@@ -349,7 +349,7 @@ class CoreInterface:
                         kwargs["context"] = {
                             "user_id": user_info.id,
                             "email": user_info.email,
-                            "is_anonymous": user_info.email,
+                            "is_anonymous": user_info.is_anonymous,
                             "workspace": workspace.name,
                         }
                         return func(*args, **kwargs)
