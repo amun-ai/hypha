@@ -12,7 +12,7 @@ playwright install
 ## Usage
 To start the hypha server, run the following command:
 ```
-
+python -m imjoy.server --port=9527 --enable-server-apps
 ```
 
 ## Development
