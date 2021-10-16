@@ -5,7 +5,9 @@ name: Test
 
 on:
   push:
-    branches: [master]
+    branches:
+      - main
+      - master
   pull_request: ~
 
 jobs:
