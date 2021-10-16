@@ -3,7 +3,6 @@ import copy
 import os
 import string
 import secrets
-import sys
 import posixpath
 from typing import List, Optional
 

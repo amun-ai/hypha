@@ -29,7 +29,7 @@ def socketio_server_fixture(minio_server):
         [
             sys.executable,
             "-m",
-            "imjoy.server",
+            "hypha.server",
             f"--port={SIO_PORT}",
             "--enable-server-apps",
             "--enable-s3",
@@ -61,7 +61,7 @@ def socketio_subpath_server_fixture(minio_server):
         [
             sys.executable,
             "-m",
-            "imjoy.server",
+            "hypha.server",
             f"--port={SIO_PORT2}",
             "--base-path=/my/engine",
         ]

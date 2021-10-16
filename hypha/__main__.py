@@ -1,4 +1,4 @@
-"""Main module for hypha"""
+"""Main module for hypha."""
 from hypha.server import get_argparser, start_server
 
 arg_parser = get_argparser()

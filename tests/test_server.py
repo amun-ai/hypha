@@ -51,7 +51,7 @@ def test_plugin_runner(socketio_server):
         [
             sys.executable,
             "-m",
-            "imjoy.runner",
+            "hypha.runner",
             f"--server-url=http://127.0.0.1:{SIO_PORT}",
             "--quit-on-ready",
             os.path.join(os.path.dirname(__file__), "example_plugin.py"),
@@ -72,7 +72,7 @@ def test_plugin_runner_subpath(socketio_subpath_server):
         [
             sys.executable,
             "-m",
-            "imjoy.runner",
+            "hypha.runner",
             f"--server-url=http://127.0.0.1:{SIO_PORT2}/my/engine",
             "--quit-on-ready",
             os.path.join(os.path.dirname(__file__), "example_plugin.py"),
@@ -101,7 +101,7 @@ async def test_plugin_runner_workspace(socketio_server):
         [
             sys.executable,
             "-m",
-            "imjoy.runner",
+            "hypha.runner",
             f"--server-url=http://127.0.0.1:{SIO_PORT}",
             f"--workspace={api.config['workspace']}",
             # f"--token={token}",
@@ -122,7 +122,7 @@ async def test_plugin_runner_workspace(socketio_server):
         [
             sys.executable,
             "-m",
-            "imjoy.runner",
+            "hypha.runner",
             f"--server-url=http://127.0.0.1:{SIO_PORT}",
             f"--workspace={api.config['workspace']}",
             f"--token={token}",
