@@ -5,6 +5,6 @@ pytest-asyncio==0.15.1
 pytest-cov==3.0.0
 pytest-timeout==2.0.1
 requests==2.26.0
-s3fs==2021.10.0
+s3fs==2021.10.1
 websocket-client==1.2.1
 zarr==2.10.1
