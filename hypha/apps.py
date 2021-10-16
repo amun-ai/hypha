@@ -17,9 +17,9 @@ from jinja2 import Environment, PackageLoader, select_autoescape
 from playwright.async_api import Page, async_playwright
 from starlette.responses import Response
 
-from imjoy.core import StatusEnum
-from imjoy.core.interface import CoreInterface
-from imjoy.utils import dotdict, safe_join
+from hypha.core import StatusEnum
+from hypha.core.interface import CoreInterface
+from hypha.utils import dotdict, safe_join
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("apps")
@@ -68,7 +68,7 @@ class ServerAppController:
         core_interface.register_interface("getAppController", self.get_public_api)
         self.core_api = dotdict(core_interface.get_interface())
         self.jinja_env = Environment(
-            loader=PackageLoader("imjoy"), autoescape=select_autoescape()
+            loader=PackageLoader("hypha"), autoescape=select_autoescape()
         )
         self.templates_dir = Path(__file__).parent / "templates"
         self.builtin_apps_dir = Path(__file__).parent / "apps"

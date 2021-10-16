@@ -41,7 +41,7 @@ jobs:
         uses: salsify/action-detect-and-tag-new-version@v2.0.1
         with:
           version-command: |
-            bash -o pipefail -c "cat imjoy/VERSION | jq -r '.version'"
+            bash -o pipefail -c "cat hypha/VERSION | jq -r '.version'"
 
       - name: Build package
         run: |

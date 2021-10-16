@@ -10,7 +10,7 @@ import pytest
 import requests
 from requests import RequestException
 
-from imjoy.minio import setup_minio_executables
+from hypha.minio import setup_minio_executables
 
 from . import (
     MINIO_PORT,
@@ -29,7 +29,7 @@ def socketio_server_fixture(minio_server):
         [
             sys.executable,
             "-m",
-            "imjoy.server",
+            "hypha.server",
             f"--port={SIO_PORT}",
             "--enable-server-apps",
             "--enable-s3",
@@ -61,7 +61,7 @@ def socketio_subpath_server_fixture(minio_server):
         [
             sys.executable,
             "-m",
-            "imjoy.server",
+            "hypha.server",
             f"--port={SIO_PORT2}",
             "--base-path=/my/engine",
         ]

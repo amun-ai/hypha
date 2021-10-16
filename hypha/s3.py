@@ -18,9 +18,9 @@ from fastapi.responses import FileResponse, Response
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
-from imjoy.core.auth import login_optional
-from imjoy.minio import MinioClient
-from imjoy.utils import generate_password, safe_join
+from hypha.core.auth import login_optional
+from hypha.minio import MinioClient
+from hypha.utils import generate_password, safe_join
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("s3")

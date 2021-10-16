@@ -1,4 +1,4 @@
-"""Package the ImJoy plugin engine."""
+"""Main module for hypha."""
 import json
 from pathlib import Path
 
