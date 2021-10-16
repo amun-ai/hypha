@@ -2,15 +2,15 @@ aiobotocore==1.4.2
 aiofiles==0.7.0
 fastapi==0.70.0
 imjoy-rpc==0.3.31
-jinja2==3.0.1
+jinja2==3.0.2
 msgpack==1.0.2
-numpy==1.19.5  # needs to stay compatible with latest tensorflow
-playwright==1.15.0
+numpy==1.21.2  # needs to stay compatible with latest tensorflow
+playwright==1.15.3
 pydantic[email]==1.8.2
 python-dotenv==0.19.1
 python-jose==3.3.0
 python-socketio[asyncio_client]==5.0.4  # pin for now to solve unknown connection issue
-pyyaml==5.4.1
+pyyaml==6.0
 shortuuid==1.0.1
 uvicorn==0.15.0
 requests==2.26.0
