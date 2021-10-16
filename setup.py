@@ -19,10 +19,10 @@ REQUIREMENTS = [
     "pydantic[email]>=1.8.2",
     "typing-extensions>=3.7.4.3",  # required by pydantic
     "jinja2>=3",
-    "python-dotenv>=0.17.0",
-    "python-engineio==4.0.0",
+    "python-dotenv>=0.19.0",
+    "python-engineio==4.1.0",
     "python-jose==3.3.0",
-    "python-socketio[asyncio_client]==5.0.4",
+    "python-socketio[asyncio_client]==5.4.1",
     "pyyaml",
     "shortuuid>=1.0.1",
     "uvicorn>=0.13.4",
