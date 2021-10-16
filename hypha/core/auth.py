@@ -16,7 +16,7 @@ from fastapi import Header, HTTPException
 from jose import jwt
 from pydantic import BaseModel  # pylint: disable=no-name-in-module
 
-from imjoy.core import UserInfo, TokenConfig
+from hypha.core import UserInfo, TokenConfig
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("imjoy-core")

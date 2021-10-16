@@ -10,7 +10,7 @@ import pytest
 import requests
 from requests import RequestException
 
-from imjoy.minio import setup_minio_executables
+from hypha.minio import setup_minio_executables
 
 from . import (
     MINIO_PORT,

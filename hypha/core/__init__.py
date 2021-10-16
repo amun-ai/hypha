@@ -15,7 +15,7 @@ from pydantic import (  # pylint: disable=no-name-in-module
     PrivateAttr,
 )
 
-from imjoy.core.plugin import DynamicPlugin
+from hypha.core.plugin import DynamicPlugin
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("core")

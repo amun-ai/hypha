@@ -12,7 +12,7 @@ import pkg_resources
 import shortuuid
 from starlette.routing import Mount
 
-from imjoy.core import (
+from hypha.core import (
     EventBus,
     ServiceInfo,
     TokenConfig,
@@ -20,9 +20,9 @@ from imjoy.core import (
     VisibilityEnum,
     WorkspaceInfo,
 )
-from imjoy.core.auth import generate_presigned_token, parse_token
-from imjoy.core.plugin import DynamicPlugin
-from imjoy.utils import dotdict
+from hypha.core.auth import generate_presigned_token, parse_token
+from hypha.core.plugin import DynamicPlugin
+from hypha.utils import dotdict
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("imjoy-core")
@@ -302,11 +302,11 @@ class CoreInterface:
         self.event_bus.emit("workspace_unregistered", ws)
 
     def load_extensions(self):
-        """Load imjoy engine extensions."""
-        # Support imjoy engine extensions
+        """Load hypha extensions."""
+        # Support hypha extensions
         # See how it works:
         # https://packaging.python.org/guides/creating-and-discovering-plugins/
-        for entry_point in pkg_resources.iter_entry_points("imjoy_engine_extension"):
+        for entry_point in pkg_resources.iter_entry_points("hypha_extension"):
             self.current_user.set(self.root_user)
             self.current_workspace.set(self.root_workspace)
             try:

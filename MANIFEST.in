@@ -1,5 +1,5 @@
-include imjoy/VERSION
-include imjoy/templates/*
-include imjoy/apps/*
-include imjoy/static_files/*
+include hypha/VERSION
+include hypha/templates/*
+include hypha/apps/*
+include hypha/static_files/*
 include LICENSE

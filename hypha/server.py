@@ -16,13 +16,13 @@ from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
-from imjoy import __version__ as VERSION
-from imjoy.asgi import ASGIGateway
-from imjoy.core import VisibilityEnum, WorkspaceInfo
-from imjoy.core.connection import BasicConnection
-from imjoy.core.interface import CoreInterface
-from imjoy.core.plugin import DynamicPlugin
-from imjoy.http import HTTPProxy
+from hypha import __version__ as VERSION
+from hypha.asgi import ASGIGateway
+from hypha.core import VisibilityEnum, WorkspaceInfo
+from hypha.core.connection import BasicConnection
+from hypha.core.interface import CoreInterface
+from hypha.core.plugin import DynamicPlugin
+from hypha.http import HTTPProxy
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("server")
@@ -248,7 +248,7 @@ def setup_socketio_server(
     @app.get(base_path)
     async def home():
         return {
-            "name": "ImJoy Engine",
+            "name": "Hypha",
             "version": VERSION,
         }
 
@@ -263,13 +263,13 @@ def setup_socketio_server(
 
     if enable_server_apps:
         # pylint: disable=import-outside-toplevel
-        from imjoy.apps import ServerAppController
+        from hypha.apps import ServerAppController
 
         ServerAppController(core_interface, port=port)
 
     if enable_s3:
         # pylint: disable=import-outside-toplevel
-        from imjoy.s3 import S3Controller
+        from hypha.s3 import S3Controller
 
         S3Controller(
             core_interface.event_bus,
@@ -334,19 +334,19 @@ def get_argparser():
         "--host",
         type=str,
         default="127.0.0.1",
-        help="host for the socketio server",
+        help="host for the hypha server",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=3000,
-        help="port for the socketio server",
+        default=9527,
+        help="port for the hypha server",
     )
     parser.add_argument(
         "--allow-origin",
         type=str,
         default="*",
-        help="origins for the socketio server",
+        help="origins for the hypha server",
     )
     parser.add_argument(
         "--base-path",

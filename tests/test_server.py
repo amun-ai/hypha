@@ -1,4 +1,4 @@
-"""Test the imjoy engine server."""
+"""Test the hypha server."""
 import os
 import subprocess
 import sys

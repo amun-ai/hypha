@@ -1,7 +1,7 @@
 """Support ASGI web server apps."""
 from starlette.types import Receive, Scope, Send
 
-from imjoy.core import ServiceInfo
+from hypha.core import ServiceInfo
 
 
 class RemoteASGIApp:

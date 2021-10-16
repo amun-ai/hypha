@@ -7,8 +7,8 @@ import msgpack
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 
-from imjoy.core.auth import login_optional
-from imjoy.core.interface import CoreInterface
+from hypha.core.auth import login_optional
+from hypha.core.interface import CoreInterface
 
 
 class MsgpackResponse(Response):
