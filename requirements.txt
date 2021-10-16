@@ -13,7 +13,7 @@ pydantic[email]==1.8.2
 python-dotenv==0.19.1
 python-jose==3.3.0
 python-socketio[asyncio_client]==5.0.4  # pin for now to solve unknown connection issue
-pyyaml==5.4.1
+pyyaml==6.0
 shortuuid==1.0.1
 uvicorn==0.15.0
 requests==2.26.0
