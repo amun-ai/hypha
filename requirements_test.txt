@@ -1,5 +1,5 @@
 boto3==1.17.106
-fsspec==2021.10.0
+fsspec==2021.10.1
 pytest==6.2.5
 pytest-asyncio==0.15.1
 pytest-cov==3.0.0
