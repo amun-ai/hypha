@@ -333,9 +333,11 @@ class CoreInterface:
             raise Exception("Service should at least contain `name` and `type`")
 
         # TODO: check if it's already exists
-        service.config = service.get("config", {})
-        assert isinstance(service.config, dict), "service.config must be a dictionary"
-        service.config["workspace"] = workspace.name
+        service["config"] = service.get("config", {})
+        assert isinstance(
+            service["config"], dict
+        ), "service.config must be a dictionary"
+        service["config"]["workspace"] = workspace.name
         formated_service = ServiceInfo.parse_obj(service)
         formated_service.set_provider(plugin)
         service_dict = formated_service.dict()
@@ -360,7 +362,11 @@ class CoreInterface:
         # service["_rintf"] = True
         # Note: service can set its `visibility` to `public` or `protected`
         workspace.add_service(formated_service)
-        return formated_service.get_id()
+        return {
+            "id": formated_service.get_id(),
+            "workspace": workspace.name,
+            "name": formated_service.name,
+        }
 
     def unregister_service(self, service_id):
         """Unregister an service."""
@@ -393,7 +399,7 @@ class CoreInterface:
     async def get_service(self, service_id):
         """Return a service."""
         if isinstance(service_id, str):
-            query = {"id": service_id}
+            query = {"name": service_id}
         else:
             query = service_id
 
@@ -408,12 +414,16 @@ class CoreInterface:
 
         if "id" in query:
             service = workspace.get_services().get(query["id"])
-            if not service:
+            root_service = self.root_workspace.get_services().get(query["id"])
+            if not service and not root_service:
                 raise Exception(f"Service not found: {query['id']}")
+            service = service or root_service
         elif "name" in query:
             service = workspace.get_service_by_name(query["name"])
-            if not service:
+            root_service = self.root_workspace.get_service_by_name(query["name"])
+            if not service and not root_service:
                 raise Exception(f"Service not found: {query['name']}")
+            service = service or root_service
         else:
             raise Exception("Please specify the service id or name to get the service")
 
@@ -628,6 +638,13 @@ class CoreInterface:
         del bound_interface["disconnect"]
         self.event_bus.emit("user_entered_workspace", (user_info, workspace))
         return bound_interface
+
+    def register_service_as_root(self, service):
+        """Register service as root user."""
+        self.current_user.set(self.root_user)
+        self.current_workspace.set(self.root_workspace)
+        self.current_plugin.set(None)
+        return self.register_service(service)
 
     def get_workspace_as_root(self, name="root"):
         """Get a workspace api as root user."""

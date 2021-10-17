@@ -222,35 +222,60 @@ def setup_logger(
     return named_logger
 
 
-def list_objects_sync(s3_client, bucket, prefix):
+def parse_s3_list_response(response):
+    """Parse the s3 list object response."""
+    if response.get("KeyCount") == 0:
+        return []
+    items = [
+        {
+            "type": "file",
+            "name": item["Key"].split("/")[-1],
+            "size": item["Size"],
+            "last_modified": datetime.timestamp(item["LastModified"]),
+        }
+        for item in response.get("Contents", [])
+    ]
+    items += [
+        {"type": "directory", "name": item["Prefix"].rstrip("/").split("/")[-1]}
+        for item in response.get("CommonPrefixes", [])
+    ]
+    return items
+
+
+def list_objects_sync(s3_client, bucket, prefix=None, delimeter="/"):
     """List a objects sync."""
-    response = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix, Delimiter="/")
-    items = response.get("Contents", [])
+    prefix = prefix or ""
+    response = s3_client.list_objects_v2(
+        Bucket=bucket, Prefix=prefix, Delimiter=delimeter
+    )
+
+    items = parse_s3_list_response(response)
     while response["IsTruncated"]:
         response = s3_client.list_objects_v2(
             Bucket=bucket,
             Prefix=prefix,
-            Delimiter="/",
+            Delimiter=delimeter,
             ContinuationToken=response["NextContinuationToken"],
         )
-        items += response["Contents"]
+        items += parse_s3_list_response(response)
     return items
 
 
-async def list_objects_async(s3_client, bucket, prefix):
+async def list_objects_async(s3_client, bucket, prefix=None, delimeter="/"):
     """List objects async."""
+    prefix = prefix or ""
     response = await s3_client.list_objects_v2(
-        Bucket=bucket, Prefix=prefix, Delimiter="/"
+        Bucket=bucket, Prefix=prefix, Delimiter=delimeter
     )
-    items = response.get("Contents", [])
+    items = parse_s3_list_response(response)
     while response["IsTruncated"]:
         response = await s3_client.list_objects_v2(
             Bucket=bucket,
             Prefix=prefix,
-            Delimiter="/",
+            Delimiter=delimeter,
             ContinuationToken=response["NextContinuationToken"],
         )
-        items += response["Contents"]
+        items += parse_s3_list_response(response)
     return items
 
 
@@ -266,7 +291,8 @@ class S3Controller:
         endpoint_url=None,
         access_key_id=None,
         secret_access_key=None,
-        default_bucket="imjoy-workspaces",
+        workspace_bucket="hypha-workspaces",
+        app_bucket="hypha-apps",
         local_log_dir="./logs",
     ):
         """Set up controller."""
@@ -279,24 +305,33 @@ class S3Controller:
             secret_access_key,
         )
         self.core_interface = core_interface
-        self.default_bucket = default_bucket
+        self.workspace_bucket = workspace_bucket
+        self.app_bucket = app_bucket
         self.local_log_dir = Path(local_log_dir)
 
         s3client = self.create_client_sync()
         try:
-            s3client.create_bucket(Bucket=self.default_bucket)
-            logger.info("Bucket created: %s", self.default_bucket)
+            s3client.create_bucket(Bucket=self.workspace_bucket)
+            logger.info("Bucket created: %s", self.workspace_bucket)
         except s3client.exceptions.BucketAlreadyExists:
             pass
         except s3client.exceptions.BucketAlreadyOwnedByYou:
             pass
+
+        try:
+            s3client.create_bucket(Bucket=self.app_bucket)
+            logger.info("Bucket created: %s", self.app_bucket)
+        except s3client.exceptions.BucketAlreadyExists:
+            pass
+        except s3client.exceptions.BucketAlreadyOwnedByYou:
+            pass
+
         self.s3client = s3client
 
         self.minio_client.admin_user_add(
             core_interface.root_user.id, generate_password()
         )
-        core_interface.register_interface("get_s3_controller", self.get_s3_controller)
-        core_interface.register_interface("getS3Controller", self.get_s3_controller)
+        core_interface.register_service_as_root(self.get_s3_service())
 
         event_bus.on("workspace_registered", self.setup_workspace)
         event_bus.on("workspace_unregistered", self.cleanup_workspace)
@@ -304,6 +339,28 @@ class S3Controller:
         event_bus.on("user_entered_workspace", self.enter_workspace)
 
         router = APIRouter()
+
+        @router.get("/{workspace}/apps/{path:path}")
+        async def get_app_file(
+            workspace: str,
+            path: str,
+            request: Request,
+            user_info: login_optional = Depends(login_optional),
+        ):
+            try:
+                path = safe_join(workspace, path)
+                async with self.create_client_async() as s3_client:
+                    return FSFileResponse(
+                        self.create_client_async(), self.workspace_bucket, path
+                    )
+            except ClientError:
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "success": False,
+                        "detail": f"File does not exists: {path}",
+                    },
+                )
 
         @router.put("/{workspace}/files/{path:path}")
         async def upload_file(
@@ -331,7 +388,7 @@ class S3Controller:
 
             async with self.create_client_async() as s3_client:
                 mpu = await s3_client.create_multipart_upload(
-                    Bucket=self.default_bucket, Key=path
+                    Bucket=self.workspace_bucket, Key=path
                 )
                 parts_info = {}
                 futs = (
@@ -346,7 +403,7 @@ class S3Controller:
                     if len(current_chunk) > 5 * 1024 * 1024:
                         count += 1
                         part_fut = s3_client.upload_part(
-                            Bucket=self.default_bucket,
+                            Bucket=self.workspace_bucket,
                             ContentLength=len(current_chunk),
                             Key=path,
                             PartNumber=count,
@@ -361,7 +418,7 @@ class S3Controller:
                         # upload the last chunk
                         count += 1
                         part_fut = s3_client.upload_part(
-                            Bucket=self.default_bucket,
+                            Bucket=self.workspace_bucket,
                             ContentLength=len(current_chunk),
                             Key=path,
                             PartNumber=count,
@@ -377,7 +434,7 @@ class S3Controller:
                     ]
 
                     response = await s3_client.complete_multipart_upload(
-                        Bucket=self.default_bucket,
+                        Bucket=self.workspace_bucket,
                         Key=path,
                         UploadId=mpu["UploadId"],
                         MultipartUpload=parts_info,
@@ -385,7 +442,7 @@ class S3Controller:
                 else:
                     response = await s3_client.put_object(
                         Body=current_chunk,
-                        Bucket=self.default_bucket,
+                        Bucket=self.workspace_bucket,
                         Key=path,
                         ContentLength=len(current_chunk),
                     )
@@ -425,7 +482,7 @@ class S3Controller:
                     # List files in the folder
                     if path.endswith("/"):
                         items = await list_objects_async(
-                            s3_client, self.default_bucket, path
+                            s3_client, self.workspace_bucket, path
                         )
                         if len(items) == 0:
                             return JSONResponse(
@@ -441,6 +498,7 @@ class S3Controller:
                             content={
                                 "success": False,
                                 "type": "directory",
+                                "name": path.split("/")[-1],
                                 "children": items,
                             },
                         )
@@ -448,10 +506,10 @@ class S3Controller:
                     try:
                         # FIXME: Commented code
                         # response = await s3_client.head_object(
-                        #     Bucket=self.default_bucket, Key=path
+                        #     Bucket=self.workspace_bucket, Key=path
                         # )
                         return FSFileResponse(
-                            self.create_client_async(), self.default_bucket, path
+                            self.create_client_async(), self.workspace_bucket, path
                         )
                     except ClientError:
                         return JSONResponse(
@@ -474,7 +532,7 @@ class S3Controller:
                 async with self.create_client_async() as s3_client:
                     try:
                         response = await s3_client.delete_object(
-                            Bucket=self.default_bucket, Key=path
+                            Bucket=self.workspace_bucket, Key=path
                         )
                         response["success"] = True
                         return JSONResponse(
@@ -558,13 +616,13 @@ class S3Controller:
                         "Sid": "AllowUserToSeeTheBucketInTheConsole",
                         "Action": ["s3:ListAllMyBuckets", "s3:GetBucketLocation"],
                         "Effect": "Allow",
-                        "Resource": [f"arn:aws:s3:::{self.default_bucket}"],
+                        "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
                     },
                     {
                         "Sid": "AllowListingOfWorkspaceFolder",
                         "Action": ["s3:ListBucket"],
                         "Effect": "Allow",
-                        "Resource": [f"arn:aws:s3:::{self.default_bucket}"],
+                        "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
                         "Condition": {
                             "StringLike": {"s3:prefix": [f"{workspace.name}/*"]}
                         },
@@ -574,7 +632,7 @@ class S3Controller:
                         "Action": ["s3:*"],
                         "Effect": "Allow",
                         "Resource": [
-                            f"arn:aws:s3:::{self.default_bucket}/{workspace.name}/*"
+                            f"arn:aws:s3:::{self.workspace_bucket}/{workspace.name}/*"
                         ],
                     },
                 ],
@@ -588,24 +646,24 @@ class S3Controller:
         os.makedirs(workspace_dir, exist_ok=True)
         self.s3client.put_object(
             Body=workspace.json().encode("utf-8"),
-            Bucket=self.default_bucket,
+            Bucket=self.workspace_bucket,
             Key=str(workspace_dir / "_workspace_config.json"),
         )
 
         # find out the latest log file number
         log_base_name = str(workspace_dir / "log.txt")
 
-        items = list_objects_sync(self.s3client, self.default_bucket, log_base_name)
+        items = list_objects_sync(self.s3client, self.workspace_bucket, log_base_name)
         # sort the log files based on the last number
-        items = sorted(items, key=lambda file: -int(file["Key"].split(".")[-1]))
+        items = sorted(items, key=lambda file: -int(file["name"].split(".")[-1]))
         if len(items) > 0:
-            start_index = int(items[0]["Key"].split(".")[-1]) + 1
+            start_index = int(items[0]["name"].split(".")[-1]) + 1
         else:
             start_index = 0
 
         ready_logger = setup_logger(
             self.s3client,
-            self.default_bucket,
+            self.workspace_bucket,
             workspace.name,
             start_index,
             workspace.name,
@@ -630,7 +688,7 @@ class S3Controller:
             "endpoint_url": self.endpoint_url,
             "access_key_id": user_info.id,
             "secret_access_key": password,
-            "bucket": self.default_bucket,
+            "bucket": self.workspace_bucket,
             "prefix": workspace.name + "/",  # important to have the trailing slash
         }
 
@@ -640,11 +698,11 @@ class S3Controller:
         """Generate presigned url."""
         try:
             workspace = self.core_interface.current_workspace.get()
-            if bucket_name != self.default_bucket or not object_name.startswith(
+            if bucket_name != self.workspace_bucket or not object_name.startswith(
                 workspace.name + "/"
             ):
                 raise Exception(
-                    f"Permission denied: bucket name must be {self.default_bucket} "
+                    f"Permission denied: bucket name must be {self.workspace_bucket} "
                     "and the object name should be prefixed with workspace.name + '/'."
                 )
             async with self.create_client_async() as s3_client:
@@ -659,10 +717,57 @@ class S3Controller:
             )  # FIXME: If we raise the error why do we need to log it first?
             raise
 
-    def get_s3_controller(self):
+    def deploy_app(self, name, source):
+        """Deploy an app."""
+        user_info = self.core_interface.current_user.get()
+        response = self.s3client.put_object(
+            ACL="public-read",
+            Body=source,
+            Bucket=self.app_bucket,
+            Key=f"{user_info.id}/{name}",
+        )
+        assert (
+            "ResponseMetadata" in response
+            and response["ResponseMetadata"]["HTTPStatusCode"] == 200
+        ), f"Failed to deploy app: {name}"
+
+    def undeploy_app(self, name):
+        """Undeploy an app."""
+        user_info = self.core_interface.current_user.get()
+        response = self.s3client.delete_object(
+            Bucket=self.app_bucket,
+            Key=f"{user_info.id}/{name}",
+        )
+        assert (
+            "ResponseMetadata" in response
+            and response["ResponseMetadata"]["HTTPStatusCode"] == 204
+        ), f"Failed to undeploy app: {name}"
+
+    def list_app(self, user: str = None):
+        """List all the apps."""
+        items = list_objects_sync(
+            self.s3client, self.app_bucket, prefix=user, delimeter=""
+        )
+        ret = []
+        for item in items:
+            if item["type"] == "directory":
+                continue
+            parts = os.path.split(item["name"])
+            user = parts[0]
+            name = "/".join(parts[1:])
+            ret.append({"name": name, "user": user, "url": f"/{user}/apps/{name}"})
+        return ret
+
+    def get_s3_service(self):
         """Get s3 controller."""
         return {
             "_rintf": True,
+            "name": "s3",
+            "type": "s3",
+            "config": {"visibility": "public"},
             "generate_credential": self.generate_credential,
             "generate_presigned_url": self.generate_presigned_url,
+            "deploy_app": self.deploy_app,
+            "undeploy_app": self.undeploy_app,
+            "list_app": self.list_app,
         }

@@ -23,6 +23,7 @@ from hypha.core.connection import BasicConnection
 from hypha.core.interface import CoreInterface
 from hypha.core.plugin import DynamicPlugin
 from hypha.http import HTTPProxy
+from hypha.utils import dotdict
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("server")
@@ -68,9 +69,21 @@ def initialize_socketio(sio, core_interface):
             user_info = core_interface.get_user_info_from_token(config.get("token"))
         except HTTPException as exp:
             logger.warning("Failed to create user: %s", exp.detail)
+            config = dotdict(config)
+            config["detail"] = f"Failed to create user: {exp.detail}"
+            event_bus.emit(
+                "plugin_registration_failed",
+                config,
+            )
             return {"success": False, "detail": f"Failed to create user: {exp.detail}"}
         except Exception as exp:  # pylint: disable=broad-except
             logger.warning("Failed to create user: %s", exp)
+            config = dotdict(config)
+            config["detail"] = f"Failed to create user: {exp}"
+            event_bus.emit(
+                "plugin_registration_failed",
+                config,
+            )
             return {"success": False, "detail": f"Failed to create user: {exp}"}
 
         ws = config.get("workspace") or user_info.id
@@ -92,6 +105,12 @@ def initialize_socketio(sio, core_interface):
                 core_interface.register_workspace(workspace)
             else:
                 logger.error("Workspace %s does not exist", ws)
+                config = dotdict(config)
+                config["detail"] = f"Workspace {ws} does not exist"
+                event_bus.emit(
+                    "plugin_registration_failed",
+                    config,
+                )
                 return {"success": False, "detail": f"Workspace {ws} does not exist."}
 
         logger.info(
@@ -107,7 +126,12 @@ def initialize_socketio(sio, core_interface):
                 user_info.id,
                 workspace.name,
             )
-
+            config = dotdict(config)
+            config.detail = f"Permission denied for workspace: {ws}"
+            event_bus.emit(
+                "plugin_registration_failed",
+                config,
+            )
             return {
                 "success": False,
                 "detail": f"Permission denied for workspace: {ws}",
@@ -233,7 +257,8 @@ def setup_socketio_server(
     endpoint_url: str = None,
     access_key_id: str = None,
     secret_access_key: str = None,
-    default_bucket: str = "imjoy-workspaces",
+    workspace_bucket: str = "hypha-workspaces",
+    app_bucket: str = "hypha-apps",
     **kwargs,
 ) -> None:
     """Set up the socketio server."""
@@ -277,7 +302,8 @@ def setup_socketio_server(
             endpoint_url=endpoint_url,
             access_key_id=access_key_id,
             secret_access_key=secret_access_key,
-            default_bucket=default_bucket,
+            workspace_bucket=workspace_bucket,
+            app_bucket=app_bucket,
         )
 
     @app.get(norm_url("/liveness"))

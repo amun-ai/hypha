@@ -8,6 +8,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.request import urlopen
 
 import requests
 import shortuuid
@@ -64,8 +65,7 @@ class ServerAppController:
         self.server_url = f"http://127.0.0.1:{self.port}"
         event_bus = self.event_bus = core_interface.event_bus
         self.core_interface = core_interface
-        core_interface.register_interface("get_app_controller", self.get_public_api)
-        core_interface.register_interface("getAppController", self.get_public_api)
+        core_interface.register_service_as_root(self.get_service_api())
         self.core_api = dotdict(core_interface.get_interface())
         self.jinja_env = Environment(
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
@@ -198,21 +198,16 @@ class ServerAppController:
             await self.browser.close()
         logger.info("Browser app controller closed.")
 
-    async def get_public_api(self) -> Dict[str, Any]:
-        """Get a list of public api."""
-        if self._status != StatusEnum.ready:
-            await self.initialize()
-
+    def get_service_api(self) -> Dict[str, Any]:
+        """Get a list of service api."""
         # TODO: check permission for each function
         controller = {
-            "deploy": self.deploy,
-            "undeploy": self.undeploy,
-            "start": self.start,
-            "stop": self.stop,
-            "list": self.list,
+            "name": "server-apps",
+            "type": "server-apps",
+            "load": self.load,
+            "unload": self.unload,
+            "_rintf": True,
         }
-
-        controller["_rintf"] = True
         return controller
 
     async def list(self, user_id: str) -> List[str]:
@@ -225,16 +220,24 @@ class ServerAppController:
 
     async def deploy(
         self,
-        source: str,
-        user_id: str,
+        source: str = None,
+        user_id: str = None,
         template: Optional[str] = None,
         app_id: Optional[str] = None,
         overwrite: bool = False,
     ) -> str:
         """Deploy a server app."""
+        if user_id is None:
+            user_info = self.core_interface.current_user.get()
+            user_id = user_info.id
         if template == "imjoy":
+            # make sure we initialized
+            await self.initialize()
             if not source:
                 raise Exception("Source should be provided for imjoy plugin.")
+            if source.startswith("http"):
+                output = urlopen(source).read()
+                source = output.decode("utf-8")
             config = await self.plugin_parser.parsePluginCode(source)
             if app_id and app_id != config.name:
                 raise Exception(
@@ -289,7 +292,8 @@ class ServerAppController:
     ) -> dotdict:
         """Start a server app instance."""
         if self.browser is None:
-            raise Exception("The app controller is not ready yet")
+            await self.initialize()
+            # raise Exception("The app controller is not ready yet")
         # context = await self.browser.createIncognitoBrowserContext()
         page = await self.browser.new_page()
         page.plugin = None
@@ -307,14 +311,25 @@ class ServerAppController:
         fut = asyncio.Future()
 
         def registered(plugin):
-            if plugin.name == name:
+            if plugin.name == name and plugin.workspace.name == workspace:
                 # return the plugin api
                 page.plugin = plugin
-                fut.set_result(plugin.config)
+                config = dotdict(plugin.config)
+                config.url = url
+                fut.set_result(config)
                 self.event_bus.off("plugin_registered", registered)
+                self.event_bus.off("plugin_registration_failed", registration_failed)
 
         # TODO: Handle timeout
         self.event_bus.on("plugin_registered", registered)
+
+        def registration_failed(config):
+            if config.name == name and config.workspace == workspace:
+                fut.set_exception(Exception(config.detail))
+                self.event_bus.off("plugin_registered", registered)
+                self.event_bus.off("plugin_registration_failed", registration_failed)
+
+        self.event_bus.on("plugin_registration_failed", registration_failed)
         try:
             response = await page.goto(url)
             assert response.status == 200, (
@@ -343,3 +358,50 @@ class ServerAppController:
             await self.browser_pages[name].close()
         else:
             raise Exception(f"Server app instance not found: {name}")
+
+    async def load(
+        self,
+        source: str = None,
+        workspace: str = None,
+        template: Optional[str] = "imjoy",
+        app_id: Optional[str] = None,
+        overwrite: bool = False,
+        token: Optional[str] = None,
+    ):
+        """
+        Deploy and start an app in the server browser.
+
+        If workspace is not specified, the app will only be deployed.
+        """
+        if workspace is None:
+            workspace = self.core_interface.current_workspace.get().name
+        if source:
+            app_id = await self.deploy(
+                source,
+                template=template,
+                app_id=app_id,
+                overwrite=overwrite,
+            )
+        else:
+            assert app_id is not None, "Please specify the app_id"
+
+        assert os.path.exists(
+            self.apps_dir / app_id
+        ), f"App (id={app_id}) does not exists."
+        if workspace:
+            config = await self.start(app_id, workspace=workspace, token=token)
+        else:
+            config = {"url": f"{self.server_url}/apps/{app_id}/index.html"}
+        config["app_id"] = app_id
+        return dotdict(config)
+
+    async def unload(self, name: str = None, app_id: str = None):
+        """
+        Stop and undeploy an app.
+
+        If app_id is not specified, the app will only be stopped but not removed.
+        """
+        assert name is not None, "Please specify `name` and `app_id`"
+        await self.stop(name)
+        if app_id is not None:
+            await self.undeploy(app_id)

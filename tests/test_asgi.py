@@ -18,18 +18,19 @@ async def test_asgi(socketio_server):
     token = await api.generate_token()
 
     # Test plugin with custom template
-    controller = await api.get_app_controller()
+    controller = await api.get_service("server-apps")
 
     source = (
         (Path(__file__).parent / "testASGIWebPythonPlugin.imjoy.html")
         .open(encoding="utf-8")
         .read()
     )
-    pid = await controller.deploy(source, "public", "imjoy", overwrite=True)
-    assert pid == "public/ASGIWebPythonPlugin"
-    apps = await controller.list("public")
-    assert pid in apps
-    config = await controller.start(pid, workspace, token)
+    config = await controller.load(
+        source=source,
+        overwrite=True,
+        workspace=workspace,
+        token=token,
+    )
     plugin = await api.get_plugin(config.name)
     await plugin.setup()
     service = await api.get_service(
@@ -37,7 +38,7 @@ async def test_asgi(socketio_server):
     )
     assert "serve" in service
 
-    response = requests.get(f"{SIO_SERVER_URL}/{workspace}/app/hello-fastapi/")
+    response = requests.get(f"{SIO_SERVER_URL}/{workspace}/asgi/hello-fastapi/")
     assert response.ok
     assert response.json()["message"] == "Hello World"
 
@@ -45,8 +46,8 @@ async def test_asgi(socketio_server):
         {"workspace": config.workspace, "name": "hello-flask"}
     )
     assert "serve" in service
-    response = requests.get(f"{SIO_SERVER_URL}/{workspace}/app/hello-flask/")
+    response = requests.get(f"{SIO_SERVER_URL}/{workspace}/asgi/hello-flask/")
     assert response.ok
     assert response.text == "<p>Hello, World!</p>"
 
-    await controller.stop(config.name)
+    await controller.unload(name=config.name)

@@ -13,14 +13,14 @@ class ImJoyPlugin:
         assert "@imjoy@" in token
         print(f"Generated token: {token}")
 
-        service_id = await api.register_service(
+        service_info = await api.register_service(
             {
                 "name": "echo service",
                 "type": "echo",
                 "echo": lambda x: print("echo: " + str(x)),
             }
         )
-        service = await api.get_service(service_id)
+        service = await api.get_service(service_info)
         await service.echo("a message")
         await api.log("initialized")
 
