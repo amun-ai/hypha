@@ -47,7 +47,7 @@ class RDFController:
 
         router = APIRouter()
 
-        @router.get("/public/apps/{path:path}")
+        @router.get("/public/rdfs/{path:path}")
         async def get_app_file(
             path: str,
             request: Request,
@@ -111,7 +111,7 @@ class RDFController:
             user = parts[0]
             name = "/".join(parts[1:])
             ret.append(
-                {"name": name, "user": user, "url": f"public/apps/{user}/{name}"}
+                {"name": name, "user": user, "url": f"public/rdfs/{user}/{name}"}
             )
         return ret
 

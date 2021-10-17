@@ -151,7 +151,7 @@ class WorkspaceInfo(BaseModel):
     docs: Optional[str]
     allow_list: Optional[List[str]]
     deny_list: Optional[List[str]]
-    read_only: bool = (False,)
+    read_only: bool = False
     _logger: Optional[logging.Logger] = PrivateAttr(default_factory=lambda: logger)
     _plugins: Dict[str, DynamicPlugin] = PrivateAttr(
         default_factory=lambda: {}

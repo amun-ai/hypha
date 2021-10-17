@@ -483,6 +483,8 @@ class S3Controller:
 
     def setup_workspace(self, workspace: WorkspaceInfo):
         """Set up workspace."""
+        if workspace.read_only:
+            return
         # make sure we have the root user in every workspace
         self.minio_client.admin_group_add(
             workspace.name, self.core_interface.root_user.id
