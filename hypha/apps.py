@@ -4,15 +4,12 @@ import logging
 import os
 import shutil
 import sys
-import threading
-import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.request import urlopen
 
 import base58
 import multihash
-import requests
 import shortuuid
 from fastapi import APIRouter
 from fastapi.responses import FileResponse, JSONResponse
@@ -22,6 +19,7 @@ from starlette.responses import Response
 
 from hypha.core import StatusEnum
 from hypha.core.interface import CoreInterface
+from hypha.core.plugin import DynamicPlugin
 from hypha.utils import dotdict, safe_join
 
 logging.basicConfig(stream=sys.stdout)
@@ -90,34 +88,13 @@ class ServerAppController:
                 content={"success": False, "detail": f"File not found: {path}"},
             )
 
-        # The following code is a hacky solution to call self.initialize
-        # We need to find a better way to call it
-        # If we try to run initialize() in the startup event callback,
-        # It give connection error.
-        @router.get("/initialize-apps")
-        async def initialize_apps() -> JSONResponse:
-            await self.initialize()
-            return JSONResponse({"status": "OK"})
-
-        def do_initialization() -> None:
-            while True:
-                try:
-                    time.sleep(0.2)
-                    response = requests.get(self.server_url + "/initialize-apps")
-                    if response.ok:
-                        logger.info("Server apps intialized.")
-                        break
-                except requests.exceptions.ConnectionError:
-                    pass
-
-        threading.Thread(target=do_initialization, daemon=True).start()
-
         core_interface.register_router(router)
 
         def close() -> None:
             asyncio.get_running_loop().create_task(self.close())
 
         event_bus.on("shutdown", close)
+        asyncio.ensure_future(self.initialize())
 
     @staticmethod
     def _capture_logs_from_browser_tabs(page: Page) -> None:
@@ -171,18 +148,10 @@ class ServerAppController:
             if self.in_docker:
                 args.append("--no-sandbox")
             self.browser = await playwright.chromium.launch(args=args)
-            for app_file in self.builtin_apps_dir.iterdir():
-                if app_file.suffix != ".html" or app_file.name.startswith("."):
-                    continue
-                source = (app_file).open().read()
-                app_id = await self.deploy(
-                    source, user_id="root", template=None, overwrite=True
-                )
-                if app_file.name == "imjoy-plugin-parser.html":
-                    self.plugin_parser_app_id = app_id
-
+            app_file = self.builtin_apps_dir / "imjoy-plugin-parser.html"
+            source = (app_file).open().read()
             self.plugin_parser = await self._launch_as_root(
-                self.plugin_parser_app_id, workspace="root"
+                source, type="raw", workspace="root"
             )
 
             # TODO: check if the plugins are marked as startup plugin
@@ -209,25 +178,25 @@ class ServerAppController:
         controller = {
             "name": "server-apps",
             "type": "server-apps",
-            "load": self.load,
-            "unload": self.unload,
+            "install": self.install,
+            "launch": self.launch,
+            "stop": self.stop,
             "list": self.list,
             "_rintf": True,
         }
         return controller
 
-    async def deploy(
+    async def install(
         self,
         source: str = None,
-        user_id: str = None,
         source_hash: str = None,
         template: Optional[str] = None,
         overwrite: bool = False,
+        attachments: List[dict] = None,
     ) -> str:
-        """Deploy a server app."""
-        if user_id is None:
-            user_info = self.core_interface.current_user.get()
-            user_id = user_info.id
+        """Save a server app."""
+        user_info = self.core_interface.current_user.get()
+        user_id = user_info.id
         if source.startswith("http"):
             with urlopen(source) as stream:
                 output = stream.read()
@@ -242,11 +211,11 @@ class ServerAppController:
                 source.encode("utf-8")
             ), f"App source code verification failed (source_hash: {source_hash})."
         if template == "imjoy":
-            # make sure we initialized
-            await self.initialize()
             if not source:
                 raise Exception("Source should be provided for imjoy plugin.")
 
+            if self._status != StatusEnum.ready:
+                await self.initialize()
             config = await self.plugin_parser.parsePluginCode(source)
             config["source_hash"] = mhash
             try:
@@ -262,23 +231,42 @@ class ServerAppController:
         elif not source:
             raise Exception("Source or template should be provided.")
 
-        if (self.apps_dir / user_id / mhash).exists() and not overwrite:
+        random_id = shortuuid.uuid()
+        app_dir = self.apps_dir / user_id / random_id
+        if app_dir.exists() and not overwrite:
             raise Exception(
-                f"Another app with the same id ({mhash}) "
+                f"Another app with the same id ({random_id}) "
                 f"already exists in the user's app space {user_id}."
             )
 
-        os.makedirs(self.apps_dir / user_id / mhash, exist_ok=True)
+        os.makedirs(app_dir, exist_ok=True)
 
-        with open(
-            self.apps_dir / user_id / mhash / "index.html", "w", encoding="utf-8"
-        ) as fil:
+        with open(app_dir / "index.html", "w", encoding="utf-8") as fil:
             fil.write(source)
 
-        return f"{user_id}/{mhash}"
+        app_id = f"{user_id}/{random_id}"
 
-    async def undeploy(self, app_id: str) -> None:
-        """Deploy a server app."""
+        if attachments:
+            try:
+
+                for att in attachments:
+                    assert (
+                        "name" in att and "source" in att
+                    ), "Attachment should contain `name` and `source`"
+                    if att["source"].startswith("http"):
+                        with urlopen(att["source"]) as stream:
+                            output = stream.read()
+                        att["source"] = output
+                    with open(safe_join(str(app_dir), att["name"]), "wb") as fil:
+                        fil.write(source)
+            except Exception:
+                self.remove(app_id)
+                raise
+
+        return {"app_id": app_id, "url": f"{self.server_url}/apps/{app_id}/index.html"}
+
+    def remove(self, app_id: str) -> None:
+        """Remove a server app."""
         if "/" not in app_id:
             raise Exception(
                 f"Invalid app id: {app_id}, the correct format is `user-id/app-id`"
@@ -288,15 +276,30 @@ class ServerAppController:
         else:
             raise Exception(f"Server app not found: {app_id}")
 
-    async def start(
+    async def launch(
         self,
-        app_id: str,
+        source: str,
         workspace: str,
         token: Optional[str] = None,
         timeout: float = 60,
+        attachments: List[dict] = None,
+        type: str = "imjoy",  # pylint: disable=redefined-builtin
     ) -> dotdict:
         """Start a server app instance."""
-        if self.browser is None:
+        user_info = self.core_interface.current_user.get()
+        user_id = user_info.id
+        if type == "raw":
+            template = None
+        elif type != "imjoy":
+            template = type + ".html"
+        else:
+            template = "imjoy"
+        app_info = await self.install(
+            source, overwrite=True, template=template, attachments=attachments
+        )
+        app_id = app_info["app_id"]
+
+        if not self.browser:
             await self.initialize()
             # raise Exception("The app controller is not ready yet")
         # context = await self.browser.createIncognitoBrowserContext()
@@ -304,46 +307,40 @@ class ServerAppController:
         page.plugin = None
         self._capture_logs_from_browser_tabs(page)
         # TODO: dispose await context.close()
-        if "/" not in app_id:
-            user_info = self.core_interface.current_user.get()
-            user_id = user_info.id
-            app_id = user_id + "/" + app_id
 
-        session_id = shortuuid.uuid()
+        plugin_id = shortuuid.uuid()
+        page_id = user_id + "/" + plugin_id
         url = (
             f"{self.server_url}/apps/{app_id}/index.html?"
-            + f"session_id={session_id}&workspace={workspace}"
+            + f"id={plugin_id}&workspace={workspace}"
             + f"&server_url={self.server_url}"
             + (f"&token={token}" if token else "")
         )
-
         fut = asyncio.Future()
 
-        def registered(plugin):
-            if (
-                plugin.config.session_id == session_id
-                and plugin.workspace.name == workspace
-            ):
-                # return the plugin api
-                page.plugin = plugin
-                config = dotdict(plugin.config)
-                config.url = url
-                config.session_id = session_id
-                fut.set_result(config)
-                self.event_bus.off("plugin_registered", registered)
-                self.event_bus.off("plugin_registration_failed", registration_failed)
+        plugin_event_bus = DynamicPlugin.create_plugin_event_bus(plugin_id)
 
-        # TODO: Handle timeout
-        self.event_bus.on("plugin_registered", registered)
+        def cleanup(*args):
+            print("cleaning up", plugin_id)
+            # asyncio.create_task(self.stop(plugin_id))
+            # self.remove(app_id)
 
-        def registration_failed(config):
-            if config.session_id == session_id and config.workspace == workspace:
-                fut.set_exception(Exception(config.detail))
-                self.event_bus.off("plugin_registered", registered)
-                self.event_bus.off("plugin_registration_failed", registration_failed)
-                asyncio.ensure_future(self.stop(session_id))
+        def connected(plugin):
+            page.plugin = plugin
+            config = dotdict(plugin.config)
+            config.url = url
+            config.id = plugin_id
+            config.app_id = app_id
+            self.browser_pages[page_id].update(config)
+            self.browser_pages[page_id]["status"] = "connected"
+            fut.set_result(config)
 
-        self.event_bus.on("plugin_registration_failed", registration_failed)
+        def failed(config):
+            fut.set_exception(Exception(config.detail))
+
+        plugin_event_bus.on("connected", connected)
+        plugin_event_bus.on("failed", failed)
+        plugin_event_bus.on("disconnected", cleanup)
 
         if timeout > 0:
 
@@ -353,7 +350,7 @@ class ServerAppController:
                 if fut.done() or fut.cancelled():
                     return
                 fut.set_exception(Exception("Failed to start app: Timeout"))
-                await self.stop(session_id)
+                cleanup()
 
             timer = startup_timer()
             asyncio.ensure_future(timer)
@@ -364,79 +361,53 @@ class ServerAppController:
                 "Failed to start server app instance, "
                 f"status: {response.status}, url: {url}"
             )
-            self.browser_pages[session_id] = page
+            self.browser_pages[page_id] = {
+                "id": plugin_id,
+                "name": app_id,
+                "status": "connecting",
+                "page": page,
+            }
         except Exception:
-            self.event_bus.off("plugin_registered", registered)
+            await page.close()
             raise
 
         return await fut
 
-    async def _launch_as_root(self, app_name: str, workspace: str = "root") -> dotdict:
+    async def _launch_as_root(
+        self,
+        source: str,
+        type: str = "imjoy",  # pylint: disable=redefined-builtin
+        workspace: str = "root",
+        timeout: float = 60.0,
+    ) -> dotdict:
         """Launch an app as root user."""
         rws = self.core_interface.get_workspace_as_root(workspace)
         token = await rws.generate_token()
-        config = await self.start(app_name, workspace, token=token)
+        config = await self.launch(
+            source, workspace, type=type, token=token, timeout=timeout
+        )
         return await self.core_interface.get_plugin_as_root(
             config.name, config.workspace
         )
 
-    async def stop(self, session_id: str) -> None:
+    async def stop(self, plugin_id: str) -> None:
         """Stop a server app instance."""
-        if session_id in self.browser_pages:
-            await self.browser_pages[session_id].close()
+        user_info = self.core_interface.current_user.get()
+        user_id = user_info.id
+        page_id = user_id + "/" + plugin_id
+        if page_id in self.browser_pages:
+            await self.browser_pages[page_id]["page"].close()
+            del self.browser_pages[page_id]
         else:
-            raise Exception(f"Server app instance not found: {session_id}")
+            raise Exception(f"Server app instance not found: {plugin_id}")
 
-    async def load(
-        self,
-        source: str = None,
-        workspace: str = None,
-        template: Optional[str] = "imjoy",
-        app_id: Optional[str] = None,
-        overwrite: bool = False,
-        token: Optional[str] = None,
-    ):
-        """
-        Deploy and start an app in the server browser.
-
-        If workspace is not specified, the app will only be deployed.
-        """
-        if workspace is None:
-            workspace = self.core_interface.current_workspace.get().name
-        if source:
-            app_id = await self.deploy(
-                source,
-                template=template,
-                overwrite=overwrite,
-            )
-        else:
-            assert app_id is not None, "Please specify the app_id"
-
-        assert os.path.exists(
-            self.apps_dir / app_id
-        ), f"App (id={app_id}) does not exists."
-        if workspace:
-            config = await self.start(app_id, workspace=workspace, token=token)
-        else:
-            config = {"url": f"{self.server_url}/apps/{app_id}/index.html"}
-        config["app_id"] = app_id
-        return dotdict(config)
-
-    async def unload(self, session_id: str = None, app_id: str = None):
-        """
-        Stop and undeploy an app.
-
-        If app_id is not specified, the app will only be stopped but not removed.
-        """
-        assert session_id is not None, "Please specify `name` and `app_id`"
-        await self.stop(session_id)
-        if app_id is not None:
-            await self.undeploy(app_id)
-
-    async def list(self, user_id: str = None) -> List[str]:
-        """List the deployed apps."""
-        if user_id is None:
-            user_info = self.core_interface.current_user.get()
-            user_id = user_info.id
-        apps = os.listdir(self.apps_dir / user_id)
-        return [{"app_id": f"{user_id}/{app}"} for app in apps]
+    async def list(self) -> List[str]:
+        """List the saved apps for the current user."""
+        user_info = self.core_interface.current_user.get()
+        user_id = user_info.id
+        sessions = [
+            {k: v for k, v in page_info.items() if k != "page"}
+            for page_id, page_info in self.browser_pages.items()
+            if page_id.startswith(user_id + "/")
+        ]
+        return sessions

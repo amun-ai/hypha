@@ -5,11 +5,45 @@ import string
 import secrets
 import posixpath
 from typing import List, Optional
-
+from datetime import datetime
 
 _os_alt_seps: List[str] = list(
     sep for sep in [os.path.sep, os.path.altsep] if sep is not None and sep != "/"
 )
+
+
+class EventBus:
+    """An event bus class."""
+
+    def __init__(self):
+        """Initialize the event bus."""
+        self._callbacks = {}
+
+    def on(self, event_name, func):
+        """Register an event callback."""
+        self._callbacks[event_name] = self._callbacks.get(event_name, []) + [func]
+        return func
+
+    def once(self, event_name, func):
+        """Register an event callback that only run once."""
+        self._callbacks[event_name] = self._callbacks.get(event_name, []) + [func]
+        # mark once callback
+        self._callbacks[event_name].once = True
+        return func
+
+    def emit(self, event_name, *data):
+        """Trigger an event."""
+        for func in self._callbacks.get(event_name, []):
+            func(*data)
+            if hasattr(func, "once"):
+                self.off(event_name, func)
+
+    def off(self, event_name, func=None):
+        """Remove an event callback."""
+        if not func:
+            del self._callbacks[event_name]
+        else:
+            self._callbacks.get(event_name, []).remove(func)
 
 
 def generate_password(length=20):
@@ -62,3 +96,62 @@ class dotdict(dict):  # pylint: disable=invalid-name
     def __deepcopy__(self, memo=None):
         """Make a deep copy."""
         return dotdict(copy.deepcopy(dict(self), memo=memo))
+
+
+def parse_s3_list_response(response, delimeter):
+    """Parse the s3 list object response."""
+    if response.get("KeyCount") == 0:
+        return []
+    items = [
+        {
+            "type": "file",
+            "name": item["Key"].split("/")[-1] if delimeter == "/" else item["Key"],
+            "size": item["Size"],
+            "last_modified": datetime.timestamp(item["LastModified"]),
+        }
+        for item in response.get("Contents", [])
+    ]
+    # only include when delimeter is /
+    if delimeter == "/":
+        items += [
+            {"type": "directory", "name": item["Prefix"].rstrip("/").split("/")[-1]}
+            for item in response.get("CommonPrefixes", [])
+        ]
+    return items
+
+
+def list_objects_sync(s3_client, bucket, prefix=None, delimeter="/"):
+    """List a objects sync."""
+    prefix = prefix or ""
+    response = s3_client.list_objects_v2(
+        Bucket=bucket, Prefix=prefix, Delimiter=delimeter
+    )
+
+    items = parse_s3_list_response(response, delimeter)
+    while response["IsTruncated"]:
+        response = s3_client.list_objects_v2(
+            Bucket=bucket,
+            Prefix=prefix,
+            Delimiter=delimeter,
+            ContinuationToken=response["NextContinuationToken"],
+        )
+        items += parse_s3_list_response(response, delimeter)
+    return items
+
+
+async def list_objects_async(s3_client, bucket, prefix=None, delimeter="/"):
+    """List objects async."""
+    prefix = prefix or ""
+    response = await s3_client.list_objects_v2(
+        Bucket=bucket, Prefix=prefix, Delimiter=delimeter
+    )
+    items = parse_s3_list_response(response, delimeter)
+    while response["IsTruncated"]:
+        response = await s3_client.list_objects_v2(
+            Bucket=bucket,
+            Prefix=prefix,
+            Delimiter=delimeter,
+            ContinuationToken=response["NextContinuationToken"],
+        )
+        items += parse_s3_list_response(response, delimeter)
+    return items

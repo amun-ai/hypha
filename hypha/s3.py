@@ -3,12 +3,11 @@ import asyncio
 import json
 import logging
 import os
-import re
 import sys
 from datetime import datetime
 from email.utils import formatdate
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from typing import Any
 
 import botocore
 from aiobotocore.session import get_session
@@ -20,46 +19,16 @@ from starlette.types import Receive, Scope, Send
 
 from hypha.core.auth import login_optional
 from hypha.minio import MinioClient
-from hypha.utils import generate_password, safe_join
+from hypha.utils import (
+    generate_password,
+    safe_join,
+    list_objects_sync,
+    list_objects_async,
+)
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("s3")
 logger.setLevel(logging.INFO)
-
-
-RANGE_REGEX = re.compile(r"^bytes=(?P<start>\d+)-(?P<end>\d*)$")
-
-
-class OpenRange(NamedTuple):
-    """Represent an open range."""
-
-    start: int
-    end: Optional[int] = None
-
-    def clamp(self, start: int, end: int) -> "ClosedRange":
-        """Clamp the range."""
-        begin = max(self.start, start)
-        end = min((x for x in (self.end, end) if x))
-
-        begin = min(begin, end)
-        end = max(begin, end)
-
-        return ClosedRange(begin, end)
-
-
-class ClosedRange(NamedTuple):
-    """Represent a closed range."""
-
-    start: int
-    end: int
-
-    def __len__(self) -> int:
-        """Return the length of the range."""
-        return self.end - self.start + 1
-
-    def __bool__(self) -> bool:
-        """Return the boolean representation of the range."""
-        return len(self) > 0
 
 
 class FSFileResponse(FileResponse):
@@ -222,65 +191,6 @@ def setup_logger(
     return named_logger
 
 
-def parse_s3_list_response(response, delimeter):
-    """Parse the s3 list object response."""
-    if response.get("KeyCount") == 0:
-        return []
-    items = [
-        {
-            "type": "file",
-            "name": item["Key"].split("/")[-1] if delimeter == "/" else item["Key"],
-            "size": item["Size"],
-            "last_modified": datetime.timestamp(item["LastModified"]),
-        }
-        for item in response.get("Contents", [])
-    ]
-    # only include when delimeter is /
-    if delimeter == "/":
-        items += [
-            {"type": "directory", "name": item["Prefix"].rstrip("/").split("/")[-1]}
-            for item in response.get("CommonPrefixes", [])
-        ]
-    return items
-
-
-def list_objects_sync(s3_client, bucket, prefix=None, delimeter="/"):
-    """List a objects sync."""
-    prefix = prefix or ""
-    response = s3_client.list_objects_v2(
-        Bucket=bucket, Prefix=prefix, Delimiter=delimeter
-    )
-
-    items = parse_s3_list_response(response, delimeter)
-    while response["IsTruncated"]:
-        response = s3_client.list_objects_v2(
-            Bucket=bucket,
-            Prefix=prefix,
-            Delimiter=delimeter,
-            ContinuationToken=response["NextContinuationToken"],
-        )
-        items += parse_s3_list_response(response, delimeter)
-    return items
-
-
-async def list_objects_async(s3_client, bucket, prefix=None, delimeter="/"):
-    """List objects async."""
-    prefix = prefix or ""
-    response = await s3_client.list_objects_v2(
-        Bucket=bucket, Prefix=prefix, Delimiter=delimeter
-    )
-    items = parse_s3_list_response(response, delimeter)
-    while response["IsTruncated"]:
-        response = await s3_client.list_objects_v2(
-            Bucket=bucket,
-            Prefix=prefix,
-            Delimiter=delimeter,
-            ContinuationToken=response["NextContinuationToken"],
-        )
-        items += parse_s3_list_response(response, delimeter)
-    return items
-
-
 class S3Controller:
     """Represent an S3 controller."""
 
@@ -288,13 +198,11 @@ class S3Controller:
 
     def __init__(
         self,
-        event_bus,
         core_interface,
         endpoint_url=None,
         access_key_id=None,
         secret_access_key=None,
         workspace_bucket="hypha-workspaces",
-        app_bucket="hypha-apps",
         local_log_dir="./logs",
     ):
         """Set up controller."""
@@ -308,21 +216,13 @@ class S3Controller:
         )
         self.core_interface = core_interface
         self.workspace_bucket = workspace_bucket
-        self.app_bucket = app_bucket
         self.local_log_dir = Path(local_log_dir)
+        event_bus = core_interface.event_bus
 
         s3client = self.create_client_sync()
         try:
             s3client.create_bucket(Bucket=self.workspace_bucket)
             logger.info("Bucket created: %s", self.workspace_bucket)
-        except s3client.exceptions.BucketAlreadyExists:
-            pass
-        except s3client.exceptions.BucketAlreadyOwnedByYou:
-            pass
-
-        try:
-            s3client.create_bucket(Bucket=self.app_bucket)
-            logger.info("Bucket created: %s", self.app_bucket)
         except s3client.exceptions.BucketAlreadyExists:
             pass
         except s3client.exceptions.BucketAlreadyOwnedByYou:
@@ -341,24 +241,6 @@ class S3Controller:
         event_bus.on("user_entered_workspace", self.enter_workspace)
 
         router = APIRouter()
-
-        @router.get("/public/apps/{path:path}")
-        async def get_app_file(
-            path: str,
-            request: Request,
-            user_info: login_optional = Depends(login_optional),
-        ):
-            try:
-                path = safe_join(path)
-                return FSFileResponse(self.create_client_async(), self.app_bucket, path)
-            except ClientError:
-                return JSONResponse(
-                    status_code=404,
-                    content={
-                        "success": False,
-                        "detail": f"File does not exists: {path}",
-                    },
-                )
 
         @router.put("/{workspace}/files/{path:path}")
         async def upload_file(
@@ -715,59 +597,13 @@ class S3Controller:
             )  # FIXME: If we raise the error why do we need to log it first?
             raise
 
-    def deploy_app(self, name, source):
-        """Deploy an app."""
-        user_info = self.core_interface.current_user.get()
-        response = self.s3client.put_object(
-            ACL="public-read",
-            Body=source,
-            Bucket=self.app_bucket,
-            Key=f"{user_info.id}/{name}",
-        )
-        assert (
-            "ResponseMetadata" in response
-            and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-        ), f"Failed to deploy app: {name}"
-
-    def undeploy_app(self, name):
-        """Undeploy an app."""
-        user_info = self.core_interface.current_user.get()
-        response = self.s3client.delete_object(
-            Bucket=self.app_bucket,
-            Key=f"{user_info.id}/{name}",
-        )
-        assert (
-            "ResponseMetadata" in response
-            and response["ResponseMetadata"]["HTTPStatusCode"] == 204
-        ), f"Failed to undeploy app: {name}"
-
-    def list_app(self, user: str = None):
-        """List all the apps."""
-        items = list_objects_sync(
-            self.s3client, self.app_bucket, prefix=user, delimeter=""
-        )
-        ret = []
-        for item in items:
-            if item["type"] == "directory":
-                continue
-            parts = os.path.split(item["name"])
-            user = parts[0]
-            name = "/".join(parts[1:])
-            ret.append(
-                {"name": name, "user": user, "url": f"public/apps/{user}/{name}"}
-            )
-        return ret
-
     def get_s3_service(self):
         """Get s3 controller."""
         return {
             "_rintf": True,
-            "name": "s3",
-            "type": "s3",
+            "name": "s3-storage",
+            "type": "s3-storage",
             "config": {"visibility": "public"},
             "generate_credential": self.generate_credential,
             "generate_presigned_url": self.generate_presigned_url,
-            "deploy_app": self.deploy_app,
-            "undeploy_app": self.undeploy_app,
-            "list_app": self.list_app,
         }

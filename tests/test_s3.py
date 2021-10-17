@@ -18,9 +18,9 @@ async def test_s3(minio_server, socketio_server):
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
-    s3controller = await api.get_service("s3")
+    s3controller = await api.get_service("s3-storage")
     assert s3controller
-    s3controller = await api.get_service({"workspace": "root", "name": "s3"})
+    s3controller = await api.get_service({"workspace": "root", "name": "s3-storage"})
     info = await s3controller.generate_credential()
     s3_client = boto3.Session().resource(
         "s3",
@@ -134,23 +134,3 @@ async def test_s3(minio_server, socketio_server):
     obj = s3_client.Object(info["bucket"], "hello.txt")
     with pytest.raises(Exception, match=r".*An error occurred (AccessDenied)*"):
         obj.upload_file("/tmp/hello.txt")
-
-
-async def test_deploy_apps():
-    """Test app deployment."""
-    api = await connect_to_server(
-        {"name": "test deploy client", "server_url": SIO_SERVER_URL}
-    )
-    s3controller = await api.get_service("s3")
-
-    source = "api.log('hello')"
-    await s3controller.deploy_app(name="test.js", source=source)
-    apps = await s3controller.list_app()
-    assert find_item(apps, "name", "test.js")
-    app = find_item(apps, "name", "test.js")
-    response = requests.get(f"{SIO_SERVER_URL}/{app['url']}")
-    assert response.ok
-    assert response.text == source
-    await s3controller.undeploy_app(name="test.js")
-    apps = await s3controller.list_app()
-    assert not find_item(apps, "name", "test.js")

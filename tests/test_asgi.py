@@ -25,9 +25,8 @@ async def test_asgi(socketio_server):
         .open(encoding="utf-8")
         .read()
     )
-    config = await controller.load(
+    config = await controller.launch(
         source=source,
-        overwrite=True,
         workspace=workspace,
         token=token,
     )
@@ -50,4 +49,9 @@ async def test_asgi(socketio_server):
     assert response.ok
     assert response.text == "<p>Hello, World!</p>"
 
-    await controller.unload(session_id=config.session_id)
+    # TODO: If we repeat the request, it fails for Flask
+    # response = requests.get(f"{SIO_SERVER_URL}/{workspace}/asgi/hello-flask/")
+    # assert response.ok
+    # assert response.text == "<p>Hello, World!</p>"
+
+    await controller.stop(config.id)

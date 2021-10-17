@@ -40,10 +40,9 @@ async def test_server_apps(socketio_server):
 
     # Test plugin with custom template
     controller = await api.get_service("server-apps")
-    config = await controller.load(
+    config = await controller.launch(
         source=TEST_APP_CODE,
-        template="window-plugin.html",
-        overwrite=True,
+        type="window-plugin",
         workspace=workspace,
         token=token,
     )
@@ -55,15 +54,10 @@ async def test_server_apps(socketio_server):
     webgpu_available = await plugin.check_webgpu()
     assert webgpu_available is True
     # only pass name so the app won't be removed
-    await controller.unload(session_id=config.session_id)
+    await controller.stop(config.id)
 
-    with pytest.raises(Exception, match=r".*does not exists.*"):
-        config = await controller.load(
-            app_id="123/233", workspace=workspace, token=token
-        )
-
-    config = await controller.load(
-        app_id=config.app_id, workspace=workspace, token=token
+    config = await controller.launch(
+        source=TEST_APP_CODE, type="window-plugin", workspace=workspace, token=token
     )
     plugin = await api.get_plugin(config.name)
     assert "execute" in plugin
@@ -71,7 +65,7 @@ async def test_server_apps(socketio_server):
     assert result == 6
     webgpu_available = await plugin.check_webgpu()
     assert webgpu_available is True
-    await controller.unload(session_id=config.session_id, app_id=config.app_id)
+    await controller.stop(config.id)
 
     # Test window plugin
     source = (
@@ -80,10 +74,9 @@ async def test_server_apps(socketio_server):
         .read()
     )
 
-    config = await controller.load(
+    config = await controller.launch(
         source=source,
-        template="imjoy",
-        overwrite=True,
+        type="imjoy",
         workspace=workspace,
         token=token,
     )
@@ -92,17 +85,16 @@ async def test_server_apps(socketio_server):
     assert "add2" in plugin
     result = await plugin.add2(4)
     assert result == 6
-    await controller.unload(session_id=config.session_id, app_id=config.app_id)
+    await controller.stop(config.id)
 
     source = (
         (Path(__file__).parent / "testWebPythonPlugin.imjoy.html")
         .open(encoding="utf-8")
         .read()
     )
-    config = await controller.load(
+    config = await controller.launch(
         source=source,
-        template="imjoy",
-        overwrite=True,
+        type="imjoy",
         workspace=workspace,
         token=token,
     )
@@ -110,17 +102,16 @@ async def test_server_apps(socketio_server):
     assert "add2" in plugin
     result = await plugin.add2(4)
     assert result == 6
-    await controller.unload(session_id=config.session_id, app_id=config.app_id)
+    await controller.stop(config.id)
 
     source = (
         (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
         .open(encoding="utf-8")
         .read()
     )
-    config = await controller.load(
+    config = await controller.launch(
         source=source,
-        template="imjoy",
-        overwrite=True,
+        type="imjoy",
         workspace=workspace,
         token=token,
     )
@@ -128,9 +119,9 @@ async def test_server_apps(socketio_server):
     assert "add2" in plugin
     result = await plugin.add2(4)
     assert result == 6
-    await controller.unload(session_id=config.session_id, app_id=config.app_id)
+    await controller.stop(config.id)
 
-    config = await controller.load(
+    config = await controller.launch(
         workspace=workspace,
         token=token,
         source="https://raw.githubusercontent.com/imjoy-team/"
@@ -138,4 +129,4 @@ async def test_server_apps(socketio_server):
     )
     assert config.name == "Untitled Plugin"
     apps = await controller.list()
-    assert find_item(apps, "app_id", config.app_id)
+    assert find_item(apps, "id", config.id)

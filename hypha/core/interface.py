@@ -13,7 +13,6 @@ import shortuuid
 from starlette.routing import Mount
 
 from hypha.core import (
-    EventBus,
     ServiceInfo,
     TokenConfig,
     UserInfo,
@@ -22,7 +21,7 @@ from hypha.core import (
 )
 from hypha.core.auth import generate_presigned_token, parse_token
 from hypha.core.plugin import DynamicPlugin
-from hypha.utils import dotdict
+from hypha.utils import dotdict, EventBus
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("imjoy-core")
@@ -102,6 +101,7 @@ class CoreInterface:
                 "list_workspaces": self.list_workspaces,
                 "listWorkspaces": self.list_workspaces,
                 "disconnect": self.disconnect,
+                # "stop_plugin": self.stop_plugin,
             }
         )
         self._imjoy_api.update(imjoy_api)
@@ -166,6 +166,8 @@ class CoreInterface:
 
     async def remove_plugin_delayed(self, plugin):
         """Remove the plugin after a delayed period (if not cancelled)."""
+        if plugin not in self._disconnected_plugins:
+            self._disconnected_plugins.append(plugin)
         await asyncio.sleep(self.disconnect_delay)
         # It means the session has been reconnected
         if plugin not in self._disconnected_plugins:
@@ -180,8 +182,6 @@ class CoreInterface:
                 "Plugin (sid: %s) does not exist or has already been terminated.", sid
             )
             return
-        if plugin not in self._disconnected_plugins:
-            self._disconnected_plugins.append(plugin)
         loop = asyncio.get_running_loop()
         loop.create_task(self.remove_plugin_delayed(plugin))
 
@@ -315,6 +315,16 @@ class CoreInterface:
             except Exception:
                 logger.exception("Failed to setup extension: %s", entry_point.name)
                 raise
+
+    def stop_plugin(self, config):
+        """Stop plugin by id."""
+        if isinstance(config, str):
+            config = {"id": config}
+        assert "id" in config, "Please provide the plugin id"
+        workspace = self.current_workspace.get()
+        plugin = workspace.get_plugin_by_id(config["id"])
+        loop = asyncio.get_running_loop()
+        loop.create_task(self.remove_plugin_delayed(plugin))
 
     def register_router(self, router):
         """Register a router."""
