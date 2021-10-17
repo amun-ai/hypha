@@ -137,14 +137,20 @@ async def test_s3(minio_server, socketio_server):
 
 
 async def test_deploy_apps():
+    """Test app deployment."""
     api = await connect_to_server(
         {"name": "test deploy client", "server_url": SIO_SERVER_URL}
     )
     s3controller = await api.get_service("s3")
 
-    await s3controller.deploy_app(name="test.js", source="api.log('hello')")
+    source = "api.log('hello')"
+    await s3controller.deploy_app(name="test.js", source=source)
     apps = await s3controller.list_app()
     assert find_item(apps, "name", "test.js")
+    app = find_item(apps, "name", "test.js")
+    response = requests.get(f"{SIO_SERVER_URL}/{app['url']}")
+    assert response.ok
+    assert response.text == source
     await s3controller.undeploy_app(name="test.js")
     apps = await s3controller.list_app()
     assert not find_item(apps, "name", "test.js")

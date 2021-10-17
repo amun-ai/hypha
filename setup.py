@@ -50,7 +50,12 @@ setup(
     include_package_data=True,
     install_requires=REQUIREMENTS,
     extras_require={
-        "server-apps": ["requests>=2.26.0", "playwright>=1.15.0"],
+        "server-apps": [
+            "requests>=2.26.0",
+            "playwright>=1.15.0",
+            "base58>=2.1.0",
+            "pymultihash>=0.8.2",
+        ],
     },
     zip_safe=False,
     entry_points={"console_scripts": ["imjoy = imjoy.__main__:main"]},

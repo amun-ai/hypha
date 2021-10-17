@@ -31,6 +31,8 @@ await imjoyRPCSocketIO.loadRequirements([{% for req in requirements %}"{{req}}",
         worker.onmessage = console.log
         const config = Object.fromEntries(new URLSearchParams(window.location.search))
         if(!config.server_url) config.server_url = window.location.origin;
+        config.source_hash = "{{ source_hash }}";
+        config.name = "{{ name }}";
         worker.postMessage(config); 
     </script>
 </body>

@@ -62,6 +62,7 @@ class DynamicPlugin:
         self.event_bus = event_bus
         self.id = self.config.id or shortuuid.uuid()  # pylint: disable=invalid-name
         self.name = self.config.name
+        self.source_hash = self.config.source_hash
         self.initializing = False
         self._disconnected = True
         self._log_history = []

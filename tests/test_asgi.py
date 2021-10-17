@@ -50,4 +50,4 @@ async def test_asgi(socketio_server):
     assert response.ok
     assert response.text == "<p>Hello, World!</p>"
 
-    await controller.unload(name=config.name)
+    await controller.unload(session_id=config.session_id)

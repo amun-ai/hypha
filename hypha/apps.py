@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.request import urlopen
 
+import base58
+import multihash
 import requests
 import shortuuid
 from fastapi import APIRouter
@@ -25,6 +27,8 @@ from hypha.utils import dotdict, safe_join
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("apps")
 logger.setLevel(logging.INFO)
+
+multihash.CodecReg.register("base58", base58.b58encode, base58.b58decode)
 
 
 def is_safe_path(basedir: str, path: str, follow_symlinks: bool = True) -> bool:
@@ -171,13 +175,14 @@ class ServerAppController:
                 if app_file.suffix != ".html" or app_file.name.startswith("."):
                     continue
                 source = (app_file).open().read()
-                pid = app_file.stem
-                await self.deploy(
-                    source, user_id="root", template=None, app_id=pid, overwrite=True
+                app_id = await self.deploy(
+                    source, user_id="root", template=None, overwrite=True
                 )
+                if app_file.name == "imjoy-plugin-parser.html":
+                    self.plugin_parser_app_id = app_id
 
             self.plugin_parser = await self._launch_as_root(
-                "imjoy-plugin-parser", workspace="root"
+                self.plugin_parser_app_id, workspace="root"
             )
 
             # TODO: check if the plugins are marked as startup plugin
@@ -206,75 +211,71 @@ class ServerAppController:
             "type": "server-apps",
             "load": self.load,
             "unload": self.unload,
+            "list": self.list,
             "_rintf": True,
         }
         return controller
-
-    async def list(self, user_id: str) -> List[str]:
-        """List the deployed apps."""
-        return [
-            f"{user_id}/{app_name}"
-            for app_name in os.listdir(self.apps_dir / user_id)
-            if not app_name.startswith(".")
-        ]
 
     async def deploy(
         self,
         source: str = None,
         user_id: str = None,
+        source_hash: str = None,
         template: Optional[str] = None,
-        app_id: Optional[str] = None,
         overwrite: bool = False,
     ) -> str:
         """Deploy a server app."""
         if user_id is None:
             user_info = self.core_interface.current_user.get()
             user_id = user_info.id
+        if source.startswith("http"):
+            with urlopen(source) as stream:
+                output = stream.read()
+            source = output.decode("utf-8")
+        # Compute multihash of the source code
+        mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
+        mhash = mhash.encode("base58").decode("ascii")
+        # Verify the source code, useful for downloading from the web
+        if source_hash is not None:
+            target_mhash = multihash.decode(source_hash.encode("ascii"), "base58")
+            assert target_mhash.verify(
+                source.encode("utf-8")
+            ), f"App source code verification failed (source_hash: {source_hash})."
         if template == "imjoy":
             # make sure we initialized
             await self.initialize()
             if not source:
                 raise Exception("Source should be provided for imjoy plugin.")
-            if source.startswith("http"):
-                output = urlopen(source).read()
-                source = output.decode("utf-8")
+
             config = await self.plugin_parser.parsePluginCode(source)
-            if app_id and app_id != config.name:
-                raise Exception(
-                    f"You cannot specify a different id ({app_id}) "
-                    f"for ImJoy plugin, it has to be `{config.name}`."
-                )
-            app_id = config.name
+            config["source_hash"] = mhash
             try:
                 temp = self.jinja_env.get_template(config.type + "-plugin.html")
-                source = temp.render(
-                    script=config.script, requirements=config.requirements
-                )
+                source = temp.render(**config)
             except Exception as err:
                 raise Exception(
                     "Failed to compile the imjoy plugin, " f"error: {err}"
                 ) from err
         elif template:
             temp = self.jinja_env.get_template(template)
-            source = temp.render(script=source)
+            source = temp.render(script=source, source_hash=mhash)
         elif not source:
             raise Exception("Source or template should be provided.")
 
-        app_id = app_id or shortuuid.uuid()
-        if (self.apps_dir / user_id / app_id).exists() and not overwrite:
+        if (self.apps_dir / user_id / mhash).exists() and not overwrite:
             raise Exception(
-                f"Another app with the same id ({app_id}) "
+                f"Another app with the same id ({mhash}) "
                 f"already exists in the user's app space {user_id}."
             )
 
-        os.makedirs(self.apps_dir / user_id / app_id, exist_ok=True)
+        os.makedirs(self.apps_dir / user_id / mhash, exist_ok=True)
 
         with open(
-            self.apps_dir / user_id / app_id / "index.html", "w", encoding="utf-8"
+            self.apps_dir / user_id / mhash / "index.html", "w", encoding="utf-8"
         ) as fil:
             fil.write(source)
 
-        return f"{user_id}/{app_id}"
+        return f"{user_id}/{mhash}"
 
     async def undeploy(self, app_id: str) -> None:
         """Deploy a server app."""
@@ -288,7 +289,11 @@ class ServerAppController:
             raise Exception(f"Server app not found: {app_id}")
 
     async def start(
-        self, app_id: str, workspace: str, token: Optional[str] = None
+        self,
+        app_id: str,
+        workspace: str,
+        token: Optional[str] = None,
+        timeout: float = 60,
     ) -> dotdict:
         """Start a server app instance."""
         if self.browser is None:
@@ -299,23 +304,31 @@ class ServerAppController:
         page.plugin = None
         self._capture_logs_from_browser_tabs(page)
         # TODO: dispose await context.close()
-        name = shortuuid.uuid()
         if "/" not in app_id:
-            app_id = workspace + "/" + app_id
+            user_info = self.core_interface.current_user.get()
+            user_id = user_info.id
+            app_id = user_id + "/" + app_id
+
+        session_id = shortuuid.uuid()
         url = (
             f"{self.server_url}/apps/{app_id}/index.html?"
-            + f"name={name}&workspace={workspace}&server_url={self.server_url}"
+            + f"session_id={session_id}&workspace={workspace}"
+            + f"&server_url={self.server_url}"
             + (f"&token={token}" if token else "")
         )
 
         fut = asyncio.Future()
 
         def registered(plugin):
-            if plugin.name == name and plugin.workspace.name == workspace:
+            if (
+                plugin.config.session_id == session_id
+                and plugin.workspace.name == workspace
+            ):
                 # return the plugin api
                 page.plugin = plugin
                 config = dotdict(plugin.config)
                 config.url = url
+                config.session_id = session_id
                 fut.set_result(config)
                 self.event_bus.off("plugin_registered", registered)
                 self.event_bus.off("plugin_registration_failed", registration_failed)
@@ -324,19 +337,34 @@ class ServerAppController:
         self.event_bus.on("plugin_registered", registered)
 
         def registration_failed(config):
-            if config.name == name and config.workspace == workspace:
+            if config.session_id == session_id and config.workspace == workspace:
                 fut.set_exception(Exception(config.detail))
                 self.event_bus.off("plugin_registered", registered)
                 self.event_bus.off("plugin_registration_failed", registration_failed)
+                asyncio.ensure_future(self.stop(session_id))
 
         self.event_bus.on("plugin_registration_failed", registration_failed)
+
+        if timeout > 0:
+
+            async def startup_timer():
+                """Killing dead app if it failed to start in time."""
+                await asyncio.sleep(timeout)
+                if fut.done() or fut.cancelled():
+                    return
+                fut.set_exception(Exception("Failed to start app: Timeout"))
+                await self.stop(session_id)
+
+            timer = startup_timer()
+            asyncio.ensure_future(timer)
+
         try:
             response = await page.goto(url)
             assert response.status == 200, (
                 "Failed to start server app instance, "
                 f"status: {response.status}, url: {url}"
             )
-            self.browser_pages[name] = page
+            self.browser_pages[session_id] = page
         except Exception:
             self.event_bus.off("plugin_registered", registered)
             raise
@@ -352,12 +380,12 @@ class ServerAppController:
             config.name, config.workspace
         )
 
-    async def stop(self, name: str) -> None:
+    async def stop(self, session_id: str) -> None:
         """Stop a server app instance."""
-        if name in self.browser_pages:
-            await self.browser_pages[name].close()
+        if session_id in self.browser_pages:
+            await self.browser_pages[session_id].close()
         else:
-            raise Exception(f"Server app instance not found: {name}")
+            raise Exception(f"Server app instance not found: {session_id}")
 
     async def load(
         self,
@@ -379,7 +407,6 @@ class ServerAppController:
             app_id = await self.deploy(
                 source,
                 template=template,
-                app_id=app_id,
                 overwrite=overwrite,
             )
         else:
@@ -395,13 +422,21 @@ class ServerAppController:
         config["app_id"] = app_id
         return dotdict(config)
 
-    async def unload(self, name: str = None, app_id: str = None):
+    async def unload(self, session_id: str = None, app_id: str = None):
         """
         Stop and undeploy an app.
 
         If app_id is not specified, the app will only be stopped but not removed.
         """
-        assert name is not None, "Please specify `name` and `app_id`"
-        await self.stop(name)
+        assert session_id is not None, "Please specify `name` and `app_id`"
+        await self.stop(session_id)
         if app_id is not None:
             await self.undeploy(app_id)
+
+    async def list(self, user_id: str = None) -> List[str]:
+        """List the deployed apps."""
+        if user_id is None:
+            user_info = self.core_interface.current_user.get()
+            user_id = user_info.id
+        apps = os.listdir(self.apps_dir / user_id)
+        return [{"app_id": f"{user_id}/{app}"} for app in apps]

@@ -222,23 +222,25 @@ def setup_logger(
     return named_logger
 
 
-def parse_s3_list_response(response):
+def parse_s3_list_response(response, delimeter):
     """Parse the s3 list object response."""
     if response.get("KeyCount") == 0:
         return []
     items = [
         {
             "type": "file",
-            "name": item["Key"].split("/")[-1],
+            "name": item["Key"].split("/")[-1] if delimeter == "/" else item["Key"],
             "size": item["Size"],
             "last_modified": datetime.timestamp(item["LastModified"]),
         }
         for item in response.get("Contents", [])
     ]
-    items += [
-        {"type": "directory", "name": item["Prefix"].rstrip("/").split("/")[-1]}
-        for item in response.get("CommonPrefixes", [])
-    ]
+    # only include when delimeter is /
+    if delimeter == "/":
+        items += [
+            {"type": "directory", "name": item["Prefix"].rstrip("/").split("/")[-1]}
+            for item in response.get("CommonPrefixes", [])
+        ]
     return items
 
 
@@ -249,7 +251,7 @@ def list_objects_sync(s3_client, bucket, prefix=None, delimeter="/"):
         Bucket=bucket, Prefix=prefix, Delimiter=delimeter
     )
 
-    items = parse_s3_list_response(response)
+    items = parse_s3_list_response(response, delimeter)
     while response["IsTruncated"]:
         response = s3_client.list_objects_v2(
             Bucket=bucket,
@@ -257,7 +259,7 @@ def list_objects_sync(s3_client, bucket, prefix=None, delimeter="/"):
             Delimiter=delimeter,
             ContinuationToken=response["NextContinuationToken"],
         )
-        items += parse_s3_list_response(response)
+        items += parse_s3_list_response(response, delimeter)
     return items
 
 
@@ -267,7 +269,7 @@ async def list_objects_async(s3_client, bucket, prefix=None, delimeter="/"):
     response = await s3_client.list_objects_v2(
         Bucket=bucket, Prefix=prefix, Delimiter=delimeter
     )
-    items = parse_s3_list_response(response)
+    items = parse_s3_list_response(response, delimeter)
     while response["IsTruncated"]:
         response = await s3_client.list_objects_v2(
             Bucket=bucket,
@@ -275,7 +277,7 @@ async def list_objects_async(s3_client, bucket, prefix=None, delimeter="/"):
             Delimiter=delimeter,
             ContinuationToken=response["NextContinuationToken"],
         )
-        items += parse_s3_list_response(response)
+        items += parse_s3_list_response(response, delimeter)
     return items
 
 
@@ -340,19 +342,15 @@ class S3Controller:
 
         router = APIRouter()
 
-        @router.get("/{workspace}/apps/{path:path}")
+        @router.get("/public/apps/{path:path}")
         async def get_app_file(
-            workspace: str,
             path: str,
             request: Request,
             user_info: login_optional = Depends(login_optional),
         ):
             try:
-                path = safe_join(workspace, path)
-                async with self.create_client_async() as s3_client:
-                    return FSFileResponse(
-                        self.create_client_async(), self.workspace_bucket, path
-                    )
+                path = safe_join(path)
+                return FSFileResponse(self.create_client_async(), self.app_bucket, path)
             except ClientError:
                 return JSONResponse(
                     status_code=404,
@@ -755,7 +753,9 @@ class S3Controller:
             parts = os.path.split(item["name"])
             user = parts[0]
             name = "/".join(parts[1:])
-            ret.append({"name": name, "user": user, "url": f"/{user}/apps/{name}"})
+            ret.append(
+                {"name": name, "user": user, "url": f"public/apps/{user}/{name}"}
+            )
         return ret
 
     def get_s3_service(self):
