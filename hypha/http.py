@@ -1,4 +1,5 @@
 """Provide the http proxy."""
+import inspect
 import json
 import traceback
 from typing import Any
@@ -90,14 +91,18 @@ class HTTPProxy:
                 )
 
         @router.get("/{workspace}/services")
-        def get_workspace_services(
+        async def get_workspace_services(
             workspace: str,
             user_info: login_optional = Depends(login_optional),
         ):
             """Route for get services under a workspace."""
             try:
                 core_interface.current_user.set(user_info)
-                services = core_interface.list_services({"workspace": workspace})
+                core_interface.current_workspace.set(
+                    core_interface.get_workspace(workspace)
+                )
+                ws = core_interface.get_workspace_interface(workspace)
+                services = await ws.list_services()
                 info = serialize(services)
                 return JSONResponse(
                     status_code=200,
@@ -118,12 +123,14 @@ class HTTPProxy:
             """Route for checking details of a service."""
             try:
                 core_interface.current_user.set(user_info)
-                ws = core_interface.get_workspace(workspace)
-                service = ws.get_service_by_name(service)
-                info = service.config.dict()
+                core_interface.current_workspace.set(
+                    core_interface.get_workspace(workspace)
+                )
+                ws = core_interface.get_workspace_interface(workspace)
+                service = await ws.get_service(service)
                 return JSONResponse(
                     status_code=200,
-                    content=info,
+                    content=serialize(service),
                 )
             except Exception as exp:
                 return JSONResponse(
@@ -146,8 +153,11 @@ class HTTPProxy:
             """
             try:
                 core_interface.current_user.set(user_info)
-                ws = core_interface.get_workspace(workspace)
-                service = ws.get_service_by_name(service)
+                core_interface.current_workspace.set(
+                    core_interface.get_workspace(workspace)
+                )
+                ws = core_interface.get_workspace_interface(workspace)
+                service = await ws.get_service(service)
                 value = get_value(keys, service)
                 if not value:
                     return JSONResponse(
@@ -186,7 +196,9 @@ class HTTPProxy:
                 if not callable(value):
                     return JSONResponse(status_code=200, content=serialize(value))
                 try:
-                    result = await value(**kwargs)
+                    result = value(**kwargs)
+                    if inspect.isawaitable(result):
+                        result = await result
                 except Exception:
                     return JSONResponse(
                         status_code=500,

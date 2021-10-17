@@ -381,7 +381,7 @@ class ServerAppController:
         timeout: float = 60.0,
     ) -> dotdict:
         """Launch an app as root user."""
-        rws = self.core_interface.get_workspace_as_root(workspace)
+        rws = self.core_interface.get_workspace_interface_as_root(workspace)
         token = await rws.generate_token()
         config = await self.launch(
             source, workspace, type=type, token=token, timeout=timeout

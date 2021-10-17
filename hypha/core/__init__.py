@@ -89,8 +89,8 @@ class ServiceInfo(BaseModel):
             "type": self.type,
             "id": self._id,
             "visibility": self.config.visibility.value,
-            "provider": self._provider.name,
-            "provider_id": self._provider.id,
+            "provider": self._provider and self._provider.name,
+            "provider_id": self._provider and self._provider.id,
         }
         summary.update(json.loads(self.config.json()))
         return summary
@@ -151,6 +151,7 @@ class WorkspaceInfo(BaseModel):
     docs: Optional[str]
     allow_list: Optional[List[str]]
     deny_list: Optional[List[str]]
+    read_only: bool = (False,)
     _logger: Optional[logging.Logger] = PrivateAttr(default_factory=lambda: logger)
     _plugins: Dict[str, DynamicPlugin] = PrivateAttr(
         default_factory=lambda: {}

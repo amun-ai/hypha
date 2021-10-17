@@ -116,6 +116,7 @@ class CoreInterface:
                     "allow_list": [],
                     "deny_list": [],
                     "visibility": "public",
+                    "read_only": True,
                 }
             )
         )
@@ -647,7 +648,7 @@ class CoreInterface:
         # from their own workspace
         del bound_interface["disconnect"]
         self.event_bus.emit("user_entered_workspace", (user_info, workspace))
-        return bound_interface
+        return dotdict(bound_interface)
 
     def register_service_as_root(self, service):
         """Register service as root user."""
@@ -656,10 +657,10 @@ class CoreInterface:
         self.current_plugin.set(None)
         return self.register_service(service)
 
-    def get_workspace_as_root(self, name="root"):
+    def get_workspace_interface_as_root(self, name="root"):
         """Get a workspace api as root user."""
         self.current_user.set(self.root_user)
-        return dotdict(self.get_workspace_interface(name))
+        return self.get_workspace_interface(name)
 
     async def get_plugin_as_root(self, name, workspace):
         """Get a plugin api as root user."""

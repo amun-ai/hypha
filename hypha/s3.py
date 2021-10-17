@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, Response
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
+from hypha.core import WorkspaceInfo
 
 from hypha.core.auth import login_optional
 from hypha.minio import MinioClient
@@ -466,6 +467,8 @@ class S3Controller:
 
     def cleanup_workspace(self, workspace):
         """Clean up workspace."""
+        if workspace.read_only:
+            return
         # TODO: if the program shutdown unexpectedly, we need to clean it up
         # We should empty the group before removing it
         group_info = self.minio_client.admin_group_info(workspace.name)
@@ -478,7 +481,7 @@ class S3Controller:
         if not workspace.persistent:
             pass
 
-    def setup_workspace(self, workspace):
+    def setup_workspace(self, workspace: WorkspaceInfo):
         """Set up workspace."""
         # make sure we have the root user in every workspace
         self.minio_client.admin_group_add(
@@ -554,12 +557,16 @@ class S3Controller:
     def enter_workspace(self, event):
         """Enter workspace."""
         user_info, workspace = event
+        if workspace.read_only:
+            return
         self.minio_client.admin_group_add(workspace.name, user_info.id)
 
     def generate_credential(self):
         """Generate credential."""
         user_info = self.core_interface.current_user.get()
         workspace = self.core_interface.current_workspace.get()
+        if workspace.read_only:
+            raise PermissionError(f"Workspace ({workspace.name}) is read-only.")
         password = generate_password()
         self.minio_client.admin_user_add(user_info.id, password)
         # Make sure the user is in the workspace
@@ -578,6 +585,8 @@ class S3Controller:
         """Generate presigned url."""
         try:
             workspace = self.core_interface.current_workspace.get()
+            if workspace.read_only:
+                raise PermissionError(f"Workspace ({workspace.name}) is read-only.")
             if bucket_name != self.workspace_bucket or not object_name.startswith(
                 workspace.name + "/"
             ):
