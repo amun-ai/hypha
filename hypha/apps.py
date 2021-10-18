@@ -149,7 +149,7 @@ class ServerAppController:
                 args.append("--no-sandbox")
             self.browser = await playwright.chromium.launch(args=args)
             app_file = self.builtin_apps_dir / "imjoy-plugin-parser.html"
-            source = (app_file).open().read()
+            source = (app_file).open(encoding="utf-8").read()
             self.plugin_parser = await self._launch_as_root(
                 source, type="raw", workspace="root"
             )
