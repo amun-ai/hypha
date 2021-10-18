@@ -87,13 +87,12 @@ def test_plugin_runner_subpath(socketio_subpath_server):
         assert "echo: a message" in output
 
 
-async def test_plugin_runner_workspace(socketio_server, test_user_token):
+async def test_plugin_runner_workspace(socketio_server):
     """Test the plugin runner with workspace."""
     api = await connect_to_server(
         {
             "name": "my second plugin",
             "server_url": SIO_SERVER_URL,
-            "token": test_user_token,
         }
     )
     token = await api.generate_token()

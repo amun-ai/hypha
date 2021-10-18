@@ -85,13 +85,9 @@ def initialize_socketio(sio, core_interface):
         workspace = core_interface.get_workspace(ws)
         if workspace is None:
             if ws == user_info.id:
-                if user_info.is_anonymous:
-                    # anonymous user will use the public workspace
-                    workspace = core_interface.get_workspace("public")
-                else:
-                    workspace = core_interface.create_user_workspace(
-                        user_info, read_only=user_info.is_anonymous
-                    )
+                workspace = core_interface.create_user_workspace(
+                    user_info, read_only=user_info.is_anonymous
+                )
             else:
                 logger.error("Workspace %s does not exist", ws)
                 config = dotdict(config)
