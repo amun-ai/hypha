@@ -90,7 +90,10 @@ def test_plugin_runner_subpath(socketio_subpath_server):
 async def test_plugin_runner_workspace(socketio_server):
     """Test the plugin runner with workspace."""
     api = await connect_to_server(
-        {"name": "my second plugin", "server_url": SIO_SERVER_URL}
+        {
+            "name": "my second plugin",
+            "server_url": SIO_SERVER_URL,
+        }
     )
     token = await api.generate_token()
     assert "@imjoy@" in token
@@ -160,19 +163,19 @@ async def test_workspace(socketio_server):
         }
     )
     await ws.log("hello")
-    service_id = await ws.register_service(
+    service_info = await ws.register_service(
         {
             "name": "test_service",
             "type": "#test",
         }
     )
-    service = await ws.get_service(service_id)
+    service = await ws.get_service(service_info)
     assert service["name"] == "test_service"
 
     def test(context=None):
         return context
 
-    service_id = await ws.register_service(
+    service_info = await ws.register_service(
         {
             "name": "test_service",
             "type": "#test",
@@ -180,7 +183,7 @@ async def test_workspace(socketio_server):
             "test": test,
         }
     )
-    service = await ws.get_service(service_id)
+    service = await ws.get_service(service_info)
     context = await service.test()
     assert "user_id" in context and "email" in context
     assert service["name"] == "test_service"

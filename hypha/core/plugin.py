@@ -2,11 +2,12 @@
 import asyncio
 import logging
 import sys
-import shortuuid
 
+import shortuuid
 from imjoy_rpc.rpc import RPC
 from imjoy_rpc.utils import ContextLocal, dotdict
 
+from hypha.utils import EventBus
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("dynamic-plugin")
@@ -18,14 +19,15 @@ class DynamicPlugin:
 
     # pylint: disable=too-many-instance-attributes
     _all_plugins = {}
+    _event_busses = {}
 
     @staticmethod
-    def get_plugin_by_session_id(session_id: str):
+    def get_plugin_by_session_id(session_id: str) -> "DynamicPlugin":
         """Get a plugin by its session id."""
         return DynamicPlugin._all_plugins.get(session_id)
 
     @staticmethod
-    def get_plugin_by_id(plugin_id: str):
+    def get_plugin_by_id(plugin_id: str) -> "DynamicPlugin":
         """Get a plugin by its session id."""
         filtered = [p for p in DynamicPlugin._all_plugins.values() if p.id == plugin_id]
         if len(filtered) == 1:
@@ -41,6 +43,31 @@ class DynamicPlugin:
         DynamicPlugin._all_plugins = {
             key: val for key, val in DynamicPlugin._all_plugins.items() if val != plugin
         }
+        if plugin.id in DynamicPlugin._event_busses:
+            DynamicPlugin._event_busses[plugin.id].emit("disconnected", plugin)
+            del DynamicPlugin._event_busses[plugin.id]
+
+    @staticmethod
+    def create_plugin_event_bus(plugin_id) -> EventBus:
+        """Remove a plugin."""
+        bus = EventBus()
+        DynamicPlugin._event_busses[plugin_id] = bus
+        return bus
+
+    @staticmethod
+    def add_plugin(plugin):
+        """Add plugin."""
+        DynamicPlugin._all_plugins[plugin.session_id] = plugin
+        if plugin.id in DynamicPlugin._event_busses:
+            DynamicPlugin._event_busses[plugin.id].emit("connected", plugin)
+
+    @staticmethod
+    def plugin_failed(config):
+        """Mark plugin as failed."""
+        if "id" in config and config["id"] in DynamicPlugin._event_busses:
+            DynamicPlugin._event_busses[config["id"]].emit(
+                "failed", config.get("detail")
+            )
 
     def __init__(
         self,
@@ -62,6 +89,7 @@ class DynamicPlugin:
         self.event_bus = event_bus
         self.id = self.config.id or shortuuid.uuid()  # pylint: disable=invalid-name
         self.name = self.config.name
+        self.source_hash = self.config.source_hash
         self.initializing = False
         self._disconnected = True
         self._log_history = []
@@ -71,8 +99,9 @@ class DynamicPlugin:
         self.terminating = False
         self._api_fut = asyncio.Future()
         self._rpc = None
+        self._terminate_callbacks = []
         self.session_id = self.connection.get_session_id()
-        DynamicPlugin._all_plugins[self.session_id] = self
+        DynamicPlugin.add_plugin(self)
         # Note: we don't need to bind the interface
         # to the plugin as we do in the js version
         # We will use context variables `current_plugin`
@@ -344,7 +373,7 @@ class DynamicPlugin:
                 self.workspace.remove_service(service)
             # clean up for 3
             self.workspace.remove_plugin(self)
-            del DynamicPlugin._all_plugins[self.session_id]
+            DynamicPlugin.remove_plugin(self)
             self.event_bus.emit("plugin_terminated", self)
             # finally done
             logger.info("Plugin %s terminated.", self.config.name)

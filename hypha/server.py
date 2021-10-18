@@ -18,11 +18,11 @@ from starlette.responses import JSONResponse, PlainTextResponse
 
 from hypha import __version__ as VERSION
 from hypha.asgi import ASGIGateway
-from hypha.core import VisibilityEnum, WorkspaceInfo
 from hypha.core.connection import BasicConnection
 from hypha.core.interface import CoreInterface
 from hypha.core.plugin import DynamicPlugin
 from hypha.http import HTTPProxy
+from hypha.utils import dotdict
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("server")
@@ -68,31 +68,34 @@ def initialize_socketio(sio, core_interface):
             user_info = core_interface.get_user_info_from_token(config.get("token"))
         except HTTPException as exp:
             logger.warning("Failed to create user: %s", exp.detail)
-            return {"success": False, "detail": f"Failed to create user: {exp.detail}"}
+            config = dotdict(config)
+            config.detail = f"Failed to create user: {exp.detail}"
+            DynamicPlugin.plugin_failed(config)
+            return {"success": False, "detail": config.detail}
         except Exception as exp:  # pylint: disable=broad-except
             logger.warning("Failed to create user: %s", exp)
-            return {"success": False, "detail": f"Failed to create user: {exp}"}
+            config = dotdict(config)
+            config.detail = f"Failed to create user: {exp}"
+            DynamicPlugin.plugin_failed(config)
+            return {"success": False, "detail": config.detail}
 
         ws = config.get("workspace") or user_info.id
-        config["workspace"] = ws
+
         config["name"] = config.get("name") or shortuuid.uuid()
         workspace = core_interface.get_workspace(ws)
         if workspace is None:
             if ws == user_info.id:
-                # only registered user can have persistent workspace
-                persistent = not user_info.is_anonymous
-                # create the user workspace automatically
-                workspace = WorkspaceInfo(
-                    name=ws,
-                    owners=[user_info.id],
-                    visibility=VisibilityEnum.protected,
-                    persistent=persistent,
+                workspace = core_interface.create_user_workspace(
+                    user_info, read_only=user_info.is_anonymous
                 )
-                workspace.set_global_event_bus(event_bus)
-                core_interface.register_workspace(workspace)
             else:
                 logger.error("Workspace %s does not exist", ws)
-                return {"success": False, "detail": f"Workspace {ws} does not exist."}
+                config = dotdict(config)
+                config.detail = f"Workspace {ws} does not exist"
+                DynamicPlugin.plugin_failed(config)
+                return {"success": False, "detail": config.detail}
+
+        config["workspace"] = workspace.name
 
         logger.info(
             "Registering plugin (uid: %s, workspace: %s)", user_info.id, workspace.name
@@ -107,43 +110,49 @@ def initialize_socketio(sio, core_interface):
                 user_info.id,
                 workspace.name,
             )
-
+            config = dotdict(config)
+            config.detail = f"Permission denied for workspace: {ws}"
+            DynamicPlugin.plugin_failed(config)
             return {
                 "success": False,
-                "detail": f"Permission denied for workspace: {ws}",
+                "detail": config.detail,
             }
 
-        plugin_id = "plugin-" + sid
-        config["id"] = plugin_id
+        config["id"] = config.get("id") or "plugin-" + sid
+        plugin_id = config["id"]
         sio.enter_room(sid, plugin_id)
 
         plugin = DynamicPlugin.get_plugin_by_id(plugin_id)
         if plugin:
-            logger.warning(
-                "Plugin reconnected (%s)",
-                plugin_id,
-            )
-        else:
-            connection = BasicConnection(sio, plugin_id, sid)
-            plugin = DynamicPlugin(
-                config,
-                core_interface.get_interface(),
-                core_interface.get_codecs(),
-                connection,
-                workspace,
-                user_info,
-                event_bus,
-            )
-            user_info.add_plugin(plugin)
-            workspace.add_plugin(plugin)
-            event_bus.emit(
-                "plugin_registered",
-                plugin,
-            )
-            logger.info(
-                "New plugin registered successfully (%s)",
-                plugin_id,
-            )
+            logger.error("Duplicated plugin id: %s", plugin.id)
+            config = dotdict(config)
+            config.detail = f"Duplicated plugin id: {plugin.id}"
+            DynamicPlugin.plugin_failed(config)
+            return {
+                "success": False,
+                "detail": config.detail,
+            }
+
+        connection = BasicConnection(sio, plugin_id, sid)
+        plugin = DynamicPlugin(
+            config,
+            core_interface.get_interface(),
+            core_interface.get_codecs(),
+            connection,
+            workspace,
+            user_info,
+            event_bus,
+        )
+        user_info.add_plugin(plugin)
+        workspace.add_plugin(plugin)
+        event_bus.emit(
+            "plugin_registered",
+            plugin,
+        )
+        logger.info(
+            "New plugin registered successfully (%s)",
+            plugin_id,
+        )
         return {"success": True, "plugin_id": plugin_id}
 
     @sio.event
@@ -233,7 +242,8 @@ def setup_socketio_server(
     endpoint_url: str = None,
     access_key_id: str = None,
     secret_access_key: str = None,
-    default_bucket: str = "imjoy-workspaces",
+    workspace_bucket: str = "hypha-workspaces",
+    rdf_bucket: str = "hypha-apps",
     **kwargs,
 ) -> None:
     """Set up the socketio server."""
@@ -270,14 +280,18 @@ def setup_socketio_server(
     if enable_s3:
         # pylint: disable=import-outside-toplevel
         from hypha.s3 import S3Controller
+        from hypha.rdf import RDFController
 
-        S3Controller(
-            core_interface.event_bus,
+        s3_controller = S3Controller(
             core_interface,
             endpoint_url=endpoint_url,
             access_key_id=access_key_id,
             secret_access_key=secret_access_key,
-            default_bucket=default_bucket,
+            workspace_bucket=workspace_bucket,
+        )
+
+        RDFController(
+            core_interface, s3_controller=s3_controller, rdf_bucket=rdf_bucket
         )
 
     @app.get(norm_url("/liveness"))

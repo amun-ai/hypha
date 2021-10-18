@@ -1,4 +1,5 @@
 """Provide the http proxy."""
+import inspect
 import json
 import traceback
 from typing import Any
@@ -6,6 +7,7 @@ from typing import Any
 import msgpack
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
+from hypha.core import UserInfo
 
 from hypha.core.auth import login_optional
 from hypha.core.interface import CoreInterface
@@ -61,6 +63,38 @@ def get_value(keys, service):
     return value
 
 
+async def get_service_as_user(
+    core_interface: CoreInterface,
+    user_info: UserInfo,
+    workspace_name: str,
+    service_name: str,
+):
+    """Get service as a specified user."""
+    core_interface.current_user.set(user_info)
+    # There won't be any plugin created in this case
+    # so we assume the user is in the public workspace
+    core_interface.current_workspace.set(core_interface.get_workspace("public"))
+    ws = core_interface.get_workspace_interface("public")
+    service = await ws.get_service({"workspace": workspace_name, "name": service_name})
+    return service
+
+
+async def list_services_as_user(
+    core_interface: CoreInterface,
+    user_info: UserInfo,
+    workspace_name: str,
+):
+    """List service as a specified user."""
+    core_interface.current_user.set(user_info)
+    # There won't be any plugin created in this case
+    # so we assume the user is in the public workspace
+    workspace = core_interface.get_workspace("public")
+    core_interface.current_workspace.set(workspace)
+    ws = core_interface.get_workspace_interface("public")
+    services = await ws.list_services({"workspace": workspace_name})
+    return services
+
+
 class HTTPProxy:
     """A proxy for accessing services from HTTP."""
 
@@ -90,14 +124,15 @@ class HTTPProxy:
                 )
 
         @router.get("/{workspace}/services")
-        def get_workspace_services(
+        async def get_workspace_services(
             workspace: str,
             user_info: login_optional = Depends(login_optional),
         ):
             """Route for get services under a workspace."""
             try:
-                core_interface.current_user.set(user_info)
-                services = core_interface.list_services({"workspace": workspace})
+                services = await list_services_as_user(
+                    core_interface, user_info, workspace
+                )
                 info = serialize(services)
                 return JSONResponse(
                     status_code=200,
@@ -117,13 +152,12 @@ class HTTPProxy:
         ):
             """Route for checking details of a service."""
             try:
-                core_interface.current_user.set(user_info)
-                ws = core_interface.get_workspace(workspace)
-                service = ws.get_service_by_name(service)
-                info = service.config.dict()
+                service = await get_service_as_user(
+                    core_interface, user_info, workspace, service
+                )
                 return JSONResponse(
                     status_code=200,
-                    content=info,
+                    content=serialize(service),
                 )
             except Exception as exp:
                 return JSONResponse(
@@ -145,9 +179,9 @@ class HTTPProxy:
             It can contain dot to refer to deeper object.
             """
             try:
-                core_interface.current_user.set(user_info)
-                ws = core_interface.get_workspace(workspace)
-                service = ws.get_service_by_name(service)
+                service = await get_service_as_user(
+                    core_interface, user_info, workspace, service
+                )
                 value = get_value(keys, service)
                 if not value:
                     return JSONResponse(
@@ -186,7 +220,9 @@ class HTTPProxy:
                 if not callable(value):
                     return JSONResponse(status_code=200, content=serialize(value))
                 try:
-                    result = await value(**kwargs)
+                    result = value(**kwargs)
+                    if inspect.isawaitable(result):
+                        result = await result
                 except Exception:
                     return JSONResponse(
                         status_code=500,

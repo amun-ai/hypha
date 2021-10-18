@@ -13,7 +13,6 @@ import shortuuid
 from starlette.routing import Mount
 
 from hypha.core import (
-    EventBus,
     ServiceInfo,
     TokenConfig,
     UserInfo,
@@ -22,7 +21,7 @@ from hypha.core import (
 )
 from hypha.core.auth import generate_presigned_token, parse_token
 from hypha.core.plugin import DynamicPlugin
-from hypha.utils import dotdict
+from hypha.utils import dotdict, EventBus
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("imjoy-core")
@@ -102,6 +101,7 @@ class CoreInterface:
                 "list_workspaces": self.list_workspaces,
                 "listWorkspaces": self.list_workspaces,
                 "disconnect": self.disconnect,
+                # "stop_plugin": self.stop_plugin,
             }
         )
         self._imjoy_api.update(imjoy_api)
@@ -116,6 +116,7 @@ class CoreInterface:
                     "allow_list": [],
                     "deny_list": [],
                     "visibility": "public",
+                    "read_only": True,
                 }
             )
         )
@@ -156,6 +157,22 @@ class CoreInterface:
             self._all_users[user_info.id] = user_info
         return user_info
 
+    def create_user_workspace(self, user_info, read_only: bool = False):
+        """Create a workspace for the user."""
+        # only registered user can have persistent workspace
+        persistent = not user_info.is_anonymous
+        # create the user workspace automatically
+        workspace = WorkspaceInfo(
+            name=user_info.id,
+            owners=[user_info.id],
+            visibility=VisibilityEnum.protected,
+            persistent=persistent,
+            read_only=read_only,
+        )
+        workspace.set_global_event_bus(self.event_bus)
+        self.register_workspace(workspace)
+        return workspace
+
     async def restore_plugin(self, plugin):
         """Restore the plugin."""
         if plugin in self._disconnected_plugins:
@@ -166,6 +183,8 @@ class CoreInterface:
 
     async def remove_plugin_delayed(self, plugin):
         """Remove the plugin after a delayed period (if not cancelled)."""
+        if plugin not in self._disconnected_plugins:
+            self._disconnected_plugins.append(plugin)
         await asyncio.sleep(self.disconnect_delay)
         # It means the session has been reconnected
         if plugin not in self._disconnected_plugins:
@@ -180,8 +199,6 @@ class CoreInterface:
                 "Plugin (sid: %s) does not exist or has already been terminated.", sid
             )
             return
-        if plugin not in self._disconnected_plugins:
-            self._disconnected_plugins.append(plugin)
         loop = asyncio.get_running_loop()
         loop.create_task(self.remove_plugin_delayed(plugin))
 
@@ -189,8 +206,11 @@ class CoreInterface:
         self,
     ):
         """Disconnect from the workspace."""
-        plugin = self.current_plugin.get()
-        await self._terminate_plugin(plugin)
+        if self.current_workspace.get() == self.current_plugin.get().workspace:
+            plugin = self.current_plugin.get()
+            await self._terminate_plugin(plugin)
+        else:
+            raise Exception("Cannot disconnect from a different workspace")
 
     async def _terminate_plugin(self, plugin):
         """Terminate the plugin."""
@@ -208,12 +228,12 @@ class CoreInterface:
         workspace = plugin.workspace
         # Remove the user completely if no plugins exists
         if len(workspace.get_plugins()) <= 0 and not workspace.persistent:
-            del self._all_workspaces[workspace.name]
             logger.info(
                 "Removing workspace (%s) completely "
                 "since there is no other plugin connected.",
                 workspace.name,
             )
+            self.unregister_workspace(workspace)
 
     def check_permission(self, workspace, user_info):
         """Check user permission for a workspace."""
@@ -293,13 +313,10 @@ class CoreInterface:
         self._all_workspaces[ws.name] = ws
         self.event_bus.emit("workspace_registered", ws)
 
-    def unregister_workspace(self, name):
+    def unregister_workspace(self, workspace: WorkspaceInfo):
         """Unregister the workspace."""
-        if name not in self._all_workspaces:
-            raise Exception(f"Workspace has not been registered: {name}")
-        ws = self._all_workspaces[name]
-        del self._all_workspaces[name]
-        self.event_bus.emit("workspace_unregistered", ws)
+        del self._all_workspaces[workspace.name]
+        self.event_bus.emit("workspace_removed", workspace)
 
     def load_extensions(self):
         """Load hypha extensions."""
@@ -315,6 +332,16 @@ class CoreInterface:
             except Exception:
                 logger.exception("Failed to setup extension: %s", entry_point.name)
                 raise
+
+    def stop_plugin(self, config):
+        """Stop plugin by id."""
+        if isinstance(config, str):
+            config = {"id": config}
+        assert "id" in config, "Please provide the plugin id"
+        workspace = self.current_workspace.get()
+        plugin = workspace.get_plugin_by_id(config["id"])
+        loop = asyncio.get_running_loop()
+        loop.create_task(self.remove_plugin_delayed(plugin))
 
     def register_router(self, router):
         """Register a router."""
@@ -333,9 +360,17 @@ class CoreInterface:
             raise Exception("Service should at least contain `name` and `type`")
 
         # TODO: check if it's already exists
-        service.config = service.get("config", {})
-        assert isinstance(service.config, dict), "service.config must be a dictionary"
-        service.config["workspace"] = workspace.name
+        service["config"] = service.get("config", {})
+        assert isinstance(
+            service["config"], dict
+        ), "service.config must be a dictionary"
+        service["config"]["workspace"] = workspace.name
+        assert (
+            "visibility" not in service
+        ), "`visibility` should be placed inside `config`"
+        assert (
+            "require_context" not in service
+        ), "`require_context` should be placed inside `config`"
         formated_service = ServiceInfo.parse_obj(service)
         formated_service.set_provider(plugin)
         service_dict = formated_service.dict()
@@ -360,7 +395,11 @@ class CoreInterface:
         # service["_rintf"] = True
         # Note: service can set its `visibility` to `public` or `protected`
         workspace.add_service(formated_service)
-        return formated_service.get_id()
+        return {
+            "id": formated_service.get_id(),
+            "workspace": workspace.name,
+            "name": formated_service.name,
+        }
 
     def unregister_service(self, service_id):
         """Unregister an service."""
@@ -393,7 +432,7 @@ class CoreInterface:
     async def get_service(self, service_id):
         """Return a service."""
         if isinstance(service_id, str):
-            query = {"id": service_id}
+            query = {"name": service_id}
         else:
             query = service_id
 
@@ -408,12 +447,16 @@ class CoreInterface:
 
         if "id" in query:
             service = workspace.get_services().get(query["id"])
-            if not service:
+            root_service = self.root_workspace.get_services().get(query["id"])
+            if not service and not root_service:
                 raise Exception(f"Service not found: {query['id']}")
+            service = service or root_service
         elif "name" in query:
             service = workspace.get_service_by_name(query["name"])
-            if not service:
+            root_service = self.root_workspace.get_service_by_name(query["name"])
+            if not service and not root_service:
                 raise Exception(f"Service not found: {query['name']}")
+            service = service or root_service
         else:
             raise Exception("Please specify the service id or name to get the service")
 
@@ -626,13 +669,19 @@ class CoreInterface:
         # Remove disconnect, since the plugin can call disconnect()
         # from their own workspace
         del bound_interface["disconnect"]
-        self.event_bus.emit("user_entered_workspace", (user_info, workspace))
-        return bound_interface
+        return dotdict(bound_interface)
 
-    def get_workspace_as_root(self, name="root"):
+    def register_service_as_root(self, service):
+        """Register service as root user."""
+        self.current_user.set(self.root_user)
+        self.current_workspace.set(self.root_workspace)
+        self.current_plugin.set(None)
+        return self.register_service(service)
+
+    def get_workspace_interface_as_root(self, name="root"):
         """Get a workspace api as root user."""
         self.current_user.set(self.root_user)
-        return dotdict(self.get_workspace_interface(name))
+        return self.get_workspace_interface(name)
 
     async def get_plugin_as_root(self, name, workspace):
         """Get a plugin api as root user."""

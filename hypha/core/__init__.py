@@ -15,45 +15,12 @@ from pydantic import (  # pylint: disable=no-name-in-module
     PrivateAttr,
 )
 
+from hypha.utils import EventBus
 from hypha.core.plugin import DynamicPlugin
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("core")
 logger.setLevel(logging.INFO)
-
-
-class EventBus:
-    """An event bus class."""
-
-    def __init__(self):
-        """Initialize the event bus."""
-        self._callbacks = {}
-
-    def on(self, event_name, func):
-        """Register an event callback."""
-        self._callbacks[event_name] = self._callbacks.get(event_name, []) + [func]
-        return func
-
-    def once(self, event_name, func):
-        """Register an event callback that only run once."""
-        self._callbacks[event_name] = self._callbacks.get(event_name, []) + [func]
-        # mark once callback
-        self._callbacks[event_name].once = True
-        return func
-
-    def emit(self, event_name, *data):
-        """Trigger an event."""
-        for func in self._callbacks.get(event_name, []):
-            func(*data)
-            if hasattr(func, "once"):
-                self.off(event_name, func)
-
-    def off(self, event_name, func=None):
-        """Remove an event callback."""
-        if not func:
-            del self._callbacks[event_name]
-        else:
-            self._callbacks.get(event_name, []).remove(func)
 
 
 class TokenConfig(BaseModel):
@@ -122,8 +89,8 @@ class ServiceInfo(BaseModel):
             "type": self.type,
             "id": self._id,
             "visibility": self.config.visibility.value,
-            "provider": self._provider.name,
-            "provider_id": self._provider.id,
+            "provider": self._provider and self._provider.name,
+            "provider_id": self._provider and self._provider.id,
         }
         summary.update(json.loads(self.config.json()))
         return summary
@@ -184,6 +151,7 @@ class WorkspaceInfo(BaseModel):
     docs: Optional[str]
     allow_list: Optional[List[str]]
     deny_list: Optional[List[str]]
+    read_only: bool = False
     _logger: Optional[logging.Logger] = PrivateAttr(default_factory=lambda: logger)
     _plugins: Dict[str, DynamicPlugin] = PrivateAttr(
         default_factory=lambda: {}
@@ -215,6 +183,15 @@ class WorkspaceInfo(BaseModel):
         ]
         if len(plugins) > 0:
             return random.choice(plugins)
+        return None
+
+    def get_plugin_by_id(self, plugin_id: str) -> Optional[DynamicPlugin]:
+        """Return a plugin by its id."""
+        plugins = [
+            plugin for plugin in self._plugins.values() if plugin.id == plugin_id
+        ]
+        if len(plugins) > 0:
+            return plugins[0]
         return None
 
     def add_plugin(self, plugin: DynamicPlugin) -> None:

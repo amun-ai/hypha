@@ -119,16 +119,22 @@ api.export({"setup": setup})
                 console.log("connected to server", api)
                 const token = await api.generateToken()
                 const workspace = await api.config.workspace;
-                const controller = await api.getAppController()
+                const controller = await api.getService("server-apps")
                 document.getElementById('deploy').onclick = async function(){
                     console.log('deploying...')
-                    const pid = await controller.deploy(editor.getValue(), "public", "imjoy", "ASGIWebPythonPlugin", true)
-                    const apps = await controller.list("public")
-                    document.getElementById("apps").innerHTML = apps.map((app)=>{
-                        return `<li>${app} <button onclick="start('${app}');">start</button> <a href="${config.server_url}/apps/${app}/index.html?name=${app}-app&workspace=${workspace}&server_url=${config.server_url}&token=${token}" target="_blank">debug</a> 
+                    const pid = await controller.launch({
+                        source: editor.getValue(),
+                        workspace,
+                        token
+                    })
+                    const apps = await controller.list()
+                    document.getElementById("apps").innerHTML = apps.map((info)=>{
+                        const app = info.app_id
+                        return `<li>${info.name} <button onclick="start('${app}');">start</button> <a href="${config.server_url}/apps/${app}/index.html?name=${app}-app&workspace=${workspace}&server_url=${config.server_url}&token=${token}" target="_blank">debug</a> 
                             <a href="${config.server_url}/${workspace}/app/hello-fastapi/" target="_blank">visit</a>
                             </li>`
                     })
+                    
                     console.log("Plugin deployed: " + pid)
                 }
                 window.start = async function(pid){
