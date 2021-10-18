@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import sys
+import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.request import urlopen
@@ -14,13 +15,13 @@ import shortuuid
 from fastapi import APIRouter
 from fastapi.responses import FileResponse, JSONResponse
 from jinja2 import Environment, PackageLoader, select_autoescape
-from playwright.async_api import Page, async_playwright
 from starlette.responses import Response
 
 from hypha.core import StatusEnum
 from hypha.core.interface import CoreInterface
 from hypha.core.plugin import DynamicPlugin
 from hypha.utils import dotdict, safe_join
+from hypha.runner.browser import BrowserAppRunner
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("apps")
@@ -44,8 +45,6 @@ class ServerAppController:
 
     # pylint: disable=too-many-instance-attributes
 
-    instance_counter: int = 0
-
     def __init__(
         self,
         core_interface: CoreInterface,
@@ -55,13 +54,10 @@ class ServerAppController:
     ):
         """Initialize the class."""
         self._status: StatusEnum = StatusEnum.not_initialized
-        self.browser = None
         self.plugin_parser = None
-        self.browser_pages = {}
+        self._apps = {}
         self.apps_dir = Path(apps_dir)
         os.makedirs(self.apps_dir, exist_ok=True)
-        self.controller_id = str(ServerAppController.instance_counter)
-        ServerAppController.instance_counter += 1
         self.port = int(port)
         self.in_docker = in_docker
         self.server_url = f"http://127.0.0.1:{self.port}"
@@ -76,6 +72,7 @@ class ServerAppController:
         self.builtin_apps_dir = Path(__file__).parent / "apps"
         router = APIRouter()
         self._initialize_future: Optional[asyncio.Future] = None
+        self._runners = {}
 
         @router.get("/apps/{path:path}")
         def get_app_file(path: str) -> Response:
@@ -96,36 +93,6 @@ class ServerAppController:
         event_bus.on("shutdown", close)
         asyncio.ensure_future(self.initialize())
 
-    @staticmethod
-    def _capture_logs_from_browser_tabs(page: Page) -> None:
-        """Capture browser tab logs."""
-
-        def _app_info(message: str) -> None:
-            """Log message at info level."""
-            if page.plugin and page.plugin.workspace:
-                workspace_logger = page.plugin.workspace.get_logger()
-                if workspace_logger:
-                    workspace_logger.info(message)
-                    return
-            logger.info(message)
-
-        def _app_error(message: str) -> None:
-            """Log message at error level."""
-            if page.plugin and page.plugin.workspace:
-                workspace_logger = page.plugin.workspace.get_logger()
-                if workspace_logger:
-                    workspace_logger.error(message)
-                    return
-            logger.error(message)
-
-        page.on(
-            "targetcreated",
-            lambda target: _app_info(str(target)),
-        )
-        page.on("console", lambda target: _app_info(target.text))
-        page.on("error", lambda target: _app_error(target.text))
-        page.on("pageerror", lambda target: _app_error(str(target)))
-
     async def initialize(self) -> None:
         """Initialize the app controller."""
         if self._status == StatusEnum.ready:
@@ -137,17 +104,15 @@ class ServerAppController:
         self._status = StatusEnum.initializing
         self._initialize_future = asyncio.Future()
         try:
-            playwright = await async_playwright().start()
-            args = [
-                "--site-per-process",
-                "--enable-unsafe-webgpu",
-                "--use-vulkan",
-                "--enable-features=Vulkan",
-            ]
-            # so it works in the docker image
-            if self.in_docker:
-                args.append("--no-sandbox")
-            self.browser = await playwright.chromium.launch(args=args)
+            # Start 2 instances of browser
+            brwoser_runner = BrowserAppRunner(self.core_interface)
+            await brwoser_runner.initialize()
+
+            brwoser_runner = BrowserAppRunner(self.core_interface)
+            await brwoser_runner.initialize()
+
+            self._runners = self.core_interface.list_services({"type": "plugin-runner"})
+            assert len(self._runners) > 0, "No plugin runner is available."
             app_file = self.builtin_apps_dir / "imjoy-plugin-parser.html"
             source = (app_file).open(encoding="utf-8").read()
             self.plugin_parser = await self._launch_as_root(
@@ -167,10 +132,9 @@ class ServerAppController:
 
     async def close(self) -> None:
         """Close the app controller."""
-        logger.info("Closing the browser app controller...")
-        if self.browser:
-            await self.browser.close()
-        logger.info("Browser app controller closed.")
+        logger.info("Closing the server app controller...")
+        for app in self._apps:
+            await self.stop(app["id"])
 
     def get_service_api(self) -> Dict[str, Any]:
         """Get a list of service api."""
@@ -300,14 +264,9 @@ class ServerAppController:
         )
         app_id = app_info["app_id"]
 
-        if not self.browser:
+        if len(self._runners) <= 0:
             await self.initialize()
-            # raise Exception("The app controller is not ready yet")
-        # context = await self.browser.createIncognitoBrowserContext()
-        page = await self.browser.new_page()
-        page.plugin = None
-        self._capture_logs_from_browser_tabs(page)
-        # TODO: dispose await context.close()
+            # raise Exception("No plugin runner is available yet")
 
         plugin_id = shortuuid.uuid()
         page_id = user_id + "/" + plugin_id
@@ -327,13 +286,12 @@ class ServerAppController:
             # self.remove(app_id)
 
         def connected(plugin):
-            page.plugin = plugin
             config = dotdict(plugin.config)
             config.url = url
             config.id = plugin_id
             config.app_id = app_id
-            self.browser_pages[page_id].update(config)
-            self.browser_pages[page_id]["status"] = "connected"
+            self._apps[page_id].update(config)
+            self._apps[page_id]["status"] = "connected"
             fut.set_result(config)
 
         def failed(config):
@@ -356,21 +314,17 @@ class ServerAppController:
             timer = startup_timer()
             asyncio.ensure_future(timer)
 
-        try:
-            response = await page.goto(url)
-            assert response.status == 200, (
-                "Failed to start server app instance, "
-                f"status: {response.status}, url: {url}"
-            )
-            self.browser_pages[page_id] = {
-                "id": plugin_id,
-                "name": app_id,
-                "status": "connecting",
-                "page": page,
-            }
-        except Exception:
-            await page.close()
-            raise
+        runner_info = random.choice(self._runners)
+        with self.core_interface.set_root_user():
+            runner = await self.core_interface.get_service(runner_info)
+            await runner.start(url=url, plugin_id=plugin_id)
+        self._apps[page_id] = {
+            "id": plugin_id,
+            "name": app_id,
+            "url": url,
+            "status": "connecting",
+            "runner": runner,
+        }
 
         return await fut
 
@@ -382,8 +336,9 @@ class ServerAppController:
         timeout: float = 60.0,
     ) -> dotdict:
         """Launch an app as root user."""
-        rws = self.core_interface.get_workspace_interface_as_root(workspace)
-        token = await rws.generate_token()
+        with self.core_interface.set_root_user():
+            rws = self.core_interface.get_workspace_interface(workspace)
+            token = await rws.generate_token()
         config = await self.launch(
             source, workspace, type=type, token=token, timeout=timeout
         )
@@ -396,9 +351,10 @@ class ServerAppController:
         user_info = self.core_interface.current_user.get()
         user_id = user_info.id
         page_id = user_id + "/" + plugin_id
-        if page_id in self.browser_pages:
-            await self.browser_pages[page_id]["page"].close()
-            del self.browser_pages[page_id]
+        if page_id in self._apps:
+            with self.core_interface.set_root_user():
+                await self._apps[page_id]["runner"].stop(plugin_id)
+            del self._apps[page_id]
         else:
             raise Exception(f"Server app instance not found: {plugin_id}")
 
@@ -407,8 +363,8 @@ class ServerAppController:
         user_info = self.core_interface.current_user.get()
         user_id = user_info.id
         sessions = [
-            {k: v for k, v in page_info.items() if k != "page"}
-            for page_id, page_info in self.browser_pages.items()
+            {k: v for k, v in page_info.items() if k != "runner"}
+            for page_id, page_info in self._apps.items()
             if page_id.startswith(user_id + "/")
         ]
         return sessions

@@ -147,4 +147,4 @@ def minio_server_fixture():
         yield
 
         proc.terminate()
-        shutil.rmtree(dirpath)
+        shutil.rmtree(dirpath, ignore_errors=True)
