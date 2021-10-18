@@ -5,11 +5,14 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 import pytest
 import requests
 from requests import RequestException
 
+from hypha.core import TokenConfig, UserInfo, auth
+from hypha.core.auth import generate_presigned_token
 from hypha.minio import setup_minio_executables
 
 from . import (
@@ -20,6 +23,32 @@ from . import (
     SIO_PORT,
     SIO_PORT2,
 )
+
+JWT_SECRET = str(uuid.uuid4())
+os.environ["JWT_SECRET"] = JWT_SECRET
+test_env = os.environ.copy()
+
+
+@pytest.fixture(name="test_user_token", scope="session")
+def generate_authenticated_user():
+    """Generate a test user token."""
+    # Patch the JWT_SECRET
+    auth.JWT_SECRET = JWT_SECRET
+
+    user_info = UserInfo(
+        id="root",
+        is_anonymous=False,
+        email=None,
+        parent=None,
+        roles=[],
+        scopes=[],
+        expires_at=None,
+    )
+    config = {}
+    config["scopes"] = []
+    token_config = TokenConfig.parse_obj(config)
+    token = generate_presigned_token(user_info, token_config)
+    yield token
 
 
 @pytest.fixture(name="socketio_server", scope="session")
@@ -36,7 +65,8 @@ def socketio_server_fixture(minio_server):
             f"--endpoint-url={MINIO_SERVER_URL}",
             f"--access-key-id={MINIO_ROOT_USER}",
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
-        ]
+        ],
+        env=test_env,
     ) as proc:
 
         timeout = 10
@@ -64,7 +94,8 @@ def socketio_subpath_server_fixture(minio_server):
             "hypha.server",
             f"--port={SIO_PORT2}",
             "--base-path=/my/engine",
-        ]
+        ],
+        env=test_env,
     ) as proc:
 
         timeout = 10

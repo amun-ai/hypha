@@ -45,10 +45,12 @@ api.export({
 """
 
 
-async def test_http_proxy(minio_server, socketio_server):
+async def test_http_proxy(minio_server, socketio_server, test_user_token):
     """Test http proxy."""
     # SIO_SERVER_URL = "http://127.0.0.1:9527"
-    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test client", "server_url": SIO_SERVER_URL, "token": test_user_token}
+    )
     workspace = api.config["workspace"]
     token = await api.generate_token()
 

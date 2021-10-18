@@ -12,9 +12,11 @@ from . import SIO_SERVER_URL, find_item
 pytestmark = pytest.mark.asyncio
 
 
-async def test_s3(minio_server, socketio_server):
+async def test_s3(minio_server, socketio_server, test_user_token):
     """Test s3 service."""
-    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test client", "server_url": SIO_SERVER_URL, "token": test_user_token}
+    )
     workspace = api.config["workspace"]
     token = await api.generate_token()
 

@@ -157,6 +157,22 @@ class CoreInterface:
             self._all_users[user_info.id] = user_info
         return user_info
 
+    def create_user_workspace(self, user_info, read_only: bool = False):
+        """Create a workspace for the user."""
+        # only registered user can have persistent workspace
+        persistent = not user_info.is_anonymous
+        # create the user workspace automatically
+        workspace = WorkspaceInfo(
+            name=user_info.id,
+            owners=[user_info.id],
+            visibility=VisibilityEnum.protected,
+            persistent=persistent,
+            read_only=read_only,
+        )
+        workspace.set_global_event_bus(self.event_bus)
+        self.register_workspace(workspace)
+        return workspace
+
     async def restore_plugin(self, plugin):
         """Restore the plugin."""
         if plugin in self._disconnected_plugins:
@@ -190,8 +206,11 @@ class CoreInterface:
         self,
     ):
         """Disconnect from the workspace."""
-        plugin = self.current_plugin.get()
-        await self._terminate_plugin(plugin)
+        if self.current_workspace.get() == self.current_plugin.get().workspace:
+            plugin = self.current_plugin.get()
+            await self._terminate_plugin(plugin)
+        else:
+            raise Exception("Cannot disconnect from a different workspace")
 
     async def _terminate_plugin(self, plugin):
         """Terminate the plugin."""
@@ -650,7 +669,6 @@ class CoreInterface:
         # Remove disconnect, since the plugin can call disconnect()
         # from their own workspace
         del bound_interface["disconnect"]
-        self.event_bus.emit("user_entered_workspace", (user_info, workspace))
         return dotdict(bound_interface)
 
     def register_service_as_root(self, service):

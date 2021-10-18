@@ -240,7 +240,6 @@ class S3Controller:
         event_bus.on("workspace_registered", self.setup_workspace)
         event_bus.on("workspace_removed", self.cleanup_workspace)
         event_bus.on("plugin_registered", self.setup_plugin)
-        event_bus.on("user_entered_workspace", self.enter_workspace)
 
         router = APIRouter()
 
@@ -558,14 +557,6 @@ class S3Controller:
             log_base_name,
         )
         workspace.set_logger(ready_logger)
-
-    def enter_workspace(self, event):
-        """Enter workspace."""
-        user_info, workspace = event
-        # anonymous user won't be allowed to store files
-        if workspace.read_only:
-            return
-        self.minio_client.admin_group_add(workspace.name, user_info.id)
 
     def generate_credential(self):
         """Generate credential."""

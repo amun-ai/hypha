@@ -7,6 +7,7 @@ from typing import Any
 import msgpack
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
+from hypha.core import UserInfo
 
 from hypha.core.auth import login_optional
 from hypha.core.interface import CoreInterface
@@ -62,6 +63,38 @@ def get_value(keys, service):
     return value
 
 
+async def get_service_as_user(
+    core_interface: CoreInterface,
+    user_info: UserInfo,
+    workspace_name: str,
+    service_name: str,
+):
+    """Get service as a specified user."""
+    core_interface.current_user.set(user_info)
+    # There won't be any plugin created in this case
+    # so we assume the user is in the public workspace
+    core_interface.current_workspace.set(core_interface.get_workspace("public"))
+    ws = core_interface.get_workspace_interface("public")
+    service = await ws.get_service({"workspace": workspace_name, "name": service_name})
+    return service
+
+
+async def list_services_as_user(
+    core_interface: CoreInterface,
+    user_info: UserInfo,
+    workspace_name: str,
+):
+    """List service as a specified user."""
+    core_interface.current_user.set(user_info)
+    # There won't be any plugin created in this case
+    # so we assume the user is in the public workspace
+    workspace = core_interface.get_workspace("public")
+    core_interface.current_workspace.set(workspace)
+    ws = core_interface.get_workspace_interface("public")
+    services = await ws.list_services({"workspace": workspace_name})
+    return services
+
+
 class HTTPProxy:
     """A proxy for accessing services from HTTP."""
 
@@ -97,12 +130,9 @@ class HTTPProxy:
         ):
             """Route for get services under a workspace."""
             try:
-                core_interface.current_user.set(user_info)
-                core_interface.current_workspace.set(
-                    core_interface.get_workspace("public")
+                services = await list_services_as_user(
+                    core_interface, user_info, workspace
                 )
-                ws = core_interface.get_workspace_interface("public")
-                services = await ws.list_services({"workspace": workspace})
                 info = serialize(services)
                 return JSONResponse(
                     status_code=200,
@@ -122,13 +152,8 @@ class HTTPProxy:
         ):
             """Route for checking details of a service."""
             try:
-                core_interface.current_user.set(user_info)
-                core_interface.current_workspace.set(
-                    core_interface.get_workspace("public")
-                )
-                ws = core_interface.get_workspace_interface("public")
-                service = await ws.get_service(
-                    {"workspace": workspace, "name": service}
+                service = await get_service_as_user(
+                    core_interface, user_info, workspace, service
                 )
                 return JSONResponse(
                     status_code=200,
@@ -154,13 +179,8 @@ class HTTPProxy:
             It can contain dot to refer to deeper object.
             """
             try:
-                core_interface.current_user.set(user_info)
-                core_interface.current_workspace.set(
-                    core_interface.get_workspace("public")
-                )
-                ws = core_interface.get_workspace_interface("public")
-                service = await ws.get_service(
-                    {"workspace": workspace, "name": service}
+                service = await get_service_as_user(
+                    core_interface, user_info, workspace, service
                 )
                 value = get_value(keys, service)
                 if not value:

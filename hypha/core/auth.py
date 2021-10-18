@@ -19,7 +19,7 @@ from pydantic import BaseModel  # pylint: disable=no-name-in-module
 from hypha.core import UserInfo, TokenConfig
 
 logging.basicConfig(stream=sys.stdout)
-logger = logging.getLogger("imjoy-core")
+logger = logging.getLogger("auth")
 logger.setLevel(logging.INFO)
 
 ENV_FILE = find_dotenv()
@@ -162,20 +162,6 @@ def valid_token(authorization: str):
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header is expected")
 
-    parts = authorization.split()
-
-    if parts[0].lower() != "bearer":
-        raise HTTPException(
-            status_code=401, detail="Authorization header must start with Bearer"
-        )
-    if len(parts) == 1:
-        raise HTTPException(status_code=401, detail="Token not found")
-    if len(parts) > 2:
-        raise HTTPException(
-            status_code=401, detail="Authorization header must be 'Bearer' token"
-        )
-
-    authorization = parts[1]
     try:
         unverified_header = jwt.get_unverified_header(authorization)
 
@@ -255,7 +241,7 @@ def parse_token(authorization: str, allow_anonymouse=False):
 
     if "@imjoy@" not in token:
         # auth0 token
-        info = valid_token(authorization)
+        info = valid_token(token)
     else:
         # generated token
         token = token.split("@imjoy@")[1]

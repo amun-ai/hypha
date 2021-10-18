@@ -18,7 +18,6 @@ from starlette.responses import JSONResponse, PlainTextResponse
 
 from hypha import __version__ as VERSION
 from hypha.asgi import ASGIGateway
-from hypha.core import VisibilityEnum, WorkspaceInfo
 from hypha.core.connection import BasicConnection
 from hypha.core.interface import CoreInterface
 from hypha.core.plugin import DynamicPlugin
@@ -81,28 +80,26 @@ def initialize_socketio(sio, core_interface):
             return {"success": False, "detail": config.detail}
 
         ws = config.get("workspace") or user_info.id
-        config["workspace"] = ws
+
         config["name"] = config.get("name") or shortuuid.uuid()
         workspace = core_interface.get_workspace(ws)
         if workspace is None:
             if ws == user_info.id:
-                # only registered user can have persistent workspace
-                persistent = not user_info.is_anonymous
-                # create the user workspace automatically
-                workspace = WorkspaceInfo(
-                    name=ws,
-                    owners=[user_info.id],
-                    visibility=VisibilityEnum.protected,
-                    persistent=persistent,
-                )
-                workspace.set_global_event_bus(event_bus)
-                core_interface.register_workspace(workspace)
+                if user_info.is_anonymous:
+                    # anonymous user will use the public workspace
+                    workspace = core_interface.get_workspace("public")
+                else:
+                    workspace = core_interface.create_user_workspace(
+                        user_info, read_only=user_info.is_anonymous
+                    )
             else:
                 logger.error("Workspace %s does not exist", ws)
                 config = dotdict(config)
                 config.detail = f"Workspace {ws} does not exist"
                 DynamicPlugin.plugin_failed(config)
                 return {"success": False, "detail": config.detail}
+
+        config["workspace"] = workspace.name
 
         logger.info(
             "Registering plugin (uid: %s, workspace: %s)", user_info.id, workspace.name
