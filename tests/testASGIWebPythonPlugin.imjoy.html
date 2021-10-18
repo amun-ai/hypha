@@ -60,7 +60,9 @@ async def setup():
         "name": "hello-fastapi",
         "type": "ASGI",
         "serve": serve_fastapi,
-        "visibility": "public"
+        "config": {
+            "visibility": "public"
+        }
     })
 
     # Registering flask app
@@ -71,7 +73,9 @@ async def setup():
         "name": "hello-flask",
         "type": "ASGI",
         "serve": serve_flask,
-        "visibility": "public"
+        "config": {
+            "visibility": "public"
+        }
     })
 
 api.export({"setup": setup})

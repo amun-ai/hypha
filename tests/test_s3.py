@@ -134,3 +134,5 @@ async def test_s3(minio_server, socketio_server):
     obj = s3_client.Object(info["bucket"], "hello.txt")
     with pytest.raises(Exception, match=r".*An error occurred (AccessDenied)*"):
         obj.upload_file("/tmp/hello.txt")
+
+    await api.disconnect()

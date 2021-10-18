@@ -25,6 +25,7 @@ from hypha.utils import (
     safe_join,
     list_objects_sync,
     list_objects_async,
+    remove_objects_sync,
 )
 
 logging.basicConfig(stream=sys.stdout)
@@ -237,7 +238,7 @@ class S3Controller:
         core_interface.register_service_as_root(self.get_s3_service())
 
         event_bus.on("workspace_registered", self.setup_workspace)
-        event_bus.on("workspace_unregistered", self.cleanup_workspace)
+        event_bus.on("workspace_removed", self.cleanup_workspace)
         event_bus.on("plugin_registered", self.setup_plugin)
         event_bus.on("user_entered_workspace", self.enter_workspace)
 
@@ -479,7 +480,9 @@ class S3Controller:
 
         # TODO: we will remove the files if it's not persistent
         if not workspace.persistent:
-            pass
+            remove_objects_sync(
+                self.s3client, self.workspace_bucket, workspace.name + "/"
+            )
 
     def setup_workspace(self, workspace: WorkspaceInfo):
         """Set up workspace."""
@@ -559,6 +562,7 @@ class S3Controller:
     def enter_workspace(self, event):
         """Enter workspace."""
         user_info, workspace = event
+        # anonymous user won't be allowed to store files
         if workspace.read_only:
             return
         self.minio_client.admin_group_add(workspace.name, user_info.id)

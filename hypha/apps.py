@@ -178,6 +178,7 @@ class ServerAppController:
         controller = {
             "name": "server-apps",
             "type": "server-apps",
+            "config": {"visibility": "public"},
             "install": self.install,
             "launch": self.launch,
             "stop": self.stop,

@@ -139,6 +139,59 @@ def list_objects_sync(s3_client, bucket, prefix=None, delimeter="/"):
     return items
 
 
+def remove_objects_sync(s3_client, bucket, prefix, delimeter=""):
+    """Remove all objects in a folder."""
+    assert prefix != "" and prefix.endswith("/")
+    response = s3_client.list_objects_v2(
+        Bucket=bucket, Prefix=prefix, Delimiter=delimeter
+    )
+    items = response.get("Contents", [])
+    if len(items) > 0:
+        delete_response = s3_client.delete_objects(
+            Bucket=bucket,
+            Delete={
+                "Objects": [
+                    {
+                        "Key": item["Key"],
+                        # 'VersionId': 'string'
+                    }
+                    for item in items
+                ],
+                "Quiet": True,
+            },
+        )
+        assert (
+            "ResponseMetadata" in delete_response
+            and delete_response["ResponseMetadata"]["HTTPStatusCode"] == 200
+        )
+    while response["IsTruncated"]:
+        response = s3_client.list_objects_v2(
+            Bucket=bucket,
+            Prefix=prefix,
+            Delimiter=delimeter,
+            ContinuationToken=response["NextContinuationToken"],
+        )
+        items = response.get("Contents", [])
+        if len(items) > 0:
+            delete_response = s3_client.delete_objects(
+                Bucket=bucket,
+                Delete={
+                    "Objects": [
+                        {
+                            "Key": item["Key"],
+                            # 'VersionId': 'string'
+                        }
+                        for item in items
+                    ],
+                    "Quiet": True,
+                },
+            )
+            assert (
+                "ResponseMetadata" in delete_response
+                and delete_response["ResponseMetadata"]["HTTPStatusCode"] == 200
+            )
+
+
 async def list_objects_async(s3_client, bucket, prefix=None, delimeter="/"):
     """List objects async."""
     prefix = prefix or ""

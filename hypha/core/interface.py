@@ -209,12 +209,12 @@ class CoreInterface:
         workspace = plugin.workspace
         # Remove the user completely if no plugins exists
         if len(workspace.get_plugins()) <= 0 and not workspace.persistent:
-            del self._all_workspaces[workspace.name]
             logger.info(
                 "Removing workspace (%s) completely "
                 "since there is no other plugin connected.",
                 workspace.name,
             )
+            self.unregister_workspace(workspace)
 
     def check_permission(self, workspace, user_info):
         """Check user permission for a workspace."""
@@ -294,13 +294,10 @@ class CoreInterface:
         self._all_workspaces[ws.name] = ws
         self.event_bus.emit("workspace_registered", ws)
 
-    def unregister_workspace(self, name):
+    def unregister_workspace(self, workspace: WorkspaceInfo):
         """Unregister the workspace."""
-        if name not in self._all_workspaces:
-            raise Exception(f"Workspace has not been registered: {name}")
-        ws = self._all_workspaces[name]
-        del self._all_workspaces[name]
-        self.event_bus.emit("workspace_unregistered", ws)
+        del self._all_workspaces[workspace.name]
+        self.event_bus.emit("workspace_removed", workspace)
 
     def load_extensions(self):
         """Load hypha extensions."""
@@ -349,6 +346,12 @@ class CoreInterface:
             service["config"], dict
         ), "service.config must be a dictionary"
         service["config"]["workspace"] = workspace.name
+        assert (
+            "visibility" not in service
+        ), "`visibility` should be placed inside `config`"
+        assert (
+            "require_context" not in service
+        ), "`require_context` should be placed inside `config`"
         formated_service = ServiceInfo.parse_obj(service)
         formated_service.set_provider(plugin)
         service_dict = formated_service.dict()

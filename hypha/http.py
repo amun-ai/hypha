@@ -99,10 +99,10 @@ class HTTPProxy:
             try:
                 core_interface.current_user.set(user_info)
                 core_interface.current_workspace.set(
-                    core_interface.get_workspace(workspace)
+                    core_interface.get_workspace("public")
                 )
-                ws = core_interface.get_workspace_interface(workspace)
-                services = await ws.list_services()
+                ws = core_interface.get_workspace_interface("public")
+                services = await ws.list_services({"workspace": workspace})
                 info = serialize(services)
                 return JSONResponse(
                     status_code=200,
@@ -124,10 +124,12 @@ class HTTPProxy:
             try:
                 core_interface.current_user.set(user_info)
                 core_interface.current_workspace.set(
-                    core_interface.get_workspace(workspace)
+                    core_interface.get_workspace("public")
                 )
-                ws = core_interface.get_workspace_interface(workspace)
-                service = await ws.get_service(service)
+                ws = core_interface.get_workspace_interface("public")
+                service = await ws.get_service(
+                    {"workspace": workspace, "name": service}
+                )
                 return JSONResponse(
                     status_code=200,
                     content=serialize(service),
@@ -154,10 +156,12 @@ class HTTPProxy:
             try:
                 core_interface.current_user.set(user_info)
                 core_interface.current_workspace.set(
-                    core_interface.get_workspace(workspace)
+                    core_interface.get_workspace("public")
                 )
-                ws = core_interface.get_workspace_interface(workspace)
-                service = await ws.get_service(service)
+                ws = core_interface.get_workspace_interface("public")
+                service = await ws.get_service(
+                    {"workspace": workspace, "name": service}
+                )
                 value = get_value(keys, service)
                 if not value:
                     return JSONResponse(
