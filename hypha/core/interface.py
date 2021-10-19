@@ -441,7 +441,7 @@ class CoreInterface:
         plugin = workspace.get_plugin_by_name(name)
         if plugin:
             return await plugin.get_api()
-        raise Exception(f"Plugin {name} not found")
+        raise Exception(f"Plugin `{name}` not found (possibly because it's not ready)")
 
     async def get_service(self, query):
         """Return a service."""

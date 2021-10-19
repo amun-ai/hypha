@@ -1,0 +1,80 @@
+<docs lang="markdown">
+[TODO: write documentation for this plugin.]
+</docs>
+
+<config lang="json">
+{
+    "name": "Unreliable Plugin",
+    "type": "window",
+    "tags": [],
+    "ui": "",
+    "version": "0.1.0",
+    "api_version": "0.1.7",
+    "description": "[TODO: describe this plugin with one sentence.]",
+    "icon": "extension",
+    "inputs": null,
+    "outputs": null,
+    "env": "",
+    "requirements": [],
+    "dependencies": [],
+    "defaults": {"w": 7, "h": 7},
+    "readiness_probe": {
+        "exec": "isReady",
+        "initial_delay_seconds": 1,
+        "period_seconds": 2,
+        "success_threshold": 1,
+        "failure_threshold": 2
+    },
+    "liveness_probe":{
+        "exec": "isAlive",
+        "initial_delay_seconds": 1,
+        "period_seconds": 2,
+        "failure_threshold": 2
+    }
+}
+</config>
+
+<script lang="javascript">
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+let ready_count = 0
+let alive_count =0
+class ImJoyPlugin {
+    async setup() {
+
+    }
+
+    async isReady() {
+        await sleep(300);
+        ready_count++;
+        if(ready_count>1)
+            return true
+        else
+            return false
+    }
+
+    async isAlive() {
+        alive_count++;
+        if(alive_count<2)
+            return true
+        else
+            return false
+    }
+}
+
+api.export(new ImJoyPlugin())
+</script>
+
+<window lang="html">
+    <div>
+    <p>
+    Hello World
+    </p>
+    </div>
+</window>
+
+<style lang="css">
+
+</style>

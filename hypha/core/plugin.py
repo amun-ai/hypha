@@ -99,6 +99,7 @@ class DynamicPlugin:
         self.terminating = False
         self._api_fut = asyncio.Future()
         self._rpc = None
+        self._status = "not-initialized"
         self._terminate_callbacks = []
         self.session_id = self.connection.get_session_id()
         DynamicPlugin.add_plugin(self)
@@ -128,6 +129,16 @@ class DynamicPlugin:
     def is_singleton(self):
         """Check if the plugin is singleton."""
         return "single-instance" in self.config.get("flags", [])
+
+    def get_status(self):
+        """Check if the plugin is singleton."""
+        return self._status
+
+    def set_status(self, status: str):
+        """Set the readiness of the plugin."""
+        if not self.api and status == "ready":
+            raise ValueError("Failed to mark plugin as ready")
+        self._status = status
 
     def dispose_object(self, obj):
         """Dispose object in RPC store."""
@@ -191,6 +202,7 @@ class DynamicPlugin:
             self.config.description,
             list(self.api),
         )
+        self._status = "ready"
         self._api_fut.set_result(self.api)
 
     def error(self, *args):
@@ -214,6 +226,7 @@ class DynamicPlugin:
         self.running = False
         self.initializing = False
         self.terminating = False
+        self._status = "disconnected"
 
     def is_disconnected(self):
         """Check if plugin is disconnected."""

@@ -123,7 +123,8 @@ def initialize_socketio(sio, core_interface):
         sio.enter_room(sid, plugin_id)
 
         plugin = DynamicPlugin.get_plugin_by_id(plugin_id)
-        if plugin:
+        # Note: for restarting plugins, we need to mark it as unready first
+        if plugin and plugin.get_status() != "restarting":
             logger.error("Duplicated plugin id: %s", plugin.id)
             config = dotdict(config)
             config.detail = f"Duplicated plugin id: {plugin.id}"

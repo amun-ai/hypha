@@ -170,10 +170,9 @@ worker.onmessage = (e)=>{
         consoleElem.removeChild(consoleElem.firstChild)
     }
 }
-const config = Object.fromEntries(new URLSearchParams(window.location.search))
+const cfg = {{ config | tojson(indent=2) }}
+const config = Object.assign(cfg, Object.fromEntries(new URLSearchParams(window.location.search)));
 if(!config.server_url) config.server_url = window.location.origin;
-config.source_hash = "{{ source_hash }}";
-config.name = "{{ name }}";
 worker.postMessage(config); 
 
 </script>

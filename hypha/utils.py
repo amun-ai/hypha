@@ -11,6 +11,25 @@ _os_alt_seps: List[str] = list(
     sep for sep in [os.path.sep, os.path.altsep] if sep is not None and sep != "/"
 )
 
+PLUGIN_CONFIG_FIELDS = [
+    "name",
+    "source_hash",
+    "version",
+    "format_version",
+    "type",
+    "tags",
+    "icon",
+    "requirements",
+    "env",
+    "defaults",
+    "flags",
+    "inputs",
+    "outputs",
+    "dependencies",
+    "readiness_probe",
+    "liveness_probe",
+]
+
 
 class EventBus:
     """An event bus class."""
