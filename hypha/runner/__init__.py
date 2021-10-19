@@ -16,7 +16,7 @@ logger = logging.getLogger("plugin-runner")
 logger.setLevel(logging.INFO)
 
 
-async def run_plugin(plugin_file, default_config):
+async def run_plugin(plugin_file, default_config, quit_on_ready=False):
     """Load plugin file."""
     loop = asyncio.get_event_loop()
     if os.path.isfile(plugin_file):
@@ -38,7 +38,7 @@ async def run_plugin(plugin_file, default_config):
         imjoy_rpc.api = api
         exec(content, globals())  # pylint: disable=exec-used
         logger.info("Plugin executed")
-        if opt.quit_on_ready:
+        if quit_on_ready:
             await asyncio.sleep(1)
             loop.stop()
 
@@ -58,7 +58,7 @@ async def run_plugin(plugin_file, default_config):
             imjoy_rpc.api = api
             exec(found[1], globals())  # pylint: disable=exec-used
             logger.info("Plugin executed")
-            if opt.quit_on_ready:
+            if quit_on_ready:
                 await asyncio.sleep(1)
                 loop.stop()
         else:
@@ -77,7 +77,7 @@ async def start(args):
             "workspace": args.workspace,
             "token": args.token,
         }
-        await run_plugin(args.file, default_config)
+        await run_plugin(args.file, default_config, quit_on_ready=args.quit_on_ready)
     except Exception:  # pylint: disable=broad-except
         logger.exception("Failed to run plugin.")
         loop = asyncio.get_event_loop()
@@ -90,40 +90,3 @@ def start_runner(args):
     loop = asyncio.get_event_loop()
     asyncio.ensure_future(start(args))
     loop.run_forever()
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("file", type=str, help="path to a plugin file")
-    parser.add_argument(
-        "--server-url",
-        type=str,
-        default=None,
-        help="url to the plugin socketio server",
-    )
-
-    parser.add_argument(
-        "--workspace",
-        type=str,
-        default=None,
-        help="the plugin workspace",
-    )
-
-    parser.add_argument(
-        "--token",
-        type=str,
-        default=None,
-        help="token for the plugin workspace",
-    )
-
-    parser.add_argument(
-        "--quit-on-ready",
-        action="store_true",
-        help="quit the server when the plugin is ready",
-    )
-
-    opt = parser.parse_args()
-
-    start_runner(opt)

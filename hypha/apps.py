@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import sys
+import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.request import urlopen
@@ -14,13 +15,13 @@ import shortuuid
 from fastapi import APIRouter
 from fastapi.responses import FileResponse, JSONResponse
 from jinja2 import Environment, PackageLoader, select_autoescape
-from playwright.async_api import Page, async_playwright
 from starlette.responses import Response
 
 from hypha.core import StatusEnum
 from hypha.core.interface import CoreInterface
 from hypha.core.plugin import DynamicPlugin
-from hypha.utils import dotdict, safe_join
+from hypha.utils import dotdict, safe_join, PLUGIN_CONFIG_FIELDS
+from hypha.runner.browser import BrowserAppRunner
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("apps")
@@ -44,8 +45,6 @@ class ServerAppController:
 
     # pylint: disable=too-many-instance-attributes
 
-    instance_counter: int = 0
-
     def __init__(
         self,
         core_interface: CoreInterface,
@@ -55,13 +54,10 @@ class ServerAppController:
     ):
         """Initialize the class."""
         self._status: StatusEnum = StatusEnum.not_initialized
-        self.browser = None
         self.plugin_parser = None
-        self.browser_pages = {}
+        self._apps = {}
         self.apps_dir = Path(apps_dir)
         os.makedirs(self.apps_dir, exist_ok=True)
-        self.controller_id = str(ServerAppController.instance_counter)
-        ServerAppController.instance_counter += 1
         self.port = int(port)
         self.in_docker = in_docker
         self.server_url = f"http://127.0.0.1:{self.port}"
@@ -76,6 +72,7 @@ class ServerAppController:
         self.builtin_apps_dir = Path(__file__).parent / "apps"
         router = APIRouter()
         self._initialize_future: Optional[asyncio.Future] = None
+        self._runners = {}
 
         @router.get("/apps/{path:path}")
         def get_app_file(path: str) -> Response:
@@ -91,40 +88,10 @@ class ServerAppController:
         core_interface.register_router(router)
 
         def close() -> None:
-            asyncio.get_running_loop().create_task(self.close())
+            asyncio.ensure_future(self.close())
 
         event_bus.on("shutdown", close)
         asyncio.ensure_future(self.initialize())
-
-    @staticmethod
-    def _capture_logs_from_browser_tabs(page: Page) -> None:
-        """Capture browser tab logs."""
-
-        def _app_info(message: str) -> None:
-            """Log message at info level."""
-            if page.plugin and page.plugin.workspace:
-                workspace_logger = page.plugin.workspace.get_logger()
-                if workspace_logger:
-                    workspace_logger.info(message)
-                    return
-            logger.info(message)
-
-        def _app_error(message: str) -> None:
-            """Log message at error level."""
-            if page.plugin and page.plugin.workspace:
-                workspace_logger = page.plugin.workspace.get_logger()
-                if workspace_logger:
-                    workspace_logger.error(message)
-                    return
-            logger.error(message)
-
-        page.on(
-            "targetcreated",
-            lambda target: _app_info(str(target)),
-        )
-        page.on("console", lambda target: _app_info(target.text))
-        page.on("error", lambda target: _app_error(target.text))
-        page.on("pageerror", lambda target: _app_error(str(target)))
 
     async def initialize(self) -> None:
         """Initialize the app controller."""
@@ -137,17 +104,15 @@ class ServerAppController:
         self._status = StatusEnum.initializing
         self._initialize_future = asyncio.Future()
         try:
-            playwright = await async_playwright().start()
-            args = [
-                "--site-per-process",
-                "--enable-unsafe-webgpu",
-                "--use-vulkan",
-                "--enable-features=Vulkan",
-            ]
-            # so it works in the docker image
-            if self.in_docker:
-                args.append("--no-sandbox")
-            self.browser = await playwright.chromium.launch(args=args)
+            # Start 2 instances of browser
+            brwoser_runner = BrowserAppRunner(self.core_interface)
+            await brwoser_runner.initialize()
+
+            brwoser_runner = BrowserAppRunner(self.core_interface)
+            await brwoser_runner.initialize()
+
+            self._runners = self.core_interface.list_services({"type": "plugin-runner"})
+            assert len(self._runners) > 0, "No plugin runner is available."
             app_file = self.builtin_apps_dir / "imjoy-plugin-parser.html"
             source = (app_file).open(encoding="utf-8").read()
             self.plugin_parser = await self._launch_as_root(
@@ -167,10 +132,9 @@ class ServerAppController:
 
     async def close(self) -> None:
         """Close the app controller."""
-        logger.info("Closing the browser app controller...")
-        if self.browser:
-            await self.browser.close()
-        logger.info("Browser app controller closed.")
+        logger.info("Closing the server app controller...")
+        for app in self._apps:
+            await self.stop(app["id"])
 
     def get_service_api(self) -> Dict[str, Any]:
         """Get a list of service api."""
@@ -221,14 +185,20 @@ class ServerAppController:
             config["source_hash"] = mhash
             try:
                 temp = self.jinja_env.get_template(config.type + "-plugin.html")
-                source = temp.render(**config)
+                source = temp.render(
+                    config={k: config[k] for k in config if k in PLUGIN_CONFIG_FIELDS},
+                    script=config.script,
+                    requirements=config.requirements,
+                )
             except Exception as err:
                 raise Exception(
                     "Failed to compile the imjoy plugin, " f"error: {err}"
                 ) from err
         elif template:
             temp = self.jinja_env.get_template(template)
-            source = temp.render(script=source, source_hash=mhash)
+            source = temp.render(
+                script=source, source_hash=mhash, config={}, requirements=[]
+            )
         elif not source:
             raise Exception("Source or template should be provided.")
 
@@ -300,43 +270,175 @@ class ServerAppController:
         )
         app_id = app_info["app_id"]
 
-        if not self.browser:
+        if len(self._runners) <= 0:
             await self.initialize()
-            # raise Exception("The app controller is not ready yet")
-        # context = await self.browser.createIncognitoBrowserContext()
-        page = await self.browser.new_page()
-        page.plugin = None
-        self._capture_logs_from_browser_tabs(page)
-        # TODO: dispose await context.close()
+            # raise Exception("No plugin runner is available yet")
 
         plugin_id = shortuuid.uuid()
-        page_id = user_id + "/" + plugin_id
+
         url = (
             f"{self.server_url}/apps/{app_id}/index.html?"
             + f"id={plugin_id}&workspace={workspace}"
             + f"&server_url={self.server_url}"
             + (f"&token={token}" if token else "")
         )
-        fut = asyncio.Future()
 
+        return await self.start(url, plugin_id, user_id, app_id, timeout)
+
+    # pylint: disable=too-many-statements
+    async def start(self, url, plugin_id, user_id, app_id, timeout, loop_count=0):
+        """Start the app and keep it alive."""
+        page_id = user_id + "/" + plugin_id
+        app_info = {
+            "id": plugin_id,
+            "name": app_id,
+            "url": url,
+            "status": "connecting",
+            "watch": False,
+        }
+
+        async def check_ready(plugin, config):
+            api = await plugin.get_api()
+            readiness_probe = config.get("readiness_probe", {})
+            exec_func = readiness_probe.get("exec")
+            if exec_func and exec_func not in api:
+                fut.set_exception(
+                    Exception(
+                        f"readiness_probe.exec function ({exec_func})"
+                        f" does not exist in plugin ({plugin.name})"
+                    )
+                )
+                return
+            if exec_func:
+                exec_func = api[exec_func]
+            initial_delay = readiness_probe.get("initial_delay_seconds", 0)
+            period = readiness_probe.get("period_seconds", 10)
+            success_threshold = readiness_probe.get("success_threshold", 1)
+            failure_threshold = readiness_probe.get("failure_threshold", 3)
+            timeout = readiness_probe.get("timeout", 5)
+            assert timeout >= 1
+            # check if it's ready
+            if exec_func:
+                await asyncio.sleep(initial_delay)
+                success = 0
+                failure = 0
+                while True:
+                    try:
+                        logger.warning(
+                            "Waiting for plugin %s to be ready...%s",
+                            plugin.name,
+                            failure,
+                        )
+                        is_ready = await asyncio.wait_for(exec_func(), timeout)
+                        if is_ready:
+                            success += 1
+                            if success >= success_threshold:
+                                break
+                    except TimeoutError:
+                        failure += 1
+                        if failure >= failure_threshold:
+                            # mark as failed
+                            plugin.set_status("unready")
+                            await asyncio.wait_for(api.teriminate(), timeout)
+                            return
+                        await asyncio.sleep(period)
+
+            logger.warning("Plugin `%s` is ready.", plugin.name)
+            fut.set_result((plugin, config))
+
+        async def keep_alive(plugin, config, loop_count):
+            api = await plugin.get_api()
+            liveness_probe = config.get("liveness_probe", {})
+            exec_func = liveness_probe.get("exec")
+            if exec_func and exec_func not in api:
+                fut.set_exception(
+                    Exception(
+                        f"liveness_probe.exec function ({exec_func})"
+                        f" does not exist in plugin ({plugin.name})"
+                    )
+                )
+                return
+            if exec_func:
+                exec_func = api[exec_func]
+            initial_delay = liveness_probe.get("initial_delay_seconds", 0)
+            period = liveness_probe.get("period_seconds", 10)
+            failure_threshold = liveness_probe.get("failure_threshold", 3)
+            timeout = liveness_probe.get("timeout", 5)
+            assert timeout >= 1
+
+            # keep-alive
+            if not exec_func:
+                return
+            await asyncio.sleep(initial_delay)
+            app_info["watch"] = True
+            failure = 0
+            while app_info["watch"]:
+                try:
+                    is_alive = await asyncio.wait_for(exec_func(), timeout)
+                    # return False is the same as failed to call alive()
+                    if not is_alive:
+                        raise TimeoutError
+                    await asyncio.sleep(period)
+                except TimeoutError:
+                    failure += 1
+                    logger.warning("Plugin %s is failing... %s", plugin.name, failure)
+                    if failure >= failure_threshold:
+                        logger.warning(
+                            "Plugin %s failed too" " many times, restarting now...",
+                            plugin.name,
+                        )
+
+                        loop_count += 1
+                        if loop_count > 10:
+                            plugin.set_status("crash-loop-back-off")
+                            app_info["watch"] = False
+                            return
+                        # Mark it as restarting
+                        plugin.set_status("restarting")
+
+                        try:
+                            await asyncio.wait_for(plugin.terminate(), timeout)
+                        except TimeoutError:
+                            pass
+                        finally:
+                            DynamicPlugin.remove_plugin(plugin)
+                        with self.core_interface.set_root_user():
+                            await app_info["runner"].stop(plugin_id)
+
+                        # start a new one
+
+                        await self.start(
+                            url,
+                            plugin_id,
+                            user_id,
+                            app_id,
+                            timeout,
+                            loop_count=loop_count,
+                        )
+
+                    else:
+                        await asyncio.sleep(period)
+
+        fut = asyncio.Future()
         plugin_event_bus = DynamicPlugin.create_plugin_event_bus(plugin_id)
 
         def cleanup(*args):
+            app_info["watch"] = False
             print("cleaning up", plugin_id)
             # asyncio.create_task(self.stop(plugin_id))
             # self.remove(app_id)
 
         def connected(plugin):
-            page.plugin = plugin
             config = dotdict(plugin.config)
             config.url = url
             config.id = plugin_id
             config.app_id = app_id
-            self.browser_pages[page_id].update(config)
-            self.browser_pages[page_id]["status"] = "connected"
-            fut.set_result(config)
+            self._apps[page_id].update(config)
+            self._apps[page_id]["status"] = "connected"
+            asyncio.get_running_loop().create_task(check_ready(plugin, config))
 
         def failed(config):
+            app_info["watch"] = False
             fut.set_exception(Exception(config.detail))
 
         plugin_event_bus.on("connected", connected)
@@ -354,25 +456,19 @@ class ServerAppController:
                 cleanup()
 
             timer = startup_timer()
-            asyncio.ensure_future(timer)
+            asyncio.get_running_loop().create_task(timer)
 
-        try:
-            response = await page.goto(url)
-            assert response.status == 200, (
-                "Failed to start server app instance, "
-                f"status: {response.status}, url: {url}"
-            )
-            self.browser_pages[page_id] = {
-                "id": plugin_id,
-                "name": app_id,
-                "status": "connecting",
-                "page": page,
-            }
-        except Exception:
-            await page.close()
-            raise
+        runner_info = random.choice(self._runners)
+        with self.core_interface.set_root_user():
+            runner = await self.core_interface.get_service(runner_info)
+            await runner.start(url=url, plugin_id=plugin_id)
 
-        return await fut
+        app_info["runner"] = runner
+        self._apps[page_id] = app_info
+
+        plugin, config = await fut
+        asyncio.get_running_loop().create_task(keep_alive(plugin, config, loop_count))
+        return config
 
     async def _launch_as_root(
         self,
@@ -382,8 +478,9 @@ class ServerAppController:
         timeout: float = 60.0,
     ) -> dotdict:
         """Launch an app as root user."""
-        rws = self.core_interface.get_workspace_interface_as_root(workspace)
-        token = await rws.generate_token()
+        with self.core_interface.set_root_user():
+            rws = self.core_interface.get_workspace_interface(workspace)
+            token = await rws.generate_token()
         config = await self.launch(
             source, workspace, type=type, token=token, timeout=timeout
         )
@@ -396,9 +493,10 @@ class ServerAppController:
         user_info = self.core_interface.current_user.get()
         user_id = user_info.id
         page_id = user_id + "/" + plugin_id
-        if page_id in self.browser_pages:
-            await self.browser_pages[page_id]["page"].close()
-            del self.browser_pages[page_id]
+        if page_id in self._apps:
+            with self.core_interface.set_root_user():
+                await self._apps[page_id]["runner"].stop(plugin_id)
+            del self._apps[page_id]
         else:
             raise Exception(f"Server app instance not found: {plugin_id}")
 
@@ -407,8 +505,8 @@ class ServerAppController:
         user_info = self.core_interface.current_user.get()
         user_id = user_info.id
         sessions = [
-            {k: v for k, v in page_info.items() if k != "page"}
-            for page_id, page_info in self.browser_pages.items()
+            {k: v for k, v in page_info.items() if k != "runner"}
+            for page_id, page_info in self._apps.items()
             if page_id.startswith(user_id + "/")
         ]
         return sessions

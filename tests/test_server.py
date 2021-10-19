@@ -218,7 +218,7 @@ async def test_workspace(socketio_server):
     assert plugin.foo is None
     assert plugin.foo2 == "bar2"
 
-    with pytest.raises(Exception, match=r".*Plugin my plugin 2 not found.*"):
+    with pytest.raises(Exception, match=r".*Plugin `my plugin 2` not found.*"):
         await api.get_plugin("my plugin 2")
 
     ws2 = await api.get_workspace("test-workspace")

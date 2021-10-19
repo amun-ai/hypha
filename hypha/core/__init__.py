@@ -179,7 +179,9 @@ class WorkspaceInfo(BaseModel):
     def get_plugin_by_name(self, plugin_name: str) -> Optional[DynamicPlugin]:
         """Return a plugin by its name (randomly select one if multiple exists)."""
         plugins = [
-            plugin for plugin in self._plugins.values() if plugin.name == plugin_name
+            plugin
+            for plugin in self._plugins.values()
+            if plugin.name == plugin_name and plugin.get_status() == "ready"
         ]
         if len(plugins) > 0:
             return random.choice(plugins)

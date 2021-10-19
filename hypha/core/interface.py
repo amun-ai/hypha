@@ -7,6 +7,7 @@ import sys
 from contextvars import ContextVar
 from functools import partial
 from typing import Dict, Optional
+from contextlib import contextmanager
 
 import pkg_resources
 import shortuuid
@@ -139,6 +140,19 @@ class CoreInterface:
             persistent=True,
         )
         self.root_workspace.set_global_event_bus(self.event_bus)
+
+        @contextmanager
+        def set_root_user():
+            _user = self.current_user.get(None)
+            try:
+                self.current_user.set(self.root_user)
+                yield self.root_user
+            finally:
+                if _user:
+                    self.current_user.set(_user)
+
+        self.set_root_user = set_root_user
+
         self.register_workspace(self.root_workspace)
         self.load_extensions()
 
@@ -427,21 +441,17 @@ class CoreInterface:
         plugin = workspace.get_plugin_by_name(name)
         if plugin:
             return await plugin.get_api()
-        raise Exception(f"Plugin {name} not found")
+        raise Exception(f"Plugin `{name}` not found (possibly because it's not ready)")
 
-    async def get_service(self, service_id):
+    async def get_service(self, query):
         """Return a service."""
-        if isinstance(service_id, str):
-            query = {"name": service_id}
-        else:
-            query = service_id
+        if isinstance(query, str):
+            query = {"name": query}
 
         if "workspace" in query:
             workspace = self.get_workspace(query["workspace"])
             if not workspace:
-                raise Exception(
-                    f"Service not found: {service_id} (workspace unavailable)"
-                )
+                raise Exception(f"Service not found: {query} (workspace unavailable)")
         else:
             workspace = self.current_workspace.get()
 
@@ -465,9 +475,9 @@ class CoreInterface:
             not self.check_permission(workspace, user_info)
             and service.config.visibility != VisibilityEnum.public
         ):
-            raise Exception(f"Permission denied: {service_id}")
+            raise Exception(f"Permission denied: {query}")
 
-        return service.dict()
+        return dotdict(service.dict())
 
     def list_workspaces(
         self,
@@ -673,24 +683,19 @@ class CoreInterface:
 
     def register_service_as_root(self, service):
         """Register service as root user."""
-        self.current_user.set(self.root_user)
-        self.current_workspace.set(self.root_workspace)
-        self.current_plugin.set(None)
-        return self.register_service(service)
-
-    def get_workspace_interface_as_root(self, name="root"):
-        """Get a workspace api as root user."""
-        self.current_user.set(self.root_user)
-        return self.get_workspace_interface(name)
+        with self.set_root_user():
+            self.current_workspace.set(self.root_workspace)
+            self.current_plugin.set(None)
+            return self.register_service(service)
 
     async def get_plugin_as_root(self, name, workspace):
         """Get a plugin api as root user."""
-        self.current_user.set(self.root_user)
-        workspace = self.get_workspace(workspace)
-        if not workspace:
-            raise Exception(f"Workspace {workspace} does not exist.")
-        self.current_workspace.set(workspace)
-        return dotdict(await self.get_plugin(name))
+        with self.set_root_user():
+            workspace = self.get_workspace(workspace)
+            if not workspace:
+                raise Exception(f"Workspace {workspace} does not exist.")
+            self.current_workspace.set(workspace)
+            return dotdict(await self.get_plugin(name))
 
     def get_interface(self):
         """Return the interface."""
