@@ -35,7 +35,7 @@ del m
 
 async def run():
     try:
-        await micropip.install(["imjoy-rpc>=0.3.33", {% for req in requirements %}"{{req}}", {% endfor %}])
+        await micropip.install(["imjoy-rpc>=0.3.34", {% for req in requirements %}"{{req}}", {% endfor %}])
         # map imjoy_rpc to imjoy
         import imjoy_rpc
         sys.modules
@@ -125,7 +125,7 @@ self.onmessage = function(e) {
                 }
                 // const startup_script = await (await fetch("./start_pyodide.py")).text()
                 // run pyodide in a new context
-                const dict = pyodide.pyimport("dict");
+                const dict = pyodide.globals.get('dict');
                 self.pyodide.runPython(src, dict());
         
             })

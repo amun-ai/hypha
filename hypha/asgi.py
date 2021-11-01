@@ -1,7 +1,14 @@
 """Support ASGI web server apps."""
+import logging
+import sys
+
 from starlette.types import Receive, Scope, Send
 
 from hypha.core import ServiceInfo
+
+logging.basicConfig(stream=sys.stdout)
+logger = logging.getLogger("asgi")
+logger.setLevel(logging.INFO)
 
 
 class RemoteASGIApp:
@@ -46,9 +53,11 @@ class ASGIGateway:
         if service.type == "ASGI":
             subpath = f"/{service.config.workspace}/apps/{service.name}"
             self.core_interface.mount_app(subpath, RemoteASGIApp(service), priority=-1)
+            logger.info("ASGI app mounted: %s", subpath)
 
     def umount_asgi_app(self, service):
         """Unmount the ASGI apps."""
         if service.type == "ASGI":
             subpath = f"/{service.config.workspace}/apps/{service.name}"
             self.core_interface.umount_app(subpath)
+            logger.info("ASGI app removed: %s", subpath)
