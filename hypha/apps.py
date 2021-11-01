@@ -76,6 +76,10 @@ class ServerAppController:
 
         @router.get("/apps/{path:path}")
         def get_app_file(path: str) -> Response:
+            if path.startswith("builtin/"):
+                return FileResponse(
+                    str(self.builtin_apps_dir / path.lstrip("builtin/"))
+                )
             path = safe_join(str(self.apps_dir), path)
             if os.path.exists(path):
                 return FileResponse(path)
@@ -133,8 +137,8 @@ class ServerAppController:
     async def close(self) -> None:
         """Close the app controller."""
         logger.info("Closing the server app controller...")
-        for app in self._apps:
-            await self.stop(app["id"])
+        for app_id in self._apps:
+            await self.stop(self._apps[app_id]["id"])
 
     def get_service_api(self) -> Dict[str, Any]:
         """Get a list of service api."""
@@ -437,9 +441,9 @@ class ServerAppController:
             self._apps[page_id]["status"] = "connected"
             asyncio.get_running_loop().create_task(check_ready(plugin, config))
 
-        def failed(config):
+        def failed(detail):
             app_info["watch"] = False
-            fut.set_exception(Exception(config.detail))
+            fut.set_exception(Exception(detail))
 
         plugin_event_bus.on("connected", connected)
         plugin_event_bus.on("failed", failed)

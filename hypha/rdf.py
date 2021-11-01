@@ -119,8 +119,8 @@ class RDFController:
         """Get rdf controller."""
         return {
             "_rintf": True,
-            "name": "rdf",
-            "type": "rdf",
+            "name": "rdf-registry",
+            "type": "registry",
             "save": self.save,
             "remove": self.remove,
             "list": self.list,

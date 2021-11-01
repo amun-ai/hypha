@@ -14,7 +14,7 @@ async def test_rdf_controller(minio_server, socketio_server):
     api = await connect_to_server(
         {"name": "test deploy client", "server_url": SIO_SERVER_URL}
     )
-    s3controller = await api.get_service("rdf")
+    s3controller = await api.get_service("rdf-registry")
 
     source = "api.log('hello')"
     await s3controller.save(name="test.js", source=source)
