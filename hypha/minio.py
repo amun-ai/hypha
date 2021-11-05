@@ -142,8 +142,8 @@ def execute_command(cmd_template, mc_executable, **kwargs):
             command_string,
         )
         raise Exception(
-            f"Failed to run mc command: ${command_string}, "
-            "message='{message}', cause='{cause}'"
+            f"Failed to run mc command: {command_string}, "
+            f"message='{message}', cause='{cause}'"
         )
     return content
 
