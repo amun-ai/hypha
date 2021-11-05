@@ -11,9 +11,7 @@ pytestmark = pytest.mark.asyncio
 async def test_minio(minio_server):
     """Test minio client."""
     minio_client = MinioClient(
-        MINIO_SERVER_URL,
-        MINIO_ROOT_USER,
-        MINIO_ROOT_PASSWORD,
+        MINIO_SERVER_URL, MINIO_ROOT_USER, MINIO_ROOT_PASSWORD, executable_path="bin"
     )
     username = "tmp-user"
     username2 = "tmp-user-2"

@@ -245,10 +245,12 @@ def setup_socketio_server(
     secret_access_key: str = None,
     workspace_bucket: str = "hypha-workspaces",
     rdf_bucket: str = "hypha-apps",
+    apps_dir: str = "apps",
+    executable_path: str = "",
     **kwargs,
 ) -> None:
     """Set up the socketio server."""
-    # pylint: disable=too-many-arguments
+    # pylint: disable=too-many-arguments,too-many-locals
 
     def norm_url(url):
         return base_path.rstrip("/") + url
@@ -276,7 +278,7 @@ def setup_socketio_server(
         # pylint: disable=import-outside-toplevel
         from hypha.apps import ServerAppController
 
-        ServerAppController(core_interface, port=port)
+        ServerAppController(core_interface, port=port, apps_dir=apps_dir)
 
     if enable_s3:
         # pylint: disable=import-outside-toplevel
@@ -289,6 +291,7 @@ def setup_socketio_server(
             access_key_id=access_key_id,
             secret_access_key=secret_access_key,
             workspace_bucket=workspace_bucket,
+            executable_path=executable_path,
         )
 
         RDFController(
@@ -396,6 +399,18 @@ def get_argparser():
         type=str,
         default=None,
         help="set SecretAccessKey for S3",
+    )
+    parser.add_argument(
+        "--apps-dir",
+        type=str,
+        default="apps",
+        help="temporary directory for storing installed apps",
+    )
+    parser.add_argument(
+        "--executable-path",
+        type=str,
+        default="bin",
+        help="temporary directory for storing executables (e.g. mc, minio)",
     )
     return parser
 

@@ -15,18 +15,18 @@ logger.setLevel(logging.INFO)
 
 MATH_PATTERN = re.compile("{(.+?)}")
 
-EXECUTABLE_PATH = "bin"
 
-
-def setup_minio_executables():
+def setup_minio_executables(executable_path):
     """Download and install the minio client and server binary files."""
-    os.makedirs(EXECUTABLE_PATH, exist_ok=True)
-    assert (
-        sys.platform == "linux"
-    ), "Manual setup required to, please download minio and minio client \
-from https://min.io/ and place them under ./bin"
-    mc_path = EXECUTABLE_PATH + "/mc"
-    minio_path = EXECUTABLE_PATH + "/minio"
+    if executable_path and not os.path.exists(executable_path):
+        os.makedirs(executable_path, exist_ok=True)
+    assert sys.platform == "linux", (
+        "Manual setup required to, please download minio and minio client \
+from https://min.io/ and place them under "
+        + executable_path
+    )
+    mc_path = os.path.join(executable_path, "mc")
+    minio_path = os.path.join(executable_path, "minio")
     if not os.path.exists(minio_path):
         print("Minio server executable not found, downloading... ")
         urllib.request.urlretrieve(
@@ -99,7 +99,7 @@ def generate_command(cmd_template, **kwargs):
     return cmd_template.format(**kwargs)
 
 
-def execute_command(cmd_template, mc_executable=EXECUTABLE_PATH + "/mc", **kwargs):
+def execute_command(cmd_template, mc_executable, **kwargs):
     """Execute the command."""
     command_string = generate_command(cmd_template, json=True, **kwargs)
     # override the executable
@@ -173,13 +173,13 @@ class MinioClient:
         access_key_id,
         secret_access_key,
         alias="s3",
-        mc_executable=EXECUTABLE_PATH + "/mc",
+        executable_path="bin",
         **kwargs,
     ):
         """Initialize the client."""
-        setup_minio_executables()
+        setup_minio_executables(executable_path)
         self.alias = alias
-        self.mc_executable = mc_executable
+        self.mc_executable = os.path.join(executable_path, "mc")
         self.endpoint_url = endpoint_url
         self.access_key_id = access_key_id
         self.secret_access_key = secret_access_key
@@ -196,7 +196,7 @@ class MinioClient:
         if "target" in kwargs:
 
             kwargs["target"] = self.alias + "/" + kwargs["target"].lstrip("/")
-        return execute_command(*args, mc_executable=self.mc_executable, **kwargs)
+        return execute_command(*args, self.mc_executable, **kwargs)
 
     def list(self, target, **kwargs):
         """List files on MinIO."""

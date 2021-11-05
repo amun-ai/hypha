@@ -118,7 +118,7 @@ def socketio_subpath_server_fixture(minio_server):
 @pytest.fixture(name="minio_server", scope="session")
 def minio_server_fixture():
     """Start minio server as test fixture and tear down after test."""
-    setup_minio_executables()
+    setup_minio_executables("./bin")
     dirpath = tempfile.mkdtemp()
     my_env = os.environ.copy()
     my_env["MINIO_ROOT_USER"] = MINIO_ROOT_USER

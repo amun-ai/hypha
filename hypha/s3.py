@@ -206,6 +206,7 @@ class S3Controller:
         secret_access_key=None,
         workspace_bucket="hypha-workspaces",
         local_log_dir="./logs",
+        executable_path="",
     ):
         """Set up controller."""
         self.endpoint_url = endpoint_url
@@ -215,6 +216,7 @@ class S3Controller:
             endpoint_url,
             access_key_id,
             secret_access_key,
+            executable_path=executable_path,
         )
         self.core_interface = core_interface
         self.workspace_bucket = workspace_bucket
