@@ -125,7 +125,8 @@ api.export({"setup": setup})
                     const pid = await controller.launch({
                         source: editor.getValue(),
                         workspace,
-                        token
+                        token,
+                        _rkwargs: true
                     })
                     const apps = await controller.list()
                     document.getElementById("apps").innerHTML = apps.map((info)=>{
