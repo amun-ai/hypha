@@ -4,6 +4,7 @@ logs/
 bin/
 data/
 apps/*
+hypha-apps/*
 node_modules
 # Byte-compiled / optimized / DLL files
 __pycache__/

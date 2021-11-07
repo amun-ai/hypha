@@ -244,8 +244,8 @@ def setup_socketio_server(
     access_key_id: str = None,
     secret_access_key: str = None,
     workspace_bucket: str = "hypha-workspaces",
-    rdf_bucket: str = "hypha-apps",
-    apps_dir: str = "apps",
+    rdf_bucket: str = "hypha-rdfs",
+    apps_dir: str = "hypha-apps",
     executable_path: str = "",
     **kwargs,
 ) -> None:
@@ -403,8 +403,20 @@ def get_argparser():
     parser.add_argument(
         "--apps-dir",
         type=str,
-        default="apps",
+        default="hypha-apps",
         help="temporary directory for storing installed apps",
+    )
+    parser.add_argument(
+        "--rdf-bucket",
+        type=str,
+        default="hypha-rdfs",
+        help="S3 bucket for storing RDF files",
+    )
+    parser.add_argument(
+        "--workspace-bucket",
+        type=str,
+        default="hypha-workspaces",
+        help="S3 bucket for storing workspaces",
     )
     parser.add_argument(
         "--executable-path",
