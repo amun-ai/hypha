@@ -70,6 +70,10 @@ class ServerAppController:
         )
         self.templates_dir = Path(__file__).parent / "templates"
         self.builtin_apps_dir = Path(__file__).parent / "apps"
+        os.makedirs(self.apps_dir / "built-in", exist_ok=True)
+        # copy files inside the builtin apps dir to the apps dir (overwrite if exists)
+        for file in self.builtin_apps_dir.glob("*"):
+            shutil.copy(file, self.apps_dir / "built-in" / file.name)
         router = APIRouter()
         self._initialize_future: Optional[asyncio.Future] = None
         self._runners = {}
