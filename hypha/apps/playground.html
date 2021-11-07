@@ -31,17 +31,13 @@ window.default_plugin = `
     "api_version": "0.1.7",
     "env": "",
     "permissions": [],
-    "requirements": ["fastapi==0.70.0", "flask==2.0.2", "a2wsgi==1.4.0"],
+    "requirements": ["fastapi==0.70.0"],
     "dependencies": []
 }
 </config>
 
 <script lang="python">
 from imjoy_rpc import api
-
-from flask import Flask
-from a2wsgi import WSGIMiddleware
-
 from fastapi import FastAPI
 
 def create_fastapi_app():
@@ -52,17 +48,6 @@ def create_fastapi_app():
         return {"message": "Hello World"}
 
     return app
-
-def create_flask_app():
-    app = Flask("hello-flask")
-
-    @app.route("/")
-    def hello_world():
-        return "<p>Hello, World!</p>"
-
-    # convert WSGI to ASGI
-    return WSGIMiddleware(app)
-
 
 async def setup():
     # Registering fastapi app
@@ -75,19 +60,9 @@ async def setup():
         "name": "hello-fastapi",
         "type": "ASGI",
         "serve": serve_fastapi,
-        "visibility": "public"
-    })
-
-    # Registering flask app
-    flask_app = create_flask_app()
-    async def serve_flask(args):
-        print(f'{scope["client"]} - {scope["method"]} - {scope["path"]}')
-        await flask_app(args["scope"], args["receive"], args["send"])
-    await api.register_service({
-        "name": "hello-flask",
-        "type": "ASGI",
-        "serve": serve_flask,
-        "visibility": "public"
+        "config":{
+            "visibility": "public"
+        }
     })
 
 api.export({"setup": setup})
@@ -120,6 +95,17 @@ api.export({"setup": setup})
                 const token = await api.generateToken()
                 const workspace = await api.config.workspace;
                 const controller = await api.getService("server-apps")
+                async function list_apps(){
+                    const apps = await controller.list()
+                    document.getElementById("apps").innerHTML = apps.map((info)=>{
+                        const app = info.app_id
+                        return `<li>${info.name} <button onclick="start('${app}');">start</button> <a href="${config.server_url}/apps/${app}/index.html?name=${app}-app&workspace=${workspace}&server_url=${config.server_url}&token=${token}" target="_blank">debug</a> 
+                            <a href="${config.server_url}/${workspace}/apps/hello-fastapi/" target="_blank">visit</a>
+                            </li>`
+                    })
+                }
+                await list_apps()
+                
                 document.getElementById('deploy').onclick = async function(){
                     console.log('deploying...')
                     const pid = await controller.launch({
@@ -128,13 +114,7 @@ api.export({"setup": setup})
                         token,
                         _rkwargs: true
                     })
-                    const apps = await controller.list()
-                    document.getElementById("apps").innerHTML = apps.map((info)=>{
-                        const app = info.app_id
-                        return `<li>${info.name} <button onclick="start('${app}');">start</button> <a href="${config.server_url}/apps/${app}/index.html?name=${app}-app&workspace=${workspace}&server_url=${config.server_url}&token=${token}" target="_blank">debug</a> 
-                            <a href="${config.server_url}/${workspace}/app/hello-fastapi/" target="_blank">visit</a>
-                            </li>`
-                    })
+                    await list_apps()
                     
                     console.log("Plugin deployed: " + pid)
                 }
