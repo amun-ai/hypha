@@ -193,7 +193,7 @@ async def test_non_persistent_workspace(socketio_server):
     assert plugin is not None
 
     # It should exist in the stats
-    response = requests.get(f"{SIO_SERVER_URL}/stats")
+    response = requests.get(f"{SIO_SERVER_URL}/api/stats")
     assert response.status_code == 200
     stats = response.json()
     workspace_info = find_item(stats["workspaces"], "name", workspace)
@@ -204,7 +204,7 @@ async def test_non_persistent_workspace(socketio_server):
     await api.disconnect()
 
     # now it should disappear from the stats
-    response = requests.get(f"{SIO_SERVER_URL}/stats")
+    response = requests.get(f"{SIO_SERVER_URL}/api/stats")
     assert response.status_code == 200
     stats = response.json()
     workspace_info = find_item(stats["workspaces"], "name", workspace)
