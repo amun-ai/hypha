@@ -45,20 +45,10 @@ class BrowserAppRunner:
 
         def _app_info(message: str) -> None:
             """Log message at info level."""
-            if page.plugin and page.plugin.workspace:
-                workspace_logger = page.plugin.workspace.get_logger()
-                if workspace_logger:
-                    workspace_logger.info(message)
-                    return
             logger.info(message)
 
         def _app_error(message: str) -> None:
             """Log message at error level."""
-            if page.plugin and page.plugin.workspace:
-                workspace_logger = page.plugin.workspace.get_logger()
-                if workspace_logger:
-                    workspace_logger.error(message)
-                    return
             logger.error(message)
 
         page.on(
@@ -104,7 +94,6 @@ class BrowserAppRunner:
             # raise Exception("The app controller is not ready yet")
         # context = await self.browser.createIncognitoBrowserContext()
         page = await self.browser.new_page()
-        page.plugin = None
         self._capture_logs_from_browser_tabs(page)
         # TODO: dispose await context.close()
 

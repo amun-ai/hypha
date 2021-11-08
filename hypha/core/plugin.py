@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import sys
+import traceback
 
 import shortuuid
 from imjoy_rpc.rpc import RPC
@@ -110,6 +111,7 @@ class DynamicPlugin:
         self._initial_interface = dotdict(interface)
         self._initial_interface._intf = True
         self._initial_interface.config = self.config.copy()
+        self._initial_interface.exit = self.terminate
         if "token" in self._initial_interface.config:
             del self._initial_interface.config["token"]
         self.initialize_if_needed(self.connection, self.config)
@@ -139,6 +141,10 @@ class DynamicPlugin:
         if not self.api and status == "ready":
             raise ValueError("Failed to mark plugin as ready")
         self._status = status
+
+    def register_exit_callback(self, exit_callback):
+        """Set the exit callback function."""
+        self._terminate_callbacks.append(exit_callback)
 
     def dispose_object(self, obj):
         """Dispose object in RPC store."""
@@ -203,6 +209,8 @@ class DynamicPlugin:
             list(self.api),
         )
         self._status = "ready"
+        if "exit" not in self.api:
+            self.api.exit = self.terminate
         self._api_fut.set_result(self.api)
 
     def error(self, *args):
@@ -357,13 +365,28 @@ class DynamicPlugin:
         """Terminate."""
         try:
             if self._rpc:
-                if self.api and self.api.exit and callable(self.api.exit):
+                if (
+                    self.api
+                    and self.api.exit
+                    and callable(self.api.exit)
+                    # pylint: disable=comparison-with-callable
+                    and self.api.exit != self.terminate
+                ):
                     logger.info(
                         "Terminating plugin %s/%s", self.config.workspace, self.name
                     )
                     self.api.exit()
 
+                for exit_callback in self._terminate_callbacks:
+                    try:
+                        exit_callback()
+                    except Exception:  # pylint: disable=broad-except
+                        logger.exception("Error in exit callback")
                 self._rpc.disconnect()
+        except Exception:  # pylint: disable=broad-except
+            logger.error(
+                "Error while terminating plugin %s: %s", self.id, traceback.format_exc()
+            )
         finally:
             self._set_disconnected()
             # The following needed to be done when terminating a plugin

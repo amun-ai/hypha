@@ -276,7 +276,8 @@ class ServerAppController:
 
         if len(self._runners) <= 0:
             await self.initialize()
-            # raise Exception("No plugin runner is available yet")
+
+        assert len(self._runners) > 0, "No plugin runner is available"
 
         plugin_id = shortuuid.uuid()
 
@@ -299,10 +300,16 @@ class ServerAppController:
             "url": url,
             "status": "connecting",
             "watch": False,
+            "runner": None,
         }
+
+        def stop_plugin():
+            logger.warning("Plugin %s is stopping...", plugin_id)
+            asyncio.create_task(self.stop(plugin_id))
 
         async def check_ready(plugin, config):
             api = await plugin.get_api()
+            plugin.register_exit_callback(stop_plugin)
             readiness_probe = config.get("readiness_probe", {})
             exec_func = readiness_probe.get("exec")
             if exec_func and exec_func not in api:
@@ -403,14 +410,8 @@ class ServerAppController:
                         try:
                             await asyncio.wait_for(plugin.terminate(), timeout)
                         except TimeoutError:
-                            pass
-                        finally:
-                            DynamicPlugin.remove_plugin(plugin)
-                        with self.core_interface.set_root_user():
-                            await app_info["runner"].stop(plugin_id)
-
+                            logger.error("Failed to terminate plugin %s", plugin.name)
                         # start a new one
-
                         await self.start(
                             url,
                             plugin_id,
@@ -498,7 +499,9 @@ class ServerAppController:
         user_id = user_info.id
         page_id = user_id + "/" + plugin_id
         if page_id in self._apps:
+            logger.info("Stopping app: %s...", page_id)
             with self.core_interface.set_root_user():
+                self._apps[page_id]["watch"] = False  # make sure we don't keep-alive
                 await self._apps[page_id]["runner"].stop(plugin_id)
             del self._apps[page_id]
         else:

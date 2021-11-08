@@ -265,7 +265,7 @@ def setup_socketio_server(
             "version": VERSION,
         }
 
-    @app.get(norm_url("/stats"))
+    @app.get(norm_url("/api/stats"))
     async def stats():
         client_count = len(core_interface.get_all_users())
         return {
@@ -298,7 +298,7 @@ def setup_socketio_server(
             core_interface, s3_controller=s3_controller, rdf_bucket=rdf_bucket
         )
 
-    @app.get(norm_url("/liveness"))
+    @app.get(norm_url("/health/liveness"))
     async def liveness(req: Request) -> JSONResponse:
         try:
             await sio.emit("liveness")

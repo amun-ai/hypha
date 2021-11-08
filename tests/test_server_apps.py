@@ -1,6 +1,7 @@
 """Test server apps."""
 from pathlib import Path
 import asyncio
+import requests
 
 import pytest
 from imjoy_rpc import connect_to_server
@@ -133,7 +134,7 @@ async def test_server_apps(socketio_server):
     assert find_item(apps, "id", config.id)
 
 
-async def test_readiness_liveness():
+async def test_readiness_liveness(socketio_server):
     """Test readiness and liveness probes."""
     api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
     workspace = api.config["workspace"]
@@ -162,3 +163,49 @@ async def test_readiness_liveness():
 
     plugin = await api.get_plugin(config.name)
     assert plugin
+
+    await plugin.exit()
+
+
+async def test_non_persistent_workspace(socketio_server):
+    """Test non-persistent workspace."""
+    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+    workspace = api.config["workspace"]
+    token = await api.generate_token()
+
+    # Test plugin with custom template
+    controller = await api.get_service("server-apps")
+
+    source = (
+        (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
+        .open(encoding="utf-8")
+        .read()
+    )
+
+    config = await controller.launch(
+        source=source,
+        type="imjoy",
+        workspace=workspace,
+        token=token,
+    )
+
+    plugin = await api.get_plugin(config.name)
+    assert plugin is not None
+
+    # It should exist in the stats
+    response = requests.get(f"{SIO_SERVER_URL}/api/stats")
+    assert response.status_code == 200
+    stats = response.json()
+    workspace_info = find_item(stats["workspaces"], "name", workspace)
+    assert workspace_info is not None
+    plugins = workspace_info["plugins"]
+    assert find_item(plugins, "id", plugin.config["id"]) is not None
+
+    await api.disconnect()
+
+    # now it should disappear from the stats
+    response = requests.get(f"{SIO_SERVER_URL}/api/stats")
+    assert response.status_code == 200
+    stats = response.json()
+    workspace_info = find_item(stats["workspaces"], "name", workspace)
+    assert workspace_info is None

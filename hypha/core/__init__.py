@@ -172,7 +172,7 @@ class WorkspaceInfo(BaseModel):
         """Return the logger."""
         self._logger = workspace_logger
 
-    def get_plugins(self) -> Dict[str, Any]:
+    def get_plugins(self) -> Dict[str, DynamicPlugin]:
         """Return the plugins."""
         return self._plugins
 
