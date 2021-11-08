@@ -98,8 +98,8 @@ api.export({"setup": setup})
                 async function list_apps(){
                     const apps = await controller.list()
                     document.getElementById("apps").innerHTML = apps.map((info)=>{
-                        const app = info.app_id
-                        return `<li>${info.name} <button onclick="start('${app}');">start</button> <a href="${config.server_url}/apps/${app}/index.html?name=${app}-app&workspace=${workspace}&server_url=${config.server_url}&token=${token}" target="_blank">debug</a> 
+                        const app_id = info.id
+                        return `<li>${info.name} <button onclick="start('${app_id}');">start</button> <button onclick="kill('${app_id}');">kill</button>  <a href="${config.server_url}/apps/${info.app_id}/index.html?name=${app_id}-app&workspace=${workspace}&server_url=${config.server_url}&token=${token}" target="_blank">debug</a> 
                             <a href="${config.server_url}/${workspace}/apps/hello-fastapi/" target="_blank">visit</a>
                             </li>`
                     })
@@ -122,6 +122,10 @@ api.export({"setup": setup})
                     const config = await controller.start(pid, workspace, token)
                     const plugin = await api.get_plugin(config.name)
                     alert("Plugin started: " + config.name)
+                }
+                window.kill = async function(pid){
+                    await controller.stop(pid)
+                    await list_apps()
                 }
             }).catch(console.error)
         });

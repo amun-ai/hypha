@@ -156,6 +156,19 @@ class CoreInterface:
         self.register_workspace(self.root_workspace)
         self.load_extensions()
 
+        def remove_empty_workspace(plugin):
+            # Remove the user completely if no plugins exists
+            workspace = plugin.workspace
+            if len(workspace.get_plugins()) <= 0 and not workspace.persistent:
+                logger.info(
+                    "Removing workspace (%s) completely "
+                    "since there is no other plugin connected.",
+                    workspace.name,
+                )
+                self.unregister_workspace(workspace)
+
+        self.event_bus.on("plugin_terminated", remove_empty_workspace)
+
     def get_all_users(self):
         """Get all the users."""
         return list(self._all_users.values())
@@ -204,6 +217,7 @@ class CoreInterface:
         if plugin not in self._disconnected_plugins:
             return
         await self._terminate_plugin(plugin)
+        # TODO: if the plugin owner is anonymous, we should remove the workspace
 
     def remove_plugin_temp(self, sid):
         """Remove session temporarily."""
@@ -240,14 +254,16 @@ class CoreInterface:
             )
 
         workspace = plugin.workspace
-        # Remove the user completely if no plugins exists
-        if len(workspace.get_plugins()) <= 0 and not workspace.persistent:
+        # check if the workspace is a not persistent worksapce
+        # terminate all the child plugins
+        if not workspace.persistent:
             logger.info(
-                "Removing workspace (%s) completely "
-                "since there is no other plugin connected.",
+                "Terminating all the child plugins in the workspace (%s).",
                 workspace.name,
             )
-            self.unregister_workspace(workspace)
+            for plg in list(workspace.get_plugins().values()):
+                if plg.user_info.parent == plugin.user_info.id:
+                    await plg.terminate()
 
     def check_permission(self, workspace, user_info):
         """Check user permission for a workspace."""
