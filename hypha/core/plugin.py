@@ -369,8 +369,8 @@ class DynamicPlugin:
                     self.api
                     and self.api.exit
                     and callable(self.api.exit)
-                    and self.api.exit
-                    != self.terminate  # pylint: disable=comparison-with-callable
+                    # pylint: disable=comparison-with-callable
+                    and self.api.exit != self.terminate
                 ):
                     logger.info(
                         "Terminating plugin %s/%s", self.config.workspace, self.name
