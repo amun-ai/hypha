@@ -267,11 +267,13 @@ def setup_socketio_server(
 
     @app.get(norm_url("/api/stats"))
     async def stats():
-        client_count = len(core_interface.get_all_users())
+        users = core_interface.get_all_users()
+        client_count = len(users)
         return {
             "plugin_count": client_count,
             "workspace_count": len(core_interface.get_all_workspace()),
             "workspaces": [w.get_summary() for w in core_interface.get_all_workspace()],
+            "users": [u.id for u in users],
         }
 
     if enable_server_apps:
