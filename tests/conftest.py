@@ -72,7 +72,7 @@ def socketio_server_fixture(minio_server):
         timeout = 10
         while timeout > 0:
             try:
-                response = requests.get(f"http://127.0.0.1:{SIO_PORT}/liveness")
+                response = requests.get(f"http://127.0.0.1:{SIO_PORT}/health/liveness")
                 if response.ok:
                     break
             except RequestException:
@@ -102,7 +102,7 @@ def socketio_subpath_server_fixture(minio_server):
         while timeout > 0:
             try:
                 response = requests.get(
-                    f"http://127.0.0.1:{SIO_PORT2}/my/engine/liveness"
+                    f"http://127.0.0.1:{SIO_PORT2}/my/engine/health/liveness"
                 )
                 if response.ok:
                     break
