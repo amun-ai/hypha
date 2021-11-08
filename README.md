@@ -1,4 +1,4 @@
-![ENGINE_VERSION](https://img.shields.io/badge/dynamic/json.svg?color=success&label=imjoy%20engine&prefix=v&query=version&url=https%3A%2F%2Fraw.githubusercontent.com%imjoy-team%2Fhypha%2Fmaster%2Fimjoy%2FVERSION) ![PyPI](https://img.shields.io/pypi/v/imjoy.svg?style=popout) ![GitHub](https://img.shields.io/github/license/imjoy-team/hypha.svg)
+![PyPI](https://img.shields.io/pypi/v/imjoy.svg?style=popout)
 # Hypha
 
 A serverless application framework for large-scale data management and AI model serving.

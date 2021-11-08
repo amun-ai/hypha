@@ -158,6 +158,15 @@ class CoreInterface:
 
         def remove_empty_workspace(plugin):
             # Remove the user completely if no plugins exists
+            user_info = plugin.user_info
+            if len(user_info.get_plugins()) <= 0:
+                del self._all_users[user_info.id]
+                logger.info(
+                    "Removing user (%s) completely since the user "
+                    "has no other plugin connected.",
+                    user_info.id,
+                )
+            # Remove the user completely if no plugins exists
             workspace = plugin.workspace
             if len(workspace.get_plugins()) <= 0 and not workspace.persistent:
                 logger.info(
@@ -243,15 +252,6 @@ class CoreInterface:
     async def _terminate_plugin(self, plugin):
         """Terminate the plugin."""
         await plugin.terminate()
-        user_info = plugin.user_info
-        # Remove the user completely if no plugins exists
-        if len(user_info.get_plugins()) <= 0:
-            del self._all_users[user_info.id]
-            logger.info(
-                "Removing user (%s) completely since the user "
-                "has no other plugin connected.",
-                user_info.id,
-            )
 
         workspace = plugin.workspace
         # check if the workspace is a not persistent worksapce
