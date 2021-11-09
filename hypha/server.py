@@ -18,6 +18,8 @@ from starlette.responses import JSONResponse, PlainTextResponse
 
 from hypha import __version__ as VERSION
 from hypha.asgi import ASGIGateway
+from hypha.core import UserInfo
+from hypha.core.auth import parse_token
 from hypha.core.connection import BasicConnection
 from hypha.core.interface import CoreInterface
 from hypha.core.plugin import DynamicPlugin
@@ -31,6 +33,32 @@ logger.setLevel(logging.INFO)
 ENV_FILE = find_dotenv()
 if ENV_FILE:
     load_dotenv(ENV_FILE)
+
+
+def parse_user(token):
+    """Parse user info from a token."""
+    if token:
+        user_info = parse_token(token)
+        uid = user_info.id
+        logger.info("User connected: %s", uid)
+    else:
+        uid = shortuuid.uuid()
+        user_info = UserInfo(
+            id=uid,
+            is_anonymous=True,
+            email=None,
+            parent=None,
+            roles=[],
+            scopes=[],
+            expires_at=None,
+        )
+        logger.info("Anonymized User connected: %s", uid)
+
+    if uid == "root":
+        logger.error("Root user is not allowed to connect remotely")
+        raise Exception("Root user is not allowed to connect remotely")
+
+    return user_info
 
 
 def initialize_socketio(sio, core_interface):
@@ -65,7 +93,7 @@ def initialize_socketio(sio, core_interface):
                 return
 
         try:
-            user_info = core_interface.get_user_info_from_token(config.get("token"))
+            user_info = parse_user(config.get("token"))
         except HTTPException as exp:
             logger.warning("Failed to create user: %s", exp.detail)
             config = dotdict(config)
@@ -284,8 +312,8 @@ def setup_socketio_server(
 
     if enable_s3:
         # pylint: disable=import-outside-toplevel
-        from hypha.s3 import S3Controller
         from hypha.rdf import RDFController
+        from hypha.s3 import S3Controller
 
         s3_controller = S3Controller(
             core_interface,

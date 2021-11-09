@@ -4,55 +4,22 @@ import inspect
 import json
 import logging
 import sys
+from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import partial
 from typing import Dict, Optional
-from contextlib import contextmanager
 
 import pkg_resources
-import shortuuid
 from starlette.routing import Mount
 
-from hypha.core import (
-    ServiceInfo,
-    TokenConfig,
-    UserInfo,
-    VisibilityEnum,
-    WorkspaceInfo,
-)
-from hypha.core.auth import generate_presigned_token, parse_token
+from hypha.core import ServiceInfo, TokenConfig, UserInfo, VisibilityEnum, WorkspaceInfo
+from hypha.core.auth import generate_presigned_token
 from hypha.core.plugin import DynamicPlugin
-from hypha.utils import dotdict, EventBus
+from hypha.utils import EventBus, dotdict
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("imjoy-core")
 logger.setLevel(logging.INFO)
-
-
-def parse_user(token):
-    """Parse user info from a token."""
-    if token:
-        user_info = parse_token(token)
-        uid = user_info.id
-        logger.info("User connected: %s", uid)
-    else:
-        uid = shortuuid.uuid()
-        user_info = UserInfo(
-            id=uid,
-            is_anonymous=True,
-            email=None,
-            parent=None,
-            roles=[],
-            scopes=[],
-            expires_at=None,
-        )
-        logger.info("Anonymized User connected: %s", uid)
-
-    if uid == "root":
-        logger.error("Root user is not allowed to connect remotely")
-        raise Exception("Root user is not allowed to connect remotely")
-
-    return user_info
 
 
 class CoreInterface:
@@ -178,20 +145,20 @@ class CoreInterface:
 
         self.event_bus.on("plugin_terminated", remove_empty_workspace)
 
+        def register_user_info(plugin):
+            user_info = plugin.user_info
+            # Note here we only use the newly created user info object
+            # if the same user id does not exist
+            if user_info.id in self._all_users:
+                user_info = self._all_users[user_info.id]
+            else:
+                self._all_users[user_info.id] = user_info
+
+        self.event_bus.on("plugin_registered", register_user_info)
+
     def get_all_users(self):
         """Get all the users."""
         return list(self._all_users.values())
-
-    def get_user_info_from_token(self, token):
-        """Get user info from token."""
-        user_info = parse_user(token)
-        # Note here we only use the newly created user info object
-        # if the same user id does not exist
-        if user_info.id in self._all_users:
-            user_info = self._all_users[user_info.id]
-        else:
-            self._all_users[user_info.id] = user_info
-        return user_info
 
     def create_user_workspace(self, user_info, read_only: bool = False):
         """Create a workspace for the user."""
