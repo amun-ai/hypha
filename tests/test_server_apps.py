@@ -196,9 +196,12 @@ async def test_non_persistent_workspace(socketio_server):
     response = requests.get(f"{SIO_SERVER_URL}/api/stats")
     assert response.status_code == 200
     stats = response.json()
-    assert stats["plugin_count"] == 3
     workspace_info = find_item(stats["workspaces"], "name", workspace)
     assert workspace_info is not None
+    count = 0
+    for workspace in stats["workspaces"]:
+        count += len(workspace["plugins"])
+    assert stats["plugin_count"] == count
     plugins = workspace_info["plugins"]
     assert find_item(plugins, "id", plugin.config["id"]) is not None
 
@@ -208,6 +211,6 @@ async def test_non_persistent_workspace(socketio_server):
     response = requests.get(f"{SIO_SERVER_URL}/api/stats")
     assert response.status_code == 200
     stats = response.json()
-    assert stats["plugin_count"] == 1
     workspace_info = find_item(stats["workspaces"], "name", workspace)
     assert workspace_info is None
+    assert stats["plugin_count"] == count - 2

@@ -144,6 +144,7 @@ def initialize_socketio(sio, core_interface):
             user_info,
             event_bus,
         )
+        core_interface.add_user(user_info)
         user_info.add_plugin(plugin)
         workspace.add_plugin(plugin)
         event_bus.emit(

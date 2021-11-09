@@ -442,9 +442,9 @@ class ServerAppController:
             self._apps[page_id]["status"] = "connected"
             asyncio.get_running_loop().create_task(check_ready(plugin, config))
 
-        def failed(config):
+        def failed(detail):
             app_info["watch"] = False
-            fut.set_exception(Exception(config.detail))
+            fut.set_exception(Exception(detail))
 
         plugin_event_bus.on("connected", connected)
         plugin_event_bus.on("failed", failed)
