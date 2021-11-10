@@ -189,9 +189,12 @@ class CoreInterface:
         # if the same user id does not exist
         if user_info.id in self._all_users:
             user_info = self._all_users[user_info.id]
-        else:
-            self._all_users[user_info.id] = user_info
         return user_info
+
+    def add_user(self, user_info):
+        """Add a user."""
+        if user_info.id not in self._all_users:
+            self._all_users[user_info.id] = user_info
 
     def create_user_workspace(self, user_info, read_only: bool = False):
         """Create a workspace for the user."""
