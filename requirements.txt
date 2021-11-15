@@ -14,6 +14,6 @@ python-jose==3.3.0
 python-socketio[asyncio_client]==5.4.1  # pin for now to solve unknown connection issue
 pyyaml==6.0
 requests==2.26.0
-shortuuid==1.0.2
+shortuuid==1.0.8
 uvicorn==0.15.0
 
