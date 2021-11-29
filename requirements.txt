@@ -11,7 +11,7 @@ pydantic[email]==1.8.2
 pymultihash==0.8.2
 python-dotenv==0.19.2
 python-jose==3.3.0
-python-socketio[asyncio_client]==5.4.1  # pin for now to solve unknown connection issue
+python-socketio[asyncio_client]==5.5.0  # pin for now to solve unknown connection issue
 pyyaml==6.0
 requests==2.26.0
 shortuuid==1.0.8
