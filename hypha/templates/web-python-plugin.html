@@ -122,7 +122,7 @@ self.onmessage = function(e) {
                 }
                 // const startup_script = await (await fetch("./start_pyodide.py")).text()
                 // run pyodide in a new context
-                const dict = pyodide.pyimport("dict");
+                const dict = pyodide.globals.get("dict");
                 self.pyodide.runPython(src, dict());
         
             })
