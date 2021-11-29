@@ -511,7 +511,7 @@ class ServerAppController:
     async def get_log(
         self,
         plugin_id: str,
-        type: str = None,
+        type: str = None,  # pylint: disable=redefined-builtin
         offset: int = 0,
         limit: Optional[int] = None,
     ) -> Union[Dict[str, List[str]], List[str]]:
