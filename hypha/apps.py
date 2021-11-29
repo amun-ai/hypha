@@ -6,7 +6,7 @@ import shutil
 import sys
 import random
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from urllib.request import urlopen
 
 import base58
@@ -151,6 +151,7 @@ class ServerAppController:
             "launch": self.launch,
             "stop": self.stop,
             "list": self.list,
+            "get_log": self.get_log,
             "_rintf": True,
         }
         return controller
@@ -504,6 +505,25 @@ class ServerAppController:
                 self._apps[page_id]["watch"] = False  # make sure we don't keep-alive
                 await self._apps[page_id]["runner"].stop(plugin_id)
             del self._apps[page_id]
+        else:
+            raise Exception(f"Server app instance not found: {plugin_id}")
+
+    async def get_log(
+        self,
+        plugin_id: str,
+        type: str = None,
+        offset: int = 0,
+        limit: Optional[int] = None,
+    ) -> Union[Dict[str, List[str]], List[str]]:
+        """Get server app instance log."""
+        user_info = self.core_interface.current_user.get()
+        user_id = user_info.id
+        page_id = user_id + "/" + plugin_id
+        if page_id in self._apps:
+            with self.core_interface.set_root_user():
+                return await self._apps[page_id]["runner"].get_log(
+                    plugin_id, type=type, offset=offset, limit=limit
+                )
         else:
             raise Exception(f"Server app instance not found: {plugin_id}")
 

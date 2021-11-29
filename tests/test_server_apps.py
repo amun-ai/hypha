@@ -18,6 +18,8 @@ api.log('awesome!connected!');
 
 api.export({
     async setup(){
+        console.log("this is a log");
+        console.error("this is an error");
         await api.log("initialized")
     },
     async check_webgpu(){
@@ -28,6 +30,7 @@ api.export({
         else return false
     },
     async execute(a, b){
+        console.log("executing", a, b);
         return a + b
     }
 })
@@ -67,6 +70,13 @@ async def test_server_apps(socketio_server):
     assert result == 6
     webgpu_available = await plugin.check_webgpu()
     assert webgpu_available is True
+
+    # Test logs
+    logs = await controller.get_log(config.id)
+    assert "log" in logs and "error" in logs
+    logs = await controller.get_log(config.id, type="log", offset=0, limit=1)
+    assert len(logs) == 1
+
     await controller.stop(config.id)
 
     # Test window plugin

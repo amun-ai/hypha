@@ -2,7 +2,7 @@
 import asyncio
 import logging
 import sys
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Union
 
 from playwright.async_api import Page, async_playwright
 
@@ -11,6 +11,8 @@ from hypha.core.interface import CoreInterface
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("browser")
 logger.setLevel(logging.INFO)
+
+MAXIMUM_LOG_ENTRIES = 2048
 
 
 class BrowserAppRunner:
@@ -39,23 +41,28 @@ class BrowserAppRunner:
         self.event_bus.on("shutdown", close)
         # asyncio.ensure_future(self.initialize())
 
-    @staticmethod
-    def _capture_logs_from_browser_tabs(page: Page) -> None:
+    def _capture_logs_from_browser_tabs(self, page: Page, logs: dict) -> None:
         """Capture browser tab logs."""
+        logs["error"] = []
 
-        def _app_info(message: str) -> None:
+        def _app_info(message: Any) -> None:
             """Log message at info level."""
-            logger.info(message)
+            msg_type = message.type
+            logger.error("%s: %s", msg_type, message.text)
+            if msg_type not in logs:
+                logs[msg_type] = []
+            logs[msg_type].append(message.text)
+            if len(logs[msg_type]) > MAXIMUM_LOG_ENTRIES:
+                logs[msg_type].pop(0)
 
         def _app_error(message: str) -> None:
             """Log message at error level."""
             logger.error(message)
+            logs["error"].append(message)
+            if len(logs["error"]) > MAXIMUM_LOG_ENTRIES:
+                logs["error"].pop(0)
 
-        page.on(
-            "targetcreated",
-            lambda target: _app_info(str(target)),
-        )
-        page.on("console", lambda target: _app_info(target.text))
+        page.on("console", lambda target: _app_info(target))
         page.on("error", lambda target: _app_error(target.text))
         page.on("pageerror", lambda target: _app_error(str(target)))
 
@@ -94,10 +101,17 @@ class BrowserAppRunner:
             # raise Exception("The app controller is not ready yet")
         # context = await self.browser.createIncognitoBrowserContext()
         page = await self.browser.new_page()
-        self._capture_logs_from_browser_tabs(page)
-        # TODO: dispose await context.close()
-
         page_id = user_id + "/" + plugin_id
+        logs = {}
+        self.browser_pages[page_id] = {
+            "url": url,
+            "status": "connecting",
+            "page": page,
+            "logs": logs,
+        }
+
+        self._capture_logs_from_browser_tabs(page, logs)
+        # TODO: dispose await context.close()
 
         try:
             response = await page.goto(url)
@@ -105,13 +119,9 @@ class BrowserAppRunner:
                 "Failed to start browser app instance, "
                 f"status: {response.status}, url: {url}"
             )
-            self.browser_pages[page_id] = {
-                "url": url,
-                "status": "connecting",
-                "page": page,
-            }
         except Exception:
             await page.close()
+            del self.browser_pages[page_id]
             raise
 
     async def stop(self, plugin_id: str) -> None:
@@ -136,6 +146,29 @@ class BrowserAppRunner:
         ]
         return sessions
 
+    async def get_log(
+        self,
+        plugin_id: str,
+        type: str = None,
+        offset: int = 0,
+        limit: Optional[int] = None,
+    ) -> Union[Dict[str, List[str]], List[str]]:
+        """Get the logs for a browser app instance."""
+        user_info = self.core_interface.current_user.get()
+        user_id = user_info.id
+        page_id = user_id + "/" + plugin_id
+        if page_id in self.browser_pages:
+            if type is None:
+                return self.browser_pages[page_id]["logs"]
+            else:
+                if limit is None:
+                    limit = MAXIMUM_LOG_ENTRIES
+                return self.browser_pages[page_id]["logs"][type][
+                    offset : offset + limit
+                ]
+        else:
+            raise Exception(f"browser app instance not found: {plugin_id}")
+
     def get_service_api(self) -> Dict[str, Any]:
         """Get a list of service api."""
         controller = {
@@ -145,6 +178,7 @@ class BrowserAppRunner:
             "start": self.start,
             "stop": self.stop,
             "list": self.list,
+            "get_log": self.get_log,
             "_rintf": True,
         }
         return controller
