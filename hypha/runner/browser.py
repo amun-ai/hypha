@@ -164,8 +164,7 @@ class BrowserAppRunner:
             if limit is None:
                 limit = MAXIMUM_LOG_ENTRIES
             return self.browser_pages[page_id]["logs"][type][offset : offset + limit]
-        else:
-            raise Exception(f"browser app instance not found: {plugin_id}")
+        raise Exception(f"browser app instance not found: {plugin_id}")
 
     def get_service_api(self) -> Dict[str, Any]:
         """Get a list of service api."""
