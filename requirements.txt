@@ -9,7 +9,7 @@ numpy==1.21.2  # needs to stay compatible with latest tensorflow
 playwright==1.16.1
 pydantic[email]==1.8.2
 pymultihash==0.8.2
-python-dotenv==0.19.1
+python-dotenv==0.19.2
 python-jose==3.3.0
 python-socketio[asyncio_client]==5.4.1  # pin for now to solve unknown connection issue
 pyyaml==6.0
