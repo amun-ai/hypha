@@ -120,12 +120,18 @@ self.onmessage = function(e) {
                 self.setMessageCallback = (cb)=>{
                     socket.on("plugin_message", cb);
                 }
-                // const startup_script = await (await fetch("./start_pyodide.py")).text()
-                // run pyodide in a new context
-                const dict = pyodide.globals.get("dict");
-                self.pyodide.runPython(src, dict());
-        
+                try {
+                    self.pyodide.runPython(src);
+                } catch (err) {
+                    console.error("Failed to start the script", err);
+                    self.postMessage({type: "stderr", "content": err})
+                    socket.disconnect();
+                }
             })
+        }).catch(err=>{
+            console.error("Failed to load pyodide", err);
+            self.postMessage({type: "stderr", "content": err})
+            socket.disconnect();
         })
         socket.on("connect_error", (error) => {
             console.error("connection error", error);
