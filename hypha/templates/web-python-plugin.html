@@ -120,8 +120,18 @@ self.onmessage = function(e) {
                 self.setMessageCallback = (cb)=>{
                     socket.on("plugin_message", cb);
                 }
-                self.pyodide.runPython(src);
+                try {
+                    self.pyodide.runPython(src);
+                } catch (err) {
+                    console.error("Failed to start the script", err);
+                    self.postMessage({type: "stderr", "content": err})
+                    socket.disconnect();
+                }
             })
+        }).catch(err=>{
+            console.error("Failed to load pyodide", err);
+            self.postMessage({type: "stderr", "content": err})
+            socket.disconnect();
         })
         socket.on("connect_error", (error) => {
             console.error("connection error", error);
