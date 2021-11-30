@@ -120,11 +120,7 @@ self.onmessage = function(e) {
                 self.setMessageCallback = (cb)=>{
                     socket.on("plugin_message", cb);
                 }
-                // const startup_script = await (await fetch("./start_pyodide.py")).text()
-                // run pyodide in a new context
-                const dict = pyodide.globals.get("dict");
-                self.pyodide.runPython(src, dict());
-        
+                self.pyodide.runPython(src);
             })
         })
         socket.on("connect_error", (error) => {
