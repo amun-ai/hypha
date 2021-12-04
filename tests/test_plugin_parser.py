@@ -4,7 +4,7 @@ from hypha.plugin_parser import parse_imjoy_plugin
 
 
 def test_python_plugin():
-    """Test loading python plugin"""
+    """Test loading python plugin."""
     source = (
         (Path(__file__).parent / "testWebPythonPlugin.imjoy.html")
         .open(encoding="utf-8")
@@ -17,7 +17,7 @@ def test_python_plugin():
 
 
 def test_js_plugin():
-    """Test loading javascript plugin"""
+    """Test loading javascript plugin."""
     source = (
         (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
         .open(encoding="utf-8")
