@@ -162,6 +162,7 @@ class ServerAppController:
         self,
         source: str = None,
         source_hash: str = None,
+        config: Optional[Dict[str, Any]] = None,
         template: Optional[str] = None,
         overwrite: bool = False,
         attachments: List[dict] = None,
@@ -185,6 +186,7 @@ class ServerAppController:
         if template == "imjoy":
             if not source:
                 raise Exception("Source should be provided for imjoy plugin.")
+            assert config is None, "Config should not be provided for imjoy plugin."
 
             if self._status != StatusEnum.ready:
                 await self.initialize()
@@ -204,7 +206,10 @@ class ServerAppController:
         elif template:
             temp = self.jinja_env.get_template(template)
             source = temp.render(
-                script=source, source_hash=mhash, config={}, requirements=[]
+                script=source,
+                source_hash=mhash,
+                config=config,
+                requirements=config.get("requirements", []),
             )
         elif not source:
             raise Exception("Source or template should be provided.")
@@ -264,6 +269,7 @@ class ServerAppController:
         workspace: str,
         token: Optional[str] = None,
         timeout: float = 60,
+        config: Optional[Dict[str, Any]] = None,
         attachments: List[dict] = None,
         type: str = "imjoy",  # pylint: disable=redefined-builtin
     ) -> dotdict:
@@ -277,7 +283,11 @@ class ServerAppController:
         else:
             template = "imjoy"
         app_info = await self.install(
-            source, overwrite=True, template=template, attachments=attachments
+            source,
+            overwrite=True,
+            template=template,
+            attachments=attachments,
+            config=config,
         )
         app_id = app_info["app_id"]
 
