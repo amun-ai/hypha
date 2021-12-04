@@ -193,8 +193,6 @@ class ServerAppController:
                     script=config["script"],
                     requirements=config["requirements"],
                 )
-            except asyncio.exceptions.TimeoutError as timeout_err:
-                raise Exception("Plugin parser timed out.") from timeout_err
             except Exception as err:
                 raise Exception(
                     "Failed to parse or compile the imjoy plugin, " f"error: {err}"
