@@ -407,7 +407,8 @@ def get_argparser():
     parser.add_argument(
         "--in-docker",
         action="store_true",
-        help="Indicate whether running in docker (e.g. server apps will run without sandboxing)",
+        help="Indicate whether running in docker (e.g. "
+        "server apps will run without sandboxing)",
     )
     parser.add_argument(
         "--endpoint-url",
