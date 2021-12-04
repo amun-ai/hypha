@@ -153,6 +153,7 @@ class ServerAppController:
         }
         return controller
 
+    # pylint: disable=too-many-statements,too-many-locals
     async def install(
         self,
         source: str = None,
@@ -192,8 +193,8 @@ class ServerAppController:
                     script=config["script"],
                     requirements=config["requirements"],
                 )
-            except asyncio.exceptions.TimeoutError:
-                raise Exception("Plugin parser timed out.")
+            except asyncio.exceptions.TimeoutError as timeout_err:
+                raise Exception("Plugin parser timed out.") from timeout_err
             except Exception as err:
                 raise Exception(
                     "Failed to parse or compile the imjoy plugin, " f"error: {err}"
@@ -287,7 +288,7 @@ class ServerAppController:
 
         return await self.start(workspace, token, plugin_id, user_id, app_id, timeout)
 
-    # pylint: disable=too-many-statements
+    # pylint: disable=too-many-statements,too-many-locals
     async def start(
         self, workspace, token, plugin_id, user_id, app_id, timeout, loop_count=0
     ):

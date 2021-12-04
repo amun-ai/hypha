@@ -1,6 +1,8 @@
 [MASTER]
 reports=no
 
+extension-pkg-whitelist=lxml
+
 disable=
   duplicate-code,
   fixme,
