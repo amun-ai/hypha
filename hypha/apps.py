@@ -272,15 +272,12 @@ class ServerAppController:
         timeout: float = 60,
         config: Optional[Dict[str, Any]] = None,
         attachments: List[dict] = None,
-        type: str = "imjoy",  # pylint: disable=redefined-builtin
     ) -> dotdict:
         """Start a server app instance."""
         user_info = self.core_interface.current_user.get()
         user_id = user_info.id
-        if type == "raw":
-            template = None
-        elif type != "imjoy":
-            template = type + ".html"
+        if config:
+            template = config.get("type") + "-plugin.html"
         else:
             template = "imjoy"
         app_info = await self.install(
@@ -507,24 +504,6 @@ class ServerAppController:
         plugin, config = await fut
         asyncio.get_running_loop().create_task(keep_alive(plugin, config, loop_count))
         return config
-
-    async def _launch_as_root(
-        self,
-        source: str,
-        type: str = "imjoy",  # pylint: disable=redefined-builtin
-        workspace: str = "root",
-        timeout: float = 60.0,
-    ) -> dotdict:
-        """Launch an app as root user."""
-        with self.core_interface.set_root_user():
-            rws = self.core_interface.get_workspace_interface(workspace)
-            token = await rws.generate_token()
-        config = await self.launch(
-            source, workspace, type=type, token=token, timeout=timeout
-        )
-        return await self.core_interface.get_plugin_as_root(
-            config.name, config.workspace
-        )
 
     async def stop(self, plugin_id: str, raise_exception=True) -> None:
         """Stop a server app instance."""

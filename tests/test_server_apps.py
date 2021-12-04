@@ -47,7 +47,7 @@ async def test_server_apps(socketio_server):
     controller = await api.get_service("server-apps")
     config = await controller.launch(
         source=TEST_APP_CODE,
-        type="window-plugin",
+        config={"type": "window"},
         workspace=workspace,
         token=token,
     )
@@ -62,7 +62,10 @@ async def test_server_apps(socketio_server):
     await controller.stop(config.id)
 
     config = await controller.launch(
-        source=TEST_APP_CODE, type="window-plugin", workspace=workspace, token=token
+        source=TEST_APP_CODE,
+        config={"type": "window"},
+        workspace=workspace,
+        token=token,
     )
     plugin = await api.get_plugin(config.name)
     assert "execute" in plugin
@@ -88,7 +91,6 @@ async def test_server_apps(socketio_server):
 
     config = await controller.launch(
         source=source,
-        type="imjoy",
         workspace=workspace,
         token=token,
     )
@@ -106,7 +108,6 @@ async def test_server_apps(socketio_server):
     )
     config = await controller.launch(
         source=source,
-        type="imjoy",
         workspace=workspace,
         token=token,
     )
@@ -123,7 +124,6 @@ async def test_server_apps(socketio_server):
     )
     config = await controller.launch(
         source=source,
-        type="imjoy",
         workspace=workspace,
         token=token,
     )
@@ -161,7 +161,6 @@ async def test_readiness_liveness(socketio_server):
 
     config = await controller.launch(
         source=source,
-        type="imjoy",
         workspace=workspace,
         token=token,
     )
@@ -194,7 +193,6 @@ async def test_non_persistent_workspace(socketio_server):
 
     config = await controller.launch(
         source=source,
-        type="imjoy",
         workspace=workspace,
         token=token,
     )
