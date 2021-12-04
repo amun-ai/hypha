@@ -112,10 +112,14 @@ class ServerAppController:
         self._initialize_future = asyncio.Future()
         try:
             # Start 2 instances of browser
-            brwoser_runner = BrowserAppRunner(self.core_interface)
+            brwoser_runner = BrowserAppRunner(
+                self.core_interface, in_docker=self.in_docker
+            )
             await brwoser_runner.initialize()
 
-            brwoser_runner = BrowserAppRunner(self.core_interface)
+            brwoser_runner = BrowserAppRunner(
+                self.core_interface, in_docker=self.in_docker
+            )
             await brwoser_runner.initialize()
 
             self._runners = self.core_interface.list_services({"type": "plugin-runner"})

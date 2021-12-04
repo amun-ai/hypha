@@ -249,6 +249,7 @@ def setup_socketio_server(
     rdf_bucket: str = "hypha-rdfs",
     apps_dir: str = "hypha-apps",
     executable_path: str = "",
+    in_docker: bool = False,
     **kwargs,
 ) -> None:
     """Set up the socketio server."""
@@ -282,7 +283,9 @@ def setup_socketio_server(
         # pylint: disable=import-outside-toplevel
         from hypha.apps import ServerAppController
 
-        ServerAppController(core_interface, port=port, apps_dir=apps_dir)
+        ServerAppController(
+            core_interface, port=port, apps_dir=apps_dir, in_docker=in_docker
+        )
 
     if enable_s3:
         # pylint: disable=import-outside-toplevel
@@ -400,6 +403,11 @@ def get_argparser():
         "--enable-s3",
         action="store_true",
         help="enable S3 object storage",
+    )
+    parser.add_argument(
+        "--in-docker",
+        action="store_true",
+        help="Indicate whether running in docker (e.g. server apps will run without sandboxing)",
     )
     parser.add_argument(
         "--endpoint-url",
