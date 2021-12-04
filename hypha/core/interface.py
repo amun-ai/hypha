@@ -60,7 +60,14 @@ class CoreInterface:
 
     # pylint: disable=no-self-use, too-many-instance-attributes, too-many-public-methods
 
-    def __init__(self, app, imjoy_api=None, app_controller=None):
+    def __init__(
+        self,
+        app,
+        imjoy_api=None,
+        app_controller=None,
+        public_base_url=None,
+        local_base_url=None,
+    ):
         """Set up instance."""
         self.event_bus = EventBus()
         self.current_user = ContextVar("current_user")
@@ -106,6 +113,8 @@ class CoreInterface:
             }
         )
         self._imjoy_api.update(imjoy_api)
+        self.public_base_url = public_base_url
+        self.local_base_url = local_base_url
 
         # Add public workspace
         self.register_workspace(

@@ -96,6 +96,7 @@ def initialize_socketio(sio, core_interface):
                 return {"success": False, "detail": config.detail}
 
         config["workspace"] = workspace.name
+        config["public_base_url"] = core_interface.public_base_url
 
         logger.info(
             "Registering plugin (uid: %s, workspace: %s)", user_info.id, workspace.name
@@ -338,7 +339,16 @@ def start_server(args):
     else:
         args.allow_origin = env.get("ALLOW_ORIGINS", "*").split(",")
     application = create_application(args.allow_origin)
-    core_interface = CoreInterface(application)
+    local_base_url = f"http://127.0.0.1:{args.port}/{args.base_path.strip('/')}".strip(
+        "/"
+    )
+    if args.public_base_url:
+        public_base_url = args.public_base_url.strip("/")
+    else:
+        public_base_url = local_base_url
+    core_interface = CoreInterface(
+        application, public_base_url=public_base_url, local_base_url=local_base_url
+    )
     setup_socketio_server(application, core_interface, **vars(args))
     if args.host in ("127.0.0.1", "localhost"):
         print(
@@ -374,6 +384,12 @@ def get_argparser():
         type=str,
         default="/",
         help="the base path for the server",
+    )
+    parser.add_argument(
+        "--public-base-url",
+        type=str,
+        default=None,
+        help="the public base URL for accessing the server",
     )
     parser.add_argument(
         "--enable-server-apps",

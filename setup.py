@@ -19,6 +19,7 @@ REQUIREMENTS = [
     "pydantic[email]>=1.8.2",
     "typing-extensions>=3.7.4.3",  # required by pydantic
     "jinja2>=3",
+    "lxml",
     "python-dotenv>=0.19.0",
     "python-engineio==4.1.0",
     "python-jose==3.3.0",

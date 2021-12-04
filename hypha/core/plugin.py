@@ -196,6 +196,7 @@ class DynamicPlugin:
             type=self.config.type,
             workspace=self.config.workspace,
             tag=self.config.tag,
+            public_base_url=self.config.public_base_url,
         )
 
         self._disconnected = False

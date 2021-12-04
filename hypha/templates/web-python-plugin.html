@@ -87,7 +87,6 @@ async function setupPyodide() {
 
 self.onmessage = function(e) {
     const config = e.data
-    config.server_token=config.token
     self.config = config
     const url = config.server_url
     const extraHeaders = {};
