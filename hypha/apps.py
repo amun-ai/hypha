@@ -205,6 +205,7 @@ class ServerAppController:
                 ) from err
         elif template:
             temp = self.jinja_env.get_template(template)
+            config = config or {}
             source = temp.render(
                 script=source,
                 source_hash=mhash,
