@@ -461,7 +461,7 @@ class CoreInterface:
     def list_plugins(self):
         """List all plugins in the workspace."""
         workspace = self.current_workspace.get()
-        return list(workspace.get_plugins())
+        return [plg.config for plg in list(workspace.get_plugins().values())]
 
     async def get_plugin(self, name):
         """Return a plugin by its name."""

@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 from imjoy_rpc import connect_to_server
-from . import SIO_PORT, SIO_PORT2, SIO_SERVER_URL
+from . import SIO_PORT, SIO_PORT2, SIO_SERVER_URL, find_item
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
@@ -217,6 +217,9 @@ async def test_workspace(socketio_server):
     plugin = await api2.get_plugin("my plugin 2")
     assert plugin.foo is None
     assert plugin.foo2 == "bar2"
+
+    plugins = await api2.list_plugins()
+    assert find_item(plugins, "name", "my plugin 2")
 
     with pytest.raises(Exception, match=r".*Plugin `my plugin 2` not found.*"):
         await api.get_plugin("my plugin 2")
