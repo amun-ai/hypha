@@ -22,6 +22,8 @@ from hypha.core.interface import CoreInterface
 from hypha.core.plugin import DynamicPlugin
 from hypha.utils import dotdict, safe_join, PLUGIN_CONFIG_FIELDS
 from hypha.runner.browser import BrowserAppRunner
+from hypha.plugin_parser import parse_imjoy_plugin
+
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("apps")
@@ -54,13 +56,14 @@ class ServerAppController:
     ):
         """Initialize the class."""
         self._status: StatusEnum = StatusEnum.not_initialized
-        self.plugin_parser = None
         self._apps = {}
         self.apps_dir = Path(apps_dir)
         os.makedirs(self.apps_dir, exist_ok=True)
         self.port = int(port)
         self.in_docker = in_docker
-        self.server_url = f"http://127.0.0.1:{self.port}"
+        self.local_base_url = core_interface.local_base_url
+        self.public_base_url = core_interface.public_base_url
+
         event_bus = self.event_bus = core_interface.event_bus
         self.core_interface = core_interface
         core_interface.register_service_as_root(self.get_service_api())
@@ -117,12 +120,6 @@ class ServerAppController:
 
             self._runners = self.core_interface.list_services({"type": "plugin-runner"})
             assert len(self._runners) > 0, "No plugin runner is available."
-            app_file = self.builtin_apps_dir / "imjoy-plugin-parser.html"
-            source = (app_file).open(encoding="utf-8").read()
-            self.plugin_parser = await self._launch_as_root(
-                source, type="raw", workspace="root"
-            )
-
             # TODO: check if the plugins are marked as startup plugin
             # and if yes, we will run it directly
 
@@ -156,6 +153,7 @@ class ServerAppController:
         }
         return controller
 
+    # pylint: disable=too-many-statements,too-many-locals
     async def install(
         self,
         source: str = None,
@@ -186,18 +184,18 @@ class ServerAppController:
 
             if self._status != StatusEnum.ready:
                 await self.initialize()
-            config = await self.plugin_parser.parsePluginCode(source)
-            config["source_hash"] = mhash
             try:
-                temp = self.jinja_env.get_template(config.type + "-plugin.html")
+                config = parse_imjoy_plugin(source)
+                config["source_hash"] = mhash
+                temp = self.jinja_env.get_template(config["type"] + "-plugin.html")
                 source = temp.render(
                     config={k: config[k] for k in config if k in PLUGIN_CONFIG_FIELDS},
-                    script=config.script,
-                    requirements=config.requirements,
+                    script=config["script"],
+                    requirements=config["requirements"],
                 )
             except Exception as err:
                 raise Exception(
-                    "Failed to compile the imjoy plugin, " f"error: {err}"
+                    "Failed to parse or compile the imjoy plugin, " f"error: {err}"
                 ) from err
         elif template:
             temp = self.jinja_env.get_template(template)
@@ -239,7 +237,11 @@ class ServerAppController:
                 self.remove(app_id)
                 raise
 
-        return {"app_id": app_id, "url": f"{self.server_url}/apps/{app_id}/index.html"}
+        return {
+            "app_id": app_id,
+            "local_url": f"{self.local_base_url}/apps/{app_id}/index.html",
+            "public_url": f"{self.public_base_url}/apps/{app_id}/index.html",
+        }
 
     def remove(self, app_id: str) -> None:
         """Remove a server app."""
@@ -282,23 +284,36 @@ class ServerAppController:
 
         plugin_id = shortuuid.uuid()
 
-        url = (
-            f"{self.server_url}/apps/{app_id}/index.html?"
+        return await self.start(workspace, token, plugin_id, user_id, app_id, timeout)
+
+    # pylint: disable=too-many-statements,too-many-locals
+    async def start(
+        self, workspace, token, plugin_id, user_id, app_id, timeout, loop_count=0
+    ):
+        """Start the app and keep it alive."""
+        local_url = (
+            f"{self.local_base_url}/apps/{app_id}/index.html?"
             + f"id={plugin_id}&workspace={workspace}"
-            + f"&server_url={self.server_url}"
-            + (f"&token={token}" if token else "")
+            + f"&server_url={self.local_base_url}"
+            + f"&token={token}"
+            if token
+            else ""
+        )
+        public_url = (
+            f"{self.public_base_url}/apps/{app_id}/index.html?"
+            + f"id={plugin_id}&workspace={workspace}"
+            + f"&server_url={self.public_base_url}"
+            + f"&token={token}"
+            if token
+            else ""
         )
 
-        return await self.start(url, plugin_id, user_id, app_id, timeout)
-
-    # pylint: disable=too-many-statements
-    async def start(self, url, plugin_id, user_id, app_id, timeout, loop_count=0):
-        """Start the app and keep it alive."""
         page_id = user_id + "/" + plugin_id
         app_info = {
             "id": plugin_id,
             "name": app_id,
-            "url": url,
+            "local_url": local_url,
+            "public_url": public_url,
             "status": "connecting",
             "watch": False,
             "runner": None,
@@ -306,7 +321,7 @@ class ServerAppController:
 
         def stop_plugin():
             logger.warning("Plugin %s is stopping...", plugin_id)
-            asyncio.create_task(self.stop(plugin_id))
+            asyncio.create_task(self.stop(plugin_id, False))
 
         async def check_ready(plugin, config):
             api = await plugin.get_api()
@@ -414,7 +429,8 @@ class ServerAppController:
                             logger.error("Failed to terminate plugin %s", plugin.name)
                         # start a new one
                         await self.start(
-                            url,
+                            workspace,
+                            token,
                             plugin_id,
                             user_id,
                             app_id,
@@ -436,9 +452,10 @@ class ServerAppController:
 
         def connected(plugin):
             config = dotdict(plugin.config)
-            config.url = url
+            config.local_url = local_url
             config.id = plugin_id
             config.app_id = app_id
+            config.public_url = public_url
             self._apps[page_id].update(config)
             self._apps[page_id]["status"] = "connected"
             asyncio.get_running_loop().create_task(check_ready(plugin, config))
@@ -467,7 +484,7 @@ class ServerAppController:
         runner_info = random.choice(self._runners)
         with self.core_interface.set_root_user():
             runner = await self.core_interface.get_service(runner_info)
-            await runner.start(url=url, plugin_id=plugin_id)
+            await runner.start(url=local_url, plugin_id=plugin_id)
 
         app_info["runner"] = runner
         self._apps[page_id] = app_info
@@ -494,7 +511,7 @@ class ServerAppController:
             config.name, config.workspace
         )
 
-    async def stop(self, plugin_id: str) -> None:
+    async def stop(self, plugin_id: str, raise_exception=True) -> None:
         """Stop a server app instance."""
         user_info = self.core_interface.current_user.get()
         user_id = user_info.id
@@ -505,7 +522,7 @@ class ServerAppController:
                 self._apps[page_id]["watch"] = False  # make sure we don't keep-alive
                 await self._apps[page_id]["runner"].stop(plugin_id)
             del self._apps[page_id]
-        else:
+        elif raise_exception:
             raise Exception(f"Server app instance not found: {plugin_id}")
 
     async def get_log(
