@@ -56,7 +56,7 @@ async def test_http_proxy(minio_server, socketio_server):
     controller = await api.get_service("server-apps")
     config = await controller.launch(
         source=TEST_APP_CODE,
-        type="window-plugin",
+        config={"type": "window"},
         workspace=workspace,
         token=token,
     )
