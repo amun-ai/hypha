@@ -22,6 +22,7 @@ from hypha.core.connection import BasicConnection
 from hypha.core.interface import CoreInterface
 from hypha.core.plugin import DynamicPlugin
 from hypha.http import HTTPProxy
+from hypha.triton import TritonProxy
 from hypha.utils import dotdict
 
 logging.basicConfig(stream=sys.stdout)
@@ -200,7 +201,7 @@ def create_application(allow_origins) -> FastAPI:
     @app.middleware("http")
     async def add_cors_header(request: Request, call_next):
         headers = {}
-        request_origin = request.headers.get("access-control-allow-origin")
+        request_origin = request.headers.get("origin")
         if request_origin and (
             allow_origins == "*"
             or allow_origins[0] == "*"
@@ -210,7 +211,12 @@ def create_application(allow_origins) -> FastAPI:
         headers["access-control-allow-credentials"] = "true"
         headers["access-control-allow-methods"] = ", ".join(["*"])
         headers["access-control-allow-headers"] = ", ".join(
-            ["Content-Type", "Authorization"]
+            [
+                "Content-Type",
+                "Authorization",
+                "Content-Encoding",
+                "Inference-Header-Content-Length",
+            ]
         )
         if (
             request.method == "OPTIONS"
@@ -250,6 +256,7 @@ def setup_socketio_server(
     apps_dir: str = "hypha-apps",
     executable_path: str = "",
     in_docker: bool = False,
+    triton_servers: str = None,
     **kwargs,
 ) -> None:
     """Set up the socketio server."""
@@ -259,6 +266,8 @@ def setup_socketio_server(
         return base_path.rstrip("/") + url
 
     HTTPProxy(core_interface)
+    if triton_servers:
+        TritonProxy(core_interface, triton_servers=triton_servers.split(","))
     ASGIGateway(core_interface)
 
     @app.get(base_path)
@@ -393,6 +402,12 @@ def get_argparser():
         type=str,
         default=None,
         help="the public base URL for accessing the server",
+    )
+    parser.add_argument(
+        "--triton-servers",
+        type=str,
+        default="https://ai.imjoy.io/triton/,https://ai.imjoy.io/triton/",
+        help="A list of comma separated Triton servers to proxy",
     )
     parser.add_argument(
         "--enable-server-apps",
