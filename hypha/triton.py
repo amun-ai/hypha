@@ -62,7 +62,7 @@ class TritonProxy:
                 "Access-Control-Request-Headers,Range"
             )
             response.headers.update(extra_headers)
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 try:
                     if request.method == "GET":
                         proxy = await client.get(url, params=params, headers=headers)
@@ -95,9 +95,8 @@ class TritonProxy:
                 except httpx.RequestError as exc:
                     response.status_code = 500
                     response.body = (
-                        "An error occurred while "
-                        + f"requesting {exc.request.url!r}.".encode("utf-8")
-                    )
+                        "An error occurred while " + f"requesting {exc.request.url!r}."
+                    ).encode("utf-8")
                     return response
 
         core_interface.register_router(router)
