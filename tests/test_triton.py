@@ -59,7 +59,7 @@ def execute(inputs, server_url, model_name, **kwargs):
                 ).reshape(result["_rshape"])
         return results
     else:
-        raise Exception("Failed to execute: " + response.text)
+        raise Exception(f"Failed to execute {model_name}: {response.text}")
 
 
 @pytest.mark.skip(reason="requires a triton server")
