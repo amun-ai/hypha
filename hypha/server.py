@@ -12,7 +12,6 @@ import socketio
 import uvicorn
 from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
@@ -24,7 +23,7 @@ from hypha.core.interface import CoreInterface
 from hypha.core.plugin import DynamicPlugin
 from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
-from hypha.utils import GzipRoute, dotdict
+from hypha.utils import GZipMiddleware, GzipRoute, dotdict
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("server")
