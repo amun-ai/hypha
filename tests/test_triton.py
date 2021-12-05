@@ -3,48 +3,76 @@ import msgpack
 import numpy as np
 import pytest
 import requests
+import gzip
 
 from . import SIO_SERVER_URL
 
 
-@pytest.mark.skip(reason="requires a triton server")
-def test_trition_execute():
-    """Test trition execute."""
-    image_array = np.random.randint(0, 255, [3, 256, 256]).astype("float32")
-    # Represent the image array as imjoy_rpc encoding
+def execute(inputs, server_url, model_name, **kwargs):
+    """Execute a model on the trition server."""
+    # Represent the numpy array with imjoy_rpc encoding
     # See: https://github.com/imjoy-team/imjoy-rpc#data-type-representation
-    encoded_image = {
-        "_rtype": "ndarray",
-        "_rvalue": image_array.tobytes(),
-        "_rshape": image_array.shape,
-        "_rdtype": str(image_array.dtype),
-    }
-    params = {"diameter": 30}
+    for idx in range(len(inputs)):
+        input_data = inputs[idx]
+        if isinstance(input_data, (np.ndarray, np.generic)):
+            inputs[idx] = {
+                "_rtype": "ndarray",
+                "_rvalue": input_data.tobytes(),
+                "_rshape": input_data.shape,
+                "_rdtype": str(input_data.dtype),
+            }
 
-    # Encode the arguments as msgpack
-    encoded_args = msgpack.dumps(
+    kwargs.update(
         {
-            "inputs": [encoded_image, params],
-            "model_name": "cellpose-python",
-            "model_version": "1",
+            "inputs": inputs,
+            "model_name": model_name,
         }
     )
+    # Encode the arguments as msgpack
+    data = msgpack.dumps(kwargs)
 
-    # Send a post request to the server
+    # Compress the data and send it via a post request to the server
+    compressed_data = gzip.compress(data)
     response = requests.post(
-        f"{SIO_SERVER_URL}/public/services/triton-client/execute",
-        data=encoded_args,
-        headers={"Content-type": "application/msgpack"},
+        f"{server_url}/public/services/triton-client/execute",
+        data=compressed_data,
+        headers={
+            "Content-Type": "application/msgpack",
+            "Content-Encoding": "gzip",
+            "Accept-Encoding": "gzip",
+        },
     )
 
     if response.ok:
         # Decode the results form the response
         results = msgpack.loads(response.content)
-        mask_obj = results["mask"]
-        # Convert the mask object into a numpy array
-        mask = np.frombuffer(mask_obj["_rvalue"], dtype=mask_obj["_rdtype"]).reshape(
-            mask_obj["_rshape"]
-        )
-        assert mask.shape == (1, 256, 256)
+        # Convert the ndarray objects into numpy arrays
+        for key in results:
+            result = results[key]
+            if (
+                isinstance(result, dict)
+                and result.get("_rtype") == "ndarray"
+                and result["_rdtype"] != "object"
+            ):
+                results[key] = np.frombuffer(
+                    result["_rvalue"], dtype=result["_rdtype"]
+                ).reshape(result["_rshape"])
+        return results
     else:
-        raise Exception("Failed to execute")
+        raise Exception("Failed to execute: " + response.text)
+
+
+@pytest.mark.skip(reason="requires a triton server")
+def test_trition_execute():
+    """Test trition execute."""
+
+    image_array = np.random.randint(0, 255, [3, 256, 256]).astype("float32")
+    params = {"diameter": 30}
+    results = execute(
+        inputs=[image_array, params],
+        server_url=SIO_SERVER_URL,
+        model_name="cellpose-python",
+        decode_json=True,
+    )
+    mask = results["mask"]
+    assert mask.shape == (1, 256, 256)
