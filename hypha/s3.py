@@ -7,7 +7,7 @@ import sys
 from datetime import datetime
 from email.utils import formatdate
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict
 
 import botocore
 from aiobotocore.session import get_session
@@ -342,6 +342,7 @@ class S3Controller:
             workspace: str,
             path: str,
             request: Request,
+            max_length: int = 1000,
             user_info: login_optional = Depends(login_optional),
         ):
             """Get or delete file."""
@@ -365,7 +366,10 @@ class S3Controller:
                     # List files in the folder
                     if path.endswith("/"):
                         items = await list_objects_async(
-                            s3_client, self.workspace_bucket, path
+                            s3_client,
+                            self.workspace_bucket,
+                            path,
+                            max_length=max_length,
                         )
                         if len(items) == 0:
                             return JSONResponse(
@@ -578,6 +582,24 @@ class S3Controller:
             "prefix": workspace.name + "/",  # important to have the trailing slash
         }
 
+    async def list_files(
+        self, path: str = "", max_length: int = 1000
+    ) -> Dict[str, Any]:
+        """List files in the folder."""
+        workspace = self.core_interface.current_workspace.get()
+        path = safe_join(workspace.name, path)
+        async with self.create_client_async() as s3_client:
+            # List files in the folder
+            if not path.endswith("/"):
+                path += "/"
+            items = await list_objects_async(
+                s3_client, self.workspace_bucket, path, max_length=max_length
+            )
+            if len(items) == 0:
+                raise Exception(f"Directory does not exists: {path}")
+
+            return items
+
     async def generate_presigned_url(
         self, bucket_name, object_name, client_method="get_object", expiration=3600
     ):
@@ -612,6 +634,7 @@ class S3Controller:
             "name": "s3-storage",
             "type": "s3-storage",
             "config": {"visibility": "public"},
+            "list_files": self.list_files,
             "generate_credential": self.generate_credential,
             "generate_presigned_url": self.generate_presigned_url,
         }

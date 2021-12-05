@@ -12,6 +12,7 @@ from . import SIO_SERVER_URL, find_item
 pytestmark = pytest.mark.asyncio
 
 
+# pylint: disable=too-many-statements
 async def test_s3(minio_server, socketio_server, test_user_token):
     """Test s3 service."""
     api = await connect_to_server(
@@ -131,6 +132,11 @@ async def test_s3(minio_server, socketio_server, test_user_token):
         info["bucket"], info["prefix"] + "hello.txt"
     )
     assert url.startswith("http") and "X-Amz-Algorithm" in url
+
+    items = await s3controller.list_files()
+    assert len(items) == 2
+    assert find_item(items, "name", "my-data-small.txt")
+    assert find_item(items, "name", "hello.txt")
 
     # Upload without the prefix should fail
     obj = s3_client.Object(info["bucket"], "hello.txt")

@@ -1,15 +1,11 @@
-"""Provide the http proxy."""
-import inspect
-import json
-import traceback
-from typing import Any
+"""Provide the triton proxy."""
+import random
+
+import httpx
 from fastapi import APIRouter, Depends, Request, Response
-from starlette.responses import StreamingResponse
 
 from hypha.core.auth import login_optional
 from hypha.core.interface import CoreInterface
-import httpx
-import random
 
 
 class TritonProxy:

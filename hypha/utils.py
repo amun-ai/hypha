@@ -211,7 +211,13 @@ def remove_objects_sync(s3_client, bucket, prefix, delimeter=""):
             )
 
 
-async def list_objects_async(s3_client, bucket, prefix=None, delimeter="/"):
+async def list_objects_async(
+    s3_client,
+    bucket: str,
+    prefix: Optional[str] = None,
+    delimeter: str = "/",
+    max_length: int = 1000,
+):
     """List objects async."""
     prefix = prefix or ""
     response = await s3_client.list_objects_v2(
@@ -226,4 +232,7 @@ async def list_objects_async(s3_client, bucket, prefix=None, delimeter="/"):
             ContinuationToken=response["NextContinuationToken"],
         )
         items += parse_s3_list_response(response, delimeter)
+        if len(items) > max_length:
+            items = items[:max_length]
+            break
     return items
