@@ -1,13 +1,13 @@
 """Provide the triton proxy."""
 import random
+from typing import Any, List
 
 import httpx
 from fastapi import APIRouter, Depends, Request, Response
+from pyotritonclient import execute
 
-from typing import Any, List
 from hypha.core.auth import login_optional
 from hypha.core.interface import CoreInterface
-from pyotritonclient import execute
 
 
 class TritonProxy:

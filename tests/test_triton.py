@@ -1,9 +1,10 @@
 """Test the triton server proxy."""
+import gzip
+
 import msgpack
 import numpy as np
 import pytest
 import requests
-import gzip
 
 from . import SIO_SERVER_URL
 
@@ -12,8 +13,7 @@ def execute(inputs, server_url, model_name, **kwargs):
     """Execute a model on the trition server."""
     # Represent the numpy array with imjoy_rpc encoding
     # See: https://github.com/imjoy-team/imjoy-rpc#data-type-representation
-    for idx in range(len(inputs)):
-        input_data = inputs[idx]
+    for idx, input_data in enumerate(inputs):
         if isinstance(input_data, (np.ndarray, np.generic)):
             inputs[idx] = {
                 "_rtype": "ndarray",
@@ -57,8 +57,7 @@ def execute(inputs, server_url, model_name, **kwargs):
                     result["_rvalue"], dtype=result["_rdtype"]
                 ).reshape(result["_rshape"])
         return results
-    else:
-        raise Exception(f"Failed to execute {model_name}: {response.text}")
+    raise Exception(f"Failed to execute {model_name}: {response.text}")
 
 
 @pytest.mark.skip(reason="requires a triton server")

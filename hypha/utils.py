@@ -252,6 +252,7 @@ class GzipRequest(Request):
             body = await super().body()
             if "gzip" in self.headers.getlist("Content-Encoding"):
                 body = gzip.decompress(body)
+            # pylint: disable=attribute-defined-outside-init
             self._body = body
         return self._body
 

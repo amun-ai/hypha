@@ -48,6 +48,7 @@ api.export({
 """
 
 
+# pylint: disable=too-many-statements
 async def test_http_proxy(minio_server, socketio_server):
     """Test http proxy."""
     # SIO_SERVER_URL = "http://127.0.0.1:9527"

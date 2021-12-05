@@ -219,6 +219,7 @@ def create_application(allow_origins) -> FastAPI:
                 "Content-Type",
                 "Authorization",
                 "Content-Encoding",
+                # for triton inference server
                 "Inference-Header-Content-Length",
             ]
         )
