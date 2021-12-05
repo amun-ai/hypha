@@ -62,7 +62,7 @@ class TritonProxy:
                 "Access-Control-Request-Headers,Range"
             )
             response.headers.update(extra_headers)
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 try:
                     if request.method == "GET":
                         proxy = await client.get(url, params=params, headers=headers)
