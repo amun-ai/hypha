@@ -236,7 +236,7 @@ def create_application(allow_origins) -> FastAPI:
         items = response.headers._list
         # pylint: disable=protected-access
         response.headers._list = [
-            (item[0].decode("latin-1").lower().encode("latin-1"), item[1])
+            (item[0].decode("latin-1").lower().encode("latin-1").title(), item[1])
             for item in items
         ]
         response.headers.update(headers)
@@ -272,7 +272,11 @@ def setup_socketio_server(
 
     HTTPProxy(core_interface)
     if triton_servers:
-        TritonProxy(core_interface, triton_servers=triton_servers.split(","))
+        TritonProxy(
+            core_interface,
+            triton_servers=triton_servers.split(","),
+            allow_origins=allow_origins,
+        )
     ASGIGateway(core_interface)
 
     @app.get(base_path)
@@ -411,7 +415,7 @@ def get_argparser():
     parser.add_argument(
         "--triton-servers",
         type=str,
-        default="https://ai.imjoy.io/triton/,https://ai.imjoy.io/triton/",
+        default=None,
         help="A list of comma separated Triton servers to proxy",
     )
     parser.add_argument(

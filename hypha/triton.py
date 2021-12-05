@@ -13,7 +13,9 @@ from hypha.core.interface import CoreInterface
 class TritonProxy:
     """A proxy for accessing triton inference servers."""
 
-    def __init__(self, core_interface: CoreInterface, triton_servers: str) -> None:
+    def __init__(
+        self, core_interface: CoreInterface, triton_servers: str, allow_origins: str
+    ) -> None:
         """Initialize the triton proxy."""
         # pylint: disable=broad-except
         router = APIRouter()
@@ -36,35 +38,67 @@ class TritonProxy:
             params = request.query_params.multi_items()
             server = random.choice(self.servers)
             url = f"{server}/{path}"
+            # add cors headers
+            extra_headers = {}
+            extra_headers["Access-Control-Expose-Headers"] = (
+                "Inference-Header-Content-Length,"
+                "Accept-Encoding,Content-Encoding,"
+                "Range,Origin,Content-Type"
+            )
+            request_origin = request.headers.get("origin")
+            if request_origin and (
+                allow_origins == "*"
+                or allow_origins[0] == "*"
+                or request_origin in allow_origins
+            ):
+                extra_headers["Access-Control-Allow-Origin"] = request_origin
+            extra_headers["Access-Control-Allow-Credentials"] = "true"
+            extra_headers["Access-Control-Allow-Methods"] = "GET,HEAD,OPTIONS,PUT,POST"
+            extra_headers["Access-Control-Allow-Headers"] = (
+                "Inference-Header-Content-Length,Accept-Encoding,"
+                "Content-Encoding,Access-Control-Allow-Headers,Origin,"
+                "Accept,X-Requested-With,Content-Type,"
+                "Access-Control-Request-Method,"
+                "Access-Control-Request-Headers,Range"
+            )
+            response.headers.update(extra_headers)
             async with httpx.AsyncClient() as client:
-                if request.method == "GET":
-                    proxy = await client.get(url, params=params, headers=headers)
-                    response.headers.update(proxy.headers)
-                    response.body = proxy.content
-                    response.status_code = proxy.status_code
-                    return response
-
-                if request.method == "POST":
-
-                    async def request_streamer():
-                        async for chunk in request.stream():
-                            yield chunk
-
-                    # Use a stream to access raw request body (with compression)
-                    async with client.stream(
-                        "POST",
-                        url,
-                        data=request_streamer(),
-                        params=params,
-                        headers=headers,
-                    ) as proxy:
+                try:
+                    if request.method == "GET":
+                        proxy = await client.get(url, params=params, headers=headers)
                         response.headers.update(proxy.headers)
-                        body = b""
-                        async for chunk in proxy.aiter_raw():
-                            body += chunk
-                        response.body = body
+                        response.body = proxy.content
                         response.status_code = proxy.status_code
                         return response
+
+                    if request.method == "POST":
+
+                        async def request_streamer():
+                            async for chunk in request.stream():
+                                yield chunk
+
+                        # Use a stream to access raw request body (with compression)
+                        async with client.stream(
+                            "POST",
+                            url,
+                            data=request_streamer(),
+                            params=params,
+                            headers=headers,
+                        ) as proxy:
+                            response.headers.update(proxy.headers)
+                            body = b""
+                            async for chunk in proxy.aiter_raw():
+                                body += chunk
+                            response.body = body
+                            response.status_code = proxy.status_code
+                            return response
+                except httpx.RequestError as exc:
+                    response.status_code = 500
+                    response.body = (
+                        "An error occurred while "
+                        + f"requesting {exc.request.url!r}.".encode("utf-8")
+                    )
+                    return response
 
         core_interface.register_router(router)
         core_interface.register_service_as_root(self.get_triton_service())
