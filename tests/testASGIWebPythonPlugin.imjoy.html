@@ -18,17 +18,13 @@
     "api_version": "0.1.7",
     "env": "",
     "permissions": [],
-    "requirements": ["fastapi==0.70.0", "flask==2.0.2", "a2wsgi==1.4.0"],
+    "requirements": ["fastapi==0.70.0"],
     "dependencies": []
 }
 </config>
 
 <script lang="python">
 from imjoy_rpc import api
-
-from flask import Flask
-from a2wsgi import WSGIMiddleware
-
 from fastapi import FastAPI
 
 def create_fastapi_app():
@@ -39,16 +35,6 @@ def create_fastapi_app():
         return {"message": "Hello World"}
 
     return app
-
-def create_flask_app():
-    app = Flask("hello-flask")
-
-    @app.route("/")
-    def hello_world():
-        return "<p>Hello, World!</p>"
-
-    # convert WSGI to ASGI
-    return WSGIMiddleware(app)
 
 
 async def setup():
@@ -62,20 +48,6 @@ async def setup():
         "name": "hello-fastapi",
         "type": "ASGI",
         "serve": serve_fastapi,
-        "config": {
-            "visibility": "public"
-        }
-    })
-
-    # Registering flask app
-    flask_app = create_flask_app()
-    async def serve_flask(args):
-        await flask_app(args["scope"], args["receive"], args["send"])
-
-    await api.register_service({
-        "name": "hello-flask",
-        "type": "ASGI",
-        "serve": serve_flask,
         "config": {
             "visibility": "public"
         }

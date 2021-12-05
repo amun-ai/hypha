@@ -41,17 +41,4 @@ async def test_asgi(socketio_server):
     assert response.ok
     assert response.json()["message"] == "Hello World"
 
-    service = await api.get_service(
-        {"workspace": config.workspace, "name": "hello-flask"}
-    )
-    assert "serve" in service
-    response = requests.get(f"{SIO_SERVER_URL}/{workspace}/apps/hello-flask/")
-    assert response.ok
-    assert response.text == "<p>Hello, World!</p>"
-
-    # TODO: If we repeat the request, it fails for Flask
-    # response = requests.get(f"{SIO_SERVER_URL}/{workspace}/apps/hello-flask/")
-    # assert response.ok
-    # assert response.text == "<p>Hello, World!</p>"
-
     await controller.stop(config.id)
