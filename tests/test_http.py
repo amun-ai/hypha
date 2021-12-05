@@ -1,5 +1,8 @@
 """Test http proxy."""
+import gzip
+
 import msgpack
+import numpy as np
 import pytest
 import requests
 from imjoy_rpc import connect_to_server
@@ -131,6 +134,9 @@ async def test_http_proxy(minio_server, socketio_server):
         data=msgpack.dumps({"data": 123}),
         headers={"Content-type": "application/msgpack"},
     )
+    assert response.ok
+    result = msgpack.loads(response.content)
+    assert result["data"] == 123
 
     response = requests.post(
         f"{SIO_SERVER_URL}/{service_ws}/services/test_service/echo",
@@ -143,3 +149,33 @@ async def test_http_proxy(minio_server, socketio_server):
     assert response.ok
     result = msgpack.loads(response.content)
     assert result["data"] == 123
+
+    # Test numpy array
+    input_array = np.random.randint(0, 255, [3, 10, 100]).astype("float32")
+    input_data = {
+        "_rtype": "ndarray",
+        "_rvalue": input_array.tobytes(),
+        "_rshape": input_array.shape,
+        "_rdtype": str(input_array.dtype),
+    }
+
+    data = msgpack.dumps({"data": input_data})
+    compressed_data = gzip.compress(data)
+    response = requests.post(
+        f"{SIO_SERVER_URL}/{service_ws}/services/test_service/echo",
+        data=compressed_data,
+        headers={
+            "Content-Type": "application/msgpack",
+            "Content-Encoding": "gzip",
+        },
+    )
+
+    assert response.ok
+    results = msgpack.loads(response.content)
+    result = results["data"]
+
+    output_array = np.frombuffer(result["_rvalue"], dtype=result["_rdtype"]).reshape(
+        result["_rshape"]
+    )
+
+    assert output_array.shape == input_array.shape

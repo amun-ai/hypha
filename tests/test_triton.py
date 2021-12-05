@@ -39,7 +39,6 @@ def execute(inputs, server_url, model_name, **kwargs):
         headers={
             "Content-Type": "application/msgpack",
             "Content-Encoding": "gzip",
-            "Accept-Encoding": "gzip",
         },
     )
 
