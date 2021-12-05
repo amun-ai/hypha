@@ -63,7 +63,6 @@ def execute(inputs, server_url, model_name, **kwargs):
 @pytest.mark.skip(reason="requires a triton server")
 def test_trition_execute():
     """Test trition execute."""
-
     image_array = np.random.randint(0, 255, [3, 256, 256]).astype("float32")
     params = {"diameter": 30}
     results = execute(
