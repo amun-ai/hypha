@@ -12,6 +12,7 @@ import socketio
 import uvicorn
 from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
@@ -23,7 +24,7 @@ from hypha.core.interface import CoreInterface
 from hypha.core.plugin import DynamicPlugin
 from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
-from hypha.utils import dotdict
+from hypha.utils import GzipRoute, dotdict
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("server")
@@ -194,9 +195,12 @@ def create_application(allow_origins) -> FastAPI:
         ),
         version=VERSION,
     )
+    app.router.route_class = GzipRoute
 
     static_folder = str(Path(__file__).parent / "static_files")
     app.mount("/static", StaticFiles(directory=static_folder), name="static")
+
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
 
     @app.middleware("http")
     async def add_cors_header(request: Request, call_next):
@@ -298,8 +302,8 @@ def setup_socketio_server(
 
     if enable_s3:
         # pylint: disable=import-outside-toplevel
-        from hypha.s3 import S3Controller
         from hypha.rdf import RDFController
+        from hypha.s3 import S3Controller
 
         s3_controller = S3Controller(
             core_interface,
