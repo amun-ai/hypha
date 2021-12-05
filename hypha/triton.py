@@ -21,8 +21,8 @@ class TritonProxy:
         self.servers = list(filter(lambda x: x.strip(), triton_servers))
         self.servers = list(map(lambda x: x.rstrip("/"), self.servers))
 
-        @router.get("/models/{path:path}")
-        @router.post("/models/{path:path}")
+        @router.get("/triton/{path:path}")
+        @router.post("/triton/{path:path}")
         async def triton_proxy(
             path: str,
             request: Request,
