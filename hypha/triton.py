@@ -4,7 +4,7 @@ from typing import Any, List
 
 import httpx
 from fastapi import APIRouter, Depends, Request, Response
-from pyotritonclient import execute
+from pyotritonclient import execute, get_config
 
 from hypha.core.auth import login_optional
 from hypha.core.interface import CoreInterface
@@ -69,13 +69,22 @@ class TritonProxy:
         core_interface.register_router(router)
         core_interface.register_service_as_root(self.get_triton_service())
 
-    async def execute(self, model_name: str, inputs: List[Any], **kwargs):
+    async def execute(
+        self, model_name: str, inputs: List[Any], server_url=None, **kwargs
+    ):
         """Execute the triton inference."""
-        server_url = random.choice(self.servers)
+        if server_url is None:
+            server_url = random.choice(self.servers)
         results = await execute(
             inputs, server_url=server_url, model_name=model_name, **kwargs
         )
         return results
+
+    async def get_config(self, model_name: str, server_url=None, **kwargs):
+        """Return the config for the triton model."""
+        if server_url is None:
+            server_url = random.choice(self.servers)
+        return await get_config(server_url=server_url, model_name=model_name, **kwargs)
 
     def get_triton_service(self):
         """Return the triton service."""
@@ -85,4 +94,5 @@ class TritonProxy:
             "type": "triton-client",
             "config": {"visibility": "public"},
             "execute": self.execute,
+            "get_config": self.get_config,
         }
