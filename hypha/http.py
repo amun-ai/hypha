@@ -7,10 +7,12 @@ from typing import Any
 import msgpack
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
-from hypha.core import UserInfo
+from imjoy_rpc.rpc import RPC
 
+from hypha.core import UserInfo
 from hypha.core.auth import login_optional
 from hypha.core.interface import CoreInterface
+from hypha.utils import GzipRoute
 
 
 class MsgpackResponse(Response):
@@ -102,6 +104,7 @@ class HTTPProxy:
         """Initialize the http proxy."""
         # pylint: disable=broad-except
         router = APIRouter()
+        router.route_class = GzipRoute
         self.core_interface = core_interface
 
         @router.get("/services")
@@ -219,10 +222,13 @@ class HTTPProxy:
                     )
                 if not callable(value):
                     return JSONResponse(status_code=200, content=serialize(value))
+                _rpc = RPC(None, None)
                 try:
-                    result = value(**kwargs)
-                    if inspect.isawaitable(result):
-                        result = await result
+                    kwargs = _rpc.unwrap(kwargs, False)
+                    results = value(**kwargs)
+                    if inspect.isawaitable(results):
+                        results = await results
+                    results = _rpc.wrap(results, False)
                 except Exception:
                     return JSONResponse(
                         status_code=500,
@@ -235,12 +241,12 @@ class HTTPProxy:
                 if request.method == "POST" and content_type == "application/msgpack":
                     return MsgpackResponse(
                         status_code=200,
-                        content=result,
+                        content=results,
                     )
 
                 return JSONResponse(
                     status_code=200,
-                    content=result,
+                    content=results,
                 )
 
             except Exception:
