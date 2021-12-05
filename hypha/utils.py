@@ -9,8 +9,11 @@ from datetime import datetime
 from typing import Callable, List, Optional
 
 from fastapi.routing import APIRoute
+from starlette.datastructures import Headers
+from starlette.middleware.gzip import GZipResponder
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 _os_alt_seps: List[str] = list(
     sep for sep in [os.path.sep, os.path.altsep] if sep is not None and sep != "/"
@@ -241,6 +244,34 @@ async def list_objects_async(
             items = items[:max_length]
             break
     return items
+
+
+class GZipMiddleware:
+    """Middleware to gzip responses (fixed to not encoding twice)."""
+
+    def __init__(
+        self, app: ASGIApp, minimum_size: int = 500, compresslevel: int = 9
+    ) -> None:
+        """Initialize the middleware."""
+        self.app = app
+        self.minimum_size = minimum_size
+        self.compresslevel = compresslevel
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Call the middleware."""
+        if scope["type"] == "http":
+            headers = Headers(scope=scope)
+            # Make sure we're not already gzipping
+            if (
+                "gzip" in headers.get("Accept-Encoding", "")
+                and "Content-Encoding" not in headers
+            ):
+                responder = GZipResponder(
+                    self.app, self.minimum_size, compresslevel=self.compresslevel
+                )
+                await responder(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 class GzipRequest(Request):
