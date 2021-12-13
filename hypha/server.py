@@ -87,7 +87,7 @@ def initialize_socketio(sio, core_interface):
         if workspace is None:
             if ws == user_info.id:
                 workspace = core_interface.create_user_workspace(
-                    user_info, read_only=user_info.is_anonymous
+                    user_info, read_only=False  # user_info.is_anonymous
                 )
             else:
                 logger.error("Workspace %s does not exist", ws)
