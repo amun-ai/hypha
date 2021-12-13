@@ -137,16 +137,17 @@ def initialize_socketio(sio, core_interface):
             }
 
         connection = BasicConnection(sio, plugin_id, sid)
+        core_interface.add_user(user_info)
+        core_interface.current_user.set(user_info)
         plugin = DynamicPlugin(
             config,
-            core_interface.get_interface(),
+            core_interface.get_workspace_interface(workspace.name),
             core_interface.get_codecs(),
             connection,
             workspace,
             user_info,
             event_bus,
         )
-        core_interface.add_user(user_info)
         user_info.add_plugin(plugin)
         workspace.add_plugin(plugin)
         event_bus.emit(

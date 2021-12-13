@@ -670,7 +670,7 @@ class CoreInterface:
         if not self.check_permission(workspace, user_info):
             raise PermissionError(f"Permission denied for workspace {name}")
 
-        interface = self.get_interface()
+        interface = self._imjoy_api.copy()
         bound_interface = {}
         for key in interface:
             if callable(interface[key]):
@@ -704,9 +704,6 @@ class CoreInterface:
         bound_interface["off"] = event_bus.off
         bound_interface["once"] = event_bus.once
         bound_interface["emit"] = event_bus.emit
-        # Remove disconnect, since the plugin can call disconnect()
-        # from their own workspace
-        del bound_interface["disconnect"]
         return dotdict(bound_interface)
 
     def register_service_as_root(self, service):
@@ -724,10 +721,6 @@ class CoreInterface:
                 raise Exception(f"Workspace {workspace} does not exist.")
             self.current_workspace.set(workspace)
             return dotdict(await self.get_plugin(name))
-
-    def get_interface(self):
-        """Return the interface."""
-        return self._imjoy_api.copy()
 
     def register_codec(self, config):
         """Register a codec."""
