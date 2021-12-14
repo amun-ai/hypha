@@ -67,7 +67,6 @@ class ServerAppController:
         event_bus = self.event_bus = core_interface.event_bus
         self.core_interface = core_interface
         core_interface.register_service_as_root(self.get_service_api())
-        self.core_api = dotdict(core_interface.get_interface())
         self.jinja_env = Environment(
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
         )
@@ -138,7 +137,7 @@ class ServerAppController:
     async def close(self) -> None:
         """Close the app controller."""
         logger.info("Closing the server app controller...")
-        for app in self._apps:
+        for app in self._apps.values():
             await self.stop(app["id"])
 
     def get_service_api(self) -> Dict[str, Any]:

@@ -143,4 +143,18 @@ async def test_s3(minio_server, socketio_server, test_user_token):
     with pytest.raises(Exception, match=r".*An error occurred (AccessDenied)*"):
         obj.upload_file("/tmp/hello.txt")
 
+    # Delete the entire folder
+    response = requests.delete(
+        f"{SIO_SERVER_URL}/{workspace}/files/",
+        headers={"Authorization": f"Bearer {token}"},
+        data=content,
+    )
+    assert (
+        response.status_code == 200
+    ), f"failed to delete {response.reason}: {response.text}"
+
+    obj = s3_client.Object(info["bucket"], info["prefix"] + "hello.txt")
+    with pytest.raises(Exception, match=r".*HeadObject operation: Not Found*"):
+        assert obj.content_length
+
     await api.disconnect()

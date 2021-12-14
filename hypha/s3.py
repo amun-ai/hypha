@@ -391,10 +391,6 @@ class S3Controller:
                         )
                     # Download the file
                     try:
-                        # FIXME: Commented code
-                        # response = await s3_client.head_object(
-                        #     Bucket=self.workspace_bucket, Key=path
-                        # )
                         return FSFileResponse(
                             self.create_client_async(), self.workspace_bucket, path
                         )
@@ -409,11 +405,11 @@ class S3Controller:
 
             if request.method == "DELETE":
                 if path.endswith("/"):
+                    remove_objects_sync(self.s3client, self.workspace_bucket, path)
                     return JSONResponse(
-                        status_code=404,
+                        status_code=200,
                         content={
-                            "success": False,
-                            "detail": "Removing directory is not supported.",
+                            "success": True,
                         },
                     )
                 async with self.create_client_async() as s3_client:
