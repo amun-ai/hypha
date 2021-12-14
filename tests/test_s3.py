@@ -133,6 +133,10 @@ async def test_s3(minio_server, socketio_server, test_user_token):
     )
     assert url.startswith("http") and "X-Amz-Algorithm" in url
 
+    response = requests.get(url)
+    assert response.ok
+    assert response.content == b"hello"
+
     items = await s3controller.list_files()
     assert len(items) == 2
     assert find_item(items, "name", "my-data-small.txt")
