@@ -274,9 +274,7 @@ class S3Controller:
                     Bucket=self.workspace_bucket, Key=path
                 )
                 parts_info = {}
-                futs = (
-                    []
-                )  # FIXME: What does this contain? We should give a better name.
+                futures = []
                 count = 0
                 # Stream support:
                 # https://github.com/tiangolo/fastapi/issues/58#issuecomment-469355469
@@ -293,10 +291,10 @@ class S3Controller:
                             UploadId=mpu["UploadId"],
                             Body=current_chunk,
                         )
-                        futs.append(part_fut)
+                        futures.append(part_fut)
                         current_chunk = b""
                 # if multipart upload is activated
-                if len(futs) > 0:
+                if len(futures) > 0:
                     if len(current_chunk) > 0:
                         # upload the last chunk
                         count += 1
@@ -308,9 +306,9 @@ class S3Controller:
                             UploadId=mpu["UploadId"],
                             Body=current_chunk,
                         )
-                        futs.append(part_fut)
+                        futures.append(part_fut)
 
-                    parts = await asyncio.gather(*futs)
+                    parts = await asyncio.gather(*futures)
                     parts_info["Parts"] = [
                         {"PartNumber": i + 1, "ETag": part["ETag"]}
                         for i, part in enumerate(parts)
@@ -612,11 +610,19 @@ class S3Controller:
                     "and the object name should be prefixed with workspace.name + '/'."
                 )
             async with self.create_client_async() as s3_client:
-                return await s3_client.generate_presigned_url(
+                url = await s3_client.generate_presigned_url(
                     client_method,
                     Params={"Bucket": bucket_name, "Key": object_name},
                     ExpiresIn=expiration,
                 )
+                # Check if it's a public url
+                if "." in self.endpoint_url:
+                    return url
+                # Assuming it's the same server as hypha and hosted under /s3 endpoint
+                url = url.lstrip(self.endpoint_url)
+                url = url.startswith("/") and url[1:] or url
+                return f"{self.core_interface.public_base_url}/s3/{url}"
+
         except ClientError as err:
             logging.error(
                 err
