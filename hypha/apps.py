@@ -137,8 +137,8 @@ class ServerAppController:
     async def close(self) -> None:
         """Close the app controller."""
         logger.info("Closing the server app controller...")
-        for k in self._apps:
-            await self.stop(self._apps[k]["id"])
+        for app in self._apps.values():
+            await self.stop(app["id"])
 
     def get_service_api(self) -> Dict[str, Any]:
         """Get a list of service api."""
