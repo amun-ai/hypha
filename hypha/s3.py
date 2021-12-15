@@ -619,7 +619,7 @@ class S3Controller:
                 if "." in self.endpoint_url:
                     return url
                 # Assuming it's the same server as hypha and hosted under /s3 endpoint
-                url = url.lstrip(self.endpoint_url)
+                url = url[len(self.endpoint_url) :]
                 url = url[1:] if url.startswith("/") else url
                 return f"{self.core_interface.public_base_url}/s3/{url}"
 
