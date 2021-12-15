@@ -568,8 +568,13 @@ class S3Controller:
         self.minio_client.admin_user_add(user_info.id, password)
         # Make sure the user is in the workspace
         self.minio_client.admin_group_add(workspace.name, user_info.id)
+        # Check if it's a public url
+        if "." in self.endpoint_url:
+            endpoint_url = self.endpoint_url
+        else:
+            endpoint_url = self.core_interface.public_base_url + "/s3"
         return {
-            "endpoint_url": self.endpoint_url,
+            "endpoint_url": endpoint_url,
             "access_key_id": user_info.id,
             "secret_access_key": password,
             "bucket": self.workspace_bucket,
