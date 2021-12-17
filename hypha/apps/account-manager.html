@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+   <meta charset="utf-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1">
+   <title>Account Manager</title>
+   <meta name="description" content="Template for ImJoy plugin">
+   <meta name="author" content="ImJoy-Team">
+   <scrpt src="https://cdnjs.cloudflare.com/ajax/libs/axios/0.19.2/axios.min.js"></scrpt>
+   <script src="https://cdn.auth0.com/js/auth0-spa-js/1.12/auth0-spa-js.production.js"> </script>
+   <link rel="stylesheet" href="https://unpkg.com/spectre.css/dist/spectre.min.css">
+   <link rel="stylesheet" href="https://unpkg.com/spectre.css/dist/spectre-exp.min.css">
+   <link rel="stylesheet" href="https://unpkg.com/spectre.css/dist/spectre-icons.min.css">
+</head>
+
+<body>
+    <div class="hero bg-gray">
+        <div class="hero-body">
+          <h1>Hypha Account Manager</h1>
+          <button onclick="login()" id="login-btn" class="btn">
+            Login
+          </button>
+
+
+          <div class="panel" style="display:none;" id="info-panel">
+            <div class="panel-header text-center">
+              <figure class="avatar avatar-lg"><img id="picture" alt="Avatar"></figure>
+              <div class="panel-title h5 mt-10" id="name"></div>
+              
+            </div>
+            <nav class="panel-nav">
+              <ul class="tab tab-block">
+                <li class="tab-item active"><a href="#panels">Profile</a></li>
+              </ul>
+            </nav>
+            <div class="panel-body">
+              <div class="tile tile-centered">
+                <div class="tile-content">
+                  <div class="tile-title text-bold">E-mail</div>
+                  <div class="tile-subtitle" id="email"></div>
+                  <div class="tile-subtitle" id="email-verification"></div>
+                </div>
+              </div>
+
+              <div class="tile tile-centered">
+                <div class="tile-content">
+                  <div class="tile-title text-bold">User ID</div>
+                  <div class="tile-subtitle" id="user-id"></div>
+                </div>
+              </div>
+
+              <div class="tile tile-centered">
+                <div class="tile-content">
+                  <div class="tile-title text-bold">Access Token</div>
+                  <div class="tile-subtitle" id="access-token"></div>
+                </div>
+                <div class="tile-action">
+                    <button class="btn btn-link btn-action btn-lg" onclick="copyToken()"><i class="icon icon-copy"></i></button>
+                </div>
+               
+              </div>
+              
+            </div>
+            <div class="panel-footer">
+                <div class="toast" id="toast" style="display:none;">
+                </div>
+              <button onclick="logout()" class="btn btn-primary btn-block">Logout</button>
+            </div>
+          </div>
+         
+        </div>
+      </div>
+    <div>
+    <script>
+const BASE_URL = 'https://ai.imjoy.io'
+
+class Client {
+    constructor(baseURL){
+        this.baseURL = baseURL
+        this.accessToken = null
+    }
+    async makeRequest(url, method, json){
+        if(!this.accessToken) {
+            await this.login()
+        }
+        if(!url.startsWith('http') && !url.startsWith('/')) url = this.baseURL + '/' + url;
+        const headers = {'Authorization': `Bearer ${this.accessToken}`}
+        let body = undefined
+        if(json){
+            headers['Content-Type'] = 'application/json'
+            body = JSON.stringify(json)
+        }
+        const response = await fetch(url, {
+            method,
+            headers,
+            body
+        })
+        const data = await response.json()
+        if(data.success){
+            return data.result
+        }
+        else{
+            throw new Error(data.detail || data.error)
+        }
+    }
+    login(){
+        return new Promise(async (resolve, reject)=>{
+            const auth0 = await createAuth0Client({
+                domain: 'imjoy.eu.auth0.com',
+                client_id: 'ofsvx6A7LdMhG0hklr5JCAEawLv4Pyse'
+            })
+            await auth0.loginWithPopup({audience: 'https://imjoy.eu.auth0.com/api/v2/'});
+            setTimeout(async ()=>{
+                //logged in. you can get the user profile like this:
+                let user = await auth0.getUser();
+                if(user){
+                    if(!user.email_verified){
+                        reject(`Please verify your email (${user.email}) by clicking the link sent from Auth0.`)
+                        return
+                    }
+                    this.userInfo = user;
+                    console.log(user);
+                }
+                else{
+                    
+                    reject("Login failed")
+                    return
+                }
+                this.auth0 = auth0;
+                this.accessToken = await auth0.getTokenSilently({audience: 'https://imjoy.eu.auth0.com/api/v2/'});
+                resolve()
+            }, 500)
+        })
+       
+       
+    }
+    async logout(){
+        const href = window.location.href;
+        await this.auth0.logout({returnTo: href});
+    }
+    async get(url){
+        return this.makeRequest(url, 'GET')
+    }
+    async put(url, json){
+        return this.makeRequest(url, 'PUT', json)
+    }
+    async post(url, json){
+    return this.makeRequest(url, 'POST', json)
+    }
+    async delete(url){
+        return this.makeRequest(url, 'DELETE')
+    }
+}
+
+window.client = new Client(BASE_URL)
+window.login = async ()=>{
+    try{
+        await window.client.login()
+    }
+    catch(e){
+        // for some reason, we need to try again
+        try{
+            await window.client.login()
+        }
+        catch(e){
+            console.error(e)
+            alert(e)
+        }
+    }
+
+    const userInfo = window.client.userInfo;
+    document.getElementById("login-btn").style.display = "none";
+    document.getElementById("name").innerHTML = userInfo.name;
+    document.getElementById("email").innerHTML = userInfo.email;
+    document.getElementById("email-verification").innerHTML = userInfo.email_verified ? "Verified" : "Not Verified";
+    // make email-verification in red if not verified
+    if(!userInfo.email_verified){
+        document.getElementById("email-verification").style.color = "red";
+    }
+    document.getElementById("picture").src = userInfo.picture;
+    document.getElementById("user-id").innerHTML = userInfo.sub;
+    document.getElementById("access-token").innerHTML = window.client.accessToken;
+    document.getElementById("info-panel").style.display = "block";
+}
+window.logout = ()=>{
+    window.client.logout()
+    document.getElementById("info-panel").style.display = "none";
+    document.getElementById("login-btn").style.display = "block";
+}
+
+window.copyToken = ()=>{
+    const el = document.createElement('textarea');
+    el.value = window.client.accessToken;
+    document.body.appendChild(el);
+    el.select();
+    document.execCommand('copy');
+    document.body.removeChild(el);
+    // display a toast
+    document.getElementById("toast").innerHTML = "Access token copied to clipboard!";
+    document.getElementById("toast").style.display = "block";
+    setTimeout(()=>{
+        document.getElementById("toast").style.display = "none";
+    }, 2000);
+}
+
+</script>
+
+  
+</body>
+</html>
