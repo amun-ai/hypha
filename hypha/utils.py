@@ -224,7 +224,7 @@ async def list_objects_async(
     bucket: str,
     prefix: Optional[str] = None,
     delimeter: str = "/",
-    max_length: int = 1000,
+    max_length: Optional[int] = None,
 ):
     """List objects async."""
     prefix = prefix or ""
@@ -240,7 +240,7 @@ async def list_objects_async(
             ContinuationToken=response["NextContinuationToken"],
         )
         items += parse_s3_list_response(response, delimeter)
-        if len(items) > max_length:
+        if max_length and len(items) > max_length:
             items = items[:max_length]
             break
     return items
