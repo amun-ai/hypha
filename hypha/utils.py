@@ -9,13 +9,12 @@ from datetime import datetime
 from typing import Callable, List, Optional
 
 from fastapi.routing import APIRoute
-from starlette.datastructures import Headers
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipResponder
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
-from starlette.datastructures import Headers, MutableHeaders
-from starlette.middleware.cors import CORSMiddleware
 
 _os_alt_seps: List[str] = list(
     sep for sep in [os.path.sep, os.path.altsep] if sep is not None and sep != "/"
@@ -307,10 +306,13 @@ class GzipRoute(APIRoute):
 class PatchedCORSMiddleware(CORSMiddleware):
     """
     A patched version of CORS middleware.
-    This is required because the CORS middleware does not send explicit origin when allow_credentials is True.
+
+    This is required because the CORS middleware does not
+    send explicit origin when allow_credentials is True.
     """
 
     async def send(self, message, send, request_headers) -> None:
+        """Send the message."""
         if message["type"] != "http.response.start":
             await send(message)
             return

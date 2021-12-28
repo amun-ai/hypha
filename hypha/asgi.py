@@ -75,7 +75,7 @@ class RemoteASGIApp:
                                 "more_body": False,
                             }
                         )
-                except Exception:
+                except Exception:  # pylint: disable=broad-except
                     await send(
                         {
                             "type": "http.response.start",
@@ -88,7 +88,7 @@ class RemoteASGIApp:
                     await send(
                         {
                             "type": "http.response.body",
-                            "body": f"{traceback.format_exec()}".encode(),
+                            "body": f"{traceback.format_exc()}".encode(),
                             "more_body": False,
                         }
                     )
