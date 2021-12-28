@@ -115,13 +115,19 @@ class ASGIGateway:
     """ASGI gateway for running web servers in the browser apps."""
 
     def __init__(
-        self, core_interface, allow_origins=None, allow_methods=None, allow_headers=None
+        self,
+        core_interface,
+        allow_origins=None,
+        allow_methods=None,
+        allow_headers=None,
+        expose_headers=None,
     ):
         """Initialize the gateway."""
         self.core_interface = core_interface
         self.allow_origins = allow_origins
         self.allow_methods = allow_methods
         self.allow_headers = allow_headers
+        self.expose_headers = expose_headers
         core_interface.event_bus.on("service_registered", self.mount_asgi_app)
         core_interface.event_bus.on("service_unregistered", self.umount_asgi_app)
 
@@ -134,6 +140,7 @@ class ASGIGateway:
                 allow_origins=self.allow_origins or ["*"],
                 allow_methods=self.allow_methods or ["*"],
                 allow_headers=self.allow_headers or ["*"],
+                expose_headers=self.expose_headers or [],
                 allow_credentials=True,
             )
 
