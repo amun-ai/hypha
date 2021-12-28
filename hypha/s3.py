@@ -16,16 +16,16 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, Response
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
-from hypha.core import WorkspaceInfo
 
+from hypha.core import WorkspaceInfo
 from hypha.core.auth import login_optional
 from hypha.minio import MinioClient
 from hypha.utils import (
     generate_password,
-    safe_join,
-    list_objects_sync,
     list_objects_async,
+    list_objects_sync,
     remove_objects_sync,
+    safe_join,
 )
 
 logging.basicConfig(stream=sys.stdout)
@@ -240,6 +240,7 @@ class S3Controller:
             core_interface.root_user.id, generate_password()
         )
         core_interface.register_service_as_root(self.get_s3_service())
+        core_interface.set_workspace_loader(self._workspace_loader)
 
         event_bus.on("workspace_registered", self._setup_workspace)
         event_bus.on("workspace_removed", self._cleanup_workspace)
@@ -255,7 +256,7 @@ class S3Controller:
             user_info: login_optional = Depends(login_optional),
         ):
             """Upload file."""
-            ws = core_interface.get_workspace(workspace)
+            ws = await core_interface.get_workspace(workspace)
             if not ws:
                 return JSONResponse(
                     status_code=404,
@@ -283,7 +284,7 @@ class S3Controller:
             user_info: login_optional = Depends(login_optional),
         ):
             """Get or delete file."""
-            ws = core_interface.get_workspace(workspace)
+            ws = await core_interface.get_workspace(workspace)
             if not ws:
                 return JSONResponse(
                     status_code=404,
@@ -305,6 +306,37 @@ class S3Controller:
                 return await self._delete_files(path)
 
         core_interface.register_router(router)
+
+    async def _workspace_loader(self, workspace_name, user_info):
+        """Load workspace from s3 record."""
+        if not self.core_interface.check_permission(workspace_name, user_info):
+            return None
+        config_path = f"{self.workspace_etc_dir}/{workspace_name}/config.json"
+        async with self.create_client_async() as s3_client:
+            response = await s3_client.get_object(
+                Bucket=self.workspace_bucket,
+                Key=config_path,
+            )
+            if (
+                "ResponseMetadata" in response
+                and "HTTPStatusCode" in response["ResponseMetadata"]
+            ):
+                response_code = response["ResponseMetadata"]["HTTPStatusCode"]
+                if response_code != 200:
+                    logger.info(
+                        "Failed to download file: %s, status code: %d",
+                        config_path,
+                        response_code,
+                    )
+                    return None
+
+            if "ETag" not in response:
+                return None
+            data = await response["Body"].read()
+            config = json.loads(data.decode("utf-8"))
+            workspace = WorkspaceInfo.parse_obj(config)
+            logger.info("Loaded workspace from s3: %s", workspace_name)
+            return workspace
 
     async def _upload_file(self, path: str, request: Request):
         """Upload file."""
@@ -502,6 +534,13 @@ class S3Controller:
 
         # TODO: we will remove the files if it's not persistent
         if not workspace.persistent:
+            # remove workspace etc files
+            remove_objects_sync(
+                self.s3client,
+                self.workspace_bucket,
+                f"{self.workspace_etc_dir}/{workspace.name}/",
+            )
+            # remove files
             remove_objects_sync(
                 self.s3client, self.workspace_bucket, workspace.name + "/"
             )

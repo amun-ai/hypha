@@ -75,8 +75,8 @@ async def get_service_as_user(
     core_interface.current_user.set(user_info)
     # There won't be any plugin created in this case
     # so we assume the user is in the public workspace
-    core_interface.current_workspace.set(core_interface.get_workspace("public"))
-    ws = core_interface.get_workspace_interface("public")
+    core_interface.current_workspace.set(await core_interface.get_workspace("public"))
+    ws = await core_interface.get_workspace_interface("public")
     service = await ws.get_service({"workspace": workspace_name, "name": service_name})
     return service
 
@@ -90,9 +90,9 @@ async def list_services_as_user(
     core_interface.current_user.set(user_info)
     # There won't be any plugin created in this case
     # so we assume the user is in the public workspace
-    workspace = core_interface.get_workspace("public")
+    workspace = await core_interface.get_workspace("public")
     core_interface.current_workspace.set(workspace)
-    ws = core_interface.get_workspace_interface("public")
+    ws = await core_interface.get_workspace_interface("public")
     services = await ws.list_services({"workspace": workspace_name})
     return services
 
@@ -108,13 +108,13 @@ class HTTPProxy:
         self.core_interface = core_interface
 
         @router.get("/services")
-        def get_all_services(
+        async def get_all_services(
             user_info: login_optional = Depends(login_optional),
         ):
             """Route for listing all the services."""
             try:
                 core_interface.current_user.set(user_info)
-                services = core_interface.list_services()
+                services = await core_interface.list_services()
                 info = serialize(services)
                 return JSONResponse(
                     status_code=200,

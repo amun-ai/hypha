@@ -1,10 +1,11 @@
 """Provide an apps controller."""
 import asyncio
+import json
 import logging
 import os
+import random
 import shutil
 import sys
-import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from urllib.request import urlopen
@@ -12,6 +13,7 @@ from urllib.request import urlopen
 import base58
 import multihash
 import shortuuid
+from aiobotocore.session import get_session
 from fastapi import APIRouter
 from fastapi.responses import FileResponse, JSONResponse
 from jinja2 import Environment, PackageLoader, select_autoescape
@@ -20,10 +22,9 @@ from starlette.responses import Response
 from hypha.core import StatusEnum
 from hypha.core.interface import CoreInterface
 from hypha.core.plugin import DynamicPlugin
-from hypha.utils import dotdict, safe_join, PLUGIN_CONFIG_FIELDS
-from hypha.runner.browser import BrowserAppRunner
 from hypha.plugin_parser import parse_imjoy_plugin
-
+from hypha.runner.browser import BrowserAppRunner
+from hypha.utils import PLUGIN_CONFIG_FIELDS, dotdict, list_objects_async, safe_join
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("apps")
@@ -53,7 +54,12 @@ class ServerAppController:
         port: int,
         in_docker: bool = False,
         apps_dir: str = "./apps",
-    ):
+        endpoint_url=None,
+        access_key_id=None,
+        secret_access_key=None,
+        workspace_bucket="hypha-workspaces",
+        user_applications_dir="applications",
+    ):  # pylint: disable=too-many-arguments
         """Initialize the class."""
         self._status: StatusEnum = StatusEnum.not_initialized
         self._apps = {}
@@ -61,6 +67,12 @@ class ServerAppController:
         os.makedirs(self.apps_dir, exist_ok=True)
         self.port = int(port)
         self.in_docker = in_docker
+        self.endpoint_url = endpoint_url
+        self.access_key_id = access_key_id
+        self.secret_access_key = secret_access_key
+        self.s3_enabled = endpoint_url is not None
+        self.workspace_bucket = workspace_bucket
+        self.user_applications_dir = user_applications_dir
         self.local_base_url = core_interface.local_base_url
         self.public_base_url = core_interface.public_base_url
 
@@ -80,9 +92,21 @@ class ServerAppController:
         self._initialize_future: Optional[asyncio.Future] = None
         self._runners = {}
 
-        @router.get("/apps/{path:path}")
-        def get_app_file(path: str) -> Response:
-            path = safe_join(str(self.apps_dir), path)
+        @router.get("/apps/{workspace}/{path:path}")
+        def get_app_file(workspace: str, path: str, token: str) -> Response:
+            user_info = core_interface.get_user_info_from_token(token)
+            if not core_interface.check_permission(workspace, user_info):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "success": False,
+                        "detail": (
+                            f"{user_info['username']} has no"
+                            f" permission to access {workspace}"
+                        ),
+                    },
+                )
+            path = safe_join(str(self.apps_dir), workspace, path)
             if os.path.exists(path):
                 return FileResponse(path)
 
@@ -121,7 +145,9 @@ class ServerAppController:
             )
             await brwoser_runner.initialize()
 
-            self._runners = self.core_interface.list_services({"type": "plugin-runner"})
+            self._runners = await self.core_interface.list_services(
+                {"type": "plugin-runner"}
+            )
             assert len(self._runners) > 0, "No plugin runner is available."
             # TODO: check if the plugins are marked as startup plugin
             # and if yes, we will run it directly
@@ -133,6 +159,136 @@ class ServerAppController:
             self._status = StatusEnum.not_initialized
             logger.exception("Failed to initialize the app controller")
             self._initialize_future.set_exception(err)
+
+    def create_client_async(self):
+        """Create client async."""
+        assert self.s3_enabled, "S3 is not enabled."
+        return get_session().create_client(
+            "s3",
+            endpoint_url=self.endpoint_url,
+            aws_access_key_id=self.access_key_id,
+            aws_secret_access_key=self.secret_access_key,
+            region_name="EU",
+        )
+
+    async def list_saved_workspaces(
+        self,
+    ):
+        """List saved workspaces."""
+        async with self.create_client_async() as s3_client:
+            items = await list_objects_async(s3_client, self.workspace_bucket, "/")
+        return [item["Key"] for item in items]
+
+    async def list_applications(self, workspace):
+        """List applications in the workspace."""
+        async with self.create_client_async() as s3_client:
+            application_dir = workspace + "/" + self.user_applications_dir
+            items = await list_objects_async(
+                s3_client, self.workspace_bucket, application_dir
+            )
+        return [item["Key"] for item in items]
+
+    async def save_application(self, app_id, config, source, attachments=None):
+        """Save an application to the workspace."""
+        workspace, mhash = app_id.split("/")
+        async with self.create_client_async() as s3_client:
+            app_dir = f"{workspace}/{self.user_applications_dir}/{mhash}"
+
+            async def save_file(key, content):
+                if isinstance(content, str):
+                    content = content.encode("utf-8")
+                response = await s3_client.put_object(
+                    Body=content,
+                    Bucket=self.workspace_bucket,
+                    Key=key,
+                    ContentLength=len(content),
+                )
+
+                if (
+                    "ResponseMetadata" in response
+                    and "HTTPStatusCode" in response["ResponseMetadata"]
+                ):
+                    response_code = response["ResponseMetadata"]["HTTPStatusCode"]
+                    assert (
+                        response_code == 200
+                    ), f"Failed to save file: {key}, status code: {response_code}"
+                assert "ETag" in response
+
+            # Upload the source code
+            await save_file(f"{app_dir}/index.html", source)
+
+            if attachments:
+                config.attachments = config.attachments or {}
+                config.attachments["files"] = config.attachments.get("files", [])
+                files = config.attachments["files"]
+                for att in attachments:
+                    assert (
+                        "name" in att and "source" in att
+                    ), "Attachment should contain `name` and `source`"
+                    if att["source"].startswith("http") and "\n" not in att["source"]:
+                        with urlopen(att["source"]) as stream:
+                            output = stream.read()
+                        att["source"] = output
+                    await save_file(f"{app_dir}/{att['name']}", att["source"])
+                    files.append(att["name"])
+
+            content = json.dumps(config, indent=4)
+            await save_file(f"{app_dir}/rdf.json", content)
+        logger.info("Saved application (%s)to workspace: %s", mhash, workspace)
+
+    async def prepare_application(self, app_id):
+        """Download files for an application to be run."""
+        local_app_dir = self.apps_dir / app_id
+        if "/" not in app_id:
+            raise ValueError(f"Invalid app id: {app_id}")
+        workspace, mhash = app_id.split("/")
+        if os.path.exists(local_app_dir):
+            logger.info("Application (%s) is already prepared.", app_id)
+            return
+
+        logger.info("Preparing application (%s).", app_id)
+
+        # Download the app to the apps dir
+        async with self.create_client_async() as s3_client:
+            app_dir = workspace + "/" + self.user_applications_dir + "/" + mhash
+
+            async def download_file(key, local_path):
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                response = await s3_client.get_object(
+                    Bucket=self.workspace_bucket,
+                    Key=key,
+                )
+                if (
+                    "ResponseMetadata" in response
+                    and "HTTPStatusCode" in response["ResponseMetadata"]
+                ):
+                    response_code = response["ResponseMetadata"]["HTTPStatusCode"]
+                    assert (
+                        response_code == 200
+                    ), f"Failed to download file: {key}, status code: {response_code}"
+                assert "ETag" in response
+                data = await response["Body"].read()
+                with open(local_path, "wb") as fil:
+                    fil.write(data)
+
+            # Upload the source code and attachments
+            await download_file(
+                os.path.join(app_dir, "index.html"), local_app_dir / "index.html"
+            )
+            await download_file(
+                os.path.join(app_dir, "rdf.json"), local_app_dir / "rdf.json"
+            )
+            with open(local_app_dir / "rdf.json", "r", encoding="utf-8") as fil:
+                config = json.load(fil)
+
+            if config.get("attachments"):
+                files = config["attachments"].get("files")
+                if files:
+                    for file_name in files:
+                        await download_file(
+                            os.path.join(app_dir, file_name), local_app_dir / file_name
+                        )
+            logger.info("Application (%s) is prepared.", app_id)
 
     async def close(self) -> None:
         """Close the app controller."""
@@ -163,12 +319,22 @@ class ServerAppController:
         source_hash: str = None,
         config: Optional[Dict[str, Any]] = None,
         template: Optional[str] = None,
-        overwrite: bool = False,
         attachments: List[dict] = None,
+        workspace: Optional[str] = None,
     ) -> str:
         """Save a server app."""
+        if not workspace:
+            workspace = self.core_interface.current_workspace.get()
+        else:
+            workspace = await self.core_interface.get_workspace(workspace)
+
         user_info = self.core_interface.current_user.get()
-        user_id = user_info.id
+        if not self.core_interface.check_permission(workspace, user_info):
+            raise Exception(
+                f"User {user_info.id} does not have permission"
+                f" to install apps in workspace {workspace}"
+            )
+
         if source.startswith("http"):
             with urlopen(source) as stream:
                 output = stream.read()
@@ -214,37 +380,9 @@ class ServerAppController:
         elif not source:
             raise Exception("Source or template should be provided.")
 
-        random_id = shortuuid.uuid()
-        app_dir = self.apps_dir / user_id / random_id
-        if app_dir.exists() and not overwrite:
-            raise Exception(
-                f"Another app with the same id ({random_id}) "
-                f"already exists in the user's app space {user_id}."
-            )
+        app_id = f"{workspace.name}/{mhash}"
 
-        os.makedirs(app_dir, exist_ok=True)
-
-        with open(app_dir / "index.html", "w", encoding="utf-8") as fil:
-            fil.write(source)
-
-        app_id = f"{user_id}/{random_id}"
-
-        if attachments:
-            try:
-
-                for att in attachments:
-                    assert (
-                        "name" in att and "source" in att
-                    ), "Attachment should contain `name` and `source`"
-                    if att["source"].startswith("http"):
-                        with urlopen(att["source"]) as stream:
-                            output = stream.read()
-                        att["source"] = output
-                    with open(safe_join(str(app_dir), att["name"]), "wb") as fil:
-                        fil.write(source)
-            except Exception:
-                self.remove(app_id)
-                raise
+        await self.save_application(app_id, config, source, attachments)
 
         return {
             "app_id": app_id,
@@ -273,15 +411,22 @@ class ServerAppController:
         attachments: List[dict] = None,
     ) -> dotdict:
         """Start a server app instance."""
-        user_info = self.core_interface.current_user.get()
-        user_id = user_info.id
+        if token:
+            user_info = self.core_interface.get_user_info_from_token(token)
+        else:
+            user_info = self.core_interface.current_user.get()
+        if not self.core_interface.check_permission(workspace, user_info):
+            raise Exception(
+                f"User {user_info.id} does not have permission"
+                " to run app in workspace {workspace}."
+            )
+
         if config:
             template = config.get("type") + "-plugin.html"
         else:
             template = "imjoy"
         app_info = await self.install(
             source,
-            overwrite=True,
             template=template,
             attachments=attachments,
             config=config,
@@ -295,13 +440,25 @@ class ServerAppController:
 
         plugin_id = shortuuid.uuid()
 
-        return await self.start(workspace, token, plugin_id, user_id, app_id, timeout)
+        return await self.start(workspace, token, plugin_id, app_id, timeout)
 
     # pylint: disable=too-many-statements,too-many-locals
-    async def start(
-        self, workspace, token, plugin_id, user_id, app_id, timeout, loop_count=0
-    ):
+    async def start(self, workspace, token, plugin_id, app_id, timeout, loop_count=0):
         """Start the app and keep it alive."""
+        if workspace != app_id.split("/")[0]:
+            raise Exception("Workspace mismatch between app_id and workspace.")
+
+        if token:
+            user_info = self.core_interface.get_user_info_from_token(token)
+        else:
+            user_info = self.core_interface.current_user.get()
+        if not self.core_interface.check_permission(workspace, user_info):
+            raise Exception(
+                f"User {user_info.id} does not have permission"
+                f" to run app {app_id} in workspace {workspace}."
+            )
+
+        await self.prepare_application(app_id)
         local_url = (
             f"{self.local_base_url}/apps/{app_id}/index.html?"
             + f"id={plugin_id}&workspace={workspace}"
@@ -319,7 +476,7 @@ class ServerAppController:
             else ""
         )
 
-        page_id = user_id + "/" + plugin_id
+        page_id = workspace + "/" + plugin_id
         app_info = {
             "id": plugin_id,
             "name": app_id,
@@ -443,7 +600,6 @@ class ServerAppController:
                             workspace,
                             token,
                             plugin_id,
-                            user_id,
                             app_id,
                             timeout,
                             loop_count=loop_count,
@@ -506,9 +662,8 @@ class ServerAppController:
 
     async def stop(self, plugin_id: str, raise_exception=True) -> None:
         """Stop a server app instance."""
-        user_info = self.core_interface.current_user.get()
-        user_id = user_info.id
-        page_id = user_id + "/" + plugin_id
+        workspace = self.core_interface.current_workspace.get()
+        page_id = workspace.name + "/" + plugin_id
         if page_id in self._apps:
             logger.info("Stopping app: %s...", page_id)
             with self.core_interface.set_root_user():
@@ -526,9 +681,8 @@ class ServerAppController:
         limit: Optional[int] = None,
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get server app instance log."""
-        user_info = self.core_interface.current_user.get()
-        user_id = user_info.id
-        page_id = user_id + "/" + plugin_id
+        workspace = self.core_interface.current_workspace.get()
+        page_id = workspace.name + "/" + plugin_id
         if page_id in self._apps:
             with self.core_interface.set_root_user():
                 return await self._apps[page_id]["runner"].get_log(
@@ -539,11 +693,10 @@ class ServerAppController:
 
     async def list(self) -> List[str]:
         """List the saved apps for the current user."""
-        user_info = self.core_interface.current_user.get()
-        user_id = user_info.id
+        workspace = self.core_interface.current_workspace.get()
         sessions = [
             {k: v for k, v in page_info.items() if k != "runner"}
             for page_id, page_info in self._apps.items()
-            if page_id.startswith(user_id + "/")
+            if page_id.startswith(workspace.name + "/")
         ]
         return sessions

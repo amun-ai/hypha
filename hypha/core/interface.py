@@ -4,25 +4,19 @@ import inspect
 import json
 import logging
 import sys
+from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import partial
 from typing import Dict, Optional
-from contextlib import contextmanager
 
 import pkg_resources
 import shortuuid
 from starlette.routing import Mount
 
-from hypha.core import (
-    ServiceInfo,
-    TokenConfig,
-    UserInfo,
-    VisibilityEnum,
-    WorkspaceInfo,
-)
+from hypha.core import ServiceInfo, TokenConfig, UserInfo, VisibilityEnum, WorkspaceInfo
 from hypha.core.auth import generate_presigned_token, parse_token
 from hypha.core.plugin import DynamicPlugin
-from hypha.utils import dotdict, EventBus
+from hypha.utils import EventBus, dotdict
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("imjoy-core")
@@ -75,6 +69,7 @@ class CoreInterface:
         self.current_workspace = ContextVar("current_workspace")
         self._all_users: Dict[str, UserInfo] = {}  # uid:user_info
         self._all_workspaces: Dict[str, WorkspaceInfo] = {}  # wid:workspace_info
+        self._workspace_loader = None
         self._app = app
         self.app_controller = app_controller
         self.disconnect_delay = 1
@@ -281,7 +276,7 @@ class CoreInterface:
         """Check user permission for a workspace."""
         # pylint: disable=too-many-return-statements
         if isinstance(workspace, str):
-            workspace = self.get_workspace(workspace)
+            workspace = self._all_workspaces.get(workspace)
             if not workspace:
                 logger.error("Workspace %s not found", workspace)
                 return False
@@ -339,11 +334,25 @@ class CoreInterface:
             return True
         return False
 
-    def get_workspace(self, name):
+    async def get_workspace(self, name, load=True):
         """Return the workspace."""
         if name in self._all_workspaces:
             return self._all_workspaces[name]
+        if load and self._workspace_loader:
+            user_info = self.current_user.get()
+            try:
+                workspace = await self._workspace_loader(name, user_info)
+                if workspace:
+                    self._all_workspaces[workspace.name] = workspace
+            except Exception:  # pylint: disable=broad-except
+                logger.exception("Failed to load workspace %s", name)
+            else:
+                return workspace
         return None
+
+    def set_workspace_loader(self, loader):
+        """Set the workspace loader."""
+        self._workspace_loader = loader
 
     def register_workspace(self, ws):
         """Register the workspace."""
@@ -477,7 +486,7 @@ class CoreInterface:
             query = {"name": query}
 
         if "workspace" in query:
-            workspace = self.get_workspace(query["workspace"])
+            workspace = await self.get_workspace(query["workspace"])
             if not workspace:
                 raise Exception(f"Service not found: {query} (workspace unavailable)")
         else:
@@ -518,7 +527,7 @@ class CoreInterface:
                 ret.append({"name": workspace.name})
         return ret
 
-    def list_services(self, query: Optional[dict] = None):
+    async def list_services(self, query: Optional[dict] = None):
         """Return a list of services based on the query."""
         # if workspace is not set, then it means current workspace
         # if workspace = *, it means search globally
@@ -549,7 +558,7 @@ class CoreInterface:
                         ret.append(service.get_summary())
             return ret
         if ws is not None:
-            workspace = self.get_workspace(ws)
+            workspace = await self.get_workspace(ws)
         else:
             workspace = self.current_workspace.get()
         ret = []
@@ -612,7 +621,7 @@ class CoreInterface:
         token = generate_presigned_token(user_info, token_config)
         return token
 
-    def create_workspace(self, config: dict):
+    async def create_workspace(self, config: dict):
         """Create a new workspace."""
         user_info = self.current_user.get()
         config["persistent"] = config.get("persistent") or False
@@ -620,7 +629,7 @@ class CoreInterface:
             raise Exception("Only registered user can create persistent workspace.")
         workspace = WorkspaceInfo.parse_obj(config)
         workspace.set_global_event_bus(self.event_bus)
-        if self.get_workspace(workspace.name):
+        if await self.get_workspace(workspace.name):
             raise Exception(f"Workspace {workspace.name} already exists.")
         user_info = self.current_user.get()
         # make sure we add the user's email to owners
@@ -630,15 +639,15 @@ class CoreInterface:
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
         user_info.scopes.append(workspace.name)
         self.register_workspace(workspace)
-        return self.get_workspace_interface(workspace.name)
+        return await self.get_workspace_interface(workspace.name)
 
-    def _update_workspace(self, name, config: dict):
+    async def _update_workspace(self, name, config: dict):
         """Bind the context to the generated workspace."""
         if not name:
             raise Exception("Workspace name is not specified.")
-        if not self.get_workspace(name):
+        workspace = await self.get_workspace(name)
+        if not workspace:
             raise Exception(f"Workspace {name} not found")
-        workspace = self.get_workspace(name)
         user_info = self.current_user.get()
         if not self.check_permission(workspace, user_info):
             raise PermissionError(f"Permission denied for workspace {name}")
@@ -661,9 +670,9 @@ class CoreInterface:
             workspace.owners.append(_id)
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
 
-    def get_workspace_interface(self, name: str):
+    async def get_workspace_interface(self, name: str):
         """Bind the context to the generated workspace."""
-        workspace = self.get_workspace(name)
+        workspace = await self.get_workspace(name)
         if not workspace:
             raise Exception(f"Workspace {name} not found")
         user_info = self.current_user.get()
@@ -716,7 +725,7 @@ class CoreInterface:
     async def get_plugin_as_root(self, name, workspace):
         """Get a plugin api as root user."""
         with self.set_root_user():
-            workspace = self.get_workspace(workspace)
+            workspace = await self.get_workspace(workspace)
             if not workspace:
                 raise Exception(f"Workspace {workspace} does not exist.")
             self.current_workspace.set(workspace)
