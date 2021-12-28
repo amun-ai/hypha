@@ -241,6 +241,7 @@ async def test_lazy_plugin(socketio_server):
         source=source,
     )
 
+    plugin = await api.get_plugin(app_info.name, launch=True)
+    assert plugin is not None
+
     await controller.uninstall(app_info.id)
-    # plugin = await api.get_plugin(config.name)
-    # assert plugin is not None

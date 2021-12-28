@@ -472,12 +472,36 @@ class CoreInterface:
         workspace = self.current_workspace.get()
         return [plg.config for plg in list(workspace.get_plugins().values())]
 
-    async def get_plugin(self, name):
+    async def get_plugin(self, name, launch: bool = False, timeout: float = 60):
         """Return a plugin by its name."""
         workspace = self.current_workspace.get()
         plugin = workspace.get_plugin_by_name(name)
         if plugin:
             return await plugin.get_api()
+        elif launch:
+            controller = await self.get_service("server-apps")
+            if not controller:
+                raise Exception(
+                    "Plugin `{name}` not found and failed to"
+                    " launch the plugin (no server-apps service found)"
+                )
+            token = self.generate_token()
+            plugin_id = shortuuid.uuid()
+            app_id = None
+            for aid, app_info in workspace.applications.items():
+                if app_info.name == name:
+                    app_id = aid
+                    break
+            if app_id is None:
+                raise Exception(f"Plugin {name} not found")
+            config = await controller.start(
+                app_id,
+                workspace=workspace.name,
+                token=token,
+                plugin_id=plugin_id,
+                timeout=timeout,
+            )
+            return await self.get_plugin(config.name)
         raise Exception(f"Plugin `{name}` not found (possibly because it's not ready)")
 
     async def get_service(self, query):

@@ -318,6 +318,7 @@ class ServerAppController:
             "install": self.install,
             "uninstall": self.uninstall,
             "launch": self.launch,
+            "start": self.start,
             "stop": self.stop,
             "list": self.list,
             "get_log": self.get_log,
@@ -473,25 +474,37 @@ class ServerAppController:
 
         assert len(self._runners) > 0, "No plugin runner is available"
 
-        plugin_id = shortuuid.uuid()
-
-        return await self.start(workspace, token, plugin_id, app_id, timeout)
+        return await self.start(
+            app_id, workspace=workspace, token=token, timeout=timeout
+        )
 
     # pylint: disable=too-many-statements,too-many-locals
-    async def start(self, workspace, token, plugin_id, app_id, timeout, loop_count=0):
+    async def start(
+        self,
+        app_id,
+        workspace=None,
+        token=None,
+        plugin_id=None,
+        timeout: float = 60,
+        loop_count=0,
+    ):
         """Start the app and keep it alive."""
+        if workspace is None:
+            workspace = self.core_interface.current_workspace.get().name
         if workspace != app_id.split("/")[0]:
             raise Exception("Workspace mismatch between app_id and workspace.")
-
-        if token:
-            user_info = self.core_interface.get_user_info_from_token(token)
-        else:
-            user_info = self.core_interface.current_user.get()
+        if token is None:
+            ws = self.core_interface.get_workspace_interface(workspace)
+            token = ws.generate_token()
+        user_info = self.core_interface.get_user_info_from_token(token)
         if not self.core_interface.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
                 f" to run app {app_id} in workspace {workspace}."
             )
+
+        if plugin_id is None:
+            plugin_id = shortuuid.uuid()
 
         await self.prepare_application(app_id)
         local_url = (
@@ -632,11 +645,11 @@ class ServerAppController:
                             logger.error("Failed to terminate plugin %s", plugin.name)
                         # start a new one
                         await self.start(
-                            workspace,
-                            token,
-                            plugin_id,
                             app_id,
-                            timeout,
+                            workspace=workspace,
+                            token=token,
+                            plugin_id=plugin_id,
+                            timeout=timeout,
                             loop_count=loop_count,
                         )
 
