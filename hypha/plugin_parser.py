@@ -123,9 +123,9 @@ def convert_config_to_rdf(plugin_config, plugin_id, source_url=None):
         "passive",
         "services",
     ]
-    for f in fields:
-        if f in plugin_config:
-            rdf[f] = plugin_config[f]
+    for field in fields:
+        if field in plugin_config:
+            rdf[field] = plugin_config[field]
     tags = plugin_config.get("labels", []) + plugin_config.get("flags", [])
     if "bioengine" not in tags:
         tags.append("bioengine")
@@ -138,19 +138,19 @@ def convert_config_to_rdf(plugin_config, plugin_id, source_url=None):
     # make sure we have a list
     if not rdf["covers"]:
         rdf["covers"] = []
-    elif type(rdf["covers"]) is not list:
+    elif not isinstance(rdf["covers"], list):
         rdf["covers"] = [rdf["covers"]]
 
     rdf["badges"] = plugin_config.get("badge")
     if not rdf["badges"]:
         rdf["badges"] = []
-    elif type(rdf["badges"]) is not list:
+    elif not isinstance(rdf["badges"], list):
         rdf["badges"] = [rdf["badges"]]
 
     rdf["authors"] = plugin_config.get("author")
     if not rdf["authors"]:
         rdf["authors"] = []
-    elif type(rdf["authors"]) is not list:
+    elif not isinstance(rdf["authors"], list):
         rdf["authors"] = [rdf["authors"]]
 
     rdf["attachments"] = {}
