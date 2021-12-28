@@ -206,6 +206,7 @@ class S3Controller:
         secret_access_key=None,
         workspace_bucket="hypha-workspaces",
         local_log_dir="./logs",
+        workspace_etc_dir="etc",
         executable_path="",
     ):
         """Set up controller."""
@@ -221,6 +222,7 @@ class S3Controller:
         self.core_interface = core_interface
         self.workspace_bucket = workspace_bucket
         self.local_log_dir = Path(local_log_dir)
+        self.workspace_etc_dir = workspace_etc_dir.rstrip("/")
         event_bus = core_interface.event_bus
 
         s3client = self.create_client_sync()
@@ -239,9 +241,9 @@ class S3Controller:
         )
         core_interface.register_service_as_root(self.get_s3_service())
 
-        event_bus.on("workspace_registered", self.setup_workspace)
-        event_bus.on("workspace_removed", self.cleanup_workspace)
-        event_bus.on("plugin_registered", self.setup_plugin)
+        event_bus.on("workspace_registered", self._setup_workspace)
+        event_bus.on("workspace_removed", self._cleanup_workspace)
+        event_bus.on("plugin_registered", self._setup_plugin)
 
         router = APIRouter()
 
@@ -269,70 +271,7 @@ class S3Controller:
                 )
             path = safe_join(workspace, path)
 
-            async with self.create_client_async() as s3_client:
-                mpu = await s3_client.create_multipart_upload(
-                    Bucket=self.workspace_bucket, Key=path
-                )
-                parts_info = {}
-                futures = []
-                count = 0
-                # Stream support:
-                # https://github.com/tiangolo/fastapi/issues/58#issuecomment-469355469
-                current_chunk = b""
-                async for chunk in request.stream():
-                    current_chunk += chunk
-                    if len(current_chunk) > 5 * 1024 * 1024:
-                        count += 1
-                        part_fut = s3_client.upload_part(
-                            Bucket=self.workspace_bucket,
-                            ContentLength=len(current_chunk),
-                            Key=path,
-                            PartNumber=count,
-                            UploadId=mpu["UploadId"],
-                            Body=current_chunk,
-                        )
-                        futures.append(part_fut)
-                        current_chunk = b""
-                # if multipart upload is activated
-                if len(futures) > 0:
-                    if len(current_chunk) > 0:
-                        # upload the last chunk
-                        count += 1
-                        part_fut = s3_client.upload_part(
-                            Bucket=self.workspace_bucket,
-                            ContentLength=len(current_chunk),
-                            Key=path,
-                            PartNumber=count,
-                            UploadId=mpu["UploadId"],
-                            Body=current_chunk,
-                        )
-                        futures.append(part_fut)
-
-                    parts = await asyncio.gather(*futures)
-                    parts_info["Parts"] = [
-                        {"PartNumber": i + 1, "ETag": part["ETag"]}
-                        for i, part in enumerate(parts)
-                    ]
-
-                    response = await s3_client.complete_multipart_upload(
-                        Bucket=self.workspace_bucket,
-                        Key=path,
-                        UploadId=mpu["UploadId"],
-                        MultipartUpload=parts_info,
-                    )
-                else:
-                    response = await s3_client.put_object(
-                        Body=current_chunk,
-                        Bucket=self.workspace_bucket,
-                        Key=path,
-                        ContentLength=len(current_chunk),
-                    )
-
-                assert "ETag" in response
-                return JSONResponse(
-                    status_code=200,
-                    content=response,
-                )
+            return await self._upload_file(path, request)
 
         @router.get("/{workspace}/files/{path:path}")
         @router.delete("/{workspace}/files/{path:path}")
@@ -360,76 +299,151 @@ class S3Controller:
                 )
             path = safe_join(workspace, path)
             if request.method == "GET":
-                async with self.create_client_async() as s3_client:
-                    # List files in the folder
-                    if path.endswith("/"):
-                        items = await list_objects_async(
-                            s3_client,
-                            self.workspace_bucket,
-                            path,
-                            max_length=max_length,
-                        )
-                        if len(items) == 0:
-                            return JSONResponse(
-                                status_code=404,
-                                content={
-                                    "success": False,
-                                    "detail": f"Directory does not exists: {path}",
-                                },
-                            )
-
-                        return JSONResponse(
-                            status_code=200,
-                            content={
-                                "success": False,
-                                "type": "directory",
-                                "name": path.split("/")[-1],
-                                "children": items,
-                            },
-                        )
-                    # Download the file
-                    try:
-                        return FSFileResponse(
-                            self.create_client_async(), self.workspace_bucket, path
-                        )
-                    except ClientError:
-                        return JSONResponse(
-                            status_code=404,
-                            content={
-                                "success": False,
-                                "detail": f"File does not exists: {path}",
-                            },
-                        )
+                return await self._get_files(path, max_length)
 
             if request.method == "DELETE":
-                if path.endswith("/"):
-                    remove_objects_sync(self.s3client, self.workspace_bucket, path)
-                    return JSONResponse(
-                        status_code=200,
-                        content={
-                            "success": True,
-                        },
-                    )
-                async with self.create_client_async() as s3_client:
-                    try:
-                        response = await s3_client.delete_object(
-                            Bucket=self.workspace_bucket, Key=path
-                        )
-                        response["success"] = True
-                        return JSONResponse(
-                            status_code=200,
-                            content=response,
-                        )
-                    except ClientError:
-                        return JSONResponse(
-                            status_code=404,
-                            content={
-                                "success": False,
-                                "detail": f"File does not exists: {path}",
-                            },
-                        )
+                return await self._delete_files(path)
 
         core_interface.register_router(router)
+
+    async def _upload_file(self, path: str, request: Request):
+        """Upload file."""
+        async with self.create_client_async() as s3_client:
+            mpu = await s3_client.create_multipart_upload(
+                Bucket=self.workspace_bucket, Key=path
+            )
+            parts_info = {}
+            futures = []
+            count = 0
+            # Stream support:
+            # https://github.com/tiangolo/fastapi/issues/58#issuecomment-469355469
+            current_chunk = b""
+            async for chunk in request.stream():
+                current_chunk += chunk
+                if len(current_chunk) > 5 * 1024 * 1024:
+                    count += 1
+                    part_fut = s3_client.upload_part(
+                        Bucket=self.workspace_bucket,
+                        ContentLength=len(current_chunk),
+                        Key=path,
+                        PartNumber=count,
+                        UploadId=mpu["UploadId"],
+                        Body=current_chunk,
+                    )
+                    futures.append(part_fut)
+                    current_chunk = b""
+            # if multipart upload is activated
+            if len(futures) > 0:
+                if len(current_chunk) > 0:
+                    # upload the last chunk
+                    count += 1
+                    part_fut = s3_client.upload_part(
+                        Bucket=self.workspace_bucket,
+                        ContentLength=len(current_chunk),
+                        Key=path,
+                        PartNumber=count,
+                        UploadId=mpu["UploadId"],
+                        Body=current_chunk,
+                    )
+                    futures.append(part_fut)
+
+                parts = await asyncio.gather(*futures)
+                parts_info["Parts"] = [
+                    {"PartNumber": i + 1, "ETag": part["ETag"]}
+                    for i, part in enumerate(parts)
+                ]
+
+                response = await s3_client.complete_multipart_upload(
+                    Bucket=self.workspace_bucket,
+                    Key=path,
+                    UploadId=mpu["UploadId"],
+                    MultipartUpload=parts_info,
+                )
+            else:
+                response = await s3_client.put_object(
+                    Body=current_chunk,
+                    Bucket=self.workspace_bucket,
+                    Key=path,
+                    ContentLength=len(current_chunk),
+                )
+
+            assert "ETag" in response
+            return JSONResponse(
+                status_code=200,
+                content=response,
+            )
+
+    async def _get_files(self, path: str, max_length: int):
+        """Get files."""
+        async with self.create_client_async() as s3_client:
+            # List files in the folder
+            if path.endswith("/"):
+                items = await list_objects_async(
+                    s3_client,
+                    self.workspace_bucket,
+                    path,
+                    max_length=max_length,
+                )
+                if len(items) == 0:
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "success": False,
+                            "detail": f"Directory does not exists: {path}",
+                        },
+                    )
+
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "success": False,
+                        "type": "directory",
+                        "name": path.split("/")[-1],
+                        "children": items,
+                    },
+                )
+            # Download the file
+            try:
+                return FSFileResponse(
+                    self.create_client_async(), self.workspace_bucket, path
+                )
+            except ClientError:
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "success": False,
+                        "detail": f"File does not exists: {path}",
+                    },
+                )
+
+    async def _delete_files(self, path: str):
+        """Delete files."""
+        if path.endswith("/"):
+            remove_objects_sync(self.s3client, self.workspace_bucket, path)
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "success": True,
+                },
+            )
+        async with self.create_client_async() as s3_client:
+            try:
+                response = await s3_client.delete_object(
+                    Bucket=self.workspace_bucket, Key=path
+                )
+                response["success"] = True
+                return JSONResponse(
+                    status_code=200,
+                    content=response,
+                )
+            except ClientError:
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "success": False,
+                        "detail": f"File does not exists: {path}",
+                    },
+                )
 
     def create_client_sync(self):
         """Create client sync."""
@@ -453,7 +467,7 @@ class S3Controller:
             region_name="EU",
         )
 
-    def setup_plugin(self, plugin):
+    def _setup_plugin(self, plugin):
         """Set up plugin."""
         user_info = plugin.user_info
         # Make sure we created an account for the user
@@ -465,7 +479,16 @@ class S3Controller:
 
         self.minio_client.admin_group_add(plugin.workspace.name, plugin.user_info.id)
 
-    def cleanup_workspace(self, workspace):
+    async def list_users(
+        self,
+    ):
+        """List users."""
+        path = self.workspace_etc_dir + "/"
+        async with self.create_client_async() as s3_client:
+            items = await list_objects_async(s3_client, self.workspace_bucket, path)
+        return items
+
+    def _cleanup_workspace(self, workspace):
         """Clean up workspace."""
         if workspace.read_only:
             return
@@ -483,7 +506,7 @@ class S3Controller:
                 self.s3client, self.workspace_bucket, workspace.name + "/"
             )
 
-    def setup_workspace(self, workspace: WorkspaceInfo):
+    def _setup_workspace(self, workspace: WorkspaceInfo):
         """Set up workspace."""
         if workspace.read_only:
             return
@@ -534,7 +557,7 @@ class S3Controller:
         self.s3client.put_object(
             Body=workspace.json().encode("utf-8"),
             Bucket=self.workspace_bucket,
-            Key=str(workspace_dir / "_workspace_config.json"),
+            Key=f"{self.workspace_etc_dir}/{workspace.name}/config.json",
         )
 
         # find out the latest log file number

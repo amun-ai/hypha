@@ -9,7 +9,8 @@ from datetime import datetime
 from typing import Callable, List, Optional
 
 from fastapi.routing import APIRoute
-from starlette.datastructures import Headers
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipResponder
 from starlette.requests import Request
 from starlette.responses import Response
@@ -224,7 +225,7 @@ async def list_objects_async(
     bucket: str,
     prefix: Optional[str] = None,
     delimeter: str = "/",
-    max_length: int = 1000,
+    max_length: Optional[int] = None,
 ):
     """List objects async."""
     prefix = prefix or ""
@@ -240,7 +241,7 @@ async def list_objects_async(
             ContinuationToken=response["NextContinuationToken"],
         )
         items += parse_s3_list_response(response, delimeter)
-        if len(items) > max_length:
+        if max_length and len(items) > max_length:
             items = items[:max_length]
             break
     return items
@@ -300,3 +301,53 @@ class GzipRoute(APIRoute):
             return await original_route_handler(request)
 
         return custom_route_handler
+
+
+class PatchedCORSMiddleware(CORSMiddleware):
+    """
+    A patched version of CORS middleware.
+
+    This is required because the CORS middleware does not
+    send explicit origin when allow_credentials is True.
+    """
+
+    async def send(self, message, send, request_headers) -> None:
+        """Send the message."""
+        if message["type"] != "http.response.start":
+            await send(message)
+            return
+
+        message.setdefault("headers", [])
+        headers = MutableHeaders(scope=message)
+        headers.update(self.simple_headers)
+        # We need to first normalize the case of the headers
+        # To avoid multiple values in the headers
+        # See issue: https://github.com/encode/starlette/issues/1309
+        # pylint: disable=protected-access
+        items = headers._list
+        # pylint: disable=protected-access
+        headers._list = [
+            (item[0].decode("latin-1").lower().encode("latin-1").title(), item[1])
+            for item in items
+        ]
+        headers = MutableHeaders(headers=dict(headers.items()))
+
+        origin = request_headers["Origin"]
+        has_cookie = "cookie" in request_headers
+        allow_credential = (
+            "Access-Control-Allow-Credentials" in self.simple_headers
+            and self.simple_headers["Access-Control-Allow-Credentials"] == "true"
+        )
+
+        # If request includes any cookie headers, then we must respond
+        # with the specific origin instead of '*'.
+        if self.allow_all_origins and (has_cookie or allow_credential):
+            self.allow_explicit_origin(headers, origin)
+
+        # If we only allow specific origins, then we have to mirror back
+        # the Origin header in the response.
+        elif not self.allow_all_origins and self.is_allowed_origin(origin=origin):
+            self.allow_explicit_origin(headers, origin)
+
+        message["headers"] = headers.raw
+        await send(message)

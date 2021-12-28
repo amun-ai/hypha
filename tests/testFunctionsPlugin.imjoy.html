@@ -1,0 +1,54 @@
+<docs>
+[TODO: write documentation for this plugin.]
+</docs>
+
+<config lang="json">
+{
+    "name": "FunctionsPlugin",
+    "type": "web-worker",
+    "tags": [],
+    "ui": "",
+    "version": "0.1.0",
+    "cover": "",
+    "description": "[TODO: describe this plugin with one sentence.]",
+    "icon": "extension",
+    "inputs": null,
+    "outputs": null,
+    "api_version": "0.1.7",
+    "env": "",
+    "permissions": [],
+    "requirements": [],
+    "dependencies": []
+}
+</config>
+
+<script lang="javascript">
+class ImJoyPlugin {
+    async setup() {
+        await api.register_service({
+            "name": "hello-functions",
+            "type": "functions",
+            "config": {
+                "visibility": "public",
+                "require_context": true
+            },
+            "hello-world": async function(event, context) {
+                return {
+                    status: 200,
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({message: "Hello World"})
+                };
+            },
+            "index": async function(event, context) {
+                return {
+                    status: 200,
+                    body: "Home page"
+                };
+            }
+
+        })
+    }
+}
+
+api.export(new ImJoyPlugin())
+</script>

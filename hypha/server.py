@@ -14,7 +14,7 @@ from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse
+from starlette.responses import JSONResponse
 
 from hypha import __version__ as VERSION
 from hypha.asgi import ASGIGateway
@@ -23,7 +23,7 @@ from hypha.core.interface import CoreInterface
 from hypha.core.plugin import DynamicPlugin
 from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
-from hypha.utils import GZipMiddleware, GzipRoute, dotdict
+from hypha.utils import GZipMiddleware, PatchedCORSMiddleware, GzipRoute, dotdict
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("server")
@@ -32,6 +32,15 @@ logger.setLevel(logging.INFO)
 ENV_FILE = find_dotenv()
 if ENV_FILE:
     load_dotenv(ENV_FILE)
+
+ALLOW_HEADERS = [
+    "Content-Type",
+    "Authorization",
+    "Content-Encoding",
+    # for triton inference server
+    "Inference-Header-Content-Length",
+]
+ALLOW_METHODS = ["*"]
 
 
 def initialize_socketio(sio, core_interface):
@@ -201,47 +210,13 @@ def create_application(allow_origins) -> FastAPI:
     app.mount("/static", StaticFiles(directory=static_folder), name="static")
 
     app.add_middleware(GZipMiddleware, minimum_size=1000)
-
-    @app.middleware("http")
-    async def add_cors_header(request: Request, call_next):
-        headers = {}
-        request_origin = request.headers.get("origin")
-        if request_origin and (
-            allow_origins == "*"
-            or allow_origins[0] == "*"
-            or request_origin in allow_origins
-        ):
-            headers["access-control-allow-origin"] = request_origin
-        headers["access-control-allow-credentials"] = "true"
-        headers["access-control-allow-methods"] = ", ".join(["*"])
-        headers["access-control-allow-headers"] = ", ".join(
-            [
-                "Content-Type",
-                "Authorization",
-                "Content-Encoding",
-                # for triton inference server
-                "Inference-Header-Content-Length",
-            ]
-        )
-        if (
-            request.method == "OPTIONS"
-            and "access-control-request-method" in request.headers
-        ):
-            return PlainTextResponse("OK", status_code=200, headers=headers)
-        response = await call_next(request)
-        # We need to first normalize the case of the headers
-        # To avoid multiple values in the headers
-        # See issue: https://github.com/encode/starlette/issues/1309
-        # pylint: disable=protected-access
-        items = response.headers._list
-        # pylint: disable=protected-access
-        response.headers._list = [
-            (item[0].decode("latin-1").lower().encode("latin-1").title(), item[1])
-            for item in items
-        ]
-        response.headers.update(headers)
-        return response
-
+    app.add_middleware(
+        PatchedCORSMiddleware,
+        allow_origins=allow_origins,
+        allow_methods=ALLOW_METHODS,
+        allow_headers=ALLOW_HEADERS,
+        allow_credentials=True,
+    )
     return app
 
 
@@ -277,7 +252,12 @@ def setup_socketio_server(
             triton_servers=triton_servers.split(","),
             allow_origins=allow_origins,
         )
-    ASGIGateway(core_interface)
+    ASGIGateway(
+        core_interface,
+        allow_origins=allow_origins,
+        allow_methods=ALLOW_METHODS,
+        allow_headers=ALLOW_HEADERS,
+    )
 
     @app.get(base_path)
     async def home():
