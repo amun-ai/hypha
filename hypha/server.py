@@ -51,8 +51,10 @@ ALLOW_HEADERS = [
 ]
 ALLOW_METHODS = ["*"]
 EXPOSE_HEADERS = [
-    "Inference-Header-Content-Length" "Accept-Encoding",
-    "Content-Encoding" "Range",
+    "Inference-Header-Content-Length",
+    "Accept-Encoding",
+    "Content-Encoding",
+    "Range",
     "Origin",
     "Content-Type",
 ]
