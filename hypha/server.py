@@ -36,7 +36,6 @@ if ENV_FILE:
 ALLOW_HEADERS = [
     "Content-Type",
     "Authorization",
-    "Content-Encoding",
     "Access-Control-Allow-Headers",
     "Origin",
     "Accept",
@@ -53,7 +52,7 @@ ALLOW_METHODS = ["*"]
 EXPOSE_HEADERS = [
     "Inference-Header-Content-Length",
     "Accept-Encoding",
-    "Content-Encoding",
+    # "Content-Encoding",
     "Range",
     "Origin",
     "Content-Type",
