@@ -266,7 +266,13 @@ class WorkspaceInfo(BaseModel):
 
     def add_service(self, service: ServiceInfo) -> None:
         """Add a service."""
-        if service.is_singleton():
+        duplicated_service = self.get_service_by_name(service.name)
+        # check if it's a singleton service or
+        # the service with the same name and provider exists
+        if service.is_singleton() or (
+            duplicated_service is not None
+            and duplicated_service.get_provider() == service.get_provider()
+        ):
             for svc in self._plugins.values():
                 if svc.name == service.name:
                     logger.info(
@@ -315,11 +321,11 @@ class WorkspaceInfo(BaseModel):
         return summary
 
     def install_application(self, rdf: RDF):
-        """Install a application to the workspace"""
+        """Install a application to the workspace."""
         self.applications[rdf.id] = rdf
         self._global_event_bus.emit("workspace_changed", self)
 
     def uninstall_application(self, rdf_id: str):
-        """Uninstall a application from the workspace"""
+        """Uninstall a application from the workspace."""
         del self.applications[rdf_id]
         self._global_event_bus.emit("workspace_changed", self)

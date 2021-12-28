@@ -7,7 +7,7 @@ import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import partial
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
 import pkg_resources
 import shortuuid
@@ -472,34 +472,76 @@ class CoreInterface:
         workspace = self.current_workspace.get()
         return [plg.config for plg in list(workspace.get_plugins().values())]
 
-    async def get_plugin(self, name, launch: bool = False, timeout: float = 60):
+    async def launch_application_by_name(
+        self, workspace: WorkspaceInfo, name: str, timeout: float = 60
+    ):
+        """Launch an installed application."""
+        controller = await self.get_service("server-apps")
+        if not controller:
+            raise Exception(
+                "Plugin `{name}` not found and failed to"
+                " launch the plugin (no server-apps service found)"
+            )
+        app_id = None
+        for aid, app_info in workspace.applications.items():
+            # find the app by plugin name
+            if app_info.name == name:
+                app_id = aid
+                break
+        if app_id is None:
+            raise Exception(f"Plugin {name} not found")
+        token = self.generate_token()
+        plugin_id = shortuuid.uuid()
+        config = await controller.start(
+            app_id,
+            workspace=workspace.name,
+            token=token,
+            plugin_id=plugin_id,
+            timeout=timeout,
+        )
+        return config
+
+    async def launch_application_by_service(
+        self, workspace: WorkspaceInfo, service_name: str, timeout: float = 60
+    ):
+        """Launch an installed application by service name."""
+        controller = await self.get_service("server-apps")
+        if not controller:
+            raise Exception(
+                "Plugin `{name}` not found and failed to"
+                " launch the plugin (no server-apps service found)"
+            )
+        app_id = None
+        for aid, app_info in workspace.applications.items():
+            # find the app by service name
+            if app_info.services and service_name in app_info.services:
+                app_id = aid
+                break
+        if app_id is None:
+            raise Exception(f"Service plugin {service_name} not found")
+        token = self.generate_token()
+        plugin_id = shortuuid.uuid()
+        config = await controller.start(
+            app_id,
+            workspace=workspace.name,
+            token=token,
+            plugin_id=plugin_id,
+            timeout=timeout,
+        )
+        return config
+
+    async def get_plugin(self, query: Union[str, dict]):
         """Return a plugin by its name."""
+        if isinstance(query, str):
+            query = {"name": query, "launch": True}
+        name = query["name"]
         workspace = self.current_workspace.get()
         plugin = workspace.get_plugin_by_name(name)
         if plugin:
             return await plugin.get_api()
-        elif launch:
-            controller = await self.get_service("server-apps")
-            if not controller:
-                raise Exception(
-                    "Plugin `{name}` not found and failed to"
-                    " launch the plugin (no server-apps service found)"
-                )
-            token = self.generate_token()
-            plugin_id = shortuuid.uuid()
-            app_id = None
-            for aid, app_info in workspace.applications.items():
-                if app_info.name == name:
-                    app_id = aid
-                    break
-            if app_id is None:
-                raise Exception(f"Plugin {name} not found")
-            config = await controller.start(
-                app_id,
-                workspace=workspace.name,
-                token=token,
-                plugin_id=plugin_id,
-                timeout=timeout,
+        if query.get("launch") is True:
+            config = await self.launch_application_by_name(
+                workspace, name, query.get("timeout", 60)
             )
             return await self.get_plugin(config.name)
         raise Exception(f"Plugin `{name}` not found (possibly because it's not ready)")
@@ -507,7 +549,7 @@ class CoreInterface:
     async def get_service(self, query):
         """Return a service."""
         if isinstance(query, str):
-            query = {"name": query}
+            query = {"name": query, "launch": True}
 
         if "workspace" in query:
             workspace = await self.get_workspace(query["workspace"])
@@ -518,16 +560,37 @@ class CoreInterface:
 
         if "id" in query:
             service = workspace.get_services().get(query["id"])
-            root_service = self.root_workspace.get_services().get(query["id"])
-            if not service and not root_service:
+            if not service:
+                service = self.root_workspace.get_services().get(query["id"])
+            if not service:
                 raise Exception(f"Service not found: {query['id']}")
-            service = service or root_service
         elif "name" in query:
             service = workspace.get_service_by_name(query["name"])
-            root_service = self.root_workspace.get_service_by_name(query["name"])
-            if not service and not root_service:
-                raise Exception(f"Service not found: {query['name']}")
-            service = service or root_service
+            if not service:
+                service = self.root_workspace.get_service_by_name(query["name"])
+            if not service:
+                if "launch" in query and query["launch"] is True:
+                    # launch the service
+                    config = await self.launch_application_by_service(
+                        workspace, query["name"], timeout=query.get("timeout", 60)
+                    )
+                    # make sure the plugin is initialized
+                    await asyncio.wait_for(
+                        self.get_plugin(config.name), query.get("timeout", 60)
+                    )
+                    service = workspace.get_service_by_name(query["name"])
+                    if not service:
+                        raise Exception(
+                            f"Service not found, "
+                            f"an application ({config.name}) "
+                            "was launched to provid it"
+                            "but it's not available"
+                        )
+                else:
+                    raise Exception(
+                        f"Service not found: {query['name']}, "
+                        "you can try to launch it by setting `launch` to `True`"
+                    )
         else:
             raise Exception("Please specify the service id or name to get the service")
 

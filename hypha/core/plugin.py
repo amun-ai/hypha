@@ -188,6 +188,17 @@ class DynamicPlugin:
             )
         else:
             self.api = await self._request_remote()
+            if self.api and "setup" in self.api:
+                await self.api.setup()
+
+            def remote_ready(_):
+                """Handle remote ready."""
+                api = self._rpc.get_remote()
+                # this make sure if reconnect, setup will be called again
+                if api and "setup" in api:
+                    asyncio.ensure_future(api.setup())
+
+            self._rpc.on("remoteReady", remote_ready)
 
         self.api["config"] = dotdict(
             id=self.id,
@@ -254,15 +265,6 @@ class DynamicPlugin:
             self._set_disconnected()
 
         self._rpc.on("disconnected", disconnected)
-
-        def remote_ready(_):
-            """Handle remote ready."""
-            api = self._rpc.get_remote()
-            # this make sure if reconnect, setup will be called again
-            if api and "setup" in api:
-                asyncio.ensure_future(api.setup())
-
-        self._rpc.on("remoteReady", remote_ready)
 
         def remote_idle():
             """Handle remote idle."""

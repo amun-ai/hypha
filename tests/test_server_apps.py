@@ -37,6 +37,56 @@ api.export({
 """
 
 
+async def test_web_python_apps(socketio_server):
+    """Test webpython plugin."""
+    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+    workspace = api.config["workspace"]
+    token = await api.generate_token()
+
+    controller = await api.get_service("server-apps")
+    source = (
+        (Path(__file__).parent / "testWebPythonPlugin.imjoy.html")
+        .open(encoding="utf-8")
+        .read()
+    )
+    config = await controller.launch(
+        source=source,
+        workspace=workspace,
+        token=token,
+    )
+    plugin = await api.get_plugin(config.name)
+    assert "add2" in plugin
+    result = await plugin.add2(4)
+    assert result == 6
+    await controller.stop(config.id)
+
+    source = (
+        (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
+        .open(encoding="utf-8")
+        .read()
+    )
+    config = await controller.launch(
+        source=source,
+        workspace=workspace,
+        token=token,
+    )
+    plugin = await api.get_plugin(config.name)
+    assert "add2" in plugin
+    result = await plugin.add2(4)
+    assert result == 6
+    await controller.stop(config.id)
+
+    config = await controller.launch(
+        workspace=workspace,
+        token=token,
+        source="https://raw.githubusercontent.com/imjoy-team/"
+        "ImJoy/master/web/src/plugins/webWorkerTemplate.imjoy.html",
+    )
+    assert config.name == "Untitled Plugin"
+    apps = await controller.list()
+    assert find_item(apps, "id", config.id)
+
+
 async def test_server_apps(socketio_server):
     """Test the server apps."""
     api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
@@ -100,48 +150,6 @@ async def test_server_apps(socketio_server):
     result = await plugin.add2(4)
     assert result == 6
     await controller.stop(config.id)
-
-    source = (
-        (Path(__file__).parent / "testWebPythonPlugin.imjoy.html")
-        .open(encoding="utf-8")
-        .read()
-    )
-    config = await controller.launch(
-        source=source,
-        workspace=workspace,
-        token=token,
-    )
-    plugin = await api.get_plugin(config.name)
-    assert "add2" in plugin
-    result = await plugin.add2(4)
-    assert result == 6
-    await controller.stop(config.id)
-
-    source = (
-        (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
-        .open(encoding="utf-8")
-        .read()
-    )
-    config = await controller.launch(
-        source=source,
-        workspace=workspace,
-        token=token,
-    )
-    plugin = await api.get_plugin(config.name)
-    assert "add2" in plugin
-    result = await plugin.add2(4)
-    assert result == 6
-    await controller.stop(config.id)
-
-    config = await controller.launch(
-        workspace=workspace,
-        token=token,
-        source="https://raw.githubusercontent.com/imjoy-team/"
-        "ImJoy/master/web/src/plugins/webWorkerTemplate.imjoy.html",
-    )
-    assert config.name == "Untitled Plugin"
-    apps = await controller.list()
-    assert find_item(apps, "id", config.id)
 
 
 async def test_readiness_liveness(socketio_server):
@@ -241,7 +249,35 @@ async def test_lazy_plugin(socketio_server):
         source=source,
     )
 
-    plugin = await api.get_plugin(app_info.name, launch=True)
+    plugin = await api.get_plugin({"name": app_info.name, "launch": True})
     assert plugin is not None
 
     await controller.uninstall(app_info.id)
+
+    await api.disconnect()
+
+
+async def test_lazy_service(socketio_server):
+    """Test lazy service loading."""
+    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+
+    # Test plugin with custom template
+    controller = await api.get_service("server-apps")
+
+    source = (
+        (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
+        .open(encoding="utf-8")
+        .read()
+    )
+
+    app_info = await controller.install(
+        source=source,
+    )
+
+    service = await api.get_service({"name": "echo", "launch": True})
+    assert service.echo is not None
+    assert await service.echo("hello") == "hello"
+
+    await controller.uninstall(app_info.id)
+
+    await api.disconnect()

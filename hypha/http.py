@@ -77,7 +77,9 @@ async def get_service_as_user(
     # so we assume the user is in the public workspace
     core_interface.current_workspace.set(await core_interface.get_workspace("public"))
     ws = await core_interface.get_workspace_interface("public")
-    service = await ws.get_service({"workspace": workspace_name, "name": service_name})
+    service = await ws.get_service(
+        {"workspace": workspace_name, "name": service_name, "launch": True}
+    )
     return service
 
 
