@@ -533,7 +533,7 @@ class CoreInterface:
     async def get_plugin(self, query: Union[str, dict]):
         """Return a plugin by its name."""
         if isinstance(query, str):
-            query = {"name": query, "launch": True}
+            query = {"name": query}
         name = query["name"]
         workspace = self.current_workspace.get()
         plugin = workspace.get_plugin_by_name(name)
@@ -549,7 +549,7 @@ class CoreInterface:
     async def get_service(self, query):
         """Return a service."""
         if isinstance(query, str):
-            query = {"name": query, "launch": True}
+            query = {"name": query}
 
         if "workspace" in query:
             workspace = await self.get_workspace(query["workspace"])
