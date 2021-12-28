@@ -42,3 +42,50 @@ async def test_asgi(socketio_server):
     assert response.json()["message"] == "Hello World"
 
     await controller.stop(config.id)
+
+
+async def test_functions(socketio_server):
+    """Test the functions service."""
+    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+    workspace = api.config["workspace"]
+    token = await api.generate_token()
+
+    # Test plugin with custom template
+    controller = await api.get_service("server-apps")
+
+    source = (
+        (Path(__file__).parent / "testFunctionsPlugin.imjoy.html")
+        .open(encoding="utf-8")
+        .read()
+    )
+    config = await controller.launch(
+        source=source,
+        workspace=workspace,
+        token=token,
+    )
+    plugin = await api.get_plugin(config.name)
+    await plugin.setup()
+    service = await api.get_service(
+        {"workspace": config.workspace, "name": "hello-functions"}
+    )
+    assert "hello-world" in service
+
+    response = requests.get(
+        f"{SIO_SERVER_URL}/{workspace}/apps/hello-functions/hello-world"
+    )
+    assert response.ok
+    assert response.json()["message"] == "Hello World"
+
+    response = requests.get(
+        f"{SIO_SERVER_URL}/{workspace}/apps/hello-functions/hello-world/"
+    )
+    assert response.ok
+
+    response = requests.get(f"{SIO_SERVER_URL}/{workspace}/apps/hello-functions/")
+    assert response.ok
+    assert response.content == b"Home page"
+
+    response = requests.get(f"{SIO_SERVER_URL}/{workspace}/apps/hello-functions")
+    assert not response.ok
+
+    await controller.stop(config.id)
