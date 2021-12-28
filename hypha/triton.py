@@ -45,15 +45,6 @@ class TritonProxy:
                 "Accept-Encoding,Content-Encoding,"
                 "Range,Origin,Content-Type"
             )
-            request_origin = request.headers.get("origin")
-            if request_origin and (
-                allow_origins == "*"
-                or allow_origins[0] == "*"
-                or request_origin in allow_origins
-            ):
-                extra_headers["Access-Control-Allow-Origin"] = request_origin
-            extra_headers["Access-Control-Allow-Credentials"] = "true"
-            extra_headers["Access-Control-Allow-Methods"] = "GET,HEAD,OPTIONS,PUT,POST"
             extra_headers["Access-Control-Allow-Headers"] = (
                 "Inference-Header-Content-Length,Accept-Encoding,"
                 "Content-Encoding,Access-Control-Allow-Headers,Origin,"

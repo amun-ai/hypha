@@ -14,6 +14,8 @@ from starlette.middleware.gzip import GZipResponder
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.middleware.cors import CORSMiddleware
 
 _os_alt_seps: List[str] = list(
     sep for sep in [os.path.sep, os.path.altsep] if sep is not None and sep != "/"
@@ -300,3 +302,50 @@ class GzipRoute(APIRoute):
             return await original_route_handler(request)
 
         return custom_route_handler
+
+
+class PatchedCORSMiddleware(CORSMiddleware):
+    """
+    A patched version of CORS middleware.
+    This is required because the CORS middleware does not send explicit origin when allow_credentials is True.
+    """
+
+    async def send(self, message, send, request_headers) -> None:
+        if message["type"] != "http.response.start":
+            await send(message)
+            return
+
+        message.setdefault("headers", [])
+        headers = MutableHeaders(scope=message)
+        headers.update(self.simple_headers)
+        # We need to first normalize the case of the headers
+        # To avoid multiple values in the headers
+        # See issue: https://github.com/encode/starlette/issues/1309
+        # pylint: disable=protected-access
+        items = headers._list
+        # pylint: disable=protected-access
+        headers._list = [
+            (item[0].decode("latin-1").lower().encode("latin-1").title(), item[1])
+            for item in items
+        ]
+        headers = MutableHeaders(headers=dict(headers.items()))
+
+        origin = request_headers["Origin"]
+        has_cookie = "cookie" in request_headers
+        allow_credential = (
+            "Access-Control-Allow-Credentials" in self.simple_headers
+            and self.simple_headers["Access-Control-Allow-Credentials"] == "true"
+        )
+
+        # If request includes any cookie headers, then we must respond
+        # with the specific origin instead of '*'.
+        if self.allow_all_origins and (has_cookie or allow_credential):
+            self.allow_explicit_origin(headers, origin)
+
+        # If we only allow specific origins, then we have to mirror back
+        # the Origin header in the response.
+        elif not self.allow_all_origins and self.is_allowed_origin(origin=origin):
+            self.allow_explicit_origin(headers, origin)
+
+        message["headers"] = headers.raw
+        await send(message)

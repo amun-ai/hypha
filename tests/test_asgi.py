@@ -81,8 +81,12 @@ async def test_functions(socketio_server):
     )
     assert response.ok
 
-    response = requests.get(f"{SIO_SERVER_URL}/{workspace}/apps/hello-functions/")
+    response = requests.get(
+        f"{SIO_SERVER_URL}/{workspace}/apps/hello-functions/",
+        headers={"origin": "http://localhost:3000"},
+    )
     assert response.ok
+    assert response.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
     assert response.content == b"Home page"
 
     response = requests.get(f"{SIO_SERVER_URL}/{workspace}/apps/hello-functions")

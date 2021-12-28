@@ -145,9 +145,12 @@ async def test_http_proxy(minio_server, socketio_server):
         headers={
             "Content-type": "application/msgpack",
             "Authorization": f"Bearer {token}",
+            "Origin": "http://localhost:3000",
         },
     )
     assert response.ok
+    assert response.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
+
     result = msgpack.loads(response.content)
     assert result["data"] == 123
 

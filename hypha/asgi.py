@@ -5,6 +5,7 @@ from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
 from hypha.core import ServiceInfo
+from hypha.utils import PatchedCORSMiddleware
 
 
 class RemoteASGIApp:
@@ -113,9 +114,14 @@ class RemoteASGIApp:
 class ASGIGateway:
     """ASGI gateway for running web servers in the browser apps."""
 
-    def __init__(self, core_interface):
+    def __init__(
+        self, core_interface, allow_origins=None, allow_methods=None, allow_headers=None
+    ):
         """Initialize the gateway."""
         self.core_interface = core_interface
+        self.allow_origins = allow_origins
+        self.allow_methods = allow_methods
+        self.allow_headers = allow_headers
         core_interface.event_bus.on("service_registered", self.mount_asgi_app)
         core_interface.event_bus.on("service_unregistered", self.umount_asgi_app)
 
@@ -123,7 +129,15 @@ class ASGIGateway:
         """Mount the ASGI apps from new services."""
         if service.type in ["ASGI", "functions"]:
             subpath = f"/{service.config.workspace}/apps/{service.name}"
-            self.core_interface.mount_app(subpath, RemoteASGIApp(service), priority=-1)
+            app = PatchedCORSMiddleware(
+                RemoteASGIApp(service),
+                allow_origins=self.allow_origins or ["*"],
+                allow_methods=self.allow_methods or ["*"],
+                allow_headers=self.allow_headers or ["*"],
+                allow_credentials=True,
+            )
+
+            self.core_interface.mount_app(subpath, app, priority=-1)
 
     def umount_asgi_app(self, service):
         """Unmount the ASGI apps."""
