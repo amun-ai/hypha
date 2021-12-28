@@ -98,3 +98,60 @@ def parse_imjoy_plugin(source, overwrite_config=None):
                 raise Exception("You must use 'tags' with configurable fields.")
     config["lang"] = config.get("lang") or "javascript"
     return config
+
+
+def convert_config_to_rdf(plugin_config, plugin_id, source_url=None):
+    """Convert imjoy plugin config to RDF format."""
+    rdf = dotdict(
+        {
+            "type": "application",
+            "id": plugin_id,
+        }
+    )
+    if source_url:
+        rdf["source"] = source_url
+    fields = [
+        "icon",
+        "name",
+        "version",
+        "api_version",
+        "description",
+        "license",
+        "requirements",
+        "dependencies",
+        "env",
+        "passive",
+        "services",
+    ]
+    for f in fields:
+        if f in plugin_config:
+            rdf[f] = plugin_config[f]
+    tags = plugin_config.get("labels", []) + plugin_config.get("flags", [])
+    if "bioengine" not in tags:
+        tags.append("bioengine")
+    rdf["tags"] = tags
+
+    docs = plugin_config.get("docs")
+    if docs:
+        rdf["documentation"] = docs.get("content")
+    rdf["covers"] = plugin_config.get("cover")
+    # make sure we have a list
+    if not rdf["covers"]:
+        rdf["covers"] = []
+    elif type(rdf["covers"]) is not list:
+        rdf["covers"] = [rdf["covers"]]
+
+    rdf["badges"] = plugin_config.get("badge")
+    if not rdf["badges"]:
+        rdf["badges"] = []
+    elif type(rdf["badges"]) is not list:
+        rdf["badges"] = [rdf["badges"]]
+
+    rdf["authors"] = plugin_config.get("author")
+    if not rdf["authors"]:
+        rdf["authors"] = []
+    elif type(rdf["authors"]) is not list:
+        rdf["authors"] = [rdf["authors"]]
+
+    rdf["attachments"] = {}
+    return rdf

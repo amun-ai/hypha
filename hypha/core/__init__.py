@@ -138,6 +138,33 @@ class UserInfo(BaseModel):
         del self._plugins[plugin.id]
 
 
+class RDF(BaseModel):
+    """Represent resource description file object."""
+
+    name: str
+    id: str
+    tags: List[str]
+    documentation: Optional[str]
+    covers: Optional[List[str]]
+    badges: Optional[List[str]]
+    authors: Optional[List[Dict[str, str]]]
+    attachments: Optional[Dict[str, List[Any]]]
+    config: Optional[Dict[str, Any]]
+    type: str
+    format_version: str = "0.2.1"
+    version: str = "0.1.0"
+    links: Optional[List[str]]
+    maintainers: Optional[List[Dict[str, str]]]
+    license: Optional[str]
+    git_repo: Optional[str]
+    source: Optional[str]
+
+    class Config:
+        """Set the config for pydantic."""
+
+        extra = Extra.allow
+
+
 class WorkspaceInfo(BaseModel):
     """Represent a workspace."""
 
@@ -152,6 +179,7 @@ class WorkspaceInfo(BaseModel):
     allow_list: Optional[List[str]]
     deny_list: Optional[List[str]]
     read_only: bool = False
+    applications: Dict[str, RDF] = {}  # installed applications
     _logger: Optional[logging.Logger] = PrivateAttr(default_factory=lambda: logger)
     _plugins: Dict[str, DynamicPlugin] = PrivateAttr(
         default_factory=lambda: {}
@@ -197,7 +225,7 @@ class WorkspaceInfo(BaseModel):
         return None
 
     def add_plugin(self, plugin: DynamicPlugin) -> None:
-        """Set a plugin."""
+        """Add a plugin."""
         if plugin.id in self._plugins:
             raise Exception(
                 f"Plugin with the same id({plugin.id})"
@@ -285,3 +313,13 @@ class WorkspaceInfo(BaseModel):
             "services": [service.get_summary() for service in self._services.values()],
         }
         return summary
+
+    def install_application(self, rdf: RDF):
+        """Install a application to the workspace"""
+        self.applications[rdf.id] = rdf
+        self._global_event_bus.emit("workspace_changed", self)
+
+    def uninstall_application(self, rdf_id: str):
+        """Uninstall a application from the workspace"""
+        del self.applications[rdf_id]
+        self._global_event_bus.emit("workspace_changed", self)

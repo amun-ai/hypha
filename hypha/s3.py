@@ -165,11 +165,15 @@ class FSRotatingFileHandler(logging.handlers.RotatingFileHandler):
             name = self.baseFilename + "." + str(self.file_index)
             with open(self.baseFilename, "rb") as fil:
                 body = fil.read()
-            self.s3_client.put_object(
+            response = self.s3_client.put_object(
                 Body=body,
                 Bucket=self.s3_bucket,
                 Key=self.s3_prefix + name,
             )
+            assert (
+                "ResponseMetadata" in response
+                and response["ResponseMetadata"]["HTTPStatusCode"] == 200
+            ), f"Failed to save log ({self.s3_prefix + name}) to S3: {response}"
             self.file_index += 1
 
         super().doRollover()
@@ -243,6 +247,7 @@ class S3Controller:
         core_interface.set_workspace_loader(self._workspace_loader)
 
         event_bus.on("workspace_registered", self._setup_workspace)
+        event_bus.on("workspace_changed", self._save_workspace_config)
         event_bus.on("workspace_removed", self._cleanup_workspace)
         event_bus.on("plugin_registered", self._setup_plugin)
 
@@ -593,11 +598,7 @@ class S3Controller:
         # Save the workspace info
         workspace_dir = self.local_log_dir / workspace.name
         os.makedirs(workspace_dir, exist_ok=True)
-        self.s3client.put_object(
-            Body=workspace.json().encode("utf-8"),
-            Bucket=self.workspace_bucket,
-            Key=f"{self.workspace_etc_dir}/{workspace.name}/config.json",
-        )
+        self._save_workspace_config(workspace)
 
         # find out the latest log file number
         log_base_name = str(workspace_dir / "log.txt")
@@ -619,6 +620,18 @@ class S3Controller:
             log_base_name,
         )
         workspace.set_logger(ready_logger)
+
+    def _save_workspace_config(self, workspace: WorkspaceInfo):
+        """Save workspace."""
+        response = self.s3client.put_object(
+            Body=workspace.json().encode("utf-8"),
+            Bucket=self.workspace_bucket,
+            Key=f"{self.workspace_etc_dir}/{workspace.name}/config.json",
+        )
+        assert (
+            "ResponseMetadata" in response
+            and response["ResponseMetadata"]["HTTPStatusCode"] == 200
+        ), f"Failed to save workspace ({workspace.name}) config: {response}"
 
     def generate_credential(self):
         """Generate credential."""

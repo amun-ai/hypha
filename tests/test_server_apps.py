@@ -222,3 +222,25 @@ async def test_non_persistent_workspace(socketio_server):
     workspace_info = find_item(stats["workspaces"], "name", workspace)
     assert workspace_info is None
     assert stats["plugin_count"] == count - 2
+
+
+async def test_lazy_plugin(socketio_server):
+    """Test lazy plugin loading."""
+    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+
+    # Test plugin with custom template
+    controller = await api.get_service("server-apps")
+
+    source = (
+        (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
+        .open(encoding="utf-8")
+        .read()
+    )
+
+    app_info = await controller.install(
+        source=source,
+    )
+
+    await controller.uninstall(app_info.id)
+    # plugin = await api.get_plugin(config.name)
+    # assert plugin is not None

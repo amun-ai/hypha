@@ -19,12 +19,18 @@ from fastapi.responses import FileResponse, JSONResponse
 from jinja2 import Environment, PackageLoader, select_autoescape
 from starlette.responses import Response
 
-from hypha.core import StatusEnum
+from hypha.core import StatusEnum, RDF
 from hypha.core.interface import CoreInterface
 from hypha.core.plugin import DynamicPlugin
-from hypha.plugin_parser import parse_imjoy_plugin
+from hypha.plugin_parser import parse_imjoy_plugin, convert_config_to_rdf
 from hypha.runner.browser import BrowserAppRunner
-from hypha.utils import PLUGIN_CONFIG_FIELDS, dotdict, list_objects_async, safe_join
+from hypha.utils import (
+    PLUGIN_CONFIG_FIELDS,
+    dotdict,
+    list_objects_async,
+    remove_objects_async,
+    safe_join,
+)
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("apps")
@@ -188,7 +194,13 @@ class ServerAppController:
             )
         return [item["Key"] for item in items]
 
-    async def save_application(self, app_id, config, source, attachments=None):
+    async def save_application(
+        self,
+        app_id: str,
+        rdf: RDF,
+        source: str,
+        attachments: Optional[Dict[str, Any]] = None,
+    ):
         """Save an application to the workspace."""
         workspace, mhash = app_id.split("/")
         async with self.create_client_async() as s3_client:
@@ -218,9 +230,9 @@ class ServerAppController:
             await save_file(f"{app_dir}/index.html", source)
 
             if attachments:
-                config.attachments = config.attachments or {}
-                config.attachments["files"] = config.attachments.get("files", [])
-                files = config.attachments["files"]
+                rdf.attachments = rdf.attachments or {}
+                rdf.attachments["files"] = rdf.attachments.get("files", [])
+                files = rdf.attachments["files"]
                 for att in attachments:
                     assert (
                         "name" in att and "source" in att
@@ -232,7 +244,7 @@ class ServerAppController:
                     await save_file(f"{app_dir}/{att['name']}", att["source"])
                     files.append(att["name"])
 
-            content = json.dumps(config, indent=4)
+            content = json.dumps(rdf.dict(), indent=4)
             await save_file(f"{app_dir}/rdf.json", content)
         logger.info("Saved application (%s)to workspace: %s", mhash, workspace)
 
@@ -279,10 +291,10 @@ class ServerAppController:
                 os.path.join(app_dir, "rdf.json"), local_app_dir / "rdf.json"
             )
             with open(local_app_dir / "rdf.json", "r", encoding="utf-8") as fil:
-                config = json.load(fil)
+                rdf = RDF.parse_obj(json.load(fil))
 
-            if config.get("attachments"):
-                files = config["attachments"].get("files")
+            if rdf.attachments:
+                files = rdf.attachments.get("files")
                 if files:
                     for file_name in files:
                         await download_file(
@@ -304,6 +316,7 @@ class ServerAppController:
             "type": "server-apps",
             "config": {"visibility": "public"},
             "install": self.install,
+            "uninstall": self.uninstall,
             "launch": self.launch,
             "stop": self.stop,
             "list": self.list,
@@ -323,6 +336,11 @@ class ServerAppController:
         workspace: Optional[str] = None,
     ) -> str:
         """Save a server app."""
+        if template is None:
+            if config:
+                template = config.get("type") + "-plugin.html"
+            else:
+                template = "imjoy"
         if not workspace:
             workspace = self.core_interface.current_workspace.get()
         else:
@@ -370,7 +388,12 @@ class ServerAppController:
                 ) from err
         elif template:
             temp = self.jinja_env.get_template(template)
-            config = config or {}
+            default_config = {
+                "name": "Untitled Plugin",
+                "version": "0.1.0",
+            }
+            default_config.update(config or {})
+            config = default_config
             source = temp.render(
                 script=source,
                 source_hash=mhash,
@@ -382,24 +405,40 @@ class ServerAppController:
 
         app_id = f"{workspace.name}/{mhash}"
 
-        await self.save_application(app_id, config, source, attachments)
+        public_url = f"{self.public_base_url}/apps/{app_id}/index.html"
+        rdf_obj = convert_config_to_rdf(config, app_id, public_url)
+        rdf_obj.update(
+            {
+                "local_url": f"{self.local_base_url}/apps/{app_id}/index.html",
+                "public_url": public_url,
+            }
+        )
+        rdf = RDF.parse_obj(rdf_obj)
+        await self.save_application(app_id, rdf, source, attachments)
+        workspace.install_application(rdf)
+        return rdf_obj
 
-        return {
-            "app_id": app_id,
-            "local_url": f"{self.local_base_url}/apps/{app_id}/index.html",
-            "public_url": f"{self.public_base_url}/apps/{app_id}/index.html",
-        }
-
-    def remove(self, app_id: str) -> None:
-        """Remove a server app."""
+    async def uninstall(self, app_id: str) -> None:
+        """Uninstall a server app."""
         if "/" not in app_id:
             raise Exception(
                 f"Invalid app id: {app_id}, the correct format is `user-id/app-id`"
             )
+        workspace_name, mhash = app_id.split("/")
+        workspace = await self.core_interface.get_workspace(workspace_name)
+
+        user_info = self.core_interface.current_user.get()
+        if not self.core_interface.check_permission(workspace, user_info):
+            raise Exception(
+                f"User {user_info.id} does not have permission"
+                f" to uninstall apps in workspace {workspace.name}"
+            )
+
+        async with self.create_client_async() as s3_client:
+            app_dir = f"{workspace.name}/{self.user_applications_dir}/{mhash}/"
+            await remove_objects_async(s3_client, self.workspace_bucket, app_dir)
         if (self.apps_dir / app_id).exists():
             shutil.rmtree(self.apps_dir / app_id, ignore_errors=True)
-        else:
-            raise Exception(f"Server app not found: {app_id}")
 
     async def launch(
         self,
@@ -421,17 +460,13 @@ class ServerAppController:
                 " to run app in workspace {workspace}."
             )
 
-        if config:
-            template = config.get("type") + "-plugin.html"
-        else:
-            template = "imjoy"
         app_info = await self.install(
             source,
-            template=template,
             attachments=attachments,
             config=config,
+            workspace=workspace,
         )
-        app_id = app_info["app_id"]
+        app_id = app_info["id"]
 
         if len(self._runners) <= 0:
             await self.initialize()
@@ -615,7 +650,6 @@ class ServerAppController:
             app_info["watch"] = False
             print("cleaning up", plugin_id)
             # asyncio.create_task(self.stop(plugin_id))
-            # self.remove(app_id)
 
         def connected(plugin):
             config = dotdict(plugin.config)
