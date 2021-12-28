@@ -38,21 +38,6 @@ class TritonProxy:
             params = request.query_params.multi_items()
             server = random.choice(self.servers)
             url = f"{server}/{path}"
-            # add cors headers
-            extra_headers = {}
-            extra_headers["Access-Control-Expose-Headers"] = (
-                "Inference-Header-Content-Length,"
-                "Accept-Encoding,Content-Encoding,"
-                "Range,Origin,Content-Type"
-            )
-            extra_headers["Access-Control-Allow-Headers"] = (
-                "Inference-Header-Content-Length,Accept-Encoding,"
-                "Content-Encoding,Access-Control-Allow-Headers,Origin,"
-                "Accept,X-Requested-With,Content-Type,"
-                "Access-Control-Request-Method,"
-                "Access-Control-Request-Headers,Range"
-            )
-            response.headers.update(extra_headers)
             async with httpx.AsyncClient(timeout=60.0) as client:
                 try:
                     if request.method == "GET":

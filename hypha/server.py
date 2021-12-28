@@ -37,10 +37,25 @@ ALLOW_HEADERS = [
     "Content-Type",
     "Authorization",
     "Content-Encoding",
+    "Access-Control-Allow-Headers",
+    "Origin",
+    "Accept",
+    "X-Requested-With",
+    "Access-Control-Request-Method",
+    "Access-Control-Request-Headers",
+    "Range",
     # for triton inference server
     "Inference-Header-Content-Length",
+    "Accept-Encoding",
+    "Content-Encoding",
 ]
 ALLOW_METHODS = ["*"]
+EXPOSE_HEADERS = [
+    "Inference-Header-Content-Length" "Accept-Encoding",
+    "Content-Encoding" "Range",
+    "Origin",
+    "Content-Type",
+]
 
 
 def initialize_socketio(sio, core_interface):
@@ -215,6 +230,7 @@ def create_application(allow_origins) -> FastAPI:
         allow_origins=allow_origins,
         allow_methods=ALLOW_METHODS,
         allow_headers=ALLOW_HEADERS,
+        expose_headers=EXPOSE_HEADERS,
         allow_credentials=True,
     )
     return app
@@ -257,6 +273,7 @@ def setup_socketio_server(
         allow_origins=allow_origins,
         allow_methods=ALLOW_METHODS,
         allow_headers=ALLOW_HEADERS,
+        expose_headers=EXPOSE_HEADERS,
     )
 
     @app.get(base_path)
