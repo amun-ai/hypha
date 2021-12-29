@@ -185,14 +185,13 @@ class ServerAppController:
             items = await list_objects_async(s3_client, self.workspace_bucket, "/")
         return [item["Key"] for item in items]
 
-    async def list_applications(self, workspace):
+    async def list_apps(self, workspace: str = None):
         """List applications in the workspace."""
-        async with self.create_client_async() as s3_client:
-            application_dir = workspace + "/" + self.user_applications_dir
-            items = await list_objects_async(
-                s3_client, self.workspace_bucket, application_dir
-            )
-        return [item["Key"] for item in items]
+        if not workspace:
+            workspace = self.core_interface.current_workspace.get()
+        else:
+            workspace = await self.core_interface.get_workspace(workspace)
+        return [app_info.dict() for app_info in workspace.applications.values()]
 
     async def save_application(
         self,
@@ -320,7 +319,8 @@ class ServerAppController:
             "launch": self.launch,
             "start": self.start,
             "stop": self.stop,
-            "list": self.list,
+            "list_apps": self.list_apps,
+            "list_running": self.list_running,
             "get_log": self.get_log,
             "_rintf": True,
         }
@@ -738,8 +738,8 @@ class ServerAppController:
         else:
             raise Exception(f"Server app instance not found: {plugin_id}")
 
-    async def list(self) -> List[str]:
-        """List the saved apps for the current user."""
+    async def list_running(self) -> List[str]:
+        """List the running apps for the current user."""
         workspace = self.core_interface.current_workspace.get()
         sessions = [
             {k: v for k, v in page_info.items() if k != "runner"}

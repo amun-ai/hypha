@@ -83,7 +83,7 @@ async def test_web_python_apps(socketio_server):
         "ImJoy/master/web/src/plugins/webWorkerTemplate.imjoy.html",
     )
     assert config.name == "Untitled Plugin"
-    apps = await controller.list()
+    apps = await controller.list_running()
     assert find_item(apps, "id", config.id)
 
 
@@ -248,6 +248,9 @@ async def test_lazy_plugin(socketio_server):
     app_info = await controller.install(
         source=source,
     )
+
+    apps = await controller.list_apps()
+    assert find_item(apps, "id", app_info.id)
 
     plugin = await api.get_plugin({"name": app_info.name, "launch": True})
     assert plugin is not None
