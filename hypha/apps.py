@@ -739,7 +739,7 @@ class ServerAppController:
             raise Exception(f"Server app instance not found: {plugin_id}")
 
     async def list_running(self) -> List[str]:
-        """List the running apps for the current user."""
+        """List the running sessions for the current workspace."""
         workspace = self.core_interface.current_workspace.get()
         sessions = [
             {k: v for k, v in page_info.items() if k != "runner"}
