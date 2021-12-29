@@ -102,7 +102,7 @@ async def test_server_apps(socketio_server):
         token=token,
     )
     assert "app_id" in config
-    plugin = await api.get_plugin(config.name)
+    plugin = await api.get_plugin(config)
     assert "execute" in plugin
     result = await plugin.execute(2, 4)
     assert result == 6
@@ -117,13 +117,13 @@ async def test_server_apps(socketio_server):
         workspace=workspace,
         token=token,
     )
-    plugin = await api.get_plugin(config.name)
+    assert "id" in config
+    plugin = await api.get_plugin(config)
     assert "execute" in plugin
     result = await plugin.execute(2, 4)
     assert result == 6
     webgpu_available = await plugin.check_webgpu()
     assert webgpu_available is True
-
     # Test logs
     logs = await controller.get_log(config.id)
     assert "log" in logs and "error" in logs
@@ -131,7 +131,6 @@ async def test_server_apps(socketio_server):
     assert len(logs) == 1
 
     await controller.stop(config.id)
-
     # Test window plugin
     source = (
         (Path(__file__).parent / "testWindowPlugin1.imjoy.html")
@@ -145,7 +144,7 @@ async def test_server_apps(socketio_server):
         token=token,
     )
     assert "app_id" in config
-    plugin = await api.get_plugin(config.name)
+    plugin = await api.get_plugin(config)
     assert "add2" in plugin
     result = await plugin.add2(4)
     assert result == 6

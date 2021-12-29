@@ -534,17 +534,27 @@ class CoreInterface:
         """Return a plugin by its name."""
         if isinstance(query, str):
             query = {"name": query}
-        name = query["name"]
         workspace = self.current_workspace.get()
-        plugin = workspace.get_plugin_by_name(name)
-        if plugin:
-            return await plugin.get_api()
-        if query.get("launch") is True:
-            config = await self.launch_application_by_name(
-                workspace, name, query.get("timeout", 60)
+        if "id" in query:
+            plugin = workspace.get_plugin_by_id(query["id"])
+            if plugin:
+                return await plugin.get_api()
+            raise Exception(
+                f"Plugin `id={query['id']}` not found (possibly because it's not ready)"
             )
-            return await self.get_plugin(config.name)
-        raise Exception(f"Plugin `{name}` not found (possibly because it's not ready)")
+        if "name" in query:
+            name = query["name"]
+            plugin = workspace.get_plugin_by_name(name)
+            if plugin:
+                return await plugin.get_api()
+            if query.get("launch") is True:
+                config = await self.launch_application_by_name(
+                    workspace, name, query.get("timeout", 60)
+                )
+                return await self.get_plugin(config.name)
+            raise Exception(
+                f"Plugin `name={name}` not found (possibly because it's not ready)"
+            )
 
     async def get_service(self, query):
         """Return a service."""
