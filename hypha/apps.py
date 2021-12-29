@@ -621,9 +621,14 @@ class ServerAppController:
                     # return False is the same as failed to call alive()
                     if not is_alive:
                         raise TimeoutError
+                    # Restore status
+                    if plugin.get_status() == "failing":
+                        plugin.set_status("ready")
                     await asyncio.sleep(period)
                 except TimeoutError:
                     failure += 1
+                    # Mark as failed
+                    plugin.set_status("failing")
                     logger.warning("Plugin %s is failing... %s", plugin.name, failure)
                     if failure >= failure_threshold:
                         logger.warning(
@@ -715,8 +720,8 @@ class ServerAppController:
             logger.info("Stopping app: %s...", page_id)
 
             app_info = self._apps[page_id]
-            # plugin = workspace.get_plugin_by_id(app_info["id"])
-            # plugin.set_status("stopping")
+            plugin = workspace.get_plugin_by_id(app_info["id"])
+            plugin.set_status("stopping")
             with self.core_interface.set_root_user():
                 app_info["watch"] = False  # make sure we don't keep-alive
                 await app_info["runner"].stop(plugin_id)
