@@ -200,25 +200,36 @@ class WorkspaceInfo(BaseModel):
         """Return the logger."""
         self._logger = workspace_logger
 
-    def get_plugins(self) -> Dict[str, DynamicPlugin]:
+    def get_plugins(self, status: str = "*") -> Dict[str, DynamicPlugin]:
         """Return the plugins."""
-        return self._plugins
+        if status == "*":
+            return self._plugins
+        else:
+            return {k: v for k, v in self._plugins.items() if v.get_status() == status}
 
-    def get_plugin_by_name(self, plugin_name: str) -> Optional[DynamicPlugin]:
+    def get_plugin_by_name(
+        self, plugin_name: str, status: str = "ready"
+    ) -> Optional[DynamicPlugin]:
         """Return a plugin by its name (randomly select one if multiple exists)."""
         plugins = [
             plugin
             for plugin in self._plugins.values()
-            if plugin.name == plugin_name and plugin.get_status() == "ready"
+            if plugin.name == plugin_name
+            and (status == "*" or plugin.get_status() == status)
         ]
         if len(plugins) > 0:
             return random.choice(plugins)
         return None
 
-    def get_plugin_by_id(self, plugin_id: str) -> Optional[DynamicPlugin]:
+    def get_plugin_by_id(
+        self, plugin_id: str, status: str = "*"
+    ) -> Optional[DynamicPlugin]:
         """Return a plugin by its id."""
         plugins = [
-            plugin for plugin in self._plugins.values() if plugin.id == plugin_id
+            plugin
+            for plugin in self._plugins.values()
+            if plugin.id == plugin_id
+            and (status == "*" or plugin.get_status() == status)
         ]
         if len(plugins) > 0:
             return plugins[0]

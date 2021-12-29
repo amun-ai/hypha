@@ -715,8 +715,8 @@ class ServerAppController:
             logger.info("Stopping app: %s...", page_id)
 
             app_info = self._apps[page_id]
-            plugin = workspace.get_plugin_by_id(app_info["id"])
-            await plugin.terminate()
+            # plugin = workspace.get_plugin_by_id(app_info["id"])
+            # plugin.set_status("stopping")
             with self.core_interface.set_root_user():
                 app_info["watch"] = False  # make sure we don't keep-alive
                 await app_info["runner"].stop(plugin_id)
