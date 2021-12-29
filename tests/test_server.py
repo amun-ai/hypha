@@ -221,7 +221,7 @@ async def test_workspace(socketio_server):
     plugins = await api2.list_plugins()
     assert find_item(plugins, "name", "my plugin 2")
 
-    with pytest.raises(Exception, match=r".*Plugin `my plugin 2` not found.*"):
+    with pytest.raises(Exception, match=r".*Plugin `name=my plugin 2` not found.*"):
         await api.get_plugin("my plugin 2")
 
     ws2 = await api.get_workspace("test-workspace")
