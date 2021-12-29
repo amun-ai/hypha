@@ -102,7 +102,7 @@ async def test_server_apps(socketio_server):
         token=token,
     )
     assert "app_id" in config
-    plugin = await api.get_plugin(config)
+    plugin = await api.get_plugin(config.name)
     assert "execute" in plugin
     result = await plugin.execute(2, 4)
     assert result == 6
@@ -118,7 +118,7 @@ async def test_server_apps(socketio_server):
         token=token,
     )
     assert "id" in config
-    plugin = await api.get_plugin(config)
+    plugin = await api.get_plugin(config.name)
     assert "execute" in plugin
     result = await plugin.execute(2, 4)
     assert result == 6
