@@ -172,6 +172,7 @@ def initialize_socketio(sio, core_interface):
             workspace,
             user_info,
             event_bus,
+            core_interface.public_base_url,
         )
         user_info.add_plugin(plugin)
         workspace.add_plugin(plugin)

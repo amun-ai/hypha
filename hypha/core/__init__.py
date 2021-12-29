@@ -204,8 +204,7 @@ class WorkspaceInfo(BaseModel):
         """Return the plugins."""
         if status == "*":
             return self._plugins
-        else:
-            return {k: v for k, v in self._plugins.items() if v.get_status() == status}
+        return {k: v for k, v in self._plugins.items() if v.get_status() == status}
 
     def get_plugin_by_name(
         self, plugin_name: str, status: str = "ready"

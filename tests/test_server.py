@@ -213,6 +213,9 @@ async def test_workspace(socketio_server):
     plugin = await api2.get_plugin("my plugin 2")
     assert plugin.foo == "bar"
 
+    objects = await api2.list_remote_objects()
+    assert len(objects) == 1
+
     await api2.export({"foo2": "bar2"})
     plugin = await api2.get_plugin("my plugin 2")
     assert plugin.foo is None

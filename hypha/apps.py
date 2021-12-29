@@ -721,11 +721,13 @@ class ServerAppController:
 
             app_info = self._apps[page_id]
             plugin = workspace.get_plugin_by_id(app_info["id"])
-            plugin.set_status("stopping")
+            if plugin:
+                await plugin.terminate()
             with self.core_interface.set_root_user():
                 app_info["watch"] = False  # make sure we don't keep-alive
                 await app_info["runner"].stop(plugin_id)
-            del self._apps[page_id]
+            if page_id in self._apps:
+                del self._apps[page_id]
         elif raise_exception:
             raise Exception(f"Server app instance not found: {plugin_id}")
 

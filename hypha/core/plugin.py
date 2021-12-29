@@ -79,6 +79,7 @@ class DynamicPlugin:
         workspace,
         user_info,
         event_bus,
+        public_base_url,
     ):
         """Set up instance."""
         self.loop = asyncio.get_event_loop()
@@ -109,7 +110,9 @@ class DynamicPlugin:
         # We will use context variables `current_plugin`
         # to obtain the current plugin
         self._initial_interface = dotdict(interface)
-        self._initial_interface._intf = True
+        self._initial_interface._rintf = (
+            f"{public_base_url}/workspaces/{self.workspace.name}"
+        )
         self._initial_interface.config = self.config.copy()
         self._initial_interface.exit = self.terminate
         if "token" in self._initial_interface.config:
@@ -145,6 +148,18 @@ class DynamicPlugin:
     def register_exit_callback(self, exit_callback):
         """Set the exit callback function."""
         self._terminate_callbacks.append(exit_callback)
+
+    def list_remote_objects(self):
+        """List remote objects."""
+        return list(self._rpc._object_store.keys())  # pylint: disable=protected-access
+
+    def dispose_remote_object(self, id_):
+        """Dispose a remote object by its id."""
+        store = self._rpc._object_store  # pylint: disable=protected-access
+        if id_ in store:
+            del store[id_]
+        else:
+            raise KeyError("Object not found in the store: " + id_)
 
     def dispose_object(self, obj):
         """Dispose object in RPC store."""

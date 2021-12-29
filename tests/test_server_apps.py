@@ -37,6 +37,81 @@ api.export({
 """
 
 
+async def test_server_apps(socketio_server):
+    """Test the server apps."""
+    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+    workspace = api.config["workspace"]
+    token = await api.generate_token()
+
+    objects = await api.list_remote_objects()
+    assert len(objects) == 1
+
+    # Test plugin with custom template
+    controller = await api.get_service("server-apps")
+
+    objects = await api.list_remote_objects()
+    assert len(objects) == 2
+
+    config = await controller.launch(
+        source=TEST_APP_CODE,
+        config={"type": "window"},
+        workspace=workspace,
+        token=token,
+    )
+    assert "app_id" in config
+    plugin = await api.get_plugin(config.name)
+
+    objects = await api.list_remote_objects()
+    assert len(objects) == 3
+
+    assert "execute" in plugin
+    result = await plugin.execute(2, 4)
+    assert result == 6
+    webgpu_available = await plugin.check_webgpu()
+    assert webgpu_available is True
+    # only pass name so the app won't be removed
+    await controller.stop(config.id)
+
+    config = await controller.launch(
+        source=TEST_APP_CODE,
+        config={"type": "window"},
+        workspace=workspace,
+        token=token,
+    )
+    assert "id" in config
+    plugin = await api.get_plugin(config.name)
+    assert "execute" in plugin
+    result = await plugin.execute(2, 4)
+    assert result == 6
+    webgpu_available = await plugin.check_webgpu()
+    assert webgpu_available is True
+    # Test logs
+    logs = await controller.get_log(config.id)
+    assert "log" in logs and "error" in logs
+    logs = await controller.get_log(config.id, type="log", offset=0, limit=1)
+    assert len(logs) == 1
+
+    await controller.stop(config.id)
+    # Test window plugin
+    source = (
+        (Path(__file__).parent / "testWindowPlugin1.imjoy.html")
+        .open(encoding="utf-8")
+        .read()
+    )
+
+    config = await controller.launch(
+        source=source,
+        workspace=workspace,
+        token=token,
+    )
+    assert "app_id" in config
+    plugin = await api.get_plugin(config)
+    assert "add2" in plugin
+    result = await plugin.add2(4)
+    assert result == 6
+    await controller.stop(config.id)
+
+
 async def test_web_python_apps(socketio_server):
     """Test webpython plugin."""
     api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
@@ -85,70 +160,6 @@ async def test_web_python_apps(socketio_server):
     assert config.name == "Untitled Plugin"
     apps = await controller.list_running()
     assert find_item(apps, "id", config.id)
-
-
-async def test_server_apps(socketio_server):
-    """Test the server apps."""
-    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
-    workspace = api.config["workspace"]
-    token = await api.generate_token()
-
-    # Test plugin with custom template
-    controller = await api.get_service("server-apps")
-    config = await controller.launch(
-        source=TEST_APP_CODE,
-        config={"type": "window"},
-        workspace=workspace,
-        token=token,
-    )
-    assert "app_id" in config
-    plugin = await api.get_plugin(config.name)
-    assert "execute" in plugin
-    result = await plugin.execute(2, 4)
-    assert result == 6
-    webgpu_available = await plugin.check_webgpu()
-    assert webgpu_available is True
-    # only pass name so the app won't be removed
-    await controller.stop(config.id)
-
-    config = await controller.launch(
-        source=TEST_APP_CODE,
-        config={"type": "window"},
-        workspace=workspace,
-        token=token,
-    )
-    assert "id" in config
-    plugin = await api.get_plugin(config.name)
-    assert "execute" in plugin
-    result = await plugin.execute(2, 4)
-    assert result == 6
-    webgpu_available = await plugin.check_webgpu()
-    assert webgpu_available is True
-    # Test logs
-    logs = await controller.get_log(config.id)
-    assert "log" in logs and "error" in logs
-    logs = await controller.get_log(config.id, type="log", offset=0, limit=1)
-    assert len(logs) == 1
-
-    await controller.stop(config.id)
-    # Test window plugin
-    source = (
-        (Path(__file__).parent / "testWindowPlugin1.imjoy.html")
-        .open(encoding="utf-8")
-        .read()
-    )
-
-    config = await controller.launch(
-        source=source,
-        workspace=workspace,
-        token=token,
-    )
-    assert "app_id" in config
-    plugin = await api.get_plugin(config)
-    assert "add2" in plugin
-    result = await plugin.add2(4)
-    assert result == 6
-    await controller.stop(config.id)
 
 
 async def test_readiness_liveness(socketio_server):

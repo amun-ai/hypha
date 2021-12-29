@@ -104,6 +104,8 @@ class CoreInterface:
                 "list_workspaces": self.list_workspaces,
                 "listWorkspaces": self.list_workspaces,
                 "disconnect": self.disconnect,
+                "list_remote_objects": self.list_remote_objects,
+                "listRemoteObjects": self.list_remote_objects,
                 # "stop_plugin": self.stop_plugin,
             }
         )
@@ -368,6 +370,11 @@ class CoreInterface:
         """Unregister the workspace."""
         del self._all_workspaces[workspace.name]
         self.event_bus.emit("workspace_removed", workspace)
+
+    def list_remote_objects(self):
+        """List all the remote objects of the current plugin."""
+        plugin = self.current_plugin.get()
+        return plugin.list_remote_objects()
 
     def load_extensions(self):
         """Load hypha extensions."""
