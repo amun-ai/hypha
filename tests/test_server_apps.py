@@ -186,11 +186,19 @@ async def test_readiness_liveness(socketio_server):
     assert config.name == "Unreliable Plugin"
     plugin = await api.get_plugin(config.name)
     assert plugin
-    await asyncio.sleep(10)
+    await asyncio.sleep(5)
 
-    plugin = await api.get_plugin(config.name)
+    plugin = None
+    failing_count = 0
+    while plugin is None:
+        try:
+            plugin = await api.get_plugin(config.name)
+        except Exception:  # pylint: disable=broad-except
+            failing_count += 1
+            if failing_count > 30:
+                raise
+            await asyncio.sleep(1)
     assert plugin
-
     await plugin.exit()
 
 
