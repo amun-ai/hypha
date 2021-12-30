@@ -79,8 +79,9 @@ class DynamicPlugin:
         workspace,
         user_info,
         event_bus,
+        session_id,
         public_base_url,
-    ):
+    ):  # pylint: disable=too-many-arguments
         """Set up instance."""
         self.loop = asyncio.get_event_loop()
         self.config = dotdict(config)
@@ -103,7 +104,7 @@ class DynamicPlugin:
         self._rpc = None
         self._status = "not-initialized"
         self._terminate_callbacks = []
-        self.session_id = self.connection.get_session_id()
+        self.session_id = session_id
         DynamicPlugin.add_plugin(self)
         # Note: we don't need to bind the interface
         # to the plugin as we do in the js version

@@ -18,7 +18,7 @@ from starlette.responses import JSONResponse
 
 from hypha import __version__ as VERSION
 from hypha.asgi import ASGIGateway
-from hypha.core.connection import BasicConnection
+from imjoy_rpc.core_connection import BasicConnection
 from hypha.core.interface import CoreInterface
 from hypha.core.plugin import DynamicPlugin
 from hypha.http import HTTPProxy
@@ -161,7 +161,14 @@ def initialize_socketio(sio, core_interface):
                 "detail": config.detail,
             }
 
-        connection = BasicConnection(sio, plugin_id, sid)
+        async def send(data):
+            await sio.emit(
+                "plugin_message",
+                data,
+                room=plugin_id,
+            )
+
+        connection = BasicConnection(send)
         core_interface.add_user(user_info)
         core_interface.current_user.set(user_info)
         plugin = DynamicPlugin(
@@ -172,6 +179,7 @@ def initialize_socketio(sio, core_interface):
             workspace,
             user_info,
             event_bus,
+            sid,
             core_interface.public_base_url,
         )
         user_info.add_plugin(plugin)
