@@ -81,7 +81,7 @@ class DynamicPlugin:
         event_bus,
         session_id,
         public_base_url,
-    ):
+    ):  # pylint: disable=too-many-arguments
         """Set up instance."""
         self.loop = asyncio.get_event_loop()
         self.config = dotdict(config)
