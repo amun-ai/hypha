@@ -161,8 +161,8 @@ def initialize_socketio(sio, core_interface):
                 "detail": config.detail,
             }
 
-        def send(data):
-            sio.emit(
+        async def send(data):
+            await sio.emit(
                 "plugin_message",
                 data,
                 room=plugin_id,
