@@ -161,11 +161,11 @@ def initialize_socketio(sio, core_interface):
                 "detail": config.detail,
             }
 
-        def send():
+        def send(data):
             sio.emit(
                 "plugin_message",
                 data,
-                room=self._plugin_id,
+                room=plugin_id,
             )
 
         connection = BasicConnection(send)
