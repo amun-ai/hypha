@@ -18,7 +18,7 @@ from starlette.responses import JSONResponse
 
 from hypha import __version__ as VERSION
 from hypha.asgi import ASGIGateway
-from imjoy_rpc.core_connection.basic_connection import BasicConnection
+from imjoy_rpc.core_connection import BasicConnection
 from hypha.core.interface import CoreInterface
 from hypha.core.plugin import DynamicPlugin
 from hypha.http import HTTPProxy
