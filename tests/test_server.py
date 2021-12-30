@@ -213,6 +213,9 @@ async def test_workspace(socketio_server):
     plugin = await api2.get_plugin("my plugin 2")
     assert plugin.foo == "bar"
 
+    objects = await api2.list_remote_objects()
+    assert len(objects) == 1
+
     await api2.export({"foo2": "bar2"})
     plugin = await api2.get_plugin("my plugin 2")
     assert plugin.foo is None
@@ -221,7 +224,7 @@ async def test_workspace(socketio_server):
     plugins = await api2.list_plugins()
     assert find_item(plugins, "name", "my plugin 2")
 
-    with pytest.raises(Exception, match=r".*Plugin `my plugin 2` not found.*"):
+    with pytest.raises(Exception, match=r".*Plugin `name=my plugin 2` not found.*"):
         await api.get_plugin("my plugin 2")
 
     ws2 = await api.get_workspace("test-workspace")

@@ -247,6 +247,59 @@ async def list_objects_async(
     return items
 
 
+async def remove_objects_async(s3_client, bucket, prefix, delimeter=""):
+    """Remove all objects in a folder asynchronously."""
+    assert prefix != "" and prefix.endswith("/")
+    response = await s3_client.list_objects_v2(
+        Bucket=bucket, Prefix=prefix, Delimiter=delimeter
+    )
+    items = response.get("Contents", [])
+    if len(items) > 0:
+        delete_response = await s3_client.delete_objects(
+            Bucket=bucket,
+            Delete={
+                "Objects": [
+                    {
+                        "Key": item["Key"],
+                        # 'VersionId': 'string'
+                    }
+                    for item in items
+                ],
+                "Quiet": True,
+            },
+        )
+        assert (
+            "ResponseMetadata" in delete_response
+            and delete_response["ResponseMetadata"]["HTTPStatusCode"] == 200
+        )
+    while response["IsTruncated"]:
+        response = await s3_client.list_objects_v2(
+            Bucket=bucket,
+            Prefix=prefix,
+            Delimiter=delimeter,
+            ContinuationToken=response["NextContinuationToken"],
+        )
+        items = response.get("Contents", [])
+        if len(items) > 0:
+            delete_response = await s3_client.delete_objects(
+                Bucket=bucket,
+                Delete={
+                    "Objects": [
+                        {
+                            "Key": item["Key"],
+                            # 'VersionId': 'string'
+                        }
+                        for item in items
+                    ],
+                    "Quiet": True,
+                },
+            )
+            assert (
+                "ResponseMetadata" in delete_response
+                and delete_response["ResponseMetadata"]["HTTPStatusCode"] == 200
+            )
+
+
 class GZipMiddleware:
     """Middleware to gzip responses (fixed to not encoding twice)."""
 

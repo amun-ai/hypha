@@ -23,7 +23,7 @@ from hypha.core.interface import CoreInterface
 from hypha.core.plugin import DynamicPlugin
 from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
-from hypha.utils import GZipMiddleware, PatchedCORSMiddleware, GzipRoute, dotdict
+from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware, dotdict
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("server")
@@ -108,7 +108,7 @@ def initialize_socketio(sio, core_interface):
         ws = config.get("workspace") or user_info.id
 
         config["name"] = config.get("name") or shortuuid.uuid()
-        workspace = core_interface.get_workspace(ws)
+        workspace = await core_interface.get_workspace(ws)
         if workspace is None:
             if ws == user_info.id:
                 workspace = core_interface.create_user_workspace(
@@ -166,12 +166,13 @@ def initialize_socketio(sio, core_interface):
         core_interface.current_user.set(user_info)
         plugin = DynamicPlugin(
             config,
-            core_interface.get_workspace_interface(workspace.name),
+            await core_interface.get_workspace_interface(workspace.name),
             core_interface.get_codecs(),
             connection,
             workspace,
             user_info,
             event_bus,
+            core_interface.public_base_url,
         )
         user_info.add_plugin(plugin)
         workspace.add_plugin(plugin)
@@ -295,14 +296,6 @@ def setup_socketio_server(
             "users": [u.id for u in users],
         }
 
-    if enable_server_apps:
-        # pylint: disable=import-outside-toplevel
-        from hypha.apps import ServerAppController
-
-        ServerAppController(
-            core_interface, port=port, apps_dir=apps_dir, in_docker=in_docker
-        )
-
     if enable_s3:
         # pylint: disable=import-outside-toplevel
         from hypha.rdf import RDFController
@@ -319,6 +312,21 @@ def setup_socketio_server(
 
         RDFController(
             core_interface, s3_controller=s3_controller, rdf_bucket=rdf_bucket
+        )
+
+    if enable_server_apps:
+        # pylint: disable=import-outside-toplevel
+        from hypha.apps import ServerAppController
+
+        ServerAppController(
+            core_interface,
+            port=port,
+            apps_dir=apps_dir,
+            in_docker=in_docker,
+            endpoint_url=endpoint_url,
+            access_key_id=access_key_id,
+            secret_access_key=secret_access_key,
+            workspace_bucket=workspace_bucket,
         )
 
     @app.get(norm_url("/health/liveness"))

@@ -43,8 +43,15 @@ async def test_server_apps(socketio_server):
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
+    objects = await api.list_remote_objects()
+    assert len(objects) == 1
+
     # Test plugin with custom template
     controller = await api.get_service("server-apps")
+
+    objects = await api.list_remote_objects()
+    assert len(objects) == 2
+
     config = await controller.launch(
         source=TEST_APP_CODE,
         config={"type": "window"},
@@ -53,6 +60,10 @@ async def test_server_apps(socketio_server):
     )
     assert "app_id" in config
     plugin = await api.get_plugin(config.name)
+
+    objects = await api.list_remote_objects()
+    assert len(objects) == 3
+
     assert "execute" in plugin
     result = await plugin.execute(2, 4)
     assert result == 6
@@ -67,13 +78,13 @@ async def test_server_apps(socketio_server):
         workspace=workspace,
         token=token,
     )
+    assert "id" in config
     plugin = await api.get_plugin(config.name)
     assert "execute" in plugin
     result = await plugin.execute(2, 4)
     assert result == 6
     webgpu_available = await plugin.check_webgpu()
     assert webgpu_available is True
-
     # Test logs
     logs = await controller.get_log(config.id)
     assert "log" in logs and "error" in logs
@@ -81,7 +92,6 @@ async def test_server_apps(socketio_server):
     assert len(logs) == 1
 
     await controller.stop(config.id)
-
     # Test window plugin
     source = (
         (Path(__file__).parent / "testWindowPlugin1.imjoy.html")
@@ -95,12 +105,20 @@ async def test_server_apps(socketio_server):
         token=token,
     )
     assert "app_id" in config
-    plugin = await api.get_plugin(config.name)
+    plugin = await api.get_plugin(config)
     assert "add2" in plugin
     result = await plugin.add2(4)
     assert result == 6
     await controller.stop(config.id)
 
+
+async def test_web_python_apps(socketio_server):
+    """Test webpython plugin."""
+    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+    workspace = api.config["workspace"]
+    token = await api.generate_token()
+
+    controller = await api.get_service("server-apps")
     source = (
         (Path(__file__).parent / "testWebPythonPlugin.imjoy.html")
         .open(encoding="utf-8")
@@ -140,7 +158,7 @@ async def test_server_apps(socketio_server):
         "ImJoy/master/web/src/plugins/webWorkerTemplate.imjoy.html",
     )
     assert config.name == "Untitled Plugin"
-    apps = await controller.list()
+    apps = await controller.list_running()
     assert find_item(apps, "id", config.id)
 
 
@@ -168,11 +186,19 @@ async def test_readiness_liveness(socketio_server):
     assert config.name == "Unreliable Plugin"
     plugin = await api.get_plugin(config.name)
     assert plugin
-    await asyncio.sleep(10)
+    await asyncio.sleep(5)
 
-    plugin = await api.get_plugin(config.name)
+    plugin = None
+    failing_count = 0
+    while plugin is None:
+        try:
+            plugin = await api.get_plugin(config.name)
+        except Exception:  # pylint: disable=broad-except
+            failing_count += 1
+            if failing_count > 30:
+                raise
+            await asyncio.sleep(1)
     assert plugin
-
     await plugin.exit()
 
 
@@ -222,3 +248,57 @@ async def test_non_persistent_workspace(socketio_server):
     workspace_info = find_item(stats["workspaces"], "name", workspace)
     assert workspace_info is None
     assert stats["plugin_count"] == count - 2
+
+
+async def test_lazy_plugin(socketio_server):
+    """Test lazy plugin loading."""
+    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+
+    # Test plugin with custom template
+    controller = await api.get_service("server-apps")
+
+    source = (
+        (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
+        .open(encoding="utf-8")
+        .read()
+    )
+
+    app_info = await controller.install(
+        source=source,
+    )
+
+    apps = await controller.list_apps()
+    assert find_item(apps, "id", app_info.id)
+
+    plugin = await api.get_plugin({"name": app_info.name, "launch": True})
+    assert plugin is not None
+
+    await controller.uninstall(app_info.id)
+
+    await api.disconnect()
+
+
+async def test_lazy_service(socketio_server):
+    """Test lazy service loading."""
+    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+
+    # Test plugin with custom template
+    controller = await api.get_service("server-apps")
+
+    source = (
+        (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
+        .open(encoding="utf-8")
+        .read()
+    )
+
+    app_info = await controller.install(
+        source=source,
+    )
+
+    service = await api.get_service({"name": "echo", "launch": True})
+    assert service.echo is not None
+    assert await service.echo("hello") == "hello"
+
+    await controller.uninstall(app_info.id)
+
+    await api.disconnect()

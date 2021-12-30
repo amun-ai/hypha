@@ -4,25 +4,19 @@ import inspect
 import json
 import logging
 import sys
+from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import partial
-from typing import Dict, Optional
-from contextlib import contextmanager
+from typing import Dict, Optional, Union
 
 import pkg_resources
 import shortuuid
 from starlette.routing import Mount
 
-from hypha.core import (
-    ServiceInfo,
-    TokenConfig,
-    UserInfo,
-    VisibilityEnum,
-    WorkspaceInfo,
-)
+from hypha.core import ServiceInfo, TokenConfig, UserInfo, VisibilityEnum, WorkspaceInfo
 from hypha.core.auth import generate_presigned_token, parse_token
 from hypha.core.plugin import DynamicPlugin
-from hypha.utils import dotdict, EventBus
+from hypha.utils import EventBus, dotdict
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("imjoy-core")
@@ -75,6 +69,7 @@ class CoreInterface:
         self.current_workspace = ContextVar("current_workspace")
         self._all_users: Dict[str, UserInfo] = {}  # uid:user_info
         self._all_workspaces: Dict[str, WorkspaceInfo] = {}  # wid:workspace_info
+        self._workspace_loader = None
         self._app = app
         self.app_controller = app_controller
         self.disconnect_delay = 1
@@ -109,6 +104,8 @@ class CoreInterface:
                 "list_workspaces": self.list_workspaces,
                 "listWorkspaces": self.list_workspaces,
                 "disconnect": self.disconnect,
+                "list_remote_objects": self.list_remote_objects,
+                "listRemoteObjects": self.list_remote_objects,
                 # "stop_plugin": self.stop_plugin,
             }
         )
@@ -281,7 +278,7 @@ class CoreInterface:
         """Check user permission for a workspace."""
         # pylint: disable=too-many-return-statements
         if isinstance(workspace, str):
-            workspace = self.get_workspace(workspace)
+            workspace = self._all_workspaces.get(workspace)
             if not workspace:
                 logger.error("Workspace %s not found", workspace)
                 return False
@@ -339,11 +336,25 @@ class CoreInterface:
             return True
         return False
 
-    def get_workspace(self, name):
+    async def get_workspace(self, name, load=True):
         """Return the workspace."""
         if name in self._all_workspaces:
             return self._all_workspaces[name]
+        if load and self._workspace_loader:
+            user_info = self.current_user.get()
+            try:
+                workspace = await self._workspace_loader(name, user_info)
+                if workspace:
+                    self._all_workspaces[workspace.name] = workspace
+            except Exception:  # pylint: disable=broad-except
+                logger.exception("Failed to load workspace %s", name)
+            else:
+                return workspace
         return None
+
+    def set_workspace_loader(self, loader):
+        """Set the workspace loader."""
+        self._workspace_loader = loader
 
     def register_workspace(self, ws):
         """Register the workspace."""
@@ -359,6 +370,11 @@ class CoreInterface:
         """Unregister the workspace."""
         del self._all_workspaces[workspace.name]
         self.event_bus.emit("workspace_removed", workspace)
+
+    def list_remote_objects(self):
+        """List all the remote objects of the current plugin."""
+        plugin = self.current_plugin.get()
+        return plugin.list_remote_objects()
 
     def load_extensions(self):
         """Load hypha extensions."""
@@ -463,13 +479,89 @@ class CoreInterface:
         workspace = self.current_workspace.get()
         return [plg.config for plg in list(workspace.get_plugins().values())]
 
-    async def get_plugin(self, name):
+    async def launch_application_by_name(
+        self, workspace: WorkspaceInfo, name: str, timeout: float = 60
+    ):
+        """Launch an installed application."""
+        controller = await self.get_service("server-apps")
+        if not controller:
+            raise Exception(
+                "Plugin `{name}` not found and failed to"
+                " launch the plugin (no server-apps service found)"
+            )
+        app_id = None
+        for aid, app_info in workspace.applications.items():
+            # find the app by plugin name
+            if app_info.name == name:
+                app_id = aid
+                break
+        if app_id is None:
+            raise Exception(f"Plugin {name} not found")
+        token = self.generate_token()
+        plugin_id = shortuuid.uuid()
+        config = await controller.start(
+            app_id,
+            workspace=workspace.name,
+            token=token,
+            plugin_id=plugin_id,
+            timeout=timeout,
+        )
+        return config
+
+    async def launch_application_by_service(
+        self, workspace: WorkspaceInfo, service_name: str, timeout: float = 60
+    ):
+        """Launch an installed application by service name."""
+        controller = await self.get_service("server-apps")
+        if not controller:
+            raise Exception(
+                "Plugin `{name}` not found and failed to"
+                " launch the plugin (no server-apps service found)"
+            )
+        app_id = None
+        for aid, app_info in workspace.applications.items():
+            # find the app by service name
+            if app_info.services and service_name in app_info.services:
+                app_id = aid
+                break
+        if app_id is None:
+            raise Exception(f"Service plugin {service_name} not found")
+        token = self.generate_token()
+        plugin_id = shortuuid.uuid()
+        config = await controller.start(
+            app_id,
+            workspace=workspace.name,
+            token=token,
+            plugin_id=plugin_id,
+            timeout=timeout,
+        )
+        return config
+
+    async def get_plugin(self, query: Union[str, dict]):
         """Return a plugin by its name."""
+        if isinstance(query, str):
+            query = {"name": query}
         workspace = self.current_workspace.get()
-        plugin = workspace.get_plugin_by_name(name)
-        if plugin:
-            return await plugin.get_api()
-        raise Exception(f"Plugin `{name}` not found (possibly because it's not ready)")
+        if "id" in query:
+            plugin = workspace.get_plugin_by_id(query["id"])
+            if plugin:
+                return await plugin.get_api()
+            raise Exception(
+                f"Plugin `id={query['id']}` not found (possibly because it's not ready)"
+            )
+        if "name" in query:
+            name = query["name"]
+            plugin = workspace.get_plugin_by_name(name)
+            if plugin:
+                return await plugin.get_api()
+            if query.get("launch") is True:
+                config = await self.launch_application_by_name(
+                    workspace, name, query.get("timeout", 60)
+                )
+                return await self.get_plugin(config.name)
+            raise Exception(
+                f"Plugin `name={name}` not found (possibly because it's not ready)"
+            )
 
     async def get_service(self, query):
         """Return a service."""
@@ -477,7 +569,7 @@ class CoreInterface:
             query = {"name": query}
 
         if "workspace" in query:
-            workspace = self.get_workspace(query["workspace"])
+            workspace = await self.get_workspace(query["workspace"])
             if not workspace:
                 raise Exception(f"Service not found: {query} (workspace unavailable)")
         else:
@@ -485,16 +577,37 @@ class CoreInterface:
 
         if "id" in query:
             service = workspace.get_services().get(query["id"])
-            root_service = self.root_workspace.get_services().get(query["id"])
-            if not service and not root_service:
+            if not service:
+                service = self.root_workspace.get_services().get(query["id"])
+            if not service:
                 raise Exception(f"Service not found: {query['id']}")
-            service = service or root_service
         elif "name" in query:
             service = workspace.get_service_by_name(query["name"])
-            root_service = self.root_workspace.get_service_by_name(query["name"])
-            if not service and not root_service:
-                raise Exception(f"Service not found: {query['name']}")
-            service = service or root_service
+            if not service:
+                service = self.root_workspace.get_service_by_name(query["name"])
+            if not service:
+                if "launch" in query and query["launch"] is True:
+                    # launch the service
+                    config = await self.launch_application_by_service(
+                        workspace, query["name"], timeout=query.get("timeout", 60)
+                    )
+                    # make sure the plugin is initialized
+                    await asyncio.wait_for(
+                        self.get_plugin(config.name), query.get("timeout", 60)
+                    )
+                    service = workspace.get_service_by_name(query["name"])
+                    if not service:
+                        raise Exception(
+                            f"Service not found, "
+                            f"an application ({config.name}) "
+                            "was launched to provid it"
+                            "but it's not available"
+                        )
+                else:
+                    raise Exception(
+                        f"Service not found: {query['name']}, "
+                        "you can try to launch it by setting `launch` to `True`"
+                    )
         else:
             raise Exception("Please specify the service id or name to get the service")
 
@@ -518,7 +631,7 @@ class CoreInterface:
                 ret.append({"name": workspace.name})
         return ret
 
-    def list_services(self, query: Optional[dict] = None):
+    async def list_services(self, query: Optional[dict] = None):
         """Return a list of services based on the query."""
         # if workspace is not set, then it means current workspace
         # if workspace = *, it means search globally
@@ -549,7 +662,7 @@ class CoreInterface:
                         ret.append(service.get_summary())
             return ret
         if ws is not None:
-            workspace = self.get_workspace(ws)
+            workspace = await self.get_workspace(ws)
         else:
             workspace = self.current_workspace.get()
         ret = []
@@ -612,7 +725,7 @@ class CoreInterface:
         token = generate_presigned_token(user_info, token_config)
         return token
 
-    def create_workspace(self, config: dict):
+    async def create_workspace(self, config: dict):
         """Create a new workspace."""
         user_info = self.current_user.get()
         config["persistent"] = config.get("persistent") or False
@@ -620,7 +733,7 @@ class CoreInterface:
             raise Exception("Only registered user can create persistent workspace.")
         workspace = WorkspaceInfo.parse_obj(config)
         workspace.set_global_event_bus(self.event_bus)
-        if self.get_workspace(workspace.name):
+        if await self.get_workspace(workspace.name):
             raise Exception(f"Workspace {workspace.name} already exists.")
         user_info = self.current_user.get()
         # make sure we add the user's email to owners
@@ -630,15 +743,15 @@ class CoreInterface:
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
         user_info.scopes.append(workspace.name)
         self.register_workspace(workspace)
-        return self.get_workspace_interface(workspace.name)
+        return await self.get_workspace_interface(workspace.name)
 
-    def _update_workspace(self, name, config: dict):
+    async def _update_workspace(self, name, config: dict):
         """Bind the context to the generated workspace."""
         if not name:
             raise Exception("Workspace name is not specified.")
-        if not self.get_workspace(name):
+        workspace = await self.get_workspace(name)
+        if not workspace:
             raise Exception(f"Workspace {name} not found")
-        workspace = self.get_workspace(name)
         user_info = self.current_user.get()
         if not self.check_permission(workspace, user_info):
             raise PermissionError(f"Permission denied for workspace {name}")
@@ -661,9 +774,9 @@ class CoreInterface:
             workspace.owners.append(_id)
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
 
-    def get_workspace_interface(self, name: str):
+    async def get_workspace_interface(self, name: str):
         """Bind the context to the generated workspace."""
-        workspace = self.get_workspace(name)
+        workspace = await self.get_workspace(name)
         if not workspace:
             raise Exception(f"Workspace {name} not found")
         user_info = self.current_user.get()
@@ -716,7 +829,7 @@ class CoreInterface:
     async def get_plugin_as_root(self, name, workspace):
         """Get a plugin api as root user."""
         with self.set_root_user():
-            workspace = self.get_workspace(workspace)
+            workspace = await self.get_workspace(workspace)
             if not workspace:
                 raise Exception(f"Workspace {workspace} does not exist.")
             self.current_workspace.set(workspace)

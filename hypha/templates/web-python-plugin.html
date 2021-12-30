@@ -35,7 +35,7 @@ del m
 
 async def run():
     try:
-        await micropip.install(["imjoy-rpc>=0.3.35", {% for req in requirements %}"{{req}}", {% endfor %}])
+        await micropip.install(["imjoy-rpc>=0.3.40", {% for req in requirements %}"{{req}}", {% endfor %}])
         # map imjoy_rpc to imjoy
         import imjoy_rpc
         sys.modules

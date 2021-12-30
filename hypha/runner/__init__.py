@@ -20,7 +20,7 @@ async def run_plugin(plugin_file, default_config, quit_on_ready=False):
     """Load plugin file."""
     loop = asyncio.get_event_loop()
     if os.path.isfile(plugin_file):
-        with open(plugin_file, encoding="utf-8") as fil:
+        with open(plugin_file, "r", encoding="utf-8") as fil:
             content = fil.read()
     elif plugin_file.startswith("http"):
         with urllib.request.urlopen(plugin_file) as response:

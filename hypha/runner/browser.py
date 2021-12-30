@@ -132,7 +132,8 @@ class BrowserAppRunner:
         page_id = user_id + "/" + plugin_id
         if page_id in self.browser_pages:
             await self.browser_pages[page_id]["page"].close()
-            del self.browser_pages[page_id]
+            if page_id in self.browser_pages:
+                del self.browser_pages[page_id]
         else:
             raise Exception(f"browser app instance not found: {plugin_id}")
 

@@ -18,7 +18,8 @@
     "env": "",
     "permissions": [],
     "requirements": [],
-    "dependencies": []
+    "dependencies": [],
+    "services": ["echo"]
 }
 </config>
 
@@ -26,6 +27,16 @@
 class ImJoyPlugin {
     async setup() {
         await api.log('initialized')
+        await api.register_service({
+            "name": "echo",
+            "type": "echo",
+            "config": {
+                "visibility": "public"
+            },
+            echo(data){
+                return data
+            }
+        })
     }
 
     async add2(a){

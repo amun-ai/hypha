@@ -138,6 +138,33 @@ class UserInfo(BaseModel):
         del self._plugins[plugin.id]
 
 
+class RDF(BaseModel):
+    """Represent resource description file object."""
+
+    name: str
+    id: str
+    tags: List[str]
+    documentation: Optional[str]
+    covers: Optional[List[str]]
+    badges: Optional[List[str]]
+    authors: Optional[List[Dict[str, str]]]
+    attachments: Optional[Dict[str, List[Any]]]
+    config: Optional[Dict[str, Any]]
+    type: str
+    format_version: str = "0.2.1"
+    version: str = "0.1.0"
+    links: Optional[List[str]]
+    maintainers: Optional[List[Dict[str, str]]]
+    license: Optional[str]
+    git_repo: Optional[str]
+    source: Optional[str]
+
+    class Config:
+        """Set the config for pydantic."""
+
+        extra = Extra.allow
+
+
 class WorkspaceInfo(BaseModel):
     """Represent a workspace."""
 
@@ -152,6 +179,7 @@ class WorkspaceInfo(BaseModel):
     allow_list: Optional[List[str]]
     deny_list: Optional[List[str]]
     read_only: bool = False
+    applications: Dict[str, RDF] = {}  # installed applications
     _logger: Optional[logging.Logger] = PrivateAttr(default_factory=lambda: logger)
     _plugins: Dict[str, DynamicPlugin] = PrivateAttr(
         default_factory=lambda: {}
@@ -172,32 +200,42 @@ class WorkspaceInfo(BaseModel):
         """Return the logger."""
         self._logger = workspace_logger
 
-    def get_plugins(self) -> Dict[str, DynamicPlugin]:
+    def get_plugins(self, status: str = "*") -> Dict[str, DynamicPlugin]:
         """Return the plugins."""
-        return self._plugins
+        if status == "*":
+            return self._plugins
+        return {k: v for k, v in self._plugins.items() if v.get_status() == status}
 
-    def get_plugin_by_name(self, plugin_name: str) -> Optional[DynamicPlugin]:
+    def get_plugin_by_name(
+        self, plugin_name: str, status: str = "ready"
+    ) -> Optional[DynamicPlugin]:
         """Return a plugin by its name (randomly select one if multiple exists)."""
         plugins = [
             plugin
             for plugin in self._plugins.values()
-            if plugin.name == plugin_name and plugin.get_status() == "ready"
+            if plugin.name == plugin_name
+            and (status == "*" or plugin.get_status() == status)
         ]
         if len(plugins) > 0:
             return random.choice(plugins)
         return None
 
-    def get_plugin_by_id(self, plugin_id: str) -> Optional[DynamicPlugin]:
+    def get_plugin_by_id(
+        self, plugin_id: str, status: str = "*"
+    ) -> Optional[DynamicPlugin]:
         """Return a plugin by its id."""
         plugins = [
-            plugin for plugin in self._plugins.values() if plugin.id == plugin_id
+            plugin
+            for plugin in self._plugins.values()
+            if plugin.id == plugin_id
+            and (status == "*" or plugin.get_status() == status)
         ]
         if len(plugins) > 0:
             return plugins[0]
         return None
 
     def add_plugin(self, plugin: DynamicPlugin) -> None:
-        """Set a plugin."""
+        """Add a plugin."""
         if plugin.id in self._plugins:
             raise Exception(
                 f"Plugin with the same id({plugin.id})"
@@ -238,7 +276,13 @@ class WorkspaceInfo(BaseModel):
 
     def add_service(self, service: ServiceInfo) -> None:
         """Add a service."""
-        if service.is_singleton():
+        duplicated_service = self.get_service_by_name(service.name)
+        # check if it's a singleton service or
+        # the service with the same name and provider exists
+        if service.is_singleton() or (
+            duplicated_service is not None
+            and duplicated_service.get_provider() == service.get_provider()
+        ):
             for svc in self._plugins.values():
                 if svc.name == service.name:
                     logger.info(
@@ -285,3 +329,13 @@ class WorkspaceInfo(BaseModel):
             "services": [service.get_summary() for service in self._services.values()],
         }
         return summary
+
+    def install_application(self, rdf: RDF):
+        """Install a application to the workspace."""
+        self.applications[rdf.id] = rdf
+        self._global_event_bus.emit("workspace_changed", self)
+
+    def uninstall_application(self, rdf_id: str):
+        """Uninstall a application from the workspace."""
+        del self.applications[rdf_id]
+        self._global_event_bus.emit("workspace_changed", self)
