@@ -433,7 +433,7 @@ class S3Controller:
                 return JSONResponse(
                     status_code=200,
                     content={
-                        "success": False,
+                        "success": True,
                         "type": "directory",
                         "name": path.split("/")[-1],
                         "children": items,
