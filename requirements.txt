@@ -1,4 +1,4 @@
-aiobotocore==1.4.2
+aiobotocore==2.0.1
 aiofiles==0.8.0
 base58==2.1.1
 fastapi==0.70.1
