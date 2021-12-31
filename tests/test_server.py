@@ -177,7 +177,7 @@ async def test_workspace(socketio_server):
 
     service_info = await ws.register_service(
         {
-            "name": "test_service",
+            "name": "test_service_2",
             "type": "#test",
             "config": {"require_context": True},
             "test": test,
@@ -186,7 +186,7 @@ async def test_workspace(socketio_server):
     service = await ws.get_service(service_info)
     context = await service.test()
     assert "user_id" in context and "email" in context
-    assert service["name"] == "test_service"
+    assert service["name"] == "test_service_2"
 
     # we should not get it because api is in another workspace
     ss2 = await api.list_services({"type": "#test"})
@@ -252,3 +252,64 @@ async def test_workspace(socketio_server):
     await ws2.off("set-state")
 
     await api.disconnect()
+
+
+async def test_services(socketio_server):
+    """Test services."""
+    api = await connect_to_server({"name": "my plugin", "server_url": SIO_SERVER_URL})
+
+    token = await api.generate_token()
+    assert "@imjoy@" in token
+
+    service_info = await api.register_service(
+        {
+            "name": "test_service",
+            "type": "#test",
+            "idx": 1,
+        }
+    )
+    service = await api.get_service(service_info)
+    assert service["name"] == "test_service"
+    assert len(await api.list_services({"name": "test_service"})) == 1
+
+    service_info = await api.register_service(
+        {
+            "name": "test_service",
+            "type": "#test",
+            "idx": 2,
+        }
+    )
+    # It should be overwritten because it's from the same provider
+    assert len(await api.list_services({"name": "test_service"})) == 1
+
+    api2 = await connect_to_server(
+        {
+            "name": "my plugin 2",
+            "server_url": SIO_SERVER_URL,
+            "token": token,
+            "workspace": api.config.workspace,
+        }
+    )
+    assert api2.config["workspace"] == api.config["workspace"]
+    service_info = await api2.register_service(
+        {
+            "name": "test_service",
+            "type": "#test",
+            "idx": 3,
+        }
+    )
+    # It should be co-exist because it's from a different provider
+    assert len(await api.list_services({"name": "test_service"})) == 2
+    assert len(await api2.list_services({"name": "test_service"})) == 2
+
+    service_info = await api.register_service(
+        {
+            "name": "test_service",
+            "type": "#test",
+            "idx": 4,
+            "config": {"flags": ["single-instance"]},  # mark it as single instance
+        }
+    )
+    # it should remove other services because it's single instance service
+    assert len(await api.list_services({"name": "test_service"})) == 1
+    assert (await api.get_service("test_service"))["idx"] == 4

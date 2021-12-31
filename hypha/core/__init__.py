@@ -283,7 +283,7 @@ class WorkspaceInfo(BaseModel):
             duplicated_service is not None
             and duplicated_service.get_provider() == service.get_provider()
         ):
-            for svc in self._plugins.values():
+            for svc in list(self._services.values()):
                 if svc.name == service.name:
                     logger.info(
                         "Unregistering other services with the same name"
