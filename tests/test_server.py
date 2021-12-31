@@ -295,7 +295,7 @@ async def test_services(socketio_server):
         {
             "name": "test_service",
             "type": "#test",
-            "idx": 2,
+            "idx": 3,
         }
     )
     # It should be co-exist because it's from a different provider
@@ -306,9 +306,10 @@ async def test_services(socketio_server):
         {
             "name": "test_service",
             "type": "#test",
-            "idx": 2,
+            "idx": 4,
             "config": {"flags": ["single-instance"]},  # mark it as single instance
         }
     )
     # it should remove other services because it's single instance service
     assert len(await api.list_services({"name": "test_service"})) == 1
+    assert (await api.get_service("test_service"))["idx"] == 4
