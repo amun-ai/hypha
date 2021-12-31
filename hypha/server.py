@@ -2,28 +2,23 @@
 import argparse
 import logging
 import sys
-from contextvars import copy_context
 from os import environ as env
 from pathlib import Path
-from typing import Union
 
-import shortuuid
-import socketio
 import uvicorn
 from dotenv import find_dotenv, load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from imjoy_rpc.core_connection import BasicConnection
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from hypha import __version__ as VERSION
 from hypha.asgi import ASGIGateway
 from hypha.core.interface import CoreInterface
-from hypha.core.plugin import DynamicPlugin
 from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
-from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware, dotdict
+from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
+from hypha.socketio import SocketIOServer
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("server")
@@ -59,164 +54,6 @@ EXPOSE_HEADERS = [
 ]
 
 
-def initialize_socketio(sio, core_interface):
-    """Initialize socketio."""
-    # pylint: disable=too-many-statements, unused-variable
-    event_bus = core_interface.event_bus
-
-    @sio.event
-    async def connect(sid, environ):
-        """Handle event called when a socketio client is connected to the server."""
-        # We don't do much until register_plugin is called
-        # This allows us to use websocket transport directly
-        # Without relying on the Authorization header
-        logger.info("New session connected: %s", sid)
-
-    @sio.event
-    async def echo(sid, data):
-        """Echo service for testing."""
-        return data
-
-    @sio.event
-    async def register_plugin(sid, config):
-        # Check if the plugin is already registered
-        plugin = DynamicPlugin.get_plugin_by_session_id(sid)
-        if plugin:
-            if plugin.is_disconnected():
-                DynamicPlugin.remove_plugin(plugin)
-                logger.info("Removing disconnected plugin: %s", plugin.id)
-            else:
-                core_interface.restore_plugin(plugin)
-                logger.info("Plugin has already been registered: %s", plugin.id)
-                return
-
-        try:
-            user_info = core_interface.get_user_info_from_token(config.get("token"))
-        except HTTPException as exp:
-            logger.warning("Failed to create user: %s", exp.detail)
-            config = dotdict(config)
-            config.detail = f"Failed to create user: {exp.detail}"
-            DynamicPlugin.plugin_failed(config)
-            return {"success": False, "detail": config.detail}
-        except Exception as exp:  # pylint: disable=broad-except
-            logger.warning("Failed to create user: %s", exp)
-            config = dotdict(config)
-            config.detail = f"Failed to create user: {exp}"
-            DynamicPlugin.plugin_failed(config)
-            return {"success": False, "detail": config.detail}
-
-        ws = config.get("workspace") or user_info.id
-
-        config["name"] = config.get("name") or shortuuid.uuid()
-        workspace = await core_interface.get_workspace(ws)
-        if workspace is None:
-            if ws == user_info.id:
-                workspace = core_interface.create_user_workspace(
-                    user_info, read_only=False  # user_info.is_anonymous
-                )
-            else:
-                logger.error("Workspace %s does not exist", ws)
-                config = dotdict(config)
-                config.detail = f"Workspace {ws} does not exist"
-                DynamicPlugin.plugin_failed(config)
-                return {"success": False, "detail": config.detail}
-
-        config["workspace"] = workspace.name
-        config["public_base_url"] = core_interface.public_base_url
-
-        logger.info(
-            "Registering plugin (uid: %s, workspace: %s)", user_info.id, workspace.name
-        )
-
-        if user_info.id != ws and not core_interface.check_permission(
-            workspace, user_info
-        ):
-            logger.warning(
-                "Failed to register plugin (uid: %s, workspace: %s)"
-                " due to permission error",
-                user_info.id,
-                workspace.name,
-            )
-            config = dotdict(config)
-            config.detail = f"Permission denied for workspace: {ws}"
-            DynamicPlugin.plugin_failed(config)
-            return {
-                "success": False,
-                "detail": config.detail,
-            }
-
-        config["id"] = config.get("id") or "plugin-" + sid
-        plugin_id = config["id"]
-        sio.enter_room(sid, plugin_id)
-
-        plugin = DynamicPlugin.get_plugin_by_id(plugin_id)
-        # Note: for restarting plugins, we need to mark it as unready first
-        if plugin and plugin.get_status() != "restarting":
-            logger.error("Duplicated plugin id: %s", plugin.id)
-            config = dotdict(config)
-            config.detail = f"Duplicated plugin id: {plugin.id}"
-            DynamicPlugin.plugin_failed(config)
-            return {
-                "success": False,
-                "detail": config.detail,
-            }
-
-        async def send(data):
-            await sio.emit(
-                "plugin_message",
-                data,
-                room=plugin_id,
-            )
-
-        connection = BasicConnection(send)
-        core_interface.add_user(user_info)
-        core_interface.current_user.set(user_info)
-        plugin = DynamicPlugin(
-            config,
-            await core_interface.get_workspace_interface(workspace.name),
-            core_interface.get_codecs(),
-            connection,
-            workspace,
-            user_info,
-            event_bus,
-            sid,
-            core_interface.public_base_url,
-        )
-        user_info.add_plugin(plugin)
-        workspace.add_plugin(plugin)
-        event_bus.emit(
-            "plugin_registered",
-            plugin,
-        )
-        logger.info(
-            "New plugin registered successfully (%s)",
-            plugin_id,
-        )
-        return {"success": True, "plugin_id": plugin_id}
-
-    @sio.event
-    async def plugin_message(sid, data):
-        plugin = DynamicPlugin.get_plugin_by_session_id(sid)
-        # TODO: Do we need to check the permission of the user?
-        if not plugin:
-            return {"success": False, "detail": f"Plugin session not found: {sid}"}
-        workspace = plugin.workspace
-        core_interface.current_user.set(plugin.user_info)
-        core_interface.current_plugin.set(plugin)
-        core_interface.current_workspace.set(workspace)
-        ctx = copy_context()
-        ctx.run(plugin.connection.handle_message, data)
-        return {"success": True}
-
-    @sio.event
-    async def disconnect(sid):
-        """Event handler called when the client is disconnected."""
-        core_interface.remove_plugin_temp(sid)
-        logger.info("Session disconnected: %s", sid)
-
-    event_bus.emit("socketio_ready", None)
-
-
 def create_application(allow_origins) -> FastAPI:
     """Set up the server application."""
     # pylint: disable=unused-variable
@@ -246,47 +83,33 @@ def create_application(allow_origins) -> FastAPI:
     return app
 
 
-def setup_socketio_server(
+def start_builtin_services(
     app: FastAPI,
     core_interface: CoreInterface,
-    port: int,
-    base_path: str = "/",
-    allow_origins: Union[str, list] = "*",
-    enable_server_apps: bool = False,
-    enable_s3: bool = False,
-    endpoint_url: str = None,
-    access_key_id: str = None,
-    secret_access_key: str = None,
-    workspace_bucket: str = "hypha-workspaces",
-    rdf_bucket: str = "hypha-rdfs",
-    apps_dir: str = "hypha-apps",
-    executable_path: str = "",
-    in_docker: bool = False,
-    triton_servers: str = None,
-    **kwargs,
+    args: argparse.Namespace,
 ) -> None:
     """Set up the socketio server."""
     # pylint: disable=too-many-arguments,too-many-locals
 
     def norm_url(url):
-        return base_path.rstrip("/") + url
+        return args.base_path.rstrip("/") + url
 
     HTTPProxy(core_interface)
-    if triton_servers:
+    if args.triton_servers:
         TritonProxy(
             core_interface,
-            triton_servers=triton_servers.split(","),
-            allow_origins=allow_origins,
+            triton_servers=args.triton_servers.split(","),
+            allow_origins=args.allow_origins,
         )
     ASGIGateway(
         core_interface,
-        allow_origins=allow_origins,
+        allow_origins=args.allow_origins,
         allow_methods=ALLOW_METHODS,
         allow_headers=ALLOW_HEADERS,
         expose_headers=EXPOSE_HEADERS,
     )
 
-    @app.get(base_path)
+    @app.get(args.base_path)
     async def home():
         return {
             "name": "Hypha",
@@ -304,57 +127,46 @@ def setup_socketio_server(
             "users": [u.id for u in users],
         }
 
-    if enable_s3:
+    if args.enable_s3:
         # pylint: disable=import-outside-toplevel
         from hypha.rdf import RDFController
         from hypha.s3 import S3Controller
 
         s3_controller = S3Controller(
             core_interface,
-            endpoint_url=endpoint_url,
-            access_key_id=access_key_id,
-            secret_access_key=secret_access_key,
-            workspace_bucket=workspace_bucket,
-            executable_path=executable_path,
+            endpoint_url=args.endpoint_url,
+            access_key_id=args.access_key_id,
+            secret_access_key=args.secret_access_key,
+            workspace_bucket=args.workspace_bucket,
+            executable_path=args.executable_path,
         )
 
         RDFController(
-            core_interface, s3_controller=s3_controller, rdf_bucket=rdf_bucket
+            core_interface, s3_controller=s3_controller, rdf_bucket=args.rdf_bucket
         )
 
-    if enable_server_apps:
+    if args.enable_server_apps:
         # pylint: disable=import-outside-toplevel
         from hypha.apps import ServerAppController
 
         ServerAppController(
             core_interface,
-            port=port,
-            apps_dir=apps_dir,
-            in_docker=in_docker,
-            endpoint_url=endpoint_url,
-            access_key_id=access_key_id,
-            secret_access_key=secret_access_key,
-            workspace_bucket=workspace_bucket,
+            port=args.port,
+            apps_dir=args.apps_dir,
+            in_docker=args.in_docker,
+            endpoint_url=args.endpoint_url,
+            access_key_id=args.access_key_id,
+            secret_access_key=args.secret_access_key,
+            workspace_bucket=args.workspace_bucket,
         )
 
     @app.get(norm_url("/health/liveness"))
     async def liveness(req: Request) -> JSONResponse:
         try:
-            await sio.emit("liveness")
+            await sio_server.is_alive()
         except Exception:  # pylint: disable=broad-except
             return JSONResponse({"status": "DOWN"}, status_code=503)
         return JSONResponse({"status": "OK"})
-
-    if allow_origins == ["*"]:
-        allow_origins = "*"
-    sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=allow_origins)
-
-    _app = socketio.ASGIApp(socketio_server=sio, socketio_path=norm_url("/socket.io"))
-
-    app.mount("/", _app)
-    app.sio = sio
-
-    initialize_socketio(sio, core_interface)
 
     @app.on_event("startup")
     async def startup_event():
@@ -364,16 +176,22 @@ def setup_socketio_server(
     def shutdown_event():
         core_interface.event_bus.emit("shutdown")
 
-    return sio
+    # SocketIO server should be the last one to be registered
+    # otherwise the server won'te be able to start properly
+    sio_server = SocketIOServer(
+        core_interface,
+        socketio_path=norm_url("/socket.io"),
+        allow_origins=args.allow_origins,
+    )
 
 
 def start_server(args):
     """Start the socketio server."""
-    if args.allow_origin:
-        args.allow_origin = args.allow_origin.split(",")
+    if args.allow_origins:
+        args.allow_origins = args.allow_origins.split(",")
     else:
-        args.allow_origin = env.get("ALLOW_ORIGINS", "*").split(",")
-    application = create_application(args.allow_origin)
+        args.allow_origins = env.get("ALLOW_ORIGINS", "*").split(",")
+    application = create_application(args.allow_origins)
     local_base_url = f"http://127.0.0.1:{args.port}/{args.base_path.strip('/')}".strip(
         "/"
     )
@@ -384,7 +202,8 @@ def start_server(args):
     core_interface = CoreInterface(
         application, public_base_url=public_base_url, local_base_url=local_base_url
     )
-    setup_socketio_server(application, core_interface, **vars(args))
+
+    start_builtin_services(application, core_interface, args)
     if args.host in ("127.0.0.1", "localhost"):
         print(
             "***Note: If you want to enable access from another host, "
@@ -409,7 +228,7 @@ def get_argparser():
         help="port for the hypha server",
     )
     parser.add_argument(
-        "--allow-origin",
+        "--allow-origins",
         type=str,
         default="*",
         help="origins for the hypha server",
