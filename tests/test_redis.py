@@ -9,7 +9,6 @@ pytestmark = pytest.mark.asyncio
 
 async def test_redis_store():
     """Test the redis store."""
-
     # Test adding a workspace
     workspace = WorkspaceInfo(
         name="test",

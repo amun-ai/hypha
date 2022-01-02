@@ -315,7 +315,9 @@ class RPC(MessageEmitter):
                     "export",
                     "on",
                 ]:
-                    args = self.encode(arguments, as_interface=True, target_id=target_id)
+                    args = self.encode(
+                        arguments, as_interface=True, target_id=target_id
+                    )
                 else:
                     args = self.encode(arguments, target_id=target_id)
 
@@ -347,7 +349,9 @@ class RPC(MessageEmitter):
                     arguments = arguments + [kwargs]
 
                 def pfunc(resolve, reject):
-                    encoded_promise = self.encode([resolve, reject], target_id=target_id)
+                    encoded_promise = self.encode(
+                        [resolve, reject], target_id=target_id
+                    )
                     # store the key id
                     # for removing them from the reference store together
                     resolve.__promise_pair = encoded_promise[0]["_rvalue"]
@@ -406,7 +410,6 @@ class RPC(MessageEmitter):
         else:
             self._remote_interface = _remote
         self._fire("remoteReady")
-
 
     def _log(self, info):
         self._connection.emit({"type": "log", "message": info})
@@ -536,8 +539,10 @@ class RPC(MessageEmitter):
                 else:
                     kwargs = {}
                 # args.append({'id': self.id})
-                
-                self._call_method(method, args, kwargs, resolve, reject, method_name=data["name"])
+
+                self._call_method(
+                    method, args, kwargs, resolve, reject, method_name=data["name"]
+                )
             else:
                 args = self.decode(data["args"], True, target_id=data["source"])
                 if data.get("with_kwargs"):
@@ -573,7 +578,9 @@ class RPC(MessageEmitter):
                     kwargs = args.pop()
                 else:
                     kwargs = {}
-                self._call_method(method, args, kwargs, resolve, reject, method_name=data["id"])
+                self._call_method(
+                    method, args, kwargs, resolve, reject, method_name=data["id"]
+                )
 
             else:
                 method = self._store.fetch(data["id"])
@@ -602,11 +609,13 @@ class RPC(MessageEmitter):
         self._fire("error", detail)
 
     def encode_service(self, service, target_id):
+        """Encode service."""
         encoded = self.encode(service, as_interface=True, target_id=target_id)
         encoded["_rtype"] = "service"
         return encoded
 
     def decode_service(self, interface, target_id):
+        """Decode service."""
         assert interface["_rtype"] == "service"
         del interface["_rtype"]
         decoded = self.decode(interface, with_promise=True, target_id=target_id)
@@ -904,9 +913,7 @@ class RPC(MessageEmitter):
             for key in keys:
                 val = a_object[key]
                 if isarray:
-                    b_object.append(
-                        self.decode(val, with_promise, target_id=target_id)
-                    )
+                    b_object.append(self.decode(val, with_promise, target_id=target_id))
                 else:
                     b_object[key] = self.decode(val, with_promise, target_id=target_id)
         # make sure we have bytes instead of memoryview, e.g. for Pyodide

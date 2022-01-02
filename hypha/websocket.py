@@ -1,25 +1,15 @@
 """Provide an s3 interface."""
+import asyncio
 import logging
 import sys
-from contextvars import copy_context
 
-import shortuuid
-from fastapi import HTTPException
-from fastapi import WebSocket
-from imjoy_rpc.core_connection import BasicConnection
-from typing import Optional
-from imjoy_rpc.utils import ContextLocal
-from hypha.core.rpc import RPC
-from fastapi import Cookie, Depends, FastAPI, Query, WebSocket, status
-from fastapi.responses import HTMLResponse
-import websockets
-
-
-import asyncio
-
-from hypha.utils import dotdict
-from hypha.core.store import store
 import msgpack
+import websockets
+from fastapi import Query, WebSocket, status
+from imjoy_rpc.core_connection import BasicConnection
+
+from hypha.core.rpc import RPC
+from hypha.core.store import store
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket")

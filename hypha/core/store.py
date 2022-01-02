@@ -1,12 +1,13 @@
-from redislite import Redis
-from hypha.core import WorkspaceInfo, RDF
-import json
-from hypha.core.rpc import RPC
-from imjoy_rpc.utils import ContextLocal
-from imjoy_rpc.core_connection import BasicConnection
-import msgpack
+"""A scalable state store based on Redis."""
 import asyncio
-from contextvars import ContextVar, copy_context
+import json
+
+import msgpack
+from imjoy_rpc.core_connection import BasicConnection
+from redislite import Redis
+
+from hypha.core import RDF, WorkspaceInfo
+from hypha.core.rpc import RPC
 
 
 class RedisStore:
@@ -21,7 +22,8 @@ class RedisStore:
         workspace: WorkspaceInfo,
         client_id: str,
     ):
-        ps = self.redis.pubsub()
+        """Create a rpc."""
+        pubsub = self.redis.pubsub()
 
         async def send(data):
             if "target" not in data:
@@ -34,7 +36,7 @@ class RedisStore:
 
         async def listen():
             while True:
-                msg = ps.get_message()
+                msg = pubsub.get_message()
                 if msg and msg.get("type") == "message":
                     assert (
                         msg.get("channel")
@@ -54,7 +56,7 @@ class RedisStore:
 
         asyncio.ensure_future(listen())
 
-        ps.subscribe(f"{workspace.name}:msg:{client_id}")
+        pubsub.subscribe(f"{workspace.name}:msg:{client_id}")
 
         rpc = RPC(connection, client_id="core")
         return rpc
@@ -89,13 +91,13 @@ class RedisStore:
         self._save_workspace(workspace)
 
     def _save_workspace(self, workspace: WorkspaceInfo):
-        wd = workspace.json()
-        self.redis.hset("workspaces", workspace.name, wd)
+        workspace_info = workspace.json()
+        self.redis.hset("workspaces", workspace.name, workspace_info)
 
     def get_workspace(self, workspace_name):
         """Get a workspace."""
-        wd = self.redis.hget("workspaces", workspace_name)
-        return WorkspaceInfo.parse_obj(json.loads(wd.decode()))
+        workspace_info = self.redis.hget("workspaces", workspace_name)
+        return WorkspaceInfo.parse_obj(json.loads(workspace_info.decode()))
 
     def get_workspace_interface(self, workspace_name, client_id):
         """Get the workspace interface."""
