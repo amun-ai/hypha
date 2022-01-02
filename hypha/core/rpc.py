@@ -234,7 +234,7 @@ class RPC(MessageEmitter):
         else:
             raise Exception("Invalid api export")
 
-        self._local_api = self.encode(api, as_interface=True, target_id=self.id)
+        self._local_api = self._encode(api, as_interface=True, target_id=self.id)
         self._fire("interfaceAvailable")
         return self._local_api
 
@@ -313,7 +313,7 @@ class RPC(MessageEmitter):
                 arguments = arguments + [kwargs]
 
             def pfunc(resolve, reject):
-                encoded_promise = self.encode([resolve, reject], target_id=target_id)
+                encoded_promise = self._encode([resolve, reject], target_id=target_id)
                 # store the key id for removing them from the reference store together
                 resolve.__promise_pair = encoded_promise[0]["_rid"]
                 reject.__promise_pair = encoded_promise[1]["_rid"]
@@ -325,11 +325,11 @@ class RPC(MessageEmitter):
                     "export",
                     "on",
                 ]:
-                    args = self.encode(
+                    args = self._encode(
                         arguments, as_interface=True, target_id=target_id
                     )
                 else:
-                    args = self.encode(arguments, target_id=target_id)
+                    args = self._encode(arguments, target_id=target_id)
 
                 call_func = {
                     "type": "method",
@@ -359,7 +359,7 @@ class RPC(MessageEmitter):
                     arguments = arguments + [kwargs]
 
                 def pfunc(resolve, reject):
-                    encoded_promise = self.encode(
+                    encoded_promise = self._encode(
                         [resolve, reject], target_id=target_id
                     )
                     # store the key id
@@ -373,7 +373,7 @@ class RPC(MessageEmitter):
                             "source": target_id,
                             "target": source,
                             # 'object_id'  : self.id,
-                            "args": self.encode(arguments, target_id=target_id),
+                            "args": self._encode(arguments, target_id=target_id),
                             "with_kwargs": bool(kwargs),
                             "promise": encoded_promise,
                         }
@@ -395,7 +395,7 @@ class RPC(MessageEmitter):
                         "source": target_id,
                         "target": source,
                         # 'object_id'  : self.id,
-                        "args": self.encode(arguments, target_id=target_id),
+                        "args": self._encode(arguments, target_id=target_id),
                         "with_kwargs": bool(kwargs),
                     }
                 )
@@ -410,7 +410,7 @@ class RPC(MessageEmitter):
 
     def set_remote_interface(self, api):
         """Set remote interface."""
-        _remote = self.decode(api, False, target_id=self.id)
+        _remote = self._decode(api, False, target_id=self.id)
         # update existing interface instead of recreating it
         # this will preserve the object reference
         if self._remote_interface:
@@ -537,13 +537,13 @@ class RPC(MessageEmitter):
         reject = None
         try:
             if "promise" in data:
-                resolve, reject = self.decode(
+                resolve, reject = self._decode(
                     data["promise"], False, target_id=data["source"]
                 )
             _interface = self._object_store[data["object_id"]]
             method = index_object(_interface, data["name"])
             if "promise" in data:
-                args = self.decode(data["args"], True, target_id=data["source"])
+                args = self._decode(data["args"], True, target_id=data["source"])
                 if data.get("with_kwargs"):
                     kwargs = args.pop()
                 else:
@@ -554,7 +554,7 @@ class RPC(MessageEmitter):
                     method, args, kwargs, resolve, reject, method_name=data["name"]
                 )
             else:
-                args = self.decode(data["args"], True, target_id=data["source"])
+                args = self._decode(data["args"], True, target_id=data["source"])
                 if data.get("with_kwargs"):
                     kwargs = args.pop()
                 else:
@@ -572,7 +572,7 @@ class RPC(MessageEmitter):
         reject = None
         try:
             if "promise" in data:
-                resolve, reject = self.decode(
+                resolve, reject = self._decode(
                     data["promise"], False, target_id=data["source"]
                 )
                 method = self._store.fetch(data["id"])
@@ -583,7 +583,7 @@ class RPC(MessageEmitter):
                         "please make it as a plugin api function. "
                         "See https://imjoy.io/docs for more details."
                     )
-                args = self.decode(data["args"], True, target_id=data["source"])
+                args = self._decode(data["args"], True, target_id=data["source"])
                 if data.get("with_kwargs"):
                     kwargs = args.pop()
                 else:
@@ -601,7 +601,7 @@ class RPC(MessageEmitter):
                         "please make it as a plugin api function. "
                         "See https://imjoy.io/docs for more details."
                     )
-                args = self.decode(data["args"], True, target_id=data["source"])
+                args = self._decode(data["args"], True, target_id=data["source"])
                 if data.get("with_kwargs"):
                     kwargs = args.pop()
                 else:
@@ -620,7 +620,7 @@ class RPC(MessageEmitter):
 
     def encode_service(self, service, target_id):
         """Encode service."""
-        encoded = self.encode(service, as_interface=True, target_id=target_id)
+        encoded = self._encode(service, as_interface=True, target_id=target_id)
         encoded["_rtype"] = "service"
         return encoded
 
@@ -628,10 +628,14 @@ class RPC(MessageEmitter):
         """Decode service."""
         assert interface["_rtype"] == "service"
         del interface["_rtype"]
-        decoded = self.decode(interface, with_promise=True, target_id=target_id)
+        decoded = self._decode(interface, with_promise=True, target_id=target_id)
         return decoded
-
+    
     def encode(self, a_object, as_interface=False, object_id=None, target_id=None):
+        """Encode object."""
+        return self._encode(a_object, as_interface=as_interface, object_id=object_id, target_id=target_id)
+
+    def _encode(self, a_object, as_interface=False, object_id=None, target_id=None):
         """Encode object."""
         if isinstance(a_object, (int, float, bool, str, bytes)) or a_object is None:
             return a_object
@@ -680,7 +684,7 @@ class RPC(MessageEmitter):
             # make sure the interface functions are encoded
             temp = a_object["_rtype"]
             del a_object["_rtype"]
-            b_object = self.encode(
+            b_object = self._encode(
                 a_object, as_interface, object_id, target_id=target_id
             )
             b_object["_rtype"] = temp
@@ -701,7 +705,7 @@ class RPC(MessageEmitter):
                 if isinstance(encoded_obj, dict) and "_rintf" in encoded_obj:
                     temp = encoded_obj["_rtype"]
                     del encoded_obj["_rtype"]
-                    encoded_obj = self.encode(encoded_obj, True, target_id=target_id)
+                    encoded_obj = self._encode(encoded_obj, True, target_id=target_id)
                     encoded_obj["_rtype"] = temp
                 b_object = encoded_obj
                 return b_object
@@ -728,20 +732,20 @@ class RPC(MessageEmitter):
                 m: getattr(a_object, m) for m in IO_METHODS if hasattr(a_object, m)
             }
             b_object["_rintf"] = True
-            b_object = self.encode(b_object, target_id=target_id)
+            b_object = self._encode(b_object, target_id=target_id)
 
         # NOTE: "typedarray" is not used
         elif isinstance(a_object, OrderedDict):
             b_object = {
                 "_rtype": "orderedmap",
-                "_rvalue": self.encode(
+                "_rvalue": self._encode(
                     list(a_object), as_interface, target_id=target_id
                 ),
             }
         elif isinstance(a_object, set):
             b_object = {
                 "_rtype": "set",
-                "_rvalue": self.encode(
+                "_rvalue": self._encode(
                     list(a_object), as_interface, target_id=target_id
                 ),
             }
@@ -772,7 +776,7 @@ class RPC(MessageEmitter):
                         if ":" in object_id
                         else object_id + ":" + str(key)
                     )
-                    encoded = self.encode(
+                    encoded = self._encode(
                         a_object[key],
                         as_interface,
                         # We need to convert to a string here,
@@ -806,9 +810,9 @@ class RPC(MessageEmitter):
                 b_object = [] if isarray else {}
                 for key in keys:
                     if isarray:
-                        b_object.append(self.encode(a_object[key], target_id=target_id))
+                        b_object.append(self._encode(a_object[key], target_id=target_id))
                     else:
-                        b_object[key] = self.encode(a_object[key], target_id=target_id)
+                        b_object[key] = self._encode(a_object[key], target_id=target_id)
         else:
             raise Exception(
                 "imjoy-rpc: Unsupported data type:"
@@ -818,6 +822,10 @@ class RPC(MessageEmitter):
         return b_object
 
     def decode(self, a_object, with_promise, target_id=None):
+        """Decode object."""
+        return self._decode(a_object, with_promise, target_id=target_id)
+
+    def _decode(self, a_object, with_promise, target_id=None):
         """Decode object."""
         if a_object is None:
             return a_object
@@ -832,7 +840,7 @@ class RPC(MessageEmitter):
                 if "_rintf" in a_object:
                     temp = a_object["_rtype"]
                     del a_object["_rtype"]
-                    a_object = self.decode(a_object, with_promise, target_id=target_id)
+                    a_object = self._decode(a_object, with_promise, target_id=target_id)
                     a_object["_rtype"] = temp
                 b_object = self._codecs[a_object["_rtype"]].decoder(a_object)
             elif a_object["_rtype"] == "callback":
@@ -898,11 +906,11 @@ class RPC(MessageEmitter):
                     b_object = a_object["_rvalue"]
             elif a_object["_rtype"] == "orderedmap":
                 b_object = OrderedDict(
-                    self.decode(a_object["_rvalue"], with_promise, target_id=target_id)
+                    self._decode(a_object["_rvalue"], with_promise, target_id=target_id)
                 )
             elif a_object["_rtype"] == "set":
                 b_object = set(
-                    self.decode(a_object["_rvalue"], with_promise, target_id=target_id)
+                    self._decode(a_object["_rvalue"], with_promise, target_id=target_id)
                 )
             elif a_object["_rtype"] == "error":
                 b_object = Exception(a_object["_rvalue"])
@@ -911,7 +919,7 @@ class RPC(MessageEmitter):
                 if "_rintf" in a_object:
                     temp = a_object["_rtype"]
                     del a_object["_rtype"]
-                    a_object = self.decode(a_object, with_promise, target_id=target_id)
+                    a_object = self._decode(a_object, with_promise, target_id=target_id)
                     a_object["_rtype"] = temp
                 b_object = a_object
         elif isinstance(a_object, (dict, list, tuple)):
@@ -923,9 +931,9 @@ class RPC(MessageEmitter):
             for key in keys:
                 val = a_object[key]
                 if isarray:
-                    b_object.append(self.decode(val, with_promise, target_id=target_id))
+                    b_object.append(self._decode(val, with_promise, target_id=target_id))
                 else:
-                    b_object[key] = self.decode(val, with_promise, target_id=target_id)
+                    b_object[key] = self._decode(val, with_promise, target_id=target_id)
         # make sure we have bytes instead of memoryview, e.g. for Pyodide
         elif isinstance(a_object, memoryview):
             b_object = a_object.tobytes()
