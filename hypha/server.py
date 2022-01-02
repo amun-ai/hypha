@@ -17,6 +17,7 @@ from hypha.asgi import ASGIGateway
 from hypha.core.interface import CoreInterface
 from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
+from hypha.websocket import WebsocketServer
 from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
 from hypha.socketio import SocketIOServer
 
@@ -93,6 +94,8 @@ def start_builtin_services(
 
     def norm_url(url):
         return args.base_path.rstrip("/") + url
+
+    WebsocketServer(core_interface)
 
     HTTPProxy(core_interface)
     if args.triton_servers:

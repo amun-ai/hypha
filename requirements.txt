@@ -19,3 +19,4 @@ shortuuid==1.0.8
 uvicorn==0.16.0
 httpx==0.21.1
 pyotritonclient==0.1.36
+redislite==4.1.0

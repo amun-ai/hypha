@@ -165,6 +165,12 @@ class RDF(BaseModel):
         extra = Extra.allow
 
 
+class ApplicationInfo(RDF):
+    """Represent an application."""
+
+    pass
+
+
 class WorkspaceInfo(BaseModel):
     """Represent a workspace."""
 
@@ -180,6 +186,7 @@ class WorkspaceInfo(BaseModel):
     deny_list: Optional[List[str]]
     read_only: bool = False
     applications: Dict[str, RDF] = {}  # installed applications
+    interfaces: Dict[str, Dict[str, Any]] = {}
     _logger: Optional[logging.Logger] = PrivateAttr(default_factory=lambda: logger)
     _plugins: Dict[str, DynamicPlugin] = PrivateAttr(
         default_factory=lambda: {}
