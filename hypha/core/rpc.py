@@ -68,6 +68,17 @@ def index_object(obj, ids):
         return index_object(_obj, ids[1:])
 
 
+class InterfaceList(list):
+    """A disposible list."""
+
+    __slots__ = "__rid__"
+
+    def __init__(self, *args, rid=None, **kwargs):
+        if rid:
+            self.__rid__ = rid
+        super().__init__(*args, **kwargs)
+
+
 class RPC(MessageEmitter):
     """Represent the RPC."""
 
@@ -84,7 +95,6 @@ class RPC(MessageEmitter):
         self.services = {}
         self._object_store = {}
         self._method_weakmap = weakref.WeakKeyDictionary()
-        self._object_weakmap = weakref.WeakKeyDictionary()
         self._local_api = None
         self._store = ReferenceStore()
         self._remote_interface = None
@@ -131,7 +141,6 @@ class RPC(MessageEmitter):
         self.services = {}
         self._object_store = {}
         self._method_weakmap = weakref.WeakKeyDictionary()
-        self._object_weakmap = weakref.WeakKeyDictionary()
         self._local_api = None
         self._store = ReferenceStore()
         self._remote_interface = None
@@ -272,10 +281,11 @@ class RPC(MessageEmitter):
 
     def dispose_object(self, obj):
         """Dispose object."""
-        if obj in self._object_weakmap:
-            object_id = self._object_weakmap[obj]
-        else:
-            raise Exception("Invalid object")
+        if not hasattr(obj, "__rid__"):
+            raise Exception(
+                "Invalid object, it must be a disposable"
+                " object with __rid__ attribute."
+            )
 
         def pfunc(resolve, reject):
             """Handle plugin function."""
@@ -288,7 +298,7 @@ class RPC(MessageEmitter):
                     resolve(None)
 
             self._connection.once("disposed", handle_disposed)
-            self._connection.emit({"type": "disposeObject", "object_id": object_id})
+            self._connection.emit({"type": "disposeObject", "object_id": obj.__rid__})
 
         return FuturePromise(pfunc, self._remote_logger)
 
@@ -305,8 +315,8 @@ class RPC(MessageEmitter):
             def pfunc(resolve, reject):
                 encoded_promise = self.encode([resolve, reject], target_id=target_id)
                 # store the key id for removing them from the reference store together
-                resolve.__promise_pair = encoded_promise[0]["_rvalue"]
-                reject.__promise_pair = encoded_promise[1]["_rvalue"]
+                resolve.__promise_pair = encoded_promise[0]["_rid"]
+                reject.__promise_pair = encoded_promise[1]["_rid"]
 
                 if name in [
                     "register",
@@ -354,8 +364,8 @@ class RPC(MessageEmitter):
                     )
                     # store the key id
                     # for removing them from the reference store together
-                    resolve.__promise_pair = encoded_promise[0]["_rvalue"]
-                    reject.__promise_pair = encoded_promise[1]["_rvalue"]
+                    resolve.__promise_pair = encoded_promise[0]["_rid"]
+                    reject.__promise_pair = encoded_promise[1]["_rid"]
                     self._connection.emit(
                         {
                             "type": "callback",
@@ -626,20 +636,22 @@ class RPC(MessageEmitter):
         if isinstance(a_object, (int, float, bool, str, bytes)) or a_object is None:
             return a_object
 
+        if not as_interface and isinstance(a_object, dict):
+            as_interface = a_object.get("_rintf", False)
+        as_interface = bool(as_interface)
+
         if callable(a_object):
             if as_interface:
                 if not object_id:
                     raise Exception("object_id is not specified.")
+                _intf, _rid = object_id.split(":")
                 b_object = {
                     "_rtype": "interface",
                     "_rtarget_id": target_id,
-                    "_rintf": object_id,
-                    "_rvalue": as_interface,
+                    "_rintf": _intf,
+                    "_rid": _rid,
                 }
-                try:
-                    self._method_weakmap[a_object] = b_object
-                except Exception:
-                    pass
+                self._method_weakmap[a_object] = b_object
             elif a_object in self._method_weakmap:
                 b_object = self._method_weakmap[a_object]
             else:
@@ -650,7 +662,7 @@ class RPC(MessageEmitter):
                     # for example when we use functools.partial to create functions
                     "_rname": getattr(a_object, "__name__", cid),
                     "_rtarget_id": target_id,
-                    "_rvalue": cid,
+                    "_rid": cid,
                 }
             return b_object
 
@@ -733,21 +745,14 @@ class RPC(MessageEmitter):
                     list(a_object), as_interface, target_id=target_id
                 ),
             }
-        elif hasattr(a_object, "_rintf") and a_object._rintf is True:
-            b_object = self.encode(a_object, True, target_id=target_id)
         elif isinstance(a_object, (list, dict)):
-            b_object = [] if isarray else {}
-            a_object_norm = a_object
 
-            keys = range(len(a_object_norm)) if isarray else a_object_norm.keys()
+            keys = range(len(a_object)) if isarray else a_object.keys()
             # encode interfaces
-            if (not isarray and a_object_norm.get("_rintf")) or as_interface:
+            if as_interface:
+                b_object = [] if isarray else {}
                 if object_id is None:
-                    _rintf = a_object_norm.get("_rintf") if not isarray else None
-                    if _rintf and isinstance(_rintf, str):
-                        object_id = _rintf  # enable custom object_id
-                    else:
-                        object_id = str(uuid.uuid4())
+                    object_id = str(uuid.uuid4())
                     # Note: object with the same id will be overwritten
                     if object_id in self._object_store:
                         logger.warning(
@@ -762,43 +767,48 @@ class RPC(MessageEmitter):
                         key.startswith("_") and key not in ALLOWED_MAGIC_METHODS
                     ):
                         continue
+                    _obj_id = (
+                        object_id + "." + str(key)
+                        if ":" in object_id
+                        else object_id + ":" + str(key)
+                    )
                     encoded = self.encode(
-                        a_object_norm[key],
-                        as_interface + "." + str(key)
-                        if isinstance(as_interface, str)
-                        else str(key),
+                        a_object[key],
+                        as_interface,
                         # We need to convert to a string here,
                         # otherwise 0 will not be truthy.
-                        object_id,
+                        _obj_id,
                         target_id=target_id,
                     )
-                    if callable(a_object_norm[key]):
+                    if callable(a_object[key]):
                         has_function = True
                     if isarray:
                         b_object.append(encoded)
                     else:
                         b_object[key] = encoded
-                # TODO: how to despose list object? create a encodeper for list?
+                # convert list to dict
+                if isarray and has_function:
+                    b_object = {k: b_object[k] for k in range(len(b_object))}
+                    b_object["_rarray"] = True
+                    b_object["_rlength"] = len(b_object)
                 if not isarray and has_function:
                     b_object["_rintf"] = object_id
+
                 # remove interface when closed
-                if "on" in a_object_norm and callable(a_object_norm["on"]):
+                if "on" in a_object and callable(a_object["on"]):
 
                     def remove_interface(_):
                         if object_id in self._object_store:
                             del self._object_store[object_id]
 
-                    a_object_norm["on"]("close", remove_interface)
+                    a_object["on"]("close", remove_interface)
             else:
+                b_object = [] if isarray else {}
                 for key in keys:
                     if isarray:
-                        b_object.append(
-                            self.encode(a_object_norm[key], target_id=target_id)
-                        )
+                        b_object.append(self.encode(a_object[key], target_id=target_id))
                     else:
-                        b_object[key] = self.encode(
-                            a_object_norm[key], target_id=target_id
-                        )
+                        b_object[key] = self.encode(a_object[key], target_id=target_id)
         else:
             raise Exception(
                 "imjoy-rpc: Unsupported data type:"
@@ -828,14 +838,14 @@ class RPC(MessageEmitter):
             elif a_object["_rtype"] == "callback":
                 b_object = self._gen_remote_callback(
                     a_object.get("_rtarget_id"),
-                    a_object["_rvalue"],
+                    a_object["_rid"],
                     with_promise,
                     target_id=target_id,
                 )
             elif a_object["_rtype"] == "interface":
                 b_object = self._gen_remote_method(
                     a_object.get("_rtarget_id"),
-                    a_object["_rvalue"],
+                    a_object["_rid"],
                     a_object["_rintf"],
                     target_id=target_id,
                 )
@@ -926,6 +936,11 @@ class RPC(MessageEmitter):
 
         # object id, used for dispose the object
         if isinstance(a_object, dict) and a_object.get("_rintf"):
+            if a_object.get("_rarray"):
+                b_object = InterfaceList(
+                    [b_object[i] for i in range(a_object["_rlength"])]
+                )
+                b_object.__rid__ = a_object.get("_rintf")
             # make the dict hashable
             if isinstance(b_object, dict):
                 if not isinstance(b_object, dotdict):
@@ -933,5 +948,4 @@ class RPC(MessageEmitter):
                 # __rid__ is used for hashing the object for removing it afterwards
                 b_object.__rid__ = a_object.get("_rintf")
 
-            self._object_weakmap[b_object] = a_object.get("_rintf")
         return b_object
