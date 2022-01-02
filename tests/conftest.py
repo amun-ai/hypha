@@ -137,7 +137,13 @@ def minio_server_fixture():
         timeout = 10
         while timeout > 0:
             try:
-                response = requests.get(f"{MINIO_SERVER_URL}/minio/health/live")
+                print(
+                    "Trying to connect to the minio server...",
+                    f"{MINIO_SERVER_URL}/minio/health/live",
+                )
+                response = requests.get(
+                    f"{MINIO_SERVER_URL}/minio/health/live", timeout=1
+                )
                 if response.ok:
                     break
             except RequestException:

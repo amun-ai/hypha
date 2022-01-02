@@ -20,24 +20,27 @@ def setup_minio_executables(executable_path):
     """Download and install the minio client and server binary files."""
     if executable_path and not os.path.exists(executable_path):
         os.makedirs(executable_path, exist_ok=True)
-    assert sys.platform == "linux", (
-        "Manual setup required to, please download minio and minio client \
-from https://min.io/ and place them under "
-        + executable_path
-    )
+    if sys.platform == "darwin":
+        minio_url = "https://dl.min.io/server/minio/release/darwin-amd64/minio"
+        mc_url = "https://dl.min.io/client/mc/release/darwin-amd64/mc"
+    elif sys.platform == "linux":
+        minio_url = "https://dl.min.io/server/minio/release/linux-amd64/minio"
+        mc_url = "https://dl.min.io/client/mc/release/linux-amd64/mc"
+    else:
+        raise NotImplementedError(
+            "Manual setup required to, please download minio and minio client \
+    from https://min.io/ and place them under "
+            + executable_path
+        )
     mc_path = os.path.join(executable_path, "mc")
     minio_path = os.path.join(executable_path, "minio")
     if not os.path.exists(minio_path):
         print("Minio server executable not found, downloading... ")
-        urllib.request.urlretrieve(
-            "https://dl.min.io/server/minio/release/linux-amd64/minio", minio_path
-        )
+        urllib.request.urlretrieve(minio_url, minio_path)
 
     if not os.path.exists(mc_path):
         print("Minio client executable not found, downloading... ")
-        urllib.request.urlretrieve(
-            "https://dl.min.io/client/mc/release/linux-amd64/mc", mc_path
-        )
+        urllib.request.urlretrieve(mc_url, mc_path)
 
     stat_result = os.stat(minio_path)
     if not bool(stat_result.st_mode & stat.S_IEXEC):
