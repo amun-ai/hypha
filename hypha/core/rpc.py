@@ -604,13 +604,6 @@ class RPC(MessageEmitter):
     def _handle_error(self, detail):
         self._fire("error", detail)
 
-    def decode_service(self, interface, target_id):
-        """Decode service."""
-        assert interface["_rtype"] == "service"
-        del interface["_rtype"]
-        decoded = self._decode(interface, with_promise=True, target_id=target_id)
-        return decoded
-
     def encode(self, a_object, as_interface=False, object_id=None, target_id=None):
         """Encode object."""
         return self._encode(
@@ -663,9 +656,6 @@ class RPC(MessageEmitter):
 
         # skip if already encoded
         if isinstance(a_object, dict) and "_rtype" in a_object:
-            # escape service object
-            if a_object["_rtype"] == "service":
-                return a_object
             # make sure the interface functions are encoded
             temp = a_object["_rtype"]
             del a_object["_rtype"]
@@ -818,8 +808,6 @@ class RPC(MessageEmitter):
             return a_object
         if isinstance(a_object, dict) and "_rtype" in a_object:
             b_object = None
-            if a_object["_rtype"] == "service":
-                return a_object
             if (
                 self._codecs.get(a_object["_rtype"])
                 and self._codecs[a_object["_rtype"]].decoder
