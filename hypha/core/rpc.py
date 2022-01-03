@@ -86,8 +86,8 @@ class RPC(MessageEmitter):
         self,
         connection,
         client_id=None,
-        default_target_id=None,
-        config=None,
+        root_target_id=None,
+        default_context=None,
         codecs=None,
     ):
         """Set up instance."""
@@ -95,19 +95,15 @@ class RPC(MessageEmitter):
         self.services = {}
         self._object_store = {}
         self._method_weakmap = weakref.WeakKeyDictionary()
-        self._local_api = None
+        self._services = {}
         self._store = ReferenceStore()
-        self._remote_interface = None
         self._codecs = codecs or {}
         self.work_dir = os.getcwd()
         self.abort = threading.Event()
-        self.id = client_id
-        self.default_target_id = default_target_id
-
-        if config is None:
-            config = {}
-        self.set_config(config)
-
+        self.client_id = client_id
+        self.root_target_id = root_target_id
+        self.default_context = default_context or {}
+        self._remote_root_service = None
         self._remote_logger = dotdict({"info": self._log, "error": self._error})
         super().__init__(self._remote_logger)
 
@@ -124,91 +120,59 @@ class RPC(MessageEmitter):
 
         self.check_modules()
 
-    def init(self):
-        """Initialize the RPC."""
-        logger.info("%s initialized", self.config.name)
-        self._connection.emit(
-            {
-                "type": "initialized",
-                "config": dict(self.config),
-                "peer_id": self._connection.peer_id,
-            }
-        )
-
     def reset(self):
         """Reset."""
         self._event_handlers = {}
         self.services = {}
         self._object_store = {}
         self._method_weakmap = weakref.WeakKeyDictionary()
-        self._local_api = None
+        self._services = {}
         self._store = ReferenceStore()
-        self._remote_interface = None
 
     def disconnect(self):
         """Disconnect."""
-        self._connection.emit({"type": "disconnect"})
-        self.reset()
+        self._fire("disconnect")
         self._connection.disconnect()
 
-    def default_exit(self):
-        """Exit default."""
-        logger.info("Terminating plugin: %s", self.id)
-        self.abort.set()
+    async def get_remote_root_service(self):
+        if self.root_target_id:
+            self._remote_root_service = await self.get_remote_service(
+                service_id=self.root_target_id
+            )
+            return self._remote_root_service
 
-    def set_config(self, config):
-        """Set config."""
-        if config is not None:
-            config = dotdict(config)
-        else:
-            config = dotdict()
-        self.id = config.id or self.id or str(uuid.uuid4())
-        self.allow_execution = config.allow_execution or False
-        self.config = dotdict(
-            {
-                "allow_execution": self.allow_execution,
-                "api_version": API_VERSION,
-                "dedicated_thread": True,
-                "description": config.description or "[TODO]",
-                "id": self.id,
-                "lang": "python",
-                "name": config.name or "ImJoy RPC Python",
-                "type": "rpc-worker",
-                "work_dir": self.work_dir,
-                "version": config.version or "0.1.0",
-            }
-        )
+    def get_all_local_services(self):
+        """Get all the local services."""
+        return self._services
 
-    async def register_service(self, service):
+    def get_local_service(self, service_id):
+        assert service_id is not None
+        return self._services.get(service_id)
+
+    async def get_remote_service(self, service_id=None, timeout=5.0):
+        """Get a remote service."""
+        if service_id is None and self.root_target_id:
+            service_id = self.root_target_id
+        elif not service_id.startswith("/"):
+            service_id = "/" + self.client_id + "/" + service_id
+        assert service_id.startswith("/")
+        provider = service_id.split("/")[1] or "/"
+        service_id = "/" + "/".join(service_id.split("/")[2:])
+        assert provider
+        self.request_remote(target_id=provider, service_id=service_id)
+        query = {"source": provider}
+        if service_id:
+            query["service_id"] = service_id
+        try:
+            data = await self.wait_for("remoteReady", query, timeout)
+            return data["api"]
+        except asyncio.exceptions.TimeoutError:
+            raise Exception(
+                f"Remote service provider (client_id={provider}, service_id={service_id}) failed to respond in time."
+            )
+
+    async def register_service(self, api):
         """Register a service."""
-        encoded = self.encode_service(service, target_id=self.id)
-        if self._remote_interface is None:
-            await self.get_service()
-        await self._remote_interface.register_service(encoded)
-
-    async def get_service(self, service_id=None, target_id=None):
-        """Get a service."""
-        if service_id is None:
-            self.request_remote(target_id=target_id)
-            await self.wait_for("remoteReady", 5.0)
-            assert self._remote_interface is not None
-            return self._remote_interface
-
-        if self._remote_interface is None:
-            await self.get_service()
-        interface = await self._remote_interface.get_service(service_id)
-        service = self.decode_service(interface, target_id=self.id)
-        return service
-
-    def export(self, api, config=None):
-        """Export the api interface."""
-        # TODO: setup forwarding_functions
-        if config is None:
-            config = api.get("config")
-
-        if config:
-            self.set_config(config)
-
         # convert and store it in a docdict
         # such that the methods are hashable
         if isinstance(api, dict):
@@ -234,9 +198,20 @@ class RPC(MessageEmitter):
         else:
             raise Exception("Invalid api export")
 
-        self._local_api = self._encode(api, as_interface=True, target_id=self.id)
-        self._fire("interfaceAvailable")
-        return self._local_api
+        if "id" not in api:
+            api["id"] = "/"
+        api["id"] = "/" + api["id"] if not api["id"].startswith("/") else api["id"]
+
+        if "name" in api:
+            api["name"] = api["id"]
+
+        if "config" not in api:
+            api["config"] = {}
+
+        self._services[api["id"]] = api
+        self._fire("serviceUpdated", {"service_id": api["id"], "api": api})
+        await self._notify_service_update()
+        return self._services[api["id"]]
 
     def check_modules(self):
         """Check if all the modules exists."""
@@ -250,26 +225,32 @@ class RPC(MessageEmitter):
                 "Failed to import numpy, ndarray encoding/decoding will not work"
             )
 
-    def request_remote(self, target_id=None):
+    def request_remote(self, target_id=None, service_id=None):
         """Request remote interface."""
-        target_id = target_id or self.default_target_id
         assert (
             target_id is not None
         ), "No target_id specified for requesting remote interface."
         self._connection.emit(
-            {"type": "getInterface", "target": target_id, "source": self.id}
+            {
+                "type": "getInterface",
+                "target": target_id,
+                "source": self.client_id,
+                "service_id": service_id,
+            }
         )
 
-    def send_interface(self, target_id):
+    def send_interface(self, target_id, service_id):
         """Send interface."""
-        if self._local_api is None:
-            raise Exception("interface is not set.")
+        service = self._services.get(service_id) if service_id else self._services
         self._connection.emit(
             {
                 "type": "setInterface",
-                "api": self._local_api,
+                "api": self._encode(
+                    service, as_interface=True, target_id=self.client_id
+                ),
                 "target": target_id,
-                "source": self.id,
+                "source": self.client_id,
+                "service_id": service_id,
             }
         )
 
@@ -372,7 +353,7 @@ class RPC(MessageEmitter):
                             "id": cid,
                             "source": target_id,
                             "target": source,
-                            # 'object_id'  : self.id,
+                            # 'object_id'  : self.client_id,
                             "args": self._encode(arguments, target_id=target_id),
                             "with_kwargs": bool(kwargs),
                             "promise": encoded_promise,
@@ -394,7 +375,7 @@ class RPC(MessageEmitter):
                         "id": cid,
                         "source": target_id,
                         "target": source,
-                        # 'object_id'  : self.id,
+                        # 'object_id'  : self.client_id,
                         "args": self._encode(arguments, target_id=target_id),
                         "with_kwargs": bool(kwargs),
                     }
@@ -402,24 +383,40 @@ class RPC(MessageEmitter):
 
         return remote_callback
 
-    async def wait_for(self, event, timeout=None):
+    async def wait_for(self, event, query=None, timeout=None):
         """Wait for event."""
         fut = self.loop.create_future()
-        self.once(event, fut.set_result)
-        return await asyncio.wait_for(fut, timeout)
 
-    def set_remote_interface(self, api):
+        def on_event(data):
+            if not query:
+                fut.set_result(data)
+                self.off(event, on_event)
+            elif isinstance(query, dict):
+                matched = True
+                for key in query:
+                    if data.get(key) != query[key]:
+                        matched = False
+                        break
+                if matched:
+                    fut.set_result(data)
+                    self.off(event, on_event)
+            elif query == data:
+                fut.set_result(data)
+                self.off(event, on_event)
+
+        self.on(event, on_event)
+        try:
+            ret = await asyncio.wait_for(fut, timeout)
+        # except timeout error
+        except asyncio.exceptions.TimeoutError:
+            self.off(event, on_event)
+            raise
+        return ret
+
+    def set_remote_interface(self, data):
         """Set remote interface."""
-        _remote = self._decode(api, False, target_id=self.id)
-        # update existing interface instead of recreating it
-        # this will preserve the object reference
-        if self._remote_interface:
-            self._remote_interface.clear()
-            for k in _remote:
-                self._remote_interface[k] = _remote[k]
-        else:
-            self._remote_interface = _remote
-        self._fire("remoteReady")
+        data["api"] = self._decode(data["api"], False, target_id=self.client_id)
+        self._fire("remoteReady", data)
 
     def _log(self, info):
         self._connection.emit({"type": "log", "message": info})
@@ -462,7 +459,6 @@ class RPC(MessageEmitter):
                 reject(Exception(format_traceback(traceback_error)))
 
     def _setup_handlers(self, connection):
-        connection.on("init", self.init)
         connection.on("execute", self._handle_execute)
         connection.on("method", self._handle_method)
         connection.on("callback", self._handle_callback)
@@ -472,6 +468,21 @@ class RPC(MessageEmitter):
         connection.on("setInterface", self._set_interface_handler)
         connection.on("interfaceSetAsRemote", self._remote_set_handler)
         connection.on("disposeObject", self._dispose_object_handler)
+
+    async def _notify_service_update(self):
+        if not self._remote_root_service:
+            await self.get_remote_root_service()
+        if self._remote_root_service:
+            await self._remote_root_service.save_services(
+                [
+                    {
+                        "id": k,
+                        "name": self._services[k]["name"],
+                        "config": self._services[k]["config"],
+                    }
+                    for k in self._services.keys()
+                ]
+            )
 
     def _dispose_object_handler(self, data):
         try:
@@ -487,22 +498,15 @@ class RPC(MessageEmitter):
         self._fire("disconnected", data)
 
     def _get_interface_handler(self, data):
-        if self._local_api is not None:
-            self.send_interface(data["source"])
-        else:
-
-            def _send_interface():
-                self.send_interface(data["source"])
-
-            self.once("interfaceAvailable", _send_interface)
+        self.send_interface(data["source"], data["service_id"])
 
     def _set_interface_handler(self, data):
-        self.set_remote_interface(data["api"])
+        self.set_remote_interface(data)
         self._connection.emit(
             {
                 "type": "interfaceSetAsRemote",
                 "target": data["source"],
-                "source": self.id,
+                "source": self.client_id,
             }
         )
 
@@ -540,27 +544,23 @@ class RPC(MessageEmitter):
                 resolve, reject = self._decode(
                     data["promise"], False, target_id=data["source"]
                 )
+            else:
+                resolve, reject = None, None
             _interface = self._object_store[data["object_id"]]
             method = index_object(_interface, data["name"])
-            if "promise" in data:
-                args = self._decode(data["args"], True, target_id=data["source"])
-                if data.get("with_kwargs"):
-                    kwargs = args.pop()
-                else:
-                    kwargs = {}
-                # args.append({'id': self.id})
-
-                self._call_method(
-                    method, args, kwargs, resolve, reject, method_name=data["name"]
-                )
+            args = self._decode(data["args"], True, target_id=data["source"])
+            if data.get("with_kwargs"):
+                kwargs = args.pop()
             else:
-                args = self._decode(data["args"], True, target_id=data["source"])
-                if data.get("with_kwargs"):
-                    kwargs = args.pop()
-                else:
-                    kwargs = {}
-                # args.append({'id': self.id})
-                self._call_method(method, args, kwargs, method_name=data["name"])
+                kwargs = {}
+            # args.append({'id': self.client_id})
+            if _interface.get("config") and _interface["config"].get("require_context"):
+                self.default_context.update({"client_id": data["source"]})
+                kwargs["context"] = self.default_context
+            self._call_method(
+                method, args, kwargs, resolve, reject, method_name=data["name"]
+            )
+
         except Exception as err:
             traceback_error = traceback.format_exc()
             logger.exception("Error during calling method: %s", err)
@@ -575,38 +575,24 @@ class RPC(MessageEmitter):
                 resolve, reject = self._decode(
                     data["promise"], False, target_id=data["source"]
                 )
-                method = self._store.fetch(data["id"])
-                if method is None:
-                    raise Exception(
-                        "Callback function can only called once, "
-                        "if you want to call a function for multiple times, "
-                        "please make it as a plugin api function. "
-                        "See https://imjoy.io/docs for more details."
-                    )
-                args = self._decode(data["args"], True, target_id=data["source"])
-                if data.get("with_kwargs"):
-                    kwargs = args.pop()
-                else:
-                    kwargs = {}
-                self._call_method(
-                    method, args, kwargs, resolve, reject, method_name=data["id"]
-                )
-
             else:
-                method = self._store.fetch(data["id"])
-                if method is None:
-                    raise Exception(
-                        "Callback function can only called once, "
-                        "if you want to call a function for multiple times, "
-                        "please make it as a plugin api function. "
-                        "See https://imjoy.io/docs for more details."
-                    )
-                args = self._decode(data["args"], True, target_id=data["source"])
-                if data.get("with_kwargs"):
-                    kwargs = args.pop()
-                else:
-                    kwargs = {}
-                self._call_method(method, args, kwargs, method_name=data["id"])
+                resolve, reject = None, None
+            method = self._store.fetch(data["id"])
+            if method is None:
+                raise Exception(
+                    "Callback function can only called once, "
+                    "if you want to call a function for multiple times, "
+                    "please make it as a plugin api function. "
+                    "See https://imjoy.io/docs for more details."
+                )
+            args = self._decode(data["args"], True, target_id=data["source"])
+            if data.get("with_kwargs"):
+                kwargs = args.pop()
+            else:
+                kwargs = {}
+            self._call_method(
+                method, args, kwargs, resolve, reject, method_name=data["id"]
+            )
 
         except Exception as err:
             traceback_error = traceback.format_exc()
@@ -618,22 +604,21 @@ class RPC(MessageEmitter):
     def _handle_error(self, detail):
         self._fire("error", detail)
 
-    def encode_service(self, service, target_id):
-        """Encode service."""
-        encoded = self._encode(service, as_interface=True, target_id=target_id)
-        encoded["_rtype"] = "service"
-        return encoded
-
     def decode_service(self, interface, target_id):
         """Decode service."""
         assert interface["_rtype"] == "service"
         del interface["_rtype"]
         decoded = self._decode(interface, with_promise=True, target_id=target_id)
         return decoded
-    
+
     def encode(self, a_object, as_interface=False, object_id=None, target_id=None):
         """Encode object."""
-        return self._encode(a_object, as_interface=as_interface, object_id=object_id, target_id=target_id)
+        return self._encode(
+            a_object,
+            as_interface=as_interface,
+            object_id=object_id,
+            target_id=target_id,
+        )
 
     def _encode(self, a_object, as_interface=False, object_id=None, target_id=None):
         """Encode object."""
@@ -810,7 +795,9 @@ class RPC(MessageEmitter):
                 b_object = [] if isarray else {}
                 for key in keys:
                     if isarray:
-                        b_object.append(self._encode(a_object[key], target_id=target_id))
+                        b_object.append(
+                            self._encode(a_object[key], target_id=target_id)
+                        )
                     else:
                         b_object[key] = self._encode(a_object[key], target_id=target_id)
         else:
@@ -931,7 +918,9 @@ class RPC(MessageEmitter):
             for key in keys:
                 val = a_object[key]
                 if isarray:
-                    b_object.append(self._decode(val, with_promise, target_id=target_id))
+                    b_object.append(
+                        self._decode(val, with_promise, target_id=target_id)
+                    )
                 else:
                     b_object[key] = self._decode(val, with_promise, target_id=target_id)
         # make sure we have bytes instead of memoryview, e.g. for Pyodide

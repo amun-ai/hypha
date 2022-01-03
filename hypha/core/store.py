@@ -1,33 +1,107 @@
 """A scalable state store based on Redis."""
 import asyncio
 import json
+import os
+import tempfile
+from typing import Union
 
 import msgpack
 from imjoy_rpc.core_connection import BasicConnection
 from redislite import Redis
 
-from hypha.core import RDF, WorkspaceInfo
+from hypha.core import WorkspaceInfo
 from hypha.core.rpc import RPC
+
+
+class WorkspaceManager:
+    def __init__(self, workspace: Union[str, WorkspaceInfo], redis: Redis):
+        self.redis = redis
+        if isinstance(workspace, str):
+            workspace = self._get_workspace(workspace)
+        self.workspace = workspace
+
+    def _save_workspace(self, workspace: WorkspaceInfo):
+        workspace_info = workspace.json()
+        self.redis.hset("workspaces", workspace.name, workspace_info)
+
+    def _get_workspace(self, workspace_name):
+        """Get a workspace."""
+        workspace_info = self.redis.hget("workspaces", workspace_name)
+        if workspace_info is None:
+            raise Exception(f"Workspace not found: {workspace_name}")
+        return WorkspaceInfo.parse_obj(json.loads(workspace_info.decode()))
+
+    def save_services(self, services, context=None):
+        assert isinstance(services, list)
+        for service in services:
+            if "id" not in service or "name" not in service or "config" not in service:
+                raise ValueError(
+                    f"Invalid service(id={service.get('id')}, "
+                    f"name={service.get('name')}), each service"
+                    " should at least contain `id`, `name` and `config`."
+                )
+        client_id = "/" + context["client_id"] if context["client_id"] != "/" else "/"
+        self.workspace.interfaces[client_id] = services
+        self._save_workspace(self.workspace)
+
+    def list_services(self, context=None):
+        service_list = []
+        for provider, services in self.workspace.interfaces.items():
+            for service in services:
+                service_list.append(
+                    {
+                        "id": provider + service["id"]
+                        if provider != "/"
+                        else service["id"],
+                        "name": service["name"],
+                        "config": service["config"],
+                    }
+                )
+        return service_list
+
+    def log(self, *args, context=None):
+        print(context["client_id"], *args)
+
+    def get_service(self, service_id, service_name):
+        interface = {
+            "id": service_id,
+            "name": service_name or service_id,
+            "config": {"require_context": True},
+            "log": self.log,
+            "save_services": self.save_services,
+            "list_services": self.list_services,
+        }
+        return interface
 
 
 class RedisStore:
     """Represent a redis store."""
 
+    _store = None
+
+    @staticmethod
+    def get_instance():
+        if RedisStore._store is None:
+            RedisStore._store = RedisStore()
+        return RedisStore._store
+
     def __init__(self, uri="/tmp/redis.db"):
         """Set up the redis store."""
+        if uri is None:
+            uri = os.path.join(tempfile.mkdtemp(), "redis.db")
         self.redis = Redis(uri)
 
     def create_rpc(
-        self,
-        workspace: WorkspaceInfo,
-        client_id: str,
+        self, workspace: Union[str, WorkspaceInfo], client_id: str, default_context=None
     ):
         """Create a rpc."""
+        if isinstance(workspace, str):
+            workspace = self.get_workspace(workspace)
         pubsub = self.redis.pubsub()
 
         async def send(data):
             if "target" not in data:
-                raise ValueError("target is required")
+                raise ValueError(f"target is required: {data}")
             self.redis.publish(
                 f"{workspace.name}:msg:{data['target']}", msgpack.packb(data)
             )
@@ -58,37 +132,15 @@ class RedisStore:
 
         pubsub.subscribe(f"{workspace.name}:msg:{client_id}")
 
-        rpc = RPC(connection, client_id="core")
+        rpc = RPC(connection, client_id=client_id, default_context=default_context)
         return rpc
 
-    def register_workspace(self, workspace: WorkspaceInfo):
+    async def register_workspace(self, workspace: WorkspaceInfo):
         """Add a workspace."""
-
-        def register_service(encoded):
-            assert "id" in encoded
-            workspace.interfaces["/" + encoded["id"]] = encoded
-            self._save_workspace(workspace)
-
-        def get_service(service_id):
-            ws = self.get_workspace(workspace.name)
-            interface = ws.interfaces["/" + service_id]
-            return interface
-
-        def list_services():
-            ws = self.get_workspace(workspace.name)
-            return list(ws.interfaces.keys())
-
-        interface = {
-            "config": {},
-            "log": print,
-            "register_service": register_service,
-            "get_service": get_service,
-            "list_services": list_services,
-        }
-
-        rpc = self.create_rpc(workspace, "core")
-        workspace.interfaces["/"] = rpc.export(interface)
         self._save_workspace(workspace)
+        await self.setup_workspace_manager(
+            workspace.name, client_id="/", service_id="/"
+        )
 
     def _save_workspace(self, workspace: WorkspaceInfo):
         workspace_info = workspace.json()
@@ -97,12 +149,38 @@ class RedisStore:
     def get_workspace(self, workspace_name):
         """Get a workspace."""
         workspace_info = self.redis.hget("workspaces", workspace_name)
+        if workspace_info is None:
+            raise Exception(f"Workspace not found: {workspace_name}")
         return WorkspaceInfo.parse_obj(json.loads(workspace_info.decode()))
 
-    def get_workspace_interface(self, workspace_name, client_id):
+    def connect_to_workspace(self, workspace_name, client_id):
+        rpc = self.create_rpc(workspace_name, client_id=client_id, default_context={})
+        return rpc
+
+    async def setup_workspace_manager(
+        self, workspace_name, client_id, service_id, service_name=None
+    ):
         """Get the workspace interface."""
-        workspace = self.get_workspace(workspace_name)
-        return workspace.interfaces["/"]
+        manager = WorkspaceManager(workspace_name, self.redis)
+        rpc = self.connect_to_workspace(workspace_name, client_id)
+
+        def update_services(_):
+            local_services = rpc.get_all_local_services()
+            manager.save_services(
+                [
+                    {
+                        "id": k,
+                        "name": local_services[k]["name"],
+                        "config": local_services[k]["config"],
+                    }
+                    for k in local_services.keys()
+                ],
+                context={"client_id": rpc.client_id},
+            )
+
+        rpc.on("serviceUpdated", update_services)
+        management_service = manager.get_service(service_id, service_name)
+        await rpc.register_service(management_service)
 
     def get_all_workspaces(self):
         """Get all workspaces."""
@@ -119,28 +197,29 @@ class RedisStore:
         """Delete a workspace."""
         self.redis.delete("workspaces", workspace_name)
 
-    def register_plugin(self, plugin_info: RDF):
-        """Add a plugin."""
-        self.redis.hset("plugins", plugin_info.id, plugin_info.json())
+    def register_client(self, client_info):
+        """Add a client."""
+        self.redis.hset("clients", client_info["id"], json.dumps(client_info))
 
-    def get_plugin(self, plugin_id: str):
-        """Get a plugin."""
-        return RDF.parse_obj(json.loads(self.redis.hget("plugins", plugin_id).decode()))
+    def get_client(self, client_id: str):
+        """Get a client."""
+        return json.loads(self.redis.hget("clients", client_id).decode())
 
-    def get_all_plugins(self):
-        """Get all plugins."""
+    def check_client_exists(self, client_id: str):
+        """Check if a client exists."""
+        return self.redis.hexists("clients", client_id)
+
+    def get_all_clients(self):
+        """Get all clients."""
         return {
-            k.decode(): RDF.parse_obj(json.loads(v.decode()))
-            for k, v in self.redis.hgetall("plugins").items()
+            k.decode(): json.loads(v.decode())
+            for k, v in self.redis.hgetall("clients").items()
         }
 
-    def list_plugins(self):
-        """List all plugins."""
-        return [k.decode() for k in self.redis.hkeys("plugins")]
+    def list_clients(self):
+        """List all clients."""
+        return [k.decode() for k in self.redis.hkeys("clients")]
 
-    def delete_plugin(self, plugin_id: str):
-        """Delete a plugin."""
-        self.redis.delete("plugins", plugin_id)
-
-
-store = RedisStore()
+    def delete_client(self, client_id: str):
+        """Delete a client."""
+        self.redis.delete("clients", client_id)

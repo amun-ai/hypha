@@ -186,7 +186,7 @@ class WorkspaceInfo(BaseModel):
     deny_list: Optional[List[str]]
     read_only: bool = False
     applications: Dict[str, RDF] = {}  # installed applications
-    interfaces: Dict[str, Dict[str, Any]] = {}
+    interfaces: Dict[str, List[Any]] = {}
     _logger: Optional[logging.Logger] = PrivateAttr(default_factory=lambda: logger)
     _plugins: Dict[str, DynamicPlugin] = PrivateAttr(
         default_factory=lambda: {}
