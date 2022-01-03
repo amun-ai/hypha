@@ -62,7 +62,7 @@ class WorkspaceManager:
     def log(self, *args, context=None):
         print(context["client_id"], *args)
 
-    def get_service(self, service_id, service_name):
+    def create_service(self, service_id, service_name):
         interface = {
             "id": service_id,
             "name": service_name or service_id,
@@ -179,7 +179,7 @@ class RedisStore:
             )
 
         rpc.on("serviceUpdated", update_services)
-        management_service = manager.get_service(service_id, service_name)
+        management_service = manager.create_service(service_id, service_name)
         await rpc.register_service(management_service)
 
     def get_all_workspaces(self):

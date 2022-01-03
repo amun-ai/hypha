@@ -27,8 +27,8 @@ async def test_redis_store():
 
     rpc = store.connect_to_workspace("test", client_id="test-plugin-1")
     api = await rpc.get_remote_service("/")
-    await api.log("hello")
-    assert len(await api.list_services()) == 1
+    await api.log("hello", _rscope="session")
+    assert len(await api.list_services()) == 2
 
     def echo(data):
         return data

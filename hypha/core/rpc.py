@@ -92,10 +92,8 @@ class RPC(MessageEmitter):
     ):
         """Set up instance."""
         self.manager_api = {}
-        self.services = {}
         self._object_store = {}
-        self._method_weakmap = weakref.WeakKeyDictionary()
-        self._services = {}
+        self._session_store = {}
         self._store = ReferenceStore()
         self._codecs = codecs or {}
         self.work_dir = os.getcwd()
@@ -106,6 +104,14 @@ class RPC(MessageEmitter):
         self._remote_root_service = None
         self._remote_logger = dotdict({"info": self._log, "error": self._error})
         super().__init__(self._remote_logger)
+        self._services = {
+            "/built-in": {
+                "id": "built-in",
+                "name": "RPC built-in services",
+                "config": {"require_context": True},
+                "get_service": self.get_local_service,
+            }
+        }
 
         try:
             # FIXME: What exception do we expect?
@@ -123,9 +129,7 @@ class RPC(MessageEmitter):
     def reset(self):
         """Reset."""
         self._event_handlers = {}
-        self.services = {}
         self._object_store = {}
-        self._method_weakmap = weakref.WeakKeyDictionary()
         self._services = {}
         self._store = ReferenceStore()
 
@@ -159,17 +163,13 @@ class RPC(MessageEmitter):
         provider = service_id.split("/")[1] or "/"
         service_id = "/" + "/".join(service_id.split("/")[2:])
         assert provider
-        self.request_remote(target_id=provider, service_id=service_id)
-        query = {"source": provider}
-        if service_id:
-            query["service_id"] = service_id
-        try:
-            data = await self.wait_for("remoteReady", query, timeout)
-            return data["api"]
-        except asyncio.exceptions.TimeoutError:
-            raise Exception(
-                f"Remote service provider (client_id={provider}, service_id={service_id}) failed to respond in time."
-            )
+
+        method = self._gen_remote_method(
+            provider,
+            "get_service",
+            object_id="/built-in",
+        )
+        return await method(service_id)
 
     async def register_service(self, api):
         """Register a service."""
@@ -225,35 +225,6 @@ class RPC(MessageEmitter):
                 "Failed to import numpy, ndarray encoding/decoding will not work"
             )
 
-    def request_remote(self, target_id=None, service_id=None):
-        """Request remote interface."""
-        assert (
-            target_id is not None
-        ), "No target_id specified for requesting remote interface."
-        self._connection.emit(
-            {
-                "type": "getInterface",
-                "target": target_id,
-                "source": self.client_id,
-                "service_id": service_id,
-            }
-        )
-
-    def send_interface(self, target_id, service_id):
-        """Send interface."""
-        service = self._services.get(service_id) if service_id else self._services
-        self._connection.emit(
-            {
-                "type": "setInterface",
-                "api": self._encode(
-                    service, as_interface=True, target_id=self.client_id
-                ),
-                "target": target_id,
-                "source": self.client_id,
-                "service_id": service_id,
-            }
-        )
-
     def _dispose_object(self, object_id):
         if object_id in self._object_store:
             del self._object_store[object_id]
@@ -283,7 +254,42 @@ class RPC(MessageEmitter):
 
         return FuturePromise(pfunc, self._remote_logger)
 
-    def _gen_remote_method(self, source, name, plugin_id=None, target_id=None):
+    def _encode_callbacks(self, callbacks, session_id, clear_when_called=False):
+        """Encode a group of callbacks without promise."""
+        if session_id not in self._session_store:
+            self._session_store[session_id] = {}
+        callback_store = self._session_store[session_id]
+        if "__callbacks__" not in callback_store:
+            callback_store["__callbacks__"] = {}
+        store = callback_store["__callbacks__"]
+        cid = str(uuid.uuid4())
+        store[cid] = {}
+        encoded = {}
+        for name, callback in callbacks.items():
+            if clear_when_called:
+
+                def wrapped_callback(*args, **kwargs):
+                    if session_id in self._session_store:
+                        del self._session_store[session_id]
+                    callback(*args, **kwargs)
+
+                store[cid][name] = wrapped_callback
+            else:
+                store[cid][name] = callback
+            encoded[name] = {
+                "_rtype": "method",
+                "_rname": name,
+                "_rtarget_id": self.client_id,
+                "_rintf": "__callbacks__",
+                "_rid": f"{cid}.{name}",
+                "_rsession": session_id,
+                "_rcontext": False,
+            }
+        return encoded
+
+    def _gen_remote_method(
+        self, source, name, remote_session=None, object_id=None, require_context=False
+    ):
         """Return remote method."""
 
         def remote_method(*arguments, **kwargs):
@@ -294,33 +300,30 @@ class RPC(MessageEmitter):
                 arguments = arguments + [kwargs]
 
             def pfunc(resolve, reject):
-                encoded_promise = self._encode([resolve, reject], target_id=target_id)
-                # store the key id for removing them from the reference store together
-                resolve.__promise_pair = encoded_promise[0]["_rid"]
-                reject.__promise_pair = encoded_promise[1]["_rid"]
+                session_id = str(uuid.uuid4())
 
-                if name in [
-                    "register",
-                    "registerService",
-                    "register_service",
-                    "export",
-                    "on",
-                ]:
-                    args = self._encode(
-                        arguments, as_interface=True, target_id=target_id
-                    )
-                else:
-                    args = self._encode(arguments, target_id=target_id)
+                encoded_promise = self._encode_callbacks(
+                    {"resolve": resolve, "reject": reject},
+                    session_id=session_id,
+                    clear_when_called=False,
+                )
+                args = self._encode(
+                    arguments,
+                    as_interface=True,
+                    session_id=session_id,
+                )
 
                 call_func = {
                     "type": "method",
-                    "source": target_id,
+                    "source": self.client_id,
                     "target": source,
                     "name": name,
-                    "object_id": plugin_id,
+                    "object_id": object_id,
                     "args": args,
                     "with_kwargs": bool(kwargs),
                     "promise": encoded_promise,
+                    "session": remote_session,
+                    "with_context": require_context,
                 }
                 self._connection.emit(call_func)
 
@@ -328,60 +331,6 @@ class RPC(MessageEmitter):
 
         remote_method.__remote_method = True  # pylint: disable=protected-access
         return remote_method
-
-    def _gen_remote_callback(self, source, cid, with_promise, target_id=None):
-        """Return remote callback."""
-        if with_promise:
-
-            def remote_callback(*arguments, **kwargs):
-                # encode keywords to a dictionary and pass to the last argument
-                arguments = list(arguments)
-                if kwargs:
-                    arguments = arguments + [kwargs]
-
-                def pfunc(resolve, reject):
-                    encoded_promise = self._encode(
-                        [resolve, reject], target_id=target_id
-                    )
-                    # store the key id
-                    # for removing them from the reference store together
-                    resolve.__promise_pair = encoded_promise[0]["_rid"]
-                    reject.__promise_pair = encoded_promise[1]["_rid"]
-                    self._connection.emit(
-                        {
-                            "type": "callback",
-                            "id": cid,
-                            "source": target_id,
-                            "target": source,
-                            # 'object_id'  : self.client_id,
-                            "args": self._encode(arguments, target_id=target_id),
-                            "with_kwargs": bool(kwargs),
-                            "promise": encoded_promise,
-                        }
-                    )
-
-                return FuturePromise(pfunc, self._remote_logger, self.dispose_object)
-
-        else:
-
-            def remote_callback(*arguments, **kwargs):
-                # encode keywords to a dictionary and pass to the last argument
-                arguments = list(arguments)
-                if kwargs:
-                    arguments = arguments + [kwargs]
-                self._connection.emit(
-                    {
-                        "type": "callback",
-                        "id": cid,
-                        "source": target_id,
-                        "target": source,
-                        # 'object_id'  : self.client_id,
-                        "args": self._encode(arguments, target_id=target_id),
-                        "with_kwargs": bool(kwargs),
-                    }
-                )
-
-        return remote_callback
 
     async def wait_for(self, event, query=None, timeout=None):
         """Wait for event."""
@@ -415,7 +364,7 @@ class RPC(MessageEmitter):
 
     def set_remote_interface(self, data):
         """Set remote interface."""
-        data["api"] = self._decode(data["api"], False, target_id=self.client_id)
+        data["api"] = self._decode(data["api"], False)
         self._fire("remoteReady", data)
 
     def _log(self, info):
@@ -459,14 +408,8 @@ class RPC(MessageEmitter):
                 reject(Exception(format_traceback(traceback_error)))
 
     def _setup_handlers(self, connection):
-        connection.on("execute", self._handle_execute)
         connection.on("method", self._handle_method)
-        connection.on("callback", self._handle_callback)
-        connection.on("error", self._handle_error)
         connection.on("disconnected", self._disconnected_hanlder)
-        connection.on("getInterface", self._get_interface_handler)
-        connection.on("setInterface", self._set_interface_handler)
-        connection.on("interfaceSetAsRemote", self._remote_set_handler)
         connection.on("disposeObject", self._dispose_object_handler)
 
     async def _notify_service_update(self):
@@ -497,66 +440,31 @@ class RPC(MessageEmitter):
         self._connection.disconnect()
         self._fire("disconnected", data)
 
-    def _get_interface_handler(self, data):
-        self.send_interface(data["source"], data["service_id"])
-
-    def _set_interface_handler(self, data):
-        self.set_remote_interface(data)
-        self._connection.emit(
-            {
-                "type": "interfaceSetAsRemote",
-                "target": data["source"],
-                "source": self.client_id,
-            }
-        )
-
-    def _remote_set_handler(self, data):
-        self._fire("interfaceSetAsRemote", data)
-
-    def _handle_execute(self, data):
-        if self.allow_execution:
-            try:
-                t = data["code"]["type"]
-                if t == "script":
-                    content = data["code"]["content"]
-                    # TODO: fix the imjoy module such that it will
-                    # stick to the current context api
-                    exec(content)
-                elif t == "requirements":
-                    pass
-                else:
-                    raise Exception("unsupported type")
-                self._connection.emit({"type": "executed"})
-            except Exception as err:
-                traceback_error = traceback.format_exc()
-                logger.exception("Error during execution: %s", err)
-                self._connection.emit({"type": "executed", "error": traceback_error})
-        else:
-            self._connection.emit(
-                {"type": "executed", "error": "execution is not allowed"}
-            )
-            logger.warning("execution is blocked due to allow_execution=False")
-
     def _handle_method(self, data):
         reject = None
         try:
             if "promise" in data:
-                resolve, reject = self._decode(
-                    data["promise"], False, target_id=data["source"]
-                )
+                promise = self._decode(data["promise"], False)
+                resolve, reject = promise["resolve"], promise["reject"]
             else:
                 resolve, reject = None, None
-            _interface = self._object_store[data["object_id"]]
-            method = index_object(_interface, data["name"])
-            args = self._decode(data["args"], True, target_id=data["source"])
+            args = self._decode(data["args"], True)
             if data.get("with_kwargs"):
                 kwargs = args.pop()
             else:
                 kwargs = {}
-            # args.append({'id': self.client_id})
-            if _interface.get("config") and _interface["config"].get("require_context"):
+            session_id = data.get("session")
+            if session_id is None:
+                _interface = self._services[data["object_id"]]
+            else:
+                if session_id not in self._session_store:
+                    raise Exception(f"Session not found: {session_id}")
+                _interface = self._session_store[session_id][data["object_id"]]
+            if data.get("with_context"):
                 self.default_context.update({"client_id": data["source"]})
                 kwargs["context"] = self.default_context
+            method = index_object(_interface, data["name"])
+
             self._call_method(
                 method, args, kwargs, resolve, reject, method_name=data["name"]
             )
@@ -564,56 +472,25 @@ class RPC(MessageEmitter):
         except Exception as err:
             traceback_error = traceback.format_exc()
             logger.exception("Error during calling method: %s", err)
-            self._connection.emit({"type": "error", "message": traceback_error})
             if callable(reject):
                 reject(traceback_error)
 
-    def _handle_callback(self, data):
-        reject = None
-        try:
-            if "promise" in data:
-                resolve, reject = self._decode(
-                    data["promise"], False, target_id=data["source"]
-                )
-            else:
-                resolve, reject = None, None
-            method = self._store.fetch(data["id"])
-            if method is None:
-                raise Exception(
-                    "Callback function can only called once, "
-                    "if you want to call a function for multiple times, "
-                    "please make it as a plugin api function. "
-                    "See https://imjoy.io/docs for more details."
-                )
-            args = self._decode(data["args"], True, target_id=data["source"])
-            if data.get("with_kwargs"):
-                kwargs = args.pop()
-            else:
-                kwargs = {}
-            self._call_method(
-                method, args, kwargs, resolve, reject, method_name=data["id"]
-            )
-
-        except Exception as err:
-            traceback_error = traceback.format_exc()
-            logger.exception("error when calling callback function: %s", err)
-            self._connection.emit({"type": "error", "message": traceback_error})
-            if callable(reject):
-                reject(traceback_error)
-
-    def _handle_error(self, detail):
-        self._fire("error", detail)
-
-    def encode(self, a_object, as_interface=False, object_id=None, target_id=None):
+    def encode(self, a_object, as_interface=False, session_id=None):
         """Encode object."""
         return self._encode(
             a_object,
             as_interface=as_interface,
-            object_id=object_id,
-            target_id=target_id,
+            session_id=session_id,
         )
 
-    def _encode(self, a_object, as_interface=False, object_id=None, target_id=None):
+    def _encode(
+        self,
+        a_object,
+        as_interface=False,
+        object_id=None,
+        session_id=None,
+        require_context=False,
+    ):
         """Encode object."""
         if isinstance(a_object, (int, float, bool, str, bytes)) or a_object is None:
             return a_object
@@ -623,29 +500,18 @@ class RPC(MessageEmitter):
         as_interface = bool(as_interface)
 
         if callable(a_object):
-            if as_interface:
-                if not object_id:
-                    raise Exception("object_id is not specified.")
-                _intf, _rid = object_id.split(":")
-                b_object = {
-                    "_rtype": "interface",
-                    "_rtarget_id": target_id,
-                    "_rintf": _intf,
-                    "_rid": _rid,
-                }
-                self._method_weakmap[a_object] = b_object
-            elif a_object in self._method_weakmap:
-                b_object = self._method_weakmap[a_object]
-            else:
-                cid = self._store.put(a_object)
-                b_object = {
-                    "_rtype": "callback",
-                    # Some functions do not have the __name__ attribute
-                    # for example when we use functools.partial to create functions
-                    "_rname": getattr(a_object, "__name__", cid),
-                    "_rtarget_id": target_id,
-                    "_rid": cid,
-                }
+            if not object_id:
+                raise Exception("object_id is not specified.")
+            _intf, _rid = object_id.split(":")
+
+            b_object = {
+                "_rtype": "method",
+                "_rtarget_id": self.client_id,
+                "_rintf": _intf,
+                "_rid": _rid,
+                "_rsession": session_id,
+                "_rcontext": require_context,
+            }
             return b_object
 
         if isinstance(a_object, tuple):
@@ -660,7 +526,12 @@ class RPC(MessageEmitter):
             temp = a_object["_rtype"]
             del a_object["_rtype"]
             b_object = self._encode(
-                a_object, as_interface, object_id, target_id=target_id
+                a_object,
+                as_interface,
+                object_id,
+                target_id=target_id,
+                session_id=session_id,
+                require_context=require_context,
             )
             b_object["_rtype"] = temp
             return b_object
@@ -680,7 +551,12 @@ class RPC(MessageEmitter):
                 if isinstance(encoded_obj, dict) and "_rintf" in encoded_obj:
                     temp = encoded_obj["_rtype"]
                     del encoded_obj["_rtype"]
-                    encoded_obj = self._encode(encoded_obj, True, target_id=target_id)
+                    encoded_obj = self._encode(
+                        encoded_obj,
+                        True,
+                        session_id=session_id,
+                        require_context=require_context,
+                    )
                     encoded_obj["_rtype"] = temp
                 b_object = encoded_obj
                 return b_object
@@ -707,38 +583,49 @@ class RPC(MessageEmitter):
                 m: getattr(a_object, m) for m in IO_METHODS if hasattr(a_object, m)
             }
             b_object["_rintf"] = True
-            b_object = self._encode(b_object, target_id=target_id)
+            b_object = self._encode(
+                b_object, session_id=session_id, require_context=require_context
+            )
 
         # NOTE: "typedarray" is not used
         elif isinstance(a_object, OrderedDict):
             b_object = {
                 "_rtype": "orderedmap",
                 "_rvalue": self._encode(
-                    list(a_object), as_interface, target_id=target_id
+                    list(a_object),
+                    as_interface,
+                    session_id=session_id,
+                    require_context=require_context,
                 ),
             }
         elif isinstance(a_object, set):
             b_object = {
                 "_rtype": "set",
                 "_rvalue": self._encode(
-                    list(a_object), as_interface, target_id=target_id
+                    list(a_object),
+                    as_interface,
+                    session_id=session_id,
+                    require_context=require_context,
                 ),
             }
         elif isinstance(a_object, (list, dict)):
-
+            if "id" in a_object and "name" in a_object and "config" in a_object:
+                require_context = a_object["config"].get("require_context")
             keys = range(len(a_object)) if isarray else a_object.keys()
             # encode interfaces
             if as_interface:
                 b_object = [] if isarray else {}
                 if object_id is None:
                     object_id = str(uuid.uuid4())
+                    if session_id not in self._session_store:
+                        self._session_store[session_id] = {}
                     # Note: object with the same id will be overwritten
-                    if object_id in self._object_store:
+                    if object_id in self._session_store[session_id]:
                         logger.warning(
                             "Overwritting interface object with the same id: %s",
                             object_id,
                         )
-                    self._object_store[object_id] = a_object
+                    self._session_store[session_id][object_id] = a_object
 
                 has_function = False
                 for key in keys:
@@ -757,7 +644,8 @@ class RPC(MessageEmitter):
                         # We need to convert to a string here,
                         # otherwise 0 will not be truthy.
                         _obj_id,
-                        target_id=target_id,
+                        session_id=session_id,
+                        require_context=require_context,
                     )
                     if callable(a_object[key]):
                         has_function = True
@@ -772,24 +660,23 @@ class RPC(MessageEmitter):
                     b_object["_rlength"] = len(b_object)
                 if not isarray and has_function:
                     b_object["_rintf"] = object_id
-
-                # remove interface when closed
-                if "on" in a_object and callable(a_object["on"]):
-
-                    def remove_interface(_):
-                        if object_id in self._object_store:
-                            del self._object_store[object_id]
-
-                    a_object["on"]("close", remove_interface)
             else:
                 b_object = [] if isarray else {}
                 for key in keys:
                     if isarray:
                         b_object.append(
-                            self._encode(a_object[key], target_id=target_id)
+                            self._encode(
+                                a_object[key],
+                                session_id=session_id,
+                                require_context=require_context,
+                            )
                         )
                     else:
-                        b_object[key] = self._encode(a_object[key], target_id=target_id)
+                        b_object[key] = self._encode(
+                            a_object[key],
+                            session_id=session_id,
+                            require_context=require_context,
+                        )
         else:
             raise Exception(
                 "imjoy-rpc: Unsupported data type:"
@@ -798,11 +685,11 @@ class RPC(MessageEmitter):
             )
         return b_object
 
-    def decode(self, a_object, with_promise, target_id=None):
+    def decode(self, a_object, with_promise):
         """Decode object."""
-        return self._decode(a_object, with_promise, target_id=target_id)
+        return self._decode(a_object, with_promise)
 
-    def _decode(self, a_object, with_promise, target_id=None):
+    def _decode(self, a_object, with_promise):
         """Decode object."""
         if a_object is None:
             return a_object
@@ -815,22 +702,16 @@ class RPC(MessageEmitter):
                 if "_rintf" in a_object:
                     temp = a_object["_rtype"]
                     del a_object["_rtype"]
-                    a_object = self._decode(a_object, with_promise, target_id=target_id)
+                    a_object = self._decode(a_object, with_promise)
                     a_object["_rtype"] = temp
                 b_object = self._codecs[a_object["_rtype"]].decoder(a_object)
-            elif a_object["_rtype"] == "callback":
-                b_object = self._gen_remote_callback(
-                    a_object.get("_rtarget_id"),
-                    a_object["_rid"],
-                    with_promise,
-                    target_id=target_id,
-                )
-            elif a_object["_rtype"] == "interface":
+            elif a_object["_rtype"] == "method":
                 b_object = self._gen_remote_method(
                     a_object.get("_rtarget_id"),
                     a_object["_rid"],
-                    a_object["_rintf"],
-                    target_id=target_id,
+                    a_object["_rsession"],
+                    object_id=a_object["_rintf"],
+                    require_context=a_object["_rcontext"],
                 )
             elif a_object["_rtype"] == "ndarray":
                 # create build array/tensor if used in the plugin
@@ -880,13 +761,9 @@ class RPC(MessageEmitter):
                 else:
                     b_object = a_object["_rvalue"]
             elif a_object["_rtype"] == "orderedmap":
-                b_object = OrderedDict(
-                    self._decode(a_object["_rvalue"], with_promise, target_id=target_id)
-                )
+                b_object = OrderedDict(self._decode(a_object["_rvalue"], with_promise))
             elif a_object["_rtype"] == "set":
-                b_object = set(
-                    self._decode(a_object["_rvalue"], with_promise, target_id=target_id)
-                )
+                b_object = set(self._decode(a_object["_rvalue"], with_promise))
             elif a_object["_rtype"] == "error":
                 b_object = Exception(a_object["_rvalue"])
             else:
@@ -894,7 +771,7 @@ class RPC(MessageEmitter):
                 if "_rintf" in a_object:
                     temp = a_object["_rtype"]
                     del a_object["_rtype"]
-                    a_object = self._decode(a_object, with_promise, target_id=target_id)
+                    a_object = self._decode(a_object, with_promise)
                     a_object["_rtype"] = temp
                 b_object = a_object
         elif isinstance(a_object, (dict, list, tuple)):
@@ -906,11 +783,9 @@ class RPC(MessageEmitter):
             for key in keys:
                 val = a_object[key]
                 if isarray:
-                    b_object.append(
-                        self._decode(val, with_promise, target_id=target_id)
-                    )
+                    b_object.append(self._decode(val, with_promise))
                 else:
-                    b_object[key] = self._decode(val, with_promise, target_id=target_id)
+                    b_object[key] = self._decode(val, with_promise)
         # make sure we have bytes instead of memoryview, e.g. for Pyodide
         elif isinstance(a_object, memoryview):
             b_object = a_object.tobytes()
