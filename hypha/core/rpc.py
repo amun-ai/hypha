@@ -79,6 +79,26 @@ class InterfaceList(list):
         super().__init__(*args, **kwargs)
 
 
+class Timer:
+    def __init__(self, timeout, callback, *args, **kwargs):
+        self._timeout = timeout
+        self._callback = callback
+        self._task = asyncio.ensure_future(self._job())
+        self._args = args
+        self._kwrags = kwargs
+
+    async def _job(self):
+        await asyncio.sleep(self._timeout)
+        await self._callback(*self._args, **self._kwrags)
+
+    def clear(self):
+        self._task.cancel()
+
+    def reset(self):
+        self._task.cancel()
+        self._task = asyncio.ensure_future(self._job())
+
+
 class RPC(MessageEmitter):
     """Represent the RPC."""
 
@@ -267,7 +287,7 @@ class RPC(MessageEmitter):
         # return FuturePromise(pfunc, self._remote_logger)
 
     def _encode_callback(
-        self, name, callback, cid, session_id, clear_after_called=False
+        self, name, callback, cid, session_id, clear_after_called=False, timer=None
     ):
         encoded = {
             "_rtype": "method",
@@ -276,25 +296,23 @@ class RPC(MessageEmitter):
             "_rpromise": False,
         }
 
-        if clear_after_called:
+        def wrapped_callback(*args, **kwargs):
+            if clear_after_called and session_id in self._object_store:
+                print(
+                    "==========removing session=========>",
+                    f"{self.client_id}:{session_id}.__callbacks__.{cid}.{name}",
+                )
+                logger.info("Deleting session %s from %s", session_id, self.client_id)
+                del self._object_store[session_id]
+            if timer:
+                timer.clear()
+            callback(*args, **kwargs)
 
-            def wrapped_callback(*args, **kwargs):
-                if session_id in self._object_store:
-                    print(
-                        "==========removing session=========>",
-                        f"{self.client_id}:{session_id}.__callbacks__.{cid}.{name}",
-                    )
-                    logger.info(
-                        "Deleting session %s from %s", session_id, self.client_id
-                    )
-                    del self._object_store[session_id]
-                callback(*args, **kwargs)
+        return encoded, wrapped_callback
 
-            return encoded, wrapped_callback
-        else:
-            return encoded, callback
-
-    def _encode_callbacks(self, callbacks, session_id, clear_after_called=False):
+    def _encode_promise(
+        self, resolve, reject, session_id, clear_after_called=False, with_timer=True
+    ):
         """Encode a group of callbacks without promise."""
         if session_id not in self._object_store:
             self._object_store[session_id] = {}
@@ -305,10 +323,35 @@ class RPC(MessageEmitter):
         cid = shortuuid.uuid()
         store[cid] = {}
         encoded = {}
-        for name, callback in callbacks.items():
-            encoded[name], store[cid][name] = self._encode_callback(
-                name, callback, cid, session_id, clear_after_called=clear_after_called
+
+        if with_timer and reject:
+            timer = Timer(2, reject, "Method call time out")
+            encoded["clear_timer"], store[cid]["clear_timer"] = self._encode_callback(
+                "clear_timer", timer.clear, cid, session_id, clear_after_called=False
             )
+            encoded["reset_timer"], store[cid]["reset_timer"] = self._encode_callback(
+                "reset_timer", timer.reset, cid, session_id, clear_after_called=False
+            )
+        else:
+            timer = None
+
+        encoded["resolve"], store[cid]["resolve"] = self._encode_callback(
+            "resolve",
+            resolve,
+            cid,
+            session_id,
+            clear_after_called=clear_after_called,
+            timer=timer,
+        )
+        encoded["reject"], store[cid]["reject"] = self._encode_callback(
+            "reject",
+            resolve,
+            cid,
+            session_id,
+            clear_after_called=clear_after_called,
+            timer=timer,
+        )
+
         return encoded
 
     def _generate_remote_method(self, encoded_method):
@@ -341,10 +384,12 @@ class RPC(MessageEmitter):
                     "with_kwargs": bool(kwargs),
                 }
                 if with_promise:
-                    call_func["promise"] = self._encode_callbacks(
-                        {"resolve": resolve, "reject": reject},
+                    call_func["promise"] = self._encode_promise(
+                        resolve=resolve,
+                        reject=reject,
                         session_id=local_session_id,
                         clear_after_called=True,
+                        with_timer=True,
                     )
                 self._connection.emit(call_func)
 
@@ -471,6 +516,8 @@ class RPC(MessageEmitter):
             if "promise" in data:
                 promise = self._decode(data["promise"])
                 resolve, reject = promise["resolve"], promise["reject"]
+                if "clear_timer" in promise:
+                    asyncio.ensure_future(promise["clear_timer"]())
             else:
                 resolve, reject = None, None
                 # TODO: add dispose handler to the result object
