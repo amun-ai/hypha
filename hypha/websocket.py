@@ -33,18 +33,21 @@ async def connect_to_websocket(
             ):
 
                 async def send(data):
-                    if data.get("type") == "disconnect":
-                        await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
-                        return
-                    if "target" not in data:
-                        raise ValueError("target is required")
-                    target_id = data["target"].encode()
-                    encoded = (
-                        len(target_id).to_bytes(1, "big")
-                        + target_id
-                        + msgpack.packb(data)
-                    )
-                    await websocket.send(encoded)
+                    try:
+                        if data.get("type") == "disconnect":
+                            await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
+                            return
+                        if "to" not in data:
+                            raise ValueError("`to` is required")
+                        target_id = data["to"].encode()
+                        encoded = (
+                            len(target_id).to_bytes(1, "big")
+                            + target_id
+                            + msgpack.packb(data)
+                        )
+                        await websocket.send(encoded)
+                    except Exception:
+                        logger.exception(f"Failed to send data to {data.get('to')}")
 
                 connection._send = send
 

@@ -40,7 +40,7 @@ class WorkspaceManager:
                     f"name={service.get('name')}), each service"
                     " should at least contain `id`, `name` and `config`."
                 )
-        client_id = "/" + context["client_id"] if context["client_id"] != "/" else "/"
+        client_id = context["client_id"] if context["client_id"] != "/" else "/"
         self.workspace.interfaces[client_id] = services
         self._save_workspace(self.workspace)
 
@@ -50,9 +50,7 @@ class WorkspaceManager:
             for service in services:
                 service_list.append(
                     {
-                        "id": provider + service["id"]
-                        if provider != "/"
-                        else service["id"],
+                        "id": provider + ":" + service["id"],
                         "name": service["name"],
                         "config": service["config"],
                     }
@@ -100,10 +98,10 @@ class RedisStore:
         pubsub = self.redis.pubsub()
 
         async def send(data):
-            if "target" not in data:
-                raise ValueError(f"target is required: {data}")
+            if "to" not in data:
+                raise ValueError(f"`to` is required: {data}")
             self.redis.publish(
-                f"{workspace.name}:msg:{data['target']}", msgpack.packb(data)
+                f"{workspace.name}:msg:{data['to']}", msgpack.packb(data)
             )
 
         connection = BasicConnection(send)

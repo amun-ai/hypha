@@ -26,7 +26,7 @@ async def test_redis_store():
     assert "test" in store.list_workspace()
 
     rpc = store.connect_to_workspace("test", client_id="test-plugin-1")
-    api = await rpc.get_remote_service("/")
+    api = await rpc.get_remote_service("/:/")
     await api.log("hello")
     assert len(await api.list_services()) == 2
 
@@ -43,7 +43,7 @@ async def test_redis_store():
     await rpc.register_service(interface)
 
     rpc = store.connect_to_workspace("test", client_id="test-plugin-2")
-    service = await rpc.get_remote_service("/test-plugin-1/test-service")
+    service = await rpc.get_remote_service("test-plugin-1:test-service")
 
     assert callable(service.echo)
     assert await service.echo("hello") == "hello"
@@ -74,7 +74,7 @@ async def test_websocket_server(socketio_server):
         token="123",
     )
 
-    ws = await rpc.get_remote_service("/")
+    ws = await rpc.get_remote_service("/:/")
     await ws.log("hello")
 
     def echo(data):
@@ -102,12 +102,12 @@ async def test_websocket_server(socketio_server):
         }
     )
 
-    svc = await rpc.get_remote_service("/test-plugin-1/test-service")
+    svc = await rpc.get_remote_service("test-plugin-1:test-service")
 
     assert await svc.echo("hello") == "hello"
 
     services = await ws.list_services()
-    assert find_item(services, "id", "/test-plugin-1/")
+    assert find_item(services, "id", "test-plugin-1:/")
 
     rpc2 = await connect_to_websocket(
         url=f"ws://127.0.0.1:{SIO_PORT}",
@@ -116,17 +116,43 @@ async def test_websocket_server(socketio_server):
         token="123",
     )
 
-    svc2 = await rpc2.get_remote_service("/test-plugin-1/test-service")
+    svc2 = await rpc2.get_remote_service("test-plugin-1:test-service")
     assert await svc2.echo("hello") == "hello"
-    assert len(rpc2._session_store) == 0
+    assert len(rpc2._object_store) == 1
     svc3 = await svc2.echo(svc2)
-    assert len(rpc2._session_store) == 0
+    assert len(rpc2._object_store) == 1
     assert await svc3.echo("hello") == "hello"
 
-    svc4 = await svc2.echo({
-        "add_one": lambda x: x+1
-    })
-    assert len(rpc2._session_store) >0
-    assert await svc4.add_one(99) == 100
+    svc4 = await svc2.echo(
+        {
+            "add_one": lambda x: x + 1,
+        }
+    )
+    assert len(rpc2._object_store) > 0
+
+    # It should fail because add_one is not a service and will be destroyed after the session
+    with pytest.raises(Exception, match=r".*Method not found: test-plugin-2:.*"):
+        assert await svc4.add_one(99) == 100
+
+    svc5 = await rpc2.register_service(
+        {
+            "add_one": lambda x: x + 1,
+        }
+    )
+    svc6 = await svc2.echo(svc5)
+    assert await svc6.add_one(99) == 100
+    with pytest.raises(Exception, match=r".*Service already exists: /.*"):
+        svc5 = await rpc2.register_service(
+            {
+                "add_two": lambda x: x + 2,
+            }
+        )
+
+    svc5 = await rpc2.register_service(
+        {
+            "id": "add-two",
+            "add_two": lambda x: x + 2,
+        }
+    )
 
     rpc.disconnect()
