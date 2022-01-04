@@ -27,7 +27,7 @@ async def test_redis_store():
 
     rpc = store.connect_to_workspace("test", client_id="test-plugin-1")
     api = await rpc.get_remote_service("/")
-    await api.log("hello", _rscope="session")
+    await api.log("hello")
     assert len(await api.list_services()) == 2
 
     def echo(data):
@@ -118,5 +118,15 @@ async def test_websocket_server(socketio_server):
 
     svc2 = await rpc2.get_remote_service("/test-plugin-1/test-service")
     assert await svc2.echo("hello") == "hello"
+    assert len(rpc2._session_store) == 0
+    svc3 = await svc2.echo(svc2)
+    assert len(rpc2._session_store) == 0
+    assert await svc3.echo("hello") == "hello"
+
+    svc4 = await svc2.echo({
+        "add_one": lambda x: x+1
+    })
+    assert len(rpc2._session_store) >0
+    assert await svc4.add_one(99) == 100
 
     rpc.disconnect()
