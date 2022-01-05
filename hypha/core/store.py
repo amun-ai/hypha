@@ -1,5 +1,6 @@
 """A scalable state store based on Redis."""
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -10,16 +11,71 @@ from typing import Callable, Union
 import aioredis
 import msgpack
 import shortuuid
-from imjoy_rpc.core_connection import BasicConnection
-from pydantic import parse_obj_as
 from redislite import Redis
 
-from hypha.core import ClientInfo, ServiceInfo, WorkspaceInfo
+from hypha.core import ClientInfo, WorkspaceInfo
 from hypha.core.rpc import RPC
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("redis-store")
 logger.setLevel(logging.INFO)
+
+
+class RedisRPCConnection:
+    """Represent a redis connection."""
+
+    def __init__(
+        self, redis: aioredis.Redis, workspace: str, client_id: str, unpack=False
+    ):
+        self._redis = redis
+        self._handle_message = None
+        self._workspace = workspace
+        self._client_id = client_id
+        self._unpack = unpack
+
+    def on_message(self, handler: Callable):
+        self._handle_message = handler
+        self._is_async = inspect.iscoroutinefunction(handler)
+        asyncio.ensure_future(self._subscribe_redis())
+
+    async def emit_message(self, data: Union[dict, bytes]):
+        assert self._handle_message is not None, "No handler for message"
+        if isinstance(data, dict):
+            if "to" not in data:
+                raise ValueError(f"`to` is required: {str(data)[:20]}")
+            await self._redis.publish(
+                f"{self._workspace}:msg:{data['to']}", msgpack.packb(data)
+            )
+        elif isinstance(data, bytes):
+            target_len = int.from_bytes(data[0:1], "big")
+            target_id = data[1 : target_len + 1].decode()
+            await self._redis.publish(
+                f"{self._workspace}:msg:{target_id}", data[target_len + 1 :]
+            )
+        else:
+            raise TypeError("Invalid type")
+
+    async def disconnect(self):
+        pass
+
+    async def _subscribe_redis(self):
+        pubsub = self._redis.pubsub()
+        await pubsub.subscribe(f"{self._workspace}:msg:{self._client_id}")
+        while True:
+            msg = await pubsub.get_message()
+            if msg and msg.get("type") == "message":
+                assert (
+                    msg.get("channel")
+                    == f"{self._workspace}:msg:{self._client_id}".encode()
+                )
+                if self._unpack:
+                    data = msgpack.unpackb(msg["data"])
+                else:
+                    data = msg["data"]
+                if self._is_async:
+                    await self._handle_message(data)
+                else:
+                    self._handle_message(data)
 
 
 class WorkspaceManager:
@@ -130,57 +186,10 @@ class WorkspaceManager:
         """Delete a client."""
         await self._redis.hdel(f"{self._workspace}:clients", client_id)
 
-    async def send(self, data: Union[dict, bytes]):
-        if isinstance(data, dict):
-            if "to" not in data:
-                raise ValueError(f"`to` is required: {str(data)[:20]}")
-            await self._redis.publish(
-                f"{self._workspace}:msg:{data['to']}", msgpack.packb(data)
-            )
-        elif isinstance(data, bytes):
-            target_len = int.from_bytes(data[0:1], "big")
-            target_id = data[1 : target_len + 1].decode()
-            await self._redis.publish(
-                f"{self._workspace}:msg:{target_id}", data[target_len + 1 :]
-            )
-        else:
-            raise TypeError("Invalid type")
-
-    async def listen(
-        self,
-        client_id: str,
-        respond: Callable,
-        unpack=False,
-        is_async=True,
-    ):
-        pubsub = self._redis.pubsub()
-        await pubsub.subscribe(f"{self._workspace}:msg:{client_id}")
-        while True:
-            msg = await pubsub.get_message()
-            if msg and msg.get("type") == "message":
-                assert (
-                    msg.get("channel") == f"{self._workspace}:msg:{client_id}".encode()
-                )
-                if unpack:
-                    data = msgpack.unpackb(msg["data"])
-                else:
-                    data = msg["data"]
-
-                if is_async:
-                    await respond(data)
-                else:
-                    respond(data)
-
     async def create_rpc(self, client_id: str, default_context=None):
         """Create a rpc for the workspace."""
-        connection = BasicConnection(self.send)
-        asyncio.ensure_future(
-            self.listen(
-                client_id,
-                connection.handle_message,
-                unpack=True,
-                is_async=False,
-            )
+        connection = RedisRPCConnection(
+            self._redis, self._workspace, client_id, unpack=True
         )
         rpc = RPC(connection, client_id=client_id, default_context=default_context)
         return rpc

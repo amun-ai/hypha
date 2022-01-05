@@ -7,8 +7,7 @@ from fastapi import Query, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
 
 from hypha.core import ClientInfo
-
-from hypha.core.store import RedisStore
+from hypha.core.store import RedisRPCConnection, RedisStore
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket")
@@ -54,20 +53,19 @@ class WebsocketServer:
 
             await websocket.accept()
 
-            asyncio.ensure_future(
-                workspace_manager.listen(
-                    client_id,
-                    websocket.send_bytes,
-                    unpack=False,
-                    is_async=True,
-                )
+            conn = RedisRPCConnection(
+                workspace_manager._redis,
+                workspace_manager._workspace,
+                client_id,
+                unpack=False,
             )
+            conn.on_message(websocket.send_bytes)
 
             await workspace_manager.register_client(ClientInfo(id=client_id))
             try:
                 while True:
                     data = await websocket.receive_bytes()
-                    await workspace_manager.send(data)
+                    await conn.emit_message(data)
             except WebSocketDisconnect as exp:
                 if exp.code != status.WS_1000_NORMAL_CLOSURE:
                     logger.warning(

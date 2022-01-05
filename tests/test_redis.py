@@ -1,9 +1,12 @@
+import time
+
+import numpy as np
+import pytest
+
 from hypha.core.store import RedisStore
 from hypha.websocket_client import connect_to_server
-import pytest
-import time
+
 from . import SIO_PORT, find_item
-import numpy as np
 
 pytestmark = pytest.mark.asyncio
 
@@ -150,6 +153,12 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
     array = np.zeros([100, 21])
     array2 = await svc6.add_one(array)
     np.testing.assert_array_equal(array2, array + 1)
+
+    # Test large data transfer
+    # array = np.zeros([2048, 2048, 10])
+    # array2 = await svc6.add_one(array)
+    # np.testing.assert_array_equal(array2, array + 1)
+
     with pytest.raises(Exception, match=r".*Service already exists: default.*"):
         await rpc2.register_service(
             {
@@ -163,7 +172,6 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
             "add_two": lambda x: x + 2,
         }
     )
-
 
     await rpc2.register_service({"id": "add-two", "blocking_sleep": time.sleep})
     svc5 = await rpc2.get_remote_service("test-plugin-2:add-two")
@@ -183,5 +191,3 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
     svc5 = await rpc2.get_remote_service("test-plugin-2:executor-test")
     # This should be fine because it is run in executor
     await svc5.blocking_sleep(3)
-
-    rpc.disconnect()

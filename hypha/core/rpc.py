@@ -7,11 +7,11 @@ import os
 import sys
 import threading
 import traceback
-import shortuuid
 import weakref
 from collections import OrderedDict
-from functools import reduce, partial
+from functools import partial, reduce
 
+import shortuuid
 from imjoy_rpc.utils import (
     FuturePromise,
     MessageEmitter,
@@ -142,18 +142,24 @@ class RPC(MessageEmitter):
                 "get_service": self.get_local_service,
             }
         )
+        self.on("method", self._handle_method)
         try:
-            # FIXME: What exception do we expect?
             self.loop = asyncio.get_event_loop()
         except RuntimeError:
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
 
-        if connection is not None:
-            self._connection = connection
-            self._setup_handlers(connection)
+        assert hasattr(connection, "emit_message") and hasattr(connection, "on_message")
+        self._emit_message = connection.emit_message
+        connection.on_message(self._on_message)
+        if hasattr(connection, "disconnect"):
+            self.on("disconnect", connection.disconnect)
 
         self.check_modules()
+
+    def _on_message(self, message):
+        """Handle message."""
+        self._fire(message["type"], message)
 
     def reset(self):
         """Reset."""
@@ -164,7 +170,6 @@ class RPC(MessageEmitter):
     def disconnect(self):
         """Disconnect."""
         self._fire("disconnect")
-        self._connection.disconnect()
 
     async def get_remote_root_service(self, timeout=None):
         if self.root_target_id:
@@ -249,10 +254,13 @@ class RPC(MessageEmitter):
         """Register a service."""
         service = self.add_service(api, overwrite=overwrite)
         if notify:
-            self._fire("serviceUpdated", {"service_id": service["id"], "api": service, "type": "add"})
+            self._fire(
+                "serviceUpdated",
+                {"service_id": service["id"], "api": service, "type": "add"},
+            )
             await self._notify_service_update()
         return service
-    
+
     async def unregister_service(self, service, notify=True):
         """Register a service."""
         if isinstance(service, str):
@@ -261,7 +269,10 @@ class RPC(MessageEmitter):
             raise Exception(f"Service not found: {service.get('id')}")
         del self._services[service["id"]]
         if notify:
-            self._fire("serviceUpdated", {"service_id": service["id"], "api": service, "type": "remove"})
+            self._fire(
+                "serviceUpdated",
+                {"service_id": service["id"], "api": service, "type": "remove"},
+            )
             await self._notify_service_update()
 
     def check_modules(self):
@@ -294,12 +305,10 @@ class RPC(MessageEmitter):
                 logger.warning("Invalid state error in callback: %s", method_id)
             finally:
                 if clear_after_called and session_id in self._object_store:
-                    logger.error(
+                    logger.info(
                         "Deleting session %s from %s", session_id, self.client_id
                     )
                     del self._object_store[session_id]
-                    # if hasattr(self._connection, "close"):
-                    #     self._connection.close()
                 if timer:
                     timer.clear()
 
@@ -399,7 +408,7 @@ class RPC(MessageEmitter):
                         with_timer=True,
                         method_name=f"{target_id}:{method_id}",
                     )
-                emit_task = self._connection.emit(call_func)
+                emit_task = asyncio.ensure_future(self._emit_message(call_func))
                 if emit_task:
 
                     def handle_result(fut):
@@ -511,10 +520,6 @@ class RPC(MessageEmitter):
             if heatbeat_task:
                 heatbeat_task.cancel()
 
-    def _setup_handlers(self, connection):
-        connection.on("method", self._handle_method)
-        connection.on("disconnected", self._disconnected_hanlder)
-
     async def _notify_service_update(self):
         if not self._remote_root_service:
             # try to get the root service
@@ -537,10 +542,7 @@ class RPC(MessageEmitter):
             ],
         }
 
-    def _disconnected_hanlder(self, data):
-        self._fire("disconnected", data)
-
-    def _handle_method(self, data):
+    def _handle_method(self, data, context=None):
         reject = None
         method_task = None
         heatbeat_task = None
