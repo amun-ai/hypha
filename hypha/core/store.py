@@ -24,14 +24,11 @@ logger.setLevel(logging.INFO)
 class RedisRPCConnection:
     """Represent a redis connection."""
 
-    def __init__(
-        self, redis: aioredis.Redis, workspace: str, client_id: str, unpack=False
-    ):
+    def __init__(self, redis: aioredis.Redis, workspace: str, client_id: str):
         self._redis = redis
         self._handle_message = None
         self._workspace = workspace
         self._client_id = client_id
-        self._unpack = unpack
 
     def on_message(self, handler: Callable):
         self._handle_message = handler
@@ -68,14 +65,10 @@ class RedisRPCConnection:
                     msg.get("channel")
                     == f"{self._workspace}:msg:{self._client_id}".encode()
                 )
-                if self._unpack:
-                    data = msgpack.unpackb(msg["data"])
-                else:
-                    data = msg["data"]
                 if self._is_async:
-                    await self._handle_message(data)
+                    await self._handle_message(msg["data"])
                 else:
-                    self._handle_message(data)
+                    self._handle_message(msg["data"])
 
 
 class WorkspaceManager:
@@ -188,9 +181,7 @@ class WorkspaceManager:
 
     async def create_rpc(self, client_id: str, default_context=None):
         """Create a rpc for the workspace."""
-        connection = RedisRPCConnection(
-            self._redis, self._workspace, client_id, unpack=True
-        )
+        connection = RedisRPCConnection(self._redis, self._workspace, client_id)
         rpc = RPC(connection, client_id=client_id, default_context=default_context)
         return rpc
 

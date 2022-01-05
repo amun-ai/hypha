@@ -10,6 +10,7 @@ import traceback
 import weakref
 from collections import OrderedDict
 from functools import partial, reduce
+import msgpack
 
 import shortuuid
 from imjoy_rpc.utils import (
@@ -164,6 +165,8 @@ class RPC(MessageEmitter):
 
     def _on_message(self, message):
         """Handle message."""
+        assert isinstance(message, bytes)
+        message = msgpack.unpackb(message)
         self._fire(message["type"], message)
 
     def reset(self):
@@ -401,7 +404,7 @@ class RPC(MessageEmitter):
                 }
                 timer = None
                 if with_promise:
-                    method_name=f"{target_id}:{method_id}"
+                    method_name = f"{target_id}:{method_id}"
                     timer = Timer(
                         self._method_timeout,
                         reject,
@@ -415,7 +418,9 @@ class RPC(MessageEmitter):
                         clear_after_called=True,
                         timer=timer,
                     )
-                emit_task = asyncio.ensure_future(self._emit_message(call_func))
+                to = target_id.encode()
+                encoded = len(to).to_bytes(1, "big") + to + msgpack.packb(call_func)
+                emit_task = asyncio.ensure_future(self._emit_message(encoded))
                 if emit_task:
 
                     def handle_result(fut):

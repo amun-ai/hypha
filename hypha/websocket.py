@@ -57,7 +57,6 @@ class WebsocketServer:
                 workspace_manager._redis,
                 workspace_manager._workspace,
                 client_id,
-                unpack=False,
             )
             conn.on_message(websocket.send_bytes)
 

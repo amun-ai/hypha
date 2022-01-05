@@ -34,22 +34,17 @@ class WebsocketRPCConnection:
             self._websocket = await websockets.connect(self._url)
             asyncio.ensure_future(self._listen(self._websocket))
         try:
-            if "to" not in data:
-                raise ValueError("`to` is required")
-            target_id = data["to"].encode()
-            encoded = (
-                len(target_id).to_bytes(1, "big") + target_id + msgpack.packb(data)
-            )
-            await self._websocket.send(encoded)
+            await self._websocket.send(data)
         except Exception:
-            logger.exception(f"Failed to send data to {data.get('to')}")
+            target_len = int.from_bytes(data[0:1], "big")
+            target_id = data[1 : target_len + 1].decode()
+            logger.exception(f"Failed to send data to {target_id}")
             raise
 
     async def _listen(self, ws):
         try:
             while not ws.closed:
                 data = await ws.recv()
-                data = msgpack.unpackb(data)
                 if self._is_async:
                     await self._handle_message(data)
                 else:
