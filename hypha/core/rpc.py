@@ -190,7 +190,7 @@ class RPC(MessageEmitter):
         """Get all the local services."""
         return self._services
 
-    def get_local_service(self, service_id):
+    def get_local_service(self, service_id, context=None):
         assert service_id is not None
         return self._services.get(service_id)
 
@@ -214,6 +214,28 @@ class RPC(MessageEmitter):
         except Exception:
             logger.exception("Failed to get remote service")
             raise
+
+    def _annotate_service_methods(
+        self, a_object, object_id, require_context=False, run_in_executor=False
+    ):
+        if isinstance(a_object, (dict, list, tuple)):
+            items = (
+                a_object.items() if isinstance(a_object, dict) else enumerate(a_object)
+            )
+            for key, val in items:
+                self._annotate_service_methods(
+                    val,
+                    object_id + "." + str(key),
+                    require_context=require_context,
+                    run_in_executor=run_in_executor,
+                )
+        elif callable(a_object):
+            # mark the method as a remote method that requires context
+            self._method_annotations[a_object] = {
+                "require_context": require_context,
+                "run_in_executor": run_in_executor,
+                "method_id": object_id,
+            }
 
     def add_service(self, api, overwrite=False):
         """Add a service (silently without triggering notifications)."""
@@ -249,6 +271,19 @@ class RPC(MessageEmitter):
 
         if "type" not in api:
             api["type"] = "generic"
+
+        # require_context only applies to the top-level functions
+        require_context, run_in_executor = False, False
+        if bool(api["config"].get("require_context")):
+            require_context = True
+        if bool(api["config"].get("run_in_executor")):
+            run_in_executor = True
+        self._annotate_service_methods(
+            api,
+            "services." + api["id"],
+            require_context=require_context,
+            run_in_executor=run_in_executor,
+        )
 
         api["uri"] = self.client_id + ":" + api["id"]
 
@@ -646,16 +681,11 @@ class RPC(MessageEmitter):
     def _encode(
         self,
         a_object,
-        service_idx=None,
-        object_id=None,
         session_id=None,
     ):
         """Encode object."""
         if isinstance(a_object, (int, float, bool, str, bytes)) or a_object is None:
             return a_object
-
-        if service_idx:
-            assert isinstance(service_idx, str)
 
         if isinstance(a_object, tuple):
             a_object = list(a_object)
@@ -670,8 +700,6 @@ class RPC(MessageEmitter):
             del a_object["_rtype"]
             b_object = self._encode(
                 a_object,
-                service_idx,
-                object_id,
                 session_id=session_id,
             )
             b_object["_rtype"] = temp
@@ -682,18 +710,16 @@ class RPC(MessageEmitter):
             if hasattr(a_object, "__remote_method__"):
                 return a_object.__remote_method__
 
-            if service_idx:
+            if a_object in self._method_annotations:
+                annotation = self._method_annotations[a_object]
                 b_object = {
                     "_rtype": "method",
                     "_rtarget": self.client_id,
-                    "_rmethod": "services." + service_idx,
+                    "_rmethod": annotation["method_id"],
                     "_rpromise": True,
                 }
             else:
-                if isinstance(object_id, str):
-                    object_id = f"{object_id}-{shortuuid.uuid()}"
-                else:
-                    object_id = f"{shortuuid.uuid()}"
+                object_id = f"{shortuuid.uuid()}"
                 b_object = {
                     "_rtype": "method",
                     "_rtarget": self.client_id,
@@ -759,7 +785,6 @@ class RPC(MessageEmitter):
                 "_rtype": "orderedmap",
                 "_rvalue": self._encode(
                     list(a_object),
-                    service_idx,
                     session_id=session_id,
                 ),
             }
@@ -768,41 +793,16 @@ class RPC(MessageEmitter):
                 "_rtype": "set",
                 "_rvalue": self._encode(
                     list(a_object),
-                    service_idx,
                     session_id=session_id,
                 ),
             }
         elif isinstance(a_object, (list, dict)):
-            is_service = a_object in self._services.values()
-            # require_context only applies to the top-level functions
-            if is_service and "config" in a_object:
-                require_context = bool(a_object["config"].get("require_context"))
-                run_in_executor = bool(a_object["config"].get("run_in_executor"))
-            else:
-                require_context = False
-                run_in_executor = False
             keys = range(len(a_object)) if isarray else a_object.keys()
             b_object = [] if isarray else {}
-            if is_service:
-                service_idx = None
-                for sk, sv in self._services.items():
-                    if a_object == sv:
-                        service_idx = sk
-                        break
-                assert isinstance(service_idx, str)
             for key in keys:
-                if callable(a_object[key]) and (require_context or run_in_executor):
-                    # mark the method as a remote method that requires context
-                    self._method_annotations[a_object[key]] = {
-                        "require_context": require_context,
-                        "run_in_executor": run_in_executor,
-                    }
-
                 encoded = self._encode(
                     a_object[key],
                     session_id=session_id,
-                    service_idx=service_idx + "." + str(key) if service_idx else None,
-                    object_id=key,
                 )
                 if isarray:
                     b_object.append(encoded)
