@@ -144,21 +144,21 @@ def minio_server_fixture():
     ) as proc:
 
         timeout = 10
+        print(
+            "Trying to connect to the minio server...",
+            f"{MINIO_SERVER_URL}/minio/health/live",
+        )
         while timeout > 0:
             try:
-                print(
-                    "Trying to connect to the minio server...",
-                    f"{MINIO_SERVER_URL}/minio/health/live",
-                )
-                response = requests.get(
-                    f"{MINIO_SERVER_URL}/minio/health/live", timeout=10
-                )
+                print(".", end="")
+                response = requests.get(f"{MINIO_SERVER_URL}/minio/health/live")
                 if response.ok:
                     break
             except RequestException:
                 pass
             timeout -= 0.1
             time.sleep(0.1)
+        print("\nMinio server started.")
         yield
 
         proc.terminate()

@@ -164,4 +164,14 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
 
     await svc5.blocking_sleep(0.5)
 
+    await rpc2.register_service(
+        {
+            "id": "executor-test",
+            "config": {"run_in_executor": True},
+            "blocking_sleep": time.sleep,
+        }
+    )
+    svc5 = await rpc2.get_remote_service("test-plugin-2:executor-test")
+    await svc5.blocking_sleep(3)
+
     rpc.disconnect()

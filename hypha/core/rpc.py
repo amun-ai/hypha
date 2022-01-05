@@ -10,7 +10,7 @@ import traceback
 import shortuuid
 import weakref
 from collections import OrderedDict
-from functools import reduce
+from functools import reduce, partial
 
 from imjoy_rpc.utils import (
     FuturePromise,
@@ -268,19 +268,22 @@ class RPC(MessageEmitter):
     def _encode_callback(
         self, name, callback, cid, session_id, clear_after_called=False, timer=None
     ):
+        method_id = f"{session_id}.__callbacks__.{cid}.{name}"
         encoded = {
             "_rtype": "method",
             "_rtarget": self.client_id,
-            "_rmethod": f"{session_id}.__callbacks__.{cid}.{name}",
+            "_rmethod": method_id,
             "_rpromise": False,
         }
 
         def wrapped_callback(*args, **kwargs):
             try:
                 callback(*args, **kwargs)
+            except asyncio.exceptions.InvalidStateError:
+                logger.warning("Invalid state error in callback: %s", method_id)
             finally:
                 if clear_after_called and session_id in self._object_store:
-                    logger.info(
+                    logger.error(
                         "Deleting session %s from %s", session_id, self.client_id
                     )
                     del self._object_store[session_id]
@@ -456,9 +459,15 @@ class RPC(MessageEmitter):
         reject=None,
         method_name=None,
         heatbeat_task=None,
+        run_in_executor=False,
     ):
         try:
-            result = method(*args, **kwargs)
+            if not inspect.iscoroutinefunction(method) and run_in_executor:
+                result = self.loop.run_in_executor(
+                    None, partial(method, *args, **kwargs)
+                )
+            else:
+                result = method(*args, **kwargs)
             if result is not None and inspect.isawaitable(result):
 
                 async def _wait(result):
@@ -534,10 +543,14 @@ class RPC(MessageEmitter):
                     async def heatbeat(interval):
                         while True:
                             try:
-                                await promise["reset_timer"]()
-                            except Exception:  # pylint: disable=broad-except
+                                logger.debug("Reset heatbeat timer: %s", data["method"])
+                                promise["reset_timer"]()
+                            except asyncio.CancelledError:
                                 if method_task:
                                     method_task.cancel()
+                                break
+                            except Exception:  # pylint: disable=broad-except
+                                logger.Exception("Failed to reset the heatbeat timer")
                                 break
                             await asyncio.sleep(interval)
 
@@ -545,7 +558,7 @@ class RPC(MessageEmitter):
                         heatbeat(promise["heatbeat_interval"])
                     )
                 elif "clear_timer" in promise:
-                    asyncio.ensure_future(promise["clear_timer"]())
+                    promise["clear_timer"]()
             else:
                 resolve, reject = None, None
                 # TODO: add dispose handler to the result object
@@ -558,7 +571,7 @@ class RPC(MessageEmitter):
             try:
                 method = index_object(self._object_store, data["method"])
             except Exception:
-                logger.exception("Failed to find method %s", method_name)
+                logger.error("Failed to find method %s", method_name)
                 raise Exception(f"Method not found: {method_name}")
             assert callable(method), f"Invalid method: {method_name}"
             if method in self._method_annotations and self._method_annotations[
@@ -566,6 +579,11 @@ class RPC(MessageEmitter):
             ].get("require_context"):
                 self.default_context.update({"client_id": data["from"]})
                 kwargs["context"] = self.default_context
+            run_in_executor = (
+                method in self._method_annotations
+                and self._method_annotations[method].get("run_in_executor")
+            )
+
             method_task = self._call_method(
                 method,
                 args,
@@ -574,11 +592,19 @@ class RPC(MessageEmitter):
                 reject,
                 method_name=method_name,
                 heatbeat_task=heatbeat_task,
+                run_in_executor=run_in_executor,
             )
 
         except Exception as err:
             traceback_error = traceback.format_exc()
-            logger.exception("Error during calling method: %s", err)
+            logger.error("Error during calling method: %s", err)
+            # make sure we clear the heatbeat timer
+            if (
+                heatbeat_task
+                and not heatbeat_task.cancelled()
+                and not heatbeat_task.done()
+            ):
+                heatbeat_task.cancel()
             if callable(reject):
                 reject(traceback_error)
 
@@ -723,8 +749,10 @@ class RPC(MessageEmitter):
             # require_context only applies to the top-level functions
             if is_service and "config" in a_object:
                 require_context = bool(a_object["config"].get("require_context"))
+                run_in_executor = bool(a_object["config"].get("run_in_executor"))
             else:
                 require_context = False
+                run_in_executor = False
             keys = range(len(a_object)) if isarray else a_object.keys()
             b_object = [] if isarray else {}
             if is_service:
@@ -735,10 +763,11 @@ class RPC(MessageEmitter):
                         break
                 assert isinstance(service_idx, str)
             for key in keys:
-                if callable(a_object[key]) and require_context:
+                if callable(a_object[key]) and (require_context or run_in_executor):
                     # mark the method as a remote method that requires context
                     self._method_annotations[a_object[key]] = {
-                        "require_context": require_context
+                        "require_context": require_context,
+                        "run_in_executor": run_in_executor,
                     }
 
                 encoded = self._encode(
