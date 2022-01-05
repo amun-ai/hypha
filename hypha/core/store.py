@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sys
+import io
 import tempfile
 from typing import Callable, Union
 
@@ -44,11 +45,18 @@ class RedisRPCConnection:
                 f"{self._workspace}:msg:{data['to']}", msgpack.packb(data)
             )
         elif isinstance(data, bytes):
-            target_len = int.from_bytes(data[0:1], "big")
-            target_id = data[1 : target_len + 1].decode()
-            await self._redis.publish(
-                f"{self._workspace}:msg:{target_id}", data[target_len + 1 :]
-            )
+            unpacker = msgpack.Unpacker(io.BytesIO(data))
+            context = unpacker.unpack()
+            pos = unpacker.tell()
+            target_id = context["to"]
+            context = {
+                "to": target_id,
+                "from": self._client_id,
+                "workspace": self._workspace,
+            }
+            # Pack more context info to the package
+            data = msgpack.packb(context) + data[pos:]
+            await self._redis.publish(f"{self._workspace}:msg:{target_id}", data)
         else:
             raise TypeError("Invalid type")
 
@@ -186,7 +194,7 @@ class WorkspaceManager:
         return rpc
 
     def log(self, *args, context=None):
-        print(context["client_id"], *args)
+        print(context["from"], *args)
 
     def create_service(self, service_id, service_name=None):
         interface = {

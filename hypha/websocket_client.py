@@ -36,9 +36,8 @@ class WebsocketRPCConnection:
         try:
             await self._websocket.send(data)
         except Exception:
-            target_len = int.from_bytes(data[0:1], "big")
-            target_id = data[1 : target_len + 1].decode()
-            logger.exception(f"Failed to send data to {target_id}")
+            data = msgpack.unpackb(data)
+            logger.exception(f"Failed to send data to {data['to']}")
             raise
 
     async def _listen(self, ws):

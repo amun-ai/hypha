@@ -11,6 +11,7 @@ import weakref
 from collections import OrderedDict
 from functools import partial, reduce
 import msgpack
+import math
 
 import shortuuid
 from imjoy_rpc.utils import (
@@ -21,6 +22,7 @@ from imjoy_rpc.utils import (
     format_traceback,
 )
 
+CHUNK_SIZE = 1024 * 1000
 API_VERSION = "0.2.3"
 ALLOWED_MAGIC_METHODS = ["__enter__", "__exit__"]
 IO_METHODS = [
@@ -67,17 +69,6 @@ def index_object(obj, ids):
         else:
             _obj = getattr(obj, ids[0])
         return index_object(_obj, ids[1:])
-
-
-class InterfaceList(list):
-    """A disposible list."""
-
-    __slots__ = "__rid__"
-
-    def __init__(self, *args, rid=None, **kwargs):
-        if rid:
-            self.__rid__ = rid
-        super().__init__(*args, **kwargs)
 
 
 class Timer:
@@ -166,7 +157,13 @@ class RPC(MessageEmitter):
     def _on_message(self, message):
         """Handle message."""
         assert isinstance(message, bytes)
-        message = msgpack.unpackb(message)
+        unpacker = msgpack.Unpacker(io.BytesIO(message))
+        context = unpacker.unpack()
+        message = unpacker.unpack()
+        # Add trusted context to the method call
+        if message.get("type") == "method":
+            message["context"] = context
+            context.update(self.default_context)
         self._fire(message["type"], message)
 
     def reset(self):
@@ -453,9 +450,39 @@ class RPC(MessageEmitter):
                         clear_after_called=True,
                         timer=timer,
                     )
-                to = target_id.encode()
-                encoded = len(to).to_bytes(1, "big") + to + msgpack.packb(call_func)
-                emit_task = asyncio.ensure_future(self._emit_message(encoded))
+                packed = msgpack.packb(call_func)
+                # total_size = len(packed)
+                # if total_size <= CHUNK_SIZE:
+                package = msgpack.packb({"to": target_id}) + packed
+                emit_task = asyncio.ensure_future(self._emit_message(package))
+                # else:
+                #     # send chunk by chunk
+                #     def send_chunks():
+                #         chunk_num = int(math.ceil(float(total_size) / CHUNK_SIZE))
+                #         for idx in range(chunk_num):
+                #             start_byte = idx * CHUNK_SIZE
+                #             chunk = msgpack.packb(
+                #                 {
+                #                     "to": target_id,
+                #                     "is_chunk": True,
+                #                     "session_id": local_session_id,
+                #                     "data": packed[
+                #                         start_byte : start_byte + CHUNK_SIZE
+                #                     ],
+                #                     "index": idx,
+                #                     "total": chunk_num,
+                #                 }
+                #             )
+                #             logger.info(
+                #                 "Sending chunk %d/%d (%d bytes)",
+                #                 idx + 1,
+                #                 chunk_num,
+                #                 total_size,
+                #             )
+                #             self._emit_message(chunk)
+
+                # emit_task = asyncio.ensure_future(send_chunks)
+
                 if emit_task:
 
                     def handle_result(fut):
@@ -640,8 +667,7 @@ class RPC(MessageEmitter):
             if method in self._method_annotations and self._method_annotations[
                 method
             ].get("require_context"):
-                self.default_context.update({"client_id": data["from"]})
-                kwargs["context"] = self.default_context
+                kwargs["context"] = data.get("context", self.default_context.copy())
             run_in_executor = (
                 method in self._method_annotations
                 and self._method_annotations[method].get("run_in_executor")
