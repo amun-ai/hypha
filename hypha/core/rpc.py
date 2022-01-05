@@ -385,7 +385,18 @@ class RPC(MessageEmitter):
                         with_timer=True,
                         method_name=f"{target_id}:{method_id}",
                     )
-                self._connection.emit(call_func)
+                emit_task = self._connection.emit(call_func)
+                if emit_task:
+
+                    def handle_result(fut):
+                        if fut.exception():
+                            reject(
+                                Exception(
+                                    f"Failed to send the request when calling method: {target_id}:{method_id}"
+                                )
+                            )
+
+                    emit_task.add_done_callback(handle_result)
 
             return FuturePromise(pfunc, self._remote_logger)
 
@@ -507,8 +518,6 @@ class RPC(MessageEmitter):
         }
 
     def _disconnected_hanlder(self, data):
-        self._fire("beforeDisconnect")
-        self._connection.disconnect()
         self._fire("disconnected", data)
 
     def _handle_method(self, data):

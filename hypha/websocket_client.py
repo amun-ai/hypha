@@ -41,6 +41,7 @@ class WebsocketConnection(BasicConnection):
             await self._websocket.send(encoded)
         except Exception:
             logger.exception(f"Failed to send data to {data.get('to')}")
+            raise
 
     async def _listen(self, ws):
         try:
@@ -56,8 +57,9 @@ class WebsocketConnection(BasicConnection):
     def disconnect(self):
         ws = self._websocket
         self._websocket = None
-        asyncio.ensure_future(ws.close(code=1000))
-        self._fire("disconnected", None)
+        if ws and not ws.closed:
+            asyncio.ensure_future(ws.close(code=1000))
+            self._fire("disconnected", None)
 
 
 async def connect_to_websocket(

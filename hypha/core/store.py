@@ -163,13 +163,6 @@ class WorkspaceManager:
                 )
                 if unpack:
                     data = msgpack.unpackb(msg["data"])
-                    print(
-                        client_id,
-                        "<====process===",
-                        data.get("source"),
-                        data["type"],
-                        data,
-                    )
                 else:
                     data = msg["data"]
 
