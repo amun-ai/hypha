@@ -3,6 +3,7 @@ from hypha.websocket import connect_to_websocket
 import pytest
 import time
 from . import SIO_PORT, find_item
+import numpy as np
 
 pytestmark = pytest.mark.asyncio
 
@@ -141,12 +142,14 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
         assert await svc4.add_one(99) == 100
 
     svc5 = await rpc2.register_service(
-        {
-            "add_one": lambda x: x + 1,
-        }
+        {"add_one": lambda x: x + 1, "inner": {"square": lambda y: y ** 2}}
     )
     svc6 = await svc2.echo(svc5)
     assert await svc6.add_one(99) == 100
+    assert await svc6.inner.square(10) == 100
+    array = np.zeros([100, 21])
+    array2 = await svc6.add_one(array)
+    np.testing.assert_array_equal(array2, array + 1)
     with pytest.raises(Exception, match=r".*Service already exists: default.*"):
         await rpc2.register_service(
             {

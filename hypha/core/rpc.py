@@ -590,7 +590,7 @@ class RPC(MessageEmitter):
     def _encode(
         self,
         a_object,
-        as_interface=False,
+        service_idx=None,
         object_id=None,
         session_id=None,
     ):
@@ -598,8 +598,8 @@ class RPC(MessageEmitter):
         if isinstance(a_object, (int, float, bool, str, bytes)) or a_object is None:
             return a_object
 
-        if as_interface:
-            assert isinstance(as_interface, str)
+        if service_idx:
+            assert isinstance(service_idx, str)
 
         if isinstance(a_object, tuple):
             a_object = list(a_object)
@@ -614,7 +614,7 @@ class RPC(MessageEmitter):
             del a_object["_rtype"]
             b_object = self._encode(
                 a_object,
-                as_interface,
+                service_idx,
                 object_id,
                 session_id=session_id,
             )
@@ -626,11 +626,11 @@ class RPC(MessageEmitter):
             if hasattr(a_object, "__remote_method__"):
                 return a_object.__remote_method__
 
-            if as_interface:
+            if service_idx:
                 b_object = {
                     "_rtype": "method",
                     "_rtarget": self.client_id,
-                    "_rmethod": "services." + as_interface,
+                    "_rmethod": "services." + service_idx,
                     "_rpromise": True,
                 }
             else:
@@ -703,7 +703,7 @@ class RPC(MessageEmitter):
                 "_rtype": "orderedmap",
                 "_rvalue": self._encode(
                     list(a_object),
-                    as_interface,
+                    service_idx,
                     session_id=session_id,
                 ),
             }
@@ -712,7 +712,7 @@ class RPC(MessageEmitter):
                 "_rtype": "set",
                 "_rvalue": self._encode(
                     list(a_object),
-                    as_interface,
+                    service_idx,
                     session_id=session_id,
                 ),
             }
@@ -726,11 +726,12 @@ class RPC(MessageEmitter):
             keys = range(len(a_object)) if isarray else a_object.keys()
             b_object = [] if isarray else {}
             if is_service:
+                service_idx = None
                 for sk, sv in self._services.items():
                     if a_object == sv:
-                        service_id = sk
+                        service_idx = sk
                         break
-                as_interface = service_id
+                assert isinstance(service_idx, str)
             for key in keys:
                 if callable(a_object[key]) and require_context:
                     # mark the method as a remote method that requires context
@@ -741,9 +742,7 @@ class RPC(MessageEmitter):
                 encoded = self._encode(
                     a_object[key],
                     session_id=session_id,
-                    as_interface=as_interface + "." + str(key)
-                    if as_interface
-                    else False,
+                    service_idx=service_idx + "." + str(key) if service_idx else None,
                     object_id=key,
                 )
                 if isarray:
