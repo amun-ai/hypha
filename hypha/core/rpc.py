@@ -83,10 +83,13 @@ class Timer:
     def __init__(self, timeout, callback, *args, label="timer", **kwargs):
         self._timeout = timeout
         self._callback = callback
-        self._task = asyncio.ensure_future(self._job())
+        self._task = None
         self._args = args
         self._kwrags = kwargs
         self._label = label
+
+    def start(self):
+        self._task = asyncio.ensure_future(self._job())
 
     async def _job(self):
         await asyncio.sleep(self._timeout)
@@ -95,9 +98,11 @@ class Timer:
             await ret
 
     def clear(self):
+        assert self._task is not None, "Timer is not started"
         self._task.cancel()
 
     def reset(self):
+        assert self._task is not None, "Timer is not started"
         self._task.cancel()
         self._task = asyncio.ensure_future(self._job())
 
@@ -242,6 +247,8 @@ class RPC(MessageEmitter):
         if "type" not in api:
             api["type"] = "generic"
 
+        api["uri"] = self.client_id + ":" + api["id"]
+
         if not overwrite and api["id"] in self._services:
             raise Exception(
                 f"Service already exists: {api['id']}, please specify"
@@ -320,8 +327,7 @@ class RPC(MessageEmitter):
         reject,
         session_id,
         clear_after_called=False,
-        with_timer=True,
-        method_name=None,
+        timer=None,
     ):
         """Encode a group of callbacks without promise."""
         if session_id not in self._object_store:
@@ -334,13 +340,7 @@ class RPC(MessageEmitter):
         store[cid] = {}
         encoded = {}
 
-        if with_timer and reject and self._method_timeout:
-            timer = Timer(
-                self._method_timeout,
-                reject,
-                f"Method call time out: {method_name}",
-                label=method_name,
-            )
+        if timer and reject and self._method_timeout:
             encoded["clear_timer"], store[cid]["clear_timer"] = self._encode_callback(
                 "clear_timer", timer.clear, cid, session_id, clear_after_called=False
             )
@@ -399,14 +399,21 @@ class RPC(MessageEmitter):
                     "params": args,
                     "with_kwargs": bool(kwargs),
                 }
+                timer = None
                 if with_promise:
+                    method_name=f"{target_id}:{method_id}"
+                    timer = Timer(
+                        self._method_timeout,
+                        reject,
+                        f"Method call time out: {method_name}",
+                        label=method_name,
+                    )
                     call_func["promise"] = self._encode_promise(
                         resolve=resolve,
                         reject=reject,
                         session_id=local_session_id,
                         clear_after_called=True,
-                        with_timer=True,
-                        method_name=f"{target_id}:{method_id}",
+                        timer=timer,
                     )
                 emit_task = asyncio.ensure_future(self._emit_message(call_func))
                 if emit_task:
@@ -418,6 +425,9 @@ class RPC(MessageEmitter):
                                     f"Failed to send the request when calling method: {target_id}:{method_id}"
                                 )
                             )
+                        elif timer:
+                            # Only start the timer after we send the message successfully
+                            timer.start()
 
                     emit_task.add_done_callback(handle_result)
 

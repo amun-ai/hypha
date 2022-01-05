@@ -54,8 +54,6 @@ class WebsocketRPCConnection:
                     await self._handle_message(data)
                 else:
                     self._handle_message(data)
-        except RuntimeError:
-            pass
         except websockets.exceptions.ConnectionClosedOK:
             pass
 

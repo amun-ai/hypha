@@ -150,7 +150,7 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
     svc6 = await svc2.echo(svc5)
     assert await svc6.add_one(99) == 100
     assert await svc6.inner.square(10) == 100
-    array = np.zeros([100, 21])
+    array = np.zeros([2048, 10, 1])
     array2 = await svc6.add_one(array)
     np.testing.assert_array_equal(array2, array + 1)
 
