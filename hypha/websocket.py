@@ -3,82 +3,16 @@ import asyncio
 import logging
 import sys
 
-import msgpack
-import websockets
 from fastapi import Query, WebSocket, status
-from imjoy_rpc.core_connection import BasicConnection
 from starlette.websockets import WebSocketDisconnect
 
 from hypha.core import ClientInfo
-from hypha.core.rpc import RPC
+
 from hypha.core.store import RedisStore
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket")
 logger.setLevel(logging.INFO)
-
-
-async def connect_to_websocket(
-    url: str, workspace: str, client_id: str, token: str, method_timeout=10
-):
-    """Connect to RPC via a websocket server."""
-    connection = BasicConnection(None)
-    loop = asyncio.get_event_loop()
-    fut = loop.create_future()
-
-    async def listen():
-        try:
-            async for websocket in websockets.connect(
-                url + f"/ws?workspace={workspace}&client_id={client_id}&token={token}"
-            ):
-
-                async def send(data):
-                    try:
-                        if data.get("type") == "disconnect":
-                            await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
-                            return
-                        if "to" not in data:
-                            raise ValueError("`to` is required")
-                        target_id = data["to"].encode()
-                        encoded = (
-                            len(target_id).to_bytes(1, "big")
-                            + target_id
-                            + msgpack.packb(data)
-                        )
-                        await websocket.send(encoded)
-                    except Exception:
-                        logger.exception(f"Failed to send data to {data.get('to')}")
-
-                connection._send = send
-
-                if not fut.done():
-                    rpc = RPC(
-                        connection,
-                        client_id=client_id,
-                        root_target_id="workspace-manager",
-                        default_context={"connection_type": "websocket"},
-                        method_timeout=method_timeout,
-                    )
-                    fut.set_result(rpc)
-
-                try:
-                    while True:
-                        data = await websocket.recv()
-                        data = msgpack.unpackb(data)
-                        connection.handle_message(data)
-                except websockets.ConnectionClosed:
-                    if websocket.close_code not in [status.WS_1000_NORMAL_CLOSURE]:
-                        logger.error(
-                            f"websocket client disconnect (code={websocket.close_code})"
-                        )
-                    else:
-                        break
-        except Exception as exp:
-            if not fut.done():
-                fut.set_exception(exp)
-
-    asyncio.ensure_future(listen())
-    return await asyncio.wait_for(fut, timeout=method_timeout)
 
 
 class WebsocketServer:

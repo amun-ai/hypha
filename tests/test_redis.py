@@ -1,5 +1,5 @@
 from hypha.core.store import RedisStore
-from hypha.websocket import connect_to_websocket
+from hypha.websocket_client import connect_to_websocket
 import pytest
 import time
 from . import SIO_PORT, find_item

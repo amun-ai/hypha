@@ -276,12 +276,18 @@ class RPC(MessageEmitter):
         }
 
         def wrapped_callback(*args, **kwargs):
-            if clear_after_called and session_id in self._object_store:
-                logger.info("Deleting session %s from %s", session_id, self.client_id)
-                del self._object_store[session_id]
-            if timer:
-                timer.clear()
-            callback(*args, **kwargs)
+            try:
+                callback(*args, **kwargs)
+            finally:
+                if clear_after_called and session_id in self._object_store:
+                    logger.info(
+                        "Deleting session %s from %s", session_id, self.client_id
+                    )
+                    del self._object_store[session_id]
+                    # if hasattr(self._connection, "close"):
+                    #     self._connection.close()
+                if timer:
+                    timer.clear()
 
         return encoded, wrapped_callback
 
@@ -425,10 +431,10 @@ class RPC(MessageEmitter):
         self._fire("remoteReady", data)
 
     def _log(self, info):
-        self._connection.emit({"type": "log", "message": info})
+        logger.info("RPC Info: %s", info)
 
     def _error(self, error):
-        self._connection.emit({"type": "error", "message": error})
+        logger.error("RPC Error: %s", error)
 
     def _call_method(
         self,
@@ -454,9 +460,6 @@ class RPC(MessageEmitter):
                     except Exception as err:
                         traceback_error = traceback.format_exc()
                         logger.exception("Error in method (%s): %s", method_name, err)
-                        self._connection.emit(
-                            {"type": "error", "message": traceback_error}
-                        )
                         if reject is not None:
                             reject(Exception(format_traceback(traceback_error)))
                     finally:
@@ -472,7 +475,6 @@ class RPC(MessageEmitter):
         except Exception as err:
             traceback_error = traceback.format_exc()
             logger.exception("Error in method %s: %s", method_name, err)
-            self._connection.emit({"type": "error", "message": traceback_error})
             if reject is not None:
                 reject(Exception(format_traceback(traceback_error)))
             if heatbeat_task:
@@ -481,7 +483,6 @@ class RPC(MessageEmitter):
     def _setup_handlers(self, connection):
         connection.on("method", self._handle_method)
         connection.on("disconnected", self._disconnected_hanlder)
-        connection.on("disposeObject", self._dispose_object_handler)
 
     async def _notify_service_update(self):
         if not self._remote_root_service:
@@ -504,14 +505,6 @@ class RPC(MessageEmitter):
                 for service in self._services.values()
             ],
         }
-
-    def _dispose_object_handler(self, data):
-        try:
-            self._dispose_object(data["object_id"])
-            self._connection.emit({"type": "disposed"})
-        except Exception as e:
-            logger.error("failed to dispose object: %s", e)
-            self._connection.emit({"type": "disposed", "error": str(e)})
 
     def _disconnected_hanlder(self, data):
         self._fire("beforeDisconnect")
