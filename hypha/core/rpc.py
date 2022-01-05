@@ -117,6 +117,7 @@ class RPC(MessageEmitter):
         self.work_dir = os.getcwd()
         self.abort = threading.Event()
         self.client_id = client_id
+        assert client_id and isinstance(client_id, str)
         self.root_target_id = root_target_id
         self.default_context = default_context or {}
         self._method_annotations = weakref.WeakKeyDictionary()
@@ -130,6 +131,7 @@ class RPC(MessageEmitter):
         self.add_service(
             {
                 "id": "built-in",
+                "type": "built-in",
                 "name": "RPC built-in services",
                 "config": {"require_context": True},
                 "get_service": self.get_local_service,
@@ -219,13 +221,16 @@ class RPC(MessageEmitter):
             raise Exception("Invalid service object type: {}".format(type(api)))
 
         if "id" not in api:
-            api["id"] = "/"
+            api["id"] = "default"
 
         if "name" not in api:
             api["name"] = api["id"]
 
         if "config" not in api:
             api["config"] = {}
+
+        if "type" not in api:
+            api["type"] = "generic"
 
         if not overwrite and api["id"] in self._services:
             raise Exception(
@@ -238,8 +243,8 @@ class RPC(MessageEmitter):
     async def register_service(self, api, overwrite=False, notify=True):
         """Register a service."""
         service = self.add_service(api, overwrite=overwrite)
-        self._fire("serviceUpdated", {"service_id": service["id"], "api": service})
         if notify:
+            self._fire("serviceUpdated", {"service_id": service["id"], "api": service})
             await self._notify_service_update()
         return service
 
@@ -254,37 +259,6 @@ class RPC(MessageEmitter):
             logger.warning(
                 "Failed to import numpy, ndarray encoding/decoding will not work"
             )
-
-    def _dispose_object(self, object_id):
-        raise NotImplementedError
-        # if object_id in self._object_store:
-        #     del self._object_store[object_id]
-        # else:
-        #     raise Exception("Object (id={}) not found.".format(object_id))
-
-    def dispose_object(self, obj):
-        """Dispose object."""
-        raise NotImplementedError
-        # if not hasattr(obj, "__rmethod__"):
-        #     raise Exception(
-        #         "Invalid object, it must be a disposable"
-        #         " object with __rmethod__ attribute."
-        #     )
-
-        # def pfunc(resolve, reject):
-        #     """Handle plugin function."""
-
-        #     def handle_disposed(data):
-        #         """Handle disposed."""
-        #         if "error" in data:
-        #             reject(data["error"])
-        #         else:
-        #             resolve(None)
-
-        #     self._connection.once("disposed", handle_disposed)
-        #     self._connection.emit({"type": "disposeObject", "object_id": obj.__rmethod__})
-
-        # return FuturePromise(pfunc, self._remote_logger)
 
     def _encode_callback(
         self, name, callback, cid, session_id, clear_after_called=False, timer=None
@@ -345,7 +319,7 @@ class RPC(MessageEmitter):
         )
         encoded["reject"], store[cid]["reject"] = self._encode_callback(
             "reject",
-            resolve,
+            reject,
             cid,
             session_id,
             clear_after_called=clear_after_called,
@@ -393,7 +367,7 @@ class RPC(MessageEmitter):
                     )
                 self._connection.emit(call_func)
 
-            return FuturePromise(pfunc, self._remote_logger, self.dispose_object)
+            return FuturePromise(pfunc, self._remote_logger)
 
         # Generate debugging information for the method
         remote_method.__remote_method__ = (
@@ -483,18 +457,25 @@ class RPC(MessageEmitter):
 
     async def _notify_service_update(self):
         if not self._remote_root_service:
+            # try to get the root service
             await self.get_remote_root_service(timeout=5.0)
+
         if self._remote_root_service:
-            await self._remote_root_service.save_services(
-                [
-                    {
-                        "id": k,
-                        "name": self._services[k]["name"],
-                        "config": self._services[k]["config"],
-                    }
-                    for k in self._services.keys()
-                ]
-            )
+            await self._remote_root_service.update_client_info(self.get_client_info())
+
+    def get_client_info(self):
+        return {
+            "id": self.client_id,
+            "services": [
+                {
+                    "id": service["id"],
+                    "type": service["type"],
+                    "name": service["name"],
+                    "config": service["config"],
+                }
+                for service in self._services.values()
+            ],
+        }
 
     def _dispose_object_handler(self, data):
         try:

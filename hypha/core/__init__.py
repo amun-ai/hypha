@@ -51,7 +51,7 @@ class ServiceConfig(BaseModel):
 
     visibility: VisibilityEnum = VisibilityEnum.protected
     require_context: bool = False
-    workspace: str
+    workspace: str = None
     flags: List[str] = []
 
 
@@ -98,6 +98,14 @@ class ServiceInfo(BaseModel):
     def get_id(self) -> str:
         """Get service id."""
         return self._id
+
+
+class ClientInfo(BaseModel):
+    """Represent service."""
+
+    id: str
+    name: Optional[str]
+    services: List[ServiceInfo] = []
 
 
 class UserInfo(BaseModel):

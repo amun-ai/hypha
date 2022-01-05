@@ -20,3 +20,4 @@ uvicorn==0.16.0
 httpx==0.21.1
 pyotritonclient==0.1.36
 redislite==6.0.674960
+aioredis==2.0.1

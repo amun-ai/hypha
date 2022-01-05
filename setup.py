@@ -26,6 +26,7 @@ REQUIREMENTS = [
     "python-socketio[asyncio_client]==5.4.1",
     "pyyaml",
     "redislite>=6.0.674960",
+    "aioredis>=2.0.1",
     "shortuuid>=1.0.1",
     "uvicorn>=0.13.4",
     "httpx>=0.21.1",

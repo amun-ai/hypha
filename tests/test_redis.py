@@ -1,32 +1,36 @@
 from hypha.core.store import RedisStore
 from hypha.websocket import connect_to_websocket
-from hypha.core import WorkspaceInfo, VisibilityEnum
 import pytest
 from . import SIO_PORT, find_item
 
 pytestmark = pytest.mark.asyncio
 
 
-async def test_redis_store():
+@pytest.fixture(scope="session", autouse=True)
+def redis_store():
+    yield RedisStore.get_instance()
+
+
+async def test_redis_store(event_loop, redis_store):
     """Test the redis store."""
-    store = RedisStore.get_instance()
-
     # Test adding a workspace
-    workspace = WorkspaceInfo(
-        name="test",
-        owners=[],
-        visibility=VisibilityEnum.protected,
-        persistent=True,
-        read_only=False,
+    await redis_store.clear_workspace("test")
+    await redis_store.register_workspace(
+        dict(
+            name="test",
+            owners=[],
+            visibility="protected",
+            persistent=True,
+            read_only=False,
+        ),
+        overwrite=True,
     )
-
-    await store.register_workspace(workspace)
-    workspace_info = store.get_workspace(workspace.name)
+    workspace_info = await redis_store.get_workspace("test")
     assert workspace_info.name == "test"
-    assert "test" in store.list_workspace()
+    assert "test" in await redis_store.list_workspace()
 
-    rpc = store.connect_to_workspace("test", client_id="test-plugin-1")
-    api = await rpc.get_remote_service("/:/")
+    rpc = await redis_store.connect_to_workspace("test", client_id="test-plugin-1")
+    api = await rpc.get_remote_service("workspace-manager:default")
     await api.log("hello")
     assert len(await api.list_services()) == 2
 
@@ -42,7 +46,7 @@ async def test_redis_store():
     }
     await rpc.register_service(interface)
 
-    rpc = store.connect_to_workspace("test", client_id="test-plugin-2")
+    rpc = await redis_store.connect_to_workspace("test", client_id="test-plugin-2")
     service = await rpc.get_remote_service("test-plugin-1:test-service")
 
     assert callable(service.echo)
@@ -50,23 +54,23 @@ async def test_redis_store():
     assert await service.echo("hello") == "hello"
 
     # Test deleting a workspace
-    store.delete_workspace(workspace.name)
-    assert "test" not in store.list_workspace()
+    await redis_store.delete_workspace("test")
+    assert "test" not in await redis_store.list_workspace()
 
 
-async def test_websocket_server(socketio_server):
+async def test_websocket_server(event_loop, socketio_server, redis_store):
     """Test the websocket server."""
-    store = RedisStore.get_instance()
-
-    workspace = WorkspaceInfo(
-        name="test-workspace",
-        owners=[],
-        visibility=VisibilityEnum.protected,
-        persistent=True,
-        read_only=False,
+    await redis_store.clear_workspace("test-workspace")
+    await redis_store.register_workspace(
+        dict(
+            name="test-workspace",
+            owners=[],
+            visibility="protected",
+            persistent=True,
+            read_only=False,
+        ),
+        overwrite=True,
     )
-
-    await store.register_workspace(workspace)
     rpc = await connect_to_websocket(
         url=f"ws://127.0.0.1:{SIO_PORT}",
         workspace="test-workspace",
@@ -74,7 +78,7 @@ async def test_websocket_server(socketio_server):
         token="123",
     )
 
-    ws = await rpc.get_remote_service("/:/")
+    ws = await rpc.get_remote_service("workspace-manager:default")
     await ws.log("hello")
 
     def echo(data):
@@ -107,7 +111,7 @@ async def test_websocket_server(socketio_server):
     assert await svc.echo("hello") == "hello"
 
     services = await ws.list_services()
-    assert find_item(services, "id", "test-plugin-1:/")
+    assert find_item(services, "uri", "test-workspace/workspace-manager:default")
 
     rpc2 = await connect_to_websocket(
         url=f"ws://127.0.0.1:{SIO_PORT}",
@@ -141,7 +145,7 @@ async def test_websocket_server(socketio_server):
     )
     svc6 = await svc2.echo(svc5)
     assert await svc6.add_one(99) == 100
-    with pytest.raises(Exception, match=r".*Service already exists: /.*"):
+    with pytest.raises(Exception, match=r".*Service already exists: default.*"):
         svc5 = await rpc2.register_service(
             {
                 "add_two": lambda x: x + 2,
