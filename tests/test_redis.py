@@ -1,6 +1,7 @@
 from hypha.core.store import RedisStore
 from hypha.websocket import connect_to_websocket
 import pytest
+import time
 from . import SIO_PORT, find_item
 
 pytestmark = pytest.mark.asyncio
@@ -118,6 +119,7 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
         workspace="test-workspace",
         client_id="test-plugin-2",
         token="123",
+        method_timeout=2,  # set to very short timeout
     )
 
     svc2 = await rpc2.get_remote_service("test-plugin-1:test-service")
@@ -146,17 +148,17 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
     svc6 = await svc2.echo(svc5)
     assert await svc6.add_one(99) == 100
     with pytest.raises(Exception, match=r".*Service already exists: default.*"):
-        svc5 = await rpc2.register_service(
+        await rpc2.register_service(
             {
                 "add_two": lambda x: x + 2,
             }
         )
 
-    svc5 = await rpc2.register_service(
-        {
-            "id": "add-two",
-            "add_two": lambda x: x + 2,
-        }
-    )
+    await rpc2.register_service({"id": "add-two", "blocking_sleep": time.sleep})
+    svc5 = await rpc2.get_remote_service("test-plugin-2:add-two")
+    with pytest.raises(Exception, match=r".*Method call time out:.*"):
+        await svc5.blocking_sleep(3)
+
+    await svc5.blocking_sleep(0.5)
 
     rpc.disconnect()

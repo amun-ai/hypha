@@ -19,7 +19,7 @@ logger.setLevel(logging.INFO)
 
 
 async def connect_to_websocket(
-    url: str, workspace: str, client_id: str, token: str, timeout=None
+    url: str, workspace: str, client_id: str, token: str, method_timeout=10
 ):
     """Connect to RPC via a websocket server."""
     connection = BasicConnection(None)
@@ -57,6 +57,7 @@ async def connect_to_websocket(
                         client_id=client_id,
                         root_target_id="workspace-manager",
                         default_context={"connection_type": "websocket"},
+                        method_timeout=method_timeout,
                     )
                     fut.set_result(rpc)
 
@@ -77,7 +78,7 @@ async def connect_to_websocket(
                 fut.set_exception(exp)
 
     asyncio.ensure_future(listen())
-    return await asyncio.wait_for(fut, timeout=timeout)
+    return await asyncio.wait_for(fut, timeout=method_timeout)
 
 
 class WebsocketServer:

@@ -80,16 +80,19 @@ class InterfaceList(list):
 
 
 class Timer:
-    def __init__(self, timeout, callback, *args, **kwargs):
+    def __init__(self, timeout, callback, *args, label="timer", **kwargs):
         self._timeout = timeout
         self._callback = callback
         self._task = asyncio.ensure_future(self._job())
         self._args = args
         self._kwrags = kwargs
+        self._label = label
 
     async def _job(self):
         await asyncio.sleep(self._timeout)
-        await self._callback(*self._args, **self._kwrags)
+        ret = self._callback(*self._args, **self._kwrags)
+        if ret is not None and inspect.isawaitable(ret):
+            await ret
 
     def clear(self):
         self._task.cancel()
@@ -109,6 +112,7 @@ class RPC(MessageEmitter):
         root_target_id=None,
         default_context=None,
         codecs=None,
+        method_timeout=10,
     ):
         """Set up instance."""
         self.manager_api = {}
@@ -122,6 +126,7 @@ class RPC(MessageEmitter):
         self.default_context = default_context or {}
         self._method_annotations = weakref.WeakKeyDictionary()
         self._remote_root_service = None
+        self._method_timeout = method_timeout
         self._remote_logger = dotdict({"info": self._log, "error": self._error})
         super().__init__(self._remote_logger)
         self._services = {}
@@ -272,10 +277,6 @@ class RPC(MessageEmitter):
 
         def wrapped_callback(*args, **kwargs):
             if clear_after_called and session_id in self._object_store:
-                print(
-                    "==========removing session=========>",
-                    f"{self.client_id}:{session_id}.__callbacks__.{cid}.{name}",
-                )
                 logger.info("Deleting session %s from %s", session_id, self.client_id)
                 del self._object_store[session_id]
             if timer:
@@ -285,7 +286,13 @@ class RPC(MessageEmitter):
         return encoded, wrapped_callback
 
     def _encode_promise(
-        self, resolve, reject, session_id, clear_after_called=False, with_timer=True
+        self,
+        resolve,
+        reject,
+        session_id,
+        clear_after_called=False,
+        with_timer=True,
+        method_name=None,
     ):
         """Encode a group of callbacks without promise."""
         if session_id not in self._object_store:
@@ -298,14 +305,20 @@ class RPC(MessageEmitter):
         store[cid] = {}
         encoded = {}
 
-        if with_timer and reject:
-            timer = Timer(2, reject, "Method call time out")
+        if with_timer and reject and self._method_timeout:
+            timer = Timer(
+                self._method_timeout,
+                reject,
+                f"Method call time out: {method_name}",
+                label=method_name,
+            )
             encoded["clear_timer"], store[cid]["clear_timer"] = self._encode_callback(
                 "clear_timer", timer.clear, cid, session_id, clear_after_called=False
             )
             encoded["reset_timer"], store[cid]["reset_timer"] = self._encode_callback(
                 "reset_timer", timer.reset, cid, session_id, clear_after_called=False
             )
+            encoded["heatbeat_interval"] = self._method_timeout / 2
         else:
             timer = None
 
@@ -364,6 +377,7 @@ class RPC(MessageEmitter):
                         session_id=local_session_id,
                         clear_after_called=True,
                         with_timer=True,
+                        method_name=f"{target_id}:{method_id}",
                     )
                 self._connection.emit(call_func)
 
@@ -417,7 +431,14 @@ class RPC(MessageEmitter):
         self._connection.emit({"type": "error", "message": error})
 
     def _call_method(
-        self, method, args, kwargs, resolve=None, reject=None, method_name=None
+        self,
+        method,
+        args,
+        kwargs,
+        resolve=None,
+        reject=None,
+        method_name=None,
+        heatbeat_task=None,
     ):
         try:
             result = method(*args, **kwargs)
@@ -438,17 +459,24 @@ class RPC(MessageEmitter):
                         )
                         if reject is not None:
                             reject(Exception(format_traceback(traceback_error)))
+                    finally:
+                        if heatbeat_task:
+                            heatbeat_task.cancel()
 
-                asyncio.ensure_future(_wait(result))
+                return asyncio.ensure_future(_wait(result))
             else:
                 if resolve is not None:
                     resolve(result)
+                if heatbeat_task:
+                    heatbeat_task.cancel()
         except Exception as err:
             traceback_error = traceback.format_exc()
             logger.exception("Error in method %s: %s", method_name, err)
             self._connection.emit({"type": "error", "message": traceback_error})
             if reject is not None:
                 reject(Exception(format_traceback(traceback_error)))
+            if heatbeat_task:
+                heatbeat_task.cancel()
 
     def _setup_handlers(self, connection):
         connection.on("method", self._handle_method)
@@ -492,12 +520,29 @@ class RPC(MessageEmitter):
 
     def _handle_method(self, data):
         reject = None
+        method_task = None
+        heatbeat_task = None
         try:
             assert "method" in data and "params" in data
             if "promise" in data:
                 promise = self._decode(data["promise"])
                 resolve, reject = promise["resolve"], promise["reject"]
-                if "clear_timer" in promise:
+                if "reset_timer" in promise and "heatbeat_interval" in promise:
+
+                    async def heatbeat(interval):
+                        while True:
+                            try:
+                                await promise["reset_timer"]()
+                            except Exception:  # pylint: disable=broad-except
+                                if method_task:
+                                    method_task.cancel()
+                                break
+                            await asyncio.sleep(interval)
+
+                    heatbeat_task = asyncio.ensure_future(
+                        heatbeat(promise["heatbeat_interval"])
+                    )
+                elif "clear_timer" in promise:
                     asyncio.ensure_future(promise["clear_timer"]())
             else:
                 resolve, reject = None, None
@@ -519,8 +564,14 @@ class RPC(MessageEmitter):
             ].get("require_context"):
                 self.default_context.update({"client_id": data["from"]})
                 kwargs["context"] = self.default_context
-            self._call_method(
-                method, args, kwargs, resolve, reject, method_name=method_name
+            method_task = self._call_method(
+                method,
+                args,
+                kwargs,
+                resolve,
+                reject,
+                method_name=method_name,
+                heatbeat_task=heatbeat_task,
             )
 
         except Exception as err:
