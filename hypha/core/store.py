@@ -5,11 +5,11 @@ import logging
 import os
 import sys
 import tempfile
-from typing import List, Callable, Union
-from functools import partial
+from typing import Callable, Union
 
 import aioredis
 import msgpack
+import shortuuid
 from imjoy_rpc.core_connection import BasicConnection
 from pydantic import parse_obj_as
 from redislite import Redis
@@ -23,9 +23,58 @@ logger.setLevel(logging.INFO)
 
 
 class WorkspaceManager:
+
+    _managers = {}
+
+    @staticmethod
+    def get_manager(workspace: str, redis: Redis):
+        if workspace in WorkspaceManager._managers:
+            return WorkspaceManager._managers[workspace]
+        else:
+            return WorkspaceManager(workspace, redis)
+
     def __init__(self, workspace: str, redis: Redis):
         self._redis = redis
         self._workspace = workspace
+        self._initialized = False
+        WorkspaceManager._managers[workspace] = self
+
+    async def setup(
+        self,
+        client_id="workspace-manager",
+        service_id="default",
+        service_name="Default workspace management service",
+    ):
+        if await self.check_client_exists(client_id):
+            # try to determine whether the client is still alive
+            rpc = await self.create_rpc(client_id + "-" + shortuuid.uuid())
+            try:
+                svc = await rpc.get_remote_service(f"{client_id}:{service_id}")
+                assert svc is not None
+                # return directly without creating the client
+                return
+            except Exception:  # pylint: disable=broad-except
+                logger.info(
+                    "Another client with the same id (%s) exists but not responding.",
+                    client_id,
+                )
+
+        await self.register_client(ClientInfo(id=client_id))
+        rpc = await self.create_rpc(client_id)
+
+        def save_client_info(_):
+            return asyncio.create_task(
+                self.update_client_info(
+                    rpc.get_client_info(),
+                    context={"client_id": rpc.client_id},
+                )
+            )
+
+        rpc.on("serviceUpdated", save_client_info)
+        management_service = self.create_service(service_id, service_name)
+        await rpc.register_service(management_service, notify=False)
+        await save_client_info(None)
+        self._initialized = True
 
     async def update_client_info(self, client_info, context=None):
         assert context is not None and "client_id" in context
@@ -81,10 +130,72 @@ class WorkspaceManager:
         """Delete a client."""
         await self._redis.hdel(f"{self._workspace}:clients", client_id)
 
+    async def send(self, data: Union[dict, bytes]):
+        if isinstance(data, dict):
+            if "to" not in data:
+                raise ValueError(f"`to` is required: {str(data)[:20]}")
+            await self._redis.publish(
+                f"{self._workspace}:msg:{data['to']}", msgpack.packb(data)
+            )
+        elif isinstance(data, bytes):
+            target_len = int.from_bytes(data[0:1], "big")
+            target_id = data[1 : target_len + 1].decode()
+            await self._redis.publish(
+                f"{self._workspace}:msg:{target_id}", data[target_len + 1 :]
+            )
+        else:
+            raise TypeError("Invalid type")
+
+    async def listen(
+        self,
+        client_id: str,
+        respond: Callable,
+        unpack=False,
+        is_async=True,
+    ):
+        pubsub = self._redis.pubsub()
+        await pubsub.subscribe(f"{self._workspace}:msg:{client_id}")
+        while True:
+            msg = await pubsub.get_message()
+            if msg and msg.get("type") == "message":
+                assert (
+                    msg.get("channel") == f"{self._workspace}:msg:{client_id}".encode()
+                )
+                if unpack:
+                    data = msgpack.unpackb(msg["data"])
+                    print(
+                        client_id,
+                        "<====process===",
+                        data.get("source"),
+                        data["type"],
+                        data,
+                    )
+                else:
+                    data = msg["data"]
+
+                if is_async:
+                    await respond(data)
+                else:
+                    respond(data)
+
+    async def create_rpc(self, client_id: str, default_context=None):
+        """Create a rpc for the workspace."""
+        connection = BasicConnection(self.send)
+        asyncio.ensure_future(
+            self.listen(
+                client_id,
+                connection.handle_message,
+                unpack=True,
+                is_async=False,
+            )
+        )
+        rpc = RPC(connection, client_id=client_id, default_context=default_context)
+        return rpc
+
     def log(self, *args, context=None):
         print(context["client_id"], *args)
 
-    def create_service(self, service_id, service_name):
+    def create_service(self, service_id, service_name=None):
         interface = {
             "id": service_id,
             "name": service_name or service_id,
@@ -113,69 +224,6 @@ class RedisStore:
             uri = os.path.join(tempfile.mkdtemp(), "redis.db")
         Redis(uri, serverconfig={"port": str(port)})
         self._redis = aioredis.from_url(f"redis://127.0.0.1:{port}/0")
-        self._workspace_managers = {}
-
-    async def send(self, workspace: str, data: Union[dict, bytes]):
-        if isinstance(data, dict):
-            if "to" not in data:
-                raise ValueError(f"`to` is required: {str(data)[:20]}")
-            await self._redis.publish(
-                f"{workspace}:msg:{data['to']}", msgpack.packb(data)
-            )
-        elif isinstance(data, bytes):
-            target_len = int.from_bytes(data[0:1], "big")
-            target_id = data[1 : target_len + 1].decode()
-            await self._redis.publish(
-                f"{workspace}:msg:{target_id}", data[target_len + 1 :]
-            )
-        else:
-            raise TypeError("Invalid type")
-
-    async def listen(
-        self,
-        workspace: str,
-        client_id: str,
-        respond: Callable,
-        unpack=False,
-        is_async=True,
-    ):
-        pubsub = self._redis.pubsub()
-        await pubsub.subscribe(f"{workspace}:msg:{client_id}")
-        while True:
-            msg = await pubsub.get_message()
-            if msg and msg.get("type") == "message":
-                assert msg.get("channel") == f"{workspace}:msg:{client_id}".encode()
-                if unpack:
-                    data = msgpack.unpackb(msg["data"])
-                    print(
-                        client_id,
-                        "<====process===",
-                        data.get("source"),
-                        data["type"],
-                        data,
-                    )
-                else:
-                    data = msg["data"]
-
-                if is_async:
-                    await respond(data)
-                else:
-                    respond(data)
-
-    async def create_rpc(self, workspace: str, client_id: str, default_context=None):
-        """Create a rpc."""
-        connection = BasicConnection(partial(self.send, workspace))
-        asyncio.ensure_future(
-            self.listen(
-                workspace,
-                client_id,
-                connection.handle_message,
-                unpack=True,
-                is_async=False,
-            )
-        )
-        rpc = RPC(connection, client_id=client_id, default_context=default_context)
-        return rpc
 
     async def register_workspace(self, workspace: dict, overwrite=False):
         """Add a workspace."""
@@ -183,9 +231,8 @@ class RedisStore:
         if not overwrite and await self._redis.hexists("workspaces", workspace.name):
             raise Exception(f"Workspace {workspace.name} already exists.")
         await self._redis.hset("workspaces", workspace.name, workspace.json())
-        self._workspace_managers[workspace.name] = await self.setup_workspace_manager(
-            workspace.name, client_id="workspace-manager", service_id="default"
-        )
+        manager = WorkspaceManager.get_manager(workspace.name, self._redis)
+        await manager.setup()
 
     async def clear_workspace(self, workspace: str):
         """Clear a workspace."""
@@ -201,37 +248,16 @@ class RedisStore:
 
     async def get_workspace_manager(self, workspace: str):
         """Get a workspace manager."""
-        if workspace in self._workspace_managers:
-            return self._workspace_managers[workspace]
-        else:
-            return WorkspaceManager(workspace, self._redis)
-
-    async def connect_to_workspace(self, workspace: str, client_id):
-        rpc = await self.create_rpc(workspace, client_id=client_id, default_context={})
-        return rpc
-
-    async def setup_workspace_manager(
-        self, workspace: str, client_id, service_id, service_name=None
-    ):
-        """Get the workspace interface."""
-
-        manager = WorkspaceManager(workspace, self._redis)
-        await manager.register_client(ClientInfo(id=client_id))
-        rpc = await self.connect_to_workspace(workspace, client_id)
-
-        def save_client_info(_):
-            return asyncio.create_task(
-                manager.update_client_info(
-                    rpc.get_client_info(),
-                    context={"client_id": rpc.client_id},
-                )
-            )
-
-        rpc.on("serviceUpdated", save_client_info)
-        management_service = manager.create_service(service_id, service_name)
-        await rpc.register_service(management_service, notify=False)
-        await save_client_info(None)
+        manager = WorkspaceManager.get_manager(workspace, self._redis)
+        await manager.setup()
         return manager
+
+    async def connect_to_workspace(
+        self, workspace: str, client_id: str, default_context: dict = None
+    ):
+        """Connect to a workspace."""
+        manager = await self.get_workspace_manager(workspace)
+        return await manager.create_rpc(client_id, default_context=default_context)
 
     async def get_all_workspaces(self):
         """Get all workspaces."""

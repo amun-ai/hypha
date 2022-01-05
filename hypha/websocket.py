@@ -13,7 +13,6 @@ from hypha.core import ClientInfo
 from hypha.core.rpc import RPC
 from hypha.core.store import RedisStore
 
-
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket")
 logger.setLevel(logging.INFO)
@@ -121,8 +120,7 @@ class WebsocketServer:
             await websocket.accept()
 
             asyncio.ensure_future(
-                store.listen(
-                    workspace,
+                workspace_manager.listen(
                     client_id,
                     websocket.send_bytes,
                     unpack=False,
@@ -134,7 +132,7 @@ class WebsocketServer:
             try:
                 while True:
                     data = await websocket.receive_bytes()
-                    await store.send(workspace, data)
+                    await workspace_manager.send(data)
             except WebSocketDisconnect as exp:
                 if exp.code != status.WS_1000_NORMAL_CLOSURE:
                     logger.warning(
