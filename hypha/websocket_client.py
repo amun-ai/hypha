@@ -62,7 +62,7 @@ class WebsocketConnection(BasicConnection):
             self._fire("disconnected", None)
 
 
-async def connect_to_websocket(
+async def connect_to_server(
     url: str, workspace: str, client_id: str, token: str, method_timeout=10
 ):
     """Connect to RPC via a websocket server."""

@@ -249,9 +249,20 @@ class RPC(MessageEmitter):
         """Register a service."""
         service = self.add_service(api, overwrite=overwrite)
         if notify:
-            self._fire("serviceUpdated", {"service_id": service["id"], "api": service})
+            self._fire("serviceUpdated", {"service_id": service["id"], "api": service, "type": "add"})
             await self._notify_service_update()
         return service
+    
+    async def unregister_service(self, service, notify=True):
+        """Register a service."""
+        if isinstance(service, str):
+            service = self._services.get(service)
+        if service["id"] not in self._services:
+            raise Exception(f"Service not found: {service.get('id')}")
+        del self._services[service["id"]]
+        if notify:
+            self._fire("serviceUpdated", {"service_id": service["id"], "api": service, "type": "remove"})
+            await self._notify_service_update()
 
     def check_modules(self):
         """Check if all the modules exists."""

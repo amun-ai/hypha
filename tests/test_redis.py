@@ -1,5 +1,5 @@
 from hypha.core.store import RedisStore
-from hypha.websocket_client import connect_to_websocket
+from hypha.websocket_client import connect_to_server
 import pytest
 import time
 from . import SIO_PORT, find_item
@@ -73,7 +73,7 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
         ),
         overwrite=True,
     )
-    rpc = await connect_to_websocket(
+    rpc = await connect_to_server(
         url=f"ws://127.0.0.1:{SIO_PORT}",
         workspace="test-workspace",
         client_id="test-plugin-1",
@@ -115,7 +115,7 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
     services = await ws.list_services()
     assert find_item(services, "uri", "test-workspace/workspace-manager:default")
 
-    rpc2 = await connect_to_websocket(
+    rpc2 = await connect_to_server(
         url=f"ws://127.0.0.1:{SIO_PORT}",
         workspace="test-workspace",
         client_id="test-plugin-2",
@@ -157,8 +157,17 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
             }
         )
 
+    await rpc2.unregister_service("default")
+    await rpc2.register_service(
+        {
+            "add_two": lambda x: x + 2,
+        }
+    )
+
+
     await rpc2.register_service({"id": "add-two", "blocking_sleep": time.sleep})
     svc5 = await rpc2.get_remote_service("test-plugin-2:add-two")
+    # This will fail because the service is blocking
     with pytest.raises(Exception, match=r".*Method call time out:.*"):
         await svc5.blocking_sleep(3)
 
@@ -172,6 +181,7 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
         }
     )
     svc5 = await rpc2.get_remote_service("test-plugin-2:executor-test")
+    # This should be fine because it is run in executor
     await svc5.blocking_sleep(3)
 
     rpc.disconnect()
