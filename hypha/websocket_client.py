@@ -28,11 +28,14 @@ class WebsocketRPCConnection:
         self._handle_message = handler
         self._is_async = inspect.iscoroutinefunction(handler)
 
+    async def open(self):
+        self._websocket = await websockets.connect(self._url)
+        asyncio.ensure_future(self._listen(self._websocket))
+
     async def emit_message(self, data):
         assert self._handle_message is not None, "No handler for message"
         if not self._websocket or self._websocket.closed:
-            self._websocket = await websockets.connect(self._url)
-            asyncio.ensure_future(self._listen(self._websocket))
+            await self.open()
         try:
             await self._websocket.send(data)
         except Exception:
@@ -48,6 +51,9 @@ class WebsocketRPCConnection:
                     await self._handle_message(data)
                 else:
                     self._handle_message(data)
+        except websockets.exceptions.ConnectionClosedError:
+            logger.warning("Connecting is broken, reopening a new connection.")
+            await self.open()
         except websockets.exceptions.ConnectionClosedOK:
             pass
 

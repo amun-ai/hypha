@@ -22,7 +22,7 @@ from imjoy_rpc.utils import (
     format_traceback,
 )
 
-CHUNK_SIZE = 1024 * 1000
+CHUNK_SIZE = 1024 * 500
 API_VERSION = "0.2.3"
 ALLOWED_MAGIC_METHODS = ["__enter__", "__exit__"]
 IO_METHODS = [
@@ -53,6 +53,7 @@ IO_METHODS = [
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("RPC")
+logger.setLevel(logging.DEBUG)
 
 
 def index_object(obj, ids):
@@ -123,6 +124,7 @@ class RPC(MessageEmitter):
         self.default_context = default_context or {}
         self._method_annotations = weakref.WeakKeyDictionary()
         self._remote_root_service = None
+        self._chunk_store = {}
         self._method_timeout = method_timeout
         self._remote_logger = dotdict({"info": self._log, "error": self._error})
         super().__init__(self._remote_logger)
@@ -137,6 +139,12 @@ class RPC(MessageEmitter):
                 "name": "RPC built-in services",
                 "config": {"require_context": True},
                 "get_service": self.get_local_service,
+                "message_cache": {
+                    "create": self._create_message,
+                    "append": self._append_message,
+                    "process": self._process_message,
+                    "remove": self._remove_message,
+                }
             }
         )
         self.on("method", self._handle_method)
@@ -154,6 +162,34 @@ class RPC(MessageEmitter):
 
         self.check_modules()
 
+    def _create_message(self, key, overwrite=False, context=None):
+        if "message_cache" not in self._object_store:
+            self._object_store["message_cache"] = {}
+        if not overwrite and key in self._object_store["message_cache"]:
+            raise Exception("Message with the same key (%s) already exists in the cache store, please use overwrite=True or remove it first.", key)
+        self._object_store["message_cache"][key] = b""
+    
+    def _append_message(self, key, data, context=None):
+        cache = self._object_store["message_cache"]
+        if key not in cache:
+            raise KeyError(f"Message with key {key} does not exists.")
+        assert isinstance(data, bytes)
+        cache[key] += data
+    
+    def _remove_message(self, key, context=None):
+        cache = self._object_store["message_cache"]
+        if key not in cache:
+            raise KeyError(f"Message with key {key} does not exists.")
+        del cache[key]
+    
+    def _process_message(self, key, remove=True, context=None):
+        cache = self._object_store["message_cache"]
+        if key not in cache:
+            raise KeyError(f"Message with key {key} does not exists.")
+        self._on_message(cache[key])
+        if remove:
+            del cache[key]
+
     def _on_message(self, message):
         """Handle message."""
         assert isinstance(message, bytes)
@@ -161,8 +197,26 @@ class RPC(MessageEmitter):
         context = unpacker.unpack()
         message = unpacker.unpack()
         # Add trusted context to the method call
-        if message.get("type") == "method":
-            message["context"] = context
+
+        if message.get("type") == "chunk":
+            session = message["session"]
+            # the chunk object does not exist or it's a starting chunk
+            if session not in self._chunk_store or message["index"] == 0:
+                self._chunk_store[session] = []
+            assert message["index"] == len(self._chunk_store[session])
+            self._chunk_store[session].append(message["data"])
+            logger.info("Chunk recieved %d/%d.", message["index"], message["total"])
+            if message["index"] == message["total"] - 1:
+                chunks = self._chunk_store[session]
+                del self._chunk_store[session]
+                logger.info("Assemble the chunks.")
+                message = msgpack.unpackb(b"".join(chunks))
+            else:
+                return
+
+        # add context for methods etc.
+        if context.get("ctx"):
+            message["ctx"] = context
             context.update(self.default_context)
         self._fire(message["type"], message)
 
@@ -332,7 +386,7 @@ class RPC(MessageEmitter):
     def _encode_callback(
         self, name, callback, cid, session_id, clear_after_called=False, timer=None
     ):
-        method_id = f"{session_id}.__callbacks__.{cid}.{name}"
+        method_id = f"{session_id}.{cid}.{name}"
         encoded = {
             "_rtype": "method",
             "_rtarget": self.client_id,
@@ -367,10 +421,7 @@ class RPC(MessageEmitter):
         """Encode a group of callbacks without promise."""
         if session_id not in self._object_store:
             self._object_store[session_id] = {}
-        callback_store = self._object_store[session_id]
-        if "__callbacks__" not in callback_store:
-            callback_store["__callbacks__"] = {}
-        store = callback_store["__callbacks__"]
+        store = self._object_store[session_id]
         cid = shortuuid.uuid()
         store[cid] = {}
         encoded = {}
@@ -411,6 +462,7 @@ class RPC(MessageEmitter):
         target_id = encoded_method["_rtarget"]
         method_id = encoded_method["_rmethod"]
         with_promise = encoded_method.get("_rpromise", False)
+        require_context = encoded_method.get("_rcontext", False)
         # do not clear if scope == "session"
         def remote_method(*arguments, **kwargs):
             """Run remote method."""
@@ -438,7 +490,7 @@ class RPC(MessageEmitter):
                 if with_promise:
                     method_name = f"{target_id}:{method_id}"
                     timer = Timer(
-                        self._method_timeout,
+                        10, #self._method_timeout,
                         reject,
                         f"Method call time out: {method_name}",
                         label=method_name,
@@ -451,37 +503,34 @@ class RPC(MessageEmitter):
                         timer=timer,
                     )
                 packed = msgpack.packb(call_func)
-                # total_size = len(packed)
-                # if total_size <= CHUNK_SIZE:
-                package = msgpack.packb({"to": target_id}) + packed
-                emit_task = asyncio.ensure_future(self._emit_message(package))
-                # else:
-                #     # send chunk by chunk
-                #     def send_chunks():
-                #         chunk_num = int(math.ceil(float(total_size) / CHUNK_SIZE))
-                #         for idx in range(chunk_num):
-                #             start_byte = idx * CHUNK_SIZE
-                #             chunk = msgpack.packb(
-                #                 {
-                #                     "to": target_id,
-                #                     "is_chunk": True,
-                #                     "session_id": local_session_id,
-                #                     "data": packed[
-                #                         start_byte : start_byte + CHUNK_SIZE
-                #                     ],
-                #                     "index": idx,
-                #                     "total": chunk_num,
-                #                 }
-                #             )
-                #             logger.info(
-                #                 "Sending chunk %d/%d (%d bytes)",
-                #                 idx + 1,
-                #                 chunk_num,
-                #                 total_size,
-                #             )
-                #             self._emit_message(chunk)
-
-                # emit_task = asyncio.ensure_future(send_chunks)
+                context_header = msgpack.packb({"to": target_id, "ctx": bool(require_context)})
+                package = context_header + packed
+                total_size = len(package)
+                if total_size <= CHUNK_SIZE + 1024:
+                    logger.info("%s: Sending bytes %d (chunksize: %d)", method_id, total_size, CHUNK_SIZE)
+                    emit_task = asyncio.ensure_future(self._emit_message(package))
+                else:
+                    # send chunk by chunk
+                    async def send_chunks():
+                        remote_service = await self.get_remote_service(f"{target_id}:built-in")
+                        assert remote_service.message_cache, "Remote client does not support message caching for long message."
+                        message_id = local_session_id + shortuuid.uuid()
+                        await remote_service.message_cache.create(message_id)
+                        chunk_num = int(math.ceil(float(total_size) / CHUNK_SIZE))
+                        for idx in range(chunk_num):
+                            start_byte = idx * CHUNK_SIZE
+                            await remote_service.message_cache.append(message_id, package[
+                                        start_byte : start_byte + CHUNK_SIZE
+                                    ])
+                            logger.info(
+                                "Sending chunk %d/%d (%d bytes)",
+                                idx + 1,
+                                chunk_num,
+                                total_size,
+                            )
+                        logger.info("All chunks sent (%d)", chunk_num)
+                        await remote_service.message_cache.process(message_id)
+                    emit_task = asyncio.ensure_future(send_chunks())
 
                 if emit_task:
 
@@ -493,8 +542,10 @@ class RPC(MessageEmitter):
                                 )
                             )
                         elif timer:
+                            logger.info("Start watchdog timer.")
                             # Only start the timer after we send the message successfully
-                            timer.start()
+                            if timer:
+                                timer.start()
 
                     emit_task.add_done_callback(handle_result)
 
@@ -667,12 +718,12 @@ class RPC(MessageEmitter):
             if method in self._method_annotations and self._method_annotations[
                 method
             ].get("require_context"):
-                kwargs["context"] = data.get("context", self.default_context.copy())
+                kwargs["context"] = data.get("ctx", self.default_context.copy())
             run_in_executor = (
                 method in self._method_annotations
                 and self._method_annotations[method].get("run_in_executor")
             )
-
+            logger.info("Executing method: %s", method_name)
             method_task = self._call_method(
                 method,
                 args,
@@ -743,6 +794,7 @@ class RPC(MessageEmitter):
                     "_rtarget": self.client_id,
                     "_rmethod": annotation["method_id"],
                     "_rpromise": True,
+                    "_rcontext": annotation.get("require_context", False)
                 }
             else:
                 object_id = f"{shortuuid.uuid()}"

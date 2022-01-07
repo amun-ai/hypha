@@ -49,11 +49,14 @@ class RedisRPCConnection:
             context = unpacker.unpack()
             pos = unpacker.tell()
             target_id = context["to"]
-            context = {
-                "to": target_id,
-                "from": self._client_id,
-                "workspace": self._workspace,
-            }
+            if context.get("ctx"):
+                # add more context as requested
+                context = {
+                    "to": target_id,
+                    "ctx": True,
+                    "from": self._client_id,
+                    "workspace": self._workspace,
+                }
             # Pack more context info to the package
             data = msgpack.packb(context) + data[pos:]
             await self._redis.publish(f"{self._workspace}:msg:{target_id}", data)
