@@ -111,6 +111,7 @@ class RPC(MessageEmitter):
         default_context=None,
         codecs=None,
         method_timeout=10,
+        max_message_buffer_size=0,
     ):
         """Set up instance."""
         self.manager_api = {}
@@ -124,6 +125,7 @@ class RPC(MessageEmitter):
         self.default_context = default_context or {}
         self._method_annotations = weakref.WeakKeyDictionary()
         self._remote_root_service = None
+        self._max_message_buffer_size = max_message_buffer_size
         self._chunk_store = {}
         self._method_timeout = method_timeout
         self._remote_logger = dotdict({"info": self._log, "error": self._error})
@@ -137,7 +139,7 @@ class RPC(MessageEmitter):
                 "id": "built-in",
                 "type": "built-in",
                 "name": "RPC built-in services",
-                "config": {"require_context": True},
+                "config": {"require_context": ["get_service", "message_cache.process"]},
                 "get_service": self.get_local_service,
                 "message_cache": {
                     "create": self._create_message,
@@ -162,21 +164,21 @@ class RPC(MessageEmitter):
 
         self.check_modules()
 
-    def _create_message(self, key, overwrite=False, context=None):
+    def _create_message(self, key, overwrite=False):
         if "message_cache" not in self._object_store:
             self._object_store["message_cache"] = {}
         if not overwrite and key in self._object_store["message_cache"]:
             raise Exception("Message with the same key (%s) already exists in the cache store, please use overwrite=True or remove it first.", key)
         self._object_store["message_cache"][key] = b""
     
-    def _append_message(self, key, data, context=None):
+    def _append_message(self, key, data):
         cache = self._object_store["message_cache"]
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
         assert isinstance(data, bytes)
         cache[key] += data
     
-    def _remove_message(self, key, context=None):
+    def _remove_message(self, key):
         cache = self._object_store["message_cache"]
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
@@ -184,37 +186,28 @@ class RPC(MessageEmitter):
     
     def _process_message(self, key, remove=True, context=None):
         cache = self._object_store["message_cache"]
+        assert context is not None, "Context is required"
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
-        self._on_message(cache[key])
+        logger.debug("Processing message %s (size=%d)", key, len(cache[key]))
+        unpacker = msgpack.Unpacker(io.BytesIO(cache[key]), max_buffer_size=self._max_message_buffer_size)
+        msg_context = unpacker.unpack()
+        message = unpacker.unpack()
+        if msg_context.get("ctx", False):
+            message["ctx"] = context
+            context.update(self.default_context)
+        self._fire(message["type"], message)
         if remove:
             del cache[key]
 
     def _on_message(self, message):
         """Handle message."""
         assert isinstance(message, bytes)
-        unpacker = msgpack.Unpacker(io.BytesIO(message))
+        unpacker = msgpack.Unpacker(io.BytesIO(message), max_buffer_size=CHUNK_SIZE*2)
         context = unpacker.unpack()
         message = unpacker.unpack()
         # Add trusted context to the method call
 
-        if message.get("type") == "chunk":
-            session = message["session"]
-            # the chunk object does not exist or it's a starting chunk
-            if session not in self._chunk_store or message["index"] == 0:
-                self._chunk_store[session] = []
-            assert message["index"] == len(self._chunk_store[session])
-            self._chunk_store[session].append(message["data"])
-            logger.info("Chunk recieved %d/%d.", message["index"], message["total"])
-            if message["index"] == message["total"] - 1:
-                chunks = self._chunk_store[session]
-                del self._chunk_store[session]
-                logger.info("Assemble the chunks.")
-                message = msgpack.unpackb(b"".join(chunks))
-            else:
-                return
-
-        # add context for methods etc.
         if context.get("ctx"):
             message["ctx"] = context
             context.update(self.default_context)
@@ -282,10 +275,11 @@ class RPC(MessageEmitter):
                 )
         elif callable(a_object):
             # mark the method as a remote method that requires context
+            method_name = ".".join(object_id.split(".")[1:])
             self._method_annotations[a_object] = {
-                "require_context": require_context,
+                "require_context": (method_name in require_context) if isinstance(require_context, (list, tuple)) else bool(require_context),
                 "run_in_executor": run_in_executor,
-                "method_id": object_id,
+                "method_id": "services." + object_id,
             }
 
     def add_service(self, api, overwrite=False):
@@ -326,12 +320,12 @@ class RPC(MessageEmitter):
         # require_context only applies to the top-level functions
         require_context, run_in_executor = False, False
         if bool(api["config"].get("require_context")):
-            require_context = True
+            require_context = api["config"]["require_context"]
         if bool(api["config"].get("run_in_executor")):
             run_in_executor = True
         self._annotate_service_methods(
             api,
-            "services." + api["id"],
+            api["id"],
             require_context=require_context,
             run_in_executor=run_in_executor,
         )
@@ -490,7 +484,7 @@ class RPC(MessageEmitter):
                 if with_promise:
                     method_name = f"{target_id}:{method_id}"
                     timer = Timer(
-                        10, #self._method_timeout,
+                        self._method_timeout,
                         reject,
                         f"Method call time out: {method_name}",
                         label=method_name,
@@ -512,14 +506,15 @@ class RPC(MessageEmitter):
                 else:
                     # send chunk by chunk
                     async def send_chunks():
-                        remote_service = await self.get_remote_service(f"{target_id}:built-in")
-                        assert remote_service.message_cache, "Remote client does not support message caching for long message."
+                        remote_services = await self.get_remote_service(f"{target_id}:built-in")
+                        assert remote_services.message_cache, "Remote client does not support message caching for long message."
+                        message_cache = remote_services.message_cache
                         message_id = local_session_id + shortuuid.uuid()
-                        await remote_service.message_cache.create(message_id)
+                        await message_cache.create(message_id)
                         chunk_num = int(math.ceil(float(total_size) / CHUNK_SIZE))
                         for idx in range(chunk_num):
                             start_byte = idx * CHUNK_SIZE
-                            await remote_service.message_cache.append(message_id, package[
+                            await message_cache.append(message_id, package[
                                         start_byte : start_byte + CHUNK_SIZE
                                     ])
                             logger.info(
@@ -529,7 +524,7 @@ class RPC(MessageEmitter):
                                 total_size,
                             )
                         logger.info("All chunks sent (%d)", chunk_num)
-                        await remote_service.message_cache.process(message_id)
+                        await message_cache.process(message_id)
                     emit_task = asyncio.ensure_future(send_chunks())
 
                 if emit_task:

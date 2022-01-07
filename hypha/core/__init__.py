@@ -5,7 +5,7 @@ import logging
 import random
 import sys
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union, Tuple
 
 import shortuuid
 from pydantic import (  # pylint: disable=no-name-in-module
@@ -50,7 +50,7 @@ class ServiceConfig(BaseModel):
     """Represent service config."""
 
     visibility: VisibilityEnum = VisibilityEnum.protected
-    require_context: bool = False
+    require_context: Union[Tuple[str], List[str], bool] = False
     workspace: str = None
     flags: List[str] = []
 

@@ -123,7 +123,7 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
         workspace="test-workspace",
         client_id="test-plugin-2",
         token="123",
-        method_timeout=2,  # set to very short timeout
+        method_timeout=10,
     )
 
     svc2 = await rpc2.get_remote_service("test-plugin-1:test-service")
@@ -155,7 +155,7 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
     np.testing.assert_array_equal(array2, array + 1)
 
     # Test large data transfer
-    array = np.zeros([2048, 1048])
+    array = np.zeros([2048, 2048, 4])
     array2 = await svc6.add_one(array)
     np.testing.assert_array_equal(array2, array + 1)
 
@@ -177,7 +177,7 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
     svc5 = await rpc2.get_remote_service("test-plugin-2:add-two")
     # This will fail because the service is blocking
     with pytest.raises(Exception, match=r".*Method call time out:.*"):
-        await svc5.blocking_sleep(3)
+        await svc5.blocking_sleep(15)
 
     await svc5.blocking_sleep(0.5)
 
