@@ -748,7 +748,8 @@ class RPC(MessageEmitter):
 
                 method_task.add_done_callback(method_done)
             else:
-                heartbeat_task.cancel()
+                if heartbeat_task:
+                    heartbeat_task.cancel()
 
         except Exception as err:
             traceback_error = traceback.format_exc()
