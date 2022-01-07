@@ -123,7 +123,7 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
         workspace="test-workspace",
         client_id="test-plugin-2",
         token="123",
-        method_timeout=10,
+        method_timeout=3,
     )
 
     svc2 = await rpc2.get_remote_service("test-plugin-1:test-service")
@@ -177,7 +177,7 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
     svc5 = await rpc2.get_remote_service("test-plugin-2:add-two")
     # This will fail because the service is blocking
     with pytest.raises(Exception, match=r".*Method call time out:.*"):
-        await svc5.blocking_sleep(15)
+        await svc5.blocking_sleep(4)
 
     await svc5.blocking_sleep(0.5)
 

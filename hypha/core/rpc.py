@@ -146,7 +146,7 @@ class RPC(MessageEmitter):
                     "append": self._append_message,
                     "process": self._process_message,
                     "remove": self._remove_message,
-                }
+                },
             }
         )
         self.on("method", self._handle_method)
@@ -168,29 +168,35 @@ class RPC(MessageEmitter):
         if "message_cache" not in self._object_store:
             self._object_store["message_cache"] = {}
         if not overwrite and key in self._object_store["message_cache"]:
-            raise Exception("Message with the same key (%s) already exists in the cache store, please use overwrite=True or remove it first.", key)
+            raise Exception(
+                "Message with the same key (%s) already exists in the cache store, please use overwrite=True or remove it first.",
+                key,
+            )
+
         self._object_store["message_cache"][key] = b""
-    
+
     def _append_message(self, key, data):
         cache = self._object_store["message_cache"]
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
         assert isinstance(data, bytes)
         cache[key] += data
-    
+
     def _remove_message(self, key):
         cache = self._object_store["message_cache"]
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
         del cache[key]
-    
+
     def _process_message(self, key, remove=True, context=None):
         cache = self._object_store["message_cache"]
         assert context is not None, "Context is required"
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
         logger.debug("Processing message %s (size=%d)", key, len(cache[key]))
-        unpacker = msgpack.Unpacker(io.BytesIO(cache[key]), max_buffer_size=self._max_message_buffer_size)
+        unpacker = msgpack.Unpacker(
+            io.BytesIO(cache[key]), max_buffer_size=self._max_message_buffer_size
+        )
         msg_context = unpacker.unpack()
         message = unpacker.unpack()
         if msg_context.get("ctx", False):
@@ -203,7 +209,7 @@ class RPC(MessageEmitter):
     def _on_message(self, message):
         """Handle message."""
         assert isinstance(message, bytes)
-        unpacker = msgpack.Unpacker(io.BytesIO(message), max_buffer_size=CHUNK_SIZE*2)
+        unpacker = msgpack.Unpacker(io.BytesIO(message), max_buffer_size=CHUNK_SIZE * 2)
         context = unpacker.unpack()
         message = unpacker.unpack()
         # Add trusted context to the method call
@@ -277,7 +283,9 @@ class RPC(MessageEmitter):
             # mark the method as a remote method that requires context
             method_name = ".".join(object_id.split(".")[1:])
             self._method_annotations[a_object] = {
-                "require_context": (method_name in require_context) if isinstance(require_context, (list, tuple)) else bool(require_context),
+                "require_context": (method_name in require_context)
+                if isinstance(require_context, (list, tuple))
+                else bool(require_context),
                 "run_in_executor": run_in_executor,
                 "method_id": "services." + object_id,
             }
@@ -497,26 +505,38 @@ class RPC(MessageEmitter):
                         timer=timer,
                     )
                 packed = msgpack.packb(call_func)
-                context_header = msgpack.packb({"to": target_id, "ctx": bool(require_context)})
+                context_header = msgpack.packb(
+                    {"to": target_id, "ctx": bool(require_context)}
+                )
                 package = context_header + packed
                 total_size = len(package)
                 if total_size <= CHUNK_SIZE + 1024:
-                    logger.info("%s: Sending bytes %d (chunksize: %d)", method_id, total_size, CHUNK_SIZE)
+                    logger.info(
+                        "%s: Sending bytes %d (chunksize: %d)",
+                        method_id,
+                        total_size,
+                        CHUNK_SIZE,
+                    )
                     emit_task = asyncio.ensure_future(self._emit_message(package))
                 else:
                     # send chunk by chunk
                     async def send_chunks():
-                        remote_services = await self.get_remote_service(f"{target_id}:built-in")
-                        assert remote_services.message_cache, "Remote client does not support message caching for long message."
+                        remote_services = await self.get_remote_service(
+                            f"{target_id}:built-in"
+                        )
+                        assert (
+                            remote_services.message_cache
+                        ), "Remote client does not support message caching for long message."
                         message_cache = remote_services.message_cache
                         message_id = local_session_id + shortuuid.uuid()
                         await message_cache.create(message_id)
                         chunk_num = int(math.ceil(float(total_size) / CHUNK_SIZE))
                         for idx in range(chunk_num):
                             start_byte = idx * CHUNK_SIZE
-                            await message_cache.append(message_id, package[
-                                        start_byte : start_byte + CHUNK_SIZE
-                                    ])
+                            await message_cache.append(
+                                message_id,
+                                package[start_byte : start_byte + CHUNK_SIZE],
+                            )
                             logger.info(
                                 "Sending chunk %d/%d (%d bytes)",
                                 idx + 1,
@@ -525,6 +545,7 @@ class RPC(MessageEmitter):
                             )
                         logger.info("All chunks sent (%d)", chunk_num)
                         await message_cache.process(message_id)
+
                     emit_task = asyncio.ensure_future(send_chunks())
 
                 if emit_task:
@@ -601,7 +622,6 @@ class RPC(MessageEmitter):
         resolve=None,
         reject=None,
         method_name=None,
-        heatbeat_task=None,
         run_in_executor=False,
     ):
         try:
@@ -617,31 +637,24 @@ class RPC(MessageEmitter):
                     try:
                         result = await result
                         if resolve is not None:
-                            resolve(result)
+                            return resolve(result)
                         elif result is not None:
                             logger.debug("returned value (%s): %s", method_name, result)
                     except Exception as err:
                         traceback_error = traceback.format_exc()
                         logger.exception("Error in method (%s): %s", method_name, err)
                         if reject is not None:
-                            reject(Exception(format_traceback(traceback_error)))
-                    finally:
-                        if heatbeat_task:
-                            heatbeat_task.cancel()
+                            return reject(Exception(format_traceback(traceback_error)))
 
                 return asyncio.ensure_future(_wait(result))
             else:
                 if resolve is not None:
-                    resolve(result)
-                if heatbeat_task:
-                    heatbeat_task.cancel()
+                    return resolve(result)
         except Exception as err:
             traceback_error = traceback.format_exc()
             logger.exception("Error in method %s: %s", method_name, err)
             if reject is not None:
-                reject(Exception(format_traceback(traceback_error)))
-            if heatbeat_task:
-                heatbeat_task.cancel()
+                return reject(Exception(format_traceback(traceback_error)))
 
     async def _notify_service_update(self):
         if not self._remote_root_service:
@@ -726,9 +739,15 @@ class RPC(MessageEmitter):
                 resolve,
                 reject,
                 method_name=method_name,
-                heatbeat_task=heatbeat_task,
                 run_in_executor=run_in_executor,
             )
+            if method_task:
+
+                def method_done(_):
+                    if heatbeat_task:
+                        heatbeat_task.cancel()
+
+                method_task.add_done_callback(method_done)
 
         except Exception as err:
             traceback_error = traceback.format_exc()
@@ -789,7 +808,7 @@ class RPC(MessageEmitter):
                     "_rtarget": self.client_id,
                     "_rmethod": annotation["method_id"],
                     "_rpromise": True,
-                    "_rcontext": annotation.get("require_context", False)
+                    "_rcontext": annotation.get("require_context", False),
                 }
             else:
                 object_id = f"{shortuuid.uuid()}"
