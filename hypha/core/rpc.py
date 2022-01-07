@@ -429,13 +429,10 @@ class RPC(MessageEmitter):
         encoded = {}
 
         if timer and reject and self._method_timeout:
-            encoded["clear_timer"], store[cid]["clear_timer"] = self._encode_callback(
-                "clear_timer", timer.clear, cid, session_id, clear_after_called=False
+            encoded["reset_timer"], encoded["clear_timer"] = self._encode(
+                [timer.reset, timer.clear], session_id
             )
-            encoded["reset_timer"], store[cid]["reset_timer"] = self._encode_callback(
-                "reset_timer", timer.reset, cid, session_id, clear_after_called=False
-            )
-            encoded["heatbeat_interval"] = self._method_timeout / 2
+            encoded["heartbeat_interval"] = self._method_timeout / 2
         else:
             timer = None
 
@@ -681,33 +678,35 @@ class RPC(MessageEmitter):
     def _handle_method(self, data, context=None):
         reject = None
         method_task = None
-        heatbeat_task = None
+        heartbeat_task = None
         try:
             assert "method" in data and "params" in data
             if "promise" in data:
                 promise = self._decode(data["promise"])
                 resolve, reject = promise["resolve"], promise["reject"]
-                if "reset_timer" in promise and "heatbeat_interval" in promise:
+                if "reset_timer" in promise and "heartbeat_interval" in promise:
 
-                    async def heatbeat(interval):
+                    async def heartbeat(interval):
                         while True:
                             try:
-                                logger.debug("Reset heatbeat timer: %s", data["method"])
-                                promise["reset_timer"]()
+                                logger.debug("Reset heartbeat timer: %s", data["method"])
+                                await promise["reset_timer"]()
                             except asyncio.CancelledError:
                                 if method_task:
                                     method_task.cancel()
                                 break
                             except Exception:  # pylint: disable=broad-except
-                                logger.Exception("Failed to reset the heatbeat timer")
+                                logger.error("Failed to reset the heartbeat timer")
+                                if method_task:
+                                    method_task.cancel()
                                 break
                             await asyncio.sleep(interval)
 
-                    heatbeat_task = asyncio.ensure_future(
-                        heatbeat(promise["heatbeat_interval"])
+                    heartbeat_task = asyncio.ensure_future(
+                        heartbeat(promise["heartbeat_interval"])
                     )
                 elif "clear_timer" in promise:
-                    promise["clear_timer"]()
+                    asyncio.ensure_future(promise["clear_timer"]()).add_done_callback(lambda x: method_task.cancel())
             else:
                 resolve, reject = None, None
                 # TODO: add dispose handler to the result object
@@ -744,21 +743,23 @@ class RPC(MessageEmitter):
             if method_task:
 
                 def method_done(_):
-                    if heatbeat_task:
-                        heatbeat_task.cancel()
+                    if heartbeat_task:
+                        heartbeat_task.cancel()
 
                 method_task.add_done_callback(method_done)
+            else:
+                heartbeat_task.cancel()
 
         except Exception as err:
             traceback_error = traceback.format_exc()
             logger.error("Error during calling method: %s", err)
-            # make sure we clear the heatbeat timer
+            # make sure we clear the heartbeat timer
             if (
-                heatbeat_task
-                and not heatbeat_task.cancelled()
-                and not heatbeat_task.done()
+                heartbeat_task
+                and not heartbeat_task.cancelled()
+                and not heartbeat_task.done()
             ):
-                heatbeat_task.cancel()
+                heartbeat_task.cancel()
             if callable(reject):
                 reject(traceback_error)
 
