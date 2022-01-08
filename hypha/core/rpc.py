@@ -53,7 +53,7 @@ IO_METHODS = [
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("RPC")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 
 def index_object(obj, ids):
@@ -164,7 +164,12 @@ class RPC(MessageEmitter):
 
         self.check_modules()
 
-    def _create_message(self, key, overwrite=False):
+    def _create_message(self, key, reset_timer=False, overwrite=False):
+        if reset_timer:
+            if key not in self._object_store:
+                raise Exception(f"session does not exist anymore: {key}")
+            self._object_store[key]["timer"].reset()
+
         if "message_cache" not in self._object_store:
             self._object_store["message_cache"] = {}
         if not overwrite and key in self._object_store["message_cache"]:
@@ -175,7 +180,11 @@ class RPC(MessageEmitter):
 
         self._object_store["message_cache"][key] = b""
 
-    def _append_message(self, key, data):
+    def _append_message(self, key, data, reset_timer=False):
+        if reset_timer:
+            if key not in self._object_store:
+                raise Exception(f"session does not exist anymore: {key}")
+            self._object_store[key]["timer"].reset()
         cache = self._object_store["message_cache"]
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
@@ -188,7 +197,11 @@ class RPC(MessageEmitter):
             raise KeyError(f"Message with key {key} does not exists.")
         del cache[key]
 
-    def _process_message(self, key, remove=True, context=None):
+    def _process_message(self, key, remove=True, reset_timer=False, context=None):
+        if reset_timer:
+            if key not in self._object_store:
+                raise Exception(f"session does not exist anymore: {key}")
+            self._object_store[key]["timer"].reset()
         cache = self._object_store["message_cache"]
         assert context is not None, "Context is required"
         if key not in cache:
@@ -386,9 +399,9 @@ class RPC(MessageEmitter):
             )
 
     def _encode_callback(
-        self, name, callback, cid, session_id, clear_after_called=False, timer=None
+        self, name, callback, session_id, clear_after_called=False, timer=None
     ):
-        method_id = f"{session_id}.{cid}.{name}"
+        method_id = f"{session_id}.{name}"
         encoded = {
             "_rtype": "method",
             "_rtarget": self.client_id,
@@ -424,8 +437,6 @@ class RPC(MessageEmitter):
         if session_id not in self._object_store:
             self._object_store[session_id] = {}
         store = self._object_store[session_id]
-        cid = shortuuid.uuid()
-        store[cid] = {}
         encoded = {}
 
         if timer and reject and self._method_timeout:
@@ -433,29 +444,53 @@ class RPC(MessageEmitter):
                 [timer.reset, timer.clear], session_id
             )
             encoded["heartbeat_interval"] = self._method_timeout / 2
+            store["timer"] = timer
         else:
             timer = None
 
-        encoded["resolve"], store[cid]["resolve"] = self._encode_callback(
+        encoded["resolve"], store["resolve"] = self._encode_callback(
             "resolve",
             resolve,
-            cid,
             session_id,
             clear_after_called=clear_after_called,
             timer=timer,
         )
-        encoded["reject"], store[cid]["reject"] = self._encode_callback(
+        encoded["reject"], store["reject"] = self._encode_callback(
             "reject",
             reject,
-            cid,
             session_id,
             clear_after_called=clear_after_called,
             timer=timer,
         )
-
         return encoded
 
-    def _generate_remote_method(self, encoded_method):
+    async def _send_chunks(self, package, target_id, session_id):
+        remote_services = await self.get_remote_service(f"{target_id}:built-in")
+        assert (
+            remote_services.message_cache
+        ), "Remote client does not support message caching for long message."
+        message_cache = remote_services.message_cache
+        message_id = session_id or shortuuid.uuid()
+        await message_cache.create(message_id, reset_timer=bool(session_id))
+        total_size = len(package)
+        chunk_num = int(math.ceil(float(total_size) / CHUNK_SIZE))
+        for idx in range(chunk_num):
+            start_byte = idx * CHUNK_SIZE
+            await message_cache.append(
+                message_id,
+                package[start_byte : start_byte + CHUNK_SIZE],
+                reset_timer=bool(session_id),
+            )
+            logger.info(
+                "Sending chunk %d/%d (%d bytes)",
+                idx + 1,
+                chunk_num,
+                total_size,
+            )
+        logger.info("All chunks sent (%d)", chunk_num)
+        await message_cache.process(message_id, reset_timer=bool(session_id))
+
+    def _generate_remote_method(self, encoded_method, session_id=None):
         """Return remote method."""
 
         target_id = encoded_method["_rtarget"]
@@ -483,6 +518,7 @@ class RPC(MessageEmitter):
                     "to": target_id,
                     "method": method_id,
                     "params": args,
+                    "session_id": local_session_id,
                     "with_kwargs": bool(kwargs),
                 }
                 timer = None
@@ -501,6 +537,7 @@ class RPC(MessageEmitter):
                         clear_after_called=True,
                         timer=timer,
                     )
+
                 packed = msgpack.packb(call_func)
                 context_header = msgpack.packb(
                     {"to": target_id, "ctx": bool(require_context)}
@@ -517,50 +554,24 @@ class RPC(MessageEmitter):
                     emit_task = asyncio.ensure_future(self._emit_message(package))
                 else:
                     # send chunk by chunk
-                    async def send_chunks():
-                        remote_services = await self.get_remote_service(
-                            f"{target_id}:built-in"
+                    emit_task = asyncio.ensure_future(
+                        self._send_chunks(package, target_id, session_id)
+                    )
+
+                def handle_result(fut):
+                    if fut.exception():
+                        reject(
+                            Exception(
+                                f"Failed to send the request when calling method: {target_id}:{method_id}"
+                            )
                         )
-                        assert (
-                            remote_services.message_cache
-                        ), "Remote client does not support message caching for long message."
-                        message_cache = remote_services.message_cache
-                        message_id = local_session_id + shortuuid.uuid()
-                        await message_cache.create(message_id)
-                        chunk_num = int(math.ceil(float(total_size) / CHUNK_SIZE))
-                        for idx in range(chunk_num):
-                            start_byte = idx * CHUNK_SIZE
-                            await message_cache.append(
-                                message_id,
-                                package[start_byte : start_byte + CHUNK_SIZE],
-                            )
-                            logger.info(
-                                "Sending chunk %d/%d (%d bytes)",
-                                idx + 1,
-                                chunk_num,
-                                total_size,
-                            )
-                        logger.info("All chunks sent (%d)", chunk_num)
-                        await message_cache.process(message_id)
+                    elif timer:
+                        logger.info("Start watchdog timer.")
+                        # Only start the timer after we send the message successfully
+                        if timer:
+                            timer.start()
 
-                    emit_task = asyncio.ensure_future(send_chunks())
-
-                if emit_task:
-
-                    def handle_result(fut):
-                        if fut.exception():
-                            reject(
-                                Exception(
-                                    f"Failed to send the request when calling method: {target_id}:{method_id}"
-                                )
-                            )
-                        elif timer:
-                            logger.info("Start watchdog timer.")
-                            # Only start the timer after we send the message successfully
-                            if timer:
-                                timer.start()
-
-                    emit_task.add_done_callback(handle_result)
+                emit_task.add_done_callback(handle_result)
 
             return FuturePromise(pfunc, self._remote_logger)
 
@@ -618,40 +629,37 @@ class RPC(MessageEmitter):
         kwargs,
         resolve=None,
         reject=None,
+        heartbeat_task=None,
         method_name=None,
         run_in_executor=False,
     ):
-        try:
-            if not inspect.iscoroutinefunction(method) and run_in_executor:
-                result = self.loop.run_in_executor(
-                    None, partial(method, *args, **kwargs)
-                )
-            else:
-                result = method(*args, **kwargs)
-            if result is not None and inspect.isawaitable(result):
+        if not inspect.iscoroutinefunction(method) and run_in_executor:
+            result = self.loop.run_in_executor(None, partial(method, *args, **kwargs))
+        else:
+            result = method(*args, **kwargs)
+        if result is not None and inspect.isawaitable(result):
 
-                async def _wait(result):
-                    try:
-                        result = await result
-                        if resolve is not None:
-                            return resolve(result)
-                        elif result is not None:
-                            logger.debug("returned value (%s): %s", method_name, result)
-                    except Exception as err:
-                        traceback_error = traceback.format_exc()
-                        logger.exception("Error in method (%s): %s", method_name, err)
-                        if reject is not None:
-                            return reject(Exception(format_traceback(traceback_error)))
+            async def _wait(result):
+                try:
+                    result = await result
+                    if heartbeat_task:
+                        heartbeat_task.cancel()
+                    if resolve is not None:
+                        return resolve(result)
+                    elif result is not None:
+                        logger.debug("returned value (%s): %s", method_name, result)
+                except Exception as err:
+                    traceback_error = traceback.format_exc()
+                    logger.exception("Error in method (%s): %s", method_name, err)
+                    if reject is not None:
+                        return reject(Exception(format_traceback(traceback_error)))
 
-                return asyncio.ensure_future(_wait(result))
-            else:
-                if resolve is not None:
-                    return resolve(result)
-        except Exception as err:
-            traceback_error = traceback.format_exc()
-            logger.exception("Error in method %s: %s", method_name, err)
-            if reject is not None:
-                return reject(Exception(format_traceback(traceback_error)))
+            return asyncio.ensure_future(_wait(result))
+        else:
+            if heartbeat_task:
+                heartbeat_task.cancel()
+            if resolve is not None:
+                return resolve(result)
 
     async def _notify_service_update(self):
         if not self._remote_root_service:
@@ -680,24 +688,29 @@ class RPC(MessageEmitter):
         method_task = None
         heartbeat_task = None
         try:
-            assert "method" in data and "params" in data
+            assert "method" in data and "params" in data and "session_id" in data
             if "promise" in data:
-                promise = self._decode(data["promise"])
+                promise = self._decode(data["promise"], session_id=data["session_id"])
                 resolve, reject = promise["resolve"], promise["reject"]
                 if "reset_timer" in promise and "heartbeat_interval" in promise:
 
                     async def heartbeat(interval):
                         while True:
                             try:
-                                logger.debug("Reset heartbeat timer: %s", data["method"])
+                                logger.debug(
+                                    "Reset heartbeat timer: %s", data["method"]
+                                )
                                 await promise["reset_timer"]()
                             except asyncio.CancelledError:
                                 if method_task:
                                     method_task.cancel()
                                 break
                             except Exception:  # pylint: disable=broad-except
-                                logger.error("Failed to reset the heartbeat timer")
-                                if method_task:
+                                if method_task and not method_task.done():
+                                    logger.error(
+                                        "Failed to reset the heartbeat timer: %s",
+                                        data["method"],
+                                    )
                                     method_task.cancel()
                                 break
                             await asyncio.sleep(interval)
@@ -705,8 +718,6 @@ class RPC(MessageEmitter):
                     heartbeat_task = asyncio.ensure_future(
                         heartbeat(promise["heartbeat_interval"])
                     )
-                elif "clear_timer" in promise:
-                    asyncio.ensure_future(promise["clear_timer"]()).add_done_callback(lambda x: method_task.cancel())
             else:
                 resolve, reject = None, None
                 # TODO: add dispose handler to the result object
@@ -737,19 +748,10 @@ class RPC(MessageEmitter):
                 kwargs,
                 resolve,
                 reject,
+                heartbeat_task=heartbeat_task,
                 method_name=method_name,
                 run_in_executor=run_in_executor,
             )
-            if method_task:
-
-                def method_done(_):
-                    if heartbeat_task:
-                        heartbeat_task.cancel()
-
-                method_task.add_done_callback(method_done)
-            else:
-                if heartbeat_task:
-                    heartbeat_task.cancel()
 
         except Exception as err:
             traceback_error = traceback.format_exc()
@@ -813,7 +815,7 @@ class RPC(MessageEmitter):
                     "_rcontext": annotation.get("require_context", False),
                 }
             else:
-                object_id = f"{shortuuid.uuid()}"
+                object_id = f"{shortuuid.uuid()}-{a_object.__name__}"
                 b_object = {
                     "_rtype": "method",
                     "_rtarget": self.client_id,
@@ -914,7 +916,7 @@ class RPC(MessageEmitter):
         """Decode object."""
         return self._decode(a_object)
 
-    def _decode(self, a_object):
+    def _decode(self, a_object, session_id=None):
         """Decode object."""
         if a_object is None:
             return a_object
@@ -927,11 +929,11 @@ class RPC(MessageEmitter):
                 if "_rintf" in a_object:
                     temp = a_object["_rtype"]
                     del a_object["_rtype"]
-                    a_object = self._decode(a_object)
+                    a_object = self._decode(a_object, session_id=session_id)
                     a_object["_rtype"] = temp
                 b_object = self._codecs[a_object["_rtype"]].decoder(a_object)
             elif a_object["_rtype"] == "method":
-                b_object = self._generate_remote_method(a_object)
+                b_object = self._generate_remote_method(a_object, session_id=session_id)
             elif a_object["_rtype"] == "ndarray":
                 # create build array/tensor if used in the plugin
                 try:
@@ -980,9 +982,11 @@ class RPC(MessageEmitter):
                 else:
                     b_object = a_object["_rvalue"]
             elif a_object["_rtype"] == "orderedmap":
-                b_object = OrderedDict(self._decode(a_object["_rvalue"]))
+                b_object = OrderedDict(
+                    self._decode(a_object["_rvalue"], session_id=session_id)
+                )
             elif a_object["_rtype"] == "set":
-                b_object = set(self._decode(a_object["_rvalue"]))
+                b_object = set(self._decode(a_object["_rvalue"], session_id=session_id))
             elif a_object["_rtype"] == "error":
                 b_object = Exception(a_object["_rvalue"])
             else:
@@ -990,7 +994,7 @@ class RPC(MessageEmitter):
                 if "_rintf" in a_object:
                     temp = a_object["_rtype"]
                     del a_object["_rtype"]
-                    a_object = self._decode(a_object)
+                    a_object = self._decode(a_object, session_id=session_id)
                     a_object["_rtype"] = temp
                 b_object = a_object
         elif isinstance(a_object, (dict, list, tuple)):
@@ -1002,9 +1006,9 @@ class RPC(MessageEmitter):
             for key in keys:
                 val = a_object[key]
                 if isarray:
-                    b_object.append(self._decode(val))
+                    b_object.append(self._decode(val, session_id=session_id))
                 else:
-                    b_object[key] = self._decode(val)
+                    b_object[key] = self._decode(val, session_id=session_id)
         # make sure we have bytes instead of memoryview, e.g. for Pyodide
         elif isinstance(a_object, memoryview):
             b_object = a_object.tobytes()
