@@ -6,13 +6,40 @@ import sys
 from fastapi import Query, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
 
-from hypha.core import ClientInfo
+from hypha.core import ClientInfo, UserInfo
 from hypha.core.store import RedisRPCConnection, RedisStore
+from hypha.core.auth import generate_presigned_token, parse_token
+import shortuuid
+import jose
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket")
 logger.setLevel(logging.INFO)
 
+def parse_user(token):
+    """Parse user info from a token."""
+    if token:
+        user_info = parse_token(token)
+        uid = user_info.id
+        logger.info("User connected: %s", uid)
+    else:
+        uid = shortuuid.uuid()
+        user_info = UserInfo(
+            id=uid,
+            is_anonymous=True,
+            email=None,
+            parent=None,
+            roles=[],
+            scopes=[],
+            expires_at=None,
+        )
+        logger.info("Anonymized User connected: %s", uid)
+
+    if uid == "root":
+        logger.error("Root user is not allowed to connect remotely")
+        raise Exception("Root user is not allowed to connect remotely")
+
+    return user_info
 
 class WebsocketServer:
     """Represent an Websocket server."""
@@ -36,11 +63,28 @@ class WebsocketServer:
             client_id: str = Query(None),
             token: str = Query(None),
         ):
-            if workspace is None or client_id is None or token is None:
-                logger.error("Missing query parameters: workspace, client_id and token")
+            if workspace is None or client_id is None:
+                logger.error("Missing query parameters: workspace, client_id")
                 await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
                 return
+
+            try:
+                user_info = parse_user(token)
+            except Exception:
+                logger.error("Invalid token: %s", token)
+                await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
+                return
+
             workspace_manager = await store.get_workspace_manager(workspace)
+            if not workspace_manager.check_permission(user_info):
+                logger.error(
+                    "Permission denied (client: %s, workspace: %s)",
+                    client_id,
+                    workspace,
+                )
+                await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
+                return
+
             if await workspace_manager.check_client_exists(client_id):
                 logger.error(
                     "Another client with the same id %s already connected to workspace: %s",
@@ -57,10 +101,11 @@ class WebsocketServer:
                 workspace_manager._redis,
                 workspace_manager._workspace,
                 client_id,
+                user_info,
             )
             conn.on_message(websocket.send_bytes)
 
-            await workspace_manager.register_client(ClientInfo(id=client_id))
+            await workspace_manager.register_client(ClientInfo(id=client_id, user_info=user_info))
             try:
                 while True:
                     data = await websocket.receive_bytes()
@@ -70,6 +115,7 @@ class WebsocketServer:
                     logger.warning(
                         f"websocket disconnect from the server (code={exp.code})"
                     )
+            finally:
                 await workspace_manager.delete_client(client_id)
 
     async def is_alive(self):

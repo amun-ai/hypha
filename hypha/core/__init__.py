@@ -100,14 +100,6 @@ class ServiceInfo(BaseModel):
         return self._id
 
 
-class ClientInfo(BaseModel):
-    """Represent service."""
-
-    id: str
-    name: Optional[str]
-    services: List[ServiceInfo] = []
-
-
 class UserInfo(BaseModel):
     """Represent user info."""
 
@@ -144,6 +136,15 @@ class UserInfo(BaseModel):
     def remove_plugin(self, plugin: DynamicPlugin) -> None:
         """Remove a plugin by id."""
         del self._plugins[plugin.id]
+
+
+class ClientInfo(BaseModel):
+    """Represent service."""
+
+    id: str
+    name: Optional[str]
+    services: List[ServiceInfo] = []
+    user_info: UserInfo
 
 
 class RDF(BaseModel):

@@ -64,7 +64,7 @@ async def test_redis_store(event_loop, redis_store):
     assert "test" not in await redis_store.list_workspace()
 
 
-async def test_websocket_server(event_loop, socketio_server, redis_store):
+async def test_websocket_server(event_loop, socketio_server, redis_store, test_user_token):
     """Test the websocket server."""
     await redis_store.clear_workspace("test-workspace")
     await redis_store.register_workspace(
@@ -81,7 +81,7 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
         url=f"ws://127.0.0.1:{SIO_PORT}",
         workspace="test-workspace",
         client_id="test-plugin-1",
-        token="123",
+        token=test_user_token,
     )
 
     ws = await rpc.get_remote_service("workspace-manager:default")
@@ -123,7 +123,7 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
         url=f"ws://127.0.0.1:{SIO_PORT}",
         workspace="test-workspace",
         client_id="test-plugin-2",
-        token="123",
+        token=test_user_token,
         method_timeout=3,
     )
 

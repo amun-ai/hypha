@@ -15,7 +15,7 @@ import shortuuid
 from redislite import Redis
 import random
 
-from hypha.core import ClientInfo, WorkspaceInfo
+from hypha.core import ClientInfo, UserInfo, WorkspaceInfo, VisibilityEnum
 from hypha.core.rpc import RPC
 
 logging.basicConfig(stream=sys.stdout)
@@ -26,11 +26,12 @@ logger.setLevel(logging.INFO)
 class RedisRPCConnection:
     """Represent a redis connection."""
 
-    def __init__(self, redis: aioredis.Redis, workspace: str, client_id: str):
+    def __init__(self, redis: aioredis.Redis, workspace: str, client_id: str, user_info: UserInfo):
         self._redis = redis
         self._handle_message = None
         self._workspace = workspace
         self._client_id = client_id
+        self._user_info = user_info.dict()
 
     def on_message(self, handler: Callable):
         self._handle_message = handler
@@ -56,6 +57,7 @@ class RedisRPCConnection:
                     "to": target_id,
                     "ctx": True,
                     "from": self._client_id,
+                    "user": self._user_info,
                     "workspace": self._workspace,
                 }
             # Pack more context info to the package
@@ -100,6 +102,15 @@ class WorkspaceManager:
         self._initialized = False
         self._rpc = None
         self._workspace_info = None
+        self._root_user = UserInfo(
+            id="root",
+            is_anonymous=False,
+            email=None,
+            parent=None,
+            roles=[],
+            scopes=[],
+            expires_at=None,
+        )
         WorkspaceManager._managers[workspace] = self
 
     async def setup(
@@ -123,13 +134,15 @@ class WorkspaceManager:
                     client_id,
                 )
 
-        await self.register_client(ClientInfo(id=client_id))
+        # Register an client as root
+        await self.register_client(ClientInfo(id=client_id, user_info=self._root_user))
         rpc = await self.create_rpc(client_id)
 
         def save_client_info(_):
             return asyncio.create_task(
                 self.update_client_info(
                     rpc.get_client_info(),
+                    context={"from": client_id, "user": self._root_user.dict()}
                 )
             )
 
@@ -140,7 +153,9 @@ class WorkspaceManager:
         self._rpc = rpc
         self._initialized = True
 
-    async def update_client_info(self, client_info):
+    async def update_client_info(self, client_info, context=None):
+        assert client_info["id"] == context["from"]
+        client_info["user_info"] = context["user"]
         client_info = ClientInfo.parse_obj(client_info)
         await self._redis.hset(
             f"{self._workspace}:clients", client_info.id, client_info.json()
@@ -193,7 +208,7 @@ class WorkspaceManager:
 
     async def create_rpc(self, client_id: str, default_context=None):
         """Create a rpc for the workspace."""
-        connection = RedisRPCConnection(self._redis, self._workspace, client_id)
+        connection = RedisRPCConnection(self._redis, self._workspace, client_id, self._root_user)
         rpc = RPC(connection, client_id=client_id, default_context=default_context)
         return rpc
 
@@ -226,6 +241,54 @@ class WorkspaceManager:
         else:
             raise Exception("Please specify the service id or name to get the service")
         return service_api
+
+    def check_permission(self, user_info):
+        """Check user permission for the workspace."""
+        # pylint: disable=too-many-return-statements
+        workspace = self._workspace_info
+
+        # Make exceptions for root user, the children of root and test workspace
+        if (
+            user_info.id == "root"
+            or user_info.parent == "root"
+            or workspace.name == "public"
+        ):
+            return True
+
+        if workspace.name == user_info.id:
+            return True
+
+        if user_info.parent:
+            parent = self._all_users.get(user_info.parent)
+            if not parent:
+                return False
+            if not self.check_permission(workspace, parent):
+                return False
+            # if the parent has access
+            # and the workspace is in the scopes
+            # then we allow the access
+            if workspace.name in user_info.scopes:
+                return True
+
+        _id = user_info.email or user_info.id
+
+        if _id in workspace.owners:
+            return True
+
+        if workspace.visibility == VisibilityEnum.public:
+            if workspace.deny_list and user_info.email not in workspace.deny_list:
+                return True
+        elif workspace.visibility == VisibilityEnum.protected:
+            if workspace.allow_list and user_info.email in workspace.allow_list:
+                return True
+
+        if "admin" in user_info.roles:
+            logger.info(
+                "Allowing access to %s for admin user %s", workspace.name, user_info.id
+            )
+            return True
+
+        return False
 
     def create_service(self, service_id, service_name=None):
         interface = {
