@@ -84,8 +84,8 @@ async def test_websocket_server(event_loop, socketio_server, redis_store, test_u
         token=test_user_token,
     )
 
-    ws = await rpc.get_remote_service("workspace-manager:default")
-    await ws.log("hello")
+    wm = await rpc.get_remote_service("workspace-manager:default")
+    await wm.log("hello")
 
     def echo(data):
         return data
@@ -116,8 +116,11 @@ async def test_websocket_server(event_loop, socketio_server, redis_store, test_u
 
     assert await svc.echo("hello") == "hello"
 
-    services = await ws.list_services()
+    services = await wm.list_services()
     assert find_item(services, "id", "workspace-manager:default")
+
+    svc = await wm.get_service("test-plugin-1:test-service")
+    assert await svc.echo("hello") == "hello"
 
     rpc2 = await connect_to_server(
         url=f"ws://127.0.0.1:{SIO_PORT}",

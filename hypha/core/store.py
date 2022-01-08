@@ -225,14 +225,14 @@ class WorkspaceManager:
         )
         return self._workspace_info
 
-    async def get_service(self, query, contex=None):
+    async def get_service(self, query, context=None):
         if isinstance(query, str):
-            query = {"name": query}
+            query = {"id": query}
 
         if "id" in query:
             service_api = await self._rpc.get_remote_service(query["id"])
         elif "name" in query:
-            services = self.list_services()
+            services = await self.list_services()
             services = list(
                 filter(lambda service: service["name"] == query["name"], services)
             )
