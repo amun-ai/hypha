@@ -440,9 +440,7 @@ class RPC(MessageEmitter):
         encoded = {}
 
         if timer and reject and self._method_timeout:
-            encoded["reset_timer"] = self._encode(
-                timer.reset, session_id
-            )
+            encoded["reset_timer"] = self._encode(timer.reset, session_id)
             encoded["interval"] = self._method_timeout / 2
             store["timer"] = timer
         else:
@@ -674,7 +672,7 @@ class RPC(MessageEmitter):
             "id": self.client_id,
             "services": [
                 {
-                    "id": service["id"],
+                    "id": f'{self.client_id}:{service["id"]}',
                     "type": service["type"],
                     "name": service["name"],
                     "config": service["config"],

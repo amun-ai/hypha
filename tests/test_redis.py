@@ -30,7 +30,8 @@ async def test_redis_store(event_loop, redis_store):
         ),
         overwrite=True,
     )
-    workspace_info = await redis_store.get_workspace("test")
+    manager = await redis_store.get_workspace_manager("test")
+    workspace_info = await manager.get_workspace_info()
     assert workspace_info.name == "test"
     assert "test" in await redis_store.list_workspace()
 
@@ -116,7 +117,7 @@ async def test_websocket_server(event_loop, socketio_server, redis_store):
     assert await svc.echo("hello") == "hello"
 
     services = await ws.list_services()
-    assert find_item(services, "uri", "test-workspace/workspace-manager:default")
+    assert find_item(services, "id", "workspace-manager:default")
 
     rpc2 = await connect_to_server(
         url=f"ws://127.0.0.1:{SIO_PORT}",
