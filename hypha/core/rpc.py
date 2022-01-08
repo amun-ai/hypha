@@ -440,10 +440,10 @@ class RPC(MessageEmitter):
         encoded = {}
 
         if timer and reject and self._method_timeout:
-            encoded["reset_timer"], encoded["clear_timer"] = self._encode(
-                [timer.reset, timer.clear], session_id
+            encoded["reset_timer"] = self._encode(
+                timer.reset, session_id
             )
-            encoded["heartbeat_interval"] = self._method_timeout / 2
+            encoded["interval"] = self._method_timeout / 2
             store["timer"] = timer
         else:
             timer = None
@@ -692,7 +692,7 @@ class RPC(MessageEmitter):
             if "promise" in data:
                 promise = self._decode(data["promise"], session_id=data["session_id"])
                 resolve, reject = promise["resolve"], promise["reject"]
-                if "reset_timer" in promise and "heartbeat_interval" in promise:
+                if "reset_timer" in promise and "interval" in promise:
 
                     async def heartbeat(interval):
                         while True:
@@ -716,7 +716,7 @@ class RPC(MessageEmitter):
                             await asyncio.sleep(interval)
 
                     heartbeat_task = asyncio.ensure_future(
-                        heartbeat(promise["heartbeat_interval"])
+                        heartbeat(promise["interval"])
                     )
             else:
                 resolve, reject = None, None
