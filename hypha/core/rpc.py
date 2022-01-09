@@ -130,6 +130,12 @@ class RPC(MessageEmitter):
         self._method_timeout = method_timeout
         self._remote_logger = dotdict({"info": self._log, "error": self._error})
         super().__init__(self._remote_logger)
+        try:
+            self.loop = asyncio.get_event_loop()
+        except RuntimeError:
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+
         self._services = {}
         self._object_store = {
             "services": self._services,
@@ -150,11 +156,6 @@ class RPC(MessageEmitter):
             }
         )
         self.on("method", self._handle_method)
-        try:
-            self.loop = asyncio.get_event_loop()
-        except RuntimeError:
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
 
         assert hasattr(connection, "emit_message") and hasattr(connection, "on_message")
         self._emit_message = connection.emit_message
@@ -235,8 +236,6 @@ class RPC(MessageEmitter):
         assert isinstance(message, bytes)
         unpacker = msgpack.Unpacker(io.BytesIO(message), max_buffer_size=CHUNK_SIZE * 2)
         main = unpacker.unpack()
-        if main["to"] == "test-workspace/test-plugin-1":
-            logger.info("=============")
         # Add trusted context to the method call
         main["ctx"] = main.copy()
         main["ctx"].update(self.default_context)
@@ -309,7 +308,12 @@ class RPC(MessageEmitter):
             raise
 
     def _annotate_service_methods(
-        self, a_object, object_id, require_context=False, run_in_executor=False
+        self,
+        a_object,
+        object_id,
+        require_context=False,
+        run_in_executor=False,
+        visibility="protected",
     ):
         if isinstance(a_object, (dict, list, tuple)):
             items = (
@@ -321,6 +325,7 @@ class RPC(MessageEmitter):
                     object_id + "." + str(key),
                     require_context=require_context,
                     run_in_executor=run_in_executor,
+                    visibility=visibility,
                 )
         elif callable(a_object):
             # mark the method as a remote method that requires context
@@ -331,6 +336,7 @@ class RPC(MessageEmitter):
                 else bool(require_context),
                 "run_in_executor": run_in_executor,
                 "method_id": "services." + object_id,
+                "visibility": visibility,
             }
 
     def add_service(self, api, overwrite=False):
@@ -374,15 +380,15 @@ class RPC(MessageEmitter):
             require_context = api["config"]["require_context"]
         if bool(api["config"].get("run_in_executor")):
             run_in_executor = True
+        visibility = api["config"].get("visibility", "protected")
+        assert visibility in ["protected", "public"]
         self._annotate_service_methods(
             api,
             api["id"],
             require_context=require_context,
             run_in_executor=run_in_executor,
+            visibility=visibility,
         )
-
-        api["uri"] = self._client_id + ":" + api["id"]
-
         if not overwrite and api["id"] in self._services:
             raise Exception(
                 f"Service already exists: {api['id']}, please specify"
@@ -546,6 +552,8 @@ class RPC(MessageEmitter):
                 if local_parent:
                     # Store the children session under the parent
                     local_session_id = local_parent + "." + local_session_id
+                store = self._get_session_store(local_session_id, create=True)
+                store["target_id"] = target_id
                 args = self._encode(
                     arguments,
                     session_id=local_session_id,
@@ -600,12 +608,6 @@ class RPC(MessageEmitter):
                     message_package = message_package + msgpack.packb(extra_data)
                 total_size = len(message_package)
                 if total_size <= CHUNK_SIZE + 1024:
-                    logger.info(
-                        "%s: Sending bytes %d (chunksize: %d)",
-                        method_id,
-                        total_size,
-                        CHUNK_SIZE,
-                    )
                     emit_task = asyncio.ensure_future(
                         self._emit_message(message_package)
                     )
@@ -752,9 +754,12 @@ class RPC(MessageEmitter):
         method_task = None
         heartbeat_task = None
         try:
-            assert "method" in data and "ctx" in data
-            local_parent = data.get("parent")
+            assert "method" in data and "ctx" in data and "from" in data
+            method_name = f'{data["from"]}:{data["method"]}'
             remote_workspace = data.get("from").split("/")[0]
+            local_workspace = data.get("to").split("/")[0]
+            local_parent = data.get("parent")
+
             if "promise" in data:
                 # Decode the promise with the remote session id
                 # Such that the session id will be passed to the remote as a parent session id
@@ -794,6 +799,36 @@ class RPC(MessageEmitter):
             else:
                 resolve, reject = None, None
 
+            try:
+                method = index_object(self._object_store, data["method"])
+            except Exception:
+                logger.error("Failed to find method %s", method_name)
+                raise Exception(f"Method not found: {method_name}")
+            assert callable(method), f"Invalid method: {method_name}"
+
+            # Check permission
+            if method in self._method_annotations:
+                # For services, it should not be protected
+                if (
+                    self._method_annotations[method].get("visibility", "protected")
+                    == "protected"
+                ):
+                    if local_workspace != remote_workspace:
+                        raise PermissionError(
+                            f"Permission denied for method {method_name}"
+                        )
+            else:
+                # For sessions, the target_id should match exactly
+                session_target_id = self._object_store[data["method"].split(".")[0]][
+                    "target_id"
+                ]
+                if local_workspace == remote_workspace and "/" not in session_target_id:
+                    session_target_id = local_workspace + "/" + session_target_id
+                if session_target_id != data["from"]:
+                    raise PermissionError(
+                        f"Illegal method call ({method_name}) from {data['from']}"
+                    )
+
             # Make sure the parent session is still open
             if local_parent:
                 # The parent session should be a session that generate the current method call
@@ -812,13 +847,7 @@ class RPC(MessageEmitter):
                 kwargs = args.pop()
             else:
                 kwargs = {}
-            method_name = f'{data["from"]}:{data["method"]}'
-            try:
-                method = index_object(self._object_store, data["method"])
-            except Exception:
-                logger.error("Failed to find method %s", method_name)
-                raise Exception(f"Method not found: {method_name}")
-            assert callable(method), f"Invalid method: {method_name}"
+
             if method in self._method_annotations and self._method_annotations[
                 method
             ].get("require_context"):
@@ -840,7 +869,6 @@ class RPC(MessageEmitter):
             )
 
         except Exception as err:
-            traceback_error = traceback.format_exc()
             logger.error("Error during calling method: %s", err)
             # make sure we clear the heartbeat timer
             if (
@@ -850,7 +878,7 @@ class RPC(MessageEmitter):
             ):
                 heartbeat_task.cancel()
             if callable(reject):
-                reject(Exception(traceback_error))
+                reject(err)
 
     def encode(self, a_object, session_id=None):
         """Encode object."""

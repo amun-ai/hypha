@@ -125,6 +125,7 @@ async def test_websocket_server(
     svc = await wm.get_service("test-plugin-1:test-service")
     assert await svc.echo("hello") == "hello"
 
+    # Get public service from another workspace
     rpc3 = await connect_to_server(url=f"ws://127.0.0.1:{SIO_PORT}")
     svc7 = await rpc3.get_remote_service("test-workspace/test-plugin-1:test-service")
     assert await svc7.square(9) == 81
@@ -146,9 +147,18 @@ async def test_websocket_server(
     with pytest.raises(
         Exception, match=r".*Permission denied for service: test-service.*"
     ):
-        await rpc3.get_remote_service(
-            "test-workspace/test-plugin-1:test-service"
-        )
+        await rpc3.get_remote_service("test-workspace/test-plugin-1:test-service")
+
+    # Should fail if we try to bypass the get_remote_service call
+    remote_echo = rpc3._generate_remote_method(
+        {
+            "_rtarget": "test-workspace/test-plugin-1",
+            "_rmethod": "services.test-service.echo",
+            "_rpromise": True,
+        }
+    )
+    with pytest.raises(Exception, match=r".*Permission denied for method.*"):
+        await remote_echo(123) == 123
 
     rpc2 = await connect_to_server(
         url=f"ws://127.0.0.1:{SIO_PORT}",
@@ -174,7 +184,7 @@ async def test_websocket_server(
 
     # It should fail because add_one is not a service and will be destroyed after the session
     with pytest.raises(
-        Exception, match=r".*Method not found: test-workspace/test-plugin-2:.*"
+        Exception, match=r".*Method not found: test-workspace/test-plugin-2.*"
     ):
         assert await svc4.add_one(99) == 100
 
