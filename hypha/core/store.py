@@ -26,7 +26,9 @@ logger.setLevel(logging.INFO)
 class RedisRPCConnection:
     """Represent a redis connection."""
 
-    def __init__(self, redis: aioredis.Redis, workspace: str, client_id: str, user_info: UserInfo):
+    def __init__(
+        self, redis: aioredis.Redis, workspace: str, client_id: str, user_info: UserInfo
+    ):
         self._redis = redis
         self._handle_message = None
         self._workspace = workspace
@@ -142,7 +144,7 @@ class WorkspaceManager:
             return asyncio.create_task(
                 self.update_client_info(
                     rpc.get_client_info(),
-                    context={"from": client_id, "user": self._root_user.dict()}
+                    context={"from": client_id, "user": self._root_user.dict()},
                 )
             )
 
@@ -208,7 +210,9 @@ class WorkspaceManager:
 
     async def create_rpc(self, client_id: str, default_context=None):
         """Create a rpc for the workspace."""
-        connection = RedisRPCConnection(self._redis, self._workspace, client_id, self._root_user)
+        connection = RedisRPCConnection(
+            self._redis, self._workspace, client_id, self._root_user
+        )
         rpc = RPC(connection, client_id=client_id, default_context=default_context)
         return rpc
 

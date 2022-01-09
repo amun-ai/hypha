@@ -64,7 +64,9 @@ async def test_redis_store(event_loop, redis_store):
     assert "test" not in await redis_store.list_workspace()
 
 
-async def test_websocket_server(event_loop, socketio_server, redis_store, test_user_token):
+async def test_websocket_server(
+    event_loop, socketio_server, redis_store, test_user_token
+):
     """Test the websocket server."""
     await redis_store.clear_workspace("test-workspace")
     await redis_store.register_workspace(

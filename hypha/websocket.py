@@ -16,6 +16,7 @@ logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket")
 logger.setLevel(logging.INFO)
 
+
 def parse_user(token):
     """Parse user info from a token."""
     if token:
@@ -40,6 +41,7 @@ def parse_user(token):
         raise Exception("Root user is not allowed to connect remotely")
 
     return user_info
+
 
 class WebsocketServer:
     """Represent an Websocket server."""
@@ -105,7 +107,9 @@ class WebsocketServer:
             )
             conn.on_message(websocket.send_bytes)
 
-            await workspace_manager.register_client(ClientInfo(id=client_id, user_info=user_info))
+            await workspace_manager.register_client(
+                ClientInfo(id=client_id, user_info=user_info)
+            )
             try:
                 while True:
                     data = await websocket.receive_bytes()

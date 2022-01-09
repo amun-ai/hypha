@@ -434,9 +434,10 @@ class RPC(MessageEmitter):
         timer=None,
     ):
         """Encode a group of callbacks without promise."""
-        if session_id not in self._object_store:
-            self._object_store[session_id] = {}
-        store = self._object_store[session_id]
+        store = self._get_session_store(session_id, create=True)
+        assert (
+            store is not None
+        ), f"Failed to create session store {session_id} due to invalid parent"
         encoded = {}
 
         if timer and reject and self._method_timeout:
@@ -488,14 +489,16 @@ class RPC(MessageEmitter):
         logger.info("All chunks sent (%d)", chunk_num)
         await message_cache.process(message_id, reset_timer=bool(session_id))
 
-    def _generate_remote_method(self, encoded_method, session_id=None):
+    def _generate_remote_method(
+        self, encoded_method, remote_parent=None, local_parent=None
+    ):
         """Return remote method."""
 
         target_id = encoded_method["_rtarget"]
         method_id = encoded_method["_rmethod"]
         with_promise = encoded_method.get("_rpromise", False)
         require_context = encoded_method.get("_rcontext", False)
-        # do not clear if scope == "session"
+
         def remote_method(*arguments, **kwargs):
             """Run remote method."""
             arguments = list(arguments)
@@ -505,6 +508,9 @@ class RPC(MessageEmitter):
 
             def pfunc(resolve, reject):
                 local_session_id = shortuuid.uuid()
+                if local_parent:
+                    # Store the children session under the parent
+                    local_session_id = local_parent + "." + local_session_id
                 args = self._encode(
                     arguments,
                     session_id=local_session_id,
@@ -516,11 +522,19 @@ class RPC(MessageEmitter):
                     "to": target_id,
                     "method": method_id,
                     "params": args,
-                    "session_id": local_session_id,
                     "with_kwargs": bool(kwargs),
                 }
+                if remote_parent:
+                    # Set the parent session
+                    # Note: It's a session id for the remote, not the current client
+                    call_func["parent"] = remote_parent
+
                 timer = None
                 if with_promise:
+                    # Only pass the current session id to the remote
+                    # if we want to received the result
+                    # I.e. the session id won't be passed for promises themselves
+                    call_func["session"] = local_session_id
                     method_name = f"{target_id}:{method_id}"
                     timer = Timer(
                         self._method_timeout,
@@ -553,7 +567,7 @@ class RPC(MessageEmitter):
                 else:
                     # send chunk by chunk
                     emit_task = asyncio.ensure_future(
-                        self._send_chunks(package, target_id, session_id)
+                        self._send_chunks(package, target_id, remote_parent)
                     )
 
                 def handle_result(fut):
@@ -686,9 +700,16 @@ class RPC(MessageEmitter):
         method_task = None
         heartbeat_task = None
         try:
-            assert "method" in data and "params" in data and "session_id" in data
+            assert "method" in data and "params" in data
+            local_parent = data.get("parent")
             if "promise" in data:
-                promise = self._decode(data["promise"], session_id=data["session_id"])
+                # Decode the promise with the remote session id
+                # Such that the session id will be passed to the remote as a parent session id
+                promise = self._decode(
+                    data["promise"],
+                    remote_parent=data.get("session"),
+                    local_parent=local_parent,
+                )
                 resolve, reject = promise["resolve"], promise["reject"]
                 if "reset_timer" in promise and "interval" in promise:
 
@@ -718,8 +739,15 @@ class RPC(MessageEmitter):
                     )
             else:
                 resolve, reject = None, None
-                # TODO: add dispose handler to the result object
-            args = self._decode(data["params"])
+
+            # Make sure the parent session is still open
+            if local_parent:
+                # The parent session should be a session that generate the current method call
+                assert (
+                    self._get_session_store(local_parent, create=False) is not None
+                ), f"Parent session was closed: {local_parent}"
+
+            args = self._decode(data["params"], remote_parent=data.get("session"))
             if data.get("with_kwargs"):
                 kwargs = args.pop()
             else:
@@ -762,7 +790,7 @@ class RPC(MessageEmitter):
             ):
                 heartbeat_task.cancel()
             if callable(reject):
-                reject(traceback_error)
+                reject(Exception(traceback_error))
 
     def encode(self, a_object, session_id=None):
         """Encode object."""
@@ -770,6 +798,27 @@ class RPC(MessageEmitter):
             a_object,
             session_id=session_id,
         )
+
+    def _get_session_store(self, session_id, create=False):
+        store = self._object_store
+        levels = session_id.split(".")
+        if create:
+            for level in levels[:-1]:
+                if level not in store:
+                    return None
+                store = store[level]
+
+            # Create the last level
+            if levels[-1] not in store:
+                store[levels[-1]] = {}
+
+            return store[levels[-1]]
+        else:
+            for level in levels:
+                if level not in store:
+                    return None
+                store = store[level]
+            return store
 
     def _encode(
         self,
@@ -813,6 +862,7 @@ class RPC(MessageEmitter):
                     "_rcontext": annotation.get("require_context", False),
                 }
             else:
+                assert isinstance(session_id, str)
                 object_id = f"{shortuuid.uuid()}-{a_object.__name__}"
                 b_object = {
                     "_rtype": "method",
@@ -820,9 +870,11 @@ class RPC(MessageEmitter):
                     "_rmethod": f"{session_id}.{object_id}",
                     "_rpromise": True,
                 }
-                if session_id not in self._object_store:
-                    self._object_store[session_id] = {}
-                self._object_store[session_id][object_id] = a_object
+                store = self._get_session_store(session_id, create=True)
+                assert (
+                    store is not None
+                ), f"Failed to create session store {session_id} due to invalid parent"
+                store[object_id] = a_object
             return b_object
 
         isarray = isinstance(a_object, list)
@@ -914,7 +966,7 @@ class RPC(MessageEmitter):
         """Decode object."""
         return self._decode(a_object)
 
-    def _decode(self, a_object, session_id=None):
+    def _decode(self, a_object, remote_parent=None, local_parent=None):
         """Decode object."""
         if a_object is None:
             return a_object
@@ -927,11 +979,15 @@ class RPC(MessageEmitter):
                 if "_rintf" in a_object:
                     temp = a_object["_rtype"]
                     del a_object["_rtype"]
-                    a_object = self._decode(a_object, session_id=session_id)
+                    a_object = self._decode(
+                        a_object, remote_parent=remote_parent, local_parent=local_parent
+                    )
                     a_object["_rtype"] = temp
                 b_object = self._codecs[a_object["_rtype"]].decoder(a_object)
             elif a_object["_rtype"] == "method":
-                b_object = self._generate_remote_method(a_object, session_id=session_id)
+                b_object = self._generate_remote_method(
+                    a_object, remote_parent=remote_parent, local_parent=local_parent
+                )
             elif a_object["_rtype"] == "ndarray":
                 # create build array/tensor if used in the plugin
                 try:
@@ -981,10 +1037,20 @@ class RPC(MessageEmitter):
                     b_object = a_object["_rvalue"]
             elif a_object["_rtype"] == "orderedmap":
                 b_object = OrderedDict(
-                    self._decode(a_object["_rvalue"], session_id=session_id)
+                    self._decode(
+                        a_object["_rvalue"],
+                        remote_parent=remote_parent,
+                        local_parent=local_parent,
+                    )
                 )
             elif a_object["_rtype"] == "set":
-                b_object = set(self._decode(a_object["_rvalue"], session_id=session_id))
+                b_object = set(
+                    self._decode(
+                        a_object["_rvalue"],
+                        remote_parent=remote_parent,
+                        local_parent=local_parent,
+                    )
+                )
             elif a_object["_rtype"] == "error":
                 b_object = Exception(a_object["_rvalue"])
             else:
@@ -992,7 +1058,9 @@ class RPC(MessageEmitter):
                 if "_rintf" in a_object:
                     temp = a_object["_rtype"]
                     del a_object["_rtype"]
-                    a_object = self._decode(a_object, session_id=session_id)
+                    a_object = self._decode(
+                        a_object, remote_parent=remote_parent, local_parent=local_parent
+                    )
                     a_object["_rtype"] = temp
                 b_object = a_object
         elif isinstance(a_object, (dict, list, tuple)):
@@ -1004,9 +1072,15 @@ class RPC(MessageEmitter):
             for key in keys:
                 val = a_object[key]
                 if isarray:
-                    b_object.append(self._decode(val, session_id=session_id))
+                    b_object.append(
+                        self._decode(
+                            val, remote_parent=remote_parent, local_parent=local_parent
+                        )
+                    )
                 else:
-                    b_object[key] = self._decode(val, session_id=session_id)
+                    b_object[key] = self._decode(
+                        val, remote_parent=remote_parent, local_parent=local_parent
+                    )
         # make sure we have bytes instead of memoryview, e.g. for Pyodide
         elif isinstance(a_object, memoryview):
             b_object = a_object.tobytes()
