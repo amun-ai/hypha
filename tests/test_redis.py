@@ -129,6 +129,27 @@ async def test_websocket_server(
     svc7 = await rpc3.get_remote_service("test-workspace/test-plugin-1:test-service")
     assert await svc7.square(9) == 81
 
+    # Change the service to protected
+    await rpc.register_service(
+        {
+            "name": "my service",
+            "id": "test-service",
+            "config": {"visibility": "protected"},
+            "setup": print,
+            "echo": echo,
+            "square": lambda x: x ** 2,
+        },
+        overwrite=True,
+    )
+
+    # It should fail due to permission error
+    with pytest.raises(
+        Exception, match=r".*Permission denied for service: test-service.*"
+    ):
+        await rpc3.get_remote_service(
+            "test-workspace/test-plugin-1:test-service"
+        )
+
     rpc2 = await connect_to_server(
         url=f"ws://127.0.0.1:{SIO_PORT}",
         workspace="test-workspace",
