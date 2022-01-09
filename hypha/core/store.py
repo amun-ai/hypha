@@ -7,7 +7,7 @@ import os
 import sys
 import io
 import tempfile
-from typing import Callable, Union
+from typing import Callable, Union, Optional
 
 import aioredis
 import msgpack
@@ -15,8 +15,9 @@ import shortuuid
 from redislite import Redis
 import random
 
-from hypha.core import ClientInfo, UserInfo, WorkspaceInfo, VisibilityEnum
+from hypha.core import ClientInfo, UserInfo, WorkspaceInfo, VisibilityEnum, TokenConfig
 from hypha.core.rpc import RPC
+from hypha.core.auth import generate_presigned_token
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("redis-store")
@@ -152,6 +153,46 @@ class WorkspaceManager:
         self._rpc = rpc
         self._initialized = True
 
+    async def create_workspace(
+        self, config: dict, overwrite=False, context: Optional[dict] = None
+    ):
+        """Create a new workspace."""
+        user_info = UserInfo.parse_obj(context["user"])
+        config["persistent"] = config.get("persistent") or False
+        if user_info.is_anonymous and config["persistent"]:
+            raise Exception("Only registered user can create persistent workspace.")
+        workspace = WorkspaceInfo.parse_obj(config)
+        # workspace.set_global_event_bus(self.event_bus)
+        # make sure we add the user's email to owners
+        _id = user_info.email or user_info.id
+        if _id not in workspace.owners:
+            workspace.owners.append(_id)
+        workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
+        user_info.scopes.append(workspace.name)
+
+        if not overwrite and await self._redis.hexists("workspaces", workspace.name):
+            raise Exception(f"Workspace {workspace.name} already exists.")
+        await self._redis.hset("workspaces", workspace.name, workspace.json())
+        manager = WorkspaceManager.get_manager(workspace.name, self._redis)
+        await manager.setup()
+
+    def generate_token(
+        self, config: Optional[dict] = None, context: Optional[dict] = None
+    ):
+        """Generate a token for the current workspace."""
+        user_info = UserInfo.parse_obj(context["user"])
+        config = config or {}
+        if "scopes" in config and config["scopes"] != [self._workspace]:
+            raise Exception("Scopes must be empty or contains only the workspace name.")
+        config["scopes"] = [self._workspace]
+        token_config = TokenConfig.parse_obj(config)
+        if not self.check_permission(user_info):
+            raise PermissionError(
+                f"User has no permission to workspace: {self._workspace}"
+            )
+        token = generate_presigned_token(user_info, token_config)
+        return token
+
     async def update_client_info(self, client_info, context=None):
         ws, client_id = context["from"].split("/")
         assert client_info["id"] == client_id
@@ -245,7 +286,7 @@ class WorkspaceManager:
             raise Exception("Please specify the service id or name to get the service")
         return service_api
 
-    def check_permission(self, user_info):
+    def check_permission(self, user_info: UserInfo):
         """Check user permission for the workspace."""
         # pylint: disable=too-many-return-statements
         workspace = self._workspace_info
@@ -304,6 +345,10 @@ class WorkspaceManager:
             "list_services": self.list_services,
             "getService": self.get_service,
             "get_service": self.get_service,
+            "generate_token": self.generate_token,
+            "generateToken": self.generate_token,
+            "create_workspace": self.create_workspace,
+            "createWorkspace": self.create_workspace,
         }
         return interface
 
