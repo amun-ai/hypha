@@ -524,6 +524,8 @@ class RPC(MessageEmitter):
                     "params": args,
                     "with_kwargs": bool(kwargs),
                 }
+
+                logger.info("Calling remote method %s, session: %s", method_id, local_session_id)
                 if remote_parent:
                     # Set the parent session
                     # Note: It's a session id for the remote, not the current client

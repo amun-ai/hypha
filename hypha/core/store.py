@@ -42,31 +42,23 @@ class RedisRPCConnection:
 
     async def emit_message(self, data: Union[dict, bytes]):
         assert self._handle_message is not None, "No handler for message"
-        if isinstance(data, dict):
-            if "to" not in data:
-                raise ValueError(f"`to` is required: {str(data)[:20]}")
-            await self._redis.publish(
-                f"{self._workspace}:msg:{data['to']}", msgpack.packb(data)
-            )
-        elif isinstance(data, bytes):
-            unpacker = msgpack.Unpacker(io.BytesIO(data))
-            context = unpacker.unpack()
-            pos = unpacker.tell()
-            target_id = context["to"]
-            if context.get("ctx"):
-                # add more context as requested
-                context = {
-                    "to": target_id,
-                    "ctx": True,
-                    "from": self._client_id,
-                    "user": self._user_info,
-                    "workspace": self._workspace,
-                }
-            # Pack more context info to the package
-            data = msgpack.packb(context) + data[pos:]
-            await self._redis.publish(f"{self._workspace}:msg:{target_id}", data)
-        else:
-            raise TypeError("Invalid type")
+        assert isinstance(data, bytes)
+        unpacker = msgpack.Unpacker(io.BytesIO(data))
+        context = unpacker.unpack()
+        pos = unpacker.tell()
+        target_id = context["to"]
+        if context.get("ctx"):
+            # add more context as requested
+            context = {
+                "to": target_id,
+                "ctx": True,
+                "from": self._client_id,
+                "user": self._user_info,
+                "workspace": self._workspace,
+            }
+        # Pack more context info to the package
+        data = msgpack.packb(context) + data[pos:]
+        await self._redis.publish(f"{self._workspace}:msg:{target_id}", data)
 
     async def disconnect(self):
         pass
