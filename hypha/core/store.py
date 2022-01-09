@@ -44,22 +44,21 @@ class RedisRPCConnection:
         assert self._handle_message is not None, "No handler for message"
         assert isinstance(data, bytes)
         unpacker = msgpack.Unpacker(io.BytesIO(data))
-        context = unpacker.unpack()
+        message = unpacker.unpack()  # Only unpack the main message
         pos = unpacker.tell()
-        target_id = context["to"]
+        target_id = message["to"]
         if "/" not in target_id:
             target_id = self._workspace + "/" + target_id
-        
-        if context.get("ctx"):
-            # add more context as requested
-            context = {
+
+        message.update(
+            {
                 "to": target_id,
-                "ctx": True,
                 "from": self._workspace + "/" + self._client_id,
                 "user": self._user_info,
             }
+        )
         # Pack more context info to the package
-        data = msgpack.packb(context) + data[pos:]
+        data = msgpack.packb(message) + data[pos:]
         await self._redis.publish(f"{target_id}:msg", data)
 
     async def disconnect(self):
@@ -138,7 +137,10 @@ class WorkspaceManager:
             return asyncio.create_task(
                 self.update_client_info(
                     rpc.get_client_info(),
-                    context={"from": self._workspace + "/" + client_id, "user": self._root_user.dict()},
+                    context={
+                        "from": self._workspace + "/" + client_id,
+                        "user": self._root_user.dict(),
+                    },
                 )
             )
 

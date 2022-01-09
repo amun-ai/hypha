@@ -139,7 +139,7 @@ class RPC(MessageEmitter):
                 "id": "built-in",
                 "type": "built-in",
                 "name": "RPC built-in services",
-                "config": {"require_context": ["get_service", "message_cache.process"]},
+                "config": {"require_context": True},
                 "get_service": self.get_local_service,
                 "message_cache": {
                     "create": self._create_message,
@@ -164,8 +164,8 @@ class RPC(MessageEmitter):
 
         self.check_modules()
 
-    def _create_message(self, key, reset_timer=False, overwrite=False):
-        if reset_timer:
+    def _create_message(self, key, heartbeat=False, overwrite=False, context=None):
+        if heartbeat:
             if key not in self._object_store:
                 raise Exception(f"session does not exist anymore: {key}")
             self._object_store[key]["timer"].reset()
@@ -180,8 +180,8 @@ class RPC(MessageEmitter):
 
         self._object_store["message_cache"][key] = b""
 
-    def _append_message(self, key, data, reset_timer=False):
-        if reset_timer:
+    def _append_message(self, key, data, heartbeat=False, context=None):
+        if heartbeat:
             if key not in self._object_store:
                 raise Exception(f"session does not exist anymore: {key}")
             self._object_store[key]["timer"].reset()
@@ -191,14 +191,14 @@ class RPC(MessageEmitter):
         assert isinstance(data, bytes)
         cache[key] += data
 
-    def _remove_message(self, key):
+    def _remove_message(self, key, context=None):
         cache = self._object_store["message_cache"]
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
         del cache[key]
 
-    def _process_message(self, key, remove=True, reset_timer=False, context=None):
-        if reset_timer:
+    def _process_message(self, key, remove=True, heartbeat=False, context=None):
+        if heartbeat:
             if key not in self._object_store:
                 raise Exception(f"session does not exist anymore: {key}")
             self._object_store[key]["timer"].reset()
@@ -210,12 +210,23 @@ class RPC(MessageEmitter):
         unpacker = msgpack.Unpacker(
             io.BytesIO(cache[key]), max_buffer_size=self._max_message_buffer_size
         )
-        msg_context = unpacker.unpack()
-        message = unpacker.unpack()
-        if msg_context.get("ctx", False):
-            message["ctx"] = context
-            context.update(self.default_context)
-        self._fire(message["type"], message)
+        main = unpacker.unpack()
+        # Make sure the fields are from trusted source
+        main.update(
+            {
+                "from": context["from"],
+                "to": context["to"],
+                "user": context["user"],
+            }
+        )
+        main["ctx"] = main.copy()
+        main["ctx"].update(self.default_context)
+        try:
+            extra = unpacker.unpack()
+            main.update(extra)
+        except msgpack.exceptions.OutOfData:
+            pass
+        self._fire(main["type"], main)
         if remove:
             del cache[key]
 
@@ -223,14 +234,16 @@ class RPC(MessageEmitter):
         """Handle message."""
         assert isinstance(message, bytes)
         unpacker = msgpack.Unpacker(io.BytesIO(message), max_buffer_size=CHUNK_SIZE * 2)
-        context = unpacker.unpack()
-        message = unpacker.unpack()
+        main = unpacker.unpack()
         # Add trusted context to the method call
-
-        if context.get("ctx"):
-            message["ctx"] = context
-            context.update(self.default_context)
-        self._fire(message["type"], message)
+        main["ctx"] = main.copy()
+        main["ctx"].update(self.default_context)
+        try:
+            extra = unpacker.unpack()
+            main.update(extra)
+        except msgpack.exceptions.OutOfData:
+            pass
+        self._fire(main["type"], main)
 
     def reset(self):
         """Reset."""
@@ -265,11 +278,11 @@ class RPC(MessageEmitter):
         # allow access for the same workspace
         if service["config"].get("visibility", "protected") == "public":
             return service
-        
+
         # allow access for the same workspace
         if context["from"].startswith(ws + "/"):
             return service
-        
+
         raise Exception(f"Permission denied for service: {service_id}")
 
     async def get_remote_service(self, service_uri=None, timeout=None):
@@ -286,7 +299,6 @@ class RPC(MessageEmitter):
                     "_rtarget": provider,
                     "_rmethod": "services.built-in.get_service",
                     "_rpromise": True,
-                    "_rcontext": True,
                 }
             )
             return await asyncio.wait_for(method(service_id), timeout=timeout)
@@ -457,7 +469,7 @@ class RPC(MessageEmitter):
         encoded = {}
 
         if timer and reject and self._method_timeout:
-            encoded["reset_timer"] = self._encode(timer.reset, session_id)
+            encoded["heartbeat"] = self._encode(timer.reset, session_id)
             encoded["interval"] = self._method_timeout / 2
             store["timer"] = timer
         else:
@@ -486,7 +498,7 @@ class RPC(MessageEmitter):
         ), "Remote client does not support message caching for long message."
         message_cache = remote_services.message_cache
         message_id = session_id or shortuuid.uuid()
-        await message_cache.create(message_id, reset_timer=bool(session_id))
+        await message_cache.create(message_id, heartbeat=bool(session_id))
         total_size = len(package)
         chunk_num = int(math.ceil(float(total_size) / CHUNK_SIZE))
         for idx in range(chunk_num):
@@ -494,7 +506,7 @@ class RPC(MessageEmitter):
             await message_cache.append(
                 message_id,
                 package[start_byte : start_byte + CHUNK_SIZE],
-                reset_timer=bool(session_id),
+                heartbeat=bool(session_id),
             )
             logger.info(
                 "Sending chunk %d/%d (%d bytes)",
@@ -503,7 +515,7 @@ class RPC(MessageEmitter):
                 total_size,
             )
         logger.info("All chunks sent (%d)", chunk_num)
-        await message_cache.process(message_id, reset_timer=bool(session_id))
+        await message_cache.process(message_id, heartbeat=bool(session_id))
 
     def _generate_remote_method(
         self, encoded_method, remote_parent=None, local_parent=None
@@ -513,7 +525,6 @@ class RPC(MessageEmitter):
         target_id = encoded_method["_rtarget"]
         method_id = encoded_method["_rmethod"]
         with_promise = encoded_method.get("_rpromise", False)
-        require_context = encoded_method.get("_rcontext", False)
 
         def remote_method(*arguments, **kwargs):
             """Run remote method."""
@@ -532,27 +543,32 @@ class RPC(MessageEmitter):
                     session_id=local_session_id,
                 )
 
-                call_func = {
+                main_message = {
                     "type": "method",
                     "from": self._client_id,
                     "to": target_id,
                     "method": method_id,
-                    "params": args,
-                    "with_kwargs": bool(kwargs),
                 }
+                extra_data = {}
+                if args:
+                    extra_data["args"] = args
+                if kwargs:
+                    extra_data["with_kwargs"] = bool(kwargs)
 
-                logger.info("Calling remote method %s, session: %s", method_id, local_session_id)
+                logger.info(
+                    "Calling remote method %s, session: %s", method_id, local_session_id
+                )
                 if remote_parent:
                     # Set the parent session
                     # Note: It's a session id for the remote, not the current client
-                    call_func["parent"] = remote_parent
+                    main_message["parent"] = remote_parent
 
                 timer = None
                 if with_promise:
                     # Only pass the current session id to the remote
                     # if we want to received the result
                     # I.e. the session id won't be passed for promises themselves
-                    call_func["session"] = local_session_id
+                    main_message["session"] = local_session_id
                     method_name = f"{target_id}:{method_id}"
                     timer = Timer(
                         self._method_timeout,
@@ -560,20 +576,18 @@ class RPC(MessageEmitter):
                         f"Method call time out: {method_name}",
                         label=method_name,
                     )
-                    call_func["promise"] = self._encode_promise(
+                    extra_data["promise"] = self._encode_promise(
                         resolve=resolve,
                         reject=reject,
                         session_id=local_session_id,
                         clear_after_called=True,
                         timer=timer,
                     )
-
-                packed = msgpack.packb(call_func)
-                context_header = msgpack.packb(
-                    {"to": target_id, "ctx": bool(require_context)}
-                )
-                package = context_header + packed
-                total_size = len(package)
+                # The message consists of two segments, the main message and extra data
+                message_package = msgpack.packb(main_message)
+                if extra_data:
+                    message_package = message_package + msgpack.packb(extra_data)
+                total_size = len(message_package)
                 if total_size <= CHUNK_SIZE + 1024:
                     logger.info(
                         "%s: Sending bytes %d (chunksize: %d)",
@@ -581,11 +595,13 @@ class RPC(MessageEmitter):
                         total_size,
                         CHUNK_SIZE,
                     )
-                    emit_task = asyncio.ensure_future(self._emit_message(package))
+                    emit_task = asyncio.ensure_future(
+                        self._emit_message(message_package)
+                    )
                 else:
                     # send chunk by chunk
                     emit_task = asyncio.ensure_future(
-                        self._send_chunks(package, target_id, remote_parent)
+                        self._send_chunks(message_package, target_id, remote_parent)
                     )
 
                 def handle_result(fut):
@@ -696,9 +712,15 @@ class RPC(MessageEmitter):
             # try to get the root service
             try:
                 await self.get_remote_root_service(timeout=5.0)
-                await self._remote_root_service.update_client_info(self.get_client_info())
+                await self._remote_root_service.update_client_info(
+                    self.get_client_info()
+                )
             except Exception as exp:  # pylint: disable=broad-except
-                logger.warning("Failed to notify service update to %s: %s", self.root_target_id, exp)
+                logger.warning(
+                    "Failed to notify service update to %s: %s",
+                    self.root_target_id,
+                    exp,
+                )
 
     def get_client_info(self):
         return {
@@ -719,7 +741,7 @@ class RPC(MessageEmitter):
         method_task = None
         heartbeat_task = None
         try:
-            assert "method" in data and "params" in data
+            assert "method" in data and "ctx" in data
             local_parent = data.get("parent")
             if "promise" in data:
                 # Decode the promise with the remote session id
@@ -730,7 +752,7 @@ class RPC(MessageEmitter):
                     local_parent=local_parent,
                 )
                 resolve, reject = promise["resolve"], promise["reject"]
-                if "reset_timer" in promise and "interval" in promise:
+                if "heartbeat" in promise and "interval" in promise:
 
                     async def heartbeat(interval):
                         while True:
@@ -738,7 +760,7 @@ class RPC(MessageEmitter):
                                 logger.debug(
                                     "Reset heartbeat timer: %s", data["method"]
                                 )
-                                await promise["reset_timer"]()
+                                await promise["heartbeat"]()
                             except asyncio.CancelledError:
                                 if method_task:
                                     method_task.cancel()
@@ -765,8 +787,10 @@ class RPC(MessageEmitter):
                 assert (
                     self._get_session_store(local_parent, create=False) is not None
                 ), f"Parent session was closed: {local_parent}"
-
-            args = self._decode(data["params"], remote_parent=data.get("session"))
+            if data.get("args"):
+                args = self._decode(data["args"], remote_parent=data.get("session"))
+            else:
+                args = []
             if data.get("with_kwargs"):
                 kwargs = args.pop()
             else:
@@ -781,7 +805,7 @@ class RPC(MessageEmitter):
             if method in self._method_annotations and self._method_annotations[
                 method
             ].get("require_context"):
-                kwargs["context"] = data.get("ctx", self.default_context.copy())
+                kwargs["context"] = data["ctx"]
             run_in_executor = (
                 method in self._method_annotations
                 and self._method_annotations[method].get("run_in_executor")
@@ -878,7 +902,6 @@ class RPC(MessageEmitter):
                     "_rtarget": self._client_id,
                     "_rmethod": annotation["method_id"],
                     "_rpromise": True,
-                    "_rcontext": annotation.get("require_context", False),
                 }
             else:
                 assert isinstance(session_id, str)

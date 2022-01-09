@@ -147,7 +147,9 @@ async def test_websocket_server(
     assert len(rpc2._object_store) > 0
 
     # It should fail because add_one is not a service and will be destroyed after the session
-    with pytest.raises(Exception, match=r".*Method not found: test-plugin-2:.*"):
+    with pytest.raises(
+        Exception, match=r".*Method not found: test-workspace/test-plugin-2:.*"
+    ):
         assert await svc4.add_one(99) == 100
 
     svc5 = await rpc2.register_service(
