@@ -17,32 +17,6 @@ logger = logging.getLogger("websocket")
 logger.setLevel(logging.INFO)
 
 
-def parse_user(token):
-    """Parse user info from a token."""
-    if token:
-        user_info = parse_token(token)
-        uid = user_info.id
-        logger.info("User connected: %s", uid)
-    else:
-        uid = shortuuid.uuid()
-        user_info = UserInfo(
-            id=uid,
-            is_anonymous=True,
-            email=None,
-            parent=None,
-            roles=[],
-            scopes=[],
-            expires_at=None,
-        )
-        logger.info("Anonymized User connected: %s", uid)
-
-    if uid == "root":
-        logger.error("Root user is not allowed to connect remotely")
-        raise Exception("Root user is not allowed to connect remotely")
-
-    return user_info
-
-
 class WebsocketServer:
     """Represent an Websocket server."""
 
@@ -65,17 +39,44 @@ class WebsocketServer:
             client_id: str = Query(None),
             token: str = Query(None),
         ):
-            if workspace is None or client_id is None:
+            if client_id is None:
                 logger.error("Missing query parameters: workspace, client_id")
                 await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
                 return
 
-            try:
-                user_info = parse_user(token)
-            except Exception:
-                logger.error("Invalid token: %s", token)
-                await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
-                return
+            if token:
+                try:
+                    user_info = parse_token(token)
+                    uid = user_info.id
+                except Exception:
+                    logger.error("Invalid token: %s", token)
+                    await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
+                    return
+            else:
+                uid = shortuuid.uuid()
+                user_info = UserInfo(
+                    id=uid,
+                    is_anonymous=True,
+                    email=None,
+                    parent=None,
+                    roles=[],
+                    scopes=[],
+                    expires_at=None,
+                )
+                logger.info("Anonymized User connected: %s", uid)
+
+            if workspace is None:
+                workspace = uid
+                await store.register_workspace(
+                    dict(
+                        name=uid,
+                        owners=[uid],
+                        visibility="protected",
+                        persistent=False,
+                        read_only=False,
+                    ),
+                    overwrite=False,
+                )
 
             workspace_manager = await store.get_workspace_manager(workspace)
             if not workspace_manager.check_permission(user_info):

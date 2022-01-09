@@ -139,7 +139,7 @@ class RPC(MessageEmitter):
                 "id": "built-in",
                 "type": "built-in",
                 "name": "RPC built-in services",
-                "config": {"require_context": True},
+                "config": {"require_context": True, "visibility": "public"},
                 "get_service": self.get_local_service,
                 "message_cache": {
                     "create": self._create_message,
@@ -235,6 +235,8 @@ class RPC(MessageEmitter):
         assert isinstance(message, bytes)
         unpacker = msgpack.Unpacker(io.BytesIO(message), max_buffer_size=CHUNK_SIZE * 2)
         main = unpacker.unpack()
+        if main["to"] == "test-workspace/test-plugin-1":
+            logger.info("=============")
         # Add trusted context to the method call
         main["ctx"] = main.copy()
         main["ctx"].update(self.default_context)
@@ -608,7 +610,7 @@ class RPC(MessageEmitter):
                     if fut.exception():
                         reject(
                             Exception(
-                                f"Failed to send the request when calling method: {target_id}:{method_id}"
+                                f"Failed to send the request when calling method ({target_id}:{method_id}), error: {fut.exception()}"
                             )
                         )
                     elif timer:
@@ -936,7 +938,6 @@ class RPC(MessageEmitter):
                     del encoded_obj["_rtype"]
                     encoded_obj = self._encode(
                         encoded_obj,
-                        True,
                         session_id=session_id,
                     )
                     encoded_obj["_rtype"] = temp

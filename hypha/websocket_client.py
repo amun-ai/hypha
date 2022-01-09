@@ -5,6 +5,7 @@ import sys
 
 import msgpack
 import websockets
+import shortuuid
 
 from hypha.core.rpc import RPC
 
@@ -16,13 +17,17 @@ logger.setLevel(logging.INFO)
 class WebsocketRPCConnection:
     """Represent a websocket connection."""
 
-    def __init__(self, url, workspace, client_id, token):
+    def __init__(self, url, client_id, workspace=None, token=None):
         """Set up instance."""
         self._websocket = None
         self._handle_message = None
-        self._url = (
-            url + f"/ws?workspace={workspace}&client_id={client_id}&token={token}"
-        )
+        assert url and client_id
+        url = url + f"/ws?client_id={client_id}"
+        if workspace is not None:
+            url += f"&workspace={workspace}"
+        if token:
+            url += f"&token={token}"
+        self._url = url
 
     def on_message(self, handler):
         self._handle_message = handler
@@ -65,10 +70,12 @@ class WebsocketRPCConnection:
 
 
 async def connect_to_server(
-    url: str, workspace: str, client_id: str, token: str, method_timeout=10
+    url: str, client_id: str=None, workspace: str=None, token: str=None, method_timeout=10
 ):
     """Connect to RPC via a websocket server."""
-    connection = WebsocketRPCConnection(url, workspace, client_id, token)
+    if client_id is None:
+        client_id = shortuuid.uuid()
+    connection = WebsocketRPCConnection(url, client_id, workspace=workspace, token=token)
     rpc = RPC(
         connection,
         client_id=client_id,

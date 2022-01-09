@@ -96,9 +96,10 @@ async def test_websocket_server(
         {
             "name": "my service",
             "id": "test-service",
-            "config": {},
+            "config": {"visibility": "public"},
             "setup": print,
             "echo": echo,
+            "square": lambda x: x**2
         }
     )
 
@@ -123,6 +124,10 @@ async def test_websocket_server(
 
     svc = await wm.get_service("test-plugin-1:test-service")
     assert await svc.echo("hello") == "hello"
+
+    rpc3 = await connect_to_server(url=f"ws://127.0.0.1:{SIO_PORT}")
+    svc7 = await rpc3.get_remote_service("test-workspace/test-plugin-1:test-service")
+    assert await svc7.square(9) == 81
 
     rpc2 = await connect_to_server(
         url=f"ws://127.0.0.1:{SIO_PORT}",
@@ -192,7 +197,7 @@ async def test_websocket_server(
     await rpc2.register_service(
         {
             "id": "executor-test",
-            "config": {"run_in_executor": True},
+            "config": {"run_in_executor": True, "visibility": "public"},
             "blocking_sleep": time.sleep,
         }
     )

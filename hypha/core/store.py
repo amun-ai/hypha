@@ -49,11 +49,12 @@ class RedisRPCConnection:
         target_id = message["to"]
         if "/" not in target_id:
             target_id = self._workspace + "/" + target_id
+        source_id = self._workspace + "/" + self._client_id
 
         message.update(
             {
                 "to": target_id,
-                "from": self._workspace + "/" + self._client_id,
+                "from": source_id,
                 "user": self._user_info,
             }
         )
