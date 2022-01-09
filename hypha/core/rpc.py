@@ -558,7 +558,7 @@ class RPC(MessageEmitter):
                     extra_data["with_kwargs"] = bool(kwargs)
 
                 logger.info(
-                    "Calling remote method %s, session: %s", method_id, local_session_id
+                    "Calling remote method %s:%s, session: %s", target_id, method_id, local_session_id
                 )
                 if remote_parent:
                     # Set the parent session
@@ -738,7 +738,7 @@ class RPC(MessageEmitter):
             ],
         }
 
-    def _handle_method(self, data, context=None):
+    def _handle_method(self, data):
         reject = None
         method_task = None
         heartbeat_task = None
