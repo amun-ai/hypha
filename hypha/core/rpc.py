@@ -119,8 +119,8 @@ class RPC(MessageEmitter):
         self._codecs = codecs or {}
         self.work_dir = os.getcwd()
         self.abort = threading.Event()
-        self.client_id = client_id
         assert client_id and isinstance(client_id, str)
+        self._client_id = client_id
         self.root_target_id = root_target_id
         self.default_context = default_context or {}
         self._method_annotations = weakref.WeakKeyDictionary()
@@ -245,7 +245,7 @@ class RPC(MessageEmitter):
     async def get_remote_root_service(self, timeout=None):
         if self.root_target_id:
             self._remote_root_service = await self.get_remote_service(
-                service_uri=self.root_target_id + ":/", timeout=timeout
+                service_uri=f"{self.root_target_id}:default", timeout=timeout
             )
             return self._remote_root_service
 
@@ -255,14 +255,29 @@ class RPC(MessageEmitter):
 
     def get_local_service(self, service_id, context=None):
         assert service_id is not None
-        return self._services.get(service_id)
+        ws, client_id = context["to"].split("/")
+        assert client_id == self._client_id
+
+        service = self._services.get(service_id)
+        if not service:
+            raise KeyError("Service not found: %s", service_id)
+
+        # allow access for the same workspace
+        if service["config"].get("visibility", "protected") == "public":
+            return service
+        
+        # allow access for the same workspace
+        if context["from"].startswith(ws + "/"):
+            return service
+        
+        raise Exception(f"Permission denied for service: {service_id}")
 
     async def get_remote_service(self, service_uri=None, timeout=None):
         """Get a remote service."""
         if service_uri is None and self.root_target_id:
             service_uri = self.root_target_id
         elif ":" not in service_uri:
-            service_uri = self.client_id + ":" + service_uri
+            service_uri = self._client_id + ":" + service_uri
         provider, service_id = service_uri.split(":")
         assert provider
         try:
@@ -271,6 +286,7 @@ class RPC(MessageEmitter):
                     "_rtarget": provider,
                     "_rmethod": "services.built-in.get_service",
                     "_rpromise": True,
+                    "_rcontext": True,
                 }
             )
             return await asyncio.wait_for(method(service_id), timeout=timeout)
@@ -351,7 +367,7 @@ class RPC(MessageEmitter):
             run_in_executor=run_in_executor,
         )
 
-        api["uri"] = self.client_id + ":" + api["id"]
+        api["uri"] = self._client_id + ":" + api["id"]
 
         if not overwrite and api["id"] in self._services:
             raise Exception(
@@ -404,7 +420,7 @@ class RPC(MessageEmitter):
         method_id = f"{session_id}.{name}"
         encoded = {
             "_rtype": "method",
-            "_rtarget": self.client_id,
+            "_rtarget": self._client_id,
             "_rmethod": method_id,
             "_rpromise": False,
         }
@@ -417,7 +433,7 @@ class RPC(MessageEmitter):
             finally:
                 if clear_after_called and session_id in self._object_store:
                     logger.info(
-                        "Deleting session %s from %s", session_id, self.client_id
+                        "Deleting session %s from %s", session_id, self._client_id
                     )
                     del self._object_store[session_id]
                 if timer:
@@ -518,7 +534,7 @@ class RPC(MessageEmitter):
 
                 call_func = {
                     "type": "method",
-                    "from": self.client_id,
+                    "from": self._client_id,
                     "to": target_id,
                     "method": method_id,
                     "params": args,
@@ -676,19 +692,20 @@ class RPC(MessageEmitter):
                 return resolve(result)
 
     async def _notify_service_update(self):
-        if not self._remote_root_service:
+        if not self._remote_root_service and self.root_target_id:
             # try to get the root service
-            await self.get_remote_root_service(timeout=5.0)
-
-        if self._remote_root_service:
-            await self._remote_root_service.update_client_info(self.get_client_info())
+            try:
+                await self.get_remote_root_service(timeout=5.0)
+                await self._remote_root_service.update_client_info(self.get_client_info())
+            except Exception as exp:  # pylint: disable=broad-except
+                logger.warning("Failed to notify service update to %s: %s", self.root_target_id, exp)
 
     def get_client_info(self):
         return {
-            "id": self.client_id,
+            "id": self._client_id,
             "services": [
                 {
-                    "id": f'{self.client_id}:{service["id"]}',
+                    "id": f'{self._client_id}:{service["id"]}',
                     "type": service["type"],
                     "name": service["name"],
                     "config": service["config"],
@@ -858,7 +875,7 @@ class RPC(MessageEmitter):
                 annotation = self._method_annotations[a_object]
                 b_object = {
                     "_rtype": "method",
-                    "_rtarget": self.client_id,
+                    "_rtarget": self._client_id,
                     "_rmethod": annotation["method_id"],
                     "_rpromise": True,
                     "_rcontext": annotation.get("require_context", False),
@@ -868,7 +885,7 @@ class RPC(MessageEmitter):
                 object_id = f"{shortuuid.uuid()}-{a_object.__name__}"
                 b_object = {
                     "_rtype": "method",
-                    "_rtarget": self.client_id,
+                    "_rtarget": self._client_id,
                     "_rmethod": f"{session_id}.{object_id}",
                     "_rpromise": True,
                 }

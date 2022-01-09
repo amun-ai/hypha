@@ -47,31 +47,33 @@ class RedisRPCConnection:
         context = unpacker.unpack()
         pos = unpacker.tell()
         target_id = context["to"]
+        if "/" not in target_id:
+            target_id = self._workspace + "/" + target_id
+        
         if context.get("ctx"):
             # add more context as requested
             context = {
                 "to": target_id,
                 "ctx": True,
-                "from": self._client_id,
+                "from": self._workspace + "/" + self._client_id,
                 "user": self._user_info,
-                "workspace": self._workspace,
             }
         # Pack more context info to the package
         data = msgpack.packb(context) + data[pos:]
-        await self._redis.publish(f"{self._workspace}:msg:{target_id}", data)
+        await self._redis.publish(f"{target_id}:msg", data)
 
     async def disconnect(self):
         pass
 
     async def _subscribe_redis(self):
         pubsub = self._redis.pubsub()
-        await pubsub.subscribe(f"{self._workspace}:msg:{self._client_id}")
+        await pubsub.subscribe(f"{self._workspace}/{self._client_id}:msg")
         while True:
             msg = await pubsub.get_message()
             if msg and msg.get("type") == "message":
                 assert (
                     msg.get("channel")
-                    == f"{self._workspace}:msg:{self._client_id}".encode()
+                    == f"{self._workspace}/{self._client_id}:msg".encode()
                 )
                 if self._is_async:
                     await self._handle_message(msg["data"])
@@ -136,7 +138,7 @@ class WorkspaceManager:
             return asyncio.create_task(
                 self.update_client_info(
                     rpc.get_client_info(),
-                    context={"from": client_id, "user": self._root_user.dict()},
+                    context={"from": self._workspace + "/" + client_id, "user": self._root_user.dict()},
                 )
             )
 
@@ -148,7 +150,9 @@ class WorkspaceManager:
         self._initialized = True
 
     async def update_client_info(self, client_info, context=None):
-        assert client_info["id"] == context["from"]
+        ws, client_id = context["from"].split("/")
+        assert client_info["id"] == client_id
+        assert ws == self._workspace
         client_info["user_info"] = context["user"]
         client_info = ClientInfo.parse_obj(client_info)
         await self._redis.hset(
