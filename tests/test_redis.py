@@ -99,7 +99,7 @@ async def test_websocket_server(
             "config": {"visibility": "public"},
             "setup": print,
             "echo": echo,
-            "square": lambda x: x**2
+            "square": lambda x: x ** 2,
         }
     )
 

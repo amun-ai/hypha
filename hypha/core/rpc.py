@@ -520,11 +520,17 @@ class RPC(MessageEmitter):
         await message_cache.process(message_id, heartbeat=bool(session_id))
 
     def _generate_remote_method(
-        self, encoded_method, remote_parent=None, local_parent=None
+        self,
+        encoded_method,
+        remote_parent=None,
+        local_parent=None,
+        remote_workspace=None,
     ):
         """Return remote method."""
 
         target_id = encoded_method["_rtarget"]
+        if remote_workspace and "/" not in target_id:
+            target_id = remote_workspace + "/" + target_id
         method_id = encoded_method["_rmethod"]
         with_promise = encoded_method.get("_rpromise", False)
 
@@ -558,7 +564,10 @@ class RPC(MessageEmitter):
                     extra_data["with_kwargs"] = bool(kwargs)
 
                 logger.info(
-                    "Calling remote method %s:%s, session: %s", target_id, method_id, local_session_id
+                    "Calling remote method %s:%s, session: %s",
+                    target_id,
+                    method_id,
+                    local_session_id,
                 )
                 if remote_parent:
                     # Set the parent session
@@ -745,6 +754,7 @@ class RPC(MessageEmitter):
         try:
             assert "method" in data and "ctx" in data
             local_parent = data.get("parent")
+            remote_workspace = data.get("from").split("/")[0]
             if "promise" in data:
                 # Decode the promise with the remote session id
                 # Such that the session id will be passed to the remote as a parent session id
@@ -752,6 +762,7 @@ class RPC(MessageEmitter):
                     data["promise"],
                     remote_parent=data.get("session"),
                     local_parent=local_parent,
+                    remote_workspace=remote_workspace,
                 )
                 resolve, reject = promise["resolve"], promise["reject"]
                 if "heartbeat" in promise and "interval" in promise:
@@ -790,7 +801,11 @@ class RPC(MessageEmitter):
                     self._get_session_store(local_parent, create=False) is not None
                 ), f"Parent session was closed: {local_parent}"
             if data.get("args"):
-                args = self._decode(data["args"], remote_parent=data.get("session"))
+                args = self._decode(
+                    data["args"],
+                    remote_parent=data.get("session"),
+                    remote_workspace=remote_workspace,
+                )
             else:
                 args = []
             if data.get("with_kwargs"):
@@ -1009,7 +1024,9 @@ class RPC(MessageEmitter):
         """Decode object."""
         return self._decode(a_object)
 
-    def _decode(self, a_object, remote_parent=None, local_parent=None):
+    def _decode(
+        self, a_object, remote_parent=None, local_parent=None, remote_workspace=None
+    ):
         """Decode object."""
         if a_object is None:
             return a_object
@@ -1023,13 +1040,19 @@ class RPC(MessageEmitter):
                     temp = a_object["_rtype"]
                     del a_object["_rtype"]
                     a_object = self._decode(
-                        a_object, remote_parent=remote_parent, local_parent=local_parent
+                        a_object,
+                        remote_parent=remote_parent,
+                        local_parent=local_parent,
+                        remote_workspace=remote_workspace,
                     )
                     a_object["_rtype"] = temp
                 b_object = self._codecs[a_object["_rtype"]].decoder(a_object)
             elif a_object["_rtype"] == "method":
                 b_object = self._generate_remote_method(
-                    a_object, remote_parent=remote_parent, local_parent=local_parent
+                    a_object,
+                    remote_parent=remote_parent,
+                    local_parent=local_parent,
+                    remote_workspace=remote_workspace,
                 )
             elif a_object["_rtype"] == "ndarray":
                 # create build array/tensor if used in the plugin
@@ -1084,6 +1107,7 @@ class RPC(MessageEmitter):
                         a_object["_rvalue"],
                         remote_parent=remote_parent,
                         local_parent=local_parent,
+                        remote_workspace=remote_workspace,
                     )
                 )
             elif a_object["_rtype"] == "set":
@@ -1092,6 +1116,7 @@ class RPC(MessageEmitter):
                         a_object["_rvalue"],
                         remote_parent=remote_parent,
                         local_parent=local_parent,
+                        remote_workspace=remote_workspace,
                     )
                 )
             elif a_object["_rtype"] == "error":
@@ -1102,7 +1127,10 @@ class RPC(MessageEmitter):
                     temp = a_object["_rtype"]
                     del a_object["_rtype"]
                     a_object = self._decode(
-                        a_object, remote_parent=remote_parent, local_parent=local_parent
+                        a_object,
+                        remote_parent=remote_parent,
+                        local_parent=local_parent,
+                        remote_workspace=remote_workspace,
                     )
                     a_object["_rtype"] = temp
                 b_object = a_object
@@ -1117,12 +1145,18 @@ class RPC(MessageEmitter):
                 if isarray:
                     b_object.append(
                         self._decode(
-                            val, remote_parent=remote_parent, local_parent=local_parent
+                            val,
+                            remote_parent=remote_parent,
+                            local_parent=local_parent,
+                            remote_workspace=remote_workspace,
                         )
                     )
                 else:
                     b_object[key] = self._decode(
-                        val, remote_parent=remote_parent, local_parent=local_parent
+                        val,
+                        remote_parent=remote_parent,
+                        local_parent=local_parent,
+                        remote_workspace=remote_workspace,
                     )
         # make sure we have bytes instead of memoryview, e.g. for Pyodide
         elif isinstance(a_object, memoryview):

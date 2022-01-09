@@ -70,12 +70,18 @@ class WebsocketRPCConnection:
 
 
 async def connect_to_server(
-    url: str, client_id: str=None, workspace: str=None, token: str=None, method_timeout=10
+    url: str,
+    client_id: str = None,
+    workspace: str = None,
+    token: str = None,
+    method_timeout=10,
 ):
     """Connect to RPC via a websocket server."""
     if client_id is None:
         client_id = shortuuid.uuid()
-    connection = WebsocketRPCConnection(url, client_id, workspace=workspace, token=token)
+    connection = WebsocketRPCConnection(
+        url, client_id, workspace=workspace, token=token
+    )
     rpc = RPC(
         connection,
         client_id=client_id,
