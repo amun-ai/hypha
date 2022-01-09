@@ -142,7 +142,7 @@ class WorkspaceManager:
                 )
             )
 
-        rpc.on("serviceUpdated", save_client_info)
+        rpc.on("service-updated", save_client_info)
         management_service = self.create_service(service_id, service_name)
         await rpc.register_service(management_service, notify=False)
         await save_client_info(None)

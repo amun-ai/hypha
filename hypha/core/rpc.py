@@ -382,7 +382,7 @@ class RPC(MessageEmitter):
         service = self.add_service(api, overwrite=overwrite)
         if notify:
             self._fire(
-                "serviceUpdated",
+                "service-updated",
                 {"service_id": service["id"], "api": service, "type": "add"},
             )
             await self._notify_service_update()
@@ -397,7 +397,7 @@ class RPC(MessageEmitter):
         del self._services[service["id"]]
         if notify:
             self._fire(
-                "serviceUpdated",
+                "service-updated",
                 {"service_id": service["id"], "api": service, "type": "remove"},
             )
             await self._notify_service_update()
