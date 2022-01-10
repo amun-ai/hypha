@@ -39,7 +39,8 @@ async def test_redis_store(event_loop, redis_store):
     rpc = wm.rpc
     api = await rpc.get_remote_service("workspace-manager:default")
     await api.log("hello")
-    assert len(await api.list_services()) == 2
+    services = await api.list_services()
+    assert len(services) == 1
     assert await api.generate_token()
     ws = await api.create_workspace(
         dict(

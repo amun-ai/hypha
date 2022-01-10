@@ -165,6 +165,9 @@ class WorkspaceManager:
     ):
         """Create a new workspace."""
         user_info = UserInfo.parse_obj(context["user"])
+        if not await self.check_permission(user_info):
+            raise Exception(f"Permission denied for workspace {self._workspace}.")
+        user_info = UserInfo.parse_obj(context["user"])
         config["persistent"] = config.get("persistent") or False
         if user_info.is_anonymous and config["persistent"]:
             raise Exception("Only registered user can create persistent workspace.")
@@ -190,14 +193,26 @@ class WorkspaceManager:
 
     async def register_service(self, service, context: Optional[dict] = None, **kwargs):
         """Register a service"""
-
+        user_info = UserInfo.parse_obj(context["user"])
+        if not await self.check_permission(user_info):
+            raise Exception(f"Permission denied for workspace {self._workspace}.")
         sv = await self._rpc.get_remote_service(context["from"] + ":built-in")
-        return await sv.register_service(service, **kwargs)
+        service["config"] = service.get("config", {})
+        service["config"]["workspace"] = self._workspace
+        service = await sv.register_service(service, **kwargs)
+        if "/" not in service["id"]:
+            # The source workspace might be different
+            source_workspace = context["from"].split("/")[0]
+            service["id"] = source_workspace + "/" + service["id"]
+        return service
 
     async def generate_token(
         self, config: Optional[dict] = None, context: Optional[dict] = None
     ):
         """Generate a token for the current workspace."""
+        user_info = UserInfo.parse_obj(context["user"])
+        if not await self.check_permission(user_info):
+            raise Exception(f"Permission denied for workspace {self._workspace}.")
         user_info = UserInfo.parse_obj(context["user"])
         config = config or {}
         if "scopes" in config and config["scopes"] != [self._workspace]:
@@ -212,6 +227,9 @@ class WorkspaceManager:
         return token
 
     async def update_client_info(self, client_info, context=None):
+        user_info = UserInfo.parse_obj(context["user"])
+        if not await self.check_permission(user_info):
+            raise Exception(f"Permission denied for workspace {self._workspace}.")
         ws, client_id = context["from"].split("/")
         assert client_info["id"] == client_id
         assert ws == self._workspace
@@ -242,6 +260,8 @@ class WorkspaceManager:
         # if workspace = *, it means search globally
         # otherwise, it search the specified workspace
         user_info = UserInfo.parse_obj(context["user"])
+        if not await self.check_permission(user_info):
+            raise Exception(f"Permission denied for workspace {self._workspace}.")
         if query is None:
             query = {}
 
@@ -292,6 +312,13 @@ class WorkspaceManager:
             try:
                 client_info = await self.get_client_info(client_id)
                 for sinfo in client_info["services"]:
+                    # If the service does not belong to the workspace, skip it
+                    if (
+                        sinfo.get("config")
+                        and sinfo["config"].get("workspace", self._workspace)
+                        != self._workspace
+                    ):
+                        continue
                     service_list.append(ServiceInfo.parse_obj(sinfo))
             # make sure we don't throw if a client is removed
             except Exception:  # pylint: disable=broad-except
@@ -325,7 +352,10 @@ class WorkspaceManager:
         rpc = RPC(connection, client_id=client_id, default_context=default_context)
         return rpc
 
-    def log(self, *args, context=None):
+    async def log(self, *args, context=None):
+        user_info = UserInfo.parse_obj(context["user"])
+        if not await self.check_permission(user_info):
+            raise Exception(f"Permission denied for workspace {self._workspace}.")
         print(context["from"], *args)
 
     async def get_workspace_info(self):
@@ -339,18 +369,30 @@ class WorkspaceManager:
         return self._workspace_info
 
     async def get_service(self, query, context=None):
+        user_info = UserInfo.parse_obj(context["user"])
+        if not await self.check_permission(user_info):
+            raise Exception(f"Permission denied for workspace {self._workspace}.")
         if isinstance(query, str):
             query = {"id": query}
 
         if "id" in query:
-            service_api = await self._rpc.get_remote_service(query["id"])
+            if "/" in query["id"]:
+                workspace = query["id"].split("/")[0]
+                if workspace != self._workspace:
+                    manager = WorkspaceManager.get_manager(
+                        workspace, self._redis, self._root_user
+                    )
+                    return await manager.get_service(query["id"], context=context)
+            service_api = await self._rpc.get_remote_service(query["id"], timeout=3)
         elif "name" in query:
             services = await self.list_services()
             services = list(
                 filter(lambda service: service["name"] == query["name"], services)
             )
             service_info = random.choice(services)
-            service_api = await self._rpc.get_remote_service(service_info["id"])
+            service_api = await self._rpc.get_remote_service(
+                service_info["id"], timeout=3
+            )
         else:
             raise Exception("Please specify the service id or name to get the service")
         return service_api
@@ -416,7 +458,12 @@ class WorkspaceManager:
         interface = {
             "id": service_id,
             "name": service_name or service_id,
-            "config": {"require_context": True, "workspace": self._workspace},
+            # Note: We make these services public by default, and assuming we will do authorization in each function
+            "config": {
+                "require_context": True,
+                "workspace": self._workspace,
+                "visibility": "public",
+            },
             "log": self.log,
             "update_client_info": self.update_client_info,
             "listServices": self.list_services,

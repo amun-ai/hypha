@@ -89,6 +89,7 @@ class ServiceInfo(BaseModel):
             "type": self.type,
             "id": self.id if hasattr(self, "id") else self._id,
             "visibility": self.config.visibility.value,
+            "config": self.config.dict(),
             "provider": self._provider and self._provider.name,
             "provider_id": self._provider and self._provider.id,
         }

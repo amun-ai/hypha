@@ -210,7 +210,7 @@ async def test_workspace(socketio_server):
         }
     )
     assert api2.config["workspace"] == "test-workspace"
-    await api2.export({"foo": "bar"})
+    # await api2.export({"foo": "bar"})
     ss3 = await api2.list_services({"type": "#test"})
     assert len(ss3) == 2
 
