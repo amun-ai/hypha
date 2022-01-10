@@ -150,6 +150,7 @@ class RPC(MessageEmitter):
                 "name": "RPC built-in services",
                 "config": {"require_context": True, "visibility": "public"},
                 "get_service": self.get_local_service,
+                "register_service": self.register_service,
                 "message_cache": {
                     "create": self._create_message,
                     "append": self._append_message,
@@ -323,6 +324,22 @@ class RPC(MessageEmitter):
                 a_object.items() if isinstance(a_object, dict) else enumerate(a_object)
             )
             for key, val in items:
+                if callable(val) and hasattr(val, "__remote_method__"):
+                    if self._client_id == val.__remote_method__["_rtarget"]:
+                        # Make sure we can modify the object
+                        if isinstance(a_object, tuple):
+                            a_object = list(a_object)
+                        # recover local method
+                        a_object[key] = index_object(
+                            self._object_store, val.__remote_method__["_rmethod"]
+                        )
+                        val = a_object[key]  # make sure it's annotated later
+                    else:
+                        raise Exception(
+                            "Local method not found: {}".format(
+                                val.__remote_method__["_rmethod"]
+                            )
+                        )
                 self._annotate_service_methods(
                     val,
                     object_id + "." + str(key),
@@ -366,7 +383,7 @@ class RPC(MessageEmitter):
             raise Exception("Invalid service object type: {}".format(type(api)))
 
         if "id" not in api:
-            api["id"] = "default"
+            api["id"] = api.get("name", "default").replace(" ", "_")
 
         if "name" not in api:
             api["name"] = api["id"]
@@ -400,8 +417,13 @@ class RPC(MessageEmitter):
         self._services[api["id"]] = api
         return api
 
-    async def register_service(self, api, overwrite=False, notify=True):
+    async def register_service(self, api, overwrite=False, notify=True, context=None):
         """Register a service."""
+        if context is not None:
+            assert (
+                context["to"] == self._client_id
+                or context["to"].split("/")[1] == self._client_id
+            )
         service = self.add_service(api, overwrite=overwrite)
         if notify:
             self._fire(
@@ -443,12 +465,20 @@ class RPC(MessageEmitter):
             )
 
     def _encode_callback(
-        self, name, callback, session_id, clear_after_called=False, timer=None
+        self,
+        name,
+        callback,
+        session_id,
+        clear_after_called=False,
+        timer=None,
+        local_workspace=None,
     ):
         method_id = f"{session_id}.{name}"
         encoded = {
             "_rtype": "method",
-            "_rtarget": self._client_id,
+            "_rtarget": f"{local_workspace}/{self._client_id}"
+            if local_workspace
+            else self._client_id,
             "_rmethod": method_id,
             "_rpromise": False,
         }
@@ -476,6 +506,7 @@ class RPC(MessageEmitter):
         session_id,
         clear_after_called=False,
         timer=None,
+        local_workspace=None,
     ):
         """Encode a group of callbacks without promise."""
         store = self._get_session_store(session_id, create=True)
@@ -485,7 +516,11 @@ class RPC(MessageEmitter):
         encoded = {}
 
         if timer and reject and self._method_timeout:
-            encoded["heartbeat"] = self._encode(timer.reset, session_id)
+            encoded["heartbeat"] = self._encode(
+                timer.reset,
+                session_id,
+                local_workspace=local_workspace,
+            )
             encoded["interval"] = self._method_timeout / 2
             store["timer"] = timer
         else:
@@ -497,6 +532,7 @@ class RPC(MessageEmitter):
             session_id,
             clear_after_called=clear_after_called,
             timer=timer,
+            local_workspace=local_workspace,
         )
         encoded["reject"], store["reject"] = self._encode_callback(
             "reject",
@@ -504,6 +540,7 @@ class RPC(MessageEmitter):
             session_id,
             clear_after_called=clear_after_called,
             timer=timer,
+            local_workspace=local_workspace,
         )
         return encoded
 
@@ -539,6 +576,7 @@ class RPC(MessageEmitter):
         remote_parent=None,
         local_parent=None,
         remote_workspace=None,
+        local_workspace=None,
     ):
         """Return remote method."""
 
@@ -561,10 +599,14 @@ class RPC(MessageEmitter):
                     # Store the children session under the parent
                     local_session_id = local_parent + "." + local_session_id
                 store = self._get_session_store(local_session_id, create=True)
+                assert (
+                    store is not None
+                ), f"Failed to get session store {local_session_id}"
                 store["target_id"] = target_id
                 args = self._encode(
                     arguments,
                     session_id=local_session_id,
+                    local_workspace=local_workspace,
                 )
 
                 main_message = {
@@ -609,6 +651,7 @@ class RPC(MessageEmitter):
                         session_id=local_session_id,
                         clear_after_called=True,
                         timer=timer,
+                        local_workspace=local_workspace,
                     )
                 # The message consists of two segments, the main message and extra data
                 message_package = msgpack.packb(main_message)
@@ -776,6 +819,7 @@ class RPC(MessageEmitter):
                     remote_parent=data.get("session"),
                     local_parent=local_parent,
                     remote_workspace=remote_workspace,
+                    local_workspace=local_workspace,
                 )
                 resolve, reject = promise["resolve"], promise["reject"]
                 if "heartbeat" in promise and "interval" in promise:
@@ -823,7 +867,7 @@ class RPC(MessageEmitter):
                 ):
                     if local_workspace != remote_workspace:
                         raise PermissionError(
-                            f"Permission denied for method {method_name}"
+                            f"Permission denied for protected method {method_name}, workspace mismatch: {local_workspace} != {remote_workspace}"
                         )
             else:
                 # For sessions, the target_id should match exactly
@@ -834,7 +878,7 @@ class RPC(MessageEmitter):
                     session_target_id = local_workspace + "/" + session_target_id
                 if session_target_id != data["from"]:
                     raise PermissionError(
-                        f"Illegal method call ({method_name}) from {data['from']}"
+                        f"Access denied for method call ({method_name}) from {data['from']}"
                     )
 
             # Make sure the parent session is still open
@@ -920,6 +964,7 @@ class RPC(MessageEmitter):
         self,
         a_object,
         session_id=None,
+        local_workspace=None,
     ):
         """Encode object."""
         if isinstance(a_object, (int, float, bool, str, bytes)) or a_object is None:
@@ -939,6 +984,7 @@ class RPC(MessageEmitter):
             b_object = self._encode(
                 a_object,
                 session_id=session_id,
+                local_workspace=local_workspace,
             )
             b_object["_rtype"] = temp
             return b_object
@@ -952,7 +998,9 @@ class RPC(MessageEmitter):
                 annotation = self._method_annotations[a_object]
                 b_object = {
                     "_rtype": "method",
-                    "_rtarget": self._client_id,
+                    "_rtarget": f"{local_workspace}/{self._client_id}"
+                    if local_workspace
+                    else self._client_id,
                     "_rmethod": annotation["method_id"],
                     "_rpromise": True,
                 }
@@ -961,7 +1009,9 @@ class RPC(MessageEmitter):
                 object_id = f"{shortuuid.uuid()}-{a_object.__name__}"
                 b_object = {
                     "_rtype": "method",
-                    "_rtarget": self._client_id,
+                    "_rtarget": f"{local_workspace}/{self._client_id}"
+                    if local_workspace
+                    else self._client_id,
                     "_rmethod": f"{session_id}.{object_id}",
                     "_rpromise": True,
                 }
@@ -990,6 +1040,7 @@ class RPC(MessageEmitter):
                     encoded_obj = self._encode(
                         encoded_obj,
                         session_id=session_id,
+                        local_workspace=local_workspace,
                     )
                     encoded_obj["_rtype"] = temp
                 b_object = encoded_obj
@@ -1017,7 +1068,11 @@ class RPC(MessageEmitter):
                 m: getattr(a_object, m) for m in IO_METHODS if hasattr(a_object, m)
             }
             b_object["_rintf"] = True
-            b_object = self._encode(b_object, session_id=session_id)
+            b_object = self._encode(
+                b_object,
+                session_id=session_id,
+                local_workspace=local_workspace,
+            )
 
         # NOTE: "typedarray" is not used
         elif isinstance(a_object, OrderedDict):
@@ -1026,6 +1081,7 @@ class RPC(MessageEmitter):
                 "_rvalue": self._encode(
                     list(a_object),
                     session_id=session_id,
+                    local_workspace=local_workspace,
                 ),
             }
         elif isinstance(a_object, set):
@@ -1034,6 +1090,7 @@ class RPC(MessageEmitter):
                 "_rvalue": self._encode(
                     list(a_object),
                     session_id=session_id,
+                    local_workspace=local_workspace,
                 ),
             }
         elif isinstance(a_object, (list, dict)):
@@ -1043,6 +1100,7 @@ class RPC(MessageEmitter):
                 encoded = self._encode(
                     a_object[key],
                     session_id=session_id,
+                    local_workspace=local_workspace,
                 )
                 if isarray:
                     b_object.append(encoded)
@@ -1061,7 +1119,12 @@ class RPC(MessageEmitter):
         return self._decode(a_object)
 
     def _decode(
-        self, a_object, remote_parent=None, local_parent=None, remote_workspace=None
+        self,
+        a_object,
+        remote_parent=None,
+        local_parent=None,
+        remote_workspace=None,
+        local_workspace=None,
     ):
         """Decode object."""
         if a_object is None:
@@ -1080,6 +1143,7 @@ class RPC(MessageEmitter):
                         remote_parent=remote_parent,
                         local_parent=local_parent,
                         remote_workspace=remote_workspace,
+                        local_workspace=local_workspace,
                     )
                     a_object["_rtype"] = temp
                 b_object = self._codecs[a_object["_rtype"]].decoder(a_object)
@@ -1089,6 +1153,7 @@ class RPC(MessageEmitter):
                     remote_parent=remote_parent,
                     local_parent=local_parent,
                     remote_workspace=remote_workspace,
+                    local_workspace=local_workspace,
                 )
             elif a_object["_rtype"] == "ndarray":
                 # create build array/tensor if used in the plugin
@@ -1144,6 +1209,7 @@ class RPC(MessageEmitter):
                         remote_parent=remote_parent,
                         local_parent=local_parent,
                         remote_workspace=remote_workspace,
+                        local_workspace=local_workspace,
                     )
                 )
             elif a_object["_rtype"] == "set":
@@ -1153,6 +1219,7 @@ class RPC(MessageEmitter):
                         remote_parent=remote_parent,
                         local_parent=local_parent,
                         remote_workspace=remote_workspace,
+                        local_workspace=local_workspace,
                     )
                 )
             elif a_object["_rtype"] == "error":
@@ -1167,6 +1234,7 @@ class RPC(MessageEmitter):
                         remote_parent=remote_parent,
                         local_parent=local_parent,
                         remote_workspace=remote_workspace,
+                        local_workspace=local_workspace,
                     )
                     a_object["_rtype"] = temp
                 b_object = a_object
@@ -1185,6 +1253,7 @@ class RPC(MessageEmitter):
                             remote_parent=remote_parent,
                             local_parent=local_parent,
                             remote_workspace=remote_workspace,
+                            local_workspace=local_workspace,
                         )
                     )
                 else:
@@ -1193,6 +1262,7 @@ class RPC(MessageEmitter):
                         remote_parent=remote_parent,
                         local_parent=local_parent,
                         remote_workspace=remote_workspace,
+                        local_workspace=local_workspace,
                     )
         # make sure we have bytes instead of memoryview, e.g. for Pyodide
         elif isinstance(a_object, memoryview):

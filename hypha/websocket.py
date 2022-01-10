@@ -123,7 +123,7 @@ class WebsocketServer:
             finally:
                 await workspace_manager.delete_client(client_id)
                 if user_info.is_anonymous:
-                    await store.delete_user(user_info)
+                    await store.delete_user(user_info.id)
 
     async def is_alive(self):
         """Check if the server is alive."""

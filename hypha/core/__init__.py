@@ -87,7 +87,7 @@ class ServiceInfo(BaseModel):
         summary = {
             "name": self.name,
             "type": self.type,
-            "id": self._id,
+            "id": self.id if hasattr(self, "id") else self._id,
             "visibility": self.config.visibility.value,
             "provider": self._provider and self._provider.name,
             "provider_id": self._provider and self._provider.id,

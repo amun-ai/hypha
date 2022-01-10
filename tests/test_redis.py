@@ -41,7 +41,7 @@ async def test_redis_store(event_loop, redis_store):
     await api.log("hello")
     assert len(await api.list_services()) == 2
     assert await api.generate_token()
-    await api.create_workspace(
+    ws = await api.create_workspace(
         dict(
             name="test-2",
             owners=[],
@@ -51,6 +51,7 @@ async def test_redis_store(event_loop, redis_store):
         ),
         overwrite=True,
     )
+    assert ws.config["workspace"] == "test-2"
 
     def echo(data):
         return data
@@ -172,7 +173,7 @@ async def test_websocket_server(
             "_rpromise": True,
         }
     )
-    with pytest.raises(Exception, match=r".*Permission denied for method.*"):
+    with pytest.raises(Exception, match=r".*Permission denied for protected method.*"):
         await remote_echo(123) == 123
 
     wm2 = await connect_to_server(

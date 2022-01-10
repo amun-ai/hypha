@@ -144,7 +144,9 @@ async def test_plugin_runner_workspace(socketio_server):
 
 async def test_workspace(socketio_server):
     """Test the plugin runner."""
-    api = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
+    api = await connect_to_server(
+        {"name": "my plugin", "server_url": WS_SERVER_URL, "method_timeout": 1000}
+    )
     with pytest.raises(
         Exception, match=r".*Scopes must be empty or contains only the workspace name*"
     ):
@@ -159,17 +161,21 @@ async def test_workspace(socketio_server):
             "allow_list": [],
             "deny_list": [],
             "visibility": "protected",  # or public
-        }
+        },
+        overwrite=True,
     )
     await ws.log("hello")
     service_info = await ws.register_service(
         {
+            "id": "test_service",
             "name": "test_service",
             "type": "#test",
+            "add3": lambda x: x + 3,
         }
     )
     service = await ws.get_service(service_info)
     assert service["name"] == "test_service"
+    assert await service.add3(9) == 12
 
     def test(context=None):
         return context
@@ -184,8 +190,7 @@ async def test_workspace(socketio_server):
     )
     service = await ws.get_service(service_info)
     context = await service.test()
-    assert "user_id" in context and "email" in context
-    assert service["name"] == "test_service_2"
+    assert "from" in context and "to" in context and "user" in context
 
     # we should not get it because api is in another workspace
     ss2 = await api.list_services({"type": "#test"})

@@ -38,7 +38,7 @@ class WebsocketRPCConnection:
             self._websocket = await websockets.connect(self._server_url)
             asyncio.ensure_future(self._listen(self._websocket))
         except Exception as exp:
-            if exp.status_code == 403:
+            if hasattr(exp, "status_code") and exp.status_code == 403:
                 raise PermissionError(
                     f"Permission denied for {self._server_url}, error: {exp}"
                 )
