@@ -8,9 +8,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from hypha.core import ClientInfo, UserInfo
 from hypha.core.store import RedisRPCConnection, RedisStore
-from hypha.core.auth import generate_presigned_token, parse_token
+from hypha.core.auth import parse_token
 import shortuuid
-import jose
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket")
