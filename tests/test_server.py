@@ -6,8 +6,8 @@ import asyncio
 
 
 import pytest
-from imjoy_rpc import connect_to_server
-from . import SIO_PORT, SIO_PORT2, SIO_SERVER_URL, find_item
+from hypha.websocket_client import connect_to_server
+from . import SIO_PORT, SIO_PORT2, WS_SERVER_URL, find_item
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
@@ -31,18 +31,17 @@ async def test_connect_to_server(socketio_server):
             await self._ws.log("hello world")
 
     # test workspace is an exception, so it can pass directly
-    ws = await connect_to_server(
-        {"name": "my plugin", "workspace": "public", "server_url": SIO_SERVER_URL}
-    )
-    with pytest.raises(Exception, match=r".*Workspace test does not exist.*"):
-        ws = await connect_to_server(
-            {"name": "my plugin", "workspace": "test", "server_url": SIO_SERVER_URL}
+    # rpc = await connect_to_server(
+    #     {"name": "my plugin", "workspace": "public", "server_url": WS_SERVER_URL}
+    # )
+    with pytest.raises(Exception, match=r".*Permission denied for.*"):
+        rpc = await connect_to_server(
+            {"name": "my plugin", "workspace": "test", "server_url": WS_SERVER_URL}
         )
-    ws = await connect_to_server({"name": "my plugin", "server_url": SIO_SERVER_URL})
-    await ws.export(ImJoyPlugin(ws))
-
-    ws = await connect_to_server({"server_url": SIO_SERVER_URL})
-    assert len(ws.config.name) == 36
+    rpc = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
+    wm = await rpc.get_remote_service("workspace-manager:default")
+    await rpc.register_service(ImJoyPlugin(wm))
+    await wm.log("hello")
 
 
 def test_plugin_runner(socketio_server):
@@ -52,7 +51,7 @@ def test_plugin_runner(socketio_server):
             sys.executable,
             "-m",
             "hypha.runner",
-            f"--server-url=http://127.0.0.1:{SIO_PORT}",
+            f"--server-url={WS_SERVER_URL}",
             "--quit-on-ready",
             os.path.join(os.path.dirname(__file__), "example_plugin.py"),
         ],
@@ -73,7 +72,7 @@ def test_plugin_runner_subpath(socketio_subpath_server):
             sys.executable,
             "-m",
             "hypha.runner",
-            f"--server-url=http://127.0.0.1:{SIO_PORT2}/my/engine",
+            f"--server-url=ws://127.0.0.1:{SIO_PORT2}/my/engine/ws",
             "--quit-on-ready",
             os.path.join(os.path.dirname(__file__), "example_plugin.py"),
         ],
@@ -92,7 +91,7 @@ async def test_plugin_runner_workspace(socketio_server):
     api = await connect_to_server(
         {
             "name": "my second plugin",
-            "server_url": SIO_SERVER_URL,
+            "server_url": WS_SERVER_URL,
         }
     )
     token = await api.generate_token()
@@ -105,7 +104,7 @@ async def test_plugin_runner_workspace(socketio_server):
             sys.executable,
             "-m",
             "hypha.runner",
-            f"--server-url=http://127.0.0.1:{SIO_PORT}",
+            f"--server-url={WS_SERVER_URL}",
             f"--workspace={api.config['workspace']}",
             # f"--token={token}",
             "--quit-on-ready",
@@ -118,7 +117,7 @@ async def test_plugin_runner_workspace(socketio_server):
         assert proc.returncode == 1
         assert err.decode("utf8") == ""
         output = out.decode("utf8")
-        assert "Permission denied for workspace:" in output
+        assert "Permission denied for " in output
 
     # now with the token, it should pass
     with subprocess.Popen(
@@ -126,7 +125,7 @@ async def test_plugin_runner_workspace(socketio_server):
             sys.executable,
             "-m",
             "hypha.runner",
-            f"--server-url=http://127.0.0.1:{SIO_PORT}",
+            f"--server-url={WS_SERVER_URL}",
             f"--workspace={api.config['workspace']}",
             f"--token={token}",
             "--quit-on-ready",
@@ -145,7 +144,7 @@ async def test_plugin_runner_workspace(socketio_server):
 
 async def test_workspace(socketio_server):
     """Test the plugin runner."""
-    api = await connect_to_server({"name": "my plugin", "server_url": SIO_SERVER_URL})
+    api = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
     with pytest.raises(
         Exception, match=r".*Scopes must be empty or contains only the workspace name*"
     ):
@@ -201,7 +200,7 @@ async def test_workspace(socketio_server):
         {
             "name": "my plugin 2",
             "workspace": "test-workspace",
-            "server_url": SIO_SERVER_URL,
+            "server_url": WS_SERVER_URL,
             "token": token,
         }
     )
@@ -256,7 +255,7 @@ async def test_workspace(socketio_server):
 
 async def test_services(socketio_server):
     """Test services."""
-    api = await connect_to_server({"name": "my plugin", "server_url": SIO_SERVER_URL})
+    api = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
 
     token = await api.generate_token()
     assert "@imjoy@" in token
@@ -285,7 +284,7 @@ async def test_services(socketio_server):
     api2 = await connect_to_server(
         {
             "name": "my plugin 2",
-            "server_url": SIO_SERVER_URL,
+            "server_url": WS_SERVER_URL,
             "token": token,
             "workspace": api.config.workspace,
         }

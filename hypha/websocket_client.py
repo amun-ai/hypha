@@ -17,25 +17,35 @@ logger.setLevel(logging.INFO)
 class WebsocketRPCConnection:
     """Represent a websocket connection."""
 
-    def __init__(self, url, client_id, workspace=None, token=None):
+    def __init__(self, server_url, client_id, workspace=None, token=None):
         """Set up instance."""
         self._websocket = None
         self._handle_message = None
-        assert url and client_id
-        url = url + f"/ws?client_id={client_id}"
+        assert server_url and client_id
+        server_url = server_url + f"?client_id={client_id}"
         if workspace is not None:
-            url += f"&workspace={workspace}"
+            server_url += f"&workspace={workspace}"
         if token:
-            url += f"&token={token}"
-        self._url = url
+            server_url += f"&token={token}"
+        self._server_url = server_url
 
     def on_message(self, handler):
         self._handle_message = handler
         self._is_async = inspect.iscoroutinefunction(handler)
 
     async def open(self):
-        self._websocket = await websockets.connect(self._url)
-        asyncio.ensure_future(self._listen(self._websocket))
+        try:
+            self._websocket = await websockets.connect(self._server_url)
+            asyncio.ensure_future(self._listen(self._websocket))
+        except Exception as exp:
+            if exp.status_code == 403:
+                raise PermissionError(
+                    f"Permission denied for {self._server_url}, error: {exp}"
+                )
+            else:
+                raise Exception(
+                    f"Failed to connect to {self._server_url}, error: {exp}"
+                )
 
     async def emit_message(self, data):
         assert self._handle_message is not None, "No handler for message"
@@ -69,24 +79,26 @@ class WebsocketRPCConnection:
             await ws.close(code=1000)
 
 
-async def connect_to_server(
-    url: str,
-    client_id: str = None,
-    workspace: str = None,
-    token: str = None,
-    method_timeout=10,
-):
+async def connect_to_server(config):
     """Connect to RPC via a websocket server."""
+    client_id = config.get("client_id")
     if client_id is None:
         client_id = shortuuid.uuid()
     connection = WebsocketRPCConnection(
-        url, client_id, workspace=workspace, token=token
+        config["server_url"],
+        client_id,
+        workspace=config.get("workspace"),
+        token=config.get("token"),
     )
+    await connection.open()
     rpc = RPC(
         connection,
         client_id=client_id,
+        name=config.get("name"),
         root_target_id="workspace-manager",
         default_context={"connection_type": "websocket"},
-        method_timeout=method_timeout,
+        method_timeout=config.get("method_timeout"),
     )
-    return rpc
+    wm = await rpc.get_remote_service("workspace-manager:default")
+    wm.rpc = rpc
+    return wm

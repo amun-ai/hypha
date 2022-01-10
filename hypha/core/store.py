@@ -87,27 +87,19 @@ class WorkspaceManager:
     _managers = {}
 
     @staticmethod
-    def get_manager(workspace: str, redis: Redis):
+    def get_manager(workspace: str, redis: Redis, root_user: UserInfo):
         if workspace in WorkspaceManager._managers:
             return WorkspaceManager._managers[workspace]
         else:
-            return WorkspaceManager(workspace, redis)
+            return WorkspaceManager(workspace, redis, root_user)
 
-    def __init__(self, workspace: str, redis: Redis):
+    def __init__(self, workspace: str, redis: Redis, root_user: UserInfo):
         self._redis = redis
         self._workspace = workspace
         self._initialized = False
         self._rpc = None
         self._workspace_info = None
-        self._root_user = UserInfo(
-            id="root",
-            is_anonymous=False,
-            email=None,
-            parent=None,
-            roles=[],
-            scopes=[],
-            expires_at=None,
-        )
+        self._root_user = root_user
         WorkspaceManager._managers[workspace] = self
 
     async def setup(
@@ -132,7 +124,9 @@ class WorkspaceManager:
                 )
 
         # Register an client as root
-        await self.register_client(ClientInfo(id=client_id, user_info=self._root_user))
+        await self.register_client(
+            ClientInfo(id=client_id, user_info=self._root_user.dict())
+        )
         rpc = await self.create_rpc(client_id)
 
         def save_client_info(_):
@@ -173,10 +167,12 @@ class WorkspaceManager:
         if not overwrite and await self._redis.hexists("workspaces", workspace.name):
             raise Exception(f"Workspace {workspace.name} already exists.")
         await self._redis.hset("workspaces", workspace.name, workspace.json())
-        manager = WorkspaceManager.get_manager(workspace.name, self._redis)
+        manager = WorkspaceManager.get_manager(
+            workspace.name, self._redis, self._root_user
+        )
         await manager.setup()
 
-    def generate_token(
+    async def generate_token(
         self, config: Optional[dict] = None, context: Optional[dict] = None
     ):
         """Generate a token for the current workspace."""
@@ -186,7 +182,7 @@ class WorkspaceManager:
             raise Exception("Scopes must be empty or contains only the workspace name.")
         config["scopes"] = [self._workspace]
         token_config = TokenConfig.parse_obj(config)
-        if not self.check_permission(user_info):
+        if not await self.check_permission(user_info):
             raise PermissionError(
                 f"User has no permission to workspace: {self._workspace}"
             )
@@ -286,7 +282,7 @@ class WorkspaceManager:
             raise Exception("Please specify the service id or name to get the service")
         return service_api
 
-    def check_permission(self, user_info: UserInfo):
+    async def check_permission(self, user_info: UserInfo):
         """Check user permission for the workspace."""
         # pylint: disable=too-many-return-statements
         workspace = self._workspace_info
@@ -303,10 +299,11 @@ class WorkspaceManager:
             return True
 
         if user_info.parent:
-            parent = self._all_users.get(user_info.parent)
+            parent = await self._redis.hget(f"users", user_info.parent)
             if not parent:
                 return False
-            if not self.check_permission(workspace, parent):
+            parent = UserInfo.parse_obj(json.loads(parent.decode()))
+            if not await self.check_permission(parent):
                 return False
             # if the parent has access
             # and the workspace is in the scopes
@@ -338,7 +335,7 @@ class WorkspaceManager:
         interface = {
             "id": service_id,
             "name": service_name or service_id,
-            "config": {"require_context": True},
+            "config": {"require_context": True, "workspace": self._workspace},
             "log": self.log,
             "update_client_info": self.update_client_info,
             "listServices": self.list_services,
@@ -370,6 +367,36 @@ class RedisStore:
             uri = os.path.join(tempfile.mkdtemp(), "redis.db")
         Redis(uri, serverconfig={"port": str(port)})
         self._redis = aioredis.from_url(f"redis://127.0.0.1:{port}/0")
+        self._root_user = None
+
+    async def setup_root_user(self):
+        if not self._root_user:
+            self._root_user = UserInfo(
+                id="root",
+                is_anonymous=False,
+                email=None,
+                parent=None,
+                roles=[],
+                scopes=[],
+                expires_at=None,
+            )
+            await self.register_user(self._root_user)
+        return self._root_user
+
+    async def register_user(self, user_info: UserInfo):
+        """Register a user."""
+        await self._redis.hset(f"users", user_info.id, user_info.json())
+
+    async def get_user(self, user_id: str):
+        """Get a user."""
+        user_info = await self._redis.hget(f"users", user_id)
+        if user_info is None:
+            return None
+        return UserInfo.parse_obj(json.loads(user_info.decode()))
+
+    async def delete_user(self, user_id: str):
+        """Delete a user."""
+        await self._redis.hdel(f"users", user_id)
 
     async def register_workspace(self, workspace: dict, overwrite=False):
         """Add a workspace."""
@@ -377,7 +404,9 @@ class RedisStore:
         if not overwrite and await self._redis.hexists("workspaces", workspace.name):
             raise Exception(f"Workspace {workspace.name} already exists.")
         await self._redis.hset("workspaces", workspace.name, workspace.json())
-        manager = WorkspaceManager.get_manager(workspace.name, self._redis)
+        manager = WorkspaceManager.get_manager(
+            workspace.name, self._redis, await self.setup_root_user()
+        )
         await manager.setup()
 
     async def clear_workspace(self, workspace: str):
@@ -387,7 +416,9 @@ class RedisStore:
 
     async def get_workspace_manager(self, workspace: str):
         """Get a workspace manager."""
-        manager = WorkspaceManager.get_manager(workspace, self._redis)
+        manager = WorkspaceManager.get_manager(
+            workspace, self._redis, await self.setup_root_user()
+        )
         await manager.setup()
         return manager
 
@@ -396,7 +427,10 @@ class RedisStore:
     ):
         """Connect to a workspace."""
         manager = await self.get_workspace_manager(workspace)
-        return await manager.create_rpc(client_id, default_context=default_context)
+        rpc = await manager.create_rpc(client_id, default_context=default_context)
+        wm = await rpc.get_remote_service("workspace-manager:default")
+        wm.rpc = rpc
+        return wm
 
     async def get_all_workspaces(self):
         """Get all workspaces."""

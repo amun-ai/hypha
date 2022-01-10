@@ -109,8 +109,9 @@ class RPC(MessageEmitter):
         client_id=None,
         root_target_id=None,
         default_context=None,
+        name=None,
         codecs=None,
-        method_timeout=10,
+        method_timeout=None,
         max_message_buffer_size=0,
     ):
         """Set up instance."""
@@ -120,14 +121,16 @@ class RPC(MessageEmitter):
         self.work_dir = os.getcwd()
         self.abort = threading.Event()
         assert client_id and isinstance(client_id, str)
+        assert client_id is not None, "client_id is required"
         self._client_id = client_id
+        self._name = name or client_id
         self.root_target_id = root_target_id
         self.default_context = default_context or {}
         self._method_annotations = weakref.WeakKeyDictionary()
         self._remote_root_service = None
         self._max_message_buffer_size = max_message_buffer_size
         self._chunk_store = {}
-        self._method_timeout = method_timeout
+        self._method_timeout = 10 if method_timeout is None else method_timeout
         self._remote_logger = dotdict({"info": self._log, "error": self._error})
         super().__init__(self._remote_logger)
         try:
@@ -406,7 +409,12 @@ class RPC(MessageEmitter):
                 {"service_id": service["id"], "api": service, "type": "add"},
             )
             await self._notify_service_update()
-        return service
+        return {
+            "id": f'{self._client_id}:{service["id"]}',
+            "type": service["type"],
+            "name": service["name"],
+            "config": service["config"],
+        }
 
     async def unregister_service(self, service, notify=True):
         """Register a service."""

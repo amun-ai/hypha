@@ -95,7 +95,7 @@ def start_builtin_services(
     def norm_url(url):
         return args.base_path.rstrip("/") + url
 
-    WebsocketServer(core_interface)
+    WebsocketServer(core_interface, path=norm_url("/ws"))
 
     HTTPProxy(core_interface)
     if args.triton_servers:

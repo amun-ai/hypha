@@ -62,6 +62,7 @@ class WebsocketServer:
                     scopes=[],
                     expires_at=None,
                 )
+                await store.register_user(user_info)
                 logger.info("Anonymized User connected: %s", uid)
 
             if workspace is None:
@@ -78,7 +79,7 @@ class WebsocketServer:
                 )
 
             workspace_manager = await store.get_workspace_manager(workspace)
-            if not workspace_manager.check_permission(user_info):
+            if not await workspace_manager.check_permission(user_info):
                 logger.error(
                     "Permission denied (client: %s, workspace: %s)",
                     client_id,
@@ -121,6 +122,8 @@ class WebsocketServer:
                     )
             finally:
                 await workspace_manager.delete_client(client_id)
+                if user_info.is_anonymous:
+                    await store.delete_user(user_info)
 
     async def is_alive(self):
         """Check if the server is alive."""

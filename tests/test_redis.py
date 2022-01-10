@@ -35,7 +35,8 @@ async def test_redis_store(event_loop, redis_store):
     assert workspace_info.name == "test"
     assert "test" in await redis_store.list_workspace()
 
-    rpc = await redis_store.connect_to_workspace("test", client_id="test-plugin-1")
+    wm = await redis_store.connect_to_workspace("test", client_id="test-plugin-1")
+    rpc = wm.rpc
     api = await rpc.get_remote_service("workspace-manager:default")
     await api.log("hello")
     assert len(await api.list_services()) == 2
@@ -63,7 +64,8 @@ async def test_redis_store(event_loop, redis_store):
     }
     await rpc.register_service(interface)
 
-    rpc = await redis_store.connect_to_workspace("test", client_id="test-plugin-2")
+    wm = await redis_store.connect_to_workspace("test", client_id="test-plugin-2")
+    rpc = wm.rpc
     service = await rpc.get_remote_service("test-plugin-1:test-service")
 
     assert callable(service.echo)
@@ -90,15 +92,16 @@ async def test_websocket_server(
         ),
         overwrite=True,
     )
-    rpc = await connect_to_server(
-        url=f"ws://127.0.0.1:{SIO_PORT}",
-        workspace="test-workspace",
-        client_id="test-plugin-1",
-        token=test_user_token,
+    wm = await connect_to_server(
+        dict(
+            server_url=f"ws://127.0.0.1:{SIO_PORT}/ws",
+            workspace="test-workspace",
+            client_id="test-plugin-1",
+            token=test_user_token,
+        )
     )
-
-    wm = await rpc.get_remote_service("workspace-manager:default")
     await wm.log("hello")
+    rpc = wm.rpc
 
     def echo(data):
         return data
@@ -137,7 +140,8 @@ async def test_websocket_server(
     assert await svc.echo("hello") == "hello"
 
     # Get public service from another workspace
-    rpc3 = await connect_to_server(url=f"ws://127.0.0.1:{SIO_PORT}")
+    wm3 = await connect_to_server({"server_url": f"ws://127.0.0.1:{SIO_PORT}/ws"})
+    rpc3 = wm3.rpc
     svc7 = await rpc3.get_remote_service("test-workspace/test-plugin-1:test-service")
     assert await svc7.square(9) == 81
 
@@ -171,13 +175,16 @@ async def test_websocket_server(
     with pytest.raises(Exception, match=r".*Permission denied for method.*"):
         await remote_echo(123) == 123
 
-    rpc2 = await connect_to_server(
-        url=f"ws://127.0.0.1:{SIO_PORT}",
-        workspace="test-workspace",
-        client_id="test-plugin-2",
-        token=test_user_token,
-        method_timeout=3,
+    wm2 = await connect_to_server(
+        dict(
+            server_url=f"ws://127.0.0.1:{SIO_PORT}/ws",
+            workspace="test-workspace",
+            client_id="test-plugin-2",
+            token=test_user_token,
+            method_timeout=3,
+        )
     )
+    rpc2 = wm2.rpc
 
     svc2 = await rpc2.get_remote_service("test-plugin-1:test-service")
     assert await svc2.echo("hello") == "hello"
@@ -199,9 +206,10 @@ async def test_websocket_server(
     ):
         assert await svc4.add_one(99) == 100
 
-    svc5 = await rpc2.register_service(
+    svc5_info = await rpc2.register_service(
         {"add_one": lambda x: x + 1, "inner": {"square": lambda y: y ** 2}}
     )
+    svc5 = await rpc2.get_remote_service(svc5_info["id"])
     svc6 = await svc2.echo(svc5)
     assert await svc6.add_one(99) == 100
     assert await svc6.inner.square(10) == 100
