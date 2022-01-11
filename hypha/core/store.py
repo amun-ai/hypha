@@ -215,7 +215,9 @@ class WorkspaceManager:
         service["config"]["workspace"] = self._workspace
         service = await sv.register_service(service, **kwargs)
         source_workspace = context["from"].split("/")[0]
-        assert source_workspace == self._workspace, "Service must be registered in the same workspace"
+        assert (
+            source_workspace == self._workspace
+        ), "Service must be registered in the same workspace"
         assert "/" not in service["id"], "Service id must not contain '/'"
         service["id"] = self._workspace + "/" + service["id"]
         return service
@@ -259,9 +261,7 @@ class WorkspaceManager:
         ), f"Failed to get client info for {self._workspace}/{client_id}"
         return client_info and json.loads(client_info.decode())
 
-    async def list_clients(
-        self, context: Optional[dict] = None
-    ):
+    async def list_clients(self, context: Optional[dict] = None):
         user_info = UserInfo.parse_obj(context["user"])
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
@@ -392,7 +392,8 @@ class WorkspaceManager:
                     )
                     await manager.setup()
                     return await manager.get_service(query["id"], context=context)
-            query["id"] = self._workspace + "/" + query["id"]
+            if "/" not in query["id"]:
+                query["id"] = self._workspace + "/" + query["id"]
             rpc = await self.get_rpc()
             service_api = await rpc.get_remote_service(query["id"])
         elif "name" in query:
@@ -404,9 +405,7 @@ class WorkspaceManager:
                 raise Exception(f"Service not found: {query['name']}")
             service_info = random.choice(services)
             rpc = await self.get_rpc()
-            service_api = await rpc.get_remote_service(
-                service_info["id"]
-            )
+            service_api = await rpc.get_remote_service(service_info["id"])
         else:
             raise Exception("Please specify the service id or name to get the service")
         return service_api
@@ -469,9 +468,7 @@ class WorkspaceManager:
         return False
 
     async def get_workspace(self, workspace: str, context=None):
-        manager = WorkspaceManager.get_manager(
-            workspace, self._redis, self._root_user
-        )
+        manager = WorkspaceManager.get_manager(workspace, self._redis, self._root_user)
         await manager.setup()
         user_info = UserInfo.parse_obj(context["user"])
         if not await manager.check_permission(user_info):
@@ -479,17 +476,15 @@ class WorkspaceManager:
         rpc = await manager.get_rpc()
         wm = await rpc.get_remote_service(workspace + "/workspace-manager:default")
         return wm
-    
+
     async def _update_workspace(self, config: dict, context=None):
         """Update the workspace config."""
         user_info = UserInfo.parse_obj(context["user"])
         if not self.check_permission(user_info):
             raise PermissionError(f"Permission denied for workspace {self._workspace}")
-        
+
         workspace_info = await self._redis.hget("workspaces", self._workspace)
-        workspace = WorkspaceInfo.parse_obj(
-            json.loads(workspace_info.decode())
-        )
+        workspace = WorkspaceInfo.parse_obj(json.loads(workspace_info.decode()))
         if "name" in config:
             raise Exception("Changing workspace name is not allowed.")
 
@@ -612,9 +607,7 @@ class RedisStore:
         await manager.setup()
         return manager
 
-    async def connect_to_workspace(
-        self, workspace: str, client_id: str
-    ):
+    async def connect_to_workspace(self, workspace: str, client_id: str):
         """Connect to a workspace."""
         manager = await self.get_workspace_manager(workspace)
         await manager.setup(client_id=client_id)

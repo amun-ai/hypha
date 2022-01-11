@@ -145,7 +145,12 @@ async def test_plugin_runner_workspace(socketio_server):
 async def test_workspace(socketio_server):
     """Test the plugin runner."""
     api = await connect_to_server(
-        {"client_id": "my-plugin", "name": "my plugin", "server_url": WS_SERVER_URL, "method_timeout": 1000}
+        {
+            "client_id": "my-plugin",
+            "name": "my plugin",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 1000,
+        }
     )
     await api.log("hi")
     with pytest.raises(
@@ -166,7 +171,9 @@ async def test_workspace(socketio_server):
         overwrite=True,
     )
     await ws.log("hello")
-    with pytest.raises(Exception, match=r".*Services can only be registered from the same workspace.*"):
+    with pytest.raises(
+        Exception, match=r".*Services can only be registered from the same workspace.*"
+    ):
         service_info = await ws.register_service(
             {
                 "id": "test_service",
@@ -178,8 +185,6 @@ async def test_workspace(socketio_server):
 
     def test(context=None):
         return context
-
-    
 
     # we should not get it because api is in another workspace
     ss2 = await api.list_services({"type": "#test"})
