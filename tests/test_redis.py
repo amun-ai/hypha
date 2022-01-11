@@ -3,17 +3,11 @@ import time
 import numpy as np
 import pytest
 
-from hypha.core.store import RedisStore
 from hypha.websocket_client import connect_to_server
 
 from . import SIO_PORT, find_item
 
 pytestmark = pytest.mark.asyncio
-
-
-@pytest.fixture(scope="session", autouse=True)
-def redis_store():
-    yield RedisStore.get_instance()
 
 
 async def test_redis_store(event_loop, redis_store):

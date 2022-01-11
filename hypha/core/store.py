@@ -120,24 +120,8 @@ class WorkspaceManager:
             return
         await self.get_workspace_info()
         if await self.check_client_exists(client_id):
-            # try to determine whether the client is still alive
-            rpc = await self.create_rpc(client_id + "-" + shortuuid.uuid())
-            try:
-                svc = await rpc.get_remote_service(
-                    f"{self._workspace}/{client_id}:{service_id}", timeout=5
-                )
-                assert svc is not None
-                self._rpc = rpc
-                self._initialized = True
-                # return directly without creating the client
-                return
-            except Exception:  # pylint: disable=broad-except
-                logger.info(
-                    "Failed to create workspace manager for %s, another client with the same id (%s) exists but not responding.",
-                    self._workspace,
-                    client_id,
-                )
-
+            raise Exception(f"Another workspace-manager already exists")
+      
         # Register an client as root
         await self.register_client(
             ClientInfo(id=client_id, user_info=self._root_user.dict())
@@ -356,6 +340,7 @@ class WorkspaceManager:
     async def create_rpc(self, client_id: str, default_context=None):
         """Create a rpc for the workspace."""
         assert "/" not in client_id
+        logger.info("Creating RPC for client %s", client_id)
         connection = RedisRPCConnection(
             self._redis, self._workspace, client_id, self._root_user
         )
@@ -546,7 +531,7 @@ class RedisStore:
             RedisStore._store = RedisStore()
         return RedisStore._store
 
-    def __init__(self, uri="/tmp/redis.db", port=6381):
+    def __init__(self, uri="/tmp/redis.db", port=6383):
         """Set up the redis store."""
         if uri is None:
             uri = os.path.join(tempfile.mkdtemp(), "redis.db")

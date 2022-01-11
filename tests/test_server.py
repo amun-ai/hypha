@@ -13,7 +13,7 @@ from . import SIO_PORT, SIO_PORT2, WS_SERVER_URL, find_item
 pytestmark = pytest.mark.asyncio
 
 
-async def test_connect_to_server(socketio_server):
+async def test_connect_to_server(redis_store, socketio_server):
     """Test connecting to the server."""
 
     class ImJoyPlugin:
@@ -44,7 +44,7 @@ async def test_connect_to_server(socketio_server):
     await wm.log("hello")
 
 
-def test_plugin_runner(socketio_server):
+def test_plugin_runner(redis_store, socketio_server):
     """Test the plugin runner."""
     with subprocess.Popen(
         [
@@ -86,7 +86,7 @@ def test_plugin_runner_subpath(socketio_subpath_server):
         assert "echo: a message" in output
 
 
-async def test_plugin_runner_workspace(socketio_server):
+async def test_plugin_runner_workspace(redis_store, socketio_server):
     """Test the plugin runner with workspace."""
     api = await connect_to_server(
         {
@@ -142,7 +142,7 @@ async def test_plugin_runner_workspace(socketio_server):
         assert "echo: a message" in output
 
 
-async def test_workspace(socketio_server):
+async def test_workspace(redis_store, socketio_server):
     """Test the plugin runner."""
     api = await connect_to_server(
         {
@@ -223,8 +223,7 @@ async def test_workspace(socketio_server):
     await api2.export({"foo": "bar"})
     services = api2.rpc.get_all_local_services()
     clients = await api2.list_clients()
-    # assert "my-plugin-2" in clients
-    # assert "my-plugin" in clients # The service provider of the workspace
+    assert "my-plugin-2" in clients
     ss3 = await api2.list_services({"type": "#test"})
     assert len(ss3) == 1
 
@@ -269,7 +268,7 @@ async def test_workspace(socketio_server):
     await api.disconnect()
 
 
-async def test_services(socketio_server):
+async def test_services(redis_store, socketio_server):
     """Test services."""
     api = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
 

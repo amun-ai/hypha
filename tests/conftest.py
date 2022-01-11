@@ -15,6 +15,7 @@ from requests import RequestException
 from hypha.core import TokenConfig, UserInfo, auth
 from hypha.core.auth import generate_presigned_token
 from hypha.minio import setup_minio_executables
+from hypha.core.store import RedisStore
 
 from . import (
     MINIO_PORT,
@@ -36,6 +37,13 @@ def event_loop(request):
     loop = asyncio.get_event_loop_policy().new_event_loop()
     yield loop
     loop.close()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def redis_store():
+    if os.path.exists("/tmp/redis.db"):
+        os.remove("/tmp/redis.db")
+    yield RedisStore.get_instance()
 
 
 @pytest.fixture(name="test_user_token", scope="session")
@@ -63,8 +71,6 @@ def generate_authenticated_user():
 @pytest.fixture(name="socketio_server", scope="session")
 def socketio_server_fixture(minio_server):
     """Start server as test fixture and tear down after test."""
-    if os.path.exists("/tmp/redis.db"):
-        os.remove("/tmp/redis.db")
     with subprocess.Popen(
         [
             sys.executable,

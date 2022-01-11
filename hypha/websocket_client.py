@@ -72,11 +72,11 @@ class WebsocketRPCConnection:
         except websockets.exceptions.ConnectionClosedOK:
             pass
 
-    async def disconnect(self, reason=None):
+    def disconnect(self, reason=None):
         ws = self._websocket
         self._websocket = None
         if ws and not ws.closed:
-            await ws.close(code=1000)
+            asyncio.ensure_future(ws.close(code=1000))
 
 
 async def connect_to_server(config):
