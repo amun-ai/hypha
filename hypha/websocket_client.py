@@ -72,7 +72,7 @@ class WebsocketRPCConnection:
         except websockets.exceptions.ConnectionClosedOK:
             pass
 
-    async def disconnect(self):
+    async def disconnect(self, reason=None):
         ws = self._websocket
         self._websocket = None
         if ws and not ws.closed:
@@ -103,7 +103,15 @@ async def connect_to_server(config):
     wm.rpc = rpc
 
     def export(api):
-        return asyncio.ensure_future(rpc.register_service(api))
+        return asyncio.ensure_future(rpc.register_service(api, overwrite=True))
+
+    async def get_plugin(query):
+        if isinstance(query, str):
+            query = {"name": query}
+        return await wm.get_service(query)
 
     wm.export = export
+    wm.get_plugin = get_plugin
+    wm.list_plugins = wm.list_services
+    wm.disconnect = rpc.disconnect
     return wm

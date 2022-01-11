@@ -118,12 +118,11 @@ class RPC(MessageEmitter):
         self.manager_api = {}
         self._store = ReferenceStore()
         self._codecs = codecs or {}
-        self.work_dir = os.getcwd()
         self.abort = threading.Event()
         assert client_id and isinstance(client_id, str)
         assert client_id is not None, "client_id is required"
         self._client_id = client_id
-        self._name = name or client_id
+        self._name = name
         self.root_target_id = root_target_id
         self.default_context = default_context or {}
         self._method_annotations = weakref.WeakKeyDictionary()
@@ -148,7 +147,7 @@ class RPC(MessageEmitter):
                 "id": "built-in",
                 "type": "built-in",
                 "name": "RPC built-in services",
-                "config": {"require_context": True, "visibility": "protected"},
+                "config": {"require_context": True, "visibility": "public"},
                 "ping": self._ping,
                 "get_service": self.get_local_service,
                 "register_service": self.register_service,
@@ -271,16 +270,15 @@ class RPC(MessageEmitter):
         self._services = {}
         self._store = ReferenceStore()
 
-    def disconnect(self):
+    async def disconnect(self):
         """Disconnect."""
         self._fire("disconnect")
 
     async def get_remote_root_service(self, timeout=None):
-        if self.root_target_id:
+        if self.root_target_id and not self._remote_root_service:
             self._remote_root_service = await self.get_remote_service(
                 service_uri=f"{self.root_target_id}:default", timeout=timeout
             )
-            return self._remote_root_service
 
     def get_all_local_services(self):
         """Get all the local services."""
@@ -333,7 +331,6 @@ class RPC(MessageEmitter):
         require_context=False,
         run_in_executor=False,
         visibility="protected",
-        workspace=None,
     ):
         if isinstance(a_object, (dict, list, tuple)):
             items = (
@@ -373,7 +370,6 @@ class RPC(MessageEmitter):
                 "run_in_executor": run_in_executor,
                 "method_id": "services." + object_id,
                 "visibility": visibility,
-                "workspace": workspace,
             }
 
     def add_service(self, api, overwrite=False):
@@ -400,7 +396,7 @@ class RPC(MessageEmitter):
             raise Exception("Invalid service object type: {}".format(type(api)))
 
         if "id" not in api:
-            api["id"] = api.get("name", "default").replace(" ", "_")
+            api["id"] = api.get("name", self._name or "default")
 
         if "name" not in api:
             api["name"] = api["id"]
@@ -419,14 +415,12 @@ class RPC(MessageEmitter):
             run_in_executor = True
         visibility = api["config"].get("visibility", "protected")
         assert visibility in ["protected", "public"]
-        workspace = api["config"].get("workspace")
         self._annotate_service_methods(
             api,
             api["id"],
             require_context=require_context,
             run_in_executor=run_in_executor,
             visibility=visibility,
-            workspace=workspace,
         )
         if not overwrite and api["id"] in self._services:
             raise Exception(
@@ -439,10 +433,12 @@ class RPC(MessageEmitter):
     async def register_service(self, api, overwrite=False, notify=True, context=None):
         """Register a service."""
         if context is not None:
+            # If this function is called from remote, we need to make sure
+            current_workspace, client_id = context["to"].split("/")
             assert (
-                context["to"] == self._client_id
-                or context["to"].split("/")[1] == self._client_id
+                client_id == self._client_id
             )
+            assert current_workspace == context["from"].split("/")[0], "Services can only be registered from the same workspace"
         service = self.add_service(api, overwrite=overwrite)
         if notify:
             self._fire(
@@ -791,10 +787,11 @@ class RPC(MessageEmitter):
                 return resolve(result)
 
     async def _notify_service_update(self):
-        if not self._remote_root_service and self.root_target_id:
+        if self.root_target_id:
             # try to get the root service
             try:
                 await self.get_remote_root_service(timeout=5.0)
+                assert self._remote_root_service
                 await self._remote_root_service.update_client_info(
                     self.get_client_info()
                 )
@@ -879,15 +876,14 @@ class RPC(MessageEmitter):
 
             # Check permission
             if method in self._method_annotations:
-                method_workspace = self._method_annotations[method].get("workspace") or local_workspace
                 # For services, it should not be protected
                 if (
                     self._method_annotations[method].get("visibility", "protected")
                     == "protected"
                 ):
-                    if method_workspace != remote_workspace:
+                    if local_workspace != remote_workspace:
                         raise PermissionError(
-                            f"Permission denied for protected method {method_name}, workspace mismatch: {method_workspace} != {remote_workspace}"
+                            f"Permission denied for protected method {method_name}, workspace mismatch: {local_workspace} != {remote_workspace}"
                         )
             else:
                 # For sessions, the target_id should match exactly

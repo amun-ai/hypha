@@ -77,8 +77,12 @@ class WebsocketServer:
                     ),
                     overwrite=False,
                 )
-
-            workspace_manager = await store.get_workspace_manager(workspace)
+            try:
+                workspace_manager = await store.get_workspace_manager(workspace)
+            except Exception as exp:
+                logger.error("Failed to get workspace manager %s, error: %s", workspace, exp)
+                await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
+                return
             if not await workspace_manager.check_permission(user_info):
                 logger.error(
                     "Permission denied (client: %s, workspace: %s)",

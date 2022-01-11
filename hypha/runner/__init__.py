@@ -25,7 +25,7 @@ async def export_service(plugin_api, config, imjoy_rpc):
         remote_api = await rpc.get_remote_service("workspace-manager:default")
         imjoy_rpc.api.update(remote_api)
         imjoy_rpc.api.register_service = rpc.register_service
-        svc = await rpc.get_remote_service(rpc._client_id + ":default")
+        svc = await rpc.get_remote_service(rpc._client_id + ":" + rpc._name)
         await svc.setup()
     except Exception as exp:
         logger.exception(exp)

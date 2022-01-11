@@ -41,6 +41,7 @@ class RedisRPCConnection:
         self._handle_message = None
         self._workspace = workspace
         self._client_id = client_id
+        assert "/" not in client_id
         self._user_info = user_info.dict()
 
     def on_message(self, handler: Callable):
@@ -70,7 +71,7 @@ class RedisRPCConnection:
         data = msgpack.packb(message) + data[pos:]
         await self._redis.publish(f"{target_id}:msg", data)
 
-    async def disconnect(self):
+    async def disconnect(self, reason=None):
         pass
 
     async def _subscribe_redis(self):
@@ -115,15 +116,19 @@ class WorkspaceManager:
         service_id="default",
         service_name="Default workspace management service",
     ):
+        if self._rpc and client_id == self._rpc._client_id:
+            return
         await self.get_workspace_info()
         if await self.check_client_exists(client_id):
             # try to determine whether the client is still alive
             rpc = await self.create_rpc(client_id + "-" + shortuuid.uuid())
             try:
                 svc = await rpc.get_remote_service(
-                    f"{self._workspace}/{client_id}:{service_id}", timeout=1
+                    f"{self._workspace}/{client_id}:{service_id}", timeout=5
                 )
                 assert svc is not None
+                self._rpc = rpc
+                self._initialized = True
                 # return directly without creating the client
                 return
             except Exception:  # pylint: disable=broad-except
@@ -157,7 +162,9 @@ class WorkspaceManager:
         self._rpc = rpc
         self._initialized = True
 
-    def get_rpc(self):
+    async def get_rpc(self, workspace=None):
+        if not self._rpc:
+            await self.setup()
         return self._rpc
 
     async def create_workspace(
@@ -187,7 +194,7 @@ class WorkspaceManager:
             workspace.name, self._redis, self._root_user
         )
         await manager.setup()
-        rpc = manager.get_rpc()
+        rpc = await manager.get_rpc()
         # Remove the client if it's not responding
         for client_id in await manager.list_clients(context=context):
             try:
@@ -202,21 +209,15 @@ class WorkspaceManager:
         user_info = UserInfo.parse_obj(context["user"])
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
-        sv = await self._rpc.get_remote_service(context["from"] + ":built-in")
+        rpc = await self.get_rpc()
+        sv = await rpc.get_remote_service(context["from"] + ":built-in")
         service["config"] = service.get("config", {})
         service["config"]["workspace"] = self._workspace
         service = await sv.register_service(service, **kwargs)
-        if "/" not in service["id"]:
-            # The source workspace might be different
-            source_workspace = context["from"].split("/")[0]
-            service["id"] = source_workspace + "/" + service["id"]
-        
-        # add the client to the workspace
-        await self.register_client(
-            ClientInfo(id=context["from"],
-            user_info=context["user"]
-        ))
-
+        source_workspace = context["from"].split("/")[0]
+        assert source_workspace == self._workspace, "Service must be registered in the same workspace"
+        assert "/" not in service["id"], "Service id must not contain '/'"
+        service["id"] = self._workspace + "/" + service["id"]
         return service
 
     async def generate_token(
@@ -247,10 +248,11 @@ class WorkspaceManager:
         assert client_info["id"] == client_id
         assert ws == self._workspace
         client_info["user_info"] = user_info
-        client_info["id"] = context["from"]
+        client_info["id"] = client_id
         await self.register_client(ClientInfo.parse_obj(client_info))
 
     async def get_client_info(self, client_id):
+        assert "/" not in client_id
         client_info = await self._redis.hget(f"{self._workspace}:clients", client_id)
         assert (
             client_info is not None
@@ -270,6 +272,7 @@ class WorkspaceManager:
         self, query: Optional[dict] = None, context: Optional[dict] = None
     ):
         """Return a list of services based on the query."""
+        assert context is not None
         # if workspace is not set, then it means current workspace
         # if workspace = *, it means search globally
         # otherwise, it search the specified workspace
@@ -326,14 +329,6 @@ class WorkspaceManager:
             try:
                 client_info = await self.get_client_info(client_id)
                 for sinfo in client_info["services"]:
-                    # If the service does not belong to the workspace, skip it
-                    if (
-                        sinfo.get("config")
-                        and sinfo["config"].get("workspace", self._workspace)
-                        != self._workspace
-                    ):
-                        logger.info("Skipping service %s: %s", sinfo["id"], sinfo["config"])
-                        continue
                     service_list.append(ServiceInfo.parse_obj(sinfo))
             # make sure we don't throw if a client is removed
             except Exception:  # pylint: disable=broad-except
@@ -342,26 +337,25 @@ class WorkspaceManager:
 
     async def register_client(self, client_info: ClientInfo):
         """Add a client."""
-        if "/" not in client_info.id:
-            client_info.id = self._workspace + "/" + client_info.id
+        assert "/" not in client_info.id
         await self._redis.hset(
             f"{self._workspace}:clients", client_info.id, client_info.json()
         )
 
     async def check_client_exists(self, client_id: str):
         """Check if a client exists."""
-        if "/" not in client_id:
-            client_id = self._workspace + "/" + client_id
+        assert "/" not in client_id
+        client_id = client_id
         return await self._redis.hexists(f"{self._workspace}:clients", client_id)
 
     async def delete_client(self, client_id: str):
         """Delete a client."""
-        if "/" not in client_id:
-            client_id = self._workspace + "/" + client_id
+        # assert "/" not in client_id
         await self._redis.hdel(f"{self._workspace}:clients", client_id)
 
     async def create_rpc(self, client_id: str, default_context=None):
         """Create a rpc for the workspace."""
+        assert "/" not in client_id
         connection = RedisRPCConnection(
             self._redis, self._workspace, client_id, self._root_user
         )
@@ -385,9 +379,7 @@ class WorkspaceManager:
         return self._workspace_info
 
     async def get_service(self, query, context=None):
-        user_info = UserInfo.parse_obj(context["user"])
-        if not await self.check_permission(user_info):
-            raise Exception(f"Permission denied for workspace {self._workspace}.")
+        # Note: No authorization required because the access is controlled by the client itself
         if isinstance(query, str):
             query = {"id": query}
 
@@ -398,16 +390,22 @@ class WorkspaceManager:
                     manager = WorkspaceManager.get_manager(
                         workspace, self._redis, self._root_user
                     )
+                    await manager.setup()
                     return await manager.get_service(query["id"], context=context)
-            service_api = await self._rpc.get_remote_service(query["id"], timeout=3)
+            query["id"] = self._workspace + "/" + query["id"]
+            rpc = await self.get_rpc()
+            service_api = await rpc.get_remote_service(query["id"])
         elif "name" in query:
-            services = await self.list_services()
+            services = await self.list_services(context=context)
             services = list(
                 filter(lambda service: service["name"] == query["name"], services)
             )
+            if not services:
+                raise Exception(f"Service not found: {query['name']}")
             service_info = random.choice(services)
-            service_api = await self._rpc.get_remote_service(
-                service_info["id"], timeout=3
+            rpc = await self.get_rpc()
+            service_api = await rpc.get_remote_service(
+                service_info["id"]
             )
         else:
             raise Exception("Please specify the service id or name to get the service")
@@ -470,6 +468,47 @@ class WorkspaceManager:
 
         return False
 
+    async def get_workspace(self, workspace: str, context=None):
+        manager = WorkspaceManager.get_manager(
+            workspace, self._redis, self._root_user
+        )
+        await manager.setup()
+        user_info = UserInfo.parse_obj(context["user"])
+        if not await manager.check_permission(user_info):
+            raise Exception(f"Permission denied for workspace {self._workspace}.")
+        rpc = await manager.get_rpc()
+        wm = await rpc.get_remote_service(workspace + "/workspace-manager:default")
+        return wm
+    
+    async def _update_workspace(self, config: dict, context=None):
+        """Update the workspace config."""
+        user_info = UserInfo.parse_obj(context["user"])
+        if not self.check_permission(user_info):
+            raise PermissionError(f"Permission denied for workspace {self._workspace}")
+        
+        workspace_info = await self._redis.hget("workspaces", self._workspace)
+        workspace = WorkspaceInfo.parse_obj(
+            json.loads(workspace_info.decode())
+        )
+        if "name" in config:
+            raise Exception("Changing workspace name is not allowed.")
+
+        # make sure all the keys are valid
+        # TODO: verify the type
+        for key in config:
+            if key.startswith("_") or not hasattr(workspace, key):
+                raise KeyError(f"Invalid key: {key}")
+
+        for key in config:
+            if not key.startswith("_") and hasattr(workspace, key):
+                setattr(workspace, key, config[key])
+        # make sure we add the user's email to owners
+        _id = user_info.email or user_info.id
+        if _id not in workspace.owners:
+            workspace.owners.append(_id)
+        workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
+        await self._redis.hset("workspaces", workspace.name, workspace.json())
+
     def create_service(self, service_id, service_name=None):
         interface = {
             "id": service_id,
@@ -494,6 +533,9 @@ class WorkspaceManager:
             "createWorkspace": self.create_workspace,
             "register_service": self.register_service,
             "registerService": self.register_service,
+            "get_workspace": self.get_workspace,
+            "getWorkspace": self.get_workspace,
+            "set": self._update_workspace,
         }
         return interface
 
@@ -571,11 +613,12 @@ class RedisStore:
         return manager
 
     async def connect_to_workspace(
-        self, workspace: str, client_id: str, default_context: dict = None
+        self, workspace: str, client_id: str
     ):
         """Connect to a workspace."""
         manager = await self.get_workspace_manager(workspace)
-        rpc = await manager.create_rpc(client_id, default_context=default_context)
+        await manager.setup(client_id=client_id)
+        rpc = await manager.get_rpc()
         wm = await rpc.get_remote_service(workspace + "/workspace-manager:default")
         wm.rpc = rpc
         return wm

@@ -40,7 +40,7 @@ async def test_redis_store(event_loop, redis_store):
     api = await rpc.get_remote_service("workspace-manager:default")
     await api.log("hello")
     services = await api.list_services()
-    assert len(services) == 1
+    assert len(services) == 4 # 2 services: built-in and default
     assert await api.generate_token()
     ws = await api.create_workspace(
         dict(
@@ -144,10 +144,7 @@ async def test_websocket_server(
     # Get public service from another workspace
     wm3 = await connect_to_server({"server_url": f"ws://127.0.0.1:{SIO_PORT}/ws"})
     rpc3 = wm3.rpc
-    # Direct access won't be possible for services
-    with pytest.raises(Exception, match=r".*Permission denied for protected method.*"):
-        svc7 = await rpc3.get_remote_service("test-workspace/test-plugin-1:test-service")
-
+    svc7 = await rpc3.get_remote_service("test-workspace/test-plugin-1:test-service")
     svc7 = await wm3.get_service("test-workspace/test-plugin-1:test-service")
     assert await svc7.square(9) == 81
 
