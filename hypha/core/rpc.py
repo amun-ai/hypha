@@ -435,10 +435,10 @@ class RPC(MessageEmitter):
         if context is not None:
             # If this function is called from remote, we need to make sure
             current_workspace, client_id = context["to"].split("/")
+            assert client_id == self._client_id
             assert (
-                client_id == self._client_id
-            )
-            assert current_workspace == context["from"].split("/")[0], "Services can only be registered from the same workspace"
+                current_workspace == context["from"].split("/")[0]
+            ), "Services can only be registered from the same workspace"
         service = self.add_service(api, overwrite=overwrite)
         if notify:
             self._fire(
