@@ -247,6 +247,7 @@ class WorkspaceManager:
         assert client_info["id"] == client_id
         assert ws == self._workspace
         client_info["user_info"] = user_info
+        client_info["id"] = context["from"]
         await self.register_client(ClientInfo.parse_obj(client_info))
 
     async def get_client_info(self, client_id):

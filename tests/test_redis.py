@@ -144,7 +144,11 @@ async def test_websocket_server(
     # Get public service from another workspace
     wm3 = await connect_to_server({"server_url": f"ws://127.0.0.1:{SIO_PORT}/ws"})
     rpc3 = wm3.rpc
-    svc7 = await rpc3.get_remote_service("test-workspace/test-plugin-1:test-service")
+    # Direct access won't be possible for services
+    with pytest.raises(Exception, match=r".*Permission denied for protected method.*"):
+        svc7 = await rpc3.get_remote_service("test-workspace/test-plugin-1:test-service")
+
+    svc7 = await wm3.get_service("test-workspace/test-plugin-1:test-service")
     assert await svc7.square(9) == 81
 
     # Change the service to protected
