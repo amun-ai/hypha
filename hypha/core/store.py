@@ -188,6 +188,12 @@ class WorkspaceManager:
         )
         await manager.setup()
         rpc = manager.get_rpc()
+        # Remove the client if it's not responding
+        for client_id in await manager.list_clients(context=context):
+            try:
+                await rpc.ping(client_id)
+            except asyncio.exceptions.TimeoutError:
+                await manager.delete_client(client_id)
         wm = await rpc.get_remote_service(workspace.name + "/workspace-manager:default")
         return wm
 
@@ -204,6 +210,13 @@ class WorkspaceManager:
             # The source workspace might be different
             source_workspace = context["from"].split("/")[0]
             service["id"] = source_workspace + "/" + service["id"]
+        
+        # add the client to the workspace
+        await self.register_client(
+            ClientInfo(id=context["from"],
+            user_info=context["user"]
+        ))
+
         return service
 
     async def generate_token(
@@ -233,11 +246,8 @@ class WorkspaceManager:
         ws, client_id = context["from"].split("/")
         assert client_info["id"] == client_id
         assert ws == self._workspace
-        client_info["user_info"] = context["user"]
-        client_info = ClientInfo.parse_obj(client_info)
-        await self._redis.hset(
-            f"{self._workspace}:clients", client_info.id, client_info.json()
-        )
+        client_info["user_info"] = user_info
+        await self.register_client(ClientInfo.parse_obj(client_info))
 
     async def get_client_info(self, client_id):
         client_info = await self._redis.hget(f"{self._workspace}:clients", client_id)
@@ -247,8 +257,11 @@ class WorkspaceManager:
         return client_info and json.loads(client_info.decode())
 
     async def list_clients(
-        self,
+        self, context: Optional[dict] = None
     ):
+        user_info = UserInfo.parse_obj(context["user"])
+        if not await self.check_permission(user_info):
+            raise Exception(f"Permission denied for workspace {self._workspace}.")
         client_keys = await self._redis.hkeys(f"{self._workspace}:clients")
         return [k.decode() for k in client_keys]
 
@@ -275,7 +288,7 @@ class WorkspaceManager:
                     workspace.name, self._redis, self._root_user
                 )
                 can_access_ws = await manager.check_permission(user_info)
-                for service in await manager.get_services():
+                for service in await manager.get_services(context=context):
                     # To access the service, it should be public or owned by the user
                     if (
                         not can_access_ws
@@ -294,7 +307,7 @@ class WorkspaceManager:
         else:
             manager = self
         ret = []
-        workspace_services = await manager.get_services()
+        workspace_services = await manager.get_services(context=context)
         for service in workspace_services:
             match = True
             for key in query:
@@ -305,9 +318,9 @@ class WorkspaceManager:
 
         return ret
 
-    async def get_services(self):
+    async def get_services(self, context=None):
         service_list = []
-        client_ids = await self.list_clients()
+        client_ids = await self.list_clients(context=context)
         for client_id in client_ids:
             try:
                 client_info = await self.get_client_info(client_id)
@@ -318,6 +331,7 @@ class WorkspaceManager:
                         and sinfo["config"].get("workspace", self._workspace)
                         != self._workspace
                     ):
+                        logger.info("Skipping service %s: %s", sinfo["id"], sinfo["config"])
                         continue
                     service_list.append(ServiceInfo.parse_obj(sinfo))
             # make sure we don't throw if a client is removed
@@ -327,21 +341,22 @@ class WorkspaceManager:
 
     async def register_client(self, client_info: ClientInfo):
         """Add a client."""
+        if "/" not in client_info.id:
+            client_info.id = self._workspace + "/" + client_info.id
         await self._redis.hset(
             f"{self._workspace}:clients", client_info.id, client_info.json()
         )
 
     async def check_client_exists(self, client_id: str):
         """Check if a client exists."""
+        if "/" not in client_id:
+            client_id = self._workspace + "/" + client_id
         return await self._redis.hexists(f"{self._workspace}:clients", client_id)
-
-    async def list_clients(self):
-        """List all clients."""
-        client_keys = await self._redis.hkeys(f"{self._workspace}:clients")
-        return [k.decode() for k in client_keys]
 
     async def delete_client(self, client_id: str):
         """Delete a client."""
+        if "/" not in client_id:
+            client_id = self._workspace + "/" + client_id
         await self._redis.hdel(f"{self._workspace}:clients", client_id)
 
     async def create_rpc(self, client_id: str, default_context=None):
@@ -468,6 +483,8 @@ class WorkspaceManager:
             "update_client_info": self.update_client_info,
             "listServices": self.list_services,
             "list_services": self.list_services,
+            "listClients": self.list_clients,
+            "list_clients": self.list_clients,
             "getService": self.get_service,
             "get_service": self.get_service,
             "generate_token": self.generate_token,

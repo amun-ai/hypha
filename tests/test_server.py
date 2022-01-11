@@ -145,18 +145,18 @@ async def test_plugin_runner_workspace(socketio_server):
 async def test_workspace(socketio_server):
     """Test the plugin runner."""
     api = await connect_to_server(
-        {"name": "my plugin", "server_url": WS_SERVER_URL, "method_timeout": 1000}
+        {"client_id": "my-plugin", "name": "my plugin", "server_url": WS_SERVER_URL, "method_timeout": 1000}
     )
     with pytest.raises(
         Exception, match=r".*Scopes must be empty or contains only the workspace name*"
     ):
-        await api.generate_token({"scopes": ["test-workspace"]})
+        await api.generate_token({"scopes": ["my-test-workspace"]})
     token = await api.generate_token()
     assert "@imjoy@" in token
 
     ws = await api.create_workspace(
         {
-            "name": "test-workspace",
+            "name": "my-test-workspace",
             "owners": ["user1@imjoy.io", "user2@imjoy.io"],
             "allow_list": [],
             "deny_list": [],
@@ -196,21 +196,26 @@ async def test_workspace(socketio_server):
     ss2 = await api.list_services({"type": "#test"})
     assert len(ss2) == 0
 
-    # let's generate a token for the test-workspace
+    # let's generate a token for the my-test-workspace
     token = await ws.generate_token()
 
     # now if we connect directly to the workspace
-    # we should be able to get the test-workspace services
+    # we should be able to get the my-test-workspace services
     api2 = await connect_to_server(
         {
+            "client_id": "my-plugin-2",
             "name": "my plugin 2",
-            "workspace": "test-workspace",
+            "workspace": "my-test-workspace",
             "server_url": WS_SERVER_URL,
             "token": token,
+            "method_timeout": 100,
         }
     )
-    assert api2.config["workspace"] == "test-workspace"
-    # await api2.export({"foo": "bar"})
+    assert api2.config["workspace"] == "my-test-workspace"
+    await api2.export({"foo": "bar"})
+    clients = await api2.list_clients()
+    # assert "my-plugin-2" in clients
+    # assert "my-plugin" in clients # The service provider of the workspace
     ss3 = await api2.list_services({"type": "#test"})
     assert len(ss3) == 2
 
@@ -231,7 +236,7 @@ async def test_workspace(socketio_server):
     with pytest.raises(Exception, match=r".*Plugin `name=my plugin 2` not found.*"):
         await api.get_plugin("my plugin 2")
 
-    ws2 = await api.get_workspace("test-workspace")
+    ws2 = await api.get_workspace("my-test-workspace")
     assert ws.config == ws2.config
 
     await ws2.set({"docs": "https://imjoy.io"})

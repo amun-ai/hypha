@@ -148,7 +148,8 @@ class RPC(MessageEmitter):
                 "id": "built-in",
                 "type": "built-in",
                 "name": "RPC built-in services",
-                "config": {"require_context": True, "visibility": "public"},
+                "config": {"require_context": True, "visibility": "protected"},
+                "ping": self._ping,
                 "get_service": self.get_local_service,
                 "register_service": self.register_service,
                 "message_cache": {
@@ -168,6 +169,20 @@ class RPC(MessageEmitter):
             self.on("disconnect", connection.disconnect)
 
         self.check_modules()
+
+    async def _ping(self, msg, context=None):
+        assert msg == "ping"
+        return "pong"
+
+    async def ping(self, client_id, timeout=1):
+        method = self._generate_remote_method(
+            {
+                "_rtarget": client_id,
+                "_rmethod": "services.built-in.ping",
+                "_rpromise": True,
+            }
+        )
+        assert (await asyncio.wait_for(method("ping"), timeout)) == "pong"
 
     def _create_message(self, key, heartbeat=False, overwrite=False, context=None):
         if heartbeat:
@@ -318,6 +333,7 @@ class RPC(MessageEmitter):
         require_context=False,
         run_in_executor=False,
         visibility="protected",
+        workspace=None,
     ):
         if isinstance(a_object, (dict, list, tuple)):
             items = (
@@ -357,6 +373,7 @@ class RPC(MessageEmitter):
                 "run_in_executor": run_in_executor,
                 "method_id": "services." + object_id,
                 "visibility": visibility,
+                "workspace": workspace,
             }
 
     def add_service(self, api, overwrite=False):
@@ -402,12 +419,14 @@ class RPC(MessageEmitter):
             run_in_executor = True
         visibility = api["config"].get("visibility", "protected")
         assert visibility in ["protected", "public"]
+        workspace = api["config"].get("workspace")
         self._annotate_service_methods(
             api,
             api["id"],
             require_context=require_context,
             run_in_executor=run_in_executor,
             visibility=visibility,
+            workspace=workspace,
         )
         if not overwrite and api["id"] in self._services:
             raise Exception(
@@ -860,14 +879,15 @@ class RPC(MessageEmitter):
 
             # Check permission
             if method in self._method_annotations:
+                method_workspace = self._method_annotations[method].get("workspace") or local_workspace
                 # For services, it should not be protected
                 if (
                     self._method_annotations[method].get("visibility", "protected")
                     == "protected"
                 ):
-                    if local_workspace != remote_workspace:
+                    if method_workspace != remote_workspace:
                         raise PermissionError(
-                            f"Permission denied for protected method {method_name}, workspace mismatch: {local_workspace} != {remote_workspace}"
+                            f"Permission denied for protected method {method_name}, workspace mismatch: {method_workspace} != {remote_workspace}"
                         )
             else:
                 # For sessions, the target_id should match exactly

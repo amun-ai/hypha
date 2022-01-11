@@ -63,6 +63,8 @@ def generate_authenticated_user():
 @pytest.fixture(name="socketio_server", scope="session")
 def socketio_server_fixture(minio_server):
     """Start server as test fixture and tear down after test."""
+    if os.path.exists("/tmp/redis.db"):
+        os.remove("/tmp/redis.db")
     with subprocess.Popen(
         [
             sys.executable,

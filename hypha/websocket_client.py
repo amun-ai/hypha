@@ -101,4 +101,9 @@ async def connect_to_server(config):
     )
     wm = await rpc.get_remote_service("workspace-manager:default")
     wm.rpc = rpc
+
+    def export(api):
+        return asyncio.ensure_future(rpc.register_service(api))
+
+    wm.export = export
     return wm
