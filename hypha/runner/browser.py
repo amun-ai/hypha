@@ -58,7 +58,7 @@ class BrowserAppRunner:
         BrowserAppRunner.instance_counter += 1
         self.in_docker = in_docker
         self.event_bus = core_interface.event_bus
-        core_interface.register_service_as_root(self.get_service_api())
+        core_interface.register_public_service(self.get_service_api())
         self.core_interface = core_interface
 
         def close() -> None:

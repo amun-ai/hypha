@@ -84,7 +84,7 @@ class ServerAppController:
 
         event_bus = self.event_bus = core_interface.event_bus
         self.core_interface = core_interface
-        core_interface.register_service_as_root(self.get_service_api())
+        core_interface.register_public_service(self.get_service_api())
         self.jinja_env = Environment(
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
         )
@@ -494,7 +494,7 @@ class ServerAppController:
         if workspace != app_id.split("/")[0]:
             raise Exception("Workspace mismatch between app_id and workspace.")
         if token is None:
-            ws = self.core_interface.get_workspace_interface(workspace)
+            ws = self.core_interfacestore.get_workspace_interface(workspace)
             token = ws.generate_token()
         user_info = self.core_interface.get_user_info_from_token(token)
         if not self.core_interface.check_permission(workspace, user_info):
@@ -701,9 +701,8 @@ class ServerAppController:
             asyncio.get_running_loop().create_task(timer)
 
         runner_info = random.choice(self._runners)
-        with self.core_interface.set_root_user():
-            runner = await self.core_interface.get_service(runner_info)
-            await runner.start(url=local_url, plugin_id=plugin_id)
+        runner = await self.core_interface.get_service(runner_info)
+        await runner.start(url=local_url, plugin_id=plugin_id)
 
         app_info["runner"] = runner
         self._apps[page_id] = app_info
@@ -723,9 +722,9 @@ class ServerAppController:
             plugin = workspace.get_plugin_by_id(app_info["id"])
             if plugin:
                 await plugin.terminate()
-            with self.core_interface.set_root_user():
-                app_info["watch"] = False  # make sure we don't keep-alive
-                await app_info["runner"].stop(plugin_id)
+
+            app_info["watch"] = False  # make sure we don't keep-alive
+            await app_info["runner"].stop(plugin_id)
             if page_id in self._apps:
                 del self._apps[page_id]
         elif raise_exception:
@@ -742,10 +741,9 @@ class ServerAppController:
         workspace = self.core_interface.current_workspace.get()
         page_id = workspace.name + "/" + plugin_id
         if page_id in self._apps:
-            with self.core_interface.set_root_user():
-                return await self._apps[page_id]["runner"].get_log(
-                    plugin_id, type=type, offset=offset, limit=limit
-                )
+            return await self._apps[page_id]["runner"].get_log(
+                plugin_id, type=type, offset=offset, limit=limit
+            )
         else:
             raise Exception(f"Server app instance not found: {plugin_id}")
 

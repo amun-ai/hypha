@@ -76,7 +76,7 @@ class TritonProxy:
                     return response
 
         core_interface.register_router(router)
-        core_interface.register_service_as_root(self.get_triton_service())
+        core_interface.register_public_service(self.get_triton_service())
 
     async def execute(
         self, model_name: str, inputs: List[Any], server_url=None, **kwargs

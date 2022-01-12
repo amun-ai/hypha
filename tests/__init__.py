@@ -3,7 +3,6 @@ import uuid
 
 SIO_PORT = 38283
 SIO_PORT2 = 38223
-SIO_SERVER_URL = f"http://127.0.0.1:{SIO_PORT}"
 WS_SERVER_URL = f"ws://127.0.0.1:{SIO_PORT}/ws"
 
 MINIO_PORT = 38483

@@ -76,7 +76,7 @@ async def get_service_as_user(
     # There won't be any plugin created in this case
     # so we assume the user is in the public workspace
     core_interface.current_workspace.set(await core_interface.get_workspace("public"))
-    ws = await core_interface.get_workspace_interface("public")
+    ws = await core_interfacestore.get_workspace_interface("public")
     service = await ws.get_service(
         {"workspace": workspace_name, "name": service_name, "launch": True}
     )
@@ -94,7 +94,7 @@ async def list_services_as_user(
     # so we assume the user is in the public workspace
     workspace = await core_interface.get_workspace("public")
     core_interface.current_workspace.set(workspace)
-    ws = await core_interface.get_workspace_interface("public")
+    ws = await core_interfacestore.get_workspace_interface("public")
     services = await ws.list_services({"workspace": workspace_name})
     return services
 

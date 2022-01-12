@@ -1,5 +1,6 @@
 """Provide the server."""
 import argparse
+import asyncio
 import logging
 import sys
 from os import environ as env
@@ -17,9 +18,8 @@ from hypha.asgi import ASGIGateway
 from hypha.core.interface import CoreInterface
 from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
-from hypha.websocket import WebsocketServer
 from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
-from hypha.socketio import SocketIOServer
+from hypha.websocket import WebsocketServer
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("server")
@@ -121,7 +121,7 @@ def start_builtin_services(
 
     @app.get(norm_url("/api/stats"))
     async def stats():
-        users = core_interface.get_all_users()
+        users = core_interface.store.get_all_users()
         client_count = len(users)
         return {
             "plugin_count": client_count,
@@ -165,27 +165,19 @@ def start_builtin_services(
 
     @app.get(norm_url("/health/liveness"))
     async def liveness(req: Request) -> JSONResponse:
-        try:
-            await sio_server.is_alive()
-        except Exception:  # pylint: disable=broad-except
+        if core_interface.is_ready():
+            return JSONResponse({"status": "OK"})
+        else:
             return JSONResponse({"status": "DOWN"}, status_code=503)
-        return JSONResponse({"status": "OK"})
 
     @app.on_event("startup")
     async def startup_event():
+        await core_interface.init()
         core_interface.event_bus.emit("startup")
 
     @app.on_event("shutdown")
     def shutdown_event():
         core_interface.event_bus.emit("shutdown")
-
-    # SocketIO server should be the last one to be registered
-    # otherwise the server won'te be able to start properly
-    sio_server = SocketIOServer(
-        core_interface,
-        socketio_path=norm_url("/socket.io"),
-        allow_origins=args.allow_origins,
-    )
 
 
 def start_server(args):

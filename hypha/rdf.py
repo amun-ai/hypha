@@ -68,7 +68,7 @@ class RDFController:
                 )
 
         core_interface.register_router(router)
-        core_interface.register_service_as_root(self.get_rdf_service())
+        core_interface.register_public_service(self.get_rdf_service())
 
     def save(self, name, source):
         """Save an RDF."""

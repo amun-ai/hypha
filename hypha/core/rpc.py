@@ -321,7 +321,9 @@ class RPC(MessageEmitter):
             )
             return await asyncio.wait_for(method(service_id), timeout=timeout)
         except Exception:
-            logger.exception("Failed to get remote service")
+            logger.exception(
+                "Failed to get remote service: %s", provider + ":" + service_id
+            )
             raise
 
     def _annotate_service_methods(
@@ -1022,7 +1024,10 @@ class RPC(MessageEmitter):
                 }
             else:
                 assert isinstance(session_id, str)
-                object_id = f"{shortuuid.uuid()}-{a_object.__name__}"
+                if hasattr(a_object, "__name__"):
+                    object_id = f"{shortuuid.uuid()}-{a_object.__name__}"
+                else:
+                    object_id = shortuuid.uuid()
                 b_object = {
                     "_rtype": "method",
                     "_rtarget": f"{local_workspace}/{self._client_id}"

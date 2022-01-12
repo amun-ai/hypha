@@ -7,7 +7,7 @@ from fastapi import Query, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
 
 from hypha.core import ClientInfo, UserInfo
-from hypha.core.store import RedisRPCConnection, RedisStore
+from hypha.core.store import RedisRPCConnection
 from hypha.core.auth import parse_token
 import shortuuid
 
@@ -26,7 +26,7 @@ class WebsocketServer:
         if allow_origins == ["*"]:
             allow_origins = "*"
 
-        store = RedisStore.get_instance()
+        store = core_interface.store
 
         self.core_interface = core_interface
         app = core_interface._app
@@ -67,12 +67,13 @@ class WebsocketServer:
 
             if workspace is None:
                 workspace = uid
+                persistent = not user_info.is_anonymous
                 await store.register_workspace(
                     dict(
                         name=uid,
                         owners=[uid],
                         visibility="protected",
-                        persistent=False,
+                        persistent=persistent,
                         read_only=False,
                     ),
                     overwrite=False,

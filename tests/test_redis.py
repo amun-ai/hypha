@@ -13,7 +13,6 @@ pytestmark = pytest.mark.asyncio
 async def test_redis_store(event_loop, redis_store):
     """Test the redis store."""
     # Test adding a workspace
-    await redis_store.clear_workspace("test")
     await redis_store.register_workspace(
         dict(
             name="test",
@@ -24,14 +23,12 @@ async def test_redis_store(event_loop, redis_store):
         ),
         overwrite=True,
     )
-    manager = await redis_store.get_workspace_manager("test")
-    workspace_info = await manager.get_workspace_info()
+    workspace_info = await redis_store.get_workspace_info("test")
     assert workspace_info.name == "test"
     assert "test" in await redis_store.list_workspace()
 
-    wm = await redis_store.connect_to_workspace("test", client_id="test-plugin-1")
-    rpc = wm.rpc
-    api = await rpc.get_remote_service("workspace-manager:default")
+    api = await redis_store.connect_to_workspace("test", client_id="test-plugin-99")
+    assert set(await api.list_clients()) == {"test-plugin-99", "workspace-manager"}
     await api.log("hello")
     services = await api.list_services()
     assert len(services) == 4  # 2 services: built-in and default
@@ -47,6 +44,9 @@ async def test_redis_store(event_loop, redis_store):
         overwrite=True,
     )
     assert ws.config["workspace"] == "test-2"
+    assert await ws.list_clients() == ["workspace-manager"]
+    ws2 = await ws.get_workspace("test-2")
+    assert ws2.log
 
     def echo(data):
         return data
@@ -58,11 +58,16 @@ async def test_redis_store(event_loop, redis_store):
         "setup": print,
         "echo": echo,
     }
-    await rpc.register_service(interface)
+    await api.register_service(interface)
 
-    wm = await redis_store.connect_to_workspace("test", client_id="test-plugin-2")
+    wm = await redis_store.connect_to_workspace("test", client_id="test-plugin-22")
+    clients = await wm.list_clients()
+    assert set(clients) == set(
+        ["workspace-manager", "test-plugin-22", "test-plugin-99"]
+    )
     rpc = wm.rpc
-    service = await rpc.get_remote_service("test-plugin-1:test-service")
+    services = await wm.list_services()
+    service = await rpc.get_remote_service("test-plugin-99:test-service")
 
     assert callable(service.echo)
     assert await service.echo("hello") == "hello"
@@ -74,10 +79,9 @@ async def test_redis_store(event_loop, redis_store):
 
 
 async def test_websocket_server(
-    event_loop, socketio_server, redis_store, test_user_token
+    event_loop, fastapi_server, redis_store, test_user_token
 ):
     """Test the websocket server."""
-    await redis_store.clear_workspace("test-workspace")
     await redis_store.register_workspace(
         dict(
             name="test-workspace",
@@ -88,6 +92,10 @@ async def test_websocket_server(
         ),
         overwrite=True,
     )
+    wm = await redis_store.connect_to_workspace(
+        "test-workspace", client_id="test-plugin-2"
+    )
+    assert set(await wm.list_clients()) == {"test-plugin-2", "workspace-manager"}
     wm = await connect_to_server(
         dict(
             server_url=f"ws://127.0.0.1:{SIO_PORT}/ws",
@@ -97,6 +105,12 @@ async def test_websocket_server(
         )
     )
     await wm.log("hello")
+
+    assert set(await wm.list_clients()) == {
+        "test-plugin-1",
+        "test-plugin-2",
+        "workspace-manager",
+    }
     rpc = wm.rpc
 
     def echo(data):
@@ -130,7 +144,7 @@ async def test_websocket_server(
     assert await svc.echo("hello") == "hello"
 
     services = await wm.list_services()
-    assert find_item(services, "id", "workspace-manager:default")
+    assert find_item(services, "id", "test-workspace/workspace-manager:default")
 
     svc = await wm.get_service("test-plugin-1:test-service")
     assert await svc.echo("hello") == "hello"
@@ -176,7 +190,7 @@ async def test_websocket_server(
         dict(
             server_url=f"ws://127.0.0.1:{SIO_PORT}/ws",
             workspace="test-workspace",
-            client_id="test-plugin-2",
+            client_id="test-plugin-6",
             token=test_user_token,
             method_timeout=3,
         )
@@ -199,7 +213,7 @@ async def test_websocket_server(
 
     # It should fail because add_one is not a service and will be destroyed after the session
     with pytest.raises(
-        Exception, match=r".*Method not found: test-workspace/test-plugin-2.*"
+        Exception, match=r".*Method not found: test-workspace/test-plugin-6.*"
     ):
         assert await svc4.add_one(99) == 100
 
@@ -234,7 +248,7 @@ async def test_websocket_server(
     )
 
     await rpc2.register_service({"id": "add-two", "blocking_sleep": time.sleep})
-    svc5 = await rpc2.get_remote_service("test-plugin-2:add-two")
+    svc5 = await rpc2.get_remote_service("test-plugin-6:add-two")
     # This will fail because the service is blocking
     with pytest.raises(Exception, match=r".*Method call time out:.*"):
         await svc5.blocking_sleep(4)
@@ -248,6 +262,6 @@ async def test_websocket_server(
             "blocking_sleep": time.sleep,
         }
     )
-    svc5 = await rpc2.get_remote_service("test-plugin-2:executor-test")
+    svc5 = await rpc2.get_remote_service("test-plugin-6:executor-test")
     # This should be fine because it is run in executor
     await svc5.blocking_sleep(3)

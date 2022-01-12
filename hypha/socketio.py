@@ -32,7 +32,7 @@ class SocketIOServer:
         sio = socketio.AsyncServer(
             async_mode="asgi", cors_allowed_origins=allow_origins
         )
-        _app = socketio.ASGIApp(socketio_server=sio, socketio_path=socketio_path)
+        _app = socketio.ASGIApp(fastapi_server=sio, socketio_path=socketio_path)
         app = core_interface._app
         app.mount("/", _app)
 
@@ -149,11 +149,10 @@ class SocketIOServer:
                 )
 
             connection = BasicConnection(send)
-            core_interface.add_user(user_info)
             core_interface.current_user.set(user_info)
             plugin = DynamicPlugin(
                 config,
-                await core_interface.get_workspace_interface(workspace.name),
+                await core_interfacestore.get_workspace_interface(workspace.name),
                 core_interface.get_codecs(),
                 connection,
                 workspace,

@@ -5,9 +5,9 @@ import msgpack
 import numpy as np
 import pytest
 import requests
-from imjoy_rpc import connect_to_server
+from hypha.websocket_client import connect_to_server
 
-from . import SIO_SERVER_URL, find_item
+from . import WS_SERVER_URL, find_item
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
@@ -49,10 +49,10 @@ api.export({
 
 
 # pylint: disable=too-many-statements
-async def test_http_proxy(minio_server, socketio_server):
+async def test_http_proxy(minio_server, fastapi_server):
     """Test http proxy."""
-    # SIO_SERVER_URL = "http://127.0.0.1:9527"
-    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+    # WS_SERVER_URL = "http://127.0.0.1:9527"
+    api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
@@ -78,7 +78,7 @@ async def test_http_proxy(minio_server, socketio_server):
     assert await service.echo("22") == "22"
 
     # Without the token, we can only access to the protected service
-    response = requests.get(f"{SIO_SERVER_URL}/services")
+    response = requests.get(f"{WS_SERVER_URL}/services")
     assert response.ok
     response = response.json()
     assert find_item(response, "name", "test_service")
@@ -91,39 +91,39 @@ async def test_http_proxy(minio_server, socketio_server):
 
     # With the token we can access the protected service
     response = requests.get(
-        f"{SIO_SERVER_URL}/services",
+        f"{WS_SERVER_URL}/services",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.ok
     assert find_item(response.json(), "name", "test_service")
     assert find_item(response.json(), "name", "test_service_protected")
 
-    response = requests.get(f"{SIO_SERVER_URL}/{service_ws}/services")
+    response = requests.get(f"{WS_SERVER_URL}/{service_ws}/services")
     assert response.ok
     assert find_item(response.json(), "name", "test_service")
 
-    response = requests.get(f"{SIO_SERVER_URL}/{service_ws}/services/test_service")
+    response = requests.get(f"{WS_SERVER_URL}/{service_ws}/services/test_service")
     assert response.ok
     service_info = response.json()
     assert service_info["name"] == "test_service"
 
-    response = requests.get(f"{SIO_SERVER_URL}/public/services/s3-storage")
+    response = requests.get(f"{WS_SERVER_URL}/public/services/s3-storage")
     assert response.ok
     service_info = response.json()
     assert service_info["name"] == "s3-storage"
 
     response = requests.get(
-        f"{SIO_SERVER_URL}/public/services/s3-storage/generate_credential"
+        f"{WS_SERVER_URL}/public/services/s3-storage/generate_credential"
     )
     assert not response.ok
 
     response = requests.get(
-        f"{SIO_SERVER_URL}/{service_ws}/services/test_service/echo?v=3345"
+        f"{WS_SERVER_URL}/{service_ws}/services/test_service/echo?v=3345"
     )
     assert response.ok, response.json()["detail"]
 
     response = requests.get(
-        f"{SIO_SERVER_URL}/{service_ws}/services/test_service/echo?v=33",
+        f"{WS_SERVER_URL}/{service_ws}/services/test_service/echo?v=33",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.ok, response.json()["detail"]
@@ -131,7 +131,7 @@ async def test_http_proxy(minio_server, socketio_server):
     assert service_info["v"] == 33
 
     response = requests.post(
-        f"{SIO_SERVER_URL}/{service_ws}/services/test_service/echo",
+        f"{WS_SERVER_URL}/{service_ws}/services/test_service/echo",
         data=msgpack.dumps({"data": 123}),
         headers={"Content-type": "application/msgpack"},
     )
@@ -140,7 +140,7 @@ async def test_http_proxy(minio_server, socketio_server):
     assert result["data"] == 123
 
     response = requests.post(
-        f"{SIO_SERVER_URL}/{service_ws}/services/test_service/echo",
+        f"{WS_SERVER_URL}/{service_ws}/services/test_service/echo",
         data=msgpack.dumps({"data": 123}),
         headers={
             "Content-type": "application/msgpack",
@@ -166,7 +166,7 @@ async def test_http_proxy(minio_server, socketio_server):
     data = msgpack.dumps({"data": input_data})
     compressed_data = gzip.compress(data)
     response = requests.post(
-        f"{SIO_SERVER_URL}/{service_ws}/services/test_service/echo",
+        f"{WS_SERVER_URL}/{service_ws}/services/test_service/echo",
         data=compressed_data,
         headers={
             "Content-Type": "application/msgpack",

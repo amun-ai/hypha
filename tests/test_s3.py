@@ -4,26 +4,26 @@ import os
 import aioboto3
 import pytest
 import requests
-from imjoy_rpc import connect_to_server
+from hypha.websocket_client import connect_to_server
 
-from . import SIO_SERVER_URL, find_item
+from . import WS_SERVER_URL, find_item
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
 
 
 # pylint: disable=too-many-statements
-async def test_s3(minio_server, socketio_server, test_user_token):
+async def test_s3(minio_server, fastapi_server, test_user_token):
     """Test s3 service."""
     api = await connect_to_server(
-        {"name": "test client", "server_url": SIO_SERVER_URL, "token": test_user_token}
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
     )
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
-    s3controller = await api.get_service("s3-storage")
+    s3controller = await api.get_service("public/workspace-manager:s3-storage")
     assert s3controller
-    s3controller = await api.get_service({"workspace": "root", "name": "s3-storage"})
+    s3controller = await api.get_service({"workspace": "public", "name": "s3-storage"})
     info = await s3controller.generate_credential()
     async with aioboto3.Session().resource(
         "s3",
@@ -47,7 +47,7 @@ async def test_s3(minio_server, socketio_server, test_user_token):
         # Upload small file (<5MB)
         content = os.urandom(2 * 1024 * 1024)
         response = requests.put(
-            f"{SIO_SERVER_URL}/{workspace}/files/my-data-small.txt",
+            f"{WS_SERVER_URL}/{workspace}/files/my-data-small.txt",
             headers={"Authorization": f"Bearer {token}"},
             data=content,
         )
@@ -58,7 +58,7 @@ async def test_s3(minio_server, socketio_server, test_user_token):
         # Upload large file with 100MB
         content = os.urandom(100 * 1024 * 1024)
         response = requests.put(
-            f"{SIO_SERVER_URL}/{workspace}/files/my-data-large.txt",
+            f"{WS_SERVER_URL}/{workspace}/files/my-data-large.txt",
             headers={"Authorization": f"Bearer {token}"},
             data=content,
         )
@@ -67,7 +67,7 @@ async def test_s3(minio_server, socketio_server, test_user_token):
         ), f"failed to upload {response.reason}: {response.text}"
 
         response = requests.get(
-            f"{SIO_SERVER_URL}/{workspace}/files/",
+            f"{WS_SERVER_URL}/{workspace}/files/",
             headers={"Authorization": f"Bearer {token}"},
         ).json()
         assert find_item(response["children"], "name", "my-data-small.txt")
@@ -75,7 +75,7 @@ async def test_s3(minio_server, socketio_server, test_user_token):
 
         # Test request with range
         response = requests.get(
-            f"{SIO_SERVER_URL}/{workspace}/files/my-data-large.txt",
+            f"{WS_SERVER_URL}/{workspace}/files/my-data-large.txt",
             headers={"Authorization": f"Bearer {token}", "Range": "bytes=10-1033"},
             data=content,
         )
@@ -85,7 +85,7 @@ async def test_s3(minio_server, socketio_server, test_user_token):
 
         # Delete the large file
         response = requests.delete(
-            f"{SIO_SERVER_URL}/{workspace}/files/my-data-large.txt",
+            f"{WS_SERVER_URL}/{workspace}/files/my-data-large.txt",
             headers={"Authorization": f"Bearer {token}"},
             data=content,
         )
@@ -94,31 +94,31 @@ async def test_s3(minio_server, socketio_server, test_user_token):
         ), f"failed to delete {response.reason}: {response.text}"
 
         response = requests.get(
-            f"{SIO_SERVER_URL}/{workspace}/files/",
+            f"{WS_SERVER_URL}/{workspace}/files/",
             headers={"Authorization": f"Bearer {token}"},
         ).json()
         assert find_item(response["children"], "name", "my-data-small.txt")
         assert not find_item(response["children"], "name", "my-data-large.txt")
 
         # Should fail if we don't pass the token
-        response = requests.get(f"{SIO_SERVER_URL}/{workspace}/files/hello.txt")
+        response = requests.get(f"{WS_SERVER_URL}/{workspace}/files/hello.txt")
         assert not response.ok
 
         response = requests.get(
-            f"{SIO_SERVER_URL}/{workspace}/files/",
+            f"{WS_SERVER_URL}/{workspace}/files/",
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 200
 
         response = requests.get(
-            f"{SIO_SERVER_URL}/{workspace}/files/hello.txt",
+            f"{WS_SERVER_URL}/{workspace}/files/hello.txt",
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.ok
         assert response.content == b"hello"
 
         response = requests.get(
-            f"{SIO_SERVER_URL}/{workspace}/files/he",
+            f"{WS_SERVER_URL}/{workspace}/files/he",
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 404
@@ -151,7 +151,7 @@ async def test_s3(minio_server, socketio_server, test_user_token):
 
         # Delete the entire folder
         response = requests.delete(
-            f"{SIO_SERVER_URL}/{workspace}/files/",
+            f"{WS_SERVER_URL}/{workspace}/files/",
             headers={"Authorization": f"Bearer {token}"},
             data=content,
         )

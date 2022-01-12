@@ -3,17 +3,17 @@ from pathlib import Path
 
 import pytest
 import requests
-from imjoy_rpc import connect_to_server
+from hypha.websocket_client import connect_to_server
 
-from . import SIO_SERVER_URL
+from . import WS_SERVER_URL
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
 
 
-async def test_asgi(socketio_server):
+async def test_asgi(fastapi_server):
     """Test the ASGI gateway apps."""
-    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+    api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
@@ -37,16 +37,16 @@ async def test_asgi(socketio_server):
     )
     assert "serve" in service
 
-    response = requests.get(f"{SIO_SERVER_URL}/{workspace}/apps/hello-fastapi/")
+    response = requests.get(f"{WS_SERVER_URL}/{workspace}/apps/hello-fastapi/")
     assert response.ok
     assert response.json()["message"] == "Hello World"
 
     await controller.stop(config.id)
 
 
-async def test_functions(socketio_server):
+async def test_functions(fastapi_server):
     """Test the functions service."""
-    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+    api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
@@ -71,25 +71,25 @@ async def test_functions(socketio_server):
     assert "hello-world" in service
 
     response = requests.get(
-        f"{SIO_SERVER_URL}/{workspace}/apps/hello-functions/hello-world"
+        f"{WS_SERVER_URL}/{workspace}/apps/hello-functions/hello-world"
     )
     assert response.ok
     assert response.json()["message"] == "Hello World"
 
     response = requests.get(
-        f"{SIO_SERVER_URL}/{workspace}/apps/hello-functions/hello-world/"
+        f"{WS_SERVER_URL}/{workspace}/apps/hello-functions/hello-world/"
     )
     assert response.ok
 
     response = requests.get(
-        f"{SIO_SERVER_URL}/{workspace}/apps/hello-functions/",
+        f"{WS_SERVER_URL}/{workspace}/apps/hello-functions/",
         headers={"origin": "http://localhost:3000"},
     )
     assert response.ok
     assert response.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
     assert response.content == b"Home page"
 
-    response = requests.get(f"{SIO_SERVER_URL}/{workspace}/apps/hello-functions")
+    response = requests.get(f"{WS_SERVER_URL}/{workspace}/apps/hello-functions")
     assert not response.ok
 
     await controller.stop(config.id)

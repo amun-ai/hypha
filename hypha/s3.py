@@ -240,10 +240,8 @@ class S3Controller:
 
         self.s3client = s3client
 
-        self.minio_client.admin_user_add(
-            core_interface.root_user.id, generate_password()
-        )
-        core_interface.register_service_as_root(self.get_s3_service())
+        self.minio_client.admin_user_add("root", generate_password())
+        core_interface.register_public_service(self.get_s3_service())
         core_interface.set_workspace_loader(self._workspace_loader)
 
         event_bus.on("workspace_registered", self._setup_workspace)

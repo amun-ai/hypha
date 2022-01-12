@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import requests
 
-from . import SIO_SERVER_URL
+from . import WS_SERVER_URL
 
 
 def execute(inputs, server_url, model_name, **kwargs):
@@ -67,7 +67,7 @@ def test_trition_execute():
     params = {"diameter": 30}
     results = execute(
         inputs=[image_array, params],
-        server_url=SIO_SERVER_URL,
+        server_url=WS_SERVER_URL,
         model_name="cellpose-python",
         decode_json=True,
     )
