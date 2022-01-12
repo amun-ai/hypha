@@ -6,7 +6,7 @@ import pytest
 import requests
 from hypha.websocket_client import connect_to_server
 
-from . import WS_SERVER_URL, find_item
+from . import WS_SERVER_URL, SERVER_URL, find_item
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
@@ -47,7 +47,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
         # Upload small file (<5MB)
         content = os.urandom(2 * 1024 * 1024)
         response = requests.put(
-            f"{WS_SERVER_URL}/{workspace}/files/my-data-small.txt",
+            f"{SERVER_URL}/{workspace}/files/my-data-small.txt",
             headers={"Authorization": f"Bearer {token}"},
             data=content,
         )
@@ -58,7 +58,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
         # Upload large file with 100MB
         content = os.urandom(100 * 1024 * 1024)
         response = requests.put(
-            f"{WS_SERVER_URL}/{workspace}/files/my-data-large.txt",
+            f"{SERVER_URL}/{workspace}/files/my-data-large.txt",
             headers={"Authorization": f"Bearer {token}"},
             data=content,
         )
@@ -67,7 +67,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
         ), f"failed to upload {response.reason}: {response.text}"
 
         response = requests.get(
-            f"{WS_SERVER_URL}/{workspace}/files/",
+            f"{SERVER_URL}/{workspace}/files/",
             headers={"Authorization": f"Bearer {token}"},
         ).json()
         assert find_item(response["children"], "name", "my-data-small.txt")
@@ -75,7 +75,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
 
         # Test request with range
         response = requests.get(
-            f"{WS_SERVER_URL}/{workspace}/files/my-data-large.txt",
+            f"{SERVER_URL}/{workspace}/files/my-data-large.txt",
             headers={"Authorization": f"Bearer {token}", "Range": "bytes=10-1033"},
             data=content,
         )
@@ -85,7 +85,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
 
         # Delete the large file
         response = requests.delete(
-            f"{WS_SERVER_URL}/{workspace}/files/my-data-large.txt",
+            f"{SERVER_URL}/{workspace}/files/my-data-large.txt",
             headers={"Authorization": f"Bearer {token}"},
             data=content,
         )
@@ -94,31 +94,31 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
         ), f"failed to delete {response.reason}: {response.text}"
 
         response = requests.get(
-            f"{WS_SERVER_URL}/{workspace}/files/",
+            f"{SERVER_URL}/{workspace}/files/",
             headers={"Authorization": f"Bearer {token}"},
         ).json()
         assert find_item(response["children"], "name", "my-data-small.txt")
         assert not find_item(response["children"], "name", "my-data-large.txt")
 
         # Should fail if we don't pass the token
-        response = requests.get(f"{WS_SERVER_URL}/{workspace}/files/hello.txt")
+        response = requests.get(f"{SERVER_URL}/{workspace}/files/hello.txt")
         assert not response.ok
 
         response = requests.get(
-            f"{WS_SERVER_URL}/{workspace}/files/",
+            f"{SERVER_URL}/{workspace}/files/",
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 200
 
         response = requests.get(
-            f"{WS_SERVER_URL}/{workspace}/files/hello.txt",
+            f"{SERVER_URL}/{workspace}/files/hello.txt",
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.ok
         assert response.content == b"hello"
 
         response = requests.get(
-            f"{WS_SERVER_URL}/{workspace}/files/he",
+            f"{SERVER_URL}/{workspace}/files/he",
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 404
@@ -151,7 +151,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
 
         # Delete the entire folder
         response = requests.delete(
-            f"{WS_SERVER_URL}/{workspace}/files/",
+            f"{SERVER_URL}/{workspace}/files/",
             headers={"Authorization": f"Bearer {token}"},
             data=content,
         )

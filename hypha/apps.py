@@ -494,7 +494,7 @@ class ServerAppController:
         if workspace != app_id.split("/")[0]:
             raise Exception("Workspace mismatch between app_id and workspace.")
         if token is None:
-            ws = self.core_interfacestore.get_workspace_interface(workspace)
+            ws = self.core_interface.store.get_workspace_interface(workspace)
             token = ws.generate_token()
         user_info = self.core_interface.get_user_info_from_token(token)
         if not self.core_interface.check_permission(workspace, user_info):

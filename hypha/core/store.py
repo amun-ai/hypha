@@ -8,6 +8,7 @@ import sys
 import io
 import tempfile
 from typing import Callable, Union, Optional
+from hypha.utils import EventBus
 
 import aioredis
 import msgpack
@@ -95,18 +96,19 @@ class WorkspaceManager:
     _managers = {}
 
     @staticmethod
-    def get_manager(workspace: str, redis: Redis, root_user: UserInfo):
+    def get_manager(workspace: str, redis: Redis, root_user: UserInfo, event_bus: EventBus):
         if workspace in WorkspaceManager._managers:
             return WorkspaceManager._managers[workspace]
         else:
-            return WorkspaceManager(workspace, redis, root_user)
+            return WorkspaceManager(workspace, redis, root_user, event_bus)
 
-    def __init__(self, workspace: str, redis: Redis, root_user: UserInfo):
+    def __init__(self, workspace: str, redis: Redis, root_user: UserInfo, event_bus: EventBus):
         self._redis = redis
         self._workspace = workspace
         self._initialized = False
         self._rpc = None
         self._root_user = root_user
+        self._event_bus = event_bus
         WorkspaceManager._managers[workspace] = self
 
     async def setup(
@@ -125,7 +127,7 @@ class WorkspaceManager:
 
         # Register an client as root
         await self.register_client(
-            ClientInfo(id=client_id, user_info=self._root_user.dict())
+            ClientInfo(id=client_id, workspace=self._workspace, user_info=self._root_user.dict())
         )
         rpc = await self.create_rpc(client_id)
 
@@ -232,6 +234,7 @@ class WorkspaceManager:
         assert ws == self._workspace
         client_info["user_info"] = user_info
         client_info["id"] = client_id
+        client_info["workspace"] = self._workspace
         await self.register_client(ClientInfo.parse_obj(client_info), overwrite=True)
 
     async def get_client_info(self, client_id):
@@ -333,6 +336,7 @@ class WorkspaceManager:
         await self._redis.hset(
             f"{self._workspace}:clients", client_info.id, client_info.json()
         )
+        self._event_bus.emit("client_registered", client_info)
 
     async def check_client_exists(self, client_id: str, workspace: str = None):
         """Check if a client exists."""
@@ -519,7 +523,7 @@ class WorkspaceManager:
                     "Failed to get the workspace manager service of %s", workspace
                 )
 
-        manager = WorkspaceManager.get_manager(workspace, self._redis, self._root_user)
+        manager = WorkspaceManager.get_manager(workspace, self._redis, self._root_user, self.event_bus)
         await manager.setup()
         return await manager.get_workspace()
 
@@ -549,6 +553,7 @@ class WorkspaceManager:
             workspace.owners.append(_id)
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
         await self._redis.hset("workspaces", workspace.name, workspace.json())
+        self.event_bus.emit("workspace_changed", workspace)
 
     def create_service(self, service_id, service_name=None):
         interface = {
@@ -603,6 +608,7 @@ class RedisStore:
         Redis(uri, serverconfig={"port": str(port)})
         self._redis = aioredis.from_url(f"redis://127.0.0.1:{port}/0")
         self._root_user = None
+        self.event_bus = EventBus()
 
     async def setup_root_user(self):
         if not self._root_user:
@@ -650,8 +656,8 @@ class RedisStore:
             raise Exception(f"Workspace {workspace.name} already exists.")
         await self.clear_workspace(workspace.name)
         await self._redis.hset("workspaces", workspace.name, workspace.json())
-        assert await self._redis.hget("workspaces", workspace.name)
         await self.get_workspace_manager(workspace.name)
+        self.event_bus.emit("workspace_registered", workspace)
 
     async def clear_workspace(self, workspace: str):
         """Clear a workspace."""
@@ -670,7 +676,7 @@ class RedisStore:
     async def get_workspace_manager(self, workspace: str):
         """Get a workspace manager."""
         manager = WorkspaceManager.get_manager(
-            workspace, self._redis, await self.setup_root_user()
+            workspace, self._redis, await self.setup_root_user(), self.event_bus
         )
         await manager.setup()
         return manager
@@ -678,7 +684,7 @@ class RedisStore:
     async def get_workspace_interface(self, workspace: str):
         """Get the interface of a workspace."""
         manager = WorkspaceManager.get_manager(
-            workspace, self._redis, await self.setup_root_user()
+            workspace, self._redis, await self.setup_root_user(), self.event_bus
         )
         return await manager.get_workspace()
 
@@ -689,7 +695,9 @@ class RedisStore:
 
     async def delete_workspace(self, workspace: str):
         """Delete a workspace."""
+        winfo = await self.get_workspace_info(workspace)
         await self._redis.hdel("workspaces", workspace)
+        self.even_bus.emit("workspace_removed", winfo)
 
     async def get_workspace_info(self, workspace: str):
         """Get info of the current workspace."""

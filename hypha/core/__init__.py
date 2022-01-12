@@ -144,6 +144,7 @@ class ClientInfo(BaseModel):
 
     id: str
     name: Optional[str]
+    workspace: str
     services: List[ServiceInfo] = []
     user_info: UserInfo
 

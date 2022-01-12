@@ -152,7 +152,7 @@ class SocketIOServer:
             core_interface.current_user.set(user_info)
             plugin = DynamicPlugin(
                 config,
-                await core_interfacestore.get_workspace_interface(workspace.name),
+                await core_interface.store.get_workspace_interface(workspace.name),
                 core_interface.get_codecs(),
                 connection,
                 workspace,
