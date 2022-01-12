@@ -135,9 +135,9 @@ async def test_plugin_runner_workspace(fastapi_server):
         stderr=subprocess.PIPE,
     ) as proc:
         out, err = proc.communicate()
-        assert proc.returncode == 0
-        assert err.decode("utf8") == ""
         output = out.decode("utf8")
+        assert proc.returncode == 0, err.decode("utf8")
+        assert err.decode("utf8") == ""
         assert "Generated token: " in output and "@imjoy@" in output
         assert "echo: a message" in output
 
