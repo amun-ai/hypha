@@ -3,7 +3,7 @@ import pytest
 import requests
 from hypha.websocket_client import connect_to_server
 
-from . import WS_SERVER_URL, find_item
+from . import WS_SERVER_URL, SERVER_URL, find_item
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
@@ -21,7 +21,7 @@ async def test_rdf_controller(minio_server, fastapi_server):
     apps = await s3controller.list()
     assert find_item(apps, "name", "test.js")
     app = find_item(apps, "name", "test.js")
-    response = requests.get(f"{WS_SERVER_URL}/{app['url']}")
+    response = requests.get(f"{SERVER_URL}/{app['url']}")
     assert response.ok
     assert response.text == source
     await s3controller.remove(name="test.js")

@@ -116,7 +116,11 @@ class WebsocketServer:
             conn.on_message(websocket.send_bytes)
 
             await workspace_manager.register_client(
-                ClientInfo(id=client_id, workspace=workspace_manager._workspace, user_info=user_info)
+                ClientInfo(
+                    id=client_id,
+                    workspace=workspace_manager._workspace,
+                    user_info=user_info,
+                )
             )
             try:
                 while True:

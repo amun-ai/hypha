@@ -66,7 +66,7 @@ class CoreInterface:
         self.current_user = ContextVar("current_user")
         self.current_workspace = ContextVar("current_workspace")
         self.store = RedisStore.get_instance()
-        self.event_bus = self.store.event_bus
+        self.event_bus = self.store.get_event_bus()
         self._all_users: Dict[str, UserInfo] = {}  # uid:user_info
         self._all_workspaces: Dict[str, WorkspaceInfo] = {}  # wid:workspace_info
         self._workspace_loader = None

@@ -96,13 +96,17 @@ class WorkspaceManager:
     _managers = {}
 
     @staticmethod
-    def get_manager(workspace: str, redis: Redis, root_user: UserInfo, event_bus: EventBus):
+    def get_manager(
+        workspace: str, redis: Redis, root_user: UserInfo, event_bus: EventBus
+    ):
         if workspace in WorkspaceManager._managers:
             return WorkspaceManager._managers[workspace]
         else:
             return WorkspaceManager(workspace, redis, root_user, event_bus)
 
-    def __init__(self, workspace: str, redis: Redis, root_user: UserInfo, event_bus: EventBus):
+    def __init__(
+        self, workspace: str, redis: Redis, root_user: UserInfo, event_bus: EventBus
+    ):
         self._redis = redis
         self._workspace = workspace
         self._initialized = False
@@ -127,7 +131,11 @@ class WorkspaceManager:
 
         # Register an client as root
         await self.register_client(
-            ClientInfo(id=client_id, workspace=self._workspace, user_info=self._root_user.dict())
+            ClientInfo(
+                id=client_id,
+                workspace=self._workspace,
+                user_info=self._root_user.dict(),
+            )
         )
         rpc = await self.create_rpc(client_id)
 
@@ -167,7 +175,7 @@ class WorkspaceManager:
         if user_info.is_anonymous and config["persistent"]:
             raise Exception("Only registered user can create persistent workspace.")
         workspace = WorkspaceInfo.parse_obj(config)
-        # workspace.set_global_event_bus(self.event_bus)
+        # workspace.set_global_event_bus(self._event_bus)
         # make sure we add the user's email to owners
         _id = user_info.email or user_info.id
         if _id not in workspace.owners:
@@ -407,7 +415,10 @@ class WorkspaceManager:
     async def get_service(self, query, context=None):
         # Note: No authorization required because the access is controlled by the client itself
         if isinstance(query, str):
-            query = {"id": query}
+            if ":" in query:
+                query = {"id": query}
+            else:
+                query = {"name": query}
 
         if "id" in query:
             if "/" in query["id"]:
@@ -523,14 +534,16 @@ class WorkspaceManager:
                     "Failed to get the workspace manager service of %s", workspace
                 )
 
-        manager = WorkspaceManager.get_manager(workspace, self._redis, self._root_user, self.event_bus)
+        manager = WorkspaceManager.get_manager(
+            workspace, self._redis, self._root_user, self._event_bus
+        )
         await manager.setup()
         return await manager.get_workspace()
 
     async def _update_workspace(self, config: dict, context=None):
         """Update the workspace config."""
         user_info = UserInfo.parse_obj(context["user"])
-        if not self.check_permission(user_info):
+        if not await self.check_permission(user_info):
             raise PermissionError(f"Permission denied for workspace {self._workspace}")
 
         workspace_info = await self._redis.hget("workspaces", self._workspace)
@@ -553,7 +566,7 @@ class WorkspaceManager:
             workspace.owners.append(_id)
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
         await self._redis.hset("workspaces", workspace.name, workspace.json())
-        self.event_bus.emit("workspace_changed", workspace)
+        self._event_bus.emit("workspace_changed", workspace)
 
     def create_service(self, service_id, service_name=None):
         interface = {
@@ -608,7 +621,10 @@ class RedisStore:
         Redis(uri, serverconfig={"port": str(port)})
         self._redis = aioredis.from_url(f"redis://127.0.0.1:{port}/0")
         self._root_user = None
-        self.event_bus = EventBus()
+        self._event_bus = EventBus()
+
+    def get_event_bus(self):
+        return self._event_bus
 
     async def setup_root_user(self):
         if not self._root_user:
@@ -657,7 +673,7 @@ class RedisStore:
         await self.clear_workspace(workspace.name)
         await self._redis.hset("workspaces", workspace.name, workspace.json())
         await self.get_workspace_manager(workspace.name)
-        self.event_bus.emit("workspace_registered", workspace)
+        self._event_bus.emit("workspace_registered", workspace)
 
     async def clear_workspace(self, workspace: str):
         """Clear a workspace."""
@@ -666,7 +682,9 @@ class RedisStore:
 
     async def connect_to_workspace(self, workspace: str, client_id: str):
         """Connect to a workspace."""
-        manager = WorkspaceManager(workspace, self._redis, await self.setup_root_user())
+        manager = WorkspaceManager(
+            workspace, self._redis, await self.setup_root_user(), self._event_bus
+        )
         await manager.setup(client_id=client_id)
         rpc = await manager.get_rpc()
         wm = await rpc.get_remote_service(workspace + "/workspace-manager:default")
@@ -676,7 +694,7 @@ class RedisStore:
     async def get_workspace_manager(self, workspace: str):
         """Get a workspace manager."""
         manager = WorkspaceManager.get_manager(
-            workspace, self._redis, await self.setup_root_user(), self.event_bus
+            workspace, self._redis, await self.setup_root_user(), self._event_bus
         )
         await manager.setup()
         return manager
@@ -684,7 +702,7 @@ class RedisStore:
     async def get_workspace_interface(self, workspace: str):
         """Get the interface of a workspace."""
         manager = WorkspaceManager.get_manager(
-            workspace, self._redis, await self.setup_root_user(), self.event_bus
+            workspace, self._redis, await self.setup_root_user(), self._event_bus
         )
         return await manager.get_workspace()
 
@@ -697,7 +715,7 @@ class RedisStore:
         """Delete a workspace."""
         winfo = await self.get_workspace_info(workspace)
         await self._redis.hdel("workspaces", workspace)
-        self.even_bus.emit("workspace_removed", winfo)
+        self._event_bus.emit("workspace_removed", winfo)
 
     async def get_workspace_info(self, workspace: str):
         """Get info of the current workspace."""

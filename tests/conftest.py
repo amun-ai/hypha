@@ -71,6 +71,8 @@ def generate_authenticated_user():
 @pytest.fixture(name="fastapi_server", scope="session")
 def fastapi_server_fixture(minio_server):
     """Start server as test fixture and tear down after test."""
+    if os.path.exists("/tmp/redis.db"):
+        os.remove("/tmp/redis.db")
     with subprocess.Popen(
         [
             sys.executable,

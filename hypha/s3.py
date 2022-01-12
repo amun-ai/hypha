@@ -553,9 +553,7 @@ class S3Controller:
         if workspace.read_only:
             return
         # make sure we have the root user in every workspace
-        self.minio_client.admin_group_add(
-            workspace.name, "root"
-        )
+        self.minio_client.admin_group_add(workspace.name, "root")
         policy_name = "policy-ws-" + workspace.name
         # policy example:
         # https://aws.amazon.com/premiumsupport/knowledge-center/iam-s3-user-specific-folder/
