@@ -23,9 +23,7 @@ async def test_redis_store(event_loop, redis_store):
         ),
         overwrite=True,
     )
-    workspace_info = await redis_store.get_workspace_info("test")
-    assert workspace_info.name == "test"
-    assert "test" in await redis_store.list_workspace()
+    assert "test" in await redis_store.list_all_workspaces()
 
     api = await redis_store.connect_to_workspace("test", client_id="test-plugin-99")
     assert set(await api.list_clients()) == {"test-plugin-99", "workspace-manager"}
@@ -73,10 +71,6 @@ async def test_redis_store(event_loop, redis_store):
     assert await service.echo("hello") == "hello"
     assert await service.echo("hello") == "hello"
 
-    # Test deleting a workspace
-    await redis_store.delete_workspace("test")
-    assert "test" not in await redis_store.list_workspace()
-
 
 async def test_websocket_server(
     event_loop, fastapi_server, redis_store, test_user_token
@@ -105,6 +99,7 @@ async def test_websocket_server(
         )
     )
     await wm.log("hello")
+    assert len(await wm.list_user_clients()) == 1
 
     assert set(await wm.list_clients()) == {
         "test-plugin-1",
@@ -228,10 +223,9 @@ async def test_websocket_server(
     array2 = await svc6.add_one(array)
     np.testing.assert_array_equal(array2, array + 1)
 
-    # Test large data transfer
-    # array = np.zeros([2048, 2048, 4])
-    # array2 = await svc6.add_one(array)
-    # np.testing.assert_array_equal(array2, array + 1)
+    assert len(await wm2.list_user_clients()) == 2
+    await wm.disconnect()
+    assert len(await wm2.list_user_clients()) == 1
 
     with pytest.raises(Exception, match=r".*Service already exists: default.*"):
         await rpc2.register_service(

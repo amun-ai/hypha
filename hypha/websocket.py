@@ -38,9 +38,13 @@ class WebsocketServer:
             client_id: str = Query(None),
             token: str = Query(None),
         ):
+            async def disconnect(code):
+                logger.info(f"Disconnecting {code}")
+                await websocket.close(code)
+
             if client_id is None:
                 logger.error("Missing query parameters: workspace, client_id")
-                await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
+                await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
                 return
 
             if token:
@@ -49,7 +53,7 @@ class WebsocketServer:
                     uid = user_info.id
                 except Exception:
                     logger.error("Invalid token: %s", token)
-                    await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
+                    await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
                     return
             else:
                 uid = shortuuid.uuid()
@@ -68,23 +72,32 @@ class WebsocketServer:
             if workspace is None:
                 workspace = uid
                 persistent = not user_info.is_anonymous
-                await store.register_workspace(
-                    dict(
-                        name=uid,
-                        owners=[uid],
-                        visibility="protected",
-                        persistent=persistent,
-                        read_only=False,
-                    ),
-                    overwrite=False,
-                )
+                # If the user disconnected unexpectedly, the workspace will be preserved
+                if not await store.get_user_workspace(uid):
+                    try:
+                        await store.register_workspace(
+                            dict(
+                                name=uid,
+                                owners=[uid],
+                                visibility="protected",
+                                persistent=persistent,
+                                read_only=False,
+                            ),
+                            overwrite=False,
+                        )
+                    except Exception as exp:
+                        logger.error("Failed to create user workspace: %s", exp)
+                        await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
+                        return
             try:
-                workspace_manager = await store.get_workspace_manager(workspace)
+                workspace_manager = await store.get_workspace_manager(
+                    workspace, setup=True
+                )
             except Exception as exp:
                 logger.error(
                     "Failed to get workspace manager %s, error: %s", workspace, exp
                 )
-                await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
+                await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
                 return
             if not await workspace_manager.check_permission(user_info):
                 logger.error(
@@ -92,7 +105,7 @@ class WebsocketServer:
                     client_id,
                     workspace,
                 )
-                await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
+                await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
                 return
 
             if await workspace_manager.check_client_exists(client_id):
@@ -101,7 +114,7 @@ class WebsocketServer:
                     client_id,
                     workspace,
                 )
-                await websocket.close(code=status.WS_1013_TRY_AGAIN_LATER)
+                await disconnect(code=status.WS_1013_TRY_AGAIN_LATER)
                 # await workspace_manager.delete_client(client_id)
                 return
 
@@ -133,8 +146,23 @@ class WebsocketServer:
                     )
             finally:
                 await workspace_manager.delete_client(client_id)
+
                 if user_info.is_anonymous:
-                    await store.delete_user(user_info.id)
+                    remain_clients = await workspace_manager.list_user_clients(
+                        {"user": user_info.dict()}
+                    )
+                    if len(remain_clients) <= 0:
+                        await store.delete_user(user_info.id)
+                        logger.info("Anonymous user (%s) disconnected.", uid)
+                    else:
+                        logger.info(
+                            "Anonymous user (%s) client disconnected (remaining clients: %s)",
+                            uid,
+                            len(remain_clients),
+                        )
+                workspace_info = await workspace_manager.get_workspace_info()
+                if not workspace_info.persistent:
+                    await workspace_manager.delete()
 
     async def is_alive(self):
         """Check if the server is alive."""

@@ -179,7 +179,8 @@ class CoreInterface:
     async def get_workspace(self, name, load=True):
         """Return the workspace."""
         try:
-            return await self.store.get_workspace_info(name)
+            manager = await self.store.get_workspace_manager(name, setup=False)
+            return await manager.get_workspace_info(name)
         except KeyError:
             if load and self._workspace_loader:
                 try:
