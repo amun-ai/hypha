@@ -268,7 +268,7 @@ class S3Controller:
                         "detail": f"Workspace does not exists: {ws}",
                     },
                 )
-            if not core_interface.check_permission(ws, user_info):
+            if not await core_interface.check_permission(ws, user_info):
                 return JSONResponse(
                     status_code=403,
                     content={"success": False, "detail": f"Permission denied: {ws}"},
@@ -296,7 +296,7 @@ class S3Controller:
                         "detail": f"Workspace does not exists: {ws}",
                     },
                 )
-            if not core_interface.check_permission(ws, user_info):
+            if not await core_interface.check_permission(ws, user_info):
                 return JSONResponse(
                     status_code=403,
                     content={"success": False, "detail": f"Permission denied: {ws}"},
@@ -312,7 +312,7 @@ class S3Controller:
 
     async def _workspace_loader(self, workspace_name, user_info):
         """Load workspace from s3 record."""
-        if not self.core_interface.check_permission(workspace_name, user_info):
+        if not await self.core_interface.check_permission(workspace_name, user_info):
             return None
         config_path = f"{self.workspace_etc_dir}/{workspace_name}/config.json"
         async with self.create_client_async() as s3_client:

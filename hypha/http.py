@@ -116,7 +116,7 @@ class HTTPProxy:
             """Route for listing all the services."""
             try:
                 core_interface.current_user.set(user_info)
-                services = await core_interface.list_services()
+                services = await core_interface.list_public_services()
                 info = serialize(services)
                 return JSONResponse(
                     status_code=200,

@@ -39,7 +39,9 @@ api.export({
 
 async def test_server_apps(fastapi_server):
     """Test the server apps."""
-    api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 30}
+    )
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
@@ -47,7 +49,7 @@ async def test_server_apps(fastapi_server):
     # assert len(objects) == 1
 
     # Test plugin with custom template
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/workspace-manager:server-apps")
 
     # objects = await api.list_remote_objects()
     # assert len(objects) == 2
@@ -118,7 +120,7 @@ async def test_web_python_apps(fastapi_server):
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/workspace-manager:server-apps")
     source = (
         (Path(__file__).parent / "testWebPythonPlugin.imjoy.html")
         .open(encoding="utf-8")
@@ -169,7 +171,7 @@ async def test_readiness_liveness(fastapi_server):
     token = await api.generate_token()
 
     # Test plugin with custom template
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/workspace-manager:server-apps")
 
     source = (
         (Path(__file__).parent / "testUnreliablePlugin.imjoy.html")
@@ -209,7 +211,7 @@ async def test_non_persistent_workspace(fastapi_server):
     token = await api.generate_token()
 
     # Test plugin with custom template
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/workspace-manager:server-apps")
 
     source = (
         (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
@@ -255,7 +257,7 @@ async def test_lazy_plugin(fastapi_server):
     api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
 
     # Test plugin with custom template
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/workspace-manager:server-apps")
 
     source = (
         (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
@@ -283,7 +285,7 @@ async def test_lazy_service(fastapi_server):
     api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
 
     # Test plugin with custom template
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/workspace-manager:server-apps")
 
     source = (
         (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")

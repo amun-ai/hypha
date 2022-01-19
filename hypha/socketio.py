@@ -108,7 +108,7 @@ class SocketIOServer:
                 workspace.name,
             )
 
-            if user_info.id != ws and not core_interface.check_permission(
+            if user_info.id != ws and not await core_interface.check_permission(
                 workspace, user_info
             ):
                 logger.warning(

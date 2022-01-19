@@ -96,22 +96,38 @@ class ServerAppController:
             shutil.copy(file, self.apps_dir / "built-in" / file.name)
         router = APIRouter()
         self._initialize_future: Optional[asyncio.Future] = None
-        self._runners = {}
+        self._runners = []
+        for _ in range(2):
+            self._runners.append(
+                BrowserAppRunner(self.core_interface, in_docker=self.in_docker)
+            )
+        self._runner_services = {}
 
         @router.get("/apps/{workspace}/{path:path}")
-        def get_app_file(workspace: str, path: str, token: str) -> Response:
-            user_info = core_interface.get_user_info_from_token(token)
-            if not core_interface.check_permission(workspace, user_info):
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "success": False,
-                        "detail": (
-                            f"{user_info['username']} has no"
-                            f" permission to access {workspace}"
-                        ),
-                    },
-                )
+        async def get_app_file(
+            workspace: str, path: str, token: str = None
+        ) -> Response:
+            if workspace != "built-in":
+                if token is None:
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "success": False,
+                            "detail": (f"Token not provided for {workspace}/{path}"),
+                        },
+                    )
+                user_info = core_interface.get_user_info_from_token(token)
+                if not await core_interface.check_permission(workspace, user_info):
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "success": False,
+                            "detail": (
+                                f"{user_info['username']} has no"
+                                f" permission to access {workspace}"
+                            ),
+                        },
+                    )
             path = safe_join(str(self.apps_dir), workspace, path)
             if os.path.exists(path):
                 return FileResponse(path)
@@ -141,20 +157,13 @@ class ServerAppController:
         self._initialize_future = asyncio.Future()
         try:
             # Start 2 instances of browser
-            brwoser_runner = BrowserAppRunner(
-                self.core_interface, in_docker=self.in_docker
-            )
-            await brwoser_runner.initialize()
+            for brwoser_runner in self._runners:
+                await brwoser_runner.initialize()
 
-            brwoser_runner = BrowserAppRunner(
-                self.core_interface, in_docker=self.in_docker
-            )
-            await brwoser_runner.initialize()
-
-            self._runners = await self.core_interface.list_services(
+            self._runner_services = await self.core_interface.list_public_services(
                 {"type": "plugin-runner"}
             )
-            assert len(self._runners) > 0, "No plugin runner is available."
+            assert len(self._runner_services) > 0, "No plugin runner is available."
             # TODO: check if the plugins are marked as startup plugin
             # and if yes, we will run it directly
 
@@ -348,7 +357,7 @@ class ServerAppController:
             workspace = await self.core_interface.get_workspace(workspace)
 
         user_info = self.core_interface.current_user.get()
-        if not self.core_interface.check_permission(workspace, user_info):
+        if not await self.core_interface.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
                 f" to install apps in workspace {workspace}"
@@ -382,6 +391,7 @@ class ServerAppController:
                     config={k: config[k] for k in config if k in PLUGIN_CONFIG_FIELDS},
                     script=config["script"],
                     requirements=config["requirements"],
+                    local_base_url=self.local_base_url,
                 )
             except Exception as err:
                 raise Exception(
@@ -392,6 +402,7 @@ class ServerAppController:
             default_config = {
                 "name": "Untitled Plugin",
                 "version": "0.1.0",
+                "local_base_url": self.local_base_url,
             }
             default_config.update(config or {})
             config = default_config
@@ -416,7 +427,7 @@ class ServerAppController:
         )
         rdf = RDF.parse_obj(rdf_obj)
         await self.save_application(app_id, rdf, source, attachments)
-        workspace.install_application(rdf)
+        # workspace.install_application(rdf)
         return rdf_obj
 
     async def uninstall(self, app_id: str) -> None:
@@ -429,7 +440,7 @@ class ServerAppController:
         workspace = await self.core_interface.get_workspace(workspace_name)
 
         user_info = self.core_interface.current_user.get()
-        if not self.core_interface.check_permission(workspace, user_info):
+        if not await self.core_interface.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
                 f" to uninstall apps in workspace {workspace.name}"
@@ -455,10 +466,10 @@ class ServerAppController:
             user_info = self.core_interface.get_user_info_from_token(token)
         else:
             user_info = self.core_interface.current_user.get()
-        if not self.core_interface.check_permission(workspace, user_info):
+        if not await self.core_interface.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
-                " to run app in workspace {workspace}."
+                f" to run app in workspace {workspace}."
             )
 
         app_info = await self.install(
@@ -469,10 +480,10 @@ class ServerAppController:
         )
         app_id = app_info["id"]
 
-        if len(self._runners) <= 0:
+        if len(self._runner_services) <= 0:
             await self.initialize()
 
-        assert len(self._runners) > 0, "No plugin runner is available"
+        assert len(self._runner_services) > 0, "No plugin runner is available"
 
         return await self.start(
             app_id, workspace=workspace, token=token, timeout=timeout
@@ -497,7 +508,7 @@ class ServerAppController:
             ws = self.core_interface.store.get_workspace_interface(workspace)
             token = ws.generate_token()
         user_info = self.core_interface.get_user_info_from_token(token)
-        if not self.core_interface.check_permission(workspace, user_info):
+        if not await self.core_interface.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
                 f" to run app {app_id} in workspace {workspace}."
@@ -700,8 +711,8 @@ class ServerAppController:
             timer = startup_timer()
             asyncio.get_running_loop().create_task(timer)
 
-        runner_info = random.choice(self._runners)
-        runner = await self.core_interface.get_service(runner_info)
+        runner_info = random.choice(self._runner_services)
+        runner = await self.core_interface.get_public_service(runner_info)
         await runner.start(url=local_url, plugin_id=plugin_id)
 
         app_info["runner"] = runner

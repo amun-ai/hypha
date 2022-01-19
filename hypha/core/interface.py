@@ -120,57 +120,12 @@ class CoreInterface:
         user_info = parse_user(token)
         return user_info
 
-    def check_permission(self, workspace, user_info):
+    async def check_permission(self, workspace: str, user_info: UserInfo):
         """Check user permission for a workspace."""
-        # pylint: disable=too-many-return-statements
-        if isinstance(workspace, str):
-            workspace = self._all_workspaces.get(workspace)
-            if not workspace:
-                logger.error("Workspace %s not found", workspace)
-                return False
-
-        # Make exceptions for root user, the children of root and test workspace
-        if (
-            user_info.id == "root"
-            or user_info.parent == "root"
-            or workspace.name == "public"
-        ):
-            return True
-
-        if workspace.name == user_info.id:
-            return True
-
-        if user_info.parent:
-            parent = self._all_users.get(user_info.parent)
-            if not parent:
-                return False
-            if not self.check_permission(workspace, parent):
-                return False
-            # if the parent has access
-            # and the workspace is in the scopes
-            # then we allow the access
-            if workspace.name in user_info.scopes:
-                return True
-
-        _id = user_info.email or user_info.id
-
-        if _id in workspace.owners:
-            return True
-
-        if workspace.visibility == VisibilityEnum.public:
-            if workspace.deny_list and user_info.email not in workspace.deny_list:
-                return True
-        elif workspace.visibility == VisibilityEnum.protected:
-            if workspace.allow_list and user_info.email in workspace.allow_list:
-                return True
-
-        if "admin" in user_info.roles:
-            logger.info(
-                "Allowing access to %s for admin user %s", workspace.name, user_info.id
-            )
-            return True
-
-        return False
+        if not isinstance(workspace, str):
+            workspace = workspace.name
+        manager = await self.store.get_workspace_manager(workspace, setup=False)
+        return await manager.check_permission(user_info, workspace)
 
     def get_all_workspace(self):
         """Return all workspaces."""
@@ -216,8 +171,18 @@ class CoreInterface:
         """Register a router."""
         self._app.include_router(router)
 
+    async def list_public_services(self, query=None):
+        """List all public services."""
+        return await self._public_workspace_interface.list_services(query)
+
+    async def get_public_service(self, query=None):
+        """Get public service."""
+        return await self._public_workspace_interface.get_service(query)
+
     def register_public_service(self, service: dict):
         """Register a service."""
+        assert not self._ready, "Cannot register public service after ready"
+
         if "name" not in service or "type" not in service:
             raise Exception("Service should at least contain `name` and `type`")
 

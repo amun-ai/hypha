@@ -4,6 +4,7 @@ import logging
 import sys
 from typing import Any, Dict, List, Optional, Union
 
+import shortuuid
 from playwright.async_api import Page, async_playwright
 
 from hypha.core.interface import CoreInterface
@@ -170,6 +171,7 @@ class BrowserAppRunner:
     def get_service_api(self) -> Dict[str, Any]:
         """Get a list of service api."""
         controller = {
+            "id": "browser-runner-" + shortuuid.uuid(),
             "name": "browser-app-runner",
             "type": "plugin-runner",
             "config": {"visibility": "protected"},
