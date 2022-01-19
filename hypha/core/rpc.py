@@ -3,9 +3,7 @@ import asyncio
 import inspect
 import io
 import logging
-import os
 import sys
-import threading
 import traceback
 import weakref
 from collections import OrderedDict
@@ -118,7 +116,6 @@ class RPC(MessageEmitter):
         self.manager_api = {}
         self._store = ReferenceStore()
         self._codecs = codecs or {}
-        self.abort = threading.Event()
         assert client_id and isinstance(client_id, str)
         assert client_id is not None, "client_id is required"
         self._client_id = client_id
