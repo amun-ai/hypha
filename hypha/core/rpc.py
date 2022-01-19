@@ -164,9 +164,6 @@ class RPC(MessageEmitter):
         assert hasattr(connection, "emit_message") and hasattr(connection, "on_message")
         self._emit_message = connection.emit_message
         connection.on_message(self._on_message)
-        if hasattr(connection, "disconnect"):
-            self.on("disconnect", connection.disconnect)
-
         self.check_modules()
 
     async def _ping(self, msg, context=None):
