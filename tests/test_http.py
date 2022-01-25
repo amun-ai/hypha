@@ -17,7 +17,7 @@ api.export({
     async setup(){
         await api.register_service(
             {
-                "_rintf": true,
+                "id": "test_service",
                 "name": "test_service",
                 "type": "test_service",
                 "config": {
@@ -31,7 +31,7 @@ api.export({
         )
         await api.register_service(
             {
-                "_rintf": true,
+                "id": "test_service_protected",
                 "name": "test_service_protected",
                 "type": "test_service",
                 "config": {
