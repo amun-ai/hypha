@@ -204,7 +204,7 @@ class ServerAppController:
         """List applications in the workspace."""
         if not workspace:
             workspace = self.core_interface.current_workspace.get()
-        
+
         workspace = await self.core_interface.get_workspace(workspace)
         return [app_info.dict() for app_info in workspace.applications.values()]
 
@@ -569,7 +569,9 @@ class ServerAppController:
             asyncio.create_task(self.stop(plugin_id, False))
 
         async def check_ready(client):
-            api = await self.core_interface.get_public_service(f"{client.workspace}/{client.id}:default")
+            api = await self.core_interface.get_public_service(
+                f"{client.workspace}/{client.id}:default"
+            )
             client.name = api.name
             # plugin.register_exit_callback(stop_plugin)
             readiness_probe = api.config.get("readiness_probe", {})
@@ -617,7 +619,12 @@ class ServerAppController:
                         await asyncio.sleep(period)
 
             logger.info("Client `%s` is ready.", client.id)
-            fut.set_result((client, api, ))
+            fut.set_result(
+                (
+                    client,
+                    api,
+                )
+            )
 
         async def keep_alive(api, loop_count):
             liveness_probe = api.config.get("liveness_probe", {})

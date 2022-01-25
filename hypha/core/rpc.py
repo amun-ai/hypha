@@ -161,7 +161,9 @@ class RPC(MessageEmitter):
             )
             self.on("method", self._handle_method)
 
-            assert hasattr(connection, "emit_message") and hasattr(connection, "on_message")
+            assert hasattr(connection, "emit_message") and hasattr(
+                connection, "on_message"
+            )
             self._emit_message = connection.emit_message
             connection.on_message(self._on_message)
         else:
@@ -336,9 +338,7 @@ class RPC(MessageEmitter):
             )
             return await asyncio.wait_for(method(service_id), timeout=timeout)
         except Exception as exp:
-            logger.exception(
-                "Failed to get remote service: %s: %s", service_id, exp
-            )
+            logger.exception("Failed to get remote service: %s: %s", service_id, exp)
             raise
 
     def _annotate_service_methods(

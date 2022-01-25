@@ -106,10 +106,7 @@ async def connect_to_server(config):
     def export(api):
         # Convert class instance to a dict
         if inspect.isclass(type(api)):
-            api = {
-                a: getattr(api, a)
-                for a in dir(api)
-            }
+            api = {a: getattr(api, a) for a in dir(api)}
         api["id"] = "default"
         api["name"] = config.get("name", "default")
         return asyncio.ensure_future(rpc.register_service(api, overwrite=True))

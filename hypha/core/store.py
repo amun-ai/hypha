@@ -23,7 +23,7 @@ from hypha.core import (
     WorkspaceInfo,
     VisibilityEnum,
     TokenConfig,
-    RDF
+    RDF,
 )
 from hypha.core.rpc import RPC
 from hypha.core.auth import generate_presigned_token
@@ -226,7 +226,7 @@ class WorkspaceManager:
         workspace_info = await self.get_workspace_info()
         workspace_info.applications[rdf.id] = rdf.dict()
         await self._update_workspace(workspace_info.dict(), context)
-    
+
     async def uninstall_application(self, rdf_id: str, context: Optional[dict] = None):
         """Uninstall a application from the workspace."""
         workspace_info = await self.get_workspace_info()
@@ -379,9 +379,7 @@ class WorkspaceManager:
     async def _update_client(self, client_info: ClientInfo):
         """Update the client info."""
         assert "/" not in client_info.id
-        if not await self._redis.hexists(
-            f"{self._workspace}:clients", client_info.id
-        ):
+        if not await self._redis.hexists(f"{self._workspace}:clients", client_info.id):
             raise Exception(f"Client {client_info.id} not found.")
         await self._redis.hset(
             f"{self._workspace}:clients", client_info.id, client_info.json()
@@ -506,25 +504,31 @@ class WorkspaceManager:
                     return await ws.get_service(query["id"], context=context)
             if "/" not in query["id"]:
                 query["id"] = self._workspace + "/" + query["id"]
+                workspace = self._workspace
             rpc = await self.setup()
             service_api = await rpc.get_remote_service(query["id"])
+            service_api["config"]["workspace"] = workspace
         elif "name" in query:
             if "workspace" in query:
                 assert await self._redis.hget("workspaces", query["workspace"])
                 ws = await self.get_workspace(query["workspace"])
                 services = await ws.list_services()
+                workspace = query["workspace"]
             else:
                 services = await self.list_services(context=context)
+                workspace = self._workspace
             services = list(
                 filter(lambda service: service["name"] == query["name"], services)
             )
             if not services:
-                raise Exception(f"Service not found: {query['name']}")
+                raise Exception(f"Service not found: {query['name']} in {workspace}")
             service_info = random.choice(services)
             rpc = await self.setup()
             service_api = await rpc.get_remote_service(service_info["id"])
+            service_api["config"]["workspace"] = workspace
         else:
             raise Exception("Please specify the service id or name to get the service")
+
         return service_api
 
     async def get_all_workspace(self):
@@ -656,7 +660,7 @@ class WorkspaceManager:
         winfo = await self.get_workspace_info(self._workspace)
         await self._redis.hdel("workspaces", self._workspace)
         self._event_bus.emit("workspace_removed", winfo)
-        print('===================removing workspace', winfo)
+        print("===================removing workspace", winfo)
 
     def create_service(self, service_id, service_name=None):
         interface = {

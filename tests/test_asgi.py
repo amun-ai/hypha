@@ -18,7 +18,7 @@ async def test_asgi(fastapi_server):
     token = await api.generate_token()
 
     # Test plugin with custom template
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/workspace-manager:server-apps")
 
     source = (
         (Path(__file__).parent / "testASGIWebPythonPlugin.imjoy.html")
@@ -51,7 +51,7 @@ async def test_functions(fastapi_server):
     token = await api.generate_token()
 
     # Test plugin with custom template
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/workspace-manager:server-apps")
 
     source = (
         (Path(__file__).parent / "testFunctionsPlugin.imjoy.html")

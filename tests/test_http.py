@@ -57,7 +57,7 @@ async def test_http_proxy(minio_server, fastapi_server):
     token = await api.generate_token()
 
     # Test plugin with custom template
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/workspace-manager:server-apps")
     config = await controller.launch(
         source=TEST_APP_CODE,
         config={"type": "window"},

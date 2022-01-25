@@ -7,9 +7,9 @@ from typing import Any
 import msgpack
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
-from imjoy_rpc.rpc import RPC
 
 from hypha.core import UserInfo
+from hypha.core.rpc import RPC
 from hypha.core.auth import login_optional
 from hypha.core.interface import CoreInterface
 from hypha.utils import GzipRoute
@@ -75,7 +75,6 @@ async def get_service_as_user(
     core_interface.current_user.set(user_info)
     # There won't be any plugin created in this case
     # so we assume the user is in the public workspace
-    core_interface.current_workspace.set(await core_interface.get_workspace("public"))
     ws = await core_interface.store.get_workspace_interface("public")
     service = await ws.get_service(
         {"workspace": workspace_name, "name": service_name, "launch": True}
@@ -92,8 +91,6 @@ async def list_services_as_user(
     core_interface.current_user.set(user_info)
     # There won't be any plugin created in this case
     # so we assume the user is in the public workspace
-    workspace = await core_interface.get_workspace("public")
-    core_interface.current_workspace.set(workspace)
     ws = await core_interface.store.get_workspace_interface("public")
     services = await ws.list_services({"workspace": workspace_name})
     return services
@@ -224,13 +221,13 @@ class HTTPProxy:
                     )
                 if not callable(value):
                     return JSONResponse(status_code=200, content=serialize(value))
-                _rpc = RPC(None, None)
+                _rpc = RPC(None, "anon")
                 try:
-                    kwargs = _rpc.unwrap(kwargs, False)
+                    kwargs = _rpc.decode(kwargs)
                     results = value(**kwargs)
                     if inspect.isawaitable(results):
                         results = await results
-                    results = _rpc.wrap(results, False)
+                    results = _rpc.encode(results)
                 except Exception:
                     return JSONResponse(
                         status_code=500,

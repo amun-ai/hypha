@@ -347,4 +347,3 @@ class WorkspaceInfo(BaseModel):
             "services": [service.get_summary() for service in self._services.values()],
         }
         return summary
-
