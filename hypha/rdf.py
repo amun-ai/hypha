@@ -119,7 +119,7 @@ class RDFController:
         """Get rdf controller."""
         return {
             "id": "rdf",
-            "name": "RDF service",
+            "name": "RDF",
             "type": "rdf",
             "save": self.save,
             "remove": self.remove,

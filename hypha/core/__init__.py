@@ -348,12 +348,3 @@ class WorkspaceInfo(BaseModel):
         }
         return summary
 
-    def install_application(self, rdf: RDF):
-        """Install a application to the workspace."""
-        self.applications[rdf.id] = rdf
-        self._global_event_bus.emit("workspace_changed", self)
-
-    def uninstall_application(self, rdf_id: str):
-        """Uninstall a application from the workspace."""
-        del self.applications[rdf_id]
-        self._global_event_bus.emit("workspace_changed", self)

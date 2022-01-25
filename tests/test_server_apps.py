@@ -188,7 +188,6 @@ async def test_readiness_liveness(fastapi_server):
                 raise
             await asyncio.sleep(1)
     assert plugin
-    await plugin.exit()
 
 
 async def test_non_persistent_workspace(fastapi_server):

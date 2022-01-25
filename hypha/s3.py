@@ -704,9 +704,8 @@ class S3Controller:
     def get_s3_service(self):
         """Get s3 controller."""
         return {
-            "_rintf": True,
             "id": "s3-storage",
-            "name": "S3 Storage Service",
+            "name": "S3 Storage",
             "type": "s3-storage",
             "config": {"visibility": "public"},
             "list_files": self.list_files,

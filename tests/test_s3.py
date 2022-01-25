@@ -23,7 +23,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
 
     s3controller = await api.get_service("public/workspace-manager:s3-storage")
     assert s3controller
-    s3controller = await api.get_service({"workspace": "public", "name": "s3-storage"})
+    s3controller = await api.get_service({"workspace": "public", "name": "S3 Storage"})
     info = await s3controller.generate_credential()
     async with aioboto3.Session().resource(
         "s3",

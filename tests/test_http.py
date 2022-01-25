@@ -110,7 +110,7 @@ async def test_http_proxy(minio_server, fastapi_server):
     response = requests.get(f"{SERVER_URL}/public/services/s3-storage")
     assert response.ok
     service_info = response.json()
-    assert service_info["name"] == "s3-storage"
+    assert service_info["id"] == "s3-storage"
 
     response = requests.get(
         f"{SERVER_URL}/public/services/s3-storage/generate_credential"

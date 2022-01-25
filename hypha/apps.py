@@ -326,7 +326,7 @@ class ServerAppController:
         """Get a list of service api."""
         # TODO: check permission for each function
         controller = {
-            "name": "Server Apps Service",
+            "name": "Server Apps",
             "id": "server-apps",
             "type": "server-apps",
             "config": {"visibility": "public"},
@@ -434,7 +434,8 @@ class ServerAppController:
         )
         rdf = RDF.parse_obj(rdf_obj)
         await self.save_application(app_id, rdf, source, attachments)
-        # workspace.install_application(rdf)
+        ws = await self.core_interface.store.get_workspace_interface(workspace.name)
+        await ws.install_application(rdf.dict())
         return rdf_obj
 
     async def uninstall(self, app_id: str) -> None:
@@ -452,6 +453,9 @@ class ServerAppController:
                 f"User {user_info.id} does not have permission"
                 f" to uninstall apps in workspace {workspace.name}"
             )
+
+        ws = await self.core_interface.store.get_workspace_interface(workspace.name)
+        await ws.uninstall_application(app_id)
 
         async with self.create_client_async() as s3_client:
             app_dir = f"{workspace.name}/{self.user_applications_dir}/{mhash}/"
@@ -519,7 +523,7 @@ class ServerAppController:
         if workspace != app_id.split("/")[0]:
             raise Exception("Workspace mismatch between app_id and workspace.")
         if token is None:
-            ws = self.core_interface.store.get_workspace_interface(workspace)
+            ws = await self.core_interface.store.get_workspace_interface(workspace)
             token = ws.generate_token()
         user_info = self.core_interface.get_user_info_from_token(token)
         if not await self.core_interface.check_permission(workspace, user_info):

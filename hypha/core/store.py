@@ -23,6 +23,7 @@ from hypha.core import (
     WorkspaceInfo,
     VisibilityEnum,
     TokenConfig,
+    RDF
 )
 from hypha.core.rpc import RPC
 from hypha.core.auth import generate_presigned_token
@@ -217,6 +218,22 @@ class WorkspaceManager:
             k = k.decode()
             await self.delete_client(k)
         await self._redis.delete(f"{workspace}:clients")
+
+    async def install_application(self, rdf: dict, context: Optional[dict] = None):
+        """Install an application to the workspace."""
+        rdf = RDF.parse_obj(rdf)
+        # TODO: check if the application is already installed
+        workspace_info = await self.get_workspace_info()
+        workspace_info.applications[rdf.id] = rdf.dict()
+        await self._update_workspace(workspace_info.dict(), context)
+    
+    async def uninstall_application(self, rdf_id: str, context: Optional[dict] = None):
+        """Uninstall a application from the workspace."""
+        workspace_info = await self.get_workspace_info()
+        if rdf_id not in workspace_info.applications:
+            raise KeyError("Application not found: " + rdf_id)
+        del workspace_info.applications[rdf_id]
+        await self._update_workspace(workspace_info.dict(), context)
 
     async def register_service(self, service, context: Optional[dict] = None, **kwargs):
         """Register a service"""
@@ -607,7 +624,7 @@ class WorkspaceManager:
 
         workspace_info = await self._redis.hget("workspaces", self._workspace)
         workspace = WorkspaceInfo.parse_obj(json.loads(workspace_info.decode()))
-        if "name" in config:
+        if "name" in config and config["name"] != workspace.name:
             raise Exception("Changing workspace name is not allowed.")
 
         # make sure all the keys are valid
@@ -675,6 +692,10 @@ class WorkspaceManager:
             "get_workspace": self.get_workspace,
             "getWorkspace": self.get_workspace,
             "set": self._update_workspace,
+            "install_application": self.install_application,
+            "installApplication": self.install_application,
+            "uninstall_application": self.uninstall_application,
+            "uninstallApplication": self.uninstall_application,
         }
         return interface
 

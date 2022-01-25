@@ -99,7 +99,7 @@ class TritonProxy:
         """Return the triton service."""
         return {
             "id": "triton-client",
-            "name": "Triton Client service",
+            "name": "Triton Client",
             "type": "triton-client",
             "config": {"visibility": "public"},
             "execute": self.execute,
