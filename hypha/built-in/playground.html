@@ -87,7 +87,7 @@ api.export({"setup": setup})
                 theme: 'vs-light',
             });
             const config = Object.fromEntries(new URLSearchParams(window.location.search))
-            if(!config.server_url) config.server_url = window.location.origin;
+            if(!config.server_url) config.server_url = window.location.origin.replace("http", "ws")+"/ws";
             // make the plugin passive so we don't need to export api
             config.passive = true
             imjoyRPCSocketIO.connectToServer(config).then(async (api)=>{

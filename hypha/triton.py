@@ -98,8 +98,8 @@ class TritonProxy:
     def get_triton_service(self):
         """Return the triton service."""
         return {
-            "_rintf": True,
-            "name": "triton-client",
+            "id": "triton-client",
+            "name": "Triton Client service",
             "type": "triton-client",
             "config": {"visibility": "public"},
             "execute": self.execute,

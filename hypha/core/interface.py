@@ -238,7 +238,11 @@ class CoreInterface:
 
         await self.store.init()
         for service in self._public_services:
-            await self._public_workspace_interface.register_service(service.dict())
+            try:
+                await self._public_workspace_interface.register_service(service.dict())
+            except Exception:  # pylint: disable=broad-except
+                logger.exception("Failed to register public service: %s", service)
+                raise
         self._ready = True
 
     def mount_app(self, path, app, name=None, priority=-1):

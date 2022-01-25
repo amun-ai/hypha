@@ -162,7 +162,7 @@ class WebsocketServer:
                         )
                 workspace_info = await workspace_manager.get_workspace_info()
                 if not workspace_info.persistent:
-                    await workspace_manager.delete()
+                    await workspace_manager.delete_if_empty()
 
     async def is_alive(self):
         """Check if the server is alive."""

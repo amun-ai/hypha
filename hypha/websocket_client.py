@@ -95,15 +95,23 @@ async def connect_to_server(config):
     rpc = RPC(
         connection,
         client_id=client_id,
-        name=config.get("name"),
         root_target_id="workspace-manager",
         default_context={"connection_type": "websocket"},
+        name=config.get("name"),
         method_timeout=config.get("method_timeout"),
     )
     wm = await rpc.get_remote_service("workspace-manager:default")
     wm.rpc = rpc
 
     def export(api):
+        # Convert class instance to a dict
+        if inspect.isclass(type(api)):
+            api = {
+                a: getattr(api, a)
+                for a in dir(api)
+            }
+        api["id"] = "default"
+        api["name"] = config.get("name", "default")
         return asyncio.ensure_future(rpc.register_service(api, overwrite=True))
 
     async def get_plugin(query):
@@ -119,4 +127,5 @@ async def connect_to_server(config):
     wm.get_plugin = get_plugin
     wm.list_plugins = wm.list_services
     wm.disconnect = disconnect
+    wm.register_codec = rpc.register_codec
     return wm

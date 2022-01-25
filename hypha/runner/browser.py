@@ -116,11 +116,13 @@ class BrowserAppRunner:
         # TODO: dispose await context.close()
 
         try:
-            response = await page.goto(url)
+            logger.info("Loading page: %s", url)
+            response = await page.goto(url, timeout=0, wait_until="load")
             assert response.status == 200, (
                 "Failed to start browser app instance, "
                 f"status: {response.status}, url: {url}"
             )
+            logger.info("Paged loaded")
         except Exception:
             await page.close()
             del self.browser_pages[page_id]

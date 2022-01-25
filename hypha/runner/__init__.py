@@ -1,16 +1,18 @@
 """Provide main entrypoint."""
 import asyncio
+import inspect
 import json
 import logging
 import os
 import re
 import sys
 import urllib.request
+from types import ModuleType
 
 import yaml
-from hypha.websocket_client import connect_to_server
+
 from hypha.utils import dotdict
-from types import ModuleType
+from hypha.websocket_client import connect_to_server
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("plugin-runner")
@@ -21,12 +23,19 @@ async def export_service(plugin_api, config, imjoy_rpc):
     try:
         wm = await connect_to_server(config)
         rpc = wm.rpc
-        await rpc.register_service(plugin_api)
+        if inspect.isclass(type(plugin_api)):
+            plugin_api = {
+                a: getattr(plugin_api, a)
+                for a in dir(plugin_api)
+            }
+        plugin_api["id"] = "default"
+        await rpc.register_service(plugin_api, overwrite=True)
         remote_api = await rpc.get_remote_service("workspace-manager:default")
         imjoy_rpc.api.update(remote_api)
         imjoy_rpc.api.register_service = rpc.register_service
-        svc = await rpc.get_remote_service(rpc._client_id + ":" + rpc._name)
-        await svc.setup()
+        svc = await rpc.get_remote_service(rpc._client_id + ":default")
+        if svc.setup:
+            await svc.setup()
     except Exception as exp:
         logger.exception(exp)
         loop = asyncio.get_event_loop()

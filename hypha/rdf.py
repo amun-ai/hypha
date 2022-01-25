@@ -118,8 +118,8 @@ class RDFController:
     def get_rdf_service(self):
         """Get rdf controller."""
         return {
-            "_rintf": True,
-            "name": "rdf",
+            "id": "rdf",
+            "name": "RDF service",
             "type": "rdf",
             "save": self.save,
             "remove": self.remove,

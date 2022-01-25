@@ -14,25 +14,28 @@ window = self;
 
 self.onmessage = function(e) {
 const config = e.data
-importScripts("https://cdn.jsdelivr.net/npm/imjoy-rpc@0.4.3/dist/imjoy-rpc-socketio.min.js")
 
-imjoyRPCSocketIO.connectToServer(config).then(async (api)=>{
-await imjoyRPCSocketIO.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
+importScripts("https://static.imjoy.io/js/imjoy-websocket-client.min.js")
+
+imjoyWebsocketClient.connectToServer(config).then(async (api)=>{
+await imjoyWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
 {{ script | safe }}
 }).catch(console.error)
 }
 </script>
-    <script>
-        const blob = new Blob([
-          document.querySelector('#worker').textContent
-        ], { type: "text/javascript" })
-        const worker = new Worker(window.URL.createObjectURL(blob));
-        worker.onerror = console.error
-        worker.onmessage = console.log
-        const cfg = {{ config | tojson(indent=2) }}
-        const config = Object.assign(cfg, Object.fromEntries(new URLSearchParams(window.location.search)));
-        if(!config.server_url) config.server_url = window.location.origin;
-        worker.postMessage(config); 
-    </script>
+<script>
+window.onload = function() {
+    const blob = new Blob([
+        document.querySelector('#worker').textContent
+    ], { type: "text/javascript" })
+    const worker = new Worker(window.URL.createObjectURL(blob));
+    worker.onerror = console.error
+    worker.onmessage = console.log
+    const cfg = {{ config | tojson(indent=2) }}
+    const config = Object.assign(cfg, Object.fromEntries(new URLSearchParams(window.location.search)));
+    if(!config.server_url) config.server_url = window.location.origin.replace("http", "ws")+"/ws";
+    worker.postMessage(config); 
+}
+</script>
 </body>
 </html>

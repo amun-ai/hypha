@@ -1,3 +1,4 @@
+
 <!doctype html>
 <html lang="en">
 <head>
@@ -12,12 +13,38 @@
 <body>
 <script>
 window.onload = function() {
-  const cfg = {{ config | tojson(indent=2) }}
+  const cfg = {
+  "local_base_url": "http://127.0.0.1:38283",
+  "name": "Untitled Plugin",
+  "type": "window",
+  "version": "0.1.0"
+}
   const config = Object.assign(cfg, Object.fromEntries(new URLSearchParams(window.location.search)));
   if(!config.server_url) config.server_url = window.location.origin.replace("http", "ws")+"/ws";
   imjoyWebsocketClient.connectToServer(config).then(async (api)=>{
-      await imjoyWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
-      {{ script | safe }}
+      await imjoyWebsocketClient.loadRequirements([])
+      
+api.log('awesome!connected!');
+
+api.export({
+    async setup(){
+        console.log("this is a log");
+        console.error("this is an error");
+        await api.log("initialized")
+    },
+    async check_webgpu(){
+        if ("gpu" in navigator) {
+            // WebGPU is supported! 🎉
+            return true
+        }
+        else return false
+    },
+    async execute(a, b){
+        console.log("executing", a, b);
+        return a + b
+    }
+})
+
   }).catch(console.error)
 }
 </script>

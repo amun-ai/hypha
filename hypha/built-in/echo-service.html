@@ -6,15 +6,14 @@
    <title>ImJoy Plugin Template</title>
    <meta name="description" content="Template for ImJoy plugin">
    <meta name="author" content="ImJoy-Team">
-   <script src="https://cdn.jsdelivr.net/npm/imjoy-rpc@0.4.3/dist/imjoy-rpc-socketio.min.js"></script>
-   <scrpt src="https://cdn.jsdelivr.net/npm/imjoy-core@0.13.82/src/pluginParser.js"></scrpt>
+   <script src="https://static.imjoy.io/js/imjoy-websocket-client.min.js"></script>
 </head>
 
 <body>
     <script>
         const config = Object.fromEntries(new URLSearchParams(window.location.search))
-        if(!config.server_url) config.server_url = window.location.origin;
-        imjoyRPCSocketIO.connectToServer(config).then((api)=>{
+        if(!config.server_url) config.server_url = window.location.origin.replace("http", "ws")+"/ws";
+        imjoyWebsocketClient.connectToServer(config).then(async (api)=>{
             async function setup(){
                 await api.register_service(
                     {

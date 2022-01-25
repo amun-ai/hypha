@@ -15,7 +15,6 @@ import shortuuid
 from imjoy_rpc.utils import (
     FuturePromise,
     MessageEmitter,
-    ReferenceStore,
     dotdict,
     format_traceback,
 )
@@ -23,7 +22,11 @@ from imjoy_rpc.utils import (
 CHUNK_SIZE = 1024 * 500
 API_VERSION = "0.2.3"
 ALLOWED_MAGIC_METHODS = ["__enter__", "__exit__"]
-IO_METHODS = [
+IO_PROPS = [
+    "name",  # file name
+    "size",  # size in bytes
+    "path",  # file path
+    "type",  # type type
     "fileno",
     "seek",
     "truncate",
@@ -51,7 +54,7 @@ IO_METHODS = [
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("RPC")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.WARNING)
 
 
 def index_object(obj, ids):
@@ -113,8 +116,6 @@ class RPC(MessageEmitter):
         max_message_buffer_size=0,
     ):
         """Set up instance."""
-        self.manager_api = {}
-        self._store = ReferenceStore()
         self._codecs = codecs or {}
         assert client_id and isinstance(client_id, str)
         assert client_id is not None, "client_id is required"
@@ -139,29 +140,51 @@ class RPC(MessageEmitter):
         self._object_store = {
             "services": self._services,
         }
-        self.add_service(
-            {
-                "id": "built-in",
-                "type": "built-in",
-                "name": "RPC built-in services",
-                "config": {"require_context": True, "visibility": "public"},
-                "ping": self._ping,
-                "get_service": self.get_local_service,
-                "register_service": self.register_service,
-                "message_cache": {
-                    "create": self._create_message,
-                    "append": self._append_message,
-                    "process": self._process_message,
-                    "remove": self._remove_message,
-                },
-            }
-        )
-        self.on("method", self._handle_method)
 
-        assert hasattr(connection, "emit_message") and hasattr(connection, "on_message")
-        self._emit_message = connection.emit_message
-        connection.on_message(self._on_message)
+        if connection:
+            self.add_service(
+                {
+                    "id": "built-in",
+                    "type": "built-in",
+                    "name": "RPC built-in services",
+                    "config": {"require_context": True, "visibility": "public"},
+                    "ping": self._ping,
+                    "get_service": self.get_local_service,
+                    "register_service": self.register_service,
+                    "message_cache": {
+                        "create": self._create_message,
+                        "append": self._append_message,
+                        "process": self._process_message,
+                        "remove": self._remove_message,
+                    },
+                }
+            )
+            self.on("method", self._handle_method)
+
+            assert hasattr(connection, "emit_message") and hasattr(connection, "on_message")
+            self._emit_message = connection.emit_message
+            connection.on_message(self._on_message)
+        else:
+
+            async def _emit_message(_):
+                logger.info("No connection to emit message")
+
+            self._emit_message = _emit_message
+
         self.check_modules()
+
+    def register_codec(self, config):
+        """Register codec."""
+        assert "name" in config
+        assert "encoder" in config or "decoder" in config
+        if "type" in config:
+            for tp in list(self._codecs.keys()):
+                codec = self._codecs[tp]
+                if codec.type == config["type"] or tp == config["name"]:
+                    logger.info("Removing duplicated codec: " + tp)
+                    del self._codecs[tp]
+
+        self._codecs[config["name"]] = dotdict(config)
 
     async def _ping(self, msg, context=None):
         assert msg == "ping"
@@ -210,7 +233,7 @@ class RPC(MessageEmitter):
             raise KeyError(f"Message with key {key} does not exists.")
         del cache[key]
 
-    def _process_message(self, key, remove=True, heartbeat=False, context=None):
+    def _process_message(self, key, heartbeat=False, context=None):
         if heartbeat:
             if key not in self._object_store:
                 raise Exception(f"session does not exist anymore: {key}")
@@ -240,8 +263,7 @@ class RPC(MessageEmitter):
         except msgpack.exceptions.OutOfData:
             pass
         self._fire(main["type"], main)
-        if remove:
-            del cache[key]
+        del cache[key]
 
     def _on_message(self, message):
         """Handle message."""
@@ -262,7 +284,6 @@ class RPC(MessageEmitter):
         """Reset."""
         self._event_handlers = {}
         self._services = {}
-        self._store = ReferenceStore()
 
     async def disconnect(self):
         """Disconnect."""
@@ -314,9 +335,9 @@ class RPC(MessageEmitter):
                 }
             )
             return await asyncio.wait_for(method(service_id), timeout=timeout)
-        except Exception:
+        except Exception as exp:
             logger.exception(
-                "Failed to get remote service: %s", provider + ":" + service_id
+                "Failed to get remote service: %s: %s", service_id, exp
             )
             raise
 
@@ -328,35 +349,7 @@ class RPC(MessageEmitter):
         run_in_executor=False,
         visibility="protected",
     ):
-        if isinstance(a_object, (dict, list, tuple)):
-            items = (
-                a_object.items() if isinstance(a_object, dict) else enumerate(a_object)
-            )
-            for key, val in items:
-                if callable(val) and hasattr(val, "__remote_method__"):
-                    if self._client_id == val.__remote_method__["_rtarget"]:
-                        # Make sure we can modify the object
-                        if isinstance(a_object, tuple):
-                            a_object = list(a_object)
-                        # recover local method
-                        a_object[key] = index_object(
-                            self._object_store, val.__remote_method__["_rmethod"]
-                        )
-                        val = a_object[key]  # make sure it's annotated later
-                    else:
-                        raise Exception(
-                            "Local method not found: {}".format(
-                                val.__remote_method__["_rmethod"]
-                            )
-                        )
-                self._annotate_service_methods(
-                    val,
-                    object_id + "." + str(key),
-                    require_context=require_context,
-                    run_in_executor=run_in_executor,
-                    visibility=visibility,
-                )
-        elif callable(a_object):
+        if callable(a_object):
             # mark the method as a remote method that requires context
             method_name = ".".join(object_id.split(".")[1:])
             self._method_annotations[a_object] = {
@@ -367,6 +360,34 @@ class RPC(MessageEmitter):
                 "method_id": "services." + object_id,
                 "visibility": visibility,
             }
+        elif isinstance(a_object, (dict, list, tuple)):
+            items = (
+                a_object.items() if isinstance(a_object, dict) else enumerate(a_object)
+            )
+            for key, val in items:
+                if callable(val) and hasattr(val, "__rpc_object__"):
+                    if self._client_id == val.__rpc_object__["_rtarget"]:
+                        # Make sure we can modify the object
+                        if isinstance(a_object, tuple):
+                            a_object = list(a_object)
+                        # recover local method
+                        a_object[key] = index_object(
+                            self._object_store, val.__rpc_object__["_rmethod"]
+                        )
+                        val = a_object[key]  # make sure it's annotated later
+                    else:
+                        raise Exception(
+                            "Local method not found: {}".format(
+                                val.__rpc_object__["_rmethod"]
+                            )
+                        )
+                self._annotate_service_methods(
+                    val,
+                    object_id + "." + str(key),
+                    require_context=require_context,
+                    run_in_executor=run_in_executor,
+                    visibility=visibility,
+                )
 
     def add_service(self, api, overwrite=False):
         """Add a service (silently without triggering notifications)."""
@@ -392,7 +413,7 @@ class RPC(MessageEmitter):
             raise Exception("Invalid service object type: {}".format(type(api)))
 
         if "id" not in api:
-            api["id"] = api.get("name", self._name or "default")
+            api["id"] = "default"
 
         if "name" not in api:
             api["name"] = api["id"]
@@ -421,7 +442,7 @@ class RPC(MessageEmitter):
         if not overwrite and api["id"] in self._services:
             raise Exception(
                 f"Service already exists: {api['id']}, please specify"
-                f" a different id (not `{api['id']}`) or overwrite=True"
+                f" a different id (not {api['id']}) or overwrite=True"
             )
         self._services[api["id"]] = api
         return api
@@ -498,7 +519,8 @@ class RPC(MessageEmitter):
             try:
                 callback(*args, **kwargs)
             except asyncio.exceptions.InvalidStateError:
-                logger.warning("Invalid state error in callback: %s", method_id)
+                # This probably means the task was cancelled
+                logger.debug("Invalid state error in callback: %s", method_id)
             finally:
                 if clear_after_called and session_id in self._object_store:
                     logger.info(
@@ -689,53 +711,17 @@ class RPC(MessageEmitter):
                     elif timer:
                         logger.info("Start watchdog timer.")
                         # Only start the timer after we send the message successfully
-                        if timer:
-                            timer.start()
+                        timer.start()
 
                 emit_task.add_done_callback(handle_result)
 
             return FuturePromise(pfunc, self._remote_logger)
 
         # Generate debugging information for the method
-        remote_method.__remote_method__ = (
+        remote_method.__rpc_object__ = (
             encoded_method.copy()
         )  # pylint: disable=protected-access
         return remote_method
-
-    async def wait_for(self, event, query=None, timeout=None):
-        """Wait for event."""
-        fut = self.loop.create_future()
-
-        def on_event(data):
-            if not query:
-                fut.set_result(data)
-                self.off(event, on_event)
-            elif isinstance(query, dict):
-                matched = True
-                for key in query:
-                    if data.get(key) != query[key]:
-                        matched = False
-                        break
-                if matched:
-                    fut.set_result(data)
-                    self.off(event, on_event)
-            elif query == data:
-                fut.set_result(data)
-                self.off(event, on_event)
-
-        self.on(event, on_event)
-        try:
-            ret = await asyncio.wait_for(fut, timeout)
-        # except timeout error
-        except asyncio.exceptions.TimeoutError:
-            self.off(event, on_event)
-            raise
-        return ret
-
-    def set_remote_interface(self, data):
-        """Set remote interface."""
-        data["api"] = self._decode(data["api"])
-        self._fire("remoteReady", data)
 
     def _log(self, info):
         logger.info("RPC Info: %s", info)
@@ -844,8 +830,6 @@ class RPC(MessageEmitter):
                                 )
                                 await promise["heartbeat"]()
                             except asyncio.CancelledError:
-                                if method_task:
-                                    method_task.cancel()
                                 break
                             except Exception:  # pylint: disable=broad-except
                                 if method_task and not method_task.done():
@@ -886,7 +870,11 @@ class RPC(MessageEmitter):
                 session_target_id = self._object_store[data["method"].split(".")[0]][
                     "target_id"
                 ]
-                if local_workspace == remote_workspace and "/" not in session_target_id:
+                if (
+                    local_workspace == remote_workspace
+                    and session_target_id
+                    and "/" not in session_target_id
+                ):
                     session_target_id = local_workspace + "/" + session_target_id
                 if session_target_id != data["from"]:
                     raise PermissionError(
@@ -988,6 +976,10 @@ class RPC(MessageEmitter):
         if isinstance(a_object, dict):
             a_object = dict(a_object)
 
+        # Reuse the remote object
+        if hasattr(a_object, "__rpc_object__"):
+            return a_object.__rpc_object__
+
         # skip if already encoded
         if isinstance(a_object, dict) and "_rtype" in a_object:
             # make sure the interface functions are encoded
@@ -1002,9 +994,6 @@ class RPC(MessageEmitter):
             return b_object
 
         if callable(a_object):
-            # Reuse the remote method
-            if hasattr(a_object, "__remote_method__"):
-                return a_object.__remote_method__
 
             if a_object in self._method_annotations:
                 annotation = self._method_annotations[a_object]
@@ -1049,7 +1038,7 @@ class RPC(MessageEmitter):
                 if isinstance(encoded_obj, dict) and "_rtype" not in encoded_obj:
                     encoded_obj["_rtype"] = codec.name
                 # encode the functions in the interface object
-                if isinstance(encoded_obj, dict) and "_rintf" in encoded_obj:
+                if isinstance(encoded_obj, dict):
                     temp = encoded_obj["_rtype"]
                     del encoded_obj["_rtype"]
                     encoded_obj = self._encode(
@@ -1080,9 +1069,10 @@ class RPC(MessageEmitter):
             a_object, (io.IOBase, io.TextIOBase, io.BufferedIOBase, io.RawIOBase)
         ):
             b_object = {
-                m: getattr(a_object, m) for m in IO_METHODS if hasattr(a_object, m)
+                m: getattr(a_object, m) for m in IO_PROPS if hasattr(a_object, m)
             }
-            b_object["_rintf"] = True
+            b_object["_rtype"] = "iostream"
+            b_object["_rnative"] = "py:" + str(type(a_object))
             b_object = self._encode(
                 b_object,
                 session_id=session_id,
@@ -1150,17 +1140,16 @@ class RPC(MessageEmitter):
                 self._codecs.get(a_object["_rtype"])
                 and self._codecs[a_object["_rtype"]].decoder
             ):
-                if "_rintf" in a_object:
-                    temp = a_object["_rtype"]
-                    del a_object["_rtype"]
-                    a_object = self._decode(
-                        a_object,
-                        remote_parent=remote_parent,
-                        local_parent=local_parent,
-                        remote_workspace=remote_workspace,
-                        local_workspace=local_workspace,
-                    )
-                    a_object["_rtype"] = temp
+                temp = a_object["_rtype"]
+                del a_object["_rtype"]
+                a_object = self._decode(
+                    a_object,
+                    remote_parent=remote_parent,
+                    local_parent=local_parent,
+                    remote_workspace=remote_workspace,
+                    local_workspace=local_workspace,
+                )
+                a_object["_rtype"] = temp
                 b_object = self._codecs[a_object["_rtype"]].decoder(a_object)
             elif a_object["_rtype"] == "method":
                 b_object = self._generate_remote_method(
@@ -1201,15 +1190,21 @@ class RPC(MessageEmitter):
                     raise exc
             elif a_object["_rtype"] == "memoryview":
                 b_object = memoryview(a_object["_rvalue"])
-            elif a_object["_rtype"] == "blob":
-                if isinstance(a_object["_rvalue"], str):
-                    b_object = io.StringIO(a_object["_rvalue"])
-                elif isinstance(a_object["_rvalue"], bytes):
-                    b_object = io.BytesIO(a_object["_rvalue"])
-                else:
-                    raise Exception(
-                        "Unsupported blob value type: " + str(type(a_object["_rvalue"]))
-                    )
+            elif a_object["_rtype"] == "iostream":
+                b_object = dotdict(
+                    {
+                        k: self._decode(
+                            a_object[k],
+                            remote_parent=remote_parent,
+                            local_parent=local_parent,
+                            remote_workspace=remote_workspace,
+                            local_workspace=local_workspace,
+                        )
+                        for k in a_object
+                        if not k.startswith("_")
+                    }
+                )
+                b_object["__rpc_object__"] = a_object
             elif a_object["_rtype"] == "typedarray":
                 if self.NUMPY_MODULE:
                     b_object = self.NUMPY_MODULE.frombuffer(
@@ -1241,17 +1236,16 @@ class RPC(MessageEmitter):
                 b_object = Exception(a_object["_rvalue"])
             else:
                 # make sure all the interface functions are decoded
-                if "_rintf" in a_object:
-                    temp = a_object["_rtype"]
-                    del a_object["_rtype"]
-                    a_object = self._decode(
-                        a_object,
-                        remote_parent=remote_parent,
-                        local_parent=local_parent,
-                        remote_workspace=remote_workspace,
-                        local_workspace=local_workspace,
-                    )
-                    a_object["_rtype"] = temp
+                temp = a_object["_rtype"]
+                del a_object["_rtype"]
+                a_object = self._decode(
+                    a_object,
+                    remote_parent=remote_parent,
+                    local_parent=local_parent,
+                    remote_workspace=remote_workspace,
+                    local_workspace=local_workspace,
+                )
+                a_object["_rtype"] = temp
                 b_object = a_object
         elif isinstance(a_object, (dict, list, tuple)):
             if isinstance(a_object, tuple):
@@ -1280,10 +1274,10 @@ class RPC(MessageEmitter):
                         local_workspace=local_workspace,
                     )
         # make sure we have bytes instead of memoryview, e.g. for Pyodide
-        elif isinstance(a_object, memoryview):
-            b_object = a_object.tobytes()
-        elif isinstance(a_object, bytearray):
-            b_object = bytes(a_object)
+        # elif isinstance(a_object, memoryview):
+        #     b_object = a_object.tobytes()
+        # elif isinstance(a_object, bytearray):
+        #     b_object = bytes(a_object)
         else:
             b_object = a_object
         return b_object

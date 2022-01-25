@@ -705,7 +705,8 @@ class S3Controller:
         """Get s3 controller."""
         return {
             "_rintf": True,
-            "name": "s3-storage",
+            "id": "s3-storage",
+            "name": "S3 Storage Service",
             "type": "s3-storage",
             "config": {"visibility": "public"},
             "list_files": self.list_files,

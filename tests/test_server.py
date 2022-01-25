@@ -40,7 +40,9 @@ async def test_connect_to_server(fastapi_server):
         )
     wm = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
     rpc = wm.rpc
-    await rpc.register_service(ImJoyPlugin(wm))
+    service_info = await rpc.register_service(ImJoyPlugin(wm))
+    service = await wm.get_service(service_info)
+    assert await service.run(None) is None
     await wm.log("hello")
 
 

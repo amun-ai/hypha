@@ -61,7 +61,7 @@ async def test_server_apps(fastapi_server):
         token=token,
     )
     assert "app_id" in config
-    plugin = await api.get_plugin(config.name)
+    plugin = await api.get_service(f"{workspace}/{config.id}:default")
 
     # objects = await api.list_remote_objects()
     # assert len(objects) == 3
@@ -71,22 +71,7 @@ async def test_server_apps(fastapi_server):
     assert result == 6
     webgpu_available = await plugin.check_webgpu()
     assert webgpu_available is True
-    # only pass name so the app won't be removed
-    await controller.stop(config.id)
 
-    config = await controller.launch(
-        source=TEST_APP_CODE,
-        config={"type": "window"},
-        workspace=workspace,
-        token=token,
-    )
-    assert "id" in config
-    plugin = await api.get_plugin(config.name)
-    assert "execute" in plugin
-    result = await plugin.execute(2, 4)
-    assert result == 6
-    webgpu_available = await plugin.check_webgpu()
-    assert webgpu_available is True
     # Test logs
     logs = await controller.get_log(config.id)
     assert "log" in logs and "error" in logs
@@ -94,6 +79,7 @@ async def test_server_apps(fastapi_server):
     assert len(logs) == 1
 
     await controller.stop(config.id)
+
     # Test window plugin
     source = (
         (Path(__file__).parent / "testWindowPlugin1.imjoy.html")
@@ -107,7 +93,7 @@ async def test_server_apps(fastapi_server):
         token=token,
     )
     assert "app_id" in config
-    plugin = await api.get_plugin(config)
+    plugin = await api.get_service(f"{workspace}/{config.id}:default")
     assert "add2" in plugin
     result = await plugin.add2(4)
     assert result == 6
@@ -131,7 +117,8 @@ async def test_web_python_apps(fastapi_server):
         workspace=workspace,
         token=token,
     )
-    plugin = await api.get_plugin(config.name)
+    assert config.name == "WebPythonPlugin"
+    plugin = await api.get_service(f"{workspace}/{config.id}:default")
     assert "add2" in plugin
     result = await plugin.add2(4)
     assert result == 6
@@ -147,7 +134,7 @@ async def test_web_python_apps(fastapi_server):
         workspace=workspace,
         token=token,
     )
-    plugin = await api.get_plugin(config.name)
+    plugin = await api.get_service(f"{workspace}/{config.id}:default")
     assert "add2" in plugin
     result = await plugin.add2(4)
     assert result == 6
@@ -159,7 +146,7 @@ async def test_web_python_apps(fastapi_server):
         source="https://raw.githubusercontent.com/imjoy-team/"
         "ImJoy/master/web/src/plugins/webWorkerTemplate.imjoy.html",
     )
-    assert config.name == "Untitled Plugin"
+    # assert config.name == "Untitled Plugin"
     apps = await controller.list_running()
     assert find_item(apps, "id", config.id)
 
@@ -185,8 +172,8 @@ async def test_readiness_liveness(fastapi_server):
         token=token,
     )
 
-    assert config.name == "Unreliable Plugin"
-    plugin = await api.get_plugin(config.name)
+    # assert config.name == "Unreliable Plugin"
+    plugin = await api.get_service(f"{workspace}/{config.id}:default")
     assert plugin
     await asyncio.sleep(5)
 
@@ -194,7 +181,7 @@ async def test_readiness_liveness(fastapi_server):
     failing_count = 0
     while plugin is None:
         try:
-            plugin = await api.get_plugin(config.name)
+            plugin = await api.get_service(f"{workspace}/{config.id}:default")
         except Exception:  # pylint: disable=broad-except
             failing_count += 1
             if failing_count > 30:
@@ -225,7 +212,7 @@ async def test_non_persistent_workspace(fastapi_server):
         token=token,
     )
 
-    plugin = await api.get_plugin(config.name)
+    plugin = await api.get_service(f"{workspace}/{config.id}:default")
     assert plugin is not None
 
     # It should exist in the stats

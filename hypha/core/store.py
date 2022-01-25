@@ -60,7 +60,6 @@ class RedisRPCConnection:
         if "/" not in target_id:
             target_id = self._workspace + "/" + target_id
         source_id = self._workspace + "/" + self._client_id
-
         message.update(
             {
                 "to": target_id,
@@ -266,7 +265,7 @@ class WorkspaceManager:
         client_info["user_info"] = user_info
         client_info["id"] = client_id
         client_info["workspace"] = self._workspace
-        await self.register_client(ClientInfo.parse_obj(client_info), overwrite=True)
+        await self._update_client(ClientInfo.parse_obj(client_info))
 
     async def get_client_info(self, client_id):
         assert "/" not in client_id
@@ -360,6 +359,21 @@ class WorkspaceManager:
                 logger.exception("Failed to get service info for client: %s", client_id)
         return service_list
 
+    async def _update_client(self, client_info: ClientInfo):
+        """Update the client info."""
+        assert "/" not in client_info.id
+        if not await self._redis.hexists(
+            f"{self._workspace}:clients", client_info.id
+        ):
+            raise Exception(f"Client {client_info.id} not found.")
+        await self._redis.hset(
+            f"{self._workspace}:clients", client_info.id, client_info.json()
+        )
+        await self._redis.sadd(
+            f"user:{client_info.user_info.id}:clients", client_info.id
+        )
+        self._event_bus.emit("client_updated", client_info)
+
     async def register_client(self, client_info: ClientInfo, overwrite: bool = False):
         """Add a client."""
         assert "/" not in client_info.id
@@ -392,10 +406,9 @@ class WorkspaceManager:
         if client_info is None:
             raise KeyError(f"Client does not exist: {self._workspace}/{client_id}")
         client_info = ClientInfo.parse_obj(json.loads(client_info.decode()))
-        ret = await self._redis.srem(
+        await self._redis.srem(
             f"user:{client_info.user_info.id}:clients", client_info.id
         )
-        assert ret >= 1
         await self._redis.hdel(f"{self._workspace}:clients", client_id)
 
     async def create_rpc(self, client_id: str, default_context=None):
@@ -407,6 +420,13 @@ class WorkspaceManager:
         )
         rpc = RPC(connection, client_id=client_id, default_context=default_context)
         return rpc
+
+    async def echo(self, data, context=None):
+        """Log a plugin message."""
+        user_info = UserInfo.parse_obj(context["user"])
+        if not await self.check_permission(user_info):
+            raise Exception(f"Permission denied for workspace {self._workspace}.")
+        return data
 
     async def log(self, msg, context=None):
         """Log a plugin message."""
@@ -607,12 +627,19 @@ class WorkspaceManager:
         await self._redis.hset("workspaces", workspace.name, workspace.json())
         self._event_bus.emit("workspace_changed", workspace)
 
+    async def delete_if_empty(self):
+        """Delete the workspace if it is empty."""
+        client_keys = await self._redis.hkeys(f"{self._workspace}:clients")
+        if not client_keys:
+            await self.delete()
+
     async def delete(self):
         """Delete the workspace."""
         await self.remove_clients(self._workspace)
         winfo = await self.get_workspace_info(self._workspace)
         await self._redis.hdel("workspaces", self._workspace)
         self._event_bus.emit("workspace_removed", winfo)
+        print('===================removing workspace', winfo)
 
     def create_service(self, service_id, service_name=None):
         interface = {
@@ -624,6 +651,7 @@ class WorkspaceManager:
                 "workspace": self._workspace,
                 "visibility": "public",
             },
+            "echo": self.echo,
             "log": self.log,
             "info": self.info,
             "error": self.error,
