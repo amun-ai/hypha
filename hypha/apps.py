@@ -504,8 +504,11 @@ class ServerAppController:
         """Callback when client is updated."""
         page_id = f"{client.workspace}/{client.id}"
         if page_id in self._client_callbacks:
-            connect = self._client_callbacks[page_id]["connect"]
-            connect(client)
+            callbacks = self._client_callbacks[page_id]
+            if "connect" in callbacks:
+                connect = callbacks["connect"]
+                del callbacks["connect"]
+                connect(client)
 
     # pylint: disable=too-many-statements,too-many-locals
     async def start(

@@ -72,12 +72,10 @@ async def get_service_as_user(
     service_name: str,
 ):
     """Get service as a specified user."""
-    core_interface.current_user.set(user_info)
-    # There won't be any plugin created in this case
-    # so we assume the user is in the public workspace
-    ws = await core_interface.store.get_workspace_interface("public")
-    service = await ws.get_service(
-        {"workspace": workspace_name, "name": service_name, "launch": True}
+    wm = await core_interface.store.get_workspace_manager(workspace_name)
+    service = await wm.get_service(
+        workspace_name + "/*:" + service_name,
+        context={"user": user_info},
     )
     return service
 
@@ -88,11 +86,8 @@ async def list_services_as_user(
     workspace_name: str,
 ):
     """List service as a specified user."""
-    core_interface.current_user.set(user_info)
-    # There won't be any plugin created in this case
-    # so we assume the user is in the public workspace
-    ws = await core_interface.store.get_workspace_interface("public")
-    services = await ws.list_services({"workspace": workspace_name})
+    wm = await core_interface.store.get_workspace_manager(workspace_name)
+    services = await wm.list_services(context={"user": user_info})
     return services
 
 
@@ -106,24 +101,24 @@ class HTTPProxy:
         router.route_class = GzipRoute
         self.core_interface = core_interface
 
-        @router.get("/services")
-        async def get_all_services(
-            user_info: login_optional = Depends(login_optional),
-        ):
-            """Route for listing all the services."""
-            try:
-                core_interface.current_user.set(user_info)
-                services = await core_interface.list_public_services()
-                info = serialize(services)
-                return JSONResponse(
-                    status_code=200,
-                    content=info,
-                )
-            except Exception as exp:
-                return JSONResponse(
-                    status_code=500,
-                    content={"success": False, "detail": str(exp)},
-                )
+        # @router.get("/services")
+        # async def get_all_services(
+        #     user_info: login_optional = Depends(login_optional),
+        # ):
+        #     """Route for listing all the services."""
+        #     try:
+        #         core_interface.current_user.set(user_info)
+        #         services = await core_interface.list_public_services()
+        #         info = serialize(services)
+        #         return JSONResponse(
+        #             status_code=200,
+        #             content=info,
+        #         )
+        #     except Exception as exp:
+        #         return JSONResponse(
+        #             status_code=500,
+        #             content={"success": False, "detail": str(exp)},
+        #         )
 
         @router.get("/{workspace}/services")
         async def get_workspace_services(

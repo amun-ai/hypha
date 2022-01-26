@@ -8,7 +8,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from hypha.core import ClientInfo, UserInfo
 from hypha.core.store import RedisRPCConnection
-from hypha.core.auth import parse_token
+from hypha.core.auth import parse_reconnection_token, parse_token
 import shortuuid
 
 logging.basicConfig(stream=sys.stdout)
@@ -37,6 +37,7 @@ class WebsocketServer:
             workspace: str = Query(None),
             client_id: str = Query(None),
             token: str = Query(None),
+            reconnection_token: str = Query(None),
         ):
             async def disconnect(code):
                 logger.info(f"Disconnecting {code}")
@@ -47,27 +48,35 @@ class WebsocketServer:
                 await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
                 return
 
-            if token:
-                try:
-                    user_info = parse_token(token)
-                    uid = user_info.id
-                except Exception:
-                    logger.error("Invalid token: %s", token)
-                    await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
-                    return
+            if reconnection_token:
+                logger.info(f"Reconnecting client via token: {reconnection_token}")
+                uid, cid = parse_reconnection_token(reconnection_token)
+                assert cid == client_id
+                user_info = await store.get_user(uid)
+                assert user_info is not None
+                logger.info("Client successfully reconnected: %s", cid)
             else:
-                uid = shortuuid.uuid()
-                user_info = UserInfo(
-                    id=uid,
-                    is_anonymous=True,
-                    email=None,
-                    parent=None,
-                    roles=[],
-                    scopes=[],
-                    expires_at=None,
-                )
-                await store.register_user(user_info)
-                logger.info("Anonymized User connected: %s", uid)
+                if token:
+                    try:
+                        user_info = parse_token(token)
+                        uid = user_info.id
+                    except Exception:
+                        logger.error("Invalid token: %s", token)
+                        await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
+                        return
+                else:
+                    uid = shortuuid.uuid()
+                    user_info = UserInfo(
+                        id=uid,
+                        is_anonymous=True,
+                        email=None,
+                        parent=None,
+                        roles=[],
+                        scopes=[],
+                        expires_at=None,
+                    )
+                    await store.register_user(user_info)
+                    logger.info("Anonymized User connected: %s", uid)
 
             if workspace is None:
                 workspace = uid
@@ -108,7 +117,9 @@ class WebsocketServer:
                 await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
                 return
 
-            if await workspace_manager.check_client_exists(client_id):
+            if not reconnection_token and await workspace_manager.check_client_exists(
+                client_id
+            ):
                 logger.error(
                     "Another client with the same id %s already connected to workspace: %s",
                     client_id,
@@ -142,27 +153,30 @@ class WebsocketServer:
             except WebSocketDisconnect as exp:
                 if exp.code != status.WS_1000_NORMAL_CLOSURE:
                     logger.warning(
-                        f"websocket disconnect from the server (code={exp.code})"
+                        f"Client disconnect from the server (code={exp.code})"
                     )
-            finally:
-                await workspace_manager.delete_client(client_id)
+                else:
+                    # Clean up if the client is disconnected normally
+                    # TODO: clean up if the client never come back
+                    logger.info("Client disconnected: %s", client_id)
+                    await workspace_manager.delete_client(client_id)
 
-                if user_info.is_anonymous:
-                    remain_clients = await workspace_manager.list_user_clients(
-                        {"user": user_info.dict()}
-                    )
-                    if len(remain_clients) <= 0:
-                        await store.delete_user(user_info.id)
-                        logger.info("Anonymous user (%s) disconnected.", uid)
-                    else:
-                        logger.info(
-                            "Anonymous user (%s) client disconnected (remaining clients: %s)",
-                            uid,
-                            len(remain_clients),
+                    if user_info.is_anonymous:
+                        remain_clients = await workspace_manager.list_user_clients(
+                            {"user": user_info.dict()}
                         )
-                workspace_info = await workspace_manager.get_workspace_info()
-                if not workspace_info.persistent:
-                    await workspace_manager.delete_if_empty()
+                        if len(remain_clients) <= 0:
+                            await store.delete_user(user_info.id)
+                            logger.info("Anonymous user (%s) disconnected.", uid)
+                        else:
+                            logger.info(
+                                "Anonymous user (%s) client disconnected (remaining clients: %s)",
+                                uid,
+                                len(remain_clients),
+                            )
+                    workspace_info = await workspace_manager.get_workspace_info()
+                    if not workspace_info.persistent:
+                        await workspace_manager.delete_if_empty()
 
     async def is_alive(self):
         """Check if the server is alive."""

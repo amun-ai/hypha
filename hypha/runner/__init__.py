@@ -23,7 +23,7 @@ async def export_service(plugin_api, config, imjoy_rpc):
     try:
         wm = await connect_to_server(config)
         rpc = wm.rpc
-        if inspect.isclass(type(plugin_api)):
+        if not isinstance(plugin_api, dict) and inspect.isclass(type(plugin_api)):
             plugin_api = {a: getattr(plugin_api, a) for a in dir(plugin_api)}
         plugin_api["id"] = "default"
         await rpc.register_service(plugin_api, overwrite=True)

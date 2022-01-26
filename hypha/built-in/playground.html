@@ -120,7 +120,7 @@ api.export({"setup": setup})
                 }
                 window.start = async function(pid){
                     const config = await controller.start(pid, workspace, token)
-                    const plugin = await api.get_plugin(config.name)
+                    const plugin = await api.get_plugin(config.id)
                     alert("Plugin started: " + config.name)
                 }
                 window.kill = async function(pid){

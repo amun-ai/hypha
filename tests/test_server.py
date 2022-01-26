@@ -211,6 +211,7 @@ async def test_workspace(fastapi_server):
 
     service_info = await api2.register_service(
         {
+            "id": "test_service_2",
             "name": "test_service_2",
             "type": "#test",
             "config": {"require_context": True},
@@ -223,25 +224,25 @@ async def test_workspace(fastapi_server):
 
     assert api2.config["workspace"] == "my-test-workspace"
     await api2.export({"foo": "bar"})
-    services = api2.rpc.get_all_local_services()
+    # services = api2.rpc.get_all_local_services()
     clients = await api2.list_clients()
     assert "my-plugin-2" in clients
     ss3 = await api2.list_services({"type": "#test"})
     assert len(ss3) == 1
 
-    plugin = await api2.get_plugin("my plugin 2")
+    plugin = await api2.get_plugin("my-plugin-2")
     assert plugin.foo == "bar"
 
     await api2.export({"foo2": "bar2"})
-    plugin = await api2.get_plugin("my plugin 2")
+    plugin = await api2.get_plugin("my-plugin-2")
     assert plugin.foo is None
     assert plugin.foo2 == "bar2"
 
     plugins = await api2.list_plugins()
     assert find_item(plugins, "name", "my plugin 2")
 
-    with pytest.raises(Exception, match=r".*Service not found.*"):
-        await api.get_plugin("my plugin 2")
+    with pytest.raises(Exception, match=r".*Failed to get client info.*"):
+        await api.get_plugin("my-plugin-2")
 
     ws2 = await api.get_workspace("my-test-workspace")
     assert ws.config == ws2.config
@@ -280,6 +281,7 @@ async def test_services(fastapi_server):
     service_info = await api.register_service(
         {
             "name": "test_service",
+            "id": "test_service",
             "type": "#test",
             "idx": 1,
         }
@@ -291,6 +293,7 @@ async def test_services(fastapi_server):
     service_info = await api.register_service(
         {
             "name": "test_service",
+            "id": "test_service",
             "type": "#test",
             "idx": 2,
         },
@@ -311,6 +314,7 @@ async def test_services(fastapi_server):
     service_info = await api2.register_service(
         {
             "name": "test_service",
+            "id": "test_service",
             "type": "#test",
             "idx": 3,
         }

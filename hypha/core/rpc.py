@@ -121,6 +121,8 @@ class RPC(MessageEmitter):
         assert client_id is not None, "client_id is required"
         self._client_id = client_id
         self._name = name
+        self._workspace = None
+        self._user_info = None
         self.root_target_id = root_target_id
         self.default_context = default_context or {}
         self._method_annotations = weakref.WeakKeyDictionary()
@@ -128,7 +130,7 @@ class RPC(MessageEmitter):
         self._max_message_buffer_size = max_message_buffer_size
         self._chunk_store = {}
         self._method_timeout = 10 if method_timeout is None else method_timeout
-        self._remote_logger = dotdict({"info": self._log, "error": self._error})
+        self._remote_logger = logger
         super().__init__(self._remote_logger)
         try:
             self.loop = asyncio.get_event_loop()
@@ -166,6 +168,10 @@ class RPC(MessageEmitter):
             )
             self._emit_message = connection.emit_message
             connection.on_message(self._on_message)
+            self._connection = connection
+
+            # Update the server and obtain client info
+            asyncio.ensure_future(self._get_user_info())
         else:
 
             async def _emit_message(_):
@@ -174,6 +180,24 @@ class RPC(MessageEmitter):
             self._emit_message = _emit_message
 
         self.check_modules()
+
+    async def _get_user_info(self):
+        if self.root_target_id:
+            # try to get the root service
+            try:
+                await self.get_remote_root_service(timeout=5.0)
+                assert self._remote_root_service
+                self._user_info = await self._remote_root_service.get_user_info()
+                if hasattr(self._connection, "set_reconnection_token"):
+                    self._connection.set_reconnection_token(
+                        self._user_info["reconnection_token"]
+                    )
+            except Exception as exp:  # pylint: disable=broad-except
+                logger.warning(
+                    "Failed to fetch user info from %s: %s",
+                    self.root_target_id,
+                    exp,
+                )
 
     def register_codec(self, config):
         """Register codec."""

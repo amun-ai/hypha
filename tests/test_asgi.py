@@ -30,7 +30,7 @@ async def test_asgi(fastapi_server):
         workspace=workspace,
         token=token,
     )
-    plugin = await api.get_plugin(config.name)
+    plugin = await api.get_plugin(config.id)
     await plugin.setup()
     service = await api.get_service(
         {"workspace": config.workspace, "name": "hello-fastapi"}
@@ -63,7 +63,7 @@ async def test_functions(fastapi_server):
         workspace=workspace,
         token=token,
     )
-    plugin = await api.get_plugin(config.name)
+    plugin = await api.get_plugin(config.id)
     await plugin.setup()
     service = await api.get_service(
         {"workspace": config.workspace, "name": "hello-functions"}

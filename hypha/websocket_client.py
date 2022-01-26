@@ -28,24 +28,32 @@ class WebsocketRPCConnection:
         if token:
             server_url += f"&token={token}"
         self._server_url = server_url
+        self._reconnection_token = None
 
     def on_message(self, handler):
         self._handle_message = handler
         self._is_async = inspect.iscoroutinefunction(handler)
 
+    def set_reconnection_token(self, token):
+        self._reconnection_token = token
+
     async def open(self):
         try:
-            self._websocket = await websockets.connect(self._server_url)
+            server_url = (
+                (self._server_url + f"&reconnection_token={self._reconnection_token}")
+                if self._reconnection_token
+                else self._server_url
+            )
+            logger.info("Receating a new connection to %s", server_url.split("?")[0])
+            self._websocket = await websockets.connect(server_url)
             asyncio.ensure_future(self._listen(self._websocket))
         except Exception as exp:
             if hasattr(exp, "status_code") and exp.status_code == 403:
                 raise PermissionError(
-                    f"Permission denied for {self._server_url}, error: {exp}"
+                    f"Permission denied for {server_url}, error: {exp}"
                 )
             else:
-                raise Exception(
-                    f"Failed to connect to {self._server_url}, error: {exp}"
-                )
+                raise Exception(f"Failed to connect to {server_url}, error: {exp}")
 
     async def emit_message(self, data):
         assert self._handle_message is not None, "No handler for message"
@@ -67,7 +75,7 @@ class WebsocketRPCConnection:
                 else:
                     self._handle_message(data)
         except websockets.exceptions.ConnectionClosedError:
-            logger.warning("Connecting is broken, reopening a new connection.")
+            logger.warning("Connection is broken, reopening a new connection.")
             asyncio.ensure_future(self.open())
         except websockets.exceptions.ConnectionClosedOK:
             pass
@@ -105,16 +113,14 @@ async def connect_to_server(config):
 
     def export(api):
         # Convert class instance to a dict
-        if inspect.isclass(type(api)):
+        if not isinstance(api, dict) and inspect.isclass(type(api)):
             api = {a: getattr(api, a) for a in dir(api)}
         api["id"] = "default"
         api["name"] = config.get("name", "default")
         return asyncio.ensure_future(rpc.register_service(api, overwrite=True))
 
     async def get_plugin(query):
-        if isinstance(query, str):
-            query = {"name": query}
-        return await wm.get_service(query)
+        return await wm.get_service(query + ":default")
 
     async def disconnect():
         await rpc.disconnect()
