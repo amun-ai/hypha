@@ -13,6 +13,8 @@ from hypha.core.rpc import RPC
 from hypha.core.auth import login_optional
 from hypha.core.interface import CoreInterface
 from hypha.utils import GzipRoute
+import shortuuid
+import random
 
 
 class MsgpackResponse(Response):
@@ -69,15 +71,32 @@ async def get_service_as_user(
     core_interface: CoreInterface,
     user_info: UserInfo,
     workspace_name: str,
-    service_name: str,
+    service_id: str,
 ):
     """Get service as a specified user."""
+    assert "/" not in service_id
+
     wm = await core_interface.store.get_workspace_manager(workspace_name)
-    service = await wm.get_service(
-        workspace_name + "/*:" + service_name,
-        context={"user": user_info},
+    services = await wm.list_services(context={"user": user_info})
+    services = list(
+        filter(
+            lambda service: service["id"].endswith(
+                ":" + service_id if ":" not in service_id else service_id
+            ),
+            services,
+        )
     )
-    return service
+    if not services:
+        raise Exception(f"Service {service_id} not found")
+    service = random.choice(services)
+    service_id = service["id"]
+
+    rpc = core_interface.store.create_rpc(
+        "http-client-" + shortuuid.uuid(), workspace_name, user_info=user_info
+    )
+    if "/" not in service_id:
+        service_id = f"{workspace_name}/{service_id}"
+    return await rpc.get_remote_service(service_id, timeout=5)
 
 
 async def list_services_as_user(

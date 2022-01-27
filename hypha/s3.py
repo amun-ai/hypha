@@ -629,10 +629,16 @@ class S3Controller:
             and response["ResponseMetadata"]["HTTPStatusCode"] == 200
         ), f"Failed to save workspace ({workspace.name}) config: {response}"
 
-    def generate_credential(self):
+    async def generate_credential(self):
         """Generate credential."""
         user_info = self.core_interface.current_user.get()
         workspace = self.core_interface.current_workspace.get()
+        if workspace == "public" or not await self.core_interface.check_permission(
+            workspace, user_info
+        ):
+            raise PermissionError(
+                f"User {user_info.id} does not have write permission to the workspace {workspace}"
+            )
         if user_info.is_anonymous:
             raise PermissionError(f"s3 credential is disabled for anonymous users.")
         password = generate_password()

@@ -132,7 +132,7 @@ class WorkspaceManager:
         ):
             return self._rpc
         if await self.check_client_exists(client_id):
-            rpc = await self.create_rpc(client_id + "-" + shortuuid.uuid())
+            rpc = await self._create_rpc(client_id + "-" + shortuuid.uuid())
             try:
                 await rpc.ping(client_id)
             except asyncio.exceptions.TimeoutError:
@@ -152,7 +152,7 @@ class WorkspaceManager:
                 user_info=self._root_user.dict(),
             )
         )
-        rpc = await self.create_rpc(client_id)
+        rpc = await self._create_rpc(client_id)
 
         def save_client_info(_):
             return asyncio.create_task(
@@ -454,8 +454,10 @@ class WorkspaceManager:
         await self._redis.hdel(f"{workspace}:clients", client_id)
         logger.info("Client deleted: %s/%s", workspace, client_id)
 
-    async def create_rpc(self, client_id: str, default_context=None):
-        """Create a rpc for the workspace."""
+    async def _create_rpc(self, client_id: str, default_context=None):
+        """Create a rpc for the workspace.
+        Note: Any request made through this rcp will be treated as a request from the root user.
+        """
         assert "/" not in client_id
         logger.info("Creating RPC for client %s", client_id)
         connection = RedisRPCConnection(
@@ -533,7 +535,6 @@ class WorkspaceManager:
             if "/" in service_id:
                 workspace = service_id.split("/")[0]
                 if workspace != self._workspace:
-
                     ws = await self.get_workspace(workspace)
                     return await ws.get_service(service_id, context=context)
             if "/" not in service_id:
@@ -541,9 +542,7 @@ class WorkspaceManager:
                 workspace = self._workspace
 
             # Make sure the client exists
-            await self._get_client_info(
-                service_id.split("/")[1].split(":")[0]
-            )
+            await self._get_client_info(service_id.split("/")[1].split(":")[0])
             rpc = await self.setup()
             service_api = await rpc.get_remote_service(service_id)
             service_api["config"]["workspace"] = workspace
@@ -648,7 +647,7 @@ class WorkspaceManager:
             rpc = await self.setup()
             try:
                 wm = await rpc.get_remote_service(
-                    workspace + "/workspace-manager:default", timeout=5
+                    workspace + "/workspace-manager:default", timeout=10
                 )
                 return wm
             except asyncio.exceptions.TimeoutError:
@@ -873,3 +872,13 @@ class RedisStore:
         """List all workspaces."""
         workspace_keys = await self._redis.hkeys("workspaces")
         return [k.decode() for k in workspace_keys]
+
+    def create_rpc(
+        self, client_id: str, workspace: str, user_info: UserInfo, default_context=None
+    ):
+        """Create a rpc object for a workspace."""
+        assert "/" not in client_id
+        logger.info("Creating RPC for client %s", client_id)
+        connection = RedisRPCConnection(self._redis, workspace, client_id, user_info)
+        rpc = RPC(connection, client_id=client_id, default_context=default_context)
+        return rpc
