@@ -240,7 +240,7 @@ async def test_non_persistent_workspace(fastapi_server):
 
 async def test_lazy_plugin(fastapi_server):
     """Test lazy plugin loading."""
-    api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
+    api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 60})
 
     # Test plugin with custom template
     controller = await api.get_service("public/workspace-manager:server-apps")
@@ -258,7 +258,7 @@ async def test_lazy_plugin(fastapi_server):
     apps = await controller.list_apps()
     assert find_item(apps, "id", app_info.id)
 
-    plugin = await api.get_plugin({"name": app_info.name, "launch": True})
+    plugin = await api.get_service({"name": "echo", "launch": True})
     assert plugin is not None
 
     await controller.uninstall(app_info.id)

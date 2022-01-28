@@ -562,10 +562,48 @@ class WorkspaceManager:
         workspace_info = WorkspaceInfo.parse_obj(json.loads(workspace_info.decode()))
         return workspace_info
 
+    async def launch_application_by_service(
+        self, workspace: str, service_name: str, user_info: UserInfo, timeout: float = 60
+    ):
+        """Launch an installed application by service name."""
+        assert await self.check_permission(user_info), "Permission denied"
+        workspace = await self.get_workspace_info(workspace)
+        controller = await self.get_service("public/workspace-manager:server-apps")
+        if not controller:
+            raise Exception(
+                "Plugin `{name}` not found and failed to"
+                " launch the plugin (no server-apps service found)"
+            )
+        app_id = None
+        for aid, app_info in workspace.applications.items():
+            # find the app by service name
+            if app_info.services and service_name in app_info.services:
+                app_id = aid
+                break
+        if app_id is None:
+            raise Exception(f"Service plugin {service_name} not found")
+        token = await self.generate_token(context={"user": user_info.dict()})
+        plugin_id = shortuuid.uuid()
+        config = await controller.start(
+            app_id,
+            workspace=workspace.name,
+            token=token,
+            plugin_id=plugin_id,
+            timeout=timeout,
+        )
+        return config
+
     async def get_service(self, service_id: Union[dict, str], context=None):
         # Note: No authorization required because the access is controlled by the client itself
         if isinstance(service_id, dict):
-            service_id = service_id["id"]
+            if "launch" in service_id and service_id["launch"]:
+                return await self.launch_application_by_service(
+                    service_id.get("workspace", self._workspace),
+                    service_id["name"],
+                    UserInfo.parse_obj(context["user"]),
+                )
+            else:
+                service_id = service_id["id"]
         assert isinstance(service_id, str)
 
         if "/" in service_id and ":" not in service_id:
