@@ -29,6 +29,7 @@ class WebsocketRPCConnection:
             server_url += f"&token={token}"
         self._server_url = server_url
         self._reconnection_token = None
+        self._listen_task = None
 
     def on_message(self, handler):
         self._handle_message = handler
@@ -46,7 +47,7 @@ class WebsocketRPCConnection:
             )
             logger.info("Receating a new connection to %s", server_url.split("?")[0])
             self._websocket = await websockets.connect(server_url)
-            asyncio.ensure_future(self._listen(self._websocket))
+            self._listen_task = asyncio.ensure_future(self._listen(self._websocket))
         except Exception as exp:
             if hasattr(exp, "status_code") and exp.status_code == 403:
                 raise PermissionError(
@@ -85,6 +86,9 @@ class WebsocketRPCConnection:
         self._websocket = None
         if ws and not ws.closed:
             await ws.close(code=1000)
+        if self._listen_task:
+            self._listen_task.cancel()
+            self._listen_task = None
         logger.info("Websocket connection disconnected (%s)", reason)
 
 

@@ -42,6 +42,7 @@ class RedisRPCConnection:
     ):
         self._redis = redis
         self._handle_message = None
+        self._subscribe_task = None
         self._workspace = workspace
         self._client_id = client_id
         assert "/" not in client_id
@@ -50,7 +51,7 @@ class RedisRPCConnection:
     def on_message(self, handler: Callable):
         self._handle_message = handler
         self._is_async = inspect.iscoroutinefunction(handler)
-        asyncio.ensure_future(self._subscribe_redis())
+        self._subscribe_task = asyncio.ensure_future(self._subscribe_redis())
 
     async def emit_message(self, data: Union[dict, bytes]):
         assert self._handle_message is not None, "No handler for message"
@@ -76,6 +77,9 @@ class RedisRPCConnection:
     async def disconnect(self, reason=None):
         self._redis = None
         self._handle_message = None
+        if self._subscribe_task:
+            self._subscribe_task.cancel()
+            self._subscribe_task = None
         logger.info("Redis connection disconnected (%s)", reason)
 
     async def _subscribe_redis(self):
@@ -291,6 +295,11 @@ class WorkspaceManager:
         ws, client_id = context["from"].split("/")
         user_info = UserInfo.parse_obj(context["user"])
         # Generate a new toke for the client to reconnect
+        logger.info(
+            "Generating new reconnection token for client %s (user id: %s)",
+            client_id,
+            user_info.id,
+        )
         token = generate_reconnection_token(user_info.id, client_id)
         return {
             "workspace": ws,
@@ -432,6 +441,7 @@ class WorkspaceManager:
             f"user:{client_info.user_info.id}:clients", client_info.id
         )
         self._event_bus.emit("client_registered", client_info)
+        logger.info("New client registered: %s/%s", self._workspace, client_info.id)
 
     async def check_client_exists(self, client_id: str, workspace: str = None):
         """Check if a client exists."""
@@ -814,7 +824,7 @@ class RedisStore:
 
     async def delete_user(self, user_id: str):
         """Delete a user."""
-        await self._redis.hdel(f"users", user_id)
+        await self._redis.hdel("users", user_id)
 
     async def register_workspace(self, workspace: dict, overwrite=False):
         """Add a workspace."""

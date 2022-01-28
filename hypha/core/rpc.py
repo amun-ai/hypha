@@ -188,9 +188,15 @@ class RPC(MessageEmitter):
                 await self.get_remote_root_service(timeout=5.0)
                 assert self._remote_root_service
                 self._user_info = await self._remote_root_service.get_user_info()
-                if hasattr(self._connection, "set_reconnection_token"):
+                if "reconnection_token" in self._user_info and hasattr(
+                    self._connection, "set_reconnection_token"
+                ):
                     self._connection.set_reconnection_token(
                         self._user_info["reconnection_token"]
+                    )
+                    logger.debug(
+                        "Set reconnection token: %s",
+                        self._user_info.get("reconnection_token"),
                     )
             except Exception as exp:  # pylint: disable=broad-except
                 logger.warning(

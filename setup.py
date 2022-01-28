@@ -10,7 +10,7 @@ DESCRIPTION = (
 )
 
 REQUIREMENTS = [
-    "aiobotocore>=1.4.2",
+    "aiobotocore>=2.1.0",
     "aiofiles",
     "fastapi>=0.70.0",
     "imjoy-rpc>=0.4.3",

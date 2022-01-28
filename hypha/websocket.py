@@ -53,12 +53,13 @@ class WebsocketServer:
                 uid, cid = parse_reconnection_token(reconnection_token)
                 assert cid == client_id
                 user_info = await store.get_user(uid)
-                assert user_info is not None
+                assert user_info is not None, "User not found: " + uid
                 logger.info("Client successfully reconnected: %s", cid)
             else:
                 if token:
                     try:
                         user_info = parse_token(token)
+                        await store.register_user(user_info)
                         uid = user_info.id
                     except Exception:
                         logger.error("Invalid token: %s", token)
@@ -139,13 +140,14 @@ class WebsocketServer:
             )
             conn.on_message(websocket.send_bytes)
 
-            await workspace_manager.register_client(
-                ClientInfo(
-                    id=client_id,
-                    workspace=workspace_manager._workspace,
-                    user_info=user_info,
+            if not reconnection_token:
+                await workspace_manager.register_client(
+                    ClientInfo(
+                        id=client_id,
+                        workspace=workspace_manager._workspace,
+                        user_info=user_info,
+                    )
                 )
-            )
             try:
                 while True:
                     data = await websocket.receive_bytes()
