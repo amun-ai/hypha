@@ -252,34 +252,6 @@ class WorkspaceInfo(BaseModel):
             return plugins[0]
         return None
 
-    def add_plugin(self, plugin: DynamicPlugin) -> None:
-        """Add a plugin."""
-        if plugin.id in self._plugins:
-            raise Exception(
-                f"Plugin with the same id({plugin.id})"
-                " already exists in the workspace ({self.name})"
-            )
-
-        if plugin.is_singleton():
-            for plg in self._plugins.values():
-                if plg.name == plugin.name:
-                    logger.info(
-                        "Terminating other plugins with the same name"
-                        " (%s) due to single-instance flag",
-                        plugin.name,
-                    )
-                    asyncio.ensure_future(plg.terminate())
-        self._plugins[plugin.id] = plugin
-        self._event_bus.emit("plugin_connected", plugin.config)
-
-    def remove_plugin(self, plugin: DynamicPlugin) -> None:
-        """Remove a plugin form the workspace."""
-        plugin_id = plugin.id
-        if plugin_id not in self._plugins:
-            raise KeyError(f"Plugin not fould (id={plugin_id})")
-        del self._plugins[plugin_id]
-        self._event_bus.emit("plugin_disconnected", plugin.config)
-
     def get_services_by_plugin(self, plugin: DynamicPlugin) -> List[ServiceInfo]:
         """Get services by plugin."""
         return [
@@ -311,7 +283,7 @@ class WorkspaceInfo(BaseModel):
                     # TODO: we need to emit unregister event here
                     self.remove_service(svc)
         self._services[service.get_id()] = service
-        self._global_event_bus.emit("service_registered", service)
+        self._global_event_bus.emit("service_registered", service.dict())
 
     def get_service_by_name(self, service_name: str) -> ServiceInfo:
         """Return a service by its name (randomly select one if multiple exists)."""
@@ -327,7 +299,7 @@ class WorkspaceInfo(BaseModel):
     def remove_service(self, service: ServiceInfo) -> None:
         """Remove a service."""
         del self._services[service.get_id()]
-        self._global_event_bus.emit("service_unregistered", service)
+        self._global_event_bus.emit("service_unregistered", service.dict())
 
     def get_event_bus(self):
         """Get the workspace event bus."""

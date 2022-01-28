@@ -153,6 +153,7 @@ class RPC(MessageEmitter):
         codecs=None,
         method_timeout=None,
         max_message_buffer_size=0,
+        loop=None,
     ):
         """Set up instance."""
         self._codecs = codecs or {}
@@ -169,13 +170,9 @@ class RPC(MessageEmitter):
         self._max_message_buffer_size = max_message_buffer_size
         self._chunk_store = {}
         self._method_timeout = 10 if method_timeout is None else method_timeout
-        self._remote_logger = dotdict({"info": self._log, "error": self._error})
+        self._remote_logger = logger
+        self.loop = loop or asyncio.get_event_loop()
         super().__init__(self._remote_logger)
-        try:
-            self.loop = asyncio.get_event_loop()
-        except RuntimeError:
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
 
         self._services = {}
         self._object_store = {
@@ -207,9 +204,10 @@ class RPC(MessageEmitter):
             )
             self._emit_message = connection.emit_message
             connection.on_message(self._on_message)
+            self._connection = connection
 
             # Update the server and obtain client info
-            asyncio.ensure_future(self._notify_service_update())
+            asyncio.ensure_future(self._get_user_info())
         else:
 
             async def _emit_message(_):
@@ -218,6 +216,30 @@ class RPC(MessageEmitter):
             self._emit_message = _emit_message
 
         self.check_modules()
+
+    async def _get_user_info(self):
+        if self.root_target_id:
+            # try to get the root service
+            try:
+                await self.get_remote_root_service(timeout=5.0)
+                assert self._remote_root_service
+                self._user_info = await self._remote_root_service.get_user_info()
+                if "reconnection_token" in self._user_info and hasattr(
+                    self._connection, "set_reconnection_token"
+                ):
+                    self._connection.set_reconnection_token(
+                        self._user_info["reconnection_token"]
+                    )
+                    logger.debug(
+                        "Set reconnection token: %s",
+                        self._user_info.get("reconnection_token"),
+                    )
+            except Exception as exp:  # pylint: disable=broad-except
+                logger.warning(
+                    "Failed to fetch user info from %s: %s",
+                    self.root_target_id,
+                    exp,
+                )
 
     def register_codec(self, config):
         """Register codec."""
@@ -818,12 +840,9 @@ class RPC(MessageEmitter):
             try:
                 await self.get_remote_root_service(timeout=5.0)
                 assert self._remote_root_service
-                workspace_info = await self._remote_root_service.update_client_info(
+                await self._remote_root_service.update_client_info(
                     self.get_client_info()
                 )
-                # Update user and workspace info
-                self._user_info = workspace_info["user_info"]
-                self._workspace = workspace_info["workspace"]
             except Exception as exp:  # pylint: disable=broad-except
                 logger.warning(
                     "Failed to notify service update to %s: %s",
@@ -1227,108 +1246,107 @@ class RPC(MessageEmitter):
 
                     else:
                         b_object = a_object
-                            logger.warning(
-                                "numpy is not available, failed to decode ndarray"
-                            )
-    
-                    except Exception as exc:
-                        logger.debug("Error in converting: %s", exc)
-                        b_object = a_object
-                        raise exc
-                elif a_object["_rtype"] == "memoryview":
-                    b_object = memoryview(a_object["_rvalue"])
-                elif a_object["_rtype"] == "iostream":
-                    b_object = dotdict(
-                        {
-                            k: self._decode(
-                                a_object[k],
-                                remote_parent=remote_parent,
-                                local_parent=local_parent,
-                                remote_workspace=remote_workspace,
-                                local_workspace=local_workspace,
-                            )
-                            for k in a_object
-                            if not k.startswith("_")
-                        }
-                    )
-                    b_object["__rpc_object__"] = a_object
-                elif a_object["_rtype"] == "typedarray":
-                    if self.NUMPY_MODULE:
-                        b_object = self.NUMPY_MODULE.frombuffer(
-                            a_object["_rvalue"], dtype=a_object["_rdtype"]
+                        logger.warning(
+                            "numpy is not available, failed to decode ndarray"
                         )
-                    else:
-                        b_object = a_object["_rvalue"]
-                elif a_object["_rtype"] == "orderedmap":
-                    b_object = OrderedDict(
-                        self._decode(
-                            a_object["_rvalue"],
+
+                except Exception as exc:
+                    logger.debug("Error in converting: %s", exc)
+                    b_object = a_object
+                    raise exc
+            elif a_object["_rtype"] == "memoryview":
+                b_object = memoryview(a_object["_rvalue"])
+            elif a_object["_rtype"] == "iostream":
+                b_object = dotdict(
+                    {
+                        k: self._decode(
+                            a_object[k],
                             remote_parent=remote_parent,
                             local_parent=local_parent,
                             remote_workspace=remote_workspace,
                             local_workspace=local_workspace,
                         )
+                        for k in a_object
+                        if not k.startswith("_")
+                    }
+                )
+                b_object["__rpc_object__"] = a_object
+            elif a_object["_rtype"] == "typedarray":
+                if self.NUMPY_MODULE:
+                    b_object = self.NUMPY_MODULE.frombuffer(
+                        a_object["_rvalue"], dtype=a_object["_rdtype"]
                     )
-                elif a_object["_rtype"] == "set":
-                    b_object = set(
-                        self._decode(
-                            a_object["_rvalue"],
-                            remote_parent=remote_parent,
-                            local_parent=local_parent,
-                            remote_workspace=remote_workspace,
-                            local_workspace=local_workspace,
-                        )
-                    )
-                elif a_object["_rtype"] == "error":
-                    b_object = Exception(a_object["_rvalue"])
                 else:
-                    # make sure all the interface functions are decoded
-                    temp = a_object["_rtype"]
-                    del a_object["_rtype"]
-                    a_object = self._decode(
-                        a_object,
+                    b_object = a_object["_rvalue"]
+            elif a_object["_rtype"] == "orderedmap":
+                b_object = OrderedDict(
+                    self._decode(
+                        a_object["_rvalue"],
                         remote_parent=remote_parent,
                         local_parent=local_parent,
                         remote_workspace=remote_workspace,
                         local_workspace=local_workspace,
                     )
-                    a_object["_rtype"] = temp
-                    b_object = a_object
-            elif isinstance(a_object, (dict, list, tuple)):
-                if isinstance(a_object, tuple):
-                    a_object = list(a_object)
-                isarray = isinstance(a_object, list)
-                b_object = [] if isarray else dotdict()
-                keys = range(len(a_object)) if isarray else a_object.keys()
-                for key in keys:
-                    val = a_object[key]
-                    if isarray:
-                        b_object.append(
-                            self._decode(
-                                val,
-                                remote_parent=remote_parent,
-                                local_parent=local_parent,
-                                remote_workspace=remote_workspace,
-                                local_workspace=local_workspace,
-                            )
-                        )
-                    else:
-                        b_object[key] = self._decode(
+                )
+            elif a_object["_rtype"] == "set":
+                b_object = set(
+                    self._decode(
+                        a_object["_rvalue"],
+                        remote_parent=remote_parent,
+                        local_parent=local_parent,
+                        remote_workspace=remote_workspace,
+                        local_workspace=local_workspace,
+                    )
+                )
+            elif a_object["_rtype"] == "error":
+                b_object = Exception(a_object["_rvalue"])
+            else:
+                # make sure all the interface functions are decoded
+                temp = a_object["_rtype"]
+                del a_object["_rtype"]
+                a_object = self._decode(
+                    a_object,
+                    remote_parent=remote_parent,
+                    local_parent=local_parent,
+                    remote_workspace=remote_workspace,
+                    local_workspace=local_workspace,
+                )
+                a_object["_rtype"] = temp
+                b_object = a_object
+        elif isinstance(a_object, (dict, list, tuple)):
+            if isinstance(a_object, tuple):
+                a_object = list(a_object)
+            isarray = isinstance(a_object, list)
+            b_object = [] if isarray else dotdict()
+            keys = range(len(a_object)) if isarray else a_object.keys()
+            for key in keys:
+                val = a_object[key]
+                if isarray:
+                    b_object.append(
+                        self._decode(
                             val,
                             remote_parent=remote_parent,
                             local_parent=local_parent,
                             remote_workspace=remote_workspace,
                             local_workspace=local_workspace,
                         )
-            # make sure we have bytes instead of memoryview, e.g. for Pyodide
-            # elif isinstance(a_object, memoryview):
-            #     b_object = a_object.tobytes()
-            # elif isinstance(a_object, bytearray):
-            #     b_object = bytes(a_object)
-            else:
-                b_object = a_object
-            return b_object
-    
+                    )
+                else:
+                    b_object[key] = self._decode(
+                        val,
+                        remote_parent=remote_parent,
+                        local_parent=local_parent,
+                        remote_workspace=remote_workspace,
+                        local_workspace=local_workspace,
+                    )
+        # make sure we have bytes instead of memoryview, e.g. for Pyodide
+        # elif isinstance(a_object, memoryview):
+        #     b_object = a_object.tobytes()
+        # elif isinstance(a_object, bytearray):
+        #     b_object = bytes(a_object)
+        else:
+            b_object = a_object
+        return b_object
 
 
 class WebsocketRPCConnection:

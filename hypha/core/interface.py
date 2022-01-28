@@ -127,10 +127,6 @@ class CoreInterface:
         manager = await self.store.get_workspace_manager(workspace, setup=False)
         return await manager.check_permission(user_info, workspace)
 
-    def get_all_workspace(self):
-        """Return all workspaces."""
-        return list(self._all_workspaces.values())
-
     async def get_workspace(self, name, load=True):
         """Return the workspace."""
         try:
@@ -230,13 +226,13 @@ class CoreInterface:
         """Check if the server is alive."""
         return self._ready
 
-    async def init(self):
+    async def init(self, loop):
         """Initialize the core interface."""
+        await self.store.init(loop)
         await self.store.register_workspace(self._public_workspace, overwrite=True)
         manager = await self.store.get_workspace_manager("public")
         self._public_workspace_interface = await manager.get_workspace()
 
-        await self.store.init()
         for service in self._public_services:
             try:
                 await self._public_workspace_interface.register_service(service.dict())

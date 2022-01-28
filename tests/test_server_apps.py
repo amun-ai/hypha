@@ -6,7 +6,7 @@ import requests
 import pytest
 from hypha.websocket_client import connect_to_server
 
-from . import WS_SERVER_URL, find_item
+from . import WS_SERVER_URL, SERVER_URL, find_item
 
 # pylint: disable=too-many-statements
 
@@ -215,7 +215,7 @@ async def test_non_persistent_workspace(fastapi_server):
     assert plugin is not None
 
     # It should exist in the stats
-    response = requests.get(f"{WS_SERVER_URL}/api/stats")
+    response = requests.get(f"{SERVER_URL}/api/stats")
     assert response.status_code == 200
     stats = response.json()
     workspace_info = find_item(stats["workspaces"], "name", workspace)
@@ -230,7 +230,7 @@ async def test_non_persistent_workspace(fastapi_server):
     await api.disconnect()
 
     # now it should disappear from the stats
-    response = requests.get(f"{WS_SERVER_URL}/api/stats")
+    response = requests.get(f"{SERVER_URL}/api/stats")
     assert response.status_code == 200
     stats = response.json()
     workspace_info = find_item(stats["workspaces"], "name", workspace)

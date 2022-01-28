@@ -8,14 +8,13 @@ import tempfile
 import time
 import uuid
 
-import pytest
 import requests
 from requests import RequestException
+import pytest_asyncio
 
 from hypha.core import TokenConfig, UserInfo, auth
 from hypha.core.auth import generate_presigned_token
 from hypha.minio import setup_minio_executables
-from hypha.core.store import RedisStore
 
 from . import (
     MINIO_PORT,
@@ -31,22 +30,7 @@ os.environ["JWT_SECRET"] = JWT_SECRET
 test_env = os.environ.copy()
 
 
-@pytest.fixture(scope="session")
-def event_loop(request):
-    """Create an instance of the default event loop for each test case."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-
-@pytest.fixture(scope="session", autouse=True)
-def redis_store():
-    if os.path.exists("/tmp/redis.db"):
-        os.remove("/tmp/redis.db")
-    yield RedisStore.get_instance()
-
-
-@pytest.fixture(name="test_user_token", scope="session")
+@pytest_asyncio.fixture(name="test_user_token", scope="session")
 def generate_authenticated_user():
     """Generate a test user token."""
     # Patch the JWT_SECRET
@@ -68,7 +52,7 @@ def generate_authenticated_user():
     yield token
 
 
-@pytest.fixture(name="fastapi_server", scope="session")
+@pytest_asyncio.fixture(name="fastapi_server", scope="session")
 def fastapi_server_fixture(minio_server):
     """Start server as test fixture and tear down after test."""
     if os.path.exists("/tmp/redis.db"):
@@ -103,7 +87,7 @@ def fastapi_server_fixture(minio_server):
         proc.terminate()
 
 
-@pytest.fixture(name="socketio_subpath_server")
+@pytest_asyncio.fixture(name="socketio_subpath_server")
 def socketio_subpath_server_fixture(minio_server):
     """Start server (under /my/engine) as test fixture and tear down after test."""
     with subprocess.Popen(
@@ -134,7 +118,7 @@ def socketio_subpath_server_fixture(minio_server):
         proc.terminate()
 
 
-@pytest.fixture(name="minio_server", scope="session")
+@pytest_asyncio.fixture(name="minio_server", scope="session")
 def minio_server_fixture():
     """Start minio server as test fixture and tear down after test."""
     setup_minio_executables("./bin")

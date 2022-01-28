@@ -131,8 +131,9 @@ class ASGIGateway:
         core_interface.event_bus.on("service_registered", self.mount_asgi_app)
         core_interface.event_bus.on("service_unregistered", self.umount_asgi_app)
 
-    def mount_asgi_app(self, service):
+    def mount_asgi_app(self, service: dict):
         """Mount the ASGI apps from new services."""
+        service = ServiceInfo.parse_obj(service)
         if service.type in ["ASGI", "functions"]:
             subpath = f"/{service.config.workspace}/apps/{service.name}"
             app = PatchedCORSMiddleware(
@@ -146,8 +147,9 @@ class ASGIGateway:
 
             self.core_interface.mount_app(subpath, app, priority=-1)
 
-    def umount_asgi_app(self, service):
+    def umount_asgi_app(self, service: dict):
         """Unmount the ASGI apps."""
+        service = ServiceInfo.parse_obj(service)
         if service.type in ["ASGI", "functions"]:
             subpath = f"/{service.config.workspace}/apps/{service.name}"
             self.core_interface.umount_app(subpath)

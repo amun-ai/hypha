@@ -502,8 +502,9 @@ class S3Controller:
             region_name="EU",
         )
 
-    def _setup_client(self, client: ClientInfo):
+    def _setup_client(self, client: dict):
         """Set up client."""
+        client = ClientInfo.parse_obj(client)
         user_info = client.user_info
         # Make sure we created an account for the user
         try:
@@ -523,8 +524,9 @@ class S3Controller:
             items = await list_objects_async(s3_client, self.workspace_bucket, path)
         return items
 
-    def _cleanup_workspace(self, workspace):
+    def _cleanup_workspace(self, workspace: dict):
         """Clean up workspace."""
+        workspace = WorkspaceInfo.parse_obj(workspace)
         if workspace.read_only:
             return
         # TODO: if the program shutdown unexpectedly, we need to clean it up
@@ -548,8 +550,9 @@ class S3Controller:
                 self.s3client, self.workspace_bucket, workspace.name + "/"
             )
 
-    def _setup_workspace(self, workspace: WorkspaceInfo):
+    def _setup_workspace(self, workspace: dict):
         """Set up workspace."""
+        workspace = WorkspaceInfo.parse_obj(workspace)
         if workspace.read_only:
             return
         # make sure we have the root user in every workspace
@@ -594,7 +597,7 @@ class S3Controller:
         # Save the workspace info
         workspace_dir = self.local_log_dir / workspace.name
         os.makedirs(workspace_dir, exist_ok=True)
-        self._save_workspace_config(workspace)
+        self._save_workspace_config(workspace.dict())
 
         # find out the latest log file number
         log_base_name = str(workspace_dir / "log.txt")
@@ -617,8 +620,9 @@ class S3Controller:
         )
         workspace.set_logger(ready_logger)
 
-    def _save_workspace_config(self, workspace: WorkspaceInfo):
+    def _save_workspace_config(self, workspace: dict):
         """Save workspace."""
+        workspace = WorkspaceInfo.parse_obj(workspace)
         response = self.s3client.put_object(
             Body=workspace.json().encode("utf-8"),
             Bucket=self.workspace_bucket,

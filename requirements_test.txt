@@ -1,7 +1,7 @@
 aioboto3==9.3.1
 fsspec==2021.10.1
 pytest==6.2.5
-pytest-asyncio==0.16.0
+pytest-asyncio==0.17.2
 pytest-cov==3.0.0
 pytest-timeout==2.0.2
 requests==2.26.0

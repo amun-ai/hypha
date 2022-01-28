@@ -98,6 +98,41 @@ class RedisRPCConnection:
                     self._handle_message(msg["data"])
 
 
+class RedisEventBus(EventBus):
+    """Represent a redis event bus."""
+
+    def __init__(self, redis) -> None:
+        super().__init__()
+        self._redis = redis
+
+    async def init(self, loop):
+        self._ready = loop.create_future()
+        self._loop = loop
+        loop.create_task(self._subscribe_redis())
+        await self._ready
+
+    def emit(self, event_type, data=None):
+        assert self._ready.result(), "Event bus not ready"
+        self._loop.create_task(
+            self._redis.publish(
+                "global_event_bus", json.dumps({"type": event_type, "data": data})
+            )
+        )
+
+    async def _subscribe_redis(self):
+        pubsub = self._redis.pubsub()
+        try:
+            await pubsub.subscribe("global_event_bus")
+            self._ready.set_result(True)
+            while True:
+                msg = await pubsub.get_message()
+                if msg and msg.get("type") == "message":
+                    data = json.loads(msg["data"].decode())
+                    super().emit(data["type"], data["data"])
+        except Exception as exp:
+            self._ready.set_exception(exp)
+
+
 class WorkspaceManager:
 
     _managers = {}
@@ -347,7 +382,7 @@ class WorkspaceManager:
             del query["workspace"]
         if ws == "*":
             ret = []
-            for workspace in await self.get_all_workspace():
+            for workspace in await self._get_all_workspace():
                 can_access_workspace = await self.check_permission(user_info, workspace)
                 ws = await self.get_workspace(workspace.name, context=context)
                 for service in await ws.list_services():
@@ -422,7 +457,7 @@ class WorkspaceManager:
         await self._redis.sadd(
             f"user:{client_info.user_info.id}:clients", client_info.id
         )
-        self._event_bus.emit("client_updated", client_info)
+        self._event_bus.emit("client_updated", client_info.dict())
 
     async def register_client(self, client_info: ClientInfo, overwrite: bool = False):
         """Add a client."""
@@ -440,7 +475,7 @@ class WorkspaceManager:
         await self._redis.sadd(
             f"user:{client_info.user_info.id}:clients", client_info.id
         )
-        self._event_bus.emit("client_registered", client_info)
+        self._event_bus.emit("client_registered", client_info.dict())
         logger.info("New client registered: %s/%s", self._workspace, client_info.id)
 
     async def check_client_exists(self, client_id: str, workspace: str = None):
@@ -582,7 +617,7 @@ class WorkspaceManager:
         service_api["config"]["workspace"] = service_info["id"].split("/")[0]
         return service_api
 
-    async def get_all_workspace(self):
+    async def _get_all_workspace(self):
         """Get all workspaces."""
         workspaces = await self._redis.hgetall("workspaces")
         return [
@@ -697,7 +732,7 @@ class WorkspaceManager:
             workspace.owners.append(_id)
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
         await self._redis.hset("workspaces", workspace.name, workspace.json())
-        self._event_bus.emit("workspace_changed", workspace)
+        self._event_bus.emit("workspace_changed", workspace.dict())
 
     async def delete_if_empty(self):
         """Delete the workspace if it is empty."""
@@ -710,7 +745,7 @@ class WorkspaceManager:
         await self.remove_clients(self._workspace)
         winfo = await self.get_workspace_info(self._workspace)
         await self._redis.hdel("workspaces", self._workspace)
-        self._event_bus.emit("workspace_removed", winfo)
+        self._event_bus.emit("workspace_removed", winfo.dict())
 
     def create_service(self, service_id, service_name=None):
         interface = {
@@ -774,7 +809,7 @@ class RedisStore:
         Redis(uri, serverconfig={"port": str(port)})
         self._redis = aioredis.from_url(f"redis://127.0.0.1:{port}/0")
         self._root_user = None
-        self._event_bus = EventBus()
+        self._event_bus = RedisEventBus(self._redis)
 
     def get_event_bus(self):
         return self._event_bus
@@ -793,7 +828,8 @@ class RedisStore:
             await self.register_user(self._root_user)
         return self._root_user
 
-    async def init(self):
+    async def init(self, loop):
+        await self._event_bus.init(loop)
         await self.setup_root_user()
 
     async def register_user(self, user_info: UserInfo):
@@ -826,6 +862,14 @@ class RedisStore:
         """Delete a user."""
         await self._redis.hdel("users", user_id)
 
+    async def get_all_workspace(self):
+        """Get all workspaces."""
+        workspaces = await self._redis.hgetall("workspaces")
+        return [
+            WorkspaceInfo.parse_obj(json.loads(v.decode()))
+            for k, v in workspaces.items()
+        ]
+
     async def register_workspace(self, workspace: dict, overwrite=False):
         """Add a workspace."""
         workspace = WorkspaceInfo.parse_obj(workspace)
@@ -852,7 +896,7 @@ class RedisStore:
             await self._redis.delete(f"{workspace}:clients")
         await self._redis.hset("workspaces", workspace.name, workspace.json())
         await self.get_workspace_manager(workspace.name, setup=True)
-        self._event_bus.emit("workspace_registered", workspace)
+        self._event_bus.emit("workspace_registered", workspace.dict())
 
     async def connect_to_workspace(self, workspace: str, client_id: str):
         """Connect to a workspace."""

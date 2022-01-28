@@ -114,6 +114,7 @@ class RPC(MessageEmitter):
         codecs=None,
         method_timeout=None,
         max_message_buffer_size=0,
+        loop=None,
     ):
         """Set up instance."""
         self._codecs = codecs or {}
@@ -131,12 +132,8 @@ class RPC(MessageEmitter):
         self._chunk_store = {}
         self._method_timeout = 10 if method_timeout is None else method_timeout
         self._remote_logger = logger
+        self.loop = loop or asyncio.get_event_loop()
         super().__init__(self._remote_logger)
-        try:
-            self.loop = asyncio.get_event_loop()
-        except RuntimeError:
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
 
         self._services = {}
         self._object_store = {

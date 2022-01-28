@@ -500,8 +500,9 @@ class ServerAppController:
             app_id, workspace=workspace, token=token, timeout=timeout
         )
 
-    def _client_updated(self, client: ClientInfo) -> None:
+    def _client_updated(self, client: dict) -> None:
         """Callback when client is updated."""
+        client = ClientInfo.parse_obj(client)
         page_id = f"{client.workspace}/{client.id}"
         if page_id in self._client_callbacks:
             callbacks = self._client_callbacks[page_id]

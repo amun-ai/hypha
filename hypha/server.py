@@ -121,12 +121,13 @@ def start_builtin_services(
 
     @app.get(norm_url("/api/stats"))
     async def stats():
-        users = core_interface.store.get_all_users()
+        users = await core_interface.store.get_all_users()
         client_count = len(users)
+        all_workspaces = await core_interface.store.get_all_workspace()
         return {
             "plugin_count": client_count,
-            "workspace_count": len(core_interface.get_all_workspace()),
-            "workspaces": [w.get_summary() for w in core_interface.get_all_workspace()],
+            "workspace_count": len(all_workspaces),
+            "workspaces": [w.get_summary() for w in all_workspaces],
             "users": [u.id for u in users],
         }
 
@@ -172,7 +173,8 @@ def start_builtin_services(
 
     @app.on_event("startup")
     async def startup_event():
-        await core_interface.init()
+        loop = asyncio.get_running_loop()
+        await core_interface.init(loop)
         core_interface.event_bus.emit("startup")
 
     @app.on_event("shutdown")
