@@ -87,35 +87,35 @@ def fastapi_server_fixture(minio_server):
         proc.terminate()
 
 
-# @pytest_asyncio.fixture(name="socketio_subpath_server")
-# def socketio_subpath_server_fixture(minio_server):
-#     """Start server (under /my/engine) as test fixture and tear down after test."""
-#     with subprocess.Popen(
-#         [
-#             sys.executable,
-#             "-m",
-#             "hypha.server",
-#             f"--port={SIO_PORT2}",
-#             "--base-path=/my/engine",
-#         ],
-#         env=test_env,
-#     ) as proc:
+@pytest_asyncio.fixture(name="fastapi_subpath_server")
+def fastapi_subpath_server_fixture(minio_server):
+    """Start server (under /my/engine) as test fixture and tear down after test."""
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "hypha.server",
+            f"--port={SIO_PORT2}",
+            "--base-path=/my/engine",
+        ],
+        env=test_env,
+    ) as proc:
 
-#         timeout = 10
-#         while timeout > 0:
-#             try:
-#                 response = requests.get(
-#                     f"http://127.0.0.1:{SIO_PORT2}/my/engine/health/liveness"
-#                 )
-#                 if response.ok:
-#                     break
-#             except RequestException:
-#                 pass
-#             timeout -= 0.1
-#             time.sleep(0.1)
-#         yield
-#         proc.kill()
-#         proc.terminate()
+        timeout = 10
+        while timeout > 0:
+            try:
+                response = requests.get(
+                    f"http://127.0.0.1:{SIO_PORT2}/my/engine/health/liveness"
+                )
+                if response.ok:
+                    break
+            except RequestException:
+                pass
+            timeout -= 0.1
+            time.sleep(0.1)
+        yield
+        proc.kill()
+        proc.terminate()
 
 
 @pytest_asyncio.fixture(name="minio_server", scope="session")
