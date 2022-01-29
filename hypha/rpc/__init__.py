@@ -20,7 +20,7 @@ from .utils import (
 )
 
 CHUNK_SIZE = 1024 * 500
-API_VERSION = "0.2.3"
+API_VERSION = "0.3.0"
 ALLOWED_MAGIC_METHODS = ["__enter__", "__exit__"]
 IO_PROPS = [
     "name",  # file name
