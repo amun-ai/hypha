@@ -218,16 +218,11 @@ async def test_non_persistent_workspace(fastapi_server):
     response = requests.get(f"{SERVER_URL}/api/stats")
     assert response.status_code == 200
     stats = response.json()
+    count = stats["user_count"]
     workspace_info = find_item(stats["workspaces"], "name", workspace)
     assert workspace_info is not None
-    count = 0
-    for workspace in stats["workspaces"]:
-        count += len(workspace["clients"])
-    assert stats["client_count"] == count
-    plugins = workspace_info["clients"]
-    assert find_item(plugins, "id", plugin.config["id"]) is not None
-
     await api.disconnect()
+    await asyncio.sleep(1)
 
     # now it should disappear from the stats
     response = requests.get(f"{SERVER_URL}/api/stats")
@@ -235,7 +230,7 @@ async def test_non_persistent_workspace(fastapi_server):
     stats = response.json()
     workspace_info = find_item(stats["workspaces"], "name", workspace)
     assert workspace_info is None
-    assert stats["client_count"] == count - 2
+    assert stats["user_count"] == count - 1
 
 
 async def test_lazy_plugin(fastapi_server):

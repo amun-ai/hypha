@@ -43,9 +43,10 @@ PLUGIN_CONFIG_FIELDS = [
 class EventBus:
     """An event bus class."""
 
-    def __init__(self):
+    def __init__(self, logger=None):
         """Initialize the event bus."""
         self._callbacks = {}
+        self._logger = logger
 
     def on(self, event_name, func):
         """Register an event callback."""
@@ -62,9 +63,18 @@ class EventBus:
     def emit(self, event_name, *data):
         """Trigger an event."""
         for func in self._callbacks.get(event_name, []):
-            func(*data)
-            if hasattr(func, "once"):
-                self.off(event_name, func)
+            try:
+                func(*data)
+                if hasattr(func, "once"):
+                    self.off(event_name, func)
+            except Exception as e:
+                if self._logger:
+                    self._logger.error(
+                        "Error in event callback: %s, %s, error: %s",
+                        event_name,
+                        func,
+                        e,
+                    )
 
     def off(self, event_name, func=None):
         """Remove an event callback."""

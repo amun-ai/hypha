@@ -177,7 +177,9 @@ class WebsocketServer:
                                 len(remain_clients),
                             )
                     workspace_info = await workspace_manager.get_workspace_info()
-                    if not workspace_info.persistent:
+                    if user_info.is_anonymous:
+                        await workspace_manager.delete()
+                    elif not workspace_info.persistent:
                         await workspace_manager.delete_if_empty()
 
     async def is_alive(self):

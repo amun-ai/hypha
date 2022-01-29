@@ -122,13 +122,13 @@ def start_builtin_services(
     @app.get(norm_url("/api/stats"))
     async def stats():
         users = await core_interface.store.get_all_users()
-        client_count = len(users)
+        user_count = len(users)
         all_workspaces = await core_interface.store.get_all_workspace()
         return {
-            "client_count": client_count,
-            "workspace_count": len(all_workspaces),
-            "workspaces": [w.get_summary() for w in all_workspaces],
+            "user_count": user_count,
             "users": [u.id for u in users],
+            "workspace_count": len(all_workspaces),
+            "workspaces": [w.dict() for w in all_workspaces],
         }
 
     if args.enable_s3:

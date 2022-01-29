@@ -104,9 +104,9 @@ class RedisEventBus(EventBus):
 
     def __init__(self, redis) -> None:
         """Initialize the event bus."""
-        super().__init__()
+        super().__init__(logger)
         self._redis = redis
-        self._local_event_bus = EventBus()
+        self._local_event_bus = EventBus(logger)
 
     async def init(self, loop):
         """Setup the event bus."""
@@ -808,7 +808,7 @@ class WorkspaceManager:
             return True
 
         if user_info.parent:
-            parent = await self._redis.hget(f"users", user_info.parent)
+            parent = await self._redis.hget("users", user_info.parent)
             if not parent:
                 return False
             parent = UserInfo.parse_obj(json.loads(parent.decode()))
@@ -898,6 +898,8 @@ class WorkspaceManager:
     async def delete_if_empty(self):
         """Delete the workspace if it is empty."""
         client_keys = await self._redis.hkeys(f"{self._workspace}:clients")
+        if b"workspace-manager" in client_keys:
+            client_keys.remove(b"workspace-manager")
         if not client_keys:
             await self.delete()
 

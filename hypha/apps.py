@@ -84,6 +84,7 @@ class ServerAppController:
 
         event_bus = core_interface.event_bus
         self.core_interface = core_interface
+        core_interface.event_bus.on("workspace_removed", self._on_workspace_removed)
         core_interface.register_public_service(self.get_service_api())
         self.jinja_env = Environment(
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
@@ -191,6 +192,18 @@ class ServerAppController:
             aws_secret_access_key=self.secret_access_key,
             region_name="EU",
         )
+
+    def _on_workspace_removed(self, workspace: dict):
+        # Shutdown the apps in the workspace
+        self.core_interface.current_workspace.set(workspace["name"])
+        for app in self._apps.values():
+            if app["workspace"] == workspace["name"]:
+                logger.info(
+                    "Shutting down app %s (since workspace %s has been removed)",
+                    app["id"],
+                    workspace["name"],
+                )
+                asyncio.ensure_future(self.stop(app["id"]))
 
     async def list_saved_workspaces(
         self,
@@ -561,6 +574,7 @@ class ServerAppController:
         app_info = {
             "id": client_id,
             "name": app_id,
+            "workspace": workspace,
             "local_url": local_url,
             "public_url": public_url,
             "status": "connecting",
