@@ -249,12 +249,13 @@ class WorkspaceManager:
         service_summary_fields = ["id", "name", "type", "config"]
         workspace_summary_fields = ["name", "description"]
         clients = await self.list_clients(context=context)
-        services = await self.list_services()
+        services = await self.list_services(context=context)
         summary = {k: workspace_info[k] for k in workspace_summary_fields}
         summary.update(
             {
                 "client_count": len(clients),
                 "clients": clients,
+                "service_count": len(services),
                 "services": [
                     {k: service[k] for k in service_summary_fields}
                     for service in services
@@ -947,6 +948,8 @@ class WorkspaceManager:
             "installApplication": self.install_application,
             "uninstall_application": self.uninstall_application,
             "uninstallApplication": self.uninstall_application,
+            "get_summary": self.get_summary,
+            "getSummary": self.get_summary,
         }
         return interface
 

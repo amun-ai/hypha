@@ -229,6 +229,7 @@ async def test_websocket_server(fastapi_server, test_user_token):
 
     assert len(await wm2.list_user_clients()) == 2
     await wm.disconnect()
+    await asyncio.sleep(0.5)
     assert len(await wm2.list_user_clients()) == 1
 
     with pytest.raises(Exception, match=r".*Service already exists: default.*"):
@@ -267,4 +268,8 @@ async def test_websocket_server(fastapi_server, test_user_token):
     )
     # This should be fine because it is run in executor
     await svc5.blocking_sleep(3)
+    summary = await wm2.get_summary()
+    assert summary["client_count"] == 2
+    assert summary["service_count"] == 6
+    assert find_item(summary["services"], "name", "executor-test")
     await wm2.disconnect()
