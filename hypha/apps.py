@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import random
-import jose
+import traceback
 import shutil
 import sys
 from pathlib import Path
@@ -517,7 +517,7 @@ class ServerAppController:
         app_id,
         workspace=None,
         token=None,
-        plugin_id=None,
+        client_id=None,
         timeout: float = 60,
         loop_count=0,
     ):
@@ -536,13 +536,13 @@ class ServerAppController:
                 f" to run app {app_id} in workspace {workspace}."
             )
 
-        if plugin_id is None:
-            plugin_id = shortuuid.uuid()
+        if client_id is None:
+            client_id = shortuuid.uuid()
 
         await self.prepare_application(app_id)
         local_url = (
             f"{self.local_base_url}/apps/{app_id}/index.html?"
-            + f"client_id={plugin_id}&workspace={workspace}"
+            + f"client_id={client_id}&workspace={workspace}"
             + f'&server_url={self.local_base_url.replace("http://", "ws://").replace("https://", "wss://")}/ws'
             + f"&token={token}"
             if token
@@ -550,16 +550,16 @@ class ServerAppController:
         )
         public_url = (
             f"{self.public_base_url}/apps/{app_id}/index.html?"
-            + f"client_id={plugin_id}&workspace={workspace}"
+            + f"client_id={client_id}&workspace={workspace}"
             + f'&server_url={self.public_base_url.replace("http://", "ws://").replace("https://", "wss://")}/ws'
             + f"&token={token}"
             if token
             else ""
         )
 
-        page_id = workspace + "/" + plugin_id
+        page_id = workspace + "/" + client_id
         app_info = {
-            "id": plugin_id,
+            "id": client_id,
             "name": app_id,
             "local_url": local_url,
             "public_url": public_url,
@@ -569,13 +569,23 @@ class ServerAppController:
         }
 
         def stop_plugin():
-            logger.warning("Plugin %s is stopping...", plugin_id)
-            asyncio.create_task(self.stop(plugin_id, False))
+            logger.warning("Plugin %s is stopping...", client_id)
+            asyncio.create_task(self.stop(client_id, False))
 
         async def check_ready(client):
-            api = await self.core_interface.get_public_service(
-                f"{client.workspace}/{client.id}:default"
+            api = await self.core_interface.get_service_as_user(
+                client.workspace, f"{client.id}:default", user_info
             )
+            try:
+                if api.setup:
+                    await api.setup()
+            except Exception:
+                fut.set_exception(
+                    Exception(
+                        f"Failed to run setup() on {client.workspace}/{client.id}:default, error: {traceback.format_exc()}"
+                    )
+                )
+                return
             client.name = api.name
             # plugin.register_exit_callback(stop_plugin)
             readiness_probe = api.config.get("readiness_probe", {})
@@ -693,7 +703,7 @@ class ServerAppController:
                             app_id,
                             workspace=workspace,
                             token=token,
-                            plugin_id=plugin_id,
+                            client_id=client_id,
                             timeout=timeout,
                             loop_count=loop_count,
                         )
@@ -738,7 +748,7 @@ class ServerAppController:
 
         runner_info = random.choice(self._runner_services)
         runner = await self.core_interface.get_public_service(runner_info)
-        await runner.start(url=local_url, plugin_id=plugin_id)
+        await runner.start(url=local_url, client_id=client_id)
 
         app_info["runner"] = runner
         self._apps[page_id] = app_info
@@ -747,10 +757,10 @@ class ServerAppController:
         asyncio.get_running_loop().create_task(keep_alive(api, loop_count))
         return config
 
-    async def stop(self, plugin_id: str, raise_exception=True) -> None:
+    async def stop(self, client_id: str, raise_exception=True) -> None:
         """Stop a server app instance."""
         workspace = self.core_interface.current_workspace.get()
-        page_id = workspace + "/" + plugin_id
+        page_id = workspace + "/" + client_id
         if page_id in self._apps:
             logger.info("Stopping app: %s...", page_id)
 
@@ -758,28 +768,28 @@ class ServerAppController:
             # TODO: Disconnect the app
 
             app_info["watch"] = False  # make sure we don't keep-alive
-            await app_info["runner"].stop(plugin_id)
+            await app_info["runner"].stop(client_id)
             if page_id in self._apps:
                 del self._apps[page_id]
         elif raise_exception:
-            raise Exception(f"Server app instance not found: {plugin_id}")
+            raise Exception(f"Server app instance not found: {client_id}")
 
     async def get_log(
         self,
-        plugin_id: str,
+        client_id: str,
         type: str = None,  # pylint: disable=redefined-builtin
         offset: int = 0,
         limit: Optional[int] = None,
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get server app instance log."""
         workspace = self.core_interface.current_workspace.get()
-        page_id = workspace + "/" + plugin_id
+        page_id = workspace + "/" + client_id
         if page_id in self._apps:
             return await self._apps[page_id]["runner"].get_log(
-                plugin_id, type=type, offset=offset, limit=limit
+                client_id, type=type, offset=offset, limit=limit
             )
         else:
-            raise Exception(f"Server app instance not found: {plugin_id}")
+            raise Exception(f"Server app instance not found: {client_id}")
 
     async def list_running(self) -> List[str]:
         """List the running sessions for the current workspace."""

@@ -3,6 +3,7 @@ import asyncio
 import inspect
 import json
 import logging
+from multiprocessing.sharedctypes import Value
 import os
 import sys
 import io
@@ -171,7 +172,7 @@ class WorkspaceManager:
         ):
             return self._rpc
         if await self.check_client_exists(client_id):
-            rpc = await self._create_rpc(client_id + "-" + shortuuid.uuid())
+            rpc = self._create_rpc(client_id + "-" + shortuuid.uuid())
             try:
                 await rpc.ping(client_id)
             except asyncio.exceptions.TimeoutError:
@@ -191,7 +192,7 @@ class WorkspaceManager:
                 user_info=self._root_user.dict(),
             )
         )
-        rpc = await self._create_rpc(client_id)
+        rpc = self._create_rpc(client_id)
 
         def save_client_info(_):
             return asyncio.create_task(
@@ -278,17 +279,26 @@ class WorkspaceManager:
     async def register_service(self, service, context: Optional[dict] = None, **kwargs):
         """Register a service"""
         user_info = UserInfo.parse_obj(context["user"])
+        source_workspace = context["from"].split("/")[0]
+        assert (
+            source_workspace == self._workspace
+        ), "Service must be registered in the same workspace"
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
+        logger.info("Registering service %s to %s", service.id, self._workspace)
+        # create a new rpc client as the user
+        # rpc = self._create_rpc(
+        #     "client-" + shortuuid.uuid(), self._workspace, user_info=user_info
+        # )
+        # try:
+        #     sv = await rpc.get_remote_service(context["from"] + ":built-in")
+        # except Exception as exp:
+        #     raise Exception(f"Client not ready: {context['from']}") from exp
         rpc = await self.get_rpc()
         sv = await rpc.get_remote_service(context["from"] + ":built-in")
         service["config"] = service.get("config", {})
         service["config"]["workspace"] = self._workspace
         service = await sv.register_service(service, **kwargs)
-        source_workspace = context["from"].split("/")[0]
-        assert (
-            source_workspace == self._workspace
-        ), "Service must be registered in the same workspace"
         assert "/" not in service["id"], "Service id must not contain '/'"
         service["id"] = self._workspace + "/" + service["id"]
         return service
@@ -301,9 +311,10 @@ class WorkspaceManager:
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
         config = config or {}
-        if "scopes" in config and config["scopes"] != [self._workspace]:
-            raise Exception("Scopes must be empty or contains only the workspace name.")
-        config["scopes"] = [self._workspace]
+        if "scopes" in config and not isinstance(config["scopes"], list):
+            raise Exception(
+                "Scopes must be empty or contains a list of workspace names."
+            )
         token_config = TokenConfig.parse_obj(config)
         for ws in config["scopes"]:
             if not await self.check_permission(user_info, ws):
@@ -346,9 +357,6 @@ class WorkspaceManager:
     async def _get_client_info(self, client_id):
         assert "/" not in client_id
         client_info = await self._redis.hget(f"{self._workspace}:clients", client_id)
-        assert (
-            client_info is not None
-        ), f"Failed to get client info for {self._workspace}/{client_id}"
         return client_info and json.loads(client_info.decode())
 
     async def list_clients(self, context: Optional[dict] = None):
@@ -439,6 +447,9 @@ class WorkspaceManager:
         for client_id in client_ids:
             try:
                 client_info = await self._get_client_info(client_id)
+                assert (
+                    client_info is not None
+                ), f"Failed to get client info for {self._workspace}/{client_id}"
                 for sinfo in client_info["services"]:
                     service_list.append(sinfo)
             # make sure we don't throw if a client is removed
@@ -456,6 +467,11 @@ class WorkspaceManager:
         )
         await self._redis.sadd(
             f"user:{client_info.user_info.id}:clients", client_info.id
+        )
+        logger.info(
+            "Client %s updated (services: %s)",
+            client_info.id,
+            [s.id for s in client_info.services],
         )
         self._event_bus.emit("client_updated", client_info.dict())
 
@@ -499,14 +515,16 @@ class WorkspaceManager:
         await self._redis.hdel(f"{workspace}:clients", client_id)
         logger.info("Client deleted: %s/%s", workspace, client_id)
 
-    async def _create_rpc(self, client_id: str, default_context=None):
+    def _create_rpc(
+        self, client_id: str, default_context=None, user_info: UserInfo = None
+    ):
         """Create a rpc for the workspace.
         Note: Any request made through this rcp will be treated as a request from the root user.
         """
         assert "/" not in client_id
-        logger.info("Creating RPC for client %s", client_id)
+        logger.info("Creating RPC for client %s/%s", self._workspace, client_id)
         connection = RedisRPCConnection(
-            self._redis, self._workspace, client_id, self._root_user
+            self._redis, self._workspace, client_id, (user_info or self._root_user)
         )
         rpc = RPC(connection, client_id=client_id, default_context=default_context)
         return rpc
@@ -562,11 +580,22 @@ class WorkspaceManager:
         workspace_info = WorkspaceInfo.parse_obj(json.loads(workspace_info.decode()))
         return workspace_info
 
-    async def launch_application_by_service(
-        self, workspace: str, service_name: str, user_info: UserInfo, timeout: float = 60
+    async def _launch_application_by_service(
+        self,
+        query: dict,
+        timeout: float = 60,
+        context: dict = None,
     ):
         """Launch an installed application by service name."""
-        assert await self.check_permission(user_info), "Permission denied"
+        workspace, service_id, client_name = (
+            query.get("workspace", self._workspace),
+            query.get("service_id"),
+            query.get("client_name"),
+        )
+        if not service_id or service_id == "*":
+            service_id = "default"
+        # Check if the user has permission to this workspace and the one to be launched
+        token = await self.generate_token({"scopes": [workspace]}, context=context)
         workspace = await self.get_workspace_info(workspace)
         controller = await self.get_service("public/workspace-manager:server-apps")
         if not controller:
@@ -577,41 +606,72 @@ class WorkspaceManager:
         app_id = None
         for aid, app_info in workspace.applications.items():
             # find the app by service name
-            if app_info.services and service_name in app_info.services:
+            if client_name and client_name == app_info.name:
+                app_id = aid
+                break
+            if app_info.services and service_id in app_info.services:
                 app_id = aid
                 break
         if app_id is None:
-            raise Exception(f"Service plugin {service_name} not found")
-        token = await self.generate_token(context={"user": user_info.dict()})
-        plugin_id = shortuuid.uuid()
+            raise Exception(f"Service id {service_id} not found")
+
+        client_id = shortuuid.uuid()
         config = await controller.start(
             app_id,
             workspace=workspace.name,
             token=token,
-            plugin_id=plugin_id,
+            client_id=client_id,
             timeout=timeout,
         )
-        return config
+        return await self.get_service(
+            {
+                "workspace": workspace.name,
+                "client_id": config["id"],
+                "service_id": service_id,
+            },
+            context=context,
+        )
 
-    async def get_service(self, service_id: Union[dict, str], context=None):
+    async def get_service(self, query: Union[dict, str], context=None):
         # Note: No authorization required because the access is controlled by the client itself
-        if isinstance(service_id, dict):
-            if "launch" in service_id and service_id["launch"]:
-                return await self.launch_application_by_service(
-                    service_id.get("workspace", self._workspace),
-                    service_id["name"],
-                    UserInfo.parse_obj(context["user"]),
-                )
+        if isinstance(query, dict):
+            if "id" not in query:
+                service_id = query.get("service_id", "*")
             else:
-                service_id = service_id["id"]
+                service_id = query["id"]
+        else:
+            assert isinstance(query, str)
+            service_id = query
+            query = {"id": service_id}
         assert isinstance(service_id, str)
 
         if "/" in service_id and ":" not in service_id:
             service_id = service_id + ":default"
+            query["workspace"] = service_id.split("/")[0]
+            if "client_id" in query and query["client_id"] != service_id.split("/")[1]:
+                raise ValueError(
+                    f"client_id ({query['client_id']}) does not match service_id ({service_id})"
+                )
+            query["client_id"] = service_id.split("/")[1]
         elif "/" not in service_id and ":" not in service_id:
-            service_id = self._workspace + "/*:" + service_id
+            workspace = query.get("workspace", self._workspace)
+            service_id = workspace + "/*:" + service_id
+            query["workspace"] = workspace
+            query["client_id"] = "*"
         elif "/" not in service_id:
-            service_id = self._workspace + "/" + service_id
+            workspace = query.get("workspace", self._workspace)
+            query["client_id"] = service_id.split(":")[0]
+            service_id = workspace + "/" + service_id
+            query["workspace"] = workspace
+        else:
+            assert "/" in service_id and ":" in service_id
+            workspace = service_id.split("/")[0]
+            query["client_id"] = service_id.split("/")[1].split(":")[0]
+            query["workspace"] = workspace
+
+        query["service_id"] = service_id.split("/")[1].split(":")[1]
+
+        logger.info("Getting service via query %s", query)
 
         # service id with an abosolute client id
         if "*" not in service_id:
@@ -625,16 +685,25 @@ class WorkspaceManager:
                 workspace = self._workspace
 
             # Make sure the client exists
-            await self._get_client_info(service_id.split("/")[1].split(":")[0])
-            rpc = await self.setup()
-            service_api = await rpc.get_remote_service(service_id)
-            service_api["config"]["workspace"] = workspace
-            return service_api
+            if await self._get_client_info(service_id.split("/")[1].split(":")[0]):
+                rpc = await self.setup()
+                service_api = await rpc.get_remote_service(service_id)
+                service_api["config"]["workspace"] = workspace
+                return service_api
+            elif "launch" in query and query["launch"] == True:
+                app_info = await self._launch_application_by_service(
+                    service_id,
+                    context=context,
+                )
+                # TODO: get the actual service
+                return app_info
         else:
             workspace, sname = service_id.split("/")
             cid, sid = sname.split(":")
             assert cid == "*", "Specifying a client id is not supported: " + cid
-            if workspace == "*":
+            if sid == "*":  # Skip the client check if the service id is *
+                services = []
+            elif workspace == "*":
                 services = await self.list_services({"workspace": "*"}, context=context)
             elif workspace != self._workspace:
                 assert await self._redis.hget("workspaces", workspace)
@@ -648,6 +717,13 @@ class WorkspaceManager:
             filter(lambda service: service["id"].endswith(":" + sid), services)
         )
         if not services:
+            if "launch" in query and query["launch"] == True:
+                app_info = await self._launch_application_by_service(
+                    query,
+                    context=context,
+                )
+                # TODO: get the actual service
+                return app_info
             raise Exception(f"Service not found: {sid} in {workspace}")
         service_info = random.choice(services)
         rpc = await self.setup()

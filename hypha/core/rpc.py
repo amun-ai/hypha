@@ -393,7 +393,10 @@ class RPC(MessageEmitter):
             )
             for key, val in items:
                 if callable(val) and hasattr(val, "__rpc_object__"):
-                    if self._client_id == val.__rpc_object__["_rtarget"]:
+                    client_id = val.__rpc_object__["_rtarget"]
+                    if "/" in client_id:
+                        client_id = client_id.split("/")[1]
+                    if self._client_id == client_id:
                         # Make sure we can modify the object
                         if isinstance(a_object, tuple):
                             a_object = list(a_object)
@@ -404,9 +407,7 @@ class RPC(MessageEmitter):
                         val = a_object[key]  # make sure it's annotated later
                     else:
                         raise Exception(
-                            "Local method not found: {}".format(
-                                val.__rpc_object__["_rmethod"]
-                            )
+                            f"Local method not found: {val.__rpc_object__['_rmethod']}, client id mismatch {self._client_id} != {client_id}"
                         )
                 self._annotate_service_methods(
                     val,
@@ -643,6 +644,8 @@ class RPC(MessageEmitter):
         target_id = encoded_method["_rtarget"]
         if remote_workspace and "/" not in target_id:
             target_id = remote_workspace + "/" + target_id
+            # Fix the target id to be an absolute id
+            encoded_method["_rtarget"] = target_id
         method_id = encoded_method["_rmethod"]
         with_promise = encoded_method.get("_rpromise", False)
 

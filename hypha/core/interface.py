@@ -1,22 +1,17 @@
 """Provide interface functions for the core."""
-import asyncio
-import inspect
-import json
 import logging
+import random
 import sys
-from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from functools import partial
-from typing import Dict, Optional, Union
-from contextvars import copy_context
+from typing import Dict
 
 import pkg_resources
 import shortuuid
 from starlette.routing import Mount
 
-from hypha.core import ServiceInfo, TokenConfig, UserInfo, VisibilityEnum, WorkspaceInfo
-from hypha.core.auth import generate_presigned_token, parse_token
-from hypha.utils import EventBus, dotdict
+from hypha.core import ServiceInfo, UserInfo, WorkspaceInfo
+from hypha.core.auth import parse_token
 from hypha.core.store import RedisStore
 
 logging.basicConfig(stream=sys.stdout)
@@ -174,6 +169,37 @@ class CoreInterface:
     async def get_public_service(self, query=None):
         """Get public service."""
         return await self._public_workspace_interface.get_service(query)
+
+    async def get_service_as_user(
+        self,
+        workspace_name: str,
+        service_id: str,
+        user_info: UserInfo,
+    ):
+        """Get service as a specified user."""
+        assert "/" not in service_id
+
+        wm = await self.store.get_workspace_manager(workspace_name)
+        services = await wm.list_services(context={"user": user_info})
+        services = list(
+            filter(
+                lambda service: service["id"].endswith(
+                    ":" + service_id if ":" not in service_id else service_id
+                ),
+                services,
+            )
+        )
+        if not services:
+            raise Exception(f"Service {service_id} not found")
+        service = random.choice(services)
+        service_id = service["id"]
+
+        rpc = self.store.create_rpc(
+            "http-client-" + shortuuid.uuid(), workspace_name, user_info=user_info
+        )
+        if "/" not in service_id:
+            service_id = f"{workspace_name}/{service_id}"
+        return await rpc.get_remote_service(service_id, timeout=5)
 
     def register_public_service(self, service: dict):
         """Register a service."""

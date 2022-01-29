@@ -119,6 +119,7 @@ class RDFController:
         """Get rdf controller."""
         return {
             "id": "rdf",
+            "config": {"visibility": "public"},
             "name": "RDF",
             "type": "rdf",
             "save": self.save,

@@ -92,7 +92,7 @@ class BrowserAppRunner:
     async def start(
         self,
         url: str,
-        plugin_id: str,
+        client_id: str,
     ):
         """Start a browser app instance."""
         user_info = self.core_interface.current_user.get()
@@ -103,7 +103,7 @@ class BrowserAppRunner:
             # raise Exception("The app controller is not ready yet")
         # context = await self.browser.createIncognitoBrowserContext()
         page = await self.browser.new_page()
-        page_id = user_id + "/" + plugin_id
+        page_id = user_id + "/" + client_id
         logs = {}
         self.browser_pages[page_id] = {
             "url": url,
@@ -128,17 +128,17 @@ class BrowserAppRunner:
             del self.browser_pages[page_id]
             raise
 
-    async def stop(self, plugin_id: str) -> None:
+    async def stop(self, client_id: str) -> None:
         """Stop a browser app instance."""
         user_info = self.core_interface.current_user.get()
         user_id = user_info.id
-        page_id = user_id + "/" + plugin_id
+        page_id = user_id + "/" + client_id
         if page_id in self.browser_pages:
             await self.browser_pages[page_id]["page"].close()
             if page_id in self.browser_pages:
                 del self.browser_pages[page_id]
         else:
-            raise Exception(f"browser app instance not found: {plugin_id}")
+            raise Exception(f"browser app instance not found: {client_id}")
 
     async def list(self) -> List[str]:
         """List the browser apps for the current user."""
@@ -153,7 +153,7 @@ class BrowserAppRunner:
 
     async def get_log(
         self,
-        plugin_id: str,
+        client_id: str,
         type: str = None,  # pylint: disable=redefined-builtin
         offset: int = 0,
         limit: Optional[int] = None,
@@ -161,14 +161,14 @@ class BrowserAppRunner:
         """Get the logs for a browser app instance."""
         user_info = self.core_interface.current_user.get()
         user_id = user_info.id
-        page_id = user_id + "/" + plugin_id
+        page_id = user_id + "/" + client_id
         if page_id in self.browser_pages:
             if type is None:
                 return self.browser_pages[page_id]["logs"]
             if limit is None:
                 limit = MAXIMUM_LOG_ENTRIES
             return self.browser_pages[page_id]["logs"][type][offset : offset + limit]
-        raise Exception(f"browser app instance not found: {plugin_id}")
+        raise Exception(f"browser app instance not found: {client_id}")
 
     def get_service_api(self) -> Dict[str, Any]:
         """Get a list of service api."""
