@@ -27,7 +27,7 @@ from hypha.core import (
     TokenConfig,
     RDF,
 )
-from hypha.core.rpc import RPC
+from hypha.rpc import RPC
 from hypha.core.auth import generate_presigned_token, generate_reconnection_token
 
 logging.basicConfig(stream=sys.stdout)

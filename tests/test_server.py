@@ -67,25 +67,25 @@ def test_plugin_runner(fastapi_server):
         assert "echo: a message" in output
 
 
-def test_plugin_runner_subpath(socketio_subpath_server):
-    """Test the plugin runner with subpath server."""
-    with subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "hypha.runner",
-            f"--server-url=ws://127.0.0.1:{SIO_PORT2}/my/engine/ws",
-            "--quit-on-ready",
-            os.path.join(os.path.dirname(__file__), "example_plugin.py"),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    ) as proc:
-        out, err = proc.communicate()
-        assert err.decode("utf8") == ""
-        output = out.decode("utf8")
-        assert "Generated token: " in output and "@imjoy@" in output
-        assert "echo: a message" in output
+# def test_plugin_runner_subpath(socketio_subpath_server):
+#     """Test the plugin runner with subpath server."""
+#     with subprocess.Popen(
+#         [
+#             sys.executable,
+#             "-m",
+#             "hypha.runner",
+#             f"--server-url=ws://127.0.0.1:{SIO_PORT2}/my/engine/ws",
+#             "--quit-on-ready",
+#             os.path.join(os.path.dirname(__file__), "example_plugin.py"),
+#         ],
+#         stdout=subprocess.PIPE,
+#         stderr=subprocess.PIPE,
+#     ) as proc:
+#         out, err = proc.communicate()
+#         assert err.decode("utf8") == ""
+#         output = out.decode("utf8")
+#         assert "Generated token: " in output and "@imjoy@" in output
+#         assert "echo: a message" in output
 
 
 async def test_plugin_runner_workspace(fastapi_server):

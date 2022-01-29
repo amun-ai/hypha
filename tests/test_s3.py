@@ -25,6 +25,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
     assert s3controller
     s3controller = await api.get_service("public/*:s3-storage")
     info = await s3controller.generate_credential()
+    print("Testing s3 client access...")
     async with aioboto3.Session().resource(
         "s3",
         endpoint_url=info["endpoint_url"],

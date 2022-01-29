@@ -7,7 +7,7 @@ import msgpack
 import websockets
 import shortuuid
 
-from hypha.core.rpc import RPC
+from hypha.rpc import RPC
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket")

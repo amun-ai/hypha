@@ -8,7 +8,7 @@ import msgpack
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 
-from hypha.core.rpc import RPC
+from hypha.rpc import RPC
 from hypha.core.auth import login_optional
 from hypha.core.interface import CoreInterface
 from hypha.utils import GzipRoute

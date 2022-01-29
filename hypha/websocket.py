@@ -154,8 +154,10 @@ class WebsocketServer:
                     await conn.emit_message(data)
             except WebSocketDisconnect as exp:
                 if exp.code != status.WS_1000_NORMAL_CLOSURE:
-                    logger.warning(
-                        f"Client disconnect from the server (code={exp.code})"
+                    logger.error(
+                        "Websocket (client=%s) disconnected unexpectedly: %s",
+                        client_id,
+                        exp,
                     )
                 else:
                     # Clean up if the client is disconnected normally

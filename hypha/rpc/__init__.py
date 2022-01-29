@@ -10,10 +10,9 @@ from collections import OrderedDict
 from functools import partial, reduce
 import msgpack
 import math
-from numpy import isin
 
 import shortuuid
-from imjoy_rpc.utils import (
+from .utils import (
     FuturePromise,
     MessageEmitter,
     dotdict,
@@ -666,9 +665,11 @@ class RPC(MessageEmitter):
                     # Store the children session under the parent
                     local_session_id = local_parent + "." + local_session_id
                 store = self._get_session_store(local_session_id, create=True)
-                assert (
-                    store is not None
-                ), f"Failed to get session store {local_session_id}"
+                if store is None:
+                    reject(
+                        RuntimeError(f"Failed to get session store {local_session_id}")
+                    )
+                    return
                 store["target_id"] = target_id
                 args = self._encode(
                     arguments,
