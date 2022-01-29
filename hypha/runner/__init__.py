@@ -25,7 +25,9 @@ async def export_service(plugin_api, config, imjoy_rpc):
         rpc = wm.rpc
         if not isinstance(plugin_api, dict) and inspect.isclass(type(plugin_api)):
             plugin_api = {a: getattr(plugin_api, a) for a in dir(plugin_api)}
+        # Copy the plugin name as the default name
         plugin_api["id"] = "default"
+        plugin_api["name"] = config.get("name", "default")
         await rpc.register_service(plugin_api, overwrite=True)
         remote_api = await rpc.get_remote_service("workspace-manager:default")
         imjoy_rpc.api.update(remote_api)

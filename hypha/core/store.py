@@ -509,6 +509,19 @@ class WorkspaceManager:
         assert "/" not in client_info.id
         if not await self._redis.hexists(f"{self._workspace}:clients", client_info.id):
             raise Exception(f"Client {client_info.id} not found.")
+
+        for service in client_info.services:
+            # Add workspace info to the service
+            service.config.workspace = self._workspace
+
+        # Store previous services for detecting changes
+        previous_client_info = await self._redis.hget(
+            f"{self._workspace}:clients", client_info.id
+        )
+        previous_client_info = ClientInfo.parse_obj(
+            json.loads(previous_client_info.decode())
+        )
+
         await self._redis.hset(
             f"{self._workspace}:clients", client_info.id, client_info.json()
         )
@@ -521,6 +534,18 @@ class WorkspaceManager:
             [s.id for s in client_info.services],
         )
         self._event_bus.emit("client_updated", client_info.dict())
+
+        # Detect changes
+        service_ids = [service.id for service in client_info.services]
+        previous_service_ids = [service.id for service in previous_client_info.services]
+        # Detect removed services
+        for service in previous_client_info.services:
+            if service.id not in service_ids:
+                self._event_bus.emit("service_unregistered", service.dict())
+        # Detect new services
+        for service in client_info.services:
+            if service.id not in previous_service_ids:
+                self._event_bus.emit("service_registered", service.dict())
 
     async def register_client(self, client_info: ClientInfo, overwrite: bool = False):
         """Add a client."""
@@ -979,7 +1004,7 @@ class RedisStore:
     def get_event_bus(self):
         return self._event_bus
 
-    async def setup_root_user(self):
+    async def setup_root_user(self) -> UserInfo:
         if not self._root_user:
             self._root_user = UserInfo(
                 id="root",

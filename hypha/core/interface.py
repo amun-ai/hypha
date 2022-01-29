@@ -174,32 +174,37 @@ class CoreInterface:
         self,
         workspace_name: str,
         service_id: str,
-        user_info: UserInfo,
+        user_info: UserInfo = None,
     ):
         """Get service as a specified user."""
         assert "/" not in service_id
+        user_info = user_info or await self.store.setup_root_user()
 
-        wm = await self.store.get_workspace_manager(workspace_name)
-        services = await wm.list_services(context={"user": user_info})
-        services = list(
-            filter(
-                lambda service: service["id"].endswith(
-                    ":" + service_id if ":" not in service_id else service_id
-                ),
-                services,
+        if ":" not in service_id:
+            wm = await self.store.get_workspace_manager(workspace_name)
+            services = await wm.list_services(context={"user": user_info})
+            services = list(
+                filter(
+                    lambda service: service["id"].endswith(
+                        ":" + service_id if ":" not in service_id else service_id
+                    ),
+                    services,
+                )
             )
-        )
-        if not services:
-            raise Exception(f"Service {service_id} not found")
-        service = random.choice(services)
-        service_id = service["id"]
+            if not services:
+                raise Exception(f"Service {service_id} not found")
+            service = random.choice(services)
+            service_id = service["id"]
 
         rpc = self.store.create_rpc(
             "http-client-" + shortuuid.uuid(), workspace_name, user_info=user_info
         )
         if "/" not in service_id:
             service_id = f"{workspace_name}/{service_id}"
-        return await rpc.get_remote_service(service_id, timeout=5)
+        service = await rpc.get_remote_service(service_id, timeout=5)
+        # Patch the workspace name
+        service["config"]["workspace"] = workspace_name
+        return service
 
     def register_public_service(self, service: dict):
         """Register a service."""

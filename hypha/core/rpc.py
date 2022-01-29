@@ -438,10 +438,14 @@ class RPC(MessageEmitter):
                     if not a.startswith("_") or a in ALLOWED_MAGIC_METHODS
                 }
             )
+            # For class instance, we need set a default id
+            api["id"] = api.get("id", "default")
         else:
             raise Exception("Invalid service object type: {}".format(type(api)))
 
-        assert "id" in api and isinstance(api["id"], str), "Service id not found"
+        assert "id" in api and isinstance(
+            api["id"], str
+        ), f"Service id not found: {api}"
 
         if "name" not in api:
             api["name"] = api["id"]

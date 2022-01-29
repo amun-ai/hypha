@@ -590,16 +590,16 @@ class ServerAppController:
             api = await self.core_interface.get_service_as_user(
                 client.workspace, f"{client.id}:default", user_info
             )
-            try:
-                if api.setup:
-                    await api.setup()
-            except Exception:
-                fut.set_exception(
-                    Exception(
-                        f"Failed to run setup() on {client.workspace}/{client.id}:default, error: {traceback.format_exc()}"
-                    )
-                )
-                return
+            # try:
+            #     if api.setup:
+            #         await api.setup()
+            # except Exception:
+            #     fut.set_exception(
+            #         Exception(
+            #             f"Failed to run setup() on {client.workspace}/{client.id}:default, error: {traceback.format_exc()}"
+            #         )
+            #     )
+            #     return
             client.name = api.name
             # plugin.register_exit_callback(stop_plugin)
             readiness_probe = api.config.get("readiness_probe", {})
