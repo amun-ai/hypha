@@ -244,10 +244,10 @@ class S3Controller:
         core_interface.register_public_service(self.get_s3_service())
         core_interface.set_workspace_loader(self._workspace_loader)
 
-        event_bus.on("workspace_registered", self._setup_workspace)
-        event_bus.on("workspace_changed", self._save_workspace_config)
-        event_bus.on("workspace_removed", self._cleanup_workspace)
-        event_bus.on("client_registered", self._setup_client)
+        event_bus.on_local("workspace_registered", self._setup_workspace)
+        event_bus.on_local("workspace_changed", self._save_workspace_config)
+        event_bus.on_local("workspace_removed", self._cleanup_workspace)
+        event_bus.on_local("client_registered", self._setup_client)
 
         router = APIRouter()
 
@@ -618,7 +618,7 @@ class S3Controller:
             workspace.name,
             log_base_name,
         )
-        workspace.set_logger(ready_logger)
+        # workspace.set_logger(ready_logger)
 
     def _save_workspace_config(self, workspace: dict):
         """Save workspace."""

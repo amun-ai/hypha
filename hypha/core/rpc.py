@@ -10,6 +10,7 @@ from collections import OrderedDict
 from functools import partial, reduce
 import msgpack
 import math
+from numpy import isin
 
 import shortuuid
 from imjoy_rpc.utils import (
@@ -440,8 +441,7 @@ class RPC(MessageEmitter):
         else:
             raise Exception("Invalid service object type: {}".format(type(api)))
 
-        if "id" not in api:
-            api["id"] = "default"
+        assert "id" in api and isinstance(api["id"], str), "Service id not found"
 
         if "name" not in api:
             api["name"] = api["id"]

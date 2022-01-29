@@ -243,7 +243,7 @@ class CoreInterface:
         # Note: service can set its `visibility` to `public` or `protected`
         self._public_services.append(ServiceInfo.parse_obj(formated_service))
         return {
-            "id": formated_service.get_id(),
+            "id": formated_service.id,
             "workspace": "public",
             "name": formated_service.name,
         }

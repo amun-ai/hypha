@@ -15,9 +15,6 @@ from pydantic import (  # pylint: disable=no-name-in-module
     PrivateAttr,
 )
 
-from hypha.utils import EventBus
-from hypha.core.plugin import DynamicPlugin
-
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("core")
 logger.setLevel(logging.INFO)
@@ -59,11 +56,9 @@ class ServiceInfo(BaseModel):
     """Represent service."""
 
     config: ServiceConfig
+    id: str
     name: str
     type: str
-
-    _provider: DynamicPlugin = PrivateAttr(default_factory=lambda: None)
-    _id: str = PrivateAttr(default_factory=shortuuid.uuid)
 
     class Config:
         """Set the config for pydantic."""
@@ -73,32 +68,6 @@ class ServiceInfo(BaseModel):
     def is_singleton(self):
         """Check if the service is singleton."""
         return "single-instance" in self.config.flags
-
-    def set_provider(self, provider: DynamicPlugin) -> None:
-        """Set the provider plugin."""
-        self._provider = provider
-
-    def get_provider(self) -> DynamicPlugin:
-        """Get the provider plugin."""
-        return self._provider
-
-    def get_summary(self) -> dict:
-        """Get a summary about the service."""
-        summary = {
-            "name": self.name,
-            "type": self.type,
-            "id": self.id if hasattr(self, "id") else self._id,
-            "visibility": self.config.visibility.value,
-            "config": self.config.dict(),
-            "provider": self._provider and self._provider.name,
-            "provider_id": self._provider and self._provider.id,
-        }
-        summary.update(json.loads(self.config.json()))
-        return summary
-
-    def get_id(self) -> str:
-        """Get service id."""
-        return self._id
 
 
 class UserInfo(BaseModel):
@@ -114,29 +83,10 @@ class UserInfo(BaseModel):
     _metadata: Dict[str, Any] = PrivateAttr(
         default_factory=lambda: {}
     )  # e.g. s3 credential
-    _plugins: Dict[str, DynamicPlugin] = PrivateAttr(
-        default_factory=lambda: {}
-    )  # id:plugin
 
     def get_metadata(self) -> Dict[str, Any]:
         """Return the metadata."""
         return self._metadata
-
-    def get_plugins(self) -> Dict[str, DynamicPlugin]:
-        """Return the plugins."""
-        return self._plugins
-
-    def get_plugin(self, plugin_id: str) -> Optional[DynamicPlugin]:
-        """Return a plugin by id."""
-        return self._plugins.get(plugin_id)
-
-    def add_plugin(self, plugin: DynamicPlugin) -> None:
-        """Add a plugin."""
-        self._plugins[plugin.id] = plugin
-
-    def remove_plugin(self, plugin: DynamicPlugin) -> None:
-        """Remove a plugin by id."""
-        del self._plugins[plugin.id]
 
 
 class ClientInfo(BaseModel):
@@ -198,124 +148,3 @@ class WorkspaceInfo(BaseModel):
     read_only: bool = False
     applications: Dict[str, RDF] = {}  # installed applications
     interfaces: Dict[str, List[Any]] = {}
-    _logger: Optional[logging.Logger] = PrivateAttr(default_factory=lambda: logger)
-    _plugins: Dict[str, DynamicPlugin] = PrivateAttr(
-        default_factory=lambda: {}
-    )  # name: plugin
-    _services: Dict[str, ServiceInfo] = PrivateAttr(default_factory=lambda: {})
-    _event_bus: EventBus = PrivateAttr(default_factory=EventBus)
-    _global_event_bus: EventBus = PrivateAttr(default_factory=lambda: None)
-
-    def set_global_event_bus(self, event_bus: EventBus) -> None:
-        """Set the global event bus."""
-        self._global_event_bus = event_bus
-
-    def get_logger(self) -> Optional[logging.Logger]:
-        """Return the logger."""
-        return self._logger
-
-    def set_logger(self, workspace_logger: logging.Logger) -> None:
-        """Return the logger."""
-        self._logger = workspace_logger
-
-    def get_plugins(self, status: str = "*") -> Dict[str, DynamicPlugin]:
-        """Return the plugins."""
-        if status == "*":
-            return self._plugins
-        return {k: v for k, v in self._plugins.items() if v.get_status() == status}
-
-    def get_plugin_by_name(
-        self, plugin_name: str, status: str = "ready"
-    ) -> Optional[DynamicPlugin]:
-        """Return a plugin by its name (randomly select one if multiple exists)."""
-        plugins = [
-            plugin
-            for plugin in self._plugins.values()
-            if plugin.name == plugin_name
-            and (status == "*" or plugin.get_status() == status)
-        ]
-        if len(plugins) > 0:
-            return random.choice(plugins)
-        return None
-
-    def get_plugin_by_id(
-        self, plugin_id: str, status: str = "*"
-    ) -> Optional[DynamicPlugin]:
-        """Return a plugin by its id."""
-        plugins = [
-            plugin
-            for plugin in self._plugins.values()
-            if plugin.id == plugin_id
-            and (status == "*" or plugin.get_status() == status)
-        ]
-        if len(plugins) > 0:
-            return plugins[0]
-        return None
-
-    def get_services_by_plugin(self, plugin: DynamicPlugin) -> List[ServiceInfo]:
-        """Get services by plugin."""
-        return [
-            self._services[k]
-            for k in self._services
-            if self._services[k].get_provider() == plugin
-        ]
-
-    def get_services(self) -> Dict[str, ServiceInfo]:
-        """Return the services."""
-        return self._services
-
-    def add_service(self, service: ServiceInfo) -> None:
-        """Add a service."""
-        duplicated_service = self.get_service_by_name(service.name)
-        # check if it's a singleton service or
-        # the service with the same name and provider exists
-        if service.is_singleton() or (
-            duplicated_service is not None
-            and duplicated_service.get_provider() == service.get_provider()
-        ):
-            for svc in list(self._services.values()):
-                if svc.name == service.name:
-                    logger.info(
-                        "Unregistering other services with the same name"
-                        " (%s) due to single-instance flag",
-                        svc.name,
-                    )
-                    # TODO: we need to emit unregister event here
-                    self.remove_service(svc)
-        self._services[service.get_id()] = service
-        self._global_event_bus.emit("service_registered", service.dict())
-
-    def get_service_by_name(self, service_name: str) -> ServiceInfo:
-        """Return a service by its name (randomly select one if multiple exists)."""
-        services = [
-            service
-            for service in self._services.values()
-            if service.name == service_name
-        ]
-        if len(services) > 0:
-            return random.choice(services)
-        return None
-
-    def remove_service(self, service: ServiceInfo) -> None:
-        """Remove a service."""
-        del self._services[service.get_id()]
-        self._global_event_bus.emit("service_unregistered", service.dict())
-
-    def get_event_bus(self):
-        """Get the workspace event bus."""
-        return self._event_bus
-
-    def get_summary(self) -> dict:
-        """Get a summary about the workspace."""
-        summary = {
-            "name": self.name,
-            "plugin_count": len(self._plugins),
-            "service_count": len(self._services),
-            "visibility": self.visibility.value,
-            "plugins": [
-                {"name": plugin.name, "id": plugin.id, "type": plugin.config.type}
-                for plugin in self._plugins.values()
-            ],
-            "services": [service.get_summary() for service in self._services.values()],
-        }
-        return summary

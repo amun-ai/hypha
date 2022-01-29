@@ -23,7 +23,7 @@ To register the functions, call `api.register_service` with `type="functions"`.
 
 ```javascript
 await api.register_service({
-    "name": "hello-functions",
+    "id": "hello-functions",
     "type": "functions",
     "config": {
         "visibility": "public",

@@ -57,7 +57,7 @@ async def setup():
         print(f'{scope["client"]} - {scope["method"]} - {scope["path"]}')
         await fastapi_app(args["scope"], args["receive"], args["send"])
     await api.register_service({
-        "name": "hello-fastapi",
+        "id": "hello-fastapi",
         "type": "ASGI",
         "serve": serve_fastapi,
         "config":{

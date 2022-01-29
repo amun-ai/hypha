@@ -125,7 +125,7 @@ def start_builtin_services(
         client_count = len(users)
         all_workspaces = await core_interface.store.get_all_workspace()
         return {
-            "plugin_count": client_count,
+            "client_count": client_count,
             "workspace_count": len(all_workspaces),
             "workspaces": [w.get_summary() for w in all_workspaces],
             "users": [u.id for u in users],
@@ -179,7 +179,7 @@ def start_builtin_services(
 
     @app.on_event("shutdown")
     def shutdown_event():
-        core_interface.event_bus.emit("shutdown")
+        core_interface.event_bus.emit("shutdown", target="local")
 
 
 def start_server(args):

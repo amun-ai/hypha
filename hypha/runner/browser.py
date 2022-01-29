@@ -23,7 +23,7 @@ def _capture_logs_from_browser_tabs(page: Page, logs: dict) -> None:
     def _app_info(message: Any) -> None:
         """Log message at info level."""
         msg_type = message.type
-        logger.error("%s: %s", msg_type, message.text)
+        logger.info("%s: %s", msg_type, message.text)
         if msg_type not in logs:
             logs[msg_type] = []
         logs[msg_type].append(message.text)

@@ -103,22 +103,42 @@ class RedisEventBus(EventBus):
     """Represent a redis event bus."""
 
     def __init__(self, redis) -> None:
+        """Initialize the event bus."""
         super().__init__()
         self._redis = redis
+        self._local_event_bus = EventBus()
 
     async def init(self, loop):
+        """Setup the event bus."""
         self._ready = loop.create_future()
         self._loop = loop
         loop.create_task(self._subscribe_redis())
         await self._ready
 
-    def emit(self, event_type, data=None):
-        assert self._ready.result(), "Event bus not ready"
-        self._loop.create_task(
-            self._redis.publish(
-                "global_event_bus", json.dumps({"type": event_type, "data": data})
+    def on_local(self, *args, **kwargs):
+        """Register a callback for a local event."""
+        return self._local_event_bus.on(*args, **kwargs)
+
+    def off_local(self, *args, **kwargs):
+        """Unregister a callback for a local event."""
+        return self._local_event_bus.off(*args, **kwargs)
+
+    def once_local(self, *args, **kwargs):
+        """Register a callback for a local event and remove it once triggered."""
+        return self._local_event_bus.once(*args, **kwargs)
+
+    def emit(self, event_type, data=None, target: str = "global"):
+        """Emit an event to the event bus."""
+        assert target in ["local", "global", "remote"]
+        if target != "remote":
+            self._local_event_bus.emit(event_type, data)
+        if target is None or target == "global":
+            assert self._ready.result(), "Event bus not ready"
+            self._loop.create_task(
+                self._redis.publish(
+                    "global_event_bus", json.dumps({"type": event_type, "data": data})
+                )
             )
-        )
 
     async def _subscribe_redis(self):
         pubsub = self._redis.pubsub()
@@ -218,6 +238,31 @@ class WorkspaceManager:
             await self.setup()
         return self._rpc
 
+    async def get_summary(self, context: Optional[dict] = None) -> dict:
+        """Get a summary about the workspace."""
+        if context:
+            user_info = UserInfo.parse_obj(context["user"])
+            if not await self.check_permission(user_info):
+                raise Exception(f"Permission denied for workspace {self._workspace}.")
+        workspace_info = await self.get_workspace_info()
+        workspace_info = workspace_info.dict()
+        service_summary_fields = ["id", "name", "type", "config"]
+        workspace_summary_fields = ["name", "description"]
+        clients = await self.list_clients(context=context)
+        services = await self.list_services()
+        summary = {k: workspace_info[k] for k in workspace_summary_fields}
+        summary.update(
+            {
+                "client_count": len(clients),
+                "clients": clients,
+                "services": [
+                    {k: service[k] for k in service_summary_fields}
+                    for service in services
+                ],
+            }
+        )
+        return summary
+
     async def create_workspace(
         self, config: dict, overwrite=False, context: Optional[dict] = None
     ):
@@ -230,7 +275,6 @@ class WorkspaceManager:
         if user_info.is_anonymous and config["persistent"]:
             raise Exception("Only registered user can create persistent workspace.")
         workspace = WorkspaceInfo.parse_obj(config)
-        # workspace.set_global_event_bus(self._event_bus)
         # make sure we add the user's email to owners
         _id = user_info.email or user_info.id
         if _id not in workspace.owners:
@@ -315,6 +359,8 @@ class WorkspaceManager:
             raise Exception(
                 "Scopes must be empty or contains a list of workspace names."
             )
+        else:
+            config["scopes"] = [self._workspace]
         token_config = TokenConfig.parse_obj(config)
         for ws in config["scopes"]:
             if not await self.check_permission(user_info, ws):
@@ -571,7 +617,7 @@ class WorkspaceManager:
             raise Exception(f"Permission denied for workspace {self._workspace}.")
         logger.critical("%s: %s", context["from"], msg)
 
-    async def get_workspace_info(self, workspace: str = None):
+    async def get_workspace_info(self, workspace: str = None) -> WorkspaceInfo:
         """Get info of the current workspace."""
         workspace = workspace or self._workspace
         workspace_info = await self._redis.hget("workspaces", workspace)
@@ -671,7 +717,7 @@ class WorkspaceManager:
 
         query["service_id"] = service_id.split("/")[1].split(":")[1]
 
-        logger.info("Getting service via query %s", query)
+        logger.info("Getting service: %s", query)
 
         # service id with an abosolute client id
         if "*" not in service_id:
@@ -1010,6 +1056,7 @@ class RedisStore:
             await self._redis.delete(f"{workspace}:clients")
         await self._redis.hset("workspaces", workspace.name, workspace.json())
         await self.get_workspace_manager(workspace.name, setup=True)
+
         self._event_bus.emit("workspace_registered", workspace.dict())
 
     async def connect_to_workspace(self, workspace: str, client_id: str):
