@@ -14,7 +14,7 @@ from . import SIO_PORT, find_item
 pytestmark = pytest.mark.asyncio
 
 
-@pytest_asyncio.fixture(scope="module")
+@pytest_asyncio.fixture()
 async def redis_store():
     if os.path.exists("/tmp/redis-temp.db"):
         os.remove("/tmp/redis-temp.db")
@@ -63,8 +63,8 @@ async def test_redis_store(redis_store):
         return data
 
     interface = {
-        "name": "my service",
         "id": "test-service",
+        "name": "my service",
         "config": {},
         "setup": print,
         "echo": echo,
@@ -108,8 +108,8 @@ async def test_websocket_server(fastapi_server, test_user_token):
 
     await rpc.register_service(
         {
-            "name": "my service",
             "id": "test-service",
+            "name": "my service",
             "config": {"visibility": "public"},
             "setup": print,
             "echo": echo,
@@ -122,6 +122,7 @@ async def test_websocket_server(fastapi_server, test_user_token):
 
     await rpc.register_service(
         {
+            "id": "default",
             "name": "my service",
             "config": {},
             "setup": print,
@@ -151,8 +152,8 @@ async def test_websocket_server(fastapi_server, test_user_token):
     # Change the service to protected
     await rpc.register_service(
         {
-            "name": "my service",
             "id": "test-service",
+            "name": "my service",
             "config": {"visibility": "protected"},
             "setup": print,
             "echo": echo,
@@ -212,7 +213,11 @@ async def test_websocket_server(fastapi_server, test_user_token):
         assert await svc4.add_one(99) == 100
 
     svc5_info = await rpc2.register_service(
-        {"add_one": lambda x: x + 1, "inner": {"square": lambda y: y ** 2}}
+        {
+            "id": "default",
+            "add_one": lambda x: x + 1,
+            "inner": {"square": lambda y: y ** 2},
+        }
     )
     svc5 = await rpc2.get_remote_service(svc5_info["id"])
     svc6 = await svc2.echo(svc5)
@@ -229,6 +234,7 @@ async def test_websocket_server(fastapi_server, test_user_token):
     with pytest.raises(Exception, match=r".*Service already exists: default.*"):
         await rpc2.register_service(
             {
+                "id": "default",
                 "add_two": lambda x: x + 2,
             }
         )
@@ -236,6 +242,7 @@ async def test_websocket_server(fastapi_server, test_user_token):
     await rpc2.unregister_service("default")
     await rpc2.register_service(
         {
+            "id": "default",
             "add_two": lambda x: x + 2,
         }
     )
