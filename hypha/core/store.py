@@ -327,7 +327,7 @@ class WorkspaceManager:
         source_workspace = context["from"].split("/")[0]
         assert (
             source_workspace == self._workspace
-        ), "Service must be registered in the same workspace"
+        ), f"Service must be registered in the same workspace: {source_workspace} != {self._workspace} (current workspace)."
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
         logger.info("Registering service %s to %s", service.id, self._workspace)
@@ -757,18 +757,20 @@ class WorkspaceManager:
                 workspace = self._workspace
 
             # Make sure the client exists
-            if await self._get_client_info(service_id.split("/")[1].split(":")[0]):
+            client_id = service_id.split("/")[1].split(":")[0]
+            if await self._get_client_info(client_id):
                 rpc = await self.setup()
                 service_api = await rpc.get_remote_service(service_id)
                 service_api["config"]["workspace"] = workspace
                 return service_api
             elif "launch" in query and query["launch"] == True:
-                app_info = await self._launch_application_by_service(
+                service_api = await self._launch_application_by_service(
                     service_id,
                     context=context,
                 )
-                # TODO: get the actual service
-                return app_info
+                return service_api
+            else:
+                raise Exception(f"Client not found: {client_id}")
         else:
             workspace, sname = service_id.split("/")
             cid, sid = sname.split(":")

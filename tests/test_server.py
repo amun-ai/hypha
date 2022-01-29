@@ -155,10 +155,6 @@ async def test_workspace(fastapi_server):
         }
     )
     await api.log("hi")
-    with pytest.raises(
-        Exception, match=r".*Scopes must be empty or contains only the workspace name*"
-    ):
-        await api.generate_token({"scopes": ["my-test-workspace"]})
     token = await api.generate_token()
     assert "@imjoy@" in token
 
@@ -174,7 +170,7 @@ async def test_workspace(fastapi_server):
     )
     await ws.log("hello")
     with pytest.raises(
-        Exception, match=r".*Services can only be registered from the same workspace.*"
+        Exception, match=r".*Service must be registered in the same workspace.*"
     ):
         service_info = await ws.register_service(
             {
@@ -241,7 +237,7 @@ async def test_workspace(fastapi_server):
     plugins = await api2.list_plugins()
     assert find_item(plugins, "name", "my plugin 2")
 
-    with pytest.raises(Exception, match=r".*Failed to get client info.*"):
+    with pytest.raises(Exception, match=r".*Client not found: my-plugin-2.*"):
         await api.get_plugin("my-plugin-2")
 
     ws2 = await api.get_workspace("my-test-workspace")
