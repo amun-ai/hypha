@@ -4,14 +4,15 @@ import json
 import logging
 import os
 import random
-import traceback
 import shutil
 import sys
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from urllib.request import urlopen
 
 import base58
+import jose
 import multihash
 import shortuuid
 from aiobotocore.session import get_session
@@ -20,10 +21,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from jinja2 import Environment, PackageLoader, select_autoescape
 from starlette.responses import Response
 
-from hypha.core import StatusEnum, RDF, ClientInfo
+from hypha.core import RDF, ClientInfo, StatusEnum
 from hypha.core.auth import parse_user
 from hypha.core.store import RedisStore
-from hypha.plugin_parser import parse_imjoy_plugin, convert_config_to_rdf
+from hypha.plugin_parser import convert_config_to_rdf, parse_imjoy_plugin
 from hypha.runner.browser import BrowserAppRunner
 from hypha.utils import (
     PLUGIN_CONFIG_FIELDS,
@@ -107,36 +108,38 @@ class ServerAppController:
         async def get_app_file(
             workspace: str, path: str, token: str = None
         ) -> Response:
-            # if workspace != "built-in":
-            #     if token is None:
-            #         return JSONResponse(
-            #             status_code=403,
-            #             content={
-            #                 "success": False,
-            #                 "detail": (f"Token not provided for {workspace}/{path}"),
-            #             },
-            #         )
-            #     try:
-            #         user_info = parse_user(token)
-            #     except jose.exceptions.JWTError:
-            #         return JSONResponse(
-            #             status_code=403,
-            #             content={
-            #                 "success": False,
-            #                 "detail": (f"Invalid token not provided for {workspace}/{path}"),
-            #             },
-            #         )
-            #     if not await store.check_permission(workspace, user_info):
-            #         return JSONResponse(
-            #             status_code=403,
-            #             content={
-            #                 "success": False,
-            #                 "detail": (
-            #                     f"{user_info['username']} has no"
-            #                     f" permission to access {workspace}"
-            #                 ),
-            #             },
-            #         )
+            if workspace != "built-in":
+                if token is None:
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "success": False,
+                            "detail": (f"Token not provided for {workspace}/{path}"),
+                        },
+                    )
+                try:
+                    user_info = parse_user(token)
+                except jose.exceptions.JWTError:
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "success": False,
+                            "detail": (
+                                f"Invalid token not provided for {workspace}/{path}"
+                            ),
+                        },
+                    )
+                if not await store.check_permission(workspace, user_info):
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "success": False,
+                            "detail": (
+                                f"{user_info['username']} has no"
+                                f" permission to access {workspace}"
+                            ),
+                        },
+                    )
             path = safe_join(str(self.apps_dir), workspace, path)
             if os.path.exists(path):
                 return FileResponse(path)
@@ -483,6 +486,7 @@ class ServerAppController:
         timeout: float = 60,
         config: Optional[Dict[str, Any]] = None,
         attachments: List[dict] = None,
+        execute_setup: bool = True,
     ) -> dotdict:
         """Start a server app instance."""
         if token:
@@ -509,7 +513,11 @@ class ServerAppController:
         assert len(self._runner_services) > 0, "No plugin runner is available"
 
         return await self.start(
-            app_id, workspace=workspace, token=token, timeout=timeout
+            app_id,
+            workspace=workspace,
+            token=token,
+            timeout=timeout,
+            execute_setup=execute_setup,
         )
 
     def _client_updated(self, client: dict) -> None:
@@ -532,6 +540,7 @@ class ServerAppController:
         client_id=None,
         timeout: float = 60,
         loop_count=0,
+        execute_setup=True,
     ):
         """Start the app and keep it alive."""
         if workspace is None:
@@ -589,16 +598,18 @@ class ServerAppController:
             api = await self.store.get_service_as_user(
                 client.workspace, f"{client.id}:default", user_info
             )
-            try:
-                if callable(api.setup):
-                    await api.setup()
-            except Exception:
-                fut.set_exception(
-                    Exception(
-                        f"Failed to run setup() on {client.workspace}/{client.id}:default, error: {traceback.format_exc()}"
+            if execute_setup:
+                try:
+                    logger.info("Executing setup for %s:default", client_id)
+                    if callable(api.setup):
+                        await api.setup()
+                except Exception:
+                    fut.set_exception(
+                        Exception(
+                            f"Failed to run setup() on {client.workspace}/{client.id}:default, error: {traceback.format_exc()}"
+                        )
                     )
-                )
-                return
+                    return
             client.name = api.name
             # plugin.register_exit_callback(stop_plugin)
             readiness_probe = api.config.get("readiness_probe", {})
@@ -719,6 +730,7 @@ class ServerAppController:
                             client_id=client_id,
                             timeout=timeout,
                             loop_count=loop_count,
+                            execute_setup=execute_setup,
                         )
 
                     else:

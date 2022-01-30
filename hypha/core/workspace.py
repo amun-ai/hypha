@@ -570,6 +570,7 @@ class WorkspaceManager:
             token=token,
             client_id=client_id,
             timeout=timeout,
+            execute_setup=True,
         )
         return await self.get_service(
             {

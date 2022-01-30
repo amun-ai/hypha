@@ -12,7 +12,7 @@ from hypha.core.auth import parse_reconnection_token, parse_token
 import shortuuid
 
 logging.basicConfig(stream=sys.stdout)
-logger = logging.getLogger("websocket")
+logger = logging.getLogger("websocket-server")
 logger.setLevel(logging.INFO)
 
 

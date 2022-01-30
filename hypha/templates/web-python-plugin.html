@@ -330,12 +330,6 @@ import msgpack
 import math
 
 import shortuuid
-from imjoy_rpc.utils import (
-    FuturePromise,
-    MessageEmitter,
-    dotdict,
-    format_traceback,
-)
 
 CHUNK_SIZE = 1024 * 500
 API_VERSION = "0.3.0"
@@ -715,7 +709,10 @@ class RPC(MessageEmitter):
             )
             for key, val in items:
                 if callable(val) and hasattr(val, "__rpc_object__"):
-                    if self._client_id == val.__rpc_object__["_rtarget"]:
+                    client_id = val.__rpc_object__["_rtarget"]
+                    if "/" in client_id:
+                        client_id = client_id.split("/")[1]
+                    if self._client_id == client_id:
                         # Make sure we can modify the object
                         if isinstance(a_object, tuple):
                             a_object = list(a_object)
@@ -726,9 +723,7 @@ class RPC(MessageEmitter):
                         val = a_object[key]  # make sure it's annotated later
                     else:
                         raise Exception(
-                            "Local method not found: {}".format(
-                                val.__rpc_object__["_rmethod"]
-                            )
+                            f"Local method not found: {val.__rpc_object__['_rmethod']}, client id mismatch {self._client_id} != {client_id}"
                         )
                 self._annotate_service_methods(
                     val,
