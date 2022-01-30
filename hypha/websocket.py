@@ -151,13 +151,10 @@ class WebsocketServer:
                     data = await websocket.receive_bytes()
                     await conn.emit_message(data)
             except WebSocketDisconnect as exp:
-                if exp.code != status.WS_1000_NORMAL_CLOSURE:
-                    logger.error(
-                        "Websocket (client=%s) disconnected unexpectedly: %s",
-                        client_id,
-                        exp,
-                    )
-                else:
+                if exp.code in [
+                    status.WS_1000_NORMAL_CLOSURE,
+                    status.WS_1001_GOING_AWAY,
+                ]:
                     # Clean up if the client is disconnected normally
                     # TODO: clean up if the client never come back
                     logger.info("Client disconnected: %s", client_id)
@@ -181,6 +178,12 @@ class WebsocketServer:
                         await workspace_manager.delete()
                     elif not workspace_info.persistent:
                         await workspace_manager.delete_if_empty()
+                else:
+                    logger.error(
+                        "Websocket (client=%s) disconnected unexpectedly: %s",
+                        client_id,
+                        exp,
+                    )
 
     async def is_alive(self):
         """Check if the server is alive."""
