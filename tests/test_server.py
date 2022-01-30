@@ -158,6 +158,16 @@ async def test_workspace(fastapi_server):
     token = await api.generate_token()
     assert "@imjoy@" in token
 
+    public_svc = await api.list_services("public")
+    assert len(public_svc) > 1
+
+    s3_svc = await api.list_services({"workspace": "public", "type": "s3-storage"})
+    assert len(s3_svc) == 1
+
+    # workspace=* means search both the public and the current workspace
+    s3_svc = await api.list_services({"workspace": "*", "type": "s3-storage"})
+    assert len(s3_svc) == 1
+
     ws = await api.create_workspace(
         {
             "name": "my-test-workspace",

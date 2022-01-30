@@ -161,12 +161,6 @@ class WorkspaceManager:
         # Clear the workspace
         await self.remove_clients(workspace.name)
         return await self.get_workspace(workspace.name, context=context)
-        # Remove the client if it's not responding
-        # for client_id in await manager.list_clients(context=context):
-        #     try:
-        #         await rpc.ping(client_id)
-        #     except asyncio.exceptions.TimeoutError:
-        #         await manager.delete_client(client_id)
 
     async def remove_clients(self, workspace: str = None):
         """Remove all the clients in the workspace."""
@@ -289,7 +283,7 @@ class WorkspaceManager:
         return [k.decode() for k in client_keys]
 
     async def list_services(
-        self, query: Optional[dict] = None, context: Optional[dict] = None
+        self, query: Optional[Union[dict, str]] = None, context: Optional[dict] = None
     ):
         """Return a list of services based on the query."""
         assert context is not None
@@ -300,14 +294,17 @@ class WorkspaceManager:
         if query is None:
             query = {}
 
+        if isinstance(query, str):
+            query = {"workspace": query}
+
         ws = query.get("workspace")
         if ws:
             del query["workspace"]
-        if ws == "*":
+        if ws == "*":  # search public and the current workspace
             ret = []
-            for workspace in await self._get_all_workspace():
+            for workspace in [self._workspace, "public"]:
                 can_access_workspace = await self.check_permission(user_info, workspace)
-                ws = await self.get_workspace(workspace.name, context=context)
+                ws = await self.get_workspace(workspace, context=context)
                 for service in await ws.list_services():
                     assert isinstance(service, dict)
                     # To access the service, it should be public or owned by the user
@@ -322,7 +319,7 @@ class WorkspaceManager:
                             match = False
                     if match:
                         if "/" not in service["id"]:
-                            service["id"] = workspace.name + "/" + service["id"]
+                            service["id"] = workspace + "/" + service["id"]
                         ret.append(service)
             return ret
 
@@ -534,6 +531,8 @@ class WorkspaceManager:
         )
         if not service_id or service_id == "*":
             service_id = "default"
+        if workspace == "*":
+            workspace = self._workspace
         # Check if the user has permission to this workspace and the one to be launched
         token = await self.generate_token({"scopes": [workspace]}, context=context)
         workspace = await self.get_workspace_info(workspace)
@@ -595,11 +594,12 @@ class WorkspaceManager:
                 )
             query["client_id"] = service_id.split("/")[1]
         elif "/" not in service_id and ":" not in service_id:
-            workspace = query.get("workspace", self._workspace)
+            # workspace=* means the current workspace or the public workspace
+            workspace = query.get("workspace", "*")
             service_id = workspace + "/*:" + service_id
             query["workspace"] = workspace
             query["client_id"] = "*"
-        elif "/" not in service_id:
+        elif "/" not in service_id and ":" in service_id:
             workspace = query.get("workspace", self._workspace)
             query["client_id"] = service_id.split(":")[0]
             service_id = workspace + "/" + service_id
@@ -620,7 +620,7 @@ class WorkspaceManager:
                 workspace = service_id.split("/")[0]
                 if workspace != self._workspace:
                     ws = await self.get_workspace(workspace)
-                    return await ws.get_service(service_id, context=context)
+                    return await ws.get_service(service_id)
             if "/" not in service_id:
                 service_id = self._workspace + "/" + service_id
                 workspace = self._workspace
@@ -647,18 +647,29 @@ class WorkspaceManager:
             if sid == "*":  # Skip the client check if the service id is *
                 services = []
             elif workspace == "*":
-                services = await self.list_services({"workspace": "*"}, context=context)
+                # Check if it's in the current workspace
+                services = await self.list_services(
+                    {"workspace": self._workspace}, context=context
+                )
+                services = list(
+                    filter(lambda service: service["id"].endswith(":" + sid), services)
+                )
+                if not services:
+                    # Try to find the service in "public"
+                    services = await self.list_services(
+                        {"workspace": "public"}, context=context
+                    )
             elif workspace != self._workspace:
                 assert await self._redis.hget("workspaces", workspace)
                 ws = await self.get_workspace(workspace)
                 services = await ws.list_services()
             else:  # only the service id without client id
-                services = await self.list_services(context=context)
                 workspace = self._workspace
+                services = await self.list_services(context=context)
+            services = list(
+                filter(lambda service: service["id"].endswith(":" + sid), services)
+            )
 
-        services = list(
-            filter(lambda service: service["id"].endswith(":" + sid), services)
-        )
         if not services:
             if "launch" in query and query["launch"] == True:
                 service_api = await self._launch_application_by_service(
