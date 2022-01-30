@@ -13,7 +13,7 @@ REQUIREMENTS = [
     "aiobotocore>=2.1.0",
     "aiofiles",
     "fastapi>=0.70.0",
-    "imjoy-rpc==0.5.0a5",
+    "imjoy-rpc==0.5.0",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=1.8.2",
@@ -57,7 +57,7 @@ setup(
     extras_require={
         "server-apps": [
             "requests>=2.26.0",
-            "playwright>=1.15.0",
+            "playwright>=1.18.1",
             "base58>=2.1.0",
             "pymultihash>=0.8.2",
         ],
