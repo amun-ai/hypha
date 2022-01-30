@@ -255,7 +255,7 @@ class WorkspaceManager:
         await self._update_client(ClientInfo.parse_obj(client_info))
 
     async def get_connection_info(self, context=None):
-        """Get the user info."""
+        """Get the connection info."""
         assert context is not None
         ws, client_id = context["from"].split("/")
         user_info = UserInfo.parse_obj(context["user"])
