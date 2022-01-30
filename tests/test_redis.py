@@ -21,6 +21,7 @@ async def redis_store():
     store = RedisStore(None, redis_uri="/tmp/redis-temp.db", redis_port=6388)
     await store.init(asyncio.get_event_loop())
     yield store
+    store.teardown()
 
 
 async def test_redis_store(redis_store):

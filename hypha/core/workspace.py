@@ -254,7 +254,7 @@ class WorkspaceManager:
         client_info["workspace"] = self._workspace
         await self._update_client(ClientInfo.parse_obj(client_info))
 
-    async def get_user_info(self, context=None):
+    async def get_connection_info(self, context=None):
         """Get the user info."""
         assert context is not None
         ws, client_id = context["from"].split("/")
@@ -830,8 +830,8 @@ class WorkspaceManager:
             "warning": self.warning,
             "critical": self.critical,
             "update_client_info": self.update_client_info,
-            "get_user_info": self.get_user_info,
-            "getUserInfo": self.get_user_info,
+            "get_connection_info": self.get_connection_info,
+            "getConnectionInfo": self.get_connection_info,
             "listServices": self.list_services,
             "list_services": self.list_services,
             "listClients": self.list_clients,

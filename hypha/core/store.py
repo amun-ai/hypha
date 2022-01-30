@@ -71,9 +71,12 @@ class RedisStore:
         self._public_workspace_interface = None
 
         if redis_uri.startswith("redis://"):
+            self._redis_server = None
             self._redis = aioredis.from_url(redis_uri)
         else:  #  Create a redis server with redislite
-            Redis(redis_uri, serverconfig={"port": str(redis_port)})
+            self._redis_server = Redis(
+                redis_uri, serverconfig={"port": str(redis_port)}
+            )
             self._redis = aioredis.from_url(f"redis://127.0.0.1:{redis_port}/0")
         self._root_user = None
         self._event_bus = RedisEventBus(self._redis)
@@ -388,3 +391,9 @@ class RedisStore:
         routes_remove = [route for route in self._app.routes if route.path == path]
         for route in routes_remove:
             self._app.routes.remove(route)
+
+    def teardown(self):
+        """Teardown the server."""
+        if self._redis_server:
+            logger.info("Shutting down the redis server.")
+            self._redis_server.shutdown()
