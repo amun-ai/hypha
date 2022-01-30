@@ -65,7 +65,7 @@ class BrowserAppRunner:
         def close() -> None:
             asyncio.get_running_loop().create_task(self.close())
 
-        self.event_bus.on("shutdown", close)
+        self.event_bus.on_local("shutdown", close)
         # asyncio.ensure_future(self.initialize())
 
     async def initialize(self) -> None:

@@ -154,7 +154,7 @@ class ServerAppController:
         def close() -> None:
             asyncio.ensure_future(self.close())
 
-        event_bus.on("shutdown", close)
+        event_bus.on_local("shutdown", close)
         event_bus.on("client_updated", self._client_updated)
         asyncio.ensure_future(self.initialize())
 

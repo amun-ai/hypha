@@ -70,8 +70,11 @@ class RedisStore:
         )
         self._public_workspace_interface = None
 
-        Redis(redis_uri, serverconfig={"port": str(redis_port)})
-        self._redis = aioredis.from_url(f"redis://127.0.0.1:{redis_port}/0")
+        if redis_uri.startswith("redis://"):
+            self._redis = aioredis.from_url(redis_uri)
+        else:  #  Create a redis server with redislite
+            Redis(redis_uri, serverconfig={"port": str(redis_port)})
+            self._redis = aioredis.from_url(f"redis://127.0.0.1:{redis_port}/0")
         self._root_user = None
         self._event_bus = RedisEventBus(self._redis)
 
@@ -98,7 +101,11 @@ class RedisStore:
         """Setup the store."""
         await self._event_bus.init(loop)
         await self.setup_root_user()
-        await self.register_workspace(self._public_workspace, overwrite=True)
+
+        try:
+            await self.register_workspace(self._public_workspace, overwrite=False)
+        except Exception:
+            logger.warning("Public workspace already exists")
         manager = await self.get_workspace_manager("public")
         self._public_workspace_interface = await manager.get_workspace()
 
@@ -108,6 +115,7 @@ class RedisStore:
             except Exception:  # pylint: disable=broad-except
                 logger.exception("Failed to register public service: %s", service)
                 raise
+
         self._ready = True
 
     async def register_user(self, user_info: UserInfo):

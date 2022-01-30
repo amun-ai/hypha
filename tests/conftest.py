@@ -23,6 +23,8 @@ from . import (
     MINIO_SERVER_URL,
     SIO_PORT,
     SIO_PORT2,
+    REDIS_PORT,
+    BACKUP_SIO_PORT,
 )
 
 JWT_SECRET = str(uuid.uuid4())
@@ -76,6 +78,8 @@ def fastapi_server_fixture(minio_server):
             f"--port={SIO_PORT}",
             "--enable-server-apps",
             "--enable-s3",
+            "--redis-uri=/tmp/redis.db",
+            f"--redis-port={REDIS_PORT}",
             f"--endpoint-url={MINIO_SERVER_URL}",
             f"--access-key-id={MINIO_ROOT_USER}",
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
@@ -87,6 +91,42 @@ def fastapi_server_fixture(minio_server):
         while timeout > 0:
             try:
                 response = requests.get(f"http://127.0.0.1:{SIO_PORT}/health/liveness")
+                if response.ok:
+                    break
+            except RequestException:
+                pass
+            timeout -= 0.1
+            time.sleep(0.1)
+        yield
+        proc.kill()
+        proc.terminate()
+
+
+@pytest_asyncio.fixture(name="fastapi_server_backup", scope="session")
+def fastapi_server_backup_fixture(minio_server, fastapi_server):
+    """Start a backup server as test fixture and tear down after test."""
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "hypha.server",
+            f"--port={BACKUP_SIO_PORT}",
+            "--enable-server-apps",
+            "--enable-s3",
+            f"--redis-uri=redis://127.0.0.1:{REDIS_PORT}/0",
+            f"--endpoint-url={MINIO_SERVER_URL}",
+            f"--access-key-id={MINIO_ROOT_USER}",
+            f"--secret-access-key={MINIO_ROOT_PASSWORD}",
+        ],
+        env=test_env,
+    ) as proc:
+
+        timeout = 10
+        while timeout > 0:
+            try:
+                response = requests.get(
+                    f"http://127.0.0.1:{BACKUP_SIO_PORT}/health/liveness"
+                )
                 if response.ok:
                     break
             except RequestException:

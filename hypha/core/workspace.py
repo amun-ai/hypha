@@ -6,7 +6,7 @@ import sys
 from typing import Optional, Union
 
 import shortuuid
-from redislite import Redis
+from aioredis.client import Redis
 
 from hypha.core import (
     RDF,

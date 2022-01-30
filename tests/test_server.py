@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 from hypha.websocket_client import connect_to_server
-from . import SIO_PORT, SIO_PORT2, WS_SERVER_URL, find_item
+from . import SIO_PORT2, WS_SERVER_URL, BACKUP_WS_SERVER_URL, find_item
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
@@ -331,3 +331,59 @@ async def test_services(fastapi_server):
     # # it should remove other services because it's single instance service
     # assert len(await api.list_services({"name": "test_service"})) == 1
     # assert (await api.get_service("test_service"))["idx"] == 4
+
+
+async def test_server_scalability(fastapi_server, fastapi_server_backup):
+    """Test services."""
+    api = await connect_to_server(
+        {"client_id": "my-plugin-99", "server_url": BACKUP_WS_SERVER_URL}
+    )
+
+    ws = await api.create_workspace(
+        {
+            "name": "my-test-workspace",
+            "owners": ["user1@imjoy.io", "user2@imjoy.io"],
+            "allow_list": [],
+            "deny_list": [],
+            "visibility": "protected",  # or public
+        },
+        overwrite=True,
+    )
+
+    token = await ws.generate_token()
+
+    # Connect from two different servers
+    api88 = await connect_to_server(
+        {
+            "client_id": "my-plugin-88",
+            "server_url": WS_SERVER_URL,
+            "workspace": "my-test-workspace",
+            "token": token,
+        }
+    )
+
+    api77 = await connect_to_server(
+        {
+            "client_id": "my-plugin-77",
+            "server_url": BACKUP_WS_SERVER_URL,
+            "workspace": "my-test-workspace",
+            "token": token,
+        }
+    )
+
+    clients = await api77.list_clients()
+    assert "my-plugin-77" in clients and "my-plugin-88" in clients
+
+    await api77.register_service(
+        {
+            "id": "test-service",
+            "add77": lambda x: x + 77,
+        }
+    )
+
+    svc = await api88.get_service("my-plugin-77:test-service")
+    assert await svc.add77(1) == 78
+
+    await api.disconnect()
+    await api77.disconnect()
+    await api88.disconnect()

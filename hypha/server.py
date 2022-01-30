@@ -173,7 +173,7 @@ def start_builtin_services(
     async def startup_event():
         loop = asyncio.get_running_loop()
         await store.init(loop)
-        store.get_event_bus().emit("startup")
+        store.get_event_bus().emit("startup", target="local")
 
     @app.on_event("shutdown")
     def shutdown_event():
