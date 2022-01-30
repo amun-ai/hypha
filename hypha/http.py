@@ -74,24 +74,50 @@ class HTTPProxy:
         router.route_class = GzipRoute
         self.store = store
 
-        # @router.get("/services")
-        # async def get_all_services(
-        #     user_info: login_optional = Depends(login_optional),
-        # ):
-        #     """Route for listing all the services."""
-        #     try:
-        #         store.current_user.set(user_info)
-        #         services = await store.list_public_services()
-        #         info = serialize(services)
-        #         return JSONResponse(
-        #             status_code=200,
-        #             content=info,
-        #         )
-        #     except Exception as exp:
-        #         return JSONResponse(
-        #             status_code=500,
-        #             content={"success": False, "detail": str(exp)},
-        #         )
+        @router.get("/workspaces")
+        async def get_all_workspaces(
+            user_info: login_optional = Depends(login_optional),
+        ):
+            """Route for listing all the services."""
+            try:
+                workspaces = await store.list_all_workspaces()
+                return JSONResponse(
+                    status_code=200,
+                    content=workspaces,
+                )
+            except Exception as exp:
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "detail": str(exp)},
+                )
+
+        @router.get("/{workspace}/info")
+        async def get_workspace_info(
+            workspace: str,
+            user_info: login_optional = Depends(login_optional),
+        ):
+            """Route for get detailed info of a workspace."""
+            try:
+                if not await store.check_permission(workspace, user_info):
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "success": False,
+                            "detail": "Permission denied to workspace: {}".format(
+                                workspace
+                            ),
+                        },
+                    )
+                workspace_info = await store.get_workspace(workspace)
+                return JSONResponse(
+                    status_code=200,
+                    content=workspace_info.dict(),
+                )
+            except Exception as exp:
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "detail": str(exp)},
+                )
 
         @router.get("/{workspace}/services")
         async def get_workspace_services(

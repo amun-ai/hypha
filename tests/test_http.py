@@ -78,15 +78,31 @@ async def test_http_proxy(minio_server, fastapi_server):
     service = await api.get_service("test_service_protected")
     assert await service.echo("22") == "22"
 
-    # Without the token, we can only access to the protected service
+    response = requests.get(f"{SERVER_URL}/workspaces")
+    assert response.ok, response.json()["detail"]
+    response = response.json()
+    assert workspace in response
+
+    response = requests.get(f"{SERVER_URL}/{workspace}/info")
+    assert not response.ok
+    assert response.json()["detail"].startswith("Permission denied")
+
+    response = requests.get(
+        f"{SERVER_URL}/{workspace}/info", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.ok, response.json()["detail"]
+    response = response.json()
+    assert response["name"] == workspace
+
+    # Without the token, we can only access to the public service
     response = requests.get(f"{SERVER_URL}/{service_ws}/services")
     assert response.ok, response.json()["detail"]
     response = response.json()
     assert find_item(response, "name", "test_service")
     assert not find_item(response, "name", "test_service_protected")
 
-    service = await api.get_service("test_service_protected")
-    assert await service.echo("22") == "22"
+    # service = await api.get_service("test_service_protected")
+    # assert await service.echo("22") == "22"
 
     # With the token we can access the protected service
     response = requests.get(

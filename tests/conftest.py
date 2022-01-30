@@ -30,6 +30,17 @@ os.environ["JWT_SECRET"] = JWT_SECRET
 test_env = os.environ.copy()
 
 
+@pytest_asyncio.fixture
+def event_loop():
+    """Create an event loop for each test."""
+    yield asyncio.get_event_loop()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Clean up after the tests."""
+    asyncio.get_event_loop().close()
+
+
 @pytest_asyncio.fixture(name="test_user_token", scope="session")
 def generate_authenticated_user():
     """Generate a test user token."""

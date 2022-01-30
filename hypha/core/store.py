@@ -267,6 +267,13 @@ class RedisStore:
         """Get public service."""
         return await self._public_workspace_interface.get_service(query)
 
+    async def list_services_as_user(self, query, user_info: UserInfo = None):
+        """List all services as user."""
+        user_info = user_info or await self.setup_root_user()
+        wm = await self.get_workspace_manager("public", setup=False)
+        services = await wm.list_services(query, context={"user": user_info})
+        return services
+
     async def get_service_as_user(
         self,
         workspace_name: str,
