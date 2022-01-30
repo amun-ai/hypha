@@ -203,14 +203,6 @@ class WorkspaceManager:
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
         logger.info("Registering service %s to %s", service.id, self._workspace)
-        # create a new rpc client as the user
-        # rpc = self._create_rpc(
-        #     "client-" + shortuuid.uuid(), self._workspace, user_info=user_info
-        # )
-        # try:
-        #     sv = await rpc.get_remote_service(context["from"] + ":built-in")
-        # except Exception as exp:
-        #     raise Exception(f"Client not ready: {context['from']}") from exp
         rpc = await self.get_rpc()
         sv = await rpc.get_remote_service(context["from"] + ":built-in")
         service["config"] = service.get("config", {})
