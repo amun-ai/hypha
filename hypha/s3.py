@@ -17,8 +17,9 @@ from fastapi.responses import FileResponse, Response
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
-from hypha.core import WorkspaceInfo, ClientInfo
+from hypha.core import ClientInfo, WorkspaceInfo
 from hypha.core.auth import login_optional
+from hypha.core.store import RedisStore
 from hypha.minio import MinioClient
 from hypha.utils import (
     generate_password,
@@ -204,7 +205,7 @@ class S3Controller:
 
     def __init__(
         self,
-        core_interface,
+        store: RedisStore,
         endpoint_url=None,
         access_key_id=None,
         secret_access_key=None,
@@ -223,11 +224,11 @@ class S3Controller:
             secret_access_key,
             executable_path=executable_path,
         )
-        self.core_interface = core_interface
+        self.store = store
         self.workspace_bucket = workspace_bucket
         self.local_log_dir = Path(local_log_dir)
         self.workspace_etc_dir = workspace_etc_dir.rstrip("/")
-        event_bus = core_interface.event_bus
+        event_bus = store.get_event_bus()
 
         s3client = self.create_client_sync()
         try:
@@ -241,8 +242,8 @@ class S3Controller:
         self.s3client = s3client
 
         self.minio_client.admin_user_add("root", generate_password())
-        core_interface.register_public_service(self.get_s3_service())
-        core_interface.set_workspace_loader(self._workspace_loader)
+        store.register_public_service(self.get_s3_service())
+        store.set_workspace_loader(self._workspace_loader)
 
         event_bus.on_local("workspace_registered", self._setup_workspace)
         event_bus.on_local("workspace_changed", self._save_workspace_config)
@@ -259,7 +260,7 @@ class S3Controller:
             user_info: login_optional = Depends(login_optional),
         ):
             """Upload file."""
-            ws = await core_interface.get_workspace(workspace)
+            ws = await store.get_workspace(workspace)
             if not ws:
                 return JSONResponse(
                     status_code=404,
@@ -268,7 +269,7 @@ class S3Controller:
                         "detail": f"Workspace does not exists: {ws}",
                     },
                 )
-            if not await core_interface.check_permission(ws, user_info):
+            if not await store.check_permission(ws, user_info):
                 return JSONResponse(
                     status_code=403,
                     content={"success": False, "detail": f"Permission denied: {ws}"},
@@ -287,7 +288,7 @@ class S3Controller:
             user_info: login_optional = Depends(login_optional),
         ):
             """Get or delete file."""
-            ws = await core_interface.get_workspace(workspace)
+            ws = await store.get_workspace(workspace)
             if not ws:
                 return JSONResponse(
                     status_code=404,
@@ -296,7 +297,7 @@ class S3Controller:
                         "detail": f"Workspace does not exists: {ws}",
                     },
                 )
-            if not await core_interface.check_permission(ws, user_info):
+            if not await store.check_permission(ws, user_info):
                 return JSONResponse(
                     status_code=403,
                     content={"success": False, "detail": f"Permission denied: {ws}"},
@@ -308,11 +309,11 @@ class S3Controller:
             if request.method == "DELETE":
                 return await self._delete_files(path)
 
-        core_interface.register_router(router)
+        store.register_router(router)
 
     async def _workspace_loader(self, workspace_name, user_info):
         """Load workspace from s3 record."""
-        if not await self.core_interface.check_permission(workspace_name, user_info):
+        if not await self.store.check_permission(workspace_name, user_info):
             return None
         config_path = f"{self.workspace_etc_dir}/{workspace_name}/config.json"
         async with self.create_client_async() as s3_client:
@@ -635,9 +636,9 @@ class S3Controller:
 
     async def generate_credential(self):
         """Generate credential."""
-        user_info = self.core_interface.current_user.get()
-        workspace = self.core_interface.current_workspace.get()
-        if workspace == "public" or not await self.core_interface.check_permission(
+        user_info = self.store.current_user.get()
+        workspace = self.store.current_workspace.get()
+        if workspace == "public" or not await self.store.check_permission(
             workspace, user_info
         ):
             raise PermissionError(
@@ -661,7 +662,7 @@ class S3Controller:
         self, path: str = "", max_length: int = 1000
     ) -> Dict[str, Any]:
         """List files in the folder."""
-        workspace = self.core_interface.current_workspace.get()
+        workspace = self.store.current_workspace.get()
         path = safe_join(workspace, path)
         async with self.create_client_async() as s3_client:
             # List files in the folder
@@ -680,8 +681,8 @@ class S3Controller:
     ):
         """Generate presigned url."""
         try:
-            user_info = self.core_interface.current_user.get()
-            workspace = self.core_interface.current_workspace.get()
+            user_info = self.store.current_user.get()
+            workspace = self.store.current_workspace.get()
             if user_info.is_anonymous:
                 raise PermissionError(f"s3 credential is disabled for anonymous users.")
             if bucket_name != self.workspace_bucket or not object_name.startswith(
@@ -703,7 +704,7 @@ class S3Controller:
                 # Assuming it's the same server as hypha and hosted under /s3 endpoint
                 url = url[len(self.endpoint_url) :]
                 url = url[1:] if url.startswith("/") else url
-                return f"{self.core_interface.public_base_url}/s3/{url}"
+                return f"{self.store.public_base_url}/s3/{url}"
 
         except ClientError as err:
             logging.error(

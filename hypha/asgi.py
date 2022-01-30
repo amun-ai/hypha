@@ -113,24 +113,25 @@ class ASGIGateway:
 
     def __init__(
         self,
-        core_interface,
+        store,
         allow_origins=None,
         allow_methods=None,
         allow_headers=None,
         expose_headers=None,
     ):
         """Initialize the gateway."""
-        self.core_interface = core_interface
+        self.store = store
         self.allow_origins = allow_origins
         self.allow_methods = allow_methods
         self.allow_headers = allow_headers
         self.expose_headers = expose_headers
         # TODO: query the current services and mount them
-        core_interface.event_bus.on(
+        event_bus = store.get_event_bus()
+        event_bus.on(
             "service_registered",
             lambda service: asyncio.ensure_future(self.mount_asgi_app(service)),
         )
-        core_interface.event_bus.on("service_unregistered", self.umount_asgi_app)
+        event_bus.on("service_unregistered", self.umount_asgi_app)
 
     async def mount_asgi_app(self, service: dict):
         """Mount the ASGI apps from new services."""
@@ -139,9 +140,7 @@ class ASGIGateway:
         if service.type in ["ASGI", "functions"]:
             workspace = service.config.workspace
             # TODO: extract the user info and pass it
-            service = await self.core_interface.get_service_as_user(
-                workspace, service.id
-            )
+            service = await self.store.get_service_as_user(workspace, service.id)
             subpath = f"/{workspace}/apps/{service.id}"
             app = PatchedCORSMiddleware(
                 RemoteASGIApp(service),
@@ -152,11 +151,11 @@ class ASGIGateway:
                 allow_credentials=True,
             )
 
-            self.core_interface.mount_app(subpath, app, priority=-1)
+            self.store.mount_app(subpath, app, priority=-1)
 
     def umount_asgi_app(self, service: dict):
         """Unmount the ASGI apps."""
         service = ServiceInfo.parse_obj(service)
         if service.type in ["ASGI", "functions"]:
             subpath = f"/{service.config.workspace}/apps/{service.id}"
-            self.core_interface.umount_app(subpath)
+            self.store.umount_app(subpath)

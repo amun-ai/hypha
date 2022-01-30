@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Union
 import shortuuid
 from playwright.async_api import Page, async_playwright
 
-from hypha.core.interface import CoreInterface
+from hypha.core.store import RedisStore
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("browser")
@@ -49,7 +49,7 @@ class BrowserAppRunner:
 
     def __init__(
         self,
-        core_interface: CoreInterface,
+        store: RedisStore,
         in_docker: bool = False,
     ):
         """Initialize the class."""
@@ -58,9 +58,9 @@ class BrowserAppRunner:
         self.controller_id = str(BrowserAppRunner.instance_counter)
         BrowserAppRunner.instance_counter += 1
         self.in_docker = in_docker
-        self.event_bus = core_interface.event_bus
-        core_interface.register_public_service(self.get_service_api())
-        self.core_interface = core_interface
+        self.event_bus = store.get_event_bus()
+        store.register_public_service(self.get_service_api())
+        self.store = store
 
         def close() -> None:
             asyncio.get_running_loop().create_task(self.close())
@@ -95,7 +95,7 @@ class BrowserAppRunner:
         client_id: str,
     ):
         """Start a browser app instance."""
-        user_info = self.core_interface.current_user.get()
+        user_info = self.store.current_user.get()
         user_id = user_info.id
 
         if not self.browser:
@@ -130,7 +130,7 @@ class BrowserAppRunner:
 
     async def stop(self, client_id: str) -> None:
         """Stop a browser app instance."""
-        user_info = self.core_interface.current_user.get()
+        user_info = self.store.current_user.get()
         user_id = user_info.id
         page_id = user_id + "/" + client_id
         if page_id in self.browser_pages:
@@ -142,7 +142,7 @@ class BrowserAppRunner:
 
     async def list(self) -> List[str]:
         """List the browser apps for the current user."""
-        user_info = self.core_interface.current_user.get()
+        user_info = self.store.current_user.get()
         user_id = user_info.id
         sessions = [
             {k: v for k, v in page_info.items() if k != "page"}
@@ -159,7 +159,7 @@ class BrowserAppRunner:
         limit: Optional[int] = None,
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get the logs for a browser app instance."""
-        user_info = self.core_interface.current_user.get()
+        user_info = self.store.current_user.get()
         user_id = user_info.id
         page_id = user_id + "/" + client_id
         if page_id in self.browser_pages:

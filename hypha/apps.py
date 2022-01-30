@@ -21,7 +21,8 @@ from jinja2 import Environment, PackageLoader, select_autoescape
 from starlette.responses import Response
 
 from hypha.core import StatusEnum, RDF, ClientInfo
-from hypha.core.interface import CoreInterface
+from hypha.core.auth import parse_user
+from hypha.core.store import RedisStore
 from hypha.plugin_parser import parse_imjoy_plugin, convert_config_to_rdf
 from hypha.runner.browser import BrowserAppRunner
 from hypha.utils import (
@@ -56,7 +57,7 @@ class ServerAppController:
 
     def __init__(
         self,
-        core_interface: CoreInterface,
+        store: RedisStore,
         port: int,
         in_docker: bool = False,
         apps_dir: str = "./apps",
@@ -79,13 +80,13 @@ class ServerAppController:
         self.s3_enabled = endpoint_url is not None
         self.workspace_bucket = workspace_bucket
         self.user_applications_dir = user_applications_dir
-        self.local_base_url = core_interface.local_base_url
-        self.public_base_url = core_interface.public_base_url
+        self.local_base_url = store.local_base_url
+        self.public_base_url = store.public_base_url
 
-        event_bus = core_interface.event_bus
-        self.core_interface = core_interface
-        core_interface.event_bus.on("workspace_removed", self._on_workspace_removed)
-        core_interface.register_public_service(self.get_service_api())
+        event_bus = store.get_event_bus()
+        self.store = store
+        event_bus.on("workspace_removed", self._on_workspace_removed)
+        store.register_public_service(self.get_service_api())
         self.jinja_env = Environment(
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
         )
@@ -99,9 +100,7 @@ class ServerAppController:
         self._client_callbacks = {}
         self._runners = []
         for _ in range(2):
-            self._runners.append(
-                BrowserAppRunner(self.core_interface, in_docker=self.in_docker)
-            )
+            self._runners.append(BrowserAppRunner(self.store, in_docker=self.in_docker))
         self._runner_services = {}
 
         @router.get("/apps/{workspace}/{path:path}")
@@ -118,7 +117,7 @@ class ServerAppController:
             #             },
             #         )
             #     try:
-            #         user_info = core_interface.get_user_info_from_token(token)
+            #         user_info = parse_user(token)
             #     except jose.exceptions.JWTError:
             #         return JSONResponse(
             #             status_code=403,
@@ -127,7 +126,7 @@ class ServerAppController:
             #                 "detail": (f"Invalid token not provided for {workspace}/{path}"),
             #             },
             #         )
-            #     if not await core_interface.check_permission(workspace, user_info):
+            #     if not await store.check_permission(workspace, user_info):
             #         return JSONResponse(
             #             status_code=403,
             #             content={
@@ -147,7 +146,7 @@ class ServerAppController:
                 content={"success": False, "detail": f"File not found: {path}"},
             )
 
-        core_interface.register_router(router)
+        store.register_router(router)
 
         def close() -> None:
             asyncio.ensure_future(self.close())
@@ -167,7 +166,7 @@ class ServerAppController:
         self._status = StatusEnum.initializing
         self._initialize_future = asyncio.Future()
         try:
-            self._runner_services = await self.core_interface.list_public_services(
+            self._runner_services = await self.store.list_public_services(
                 {"type": "plugin-runner"}
             )
             assert len(self._runner_services) > 0, "No plugin runner is available."
@@ -195,7 +194,7 @@ class ServerAppController:
 
     def _on_workspace_removed(self, workspace: dict):
         # Shutdown the apps in the workspace
-        self.core_interface.current_workspace.set(workspace["name"])
+        self.store.current_workspace.set(workspace["name"])
         for app in self._apps.values():
             if app["workspace"] == workspace["name"]:
                 logger.info(
@@ -216,9 +215,9 @@ class ServerAppController:
     async def list_apps(self, workspace: str = None):
         """List applications in the workspace."""
         if not workspace:
-            workspace = self.core_interface.current_workspace.get()
+            workspace = self.store.current_workspace.get()
 
-        workspace = await self.core_interface.get_workspace(workspace)
+        workspace = await self.store.get_workspace(workspace)
         return [app_info.dict() for app_info in workspace.applications.values()]
 
     async def save_application(
@@ -372,12 +371,12 @@ class ServerAppController:
             else:
                 template = "imjoy"
         if not workspace:
-            workspace = self.core_interface.current_workspace.get()
+            workspace = self.store.current_workspace.get()
 
-        workspace = await self.core_interface.get_workspace(workspace)
+        workspace = await self.store.get_workspace(workspace)
 
-        user_info = self.core_interface.current_user.get()
-        if not await self.core_interface.check_permission(workspace, user_info):
+        user_info = self.store.current_user.get()
+        if not await self.store.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
                 f" to install apps in workspace {workspace}"
@@ -447,7 +446,7 @@ class ServerAppController:
         )
         rdf = RDF.parse_obj(rdf_obj)
         await self.save_application(app_id, rdf, source, attachments)
-        ws = await self.core_interface.store.get_workspace_interface(workspace.name)
+        ws = await self.store.get_workspace_interface(workspace.name)
         await ws.install_application(rdf.dict())
         return rdf_obj
 
@@ -458,16 +457,16 @@ class ServerAppController:
                 f"Invalid app id: {app_id}, the correct format is `user-id/app-id`"
             )
         workspace_name, mhash = app_id.split("/")
-        workspace = await self.core_interface.get_workspace(workspace_name)
+        workspace = await self.store.get_workspace(workspace_name)
 
-        user_info = self.core_interface.current_user.get()
-        if not await self.core_interface.check_permission(workspace, user_info):
+        user_info = self.store.current_user.get()
+        if not await self.store.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
                 f" to uninstall apps in workspace {workspace.name}"
             )
 
-        ws = await self.core_interface.store.get_workspace_interface(workspace.name)
+        ws = await self.store.get_workspace_interface(workspace.name)
         await ws.uninstall_application(app_id)
 
         async with self.create_client_async() as s3_client:
@@ -487,10 +486,10 @@ class ServerAppController:
     ) -> dotdict:
         """Start a server app instance."""
         if token:
-            user_info = self.core_interface.get_user_info_from_token(token)
+            user_info = parse_user(token)
         else:
-            user_info = self.core_interface.current_user.get()
-        if not await self.core_interface.check_permission(workspace, user_info):
+            user_info = self.store.current_user.get()
+        if not await self.store.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
                 f" to run app in workspace {workspace}."
@@ -536,14 +535,14 @@ class ServerAppController:
     ):
         """Start the app and keep it alive."""
         if workspace is None:
-            workspace = self.core_interface.current_workspace.get()
+            workspace = self.store.current_workspace.get()
         if workspace != app_id.split("/")[0]:
             raise Exception("Workspace mismatch between app_id and workspace.")
         if token is None:
-            ws = await self.core_interface.store.get_workspace_interface(workspace)
+            ws = await self.store.get_workspace_interface(workspace)
             token = ws.generate_token()
-        user_info = self.core_interface.get_user_info_from_token(token)
-        if not await self.core_interface.check_permission(workspace, user_info):
+        user_info = parse_user(token)
+        if not await self.store.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
                 f" to run app {app_id} in workspace {workspace}."
@@ -587,7 +586,7 @@ class ServerAppController:
             asyncio.create_task(self.stop(client_id, False))
 
         async def check_ready(client):
-            api = await self.core_interface.get_service_as_user(
+            api = await self.store.get_service_as_user(
                 client.workspace, f"{client.id}:default", user_info
             )
             try:
@@ -761,7 +760,7 @@ class ServerAppController:
             asyncio.get_running_loop().create_task(timer)
 
         runner_info = random.choice(self._runner_services)
-        runner = await self.core_interface.get_public_service(runner_info)
+        runner = await self.store.get_public_service(runner_info)
         await runner.start(url=local_url, client_id=client_id)
 
         app_info["runner"] = runner
@@ -773,7 +772,7 @@ class ServerAppController:
 
     async def stop(self, client_id: str, raise_exception=True) -> None:
         """Stop a server app instance."""
-        workspace = self.core_interface.current_workspace.get()
+        workspace = self.store.current_workspace.get()
         page_id = workspace + "/" + client_id
         if page_id in self._apps:
             logger.info("Stopping app: %s...", page_id)
@@ -796,7 +795,7 @@ class ServerAppController:
         limit: Optional[int] = None,
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get server app instance log."""
-        workspace = self.core_interface.current_workspace.get()
+        workspace = self.store.current_workspace.get()
         page_id = workspace + "/" + client_id
         if page_id in self._apps:
             return await self._apps[page_id]["runner"].get_log(
@@ -807,7 +806,7 @@ class ServerAppController:
 
     async def list_running(self) -> List[str]:
         """List the running sessions for the current workspace."""
-        workspace = self.core_interface.current_workspace.get()
+        workspace = self.store.current_workspace.get()
         sessions = [
             {k: v for k, v in page_info.items() if k != "runner"}
             for page_id, page_info in self._apps.items()

@@ -25,14 +25,14 @@ class RDFController:
 
     def __init__(
         self,
-        core_interface,
+        store,
         s3_controller=None,
         rdf_bucket="hypha-apps",
     ):
         """Set up controller."""
-        self.event_bus = core_interface.event_bus
+        self.event_bus = store.get_event_bus()
         self.s3_controller = s3_controller
-        self.core_interface = core_interface
+        self.store = store
         self.rdf_bucket = rdf_bucket
 
         self.s3client = self.s3_controller.create_client_sync()
@@ -67,12 +67,12 @@ class RDFController:
                     },
                 )
 
-        core_interface.register_router(router)
-        core_interface.register_public_service(self.get_rdf_service())
+        store.register_router(router)
+        store.register_public_service(self.get_rdf_service())
 
     def save(self, name, source):
         """Save an RDF."""
-        user_info = self.core_interface.current_user.get()
+        user_info = self.store.current_user.get()
         response = self.s3client.put_object(
             ACL="public-read",
             Body=source,
@@ -87,7 +87,7 @@ class RDFController:
 
     def remove(self, name):
         """Remove an RDF."""
-        user_info = self.core_interface.current_user.get()
+        user_info = self.store.current_user.get()
         response = self.s3client.delete_object(
             Bucket=self.rdf_bucket,
             Key=f"{user_info.id}/{name}",

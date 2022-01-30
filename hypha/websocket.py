@@ -21,15 +21,13 @@ class WebsocketServer:
 
     # pylint: disable=too-many-statements
 
-    def __init__(self, core_interface, path="/ws", allow_origins="*") -> None:
+    def __init__(self, store, path="/ws", allow_origins="*") -> None:
         """Set up the socketio server."""
         if allow_origins == ["*"]:
             allow_origins = "*"
 
-        store = core_interface.store
-
-        self.core_interface = core_interface
-        app = core_interface._app
+        self.store = store
+        app = store._app
 
         @app.websocket(path)
         async def websocket_endpoint(

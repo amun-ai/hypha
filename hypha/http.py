@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, Response
 
 from hypha.rpc import RPC
 from hypha.core.auth import login_optional
-from hypha.core.interface import CoreInterface
+from hypha.core.store import RedisStore
 from hypha.utils import GzipRoute
 
 
@@ -67,12 +67,12 @@ def get_value(keys, service):
 class HTTPProxy:
     """A proxy for accessing services from HTTP."""
 
-    def __init__(self, core_interface: CoreInterface) -> None:
+    def __init__(self, store: RedisStore) -> None:
         """Initialize the http proxy."""
         # pylint: disable=broad-except
         router = APIRouter()
         router.route_class = GzipRoute
-        self.core_interface = core_interface
+        self.store = store
 
         # @router.get("/services")
         # async def get_all_services(
@@ -80,8 +80,8 @@ class HTTPProxy:
         # ):
         #     """Route for listing all the services."""
         #     try:
-        #         core_interface.current_user.set(user_info)
-        #         services = await core_interface.list_public_services()
+        #         store.current_user.set(user_info)
+        #         services = await store.list_public_services()
         #         info = serialize(services)
         #         return JSONResponse(
         #             status_code=200,
@@ -100,7 +100,7 @@ class HTTPProxy:
         ):
             """Route for get services under a workspace."""
             try:
-                wm = await core_interface.store.get_workspace_manager(workspace)
+                wm = await store.get_workspace_manager(workspace)
                 services = await wm.list_services(context={"user": user_info})
                 info = serialize(services)
                 return JSONResponse(
@@ -121,9 +121,7 @@ class HTTPProxy:
         ):
             """Route for checking details of a service."""
             try:
-                service = await core_interface.get_service_as_user(
-                    workspace, service, user_info
-                )
+                service = await store.get_service_as_user(workspace, service, user_info)
                 return JSONResponse(
                     status_code=200,
                     content=serialize(service),
@@ -148,9 +146,7 @@ class HTTPProxy:
             It can contain dot to refer to deeper object.
             """
             try:
-                service = await core_interface.get_service_as_user(
-                    workspace, service, user_info
-                )
+                service = await store.get_service_as_user(workspace, service, user_info)
                 value = get_value(keys, service)
                 if not value:
                     return JSONResponse(
@@ -221,4 +217,4 @@ class HTTPProxy:
                     content={"success": False, "detail": traceback.format_exc()},
                 )
 
-        core_interface.register_router(router)
+        store.register_router(router)

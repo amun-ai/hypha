@@ -1,19 +1,23 @@
 """Provide the ImJoy core API interface."""
 import asyncio
+import inspect
+import io
 import json
 import logging
-import random
 import sys
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-import shortuuid
+import aioredis
+import msgpack
 from pydantic import (  # pylint: disable=no-name-in-module
     BaseModel,
     EmailStr,
     Extra,
     PrivateAttr,
 )
+
+from hypha.utils import EventBus
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("core")
@@ -148,3 +152,122 @@ class WorkspaceInfo(BaseModel):
     read_only: bool = False
     applications: Dict[str, RDF] = {}  # installed applications
     interfaces: Dict[str, List[Any]] = {}
+
+
+class RedisRPCConnection:
+    """Represent a redis connection."""
+
+    def __init__(
+        self, redis: aioredis.Redis, workspace: str, client_id: str, user_info: UserInfo
+    ):
+        self._redis = redis
+        self._handle_message = None
+        self._subscribe_task = None
+        self._workspace = workspace
+        self._client_id = client_id
+        assert "/" not in client_id
+        self._user_info = user_info.dict()
+
+    def on_message(self, handler: Callable):
+        self._handle_message = handler
+        self._is_async = inspect.iscoroutinefunction(handler)
+        self._subscribe_task = asyncio.ensure_future(self._subscribe_redis())
+
+    async def emit_message(self, data: Union[dict, bytes]):
+        assert self._handle_message is not None, "No handler for message"
+        assert isinstance(data, bytes)
+        unpacker = msgpack.Unpacker(io.BytesIO(data))
+        message = unpacker.unpack()  # Only unpack the main message
+        pos = unpacker.tell()
+        target_id = message["to"]
+        if "/" not in target_id:
+            target_id = self._workspace + "/" + target_id
+        source_id = self._workspace + "/" + self._client_id
+        message.update(
+            {
+                "to": target_id,
+                "from": source_id,
+                "user": self._user_info,
+            }
+        )
+        # Pack more context info to the package
+        data = msgpack.packb(message) + data[pos:]
+        await self._redis.publish(f"{target_id}:msg", data)
+
+    async def disconnect(self, reason=None):
+        self._redis = None
+        self._handle_message = None
+        if self._subscribe_task:
+            self._subscribe_task.cancel()
+            self._subscribe_task = None
+        logger.info("Redis connection disconnected (%s)", reason)
+
+    async def _subscribe_redis(self):
+        pubsub = self._redis.pubsub()
+        await pubsub.subscribe(f"{self._workspace}/{self._client_id}:msg")
+        while True:
+            msg = await pubsub.get_message()
+            if msg and msg.get("type") == "message":
+                assert (
+                    msg.get("channel")
+                    == f"{self._workspace}/{self._client_id}:msg".encode()
+                )
+                if self._is_async:
+                    await self._handle_message(msg["data"])
+                else:
+                    self._handle_message(msg["data"])
+
+
+class RedisEventBus(EventBus):
+    """Represent a redis event bus."""
+
+    def __init__(self, redis) -> None:
+        """Initialize the event bus."""
+        super().__init__(logger)
+        self._redis = redis
+        self._local_event_bus = EventBus(logger)
+
+    async def init(self, loop):
+        """Setup the event bus."""
+        self._ready = loop.create_future()
+        self._loop = loop
+        loop.create_task(self._subscribe_redis())
+        await self._ready
+
+    def on_local(self, *args, **kwargs):
+        """Register a callback for a local event."""
+        return self._local_event_bus.on(*args, **kwargs)
+
+    def off_local(self, *args, **kwargs):
+        """Unregister a callback for a local event."""
+        return self._local_event_bus.off(*args, **kwargs)
+
+    def once_local(self, *args, **kwargs):
+        """Register a callback for a local event and remove it once triggered."""
+        return self._local_event_bus.once(*args, **kwargs)
+
+    def emit(self, event_type, data=None, target: str = "global"):
+        """Emit an event to the event bus."""
+        assert target in ["local", "global", "remote"]
+        if target != "remote":
+            self._local_event_bus.emit(event_type, data)
+        if target is None or target == "global":
+            assert self._ready.result(), "Event bus not ready"
+            self._loop.create_task(
+                self._redis.publish(
+                    "global_event_bus", json.dumps({"type": event_type, "data": data})
+                )
+            )
+
+    async def _subscribe_redis(self):
+        pubsub = self._redis.pubsub()
+        try:
+            await pubsub.subscribe("global_event_bus")
+            self._ready.set_result(True)
+            while True:
+                msg = await pubsub.get_message()
+                if msg and msg.get("type") == "message":
+                    data = json.loads(msg["data"].decode())
+                    super().emit(data["type"], data["data"])
+        except Exception as exp:
+            self._ready.set_exception(exp)

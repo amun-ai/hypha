@@ -328,3 +328,29 @@ def parse_reconnection_token(token):
         issuer=AUTH0_ISSUER,
     )
     return payload["sub"], payload["cid"]
+
+
+def parse_user(token):
+    """Parse user info from a token."""
+    if token:
+        user_info = parse_token(token)
+        uid = user_info.id
+        logger.info("User connected: %s", uid)
+    else:
+        uid = shortuuid.uuid()
+        user_info = UserInfo(
+            id=uid,
+            is_anonymous=True,
+            email=None,
+            parent=None,
+            roles=[],
+            scopes=[],
+            expires_at=None,
+        )
+        logger.info("Anonymized User connected: %s", uid)
+
+    if uid == "root":
+        logger.error("Root user is not allowed to connect remotely")
+        raise Exception("Root user is not allowed to connect remotely")
+
+    return user_info
