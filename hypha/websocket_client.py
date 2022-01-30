@@ -28,7 +28,7 @@ except ImportError:
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket-client")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.WARNING)
 
 
 class WebsocketRPCConnection:

@@ -81,9 +81,11 @@ class Timer:
         self._args = args
         self._kwrags = kwargs
         self._label = label
+        self.started = False
 
     def start(self):
         self._task = asyncio.ensure_future(self._job())
+        self.started = True
 
     async def _job(self):
         await asyncio.sleep(self._timeout)
@@ -92,11 +94,15 @@ class Timer:
             await ret
 
     def clear(self):
-        assert self._task is not None, "Timer is not started"
-        self._task.cancel()
+        if self._task:
+            self._task.cancel()
+            self._task = None
+            self.started = False
+        else:
+            logger.warning("Clearing a timer (%s) which is not started", self._label)
 
     def reset(self):
-        assert self._task is not None, "Timer is not started"
+        assert self._task is not None, f"Timer ({self._label}) is not started"
         self._task.cancel()
         self._task = asyncio.ensure_future(self._job())
 
@@ -564,7 +570,7 @@ class RPC(MessageEmitter):
                         "Deleting session %s from %s", session_id, self._client_id
                     )
                     del self._object_store[session_id]
-                if timer:
+                if timer and timer.started:
                     timer.clear()
 
         return encoded, wrapped_callback
@@ -891,7 +897,7 @@ class RPC(MessageEmitter):
             try:
                 method = index_object(self._object_store, data["method"])
             except Exception:
-                logger.error("Failed to find method %s", method_name)
+                logger.debug("Failed to find method %s", method_name)
                 raise Exception(f"Method not found: {method_name}")
             assert callable(method), f"Invalid method: {method_name}"
 
@@ -962,7 +968,6 @@ class RPC(MessageEmitter):
             )
 
         except Exception as err:
-            logger.error("Error during calling method: %s", err)
             # make sure we clear the heartbeat timer
             if (
                 heartbeat_task
@@ -972,6 +977,9 @@ class RPC(MessageEmitter):
                 heartbeat_task.cancel()
             if callable(reject):
                 reject(err)
+                logger.debug("Error during calling method: %s", err)
+            else:
+                logger.error("Error during calling method: %s", err)
 
     def encode(self, a_object, session_id=None):
         """Encode object."""

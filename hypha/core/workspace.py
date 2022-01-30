@@ -674,7 +674,7 @@ class WorkspaceManager:
                     context=context,
                 )
                 return service_api
-            raise Exception(f"Service not found: {sid} in {workspace}")
+            raise Exception(f"Service not found: {sid} in workspace {workspace}")
         service_info = random.choice(services)
         rpc = await self.setup()
         service_api = await rpc.get_remote_service(service_info["id"])
