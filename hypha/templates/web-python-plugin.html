@@ -1740,7 +1740,7 @@ class PyodideWebsocketRPCConnection:
             await self.open()
         try:
             data = pyodide.to_js(data)
-            self._websocket.send(data);
+            self._websocket.send(data)
         except Exception as exp:
             #   data = msgpack_unpackb(data);
             logger.error("Failed to send data, error: %s", exp)

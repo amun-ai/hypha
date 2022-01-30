@@ -4,10 +4,27 @@ import logging
 import sys
 
 import msgpack
-import websockets
 import shortuuid
 
-from hypha.rpc import RPC
+from .rpc import RPC
+
+try:
+    import js  # noqa: F401
+    import pyodide  # noqa: F401
+
+    from .pyodide_websocket import PyodideWebsocketRPCConnection
+
+    def custom_exception_handler(loop, context):
+        pass
+
+    # Patch the exception handler to avoid the default one
+    asyncio.get_event_loop().set_exception_handler(custom_exception_handler)
+
+    IS_PYODIDE = True
+except ImportError:
+    import websockets
+
+    IS_PYODIDE = False
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket-client")
@@ -97,7 +114,13 @@ async def connect_to_server(config):
     client_id = config.get("client_id")
     if client_id is None:
         client_id = shortuuid.uuid()
-    connection = WebsocketRPCConnection(
+
+    if IS_PYODIDE:
+        Connection = PyodideWebsocketRPCConnection
+    else:
+        Connection = WebsocketRPCConnection
+
+    connection = Connection(
         config["server_url"],
         client_id,
         workspace=config.get("workspace"),
