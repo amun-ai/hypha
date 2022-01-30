@@ -18,7 +18,7 @@ from hypha.core import (
     RedisRPCConnection,
 )
 from hypha.core.auth import generate_presigned_token, generate_reconnection_token
-from hypha.rpc import RPC
+from imjoy_rpc.hypha import RPC
 from hypha.utils import EventBus
 
 logging.basicConfig(stream=sys.stdout)

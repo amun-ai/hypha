@@ -22,7 +22,7 @@ from hypha.core import (
     RedisEventBus,
 )
 from hypha.core.workspace import WorkspaceManager
-from hypha.rpc import RPC
+from imjoy_rpc.hypha import RPC
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("redis-store")

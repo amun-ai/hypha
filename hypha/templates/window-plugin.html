@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ImJoy Plugin Template</title>
+  <title>ImJoy Plugin (window)</title>
   <meta name="description" content="Template for ImJoy plugin">
   <meta name="author" content="ImJoy-Team">
-  <script src="https://static.imjoy.io/js/imjoy-websocket-client.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/imjoy-rpc@0.5.0-a2/dist/hypha-rpc-websocket.min.js"></script>
 </head>
 
 <body>
@@ -15,8 +15,8 @@ window.onload = function() {
   const cfg = {{ config | tojson(indent=2) }}
   const config = Object.assign(cfg, Object.fromEntries(new URLSearchParams(window.location.search)));
   if(!config.server_url) config.server_url = window.location.origin.replace("http", "ws")+"/ws";
-  imjoyWebsocketClient.connectToServer(config).then(async (api)=>{
-      await imjoyWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
+  hyphaWebsocketClient.connectToServer(config).then(async (api)=>{
+      await hyphaWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
       {{ script | safe }}
   }).catch(console.error)
 }

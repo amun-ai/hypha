@@ -12,7 +12,7 @@ from types import ModuleType
 import yaml
 
 from hypha.utils import dotdict
-from hypha.websocket_client import connect_to_server
+from imjoy_rpc.hypha.websocket_client import connect_to_server
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("plugin-runner")

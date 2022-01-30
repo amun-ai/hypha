@@ -6,7 +6,7 @@ import pytest
 import asyncio
 import pytest_asyncio
 
-from hypha.websocket_client import connect_to_server
+from imjoy_rpc.hypha.websocket_client import connect_to_server
 from hypha.core.store import RedisStore
 
 from . import SIO_PORT, find_item

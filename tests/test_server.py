@@ -6,7 +6,7 @@ import asyncio
 
 
 import pytest
-from hypha.websocket_client import connect_to_server
+from imjoy_rpc.hypha.websocket_client import connect_to_server
 from . import SIO_PORT2, WS_SERVER_URL, BACKUP_WS_SERVER_URL, find_item
 
 # All test coroutines will be treated as marked.

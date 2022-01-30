@@ -1,7 +1,7 @@
 """Test S3 services."""
 import pytest
 import requests
-from hypha.websocket_client import connect_to_server
+from imjoy_rpc.hypha.websocket_client import connect_to_server
 
 from . import WS_SERVER_URL, SERVER_URL, find_item
 
