@@ -15,6 +15,8 @@ MINIO_ROOT_USER = "minio"
 MINIO_ROOT_PASSWORD = str(uuid.uuid4())
 REDIS_PORT = 6383
 
+TRITON_SERVERS = "https://ai.imjoy.io/triton"
+
 
 def find_item(items, key, value):
     """Find an item with key or attributes in an object list."""

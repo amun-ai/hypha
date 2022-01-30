@@ -25,6 +25,7 @@ from . import (
     SIO_PORT2,
     REDIS_PORT,
     BACKUP_SIO_PORT,
+    TRITON_SERVERS,
 )
 
 JWT_SECRET = str(uuid.uuid4())
@@ -83,6 +84,7 @@ def fastapi_server_fixture(minio_server):
             f"--endpoint-url={MINIO_SERVER_URL}",
             f"--access-key-id={MINIO_ROOT_USER}",
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
+            f"--triton-servers={TRITON_SERVERS}",
         ],
         env=test_env,
     ) as proc:
@@ -117,6 +119,7 @@ def fastapi_server_backup_fixture(minio_server, fastapi_server):
             f"--endpoint-url={MINIO_SERVER_URL}",
             f"--access-key-id={MINIO_ROOT_USER}",
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
+            f"--triton-servers={TRITON_SERVERS}",
         ],
         env=test_env,
     ) as proc:
