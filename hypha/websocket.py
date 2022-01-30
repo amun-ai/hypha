@@ -22,7 +22,7 @@ class WebsocketServer:
     # pylint: disable=too-many-statements
 
     def __init__(self, store, path="/ws", allow_origins="*") -> None:
-        """Set up the socketio server."""
+        """Set up the websocket server."""
         if allow_origins == ["*"]:
             allow_origins = "*"
 

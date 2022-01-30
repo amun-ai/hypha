@@ -89,7 +89,7 @@ def start_builtin_services(
     store: RedisStore,
     args: argparse.Namespace,
 ) -> None:
-    """Set up the socketio server."""
+    """Set up the builtin services."""
     # pylint: disable=too-many-arguments,too-many-locals
 
     def norm_url(url):
@@ -181,7 +181,7 @@ def start_builtin_services(
 
 
 def start_server(args):
-    """Start the socketio server."""
+    """Start the server."""
     if args.allow_origins:
         args.allow_origins = args.allow_origins.split(",")
     else:

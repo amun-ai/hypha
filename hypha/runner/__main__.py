@@ -10,7 +10,7 @@ if __name__ == "__main__":
         "--server-url",
         type=str,
         default=None,
-        help="url to the plugin socketio server",
+        help="url to the hypha websocket server",
     )
 
     parser.add_argument(
