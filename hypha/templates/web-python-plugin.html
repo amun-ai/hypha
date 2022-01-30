@@ -509,13 +509,17 @@ class RPC(MessageEmitter):
                     self._connection.set_reconnection_token(
                         self._user_info["reconnection_token"]
                     )
+                    reconnection_expires_in = self._user_info["reconnection_expires_in"] * 0.8
                     logger.debug(
-                        "Set reconnection token: %s",
+                        "Reconnection token obtained: %s, will be refreshed in %d seconds",
                         self._user_info.get("reconnection_token"),
+                        reconnection_expires_in
                     )
+                    await asyncio.sleep(reconnection_expires_in)
+                    await self._get_user_info()
             except Exception as exp:  # pylint: disable=broad-except
                 logger.warning(
-                    "Failed to fetch user info from %s: %s",
+                    "Failed to fetch user info from %s: %s (reconnection will also fail)",
                     self.root_target_id,
                     exp,
                 )
@@ -1818,12 +1822,10 @@ async def export_service(plugin_api, config, imjoy_rpc):
         plugin_api["id"] = "default"
         plugin_api["name"] = config.get("name", "default")
         await rpc.register_service(plugin_api, overwrite=True)
-        remote_api = await rpc.get_remote_service("workspace-manager:default")
-        imjoy_rpc.api.update(remote_api)
-        imjoy_rpc.api.register_service = rpc.register_service
-        svc = await rpc.get_remote_service(rpc._client_id + ":default")
-        if svc.setup:
-            await svc.setup()
+        imjoy_rpc.api.update(wm)
+        # svc = await rpc.get_remote_service(rpc._client_id + ":default")
+        # if svc.setup:
+        #     await svc.setup()
     except Exception as exp:
         logger.exception(exp)
         console.error("Failed to export service: ", traceback.format_exc())

@@ -191,13 +191,19 @@ class RPC(MessageEmitter):
                     self._connection.set_reconnection_token(
                         self._user_info["reconnection_token"]
                     )
-                    logger.debug(
-                        "Set reconnection token: %s",
-                        self._user_info.get("reconnection_token"),
+                    reconnection_expires_in = (
+                        self._user_info["reconnection_expires_in"] * 0.8
                     )
+                    logger.debug(
+                        "Reconnection token obtained: %s, will be refreshed in %d seconds",
+                        self._user_info.get("reconnection_token"),
+                        reconnection_expires_in,
+                    )
+                    await asyncio.sleep(reconnection_expires_in)
+                    await self._get_user_info()
             except Exception as exp:  # pylint: disable=broad-except
                 logger.warning(
-                    "Failed to fetch user info from %s: %s",
+                    "Failed to fetch user info from %s: %s (reconnection will also fail)",
                     self.root_target_id,
                     exp,
                 )

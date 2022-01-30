@@ -393,12 +393,16 @@ class WorkspaceManager:
             client_id,
             user_info.id,
         )
-        token = generate_reconnection_token(user_info.id, client_id)
+        expires_in = 60 * 60 * 3  #  3 hours
+        token = generate_reconnection_token(
+            user_info.id, client_id, expires_in=expires_in
+        )
         return {
             "workspace": ws,
             "client_id": client_id,
             "user_info": context["user"],
             "reconnection_token": token,
+            "reconnection_expires_in": expires_in,
         }
 
     async def _get_client_info(self, client_id):
@@ -792,12 +796,11 @@ class WorkspaceManager:
         )
         if not services:
             if "launch" in query and query["launch"] == True:
-                app_info = await self._launch_application_by_service(
+                service_api = await self._launch_application_by_service(
                     query,
                     context=context,
                 )
-                # TODO: get the actual service
-                return app_info
+                return service_api
             raise Exception(f"Service not found: {sid} in {workspace}")
         service_info = random.choice(services)
         rpc = await self.setup()

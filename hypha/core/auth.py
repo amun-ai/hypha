@@ -299,15 +299,17 @@ def generate_presigned_token(
     return uid + "@imjoy@" + token
 
 
-def generate_reconnection_token(user_id: str, client_id: str):
+def generate_reconnection_token(user_id: str, client_id: str, expires_in: int = 10800):
     """Generate a token for reconnection."""
+    current_time = time.time()
+    expires_at = current_time + expires_in
     return jwt.encode(
         {
             "iss": AUTH0_ISSUER,
             "sub": user_id,
             "aud": AUTH0_AUDIENCE,
-            "iat": time.time(),
-            "exp": 317125598072,  # Never expires
+            "iat": current_time,
+            "exp": expires_at,
             "gty": "client-credentials",
             "cid": client_id,
         },

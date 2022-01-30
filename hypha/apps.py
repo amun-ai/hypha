@@ -591,7 +591,7 @@ class ServerAppController:
                 client.workspace, f"{client.id}:default", user_info
             )
             try:
-                if api.setup:
+                if callable(api.setup):
                     await api.setup()
             except Exception:
                 fut.set_exception(
