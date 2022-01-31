@@ -6,7 +6,7 @@
   <title>ImJoy Plugin (window)</title>
   <meta name="description" content="Template for ImJoy plugin">
   <meta name="author" content="ImJoy-Team">
-  <script src="https://cdn.jsdelivr.net/npm/imjoy-rpc@0.5.3/dist/hypha-rpc-websocket.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/imjoy-rpc@0.5.4/dist/hypha-rpc-websocket.min.js"></script>
 </head>
 
 <body>
@@ -14,7 +14,7 @@
 window.onload = function() {
   const cfg = {{ config | tojson(indent=2) }}
   const config = Object.assign(cfg, Object.fromEntries(new URLSearchParams(window.location.search)));
-  if(!config.server_url) config.server_url = window.location.origin.replace("http", "ws")+"/ws";
+  if(!config.server_url) config.server_url = window.location.origin;
   hyphaWebsocketClient.connectToServer(config).then(async (api)=>{
       await hyphaWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
       {{ script | safe }}
