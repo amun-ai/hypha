@@ -644,8 +644,6 @@ class S3Controller:
             raise PermissionError(
                 f"User {user_info.id} does not have write permission to the workspace {workspace}"
             )
-        if user_info.is_anonymous:
-            raise PermissionError(f"s3 credential is disabled for anonymous users.")
         password = generate_password()
         self.minio_client.admin_user_add(user_info.id, password)
         # Make sure the user is in the workspace
@@ -683,8 +681,6 @@ class S3Controller:
         try:
             user_info = self.store.current_user.get()
             workspace = self.store.current_workspace.get()
-            if user_info.is_anonymous:
-                raise PermissionError(f"s3 credential is disabled for anonymous users.")
             if bucket_name != self.workspace_bucket or not object_name.startswith(
                 workspace + "/"
             ):

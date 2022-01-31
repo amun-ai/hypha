@@ -32,15 +32,24 @@ class WorkspaceManager:
 
     @staticmethod
     def get_manager(
-        workspace: str, redis: Redis, root_user: UserInfo, event_bus: EventBus
+        workspace: str,
+        redis: Redis,
+        root_user: UserInfo,
+        event_bus: EventBus,
+        server_info: dict,
     ):
         if workspace in WorkspaceManager._managers:
             return WorkspaceManager._managers[workspace]
         else:
-            return WorkspaceManager(workspace, redis, root_user, event_bus)
+            return WorkspaceManager(workspace, redis, root_user, event_bus, server_info)
 
     def __init__(
-        self, workspace: str, redis: Redis, root_user: UserInfo, event_bus: EventBus
+        self,
+        workspace: str,
+        redis: Redis,
+        root_user: UserInfo,
+        event_bus: EventBus,
+        server_info: dict,
     ):
         self._redis = redis
         self._workspace = workspace
@@ -48,6 +57,7 @@ class WorkspaceManager:
         self._rpc = None
         self._root_user = root_user
         self._event_bus = event_bus
+        self._server_info = server_info
         WorkspaceManager._managers[workspace] = self
 
     async def setup(
@@ -255,13 +265,15 @@ class WorkspaceManager:
         token = generate_reconnection_token(
             user_info.id, client_id, expires_in=expires_in
         )
-        return {
+        info = {
             "workspace": ws,
             "client_id": client_id,
             "user_info": context["user"],
             "reconnection_token": token,
             "reconnection_expires_in": expires_in,
         }
+        info.update(self._server_info)
+        return info
 
     async def _get_client_info(self, client_id):
         assert "/" not in client_id
@@ -638,13 +650,14 @@ class WorkspaceManager:
             if await self._get_client_info(client_id):
                 rpc = await self.setup()
                 service_api = await rpc.get_remote_service(service_id)
-                service_api["config"]["workspace"] = workspace
-                return service_api
+                return self.patch_service_config(workspace, service_api)
             elif "launch" in query and query["launch"] == True:
                 service_api = await self._launch_application_by_service(
-                    service_id,
+                    query,
                     context=context,
                 )
+                # No need to patch the service config
+                # because the service is already patched
                 return service_api
             else:
                 raise Exception(f"Client not found: {client_id}")
@@ -684,12 +697,17 @@ class WorkspaceManager:
                     query,
                     context=context,
                 )
+                # No need to patch the service config
+                # because the service is already patched
                 return service_api
             raise Exception(f"Service not found: {sid} in workspace {workspace}")
         service_info = random.choice(services)
         rpc = await self.setup()
         service_api = await rpc.get_remote_service(service_info["id"])
-        service_api["config"]["workspace"] = service_info["id"].split("/")[0]
+        return self.patch_service_config(service_info["id"].split("/")[0], service_api)
+
+    def patch_service_config(self, workspace, service_api):
+        service_api["config"]["workspace"] = workspace
         return service_api
 
     async def _get_all_workspace(self):
@@ -772,7 +790,11 @@ class WorkspaceManager:
                 )
 
         manager = WorkspaceManager.get_manager(
-            workspace, self._redis, self._root_user, self._event_bus
+            workspace,
+            self._redis,
+            self._root_user,
+            self._event_bus,
+            self._server_info,
         )
         await manager.setup()
         return await manager.get_workspace()

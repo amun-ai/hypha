@@ -69,6 +69,10 @@ class RedisStore:
             }
         )
         self._public_workspace_interface = None
+        self._server_info = {
+            "public_base_url": self.public_base_url,
+            "local_base_url": self.local_base_url,
+        }
 
         if redis_uri.startswith("redis://"):
             self._redis_server = None
@@ -199,7 +203,11 @@ class RedisStore:
     async def get_workspace_manager(self, workspace: str, setup=True):
         """Get a workspace manager."""
         manager = WorkspaceManager.get_manager(
-            workspace, self._redis, await self.setup_root_user(), self._event_bus
+            workspace,
+            self._redis,
+            await self.setup_root_user(),
+            self._event_bus,
+            self._server_info,
         )
         if setup:
             await manager.setup()
@@ -208,7 +216,11 @@ class RedisStore:
     async def get_workspace_interface(self, workspace: str, context: dict = None):
         """Get the interface of a workspace."""
         manager = WorkspaceManager.get_manager(
-            workspace, self._redis, await self.setup_root_user(), self._event_bus
+            workspace,
+            self._redis,
+            await self.setup_root_user(),
+            self._event_bus,
+            self._server_info,
         )
         return await manager.get_workspace(context=context)
 
