@@ -43,7 +43,7 @@ async def test_redis_store(redis_store):
     assert set(await api.list_clients()) == {"test-plugin-99", "workspace-manager"}
     await api.log("hello")
     services = await api.list_services()
-    assert len(services) == 4  # 2 services: built-in and default
+    assert len(services) == 1
     assert await api.generate_token()
     ws = await api.create_workspace(
         dict(
@@ -136,7 +136,9 @@ async def test_websocket_server(fastapi_server, test_user_token):
     assert await svc.echo("hello") == "hello"
 
     services = await wm.list_services()
-    assert find_item(services, "id", f"{wm.config.workspace}/workspace-manager:default")
+    assert (
+        len(services) == 2
+    )  # built-in and workspace-manager.default service are not listed
 
     svc = await wm.get_service("test-plugin-1:test-service")
     assert await svc.echo("hello") == "hello"
@@ -271,6 +273,6 @@ async def test_websocket_server(fastapi_server, test_user_token):
     await svc5.blocking_sleep(3)
     summary = await wm2.get_summary()
     assert summary["client_count"] == 2
-    assert summary["service_count"] == 6
+    assert summary["service_count"] == 3
     assert find_item(summary["services"], "name", "executor-test")
     await wm2.disconnect()
