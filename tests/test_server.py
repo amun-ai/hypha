@@ -388,7 +388,8 @@ async def test_server_scalability(fastapi_server, fastapi_server_backup):
         {
             "id": "test-service",
             "add77": lambda x: x + 77,
-        }
+        },
+        overwrite=True,
     )
 
     svc = await api88.get_service("my-plugin-77:test-service")
