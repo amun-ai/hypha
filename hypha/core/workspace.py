@@ -409,6 +409,8 @@ class WorkspaceManager:
         for service in client_info.services:
             # Add workspace info to the service
             service.config.workspace = self._workspace
+            if ":" not in service.id:
+                service.id = client_info.id + ":" + service.id
 
         # Store previous services for detecting changes
         previous_client_info = await self._redis.hget(

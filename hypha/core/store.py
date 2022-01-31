@@ -127,6 +127,9 @@ class RedisStore:
         )
         for service in self._public_services:
             try:
+                if ":" not in service.id:
+                    service.id = "workspace_manager:" + service.id
+                service.config.workspace = "public"
                 svc = service.dict()
                 await self._public_workspace_interface.register_service(svc)
                 self._event_bus.emit(
@@ -141,6 +144,7 @@ class RedisStore:
     async def _register_public_service(self, service: dict):
         """Register the public service."""
         service = ServiceInfo.parse_obj(service)
+        assert ":" in service.id and service.config.workspace
         # Add public service to the registry
         if (
             service.config.visibility == VisibilityEnum.public
