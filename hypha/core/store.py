@@ -127,14 +127,7 @@ class RedisStore:
         )
         for service in self._public_services:
             try:
-                if ":" not in service.id:
-                    service.id = "workspace_manager:" + service.id
-                service.config.workspace = "public"
-                svc = service.dict()
-                await self._public_workspace_interface.register_service(svc)
-                self._event_bus.emit(
-                    "service_registered", {k: svc[k] for k in SERVICE_SUMMARY_FIELD}
-                )
+                await self._public_workspace_interface.register_service(service.dict())
             except Exception:  # pylint: disable=broad-except
                 logger.exception("Failed to register public service: %s", service)
                 raise
