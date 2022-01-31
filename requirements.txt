@@ -16,7 +16,7 @@ python-socketio[asyncio_client]==5.4.1  # pin for now to solve unknown connectio
 pyyaml==6.0
 requests==2.26.0
 shortuuid==1.0.8
-uvicorn==0.16.0
+uvicorn==0.17.1
 httpx==0.21.1
 pyotritonclient==0.1.36
 redislite==4.1.0
