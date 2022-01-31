@@ -65,6 +65,7 @@ async def test_http_proxy(minio_server, fastapi_server):
         config={"type": "window"},
         workspace=workspace,
         token=token,
+        wait_for_service=None,
     )
     plugin = await api.get_plugin(config.id)
     assert "setup" in plugin

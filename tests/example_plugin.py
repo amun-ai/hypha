@@ -19,7 +19,8 @@ class ImJoyPlugin:
                 "name": "echo service",
                 "type": "echo",
                 "echo": lambda x: print("echo: " + str(x)),
-            }
+            },
+            overwrite=True,
         )
         service = await api.get_service(service_info)
         await service.echo("a message")

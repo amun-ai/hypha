@@ -59,6 +59,7 @@ async def test_server_apps(fastapi_server):
         config={"type": "window"},
         workspace=workspace,
         token=token,
+        wait_for_service="default",
     )
     assert "app_id" in config
     plugin = await api.get_service(f"{workspace}/{config.id}:default")

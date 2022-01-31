@@ -27,6 +27,7 @@ from imjoy_rpc.hypha.websocket_client import connect_to_server
 async def export_service(plugin_api, config, imjoy_rpc):
     try:
         wm = await connect_to_server(config)
+        imjoy_rpc.api.update(wm) # make the api available to the plugin
         rpc = wm.rpc
         if not isinstance(plugin_api, dict) and inspect.isclass(type(plugin_api)):
             plugin_api = {a: getattr(plugin_api, a) for a in dir(plugin_api)}
@@ -34,7 +35,6 @@ async def export_service(plugin_api, config, imjoy_rpc):
         plugin_api["id"] = "default"
         plugin_api["name"] = config.get("name", "default")
         await rpc.register_service(plugin_api, overwrite=True)
-        imjoy_rpc.api.update(wm)
         # svc = await rpc.get_remote_service(rpc._client_id + ":default")
         # if svc.setup:
         #     await svc.setup()

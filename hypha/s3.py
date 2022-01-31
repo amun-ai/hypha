@@ -679,7 +679,6 @@ class S3Controller:
     ):
         """Generate presigned url."""
         try:
-            user_info = self.store.current_user.get()
             workspace = self.store.current_workspace.get()
             if bucket_name != self.workspace_bucket or not object_name.startswith(
                 workspace + "/"

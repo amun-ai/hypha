@@ -431,6 +431,14 @@ class WorkspaceManager:
         for service in client_info.services:
             if service.id not in previous_service_ids:
                 self._event_bus.emit("service_registered", service.dict())
+                # Try to execute the setup function for the default service
+                if service.id.endswith(":default"):
+                    rpc = await self.setup()
+                    wm = await rpc.get_remote_service(
+                        self._workspace + "/" + service.id, timeout=10
+                    )
+                    if callable(wm.setup):
+                        await wm.setup()
 
     async def register_client(self, client_info: ClientInfo, overwrite: bool = False):
         """Add a client."""
@@ -470,6 +478,9 @@ class WorkspaceManager:
             f"user:{client_info.user_info.id}:clients", client_info.id
         )
         await self._redis.hdel(f"{workspace}:clients", client_id)
+        # Unregister all the services
+        for service in client_info.services:
+            self._event_bus.emit("service_unregistered", service.dict())
         logger.info("Client deleted: %s/%s", workspace, client_id)
 
     def _create_rpc(
@@ -581,7 +592,7 @@ class WorkspaceManager:
             token=token,
             client_id=client_id,
             timeout=timeout,
-            execute_setup=True,
+            wait_for_service=service_id,
         )
         return await self.get_service(
             {

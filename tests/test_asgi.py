@@ -30,10 +30,10 @@ async def test_asgi(fastapi_server):
         source=source,
         workspace=workspace,
         token=token,
-        execute_setup=False,  # execute the setup() function after started
+        wait_for_service="default",  # execute the setup() function after started
     )
-    plugin = await api.get_plugin(config.id)
-    await plugin.setup()
+    # plugin = await api.get_plugin(config.id)
+    # await plugin.setup()
 
     # Wait for the setup() to finish
     await asyncio.sleep(1)
@@ -68,7 +68,7 @@ async def test_functions(fastapi_server):
         source=source,
         workspace=workspace,
         token=token,
-        execute_setup=True,  # execute the setup() function after started
+        wait_for_service="default",  # execute the setup() function after started
     )
     # plugin = await api.get_plugin(config.id)
     # await plugin.setup()

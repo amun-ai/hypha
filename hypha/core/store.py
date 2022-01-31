@@ -319,7 +319,7 @@ class RedisStore:
                 )
             )
             if not services:
-                raise Exception(f"Service {service_id} not found")
+                raise KeyError(f"Service {service_id} not found")
             service = random.choice(services)
             service_id = service["id"]
 

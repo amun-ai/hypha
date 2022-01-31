@@ -486,7 +486,7 @@ class ServerAppController:
         timeout: float = 60,
         config: Optional[Dict[str, Any]] = None,
         attachments: List[dict] = None,
-        execute_setup: bool = True,
+        wait_for_service: str = None,
     ) -> dotdict:
         """Start a server app instance."""
         if token:
@@ -517,7 +517,7 @@ class ServerAppController:
             workspace=workspace,
             token=token,
             timeout=timeout,
-            execute_setup=execute_setup,
+            wait_for_service=wait_for_service,
         )
 
     def _client_updated(self, client: dict) -> None:
@@ -530,6 +530,13 @@ class ServerAppController:
                 connect = callbacks["connect"]
                 del callbacks["connect"]
                 connect(client)
+            if "wait_for_service" in callbacks:
+                service_id, svc_fut = callbacks["wait_for_service"]
+                if not svc_fut.done():
+                    for service in client.services:
+                        if service.id.endswith(":" + service_id):
+                            svc_fut.set_result(service)
+                            break
 
     # pylint: disable=too-many-statements,too-many-locals
     async def start(
@@ -540,9 +547,10 @@ class ServerAppController:
         client_id=None,
         timeout: float = 60,
         loop_count=0,
-        execute_setup=True,
+        wait_for_service: str = None,
     ):
         """Start the app and keep it alive."""
+        wait_for_service = "default" if wait_for_service == True else wait_for_service
         if workspace is None:
             workspace = self.store.current_workspace.get()
         if workspace != app_id.split("/")[0]:
@@ -598,15 +606,18 @@ class ServerAppController:
             api = await self.store.get_service_as_user(
                 client.workspace, f"{client.id}:default", user_info
             )
-            if execute_setup:
+            if wait_for_service:
+                callbacks = self._client_callbacks[page_id]
                 try:
-                    logger.info("Executing setup for %s:default", client_id)
-                    if callable(api.setup):
-                        await api.setup()
+                    service_id, svc_fut = callbacks["wait_for_service"]
+                    logger.info("Waiting for service %s:%s", client_id, service_id)
+                    await asyncio.wait_for(svc_fut, timeout=timeout)
+                    del callbacks["wait_for_service"]
                 except Exception:
+                    del callbacks["wait_for_service"]
                     fut.set_exception(
                         Exception(
-                            f"Failed to run setup() on {client.workspace}/{client.id}:default, error: {traceback.format_exc()}"
+                            f"Failed to get service {wait_for_service} in {client.workspace}/{client.id}, error: {traceback.format_exc()}"
                         )
                     )
                     return
@@ -628,8 +639,8 @@ class ServerAppController:
             period = readiness_probe.get("period_seconds", 10)
             success_threshold = readiness_probe.get("success_threshold", 1)
             failure_threshold = readiness_probe.get("failure_threshold", 3)
-            timeout = readiness_probe.get("timeout", 5)
-            assert timeout >= 1
+            readiness_timeout = readiness_probe.get("timeout", 5)
+            assert readiness_timeout >= 1
             # check if it's ready
             if exec_func:
                 await asyncio.sleep(initial_delay)
@@ -642,7 +653,9 @@ class ServerAppController:
                             client.name,
                             failure,
                         )
-                        is_ready = await asyncio.wait_for(exec_func(), timeout)
+                        is_ready = await asyncio.wait_for(
+                            exec_func(), readiness_timeout
+                        )
                         if is_ready:
                             success += 1
                             if success >= success_threshold:
@@ -730,13 +743,24 @@ class ServerAppController:
                             client_id=client_id,
                             timeout=timeout,
                             loop_count=loop_count,
-                            execute_setup=execute_setup,
+                            wait_for_service=wait_for_service,
                         )
 
                     else:
                         await asyncio.sleep(period)
 
         fut = asyncio.Future()
+
+        def kill_on_error(fut):
+            if fut.exception():
+                logger.error(
+                    "Failed to start plugin %s, error: %s",
+                    client_id,
+                    fut.exception(),
+                )
+                asyncio.ensure_future(self.stop(client_id, False))
+
+        fut.add_done_callback(kill_on_error)
 
         def connect(client):
             config = dotdict()
@@ -757,6 +781,10 @@ class ServerAppController:
             "connect": connect,
             "cleanup": cleanup,
         }
+        if wait_for_service:
+            svc_fut = asyncio.Future()
+            service_id = "default" if wait_for_service == True else wait_for_service
+            self._client_callbacks[page_id]["wait_for_service"] = service_id, svc_fut
 
         if timeout > 0:
 
@@ -786,6 +814,14 @@ class ServerAppController:
         """Stop a server app instance."""
         workspace = self.store.current_workspace.get()
         page_id = workspace + "/" + client_id
+        if page_id in self._client_callbacks:
+            callbacks = self._client_callbacks[page_id]
+            if "wait_for_service" in callbacks:
+                _, svc_fut = callbacks["wait_for_service"]
+                if not svc_fut.done():
+                    svc_fut.set_exception(Exception("App stopped"))
+            del self._client_callbacks[page_id]
+
         if page_id in self._apps:
             logger.info("Stopping app: %s...", page_id)
 
