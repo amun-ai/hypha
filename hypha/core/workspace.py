@@ -25,6 +25,8 @@ logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("workspace")
 logger.setLevel(logging.INFO)
 
+SERVICE_SUMMARY_FIELD = ["id", "name", "type", "config"]
+
 
 class WorkspaceManager:
 
@@ -128,7 +130,6 @@ class WorkspaceManager:
                 raise Exception(f"Permission denied for workspace {self._workspace}.")
         workspace_info = await self.get_workspace_info()
         workspace_info = workspace_info.dict()
-        service_summary_fields = ["id", "name", "type", "config"]
         workspace_summary_fields = ["name", "description"]
         clients = await self.list_clients(context=context)
         services = await self.list_services(context=context)
@@ -139,7 +140,7 @@ class WorkspaceManager:
                 "clients": clients,
                 "service_count": len(services),
                 "services": [
-                    {k: service[k] for k in service_summary_fields}
+                    {k: service[k] for k in SERVICE_SUMMARY_FIELD}
                     for service in services
                 ],
             }
@@ -307,7 +308,17 @@ class WorkspaceManager:
             query = {}
 
         if isinstance(query, str):
-            query = {"workspace": query}
+            if query == "public":
+                public_services = await self._redis.hgetall("public:services")
+                ps = []
+                for service_id, service in public_services.items():
+                    service = json.loads(service.decode())
+                    # Make sure we have an absolute id with workspace
+                    service["id"] = service_id.decode()
+                    ps.append(service)
+                return ps
+            else:
+                query = {"workspace": query}
 
         ws = query.get("workspace")
         if ws:
@@ -426,10 +437,12 @@ class WorkspaceManager:
         # Detect removed services
         for service in previous_client_info.services:
             if service.id not in service_ids:
+                service.config.workspace = self._workspace
                 self._event_bus.emit("service_unregistered", service.dict())
         # Detect new services
         for service in client_info.services:
             if service.id not in previous_service_ids:
+                service.config.workspace = self._workspace
                 self._event_bus.emit("service_registered", service.dict())
                 # Try to execute the setup function for the default service
                 if service.id.endswith(":default"):
@@ -480,6 +493,7 @@ class WorkspaceManager:
         await self._redis.hdel(f"{workspace}:clients", client_id)
         # Unregister all the services
         for service in client_info.services:
+            service.config.workspace = workspace
             self._event_bus.emit("service_unregistered", service.dict())
         logger.info("Client deleted: %s/%s", workspace, client_id)
 
@@ -688,9 +702,7 @@ class WorkspaceManager:
                 )
                 if not services:
                     # Try to find the service in "public"
-                    services = await self.list_services(
-                        {"workspace": "public"}, context=context
-                    )
+                    services = await self.list_services("public", context=context)
             elif workspace != self._workspace:
                 assert await self._redis.hget("workspaces", workspace)
                 ws = await self.get_workspace(workspace)

@@ -13,7 +13,7 @@ REQUIREMENTS = [
     "aiobotocore>=2.1.0",
     "aiofiles",
     "fastapi>=0.70.0",
-    "imjoy-rpc==0.5.4",
+    "imjoy-rpc==0.5.4.post0",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=1.8.2",

@@ -159,7 +159,7 @@ async def test_workspace(fastapi_server):
     assert "@imjoy@" in token
 
     public_svc = await api.list_services("public")
-    assert len(public_svc) > 1
+    assert len(public_svc) > 0
 
     s3_svc = await api.list_services({"workspace": "public", "type": "s3-storage"})
     assert len(s3_svc) == 1
@@ -220,13 +220,16 @@ async def test_workspace(fastapi_server):
             "id": "test_service_2",
             "name": "test_service_2",
             "type": "#test",
-            "config": {"require_context": True},
+            "config": {"require_context": True, "visibility": "public"},
             "test": test,
         }
     )
     service = await api2.get_service(service_info)
     context = await service.test()
     assert "from" in context and "to" in context and "user" in context
+
+    svcs = await api2.list_services("public")
+    assert find_item(svcs, "name", "test_service_2")
 
     assert api2.config["workspace"] == "my-test-workspace"
     await api2.export({"foo": "bar"})

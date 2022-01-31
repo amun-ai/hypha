@@ -2,6 +2,7 @@
 import json
 import logging
 import random
+import asyncio
 import sys
 from contextvars import ContextVar, copy_context
 from functools import partial
@@ -20,8 +21,9 @@ from hypha.core import (
     WorkspaceInfo,
     RedisRPCConnection,
     RedisEventBus,
+    VisibilityEnum,
 )
-from hypha.core.workspace import WorkspaceManager
+from hypha.core.workspace import WorkspaceManager, SERVICE_SUMMARY_FIELD
 from imjoy_rpc.hypha import RPC
 
 logging.basicConfig(stream=sys.stdout)
@@ -115,15 +117,56 @@ class RedisStore:
             logger.warning("Public workspace already exists")
         manager = await self.get_workspace_manager("public")
         self._public_workspace_interface = await manager.get_workspace()
-
+        self._event_bus.on_local(
+            "service_registered",
+            lambda svc: asyncio.ensure_future(self._register_public_service(svc)),
+        )
+        self._event_bus.on_local(
+            "service_unregistered",
+            lambda svc: asyncio.ensure_future(self._unregister_public_service(svc)),
+        )
         for service in self._public_services:
             try:
-                await self._public_workspace_interface.register_service(service.dict())
+                svc = service.dict()
+                await self._public_workspace_interface.register_service(svc)
+                self._event_bus.emit(
+                    "service_registered", {k: svc[k] for k in SERVICE_SUMMARY_FIELD}
+                )
             except Exception:  # pylint: disable=broad-except
                 logger.exception("Failed to register public service: %s", service)
                 raise
 
         self._ready = True
+
+    async def _register_public_service(self, service: dict):
+        """Register the public service."""
+        service = ServiceInfo.parse_obj(service)
+        # Add public service to the registry
+        if (
+            service.config.visibility == VisibilityEnum.public
+            and not service.id.endswith(":built-in")
+        ):
+            service_dict = service.dict()
+            service_summary = {k: service_dict[k] for k in SERVICE_SUMMARY_FIELD}
+            if "/" not in service.id:
+                service_id = service.config.workspace + "/" + service.id
+            else:
+                service_id = service.id
+            await self._redis.hset(
+                "public:services", service_id, json.dumps(service_summary)
+            )
+
+    async def _unregister_public_service(self, service: dict):
+        service = ServiceInfo.parse_obj(service)
+        if (
+            service.config.visibility == VisibilityEnum.public
+            and not service.id.endswith(":built-in")
+        ):
+            if "/" not in service.id:
+                service_id = service.config.workspace + "/" + service.id
+            else:
+                service_id = service.id
+            await self._redis.hdel("public:services", service_id)
 
     async def register_user(self, user_info: UserInfo):
         """Register a user."""
