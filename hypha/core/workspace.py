@@ -304,13 +304,17 @@ class WorkspaceManager:
             ret = []
             for workspace in [self._workspace, "public"]:
                 can_access_workspace = await self.check_permission(user_info, workspace)
-                ws = await self.get_workspace(workspace, context=context)
+                ws = await self.get_workspace(workspace)
                 for service in await ws.list_services():
                     assert isinstance(service, dict)
                     # To access the service, it should be public or owned by the user
                     if (
-                        not can_access_workspace
-                        and service["config"].get("visibility") != "public"
+                        service["id"].endswith(":built-in")
+                        or service["id"] == "workspace-manager:default"
+                        or (
+                            not can_access_workspace
+                            and service["config"].get("visibility") != "public"
+                        )
                     ):
                         continue
                     match = True
@@ -330,7 +334,7 @@ class WorkspaceManager:
         else:
             can_access_workspace = await self.check_permission(user_info, ws)
             workspace_name = ws
-            ws = await self.get_workspace(ws, context=context)
+            ws = await self.get_workspace(ws)
             services = await ws.list_services()
 
         ret = []
@@ -338,8 +342,12 @@ class WorkspaceManager:
         for service in services:
             assert isinstance(service, dict)
             if (
-                not can_access_workspace
-                and service["config"].get("visibility") != "public"
+                service["id"].endswith(":built-in")
+                or service["id"] == "workspace-manager:default"
+                or (
+                    not can_access_workspace
+                    and service["config"].get("visibility") != "public"
+                )
             ):
                 continue
             match = True
@@ -703,11 +711,7 @@ class WorkspaceManager:
             workspace = await self.get_workspace_info(workspace)
 
         # Make exceptions for root user, the children of root and test workspace
-        if (
-            user_info.id == "root"
-            or user_info.parent == "root"
-            or workspace.name == "public"
-        ):
+        if user_info.id == "root" or user_info.parent == "root":
             return True
 
         if workspace.name == user_info.id:
