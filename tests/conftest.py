@@ -69,8 +69,6 @@ def generate_authenticated_user():
 @pytest_asyncio.fixture(name="fastapi_server", scope="session")
 def fastapi_server_fixture(minio_server):
     """Start server as test fixture and tear down after test."""
-    if os.path.exists("/tmp/redis.db"):
-        os.remove("/tmp/redis.db")
     with subprocess.Popen(
         [
             sys.executable,
@@ -80,6 +78,7 @@ def fastapi_server_fixture(minio_server):
             "--enable-server-apps",
             "--enable-s3",
             "--redis-uri=/tmp/redis.db",
+            "--reset-redis",
             f"--redis-port={REDIS_PORT}",
             f"--endpoint-url={MINIO_SERVER_URL}",
             f"--access-key-id={MINIO_ROOT_USER}",

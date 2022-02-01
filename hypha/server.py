@@ -172,7 +172,7 @@ def start_builtin_services(
     @app.on_event("startup")
     async def startup_event():
         loop = asyncio.get_running_loop()
-        await store.init(loop)
+        await store.init(loop, reset_redis=args.reset_redis)
         store.get_event_bus().emit("startup", target="local")
 
     @app.on_event("shutdown")
@@ -243,6 +243,11 @@ def get_argparser():
         type=str,
         default="/tmp/redis.db",
         help="the URI (a URL or database file path) for the redis database",
+    )
+    parser.add_argument(
+        "--reset-redis",
+        action="store_true",
+        help="reset and clear all the data in the redis database",
     )
     parser.add_argument(
         "--redis-port",

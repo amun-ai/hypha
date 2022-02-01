@@ -16,10 +16,8 @@ pytestmark = pytest.mark.asyncio
 
 @pytest_asyncio.fixture()
 async def redis_store():
-    if os.path.exists("/tmp/redis-temp.db"):
-        os.remove("/tmp/redis-temp.db")
     store = RedisStore(None, redis_uri="/tmp/redis-temp.db", redis_port=6388)
-    await store.init(asyncio.get_event_loop())
+    await store.init(asyncio.get_event_loop(), reset_redis=True)
     yield store
     store.teardown()
 

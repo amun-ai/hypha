@@ -106,8 +106,12 @@ class RedisStore:
             await self.register_user(self._root_user)
         return self._root_user
 
-    async def init(self, loop):
+    async def init(self, loop, reset_redis=False):
         """Setup the store."""
+        if reset_redis:
+            logger.warning("RESETTING ALL REDIS DATA!!!")
+            await self._redis.flushall()
+            assert len(await self._redis.hgetall("public:services")) == 0
         await self._event_bus.init(loop)
         await self.setup_root_user()
 
@@ -190,10 +194,6 @@ class RedisStore:
         return [
             UserInfo.parse_obj(json.loads(user.decode())) for user in users.values()
         ]
-
-    async def delete_user(self, user_id: str):
-        """Delete a user."""
-        await self._redis.hdel("users", user_id)
 
     async def get_all_workspace(self):
         """Get all workspaces."""

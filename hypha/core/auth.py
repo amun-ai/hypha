@@ -299,19 +299,26 @@ def generate_presigned_token(
     return uid + "@imjoy@" + token
 
 
-def generate_reconnection_token(user_id: str, client_id: str, expires_in: int = 10800):
+def generate_reconnection_token(
+    user_info: UserInfo, client_id: str, workspace: str, expires_in: int = 10800
+):
     """Generate a token for reconnection."""
     current_time = time.time()
     expires_at = current_time + expires_in
     return jwt.encode(
         {
             "iss": AUTH0_ISSUER,
-            "sub": user_id,
+            "sub": user_info.id,
             "aud": AUTH0_AUDIENCE,
             "iat": current_time,
             "exp": expires_at,
             "gty": "client-credentials",
             "cid": client_id,
+            "ws": workspace,
+            "https://api.imjoy.io/email": user_info.email,
+            "https://api.imjoy.io/roles": user_info.roles,
+            "parent": user_info.parent,
+            "scope": " ".join(user_info.scopes),
         },
         JWT_SECRET,
         algorithm="HS256",
@@ -327,7 +334,8 @@ def parse_reconnection_token(token):
         audience=AUTH0_AUDIENCE,
         issuer=AUTH0_ISSUER,
     )
-    return payload["sub"], payload["cid"]
+    info = ValidToken(credentials=payload, scopes=payload["scope"].split(" "))
+    return get_user_info(info), payload["ws"], payload["cid"]
 
 
 def parse_user(token):

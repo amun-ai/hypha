@@ -117,7 +117,7 @@ class WorkspaceManager:
         self._initialized = True
         return rpc
 
-    async def get_rpc(self, workspace=None):
+    async def get_rpc(self):
         if not self._rpc:
             await self.setup()
         return self._rpc
@@ -264,7 +264,7 @@ class WorkspaceManager:
         )
         expires_in = 60 * 60 * 3  #  3 hours
         token = generate_reconnection_token(
-            user_info.id, client_id, expires_in=expires_in
+            user_info, client_id, ws, expires_in=expires_in
         )
         info = {
             "workspace": ws,
@@ -312,10 +312,18 @@ class WorkspaceManager:
                 public_services = await self._redis.hgetall("public:services")
                 ps = []
                 for service_id, service in public_services.items():
-                    service = json.loads(service.decode())
-                    # Make sure we have an absolute id with workspace
-                    service["id"] = service_id.decode()
-                    ps.append(service)
+                    sid = service_id.decode()
+                    assert "/" in sid and ":" in sid
+                    ws = sid.split("/")[0]
+                    cid = sid.split("/")[1].split(":")[0]
+                    # Disconnected clients will be removed
+                    if await self.check_client_exists(cid, ws):
+                        service = json.loads(service.decode())
+                        # Make sure we have an absolute id with workspace
+                        service["id"] = sid
+                        ps.append(service)
+                    else:
+                        logger.info("Skipping unavailable service: %s", sid)
                 return ps
             else:
                 query = {"workspace": query}
@@ -498,6 +506,19 @@ class WorkspaceManager:
             service.config.workspace = workspace
             self._event_bus.emit("service_unregistered", service.dict())
         logger.info("Client deleted: %s/%s", workspace, client_id)
+
+        user_info = client_info.user_info
+        if user_info.is_anonymous:
+            remain_clients = await self.list_user_clients({"user": user_info.dict()})
+            if len(remain_clients) <= 0:
+                await self._redis.hdel("users", user_info.id)
+                logger.info("Anonymous user (%s) removed.", user_info.id)
+            else:
+                logger.info(
+                    "Anonymous user (%s) client removed (remaining clients: %s)",
+                    user_info.id,
+                    len(remain_clients),
+                )
 
     def _create_rpc(
         self, client_id: str, default_context=None, user_info: UserInfo = None
@@ -860,12 +881,19 @@ class WorkspaceManager:
         if not client_keys:
             await self.delete()
 
-    async def delete(self):
+    async def delete(self, force: bool = False):
         """Delete the workspace."""
-        await self.remove_clients(self._workspace)
         winfo = await self.get_workspace_info(self._workspace)
-        await self._redis.hdel("workspaces", self._workspace)
-        self._event_bus.emit("workspace_removed", winfo.dict())
+        if not winfo.persistent or force:
+            await self.remove_clients(self._workspace)
+            await self._redis.hdel("workspaces", self._workspace)
+            self._event_bus.emit("workspace_removed", winfo.dict())
+        else:
+            client_keys = await self._redis.hkeys(f"{self._workspace}:clients")
+            if b"workspace-manager" in client_keys:
+                client_keys.remove(b"workspace-manager")
+            if not client_keys:
+                self.delete(force=True)
 
     def create_service(self, service_id, service_name=None):
         interface = {
