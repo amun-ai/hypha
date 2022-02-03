@@ -154,7 +154,6 @@ class WorkspaceManager:
         user_info = UserInfo.parse_obj(context["user"])
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
-        user_info = UserInfo.parse_obj(context["user"])
         config["persistent"] = config.get("persistent") or False
         if user_info.is_anonymous and config["persistent"]:
             raise Exception("Only registered user can create persistent workspace.")
@@ -164,7 +163,6 @@ class WorkspaceManager:
         if _id not in workspace.owners:
             workspace.owners.append(_id)
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
-        user_info.scopes.append(workspace.name)
 
         if not overwrite and await self._redis.hexists("workspaces", workspace.name):
             raise Exception(f"Workspace {workspace.name} already exists.")
@@ -903,7 +901,7 @@ class WorkspaceManager:
             "config": {
                 "require_context": True,
                 "workspace": self._workspace,
-                "visibility": "public",
+                "visibility": "protected",
             },
             "echo": self.echo,
             "log": self.log,

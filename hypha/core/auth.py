@@ -305,7 +305,7 @@ def generate_reconnection_token(
     """Generate a token for reconnection."""
     current_time = time.time()
     expires_at = current_time + expires_in
-    return jwt.encode(
+    ret = jwt.encode(
         {
             "iss": AUTH0_ISSUER,
             "sub": user_info.id,
@@ -323,6 +323,7 @@ def generate_reconnection_token(
         JWT_SECRET,
         algorithm="HS256",
     )
+    return ret
 
 
 def parse_reconnection_token(token):
