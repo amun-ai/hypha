@@ -1,0 +1,22 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request: ~
+
+jobs:
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - run: helm dependency build hypha/helm-chart/hypha
+      - run: helm install --dry-run --debug --generate-name hypha/helm-chart/hypha
+
+
+  
+
+
+
