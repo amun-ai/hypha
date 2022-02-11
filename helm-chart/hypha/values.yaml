@@ -23,6 +23,9 @@ cert-manager:
 
 ingress:
   enabled: false
+
+ingress-nginx:
+  enabled: false
   rbac:
     create: true
   defaultBackend:
