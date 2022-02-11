@@ -12,7 +12,7 @@ service:
   type: LoadBalancer
 
 cert-manager:
-  enabled: disabled
+  enabled: false
 
 # minio:
 #   enabled: false
@@ -21,17 +21,8 @@ cert-manager:
 #   minioStorageSize: 2Gi
 #   minioStoragePath: /tmp/s3
 
-imjoyCoreServer:
-  enabled: true
-  replicaCount: 1
-  jwtSecret: F3eckV4uR5Q7KfNP3FqTVGuQA3wjeGAm
-  allowOrigins: "*"
-  auth0Audience: https://imjoy.eu.auth0.com/api/v2/
-  auth0Domain: imjoy.eu.auth0.com
-  admins: "oeway007@gmail.com"
-
-
-ingress-nginx:
+ingress:
+  enabled: false
   rbac:
     create: true
   defaultBackend:
@@ -42,21 +33,22 @@ ingress-nginx:
 
 docker-registry:
   enabled: false
-  storage: s3
-  secrets:
-    s3:
-      accessKey: imjoy
-      secretKey: Nbj2cbcUDGGy7QNS8RjCwMrNRXrp2Ms7UXeF
-  s3:
-    region: EU
-    regionEndpoint: http://minio-s3:9000
-    bucket: docker-registry
-    secure: false
-  service:
-    port: 5000
-    nodePort: 31822 # only valid when using NodePort
+  # storage: s3
+  # secrets:
+  #   s3:
+  #     accessKey: imjoy
+  #     secretKey: Nbj2cbcUDGGy7QNS8RjCwMrNRXrp2Ms7UXeF
+  # s3:
+  #   region: EU
+  #   regionEndpoint: http://minio-s3:9000
+  #   bucket: docker-registry
+  #   secure: false
+  # service:
+  #   port: 5000
+  #   nodePort: 31822 # only valid when using NodePort
 
 minio:
+  enabled: true
   replicas: 4
   ingress:
     enabled: true
