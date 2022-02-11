@@ -1,0 +1,126 @@
+# Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+#  * Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+#  * Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#  * Neither the name of NVIDIA CORPORATION nor the names of its
+#    contributors may be used to endorse or promote products derived
+#    from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY
+# EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+# PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+# PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+# OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tritoninferenceserver
+  namespace: tritoninferenceserver
+  labels:
+    app: tritoninferenceserver
+    release: tritoninferenceserver
+    heritage: tritoninferenceserver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tritoninferenceserver
+      release: tritoninferenceserver
+  template:
+    metadata:
+      labels:
+        app: tritoninferenceserver
+        release: tritoninferenceserver
+    spec:
+      securityContext:
+        runAsUser: 0
+      initContainers:
+        - name: model-copy-s3
+          # image: amazon/aws-cli
+          image: amazon/aws-cli
+          command: ["/bin/sh", "-c"]
+          args:
+            - >
+              aws --no-sign-request --endpoint-url https://uk1s3.embassy.ebi.ac.uk s3 sync s3://model-repository/ /model-repository
+          volumeMounts:
+            - mountPath: /model-repository
+              name: model-repository
+      containers:
+        - name: tritoninferenceserver
+          image: nvcr.io/nvidia/tritonserver:21.10-py3
+          volumeMounts:
+            - mountPath: /dev/shm
+              name: dshm
+            - mountPath: /model-repository
+              name: model-repository
+            - mountPath: /model-snapshots
+              name: model-snapshots
+          env:
+          - name: TF_FORCE_GPU_ALLOW_GROWTH
+            value: "true"
+          - name: MODEL_SNAPSHOTS_DIRECTORY
+            value: "/model-snapshots"
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+              memory: "32Gi"
+              cpu: "4"
+            limits:
+              nvidia.com/gpu: "1"
+              memory: "32Gi"
+              cpu: "4"
+          command: ["/bin/sh"]
+          args:
+            - -c
+            - >-
+              apt update -yq &&
+              apt install libgl1-mesa-glx -y &&
+              tritonserver --model-store=/model-repository --log-verbose=1 --model-control-mode=poll --repository-poll-secs=60 --exit-on-error=false
+          ports:
+            - containerPort: 8000
+              name: http
+            - containerPort: 8001
+              name: grpc
+            - containerPort: 8002
+              name: metrics
+          # lifecycle:
+          #   postStart:
+          #     exec:
+          #       command:
+          #         - >
+          #           /bin/sh -c apt update -yq && apt install libgl1-mesa-glx -y
+                # command:
+                  #  - |
+                    # bash -c "apt update -yq && apt install libgl1-mesa-glx -y"
+          # livenessProbe:
+          #   httpGet:
+          #     path: /v2/health/live
+          #     port: http
+          # readinessProbe:
+          #   initialDelaySeconds: 5
+          #   periodSeconds: 5
+          #   httpGet:
+          #     path: /v2/health/ready
+          #     port: http
+      volumes:
+        - name: dshm
+          emptyDir:
+              medium: Memory
+        - name: model-repository
+          emptyDir: {}
+        - name: model-snapshots
+          emptyDir: {}
