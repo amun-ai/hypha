@@ -1,4 +1,9 @@
 {{- if .Values.ingress.enabled -}}
+{{- $apiVersions := .Capabilities.APIVersions -}}
+{{- $serviceName := include "docker-registry.fullname" . -}}
+{{- $servicePort := .Values.service.port -}}
+{{- $path := .Values.ingress.path -}}
+
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
