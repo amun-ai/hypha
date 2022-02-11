@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hyphaserver
+  namespace: hyphaserver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hyphaserver
+      release: hyphaserver
+  template:
+    metadata:
+      labels:
+        app: hyphaserver
+        release: hyphaserver
+    spec:
+      containers:
+      - name: hyphaserver
+        command: ["/bin/sh", "-c"]
+        args:
+         - >
+          python -m hypha.server \
+            --host=0.0.0.0 \
+            --port=9520 \
+            --enable-server-apps \
+            --enable-s3 \
+            --endpoint-url=$S3_ENDPOINT_URL \
+            # --endpoint-url= http://minio.minio.svc.cluster.local:9000
+            --access-key-id=$S3_ACCESS_KEY \
+            --secret-access-key=$S3_SECRET_KEY \
+            --triton-servers=http://tritoninferenceserver.tritoninferenceserver.svc.cluster.local:8000
+            # --apps-dir=/home/hypha-apps \
+            # --executable-path=/home/bin \
+        image: ghcr.io/ctr26/hypha:latest
+        env:
+  #     AUTH0_DOMAIN: ${AUTH0_DOMAIN}
+  #     JWT_SECRET: ${JWT_SECRET}
+        - name: AUTH0_AUDIENCE
+          value:  $AUTH0_AUDIENCE
+        - name: AUTH0_DOMAIN
+          value:  $AUTH0_DOMAIN
+        - name: JWT_SECRET
+          value:  $JWT_SECRET
+        imagePullPolicy: Always
+        resources:
+          limits:
+            cpu: "0.5"
+            memory: "2Gi"
+        # livenessProbe:
+        #   failureThreshold: 3
+        #   httpGet:
+        #     path: "Unknown"
+        #     port: http
+        #     scheme: HTTP
+        #   periodSeconds: 10
+        #   successThreshold: 1
+        #   timeoutSeconds: 1
+        ports:
+        - containerPort: 9520
+          name: http
+          protocol: TCP
+        # readinessProbe:
+        #   failureThreshold: 3
+        #   httpGet:
+        #     path: /v2/health/ready
+        #     port: http
+        #     scheme: HTTP
+        #   initialDelaySeconds: 5
+        #   periodSeconds: 5
+        #   successThreshold: 1
+        #   timeoutSeconds: 1
+      securityContext:
+        # fsGroup: 1000
+        runAsUser: 0
+
+
+
+  # hypha:
+  #   build: hypha
+  #   image: ghcr.io/ctr26/hypha
+  #   networks:
+  #     - imjoy-ai-engine
+  #   environment:
+  #     AUTH0_AUDIENCE: ${AUTH0_AUDIENCE}
+  #     AUTH0_DOMAIN: ${AUTH0_DOMAIN}
+  #     JWT_SECRET: ${JWT_SECRET}
+  #   ports:
+  #     - "9520:9520"
+  #   command: python -m hypha.server --host=0.0.0.0 --port=9520 --enable-server-apps --enable-s3 --endpoint-url=${S3_ENDPOINT_URL} --access-key-id=${S3_ACCESS_KEY} --secret-access-key=${S3_SECRET_KEY} --apps-dir=/home/hypha-apps --executable-path=/home/bin
+  #   volumes:
+  #     - "${DATA_ROOT}/hypha-apps:/home/hypha-apps"
+  #   working_dir: /home
+  #   depends_on:
+  #     minio:
+  #       condition: service_healthy
+  #   labels:
+  #     - "traefik.http.routers.hypha.rule=Host(`ai.imjoy.io`)"
+  #     - "traefik.http.routers.hypha.entrypoints=websecure"
+  #     - "traefik.http.routers.hypha.tls.certresolver=leresolver"
+  #     - "traefik.http.services.hypha.loadbalancer.server.port=9520"
+  #     # - "traefik.http.routers.api.tls.domains[0].main=imjoy.io"
+  #     # - "traefik.http.routers.api.tls.domains[0].sans=*.imjoy.io"
