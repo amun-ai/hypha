@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ .Release.Name }}-test"
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: {{ .Release.Name }}-test
+      image: {{ .Values.dockerImage | quote }}
+      imagePullPolicy: IfNotPresent
+      command:
+        - python3
+        - -c
+        - |
+          from imjoy_app_controller.__main__ import start_plugin_pod
+          try:
+            print('starting plugin pod...')
+            start_plugin_pod({"workspace": "test", "name": "test-plugin"})
+            print('plugin pod started.')
+          except Exception:
+            print('failed to start plugin pod.')
+            raise
+          finally:
+            print('removing plugin pod...')
+            stop_plugin_pod({"workspace": "test", "name": "test-plugin"})
+            print('plugin pod removed.')
+
+  restartPolicy: Never
