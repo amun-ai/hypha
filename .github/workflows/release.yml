@@ -61,8 +61,4 @@ jobs:
           tag: "${{ steps.check-version.outputs.tag }}"
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-      - name: DockerBuild
-        with:
-          push: true
-          tags: ghcr.io/ctr26/hypha:latest
 
