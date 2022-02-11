@@ -1,0 +1,73 @@
+# Default values for imjoy-app-engine.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+replicaCount: 1
+acmeEmail: "oeway007@gmail.com"
+container: imjoy/imjoy-app-engine
+certSecretName: imjoy-app-engine-tls
+imjoyHostName: engine.imjoy.io
+s3ConsoleHostName: s3-console.imjoy.io
+# productionMode: false # using `letsencrypt-prod` if set to true
+service:
+  type: LoadBalancer
+
+cert-manager:
+  enabled: disabled
+
+# minio:
+#   enabled: false
+#   minioRootUser: imjoy
+#   minioRootPassword: Nbj2cbcUDGGy7QNS8RjCwMrNRXrp2Ms7UXeF
+#   minioStorageSize: 2Gi
+#   minioStoragePath: /tmp/s3
+
+imjoyCoreServer:
+  enabled: true
+  replicaCount: 1
+  jwtSecret: F3eckV4uR5Q7KfNP3FqTVGuQA3wjeGAm
+  allowOrigins: "*"
+  auth0Audience: https://imjoy.eu.auth0.com/api/v2/
+  auth0Domain: imjoy.eu.auth0.com
+  admins: "oeway007@gmail.com"
+
+
+ingress-nginx:
+  rbac:
+    create: true
+  defaultBackend:
+    enabled: true
+  controller:
+    ingressClassResource:
+      default: true
+
+docker-registry:
+  enabled: false
+  storage: s3
+  secrets:
+    s3:
+      accessKey: imjoy
+      secretKey: Nbj2cbcUDGGy7QNS8RjCwMrNRXrp2Ms7UXeF
+  s3:
+    region: EU
+    regionEndpoint: http://minio-s3:9000
+    bucket: docker-registry
+    secure: false
+  service:
+    port: 5000
+    nodePort: 31822 # only valid when using NodePort
+
+minio:
+  replicas: 4
+  ingress:
+    enabled: true
+    annotations:
+      nginx.ingress.kubernetes.io/rewrite-target: /$2
+    path: /s3(/|$)(.*)
+    hosts:
+      - imjoy.duckdns.org
+  resources:
+    requests:
+      memory: 2Gi
+      
+  persistence:
+    size: 10Gi
