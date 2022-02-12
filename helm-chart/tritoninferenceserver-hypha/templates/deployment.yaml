@@ -24,6 +24,20 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+
+# replicaCount: 1
+# image.imageName: nvcr.io/nvidia/tritonserver:21.10-py3
+# image.pullPolicy: IfNotPresent
+#   # modelRepositoryPath: s3://imjoy-s3.pasteur.fr:80/model-repository
+# image.modelRepositoryPath: /model-repository
+# image.modelSnapshotsPath: /model-snapshots
+# image.numGpus: 1
+# image.s3Endpoint: https://uk1s3.embassy.ebi.ac.uk
+# image.s3Bucket: s3://model-repository/
+
+# service:
+#   type: ClusterIP
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -34,7 +48,7 @@ metadata:
     release: tritoninferenceserver
     heritage: tritoninferenceserver
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
       app: tritoninferenceserver
@@ -54,33 +68,35 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - >
-              aws --no-sign-request --endpoint-url https://uk1s3.embassy.ebi.ac.uk s3 sync s3://model-repository/ /model-repository
+              aws --no-sign-request --endpoint-url {{ .Values.image.s3Endpoint }} s3 sync {{ .Values.image.s3Bucket }} {{ .Values.image.modelRepositoryPath }}
           volumeMounts:
-            - mountPath: /model-repository
+            # - mountPath: /model-repository
+            # image.modelRepositoryPath: /model-repository
+            - mountPath: {{ .Values.image.modelRepositoryPath }}
               name: model-repository
       containers:
         - name: tritoninferenceserver
-          image: nvcr.io/nvidia/tritonserver:21.10-py3
+          image: {{ .Values.image.imageName }}
           volumeMounts:
             - mountPath: /dev/shm
               name: dshm
-            - mountPath: /model-repository
+            - mountPath: {{ .Values.image.modelRepositoryPath }}
               name: model-repository
-            - mountPath: /model-snapshots
+            - mountPath:  {{ .Values.image.modelSnapshotsPath }}
               name: model-snapshots
           env:
           - name: TF_FORCE_GPU_ALLOW_GROWTH
             value: "true"
           - name: MODEL_SNAPSHOTS_DIRECTORY
-            value: "/model-snapshots"
+            value: "{{ .Values.image.modelSnapshotsPath }}"
           imagePullPolicy: IfNotPresent
           resources:
             requests:
-              nvidia.com/gpu: "1"
+              nvidia.com/gpu:  {{ .Values.image.numGpus }}
               memory: "32Gi"
               cpu: "4"
             limits:
-              nvidia.com/gpu: "1"
+              nvidia.com/gpu:  {{ .Values.image.numGpus }}
               memory: "32Gi"
               cpu: "4"
           command: ["/bin/sh"]
@@ -89,7 +105,7 @@ spec:
             - >-
               apt update -yq &&
               apt install libgl1-mesa-glx -y &&
-              tritonserver --model-store=/model-repository --log-verbose=1 --model-control-mode=poll --repository-poll-secs=60 --exit-on-error=false
+              tritonserver --model-store={{ .Values.image.modelRepositoryPath }} --log-verbose=1 --model-control-mode=poll --repository-poll-secs=60 --exit-on-error=false
           ports:
             - containerPort: 8000
               name: http

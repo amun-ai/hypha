@@ -26,6 +26,7 @@
 #             name: tritoninferenceserver
 #             port:
 #               number: 80
+{{- if .Values.ingress.enabled -}}
 
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -72,3 +73,5 @@ spec:
   #   - hosts:
   #     - "imjoy.duckdns.org"
   #     secretName: tls-secret
+
+  {{- end -}}

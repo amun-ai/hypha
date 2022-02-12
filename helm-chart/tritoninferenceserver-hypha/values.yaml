@@ -1,0 +1,16 @@
+replicaCount: 1
+image:
+  imageName: nvcr.io/nvidia/tritonserver:21.10-py3
+  pullPolicy: IfNotPresent
+  # modelRepositoryPath: s3://imjoy-s3.pasteur.fr:80/model-repository
+  modelRepositoryPath: /model-repository
+  modelSnapshotsPath: /model-snapshots
+  numGpus: 1
+  s3Endpoint: https://uk1s3.embassy.ebi.ac.cuk
+  s3Bucket: s3://model-repository/
+
+# service:
+#   type: ClusterIP
+
+ingress:
+  enabled: false
