@@ -1,0 +1,123 @@
+# version: v3.4.0
+
+# context defines the context of this Desired State File.
+# It is used to allow Helmsman identify which releases are managed by which DSF.
+# Therefore, it is important that each DSF uses a unique context.
+
+# metadata -- add as many key/value pairs as you want
+metadata:
+  maintainer: "imjoy-team(imjoy.team@gmail.com)"
+  description: "Desired State File for ImJoy App Engine K8s deploy"
+
+namespaces:
+  hypha:
+  cert-manager:
+  nvidia-gpu-operator:
+  ingress-nginx:
+
+helmRepos:
+  jetstack: "https://charts.jetstack.io"
+  nginx-stable: "https://helm.nginx.com/stable"
+  ingress-nginx: "https://kubernetes.github.io/ingress-nginx"
+  # trow: "https://trow.io"
+  # triton-hypha: "file://./tritoninferenceserver-hypha"
+  # hypha: "file://./hypha"
+  nvdp: "https://nvidia.github.io/k8s-device-plugin"
+  nvidia: "https://nvidia.github.io/gpu-operator"
+  minio: "https://charts.min.io/"
+
+  # imjoy: https://github.com/imjoy-team/imjoy-app-engine/charts
+
+settings:
+  
+apps:
+  # triton-hypha:
+  #   name: "triton-hypha"
+  #   chart: "./triton-hypha"
+  #   enabled: true
+  #   version: "0.1.0"
+  #   wait: true
+  #   group: "production"
+  #   namespace: "hypha"
+
+  hypha:
+    name: "hypha"
+    chart: "./hypha"
+    enabled: true
+    version: "0.1.0"
+    wait: true
+    group: "production"
+    namespace: "hypha"
+
+  cert-manager:
+    name: "cert-manager"
+    chart: "jetstack/cert-manager"
+    enabled: true
+    priority: 0
+    # timeout: 120
+    version: "v1.4.2"
+    wait: true
+    group: "production"
+    namespace: "cert-manager"
+    set:
+      installCRDs: true
+      ingressShim.defaultIssuerKind: "ClusterIssuer"
+      ingressShim.defaultIssuerName: "letsencrypt"
+    hooks:
+      postUpgrade: "helmsman/cluster_issuer.yaml"
+      postInstall: "helmsman/cluster_issuer.yaml"
+
+  # docker-registry:
+  #   name: "docker-registry"
+  #   namespace: "docker-registry"
+  #   chart: "twuni/docker-registry"
+  #   group: "production"
+  #   enabled: true
+  #   version: "1.11.0"
+  #   set:
+  #     proxy:enabled: true
+  #     proxy.username: "$CI_REGISTRY_USER"
+  #     proxy.password: "$CI_REGISTRY_PASSWORD"
+  #   valuesFiles:
+  #     - docker-registry/values.yaml 
+
+  nvidia-device-plugin:
+    name: "nvidia-device-plugin"
+    namespace: "nvidia-gpu-operator"
+    chart: "nvdp/nvidia-device-plugin"
+    enabled: true
+    version: "0.10.0"
+    group: "production"
+
+  nvidia-gpu-operator:
+    name: "nvidia-gpu-operator"
+    namespace: "nvidia-gpu-operator"
+    chart: "nvidia/gpu-operator"
+    enabled: true
+    version: "1.8.2"
+    group: "production"
+
+  ingress-nginx:
+    name: "ingress-nginx"
+    namespace: "ingress-nginx"
+    chart: "ingress-nginx/ingress-nginx"
+    group: "production"
+    enabled: true
+    version: "3.35.0"
+    valuesFiles:
+      - helmsman/nginx-ingress.yaml
+
+  # minio:
+  #   name: "minio"
+  #   namespace: "minio"
+  #   chart: "minio/minio"
+  #   group: "production"
+  #   # wait: true
+  #   enabled: false
+  #   timeout: 4800
+  #   version: "3.3.0"
+  #   valuesFiles:
+  #       - minio/values.yaml
+  #   set:
+  #     rootUser: rootuser
+  #     rootPassword: rootpass123

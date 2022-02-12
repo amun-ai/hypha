@@ -1,0 +1,17 @@
+persistence:
+  enabled: true
+  size: 350Gi
+ingress:
+  enabled: true
+  hosts:
+    - "registry.imjoy.duckdns.org"
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    kubernetes.io/tls-acme: "true"
+    cert-manager.k8s.io/acme-challenge-type: http01
+    cert-manager.io/cluster-issuer: letsencrypt-production
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+  tls:
+  - secretName: docker-denbi
+    hosts:
+      - "registry.imjoy.duckdns.org"

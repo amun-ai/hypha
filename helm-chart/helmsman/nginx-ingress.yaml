@@ -1,0 +1,9 @@
+rbac:
+  create: true
+# Crucial for cert-manager to work for some reason: 
+defaultBackend:
+  enabled: true
+
+controller:
+  ingressClassResource:
+    default: true
