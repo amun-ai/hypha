@@ -1,77 +1,51 @@
-# apiVersion: networking.k8s.io/v1
-# kind: Ingress
-# metadata:
-#   name: tritoninferenceserver
-#   annotations:
-#     traefik.frontend.priority: "2"
-#     traefik.http.routers.triton.rule: "Host(`triton.imjoy.io`)"
-#     traefik.http.routers.triton.entrypoints: "websecure"
-#     # # traefik.http.routers.triton.tls.certresolver: "leresolver"
-#     # traefik.http.routers.triton.middlewares: "triton-header"
-#     # # traefik.http.services.triton-server.loadbalancer.server.port: "8000"
-#     # traefik.http.middlewares.triton-header.headers.accesscontrolallowheaders: "Access-Control-Allow-Headers,Origin,Accept,X-Requested-With,Content-Type,Access-Control-Request-Method,Access-Control-Request-Headers,Range"
-#     # traefik.http.middlewares.triton-header.headers.accesscontrolallowmethods: "GET,HEAD,OPTIONS,PUT,POST"
-#     # traefik.http.middlewares.triton-header.headers.accesscontrolalloworiginlist: "https://imjoy.io,https://lib.imjoy.io,https://kaibu.org,https://ij.imjoy.io"
-#     # traefik.http.middlewares.triton-header.headers.accesscontrolmaxage: "100"
-#     # traefik.http.middlewares.triton-header.headers.addvaryheader: "true"
-#     # nginx.ingress.kubernetes.io/rewrite-target: /
-# spec:
-#   rules:
-#   - host: imjoy.duckdns.org
-#     http:
-#       paths:
-#       - path: /triton
-#         backend:
-#           service:
-#             name: tritoninferenceserver
-#             port:
-#               number: 80
-{{- if .Values.ingress.enabled -}}
 
-apiVersion: networking.k8s.io/v1
+{{- if .Values.ingress.enabled -}}
+{{- $apiVersions := .Capabilities.APIVersions -}}
+{{- $serviceName := include "tritoninferenceserver.fullname" . -}}
+{{- $servicePort := .Values.service.port -}}
+{{- $path := .Values.ingress.path -}}
+apiVersion: {{- if $apiVersions.Has "networking.k8s.io/v1" }} networking.k8s.io/v1 {{- else }} networking.k8s.io/v1beta1 {{- end }}
 kind: Ingress
 metadata:
-  name: tritoninferenceserver
-#   namespace: tritoninferenceserver
+  name: {{ template "tritoninferenceserver.fullname" . }}
+  namespace: {{ .Values.namespace | default .Release.Namespace }}
+  labels:
+    app: {{ template "tritoninferenceserver.name" . }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+{{- if .Values.ingress.labels }}
+{{ toYaml .Values.ingress.labels | indent 4 }}
+{{- end }}
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /$2
-    # # cert-manager.io/cluster-issuer: letsencrypt-production
-    nginx.ingress.kubernetes.io/enable-cors: "true"
-    kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-        more_set_headers "Access-Control-Allow-Headers: Inference-Header-Content-Length,Accept-Encoding,Content-Encoding,Access-Control-Allow-Headers";
-    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
-    nginx.ingress.kubernetes.io/cors-allow-methods: "GET,HEAD,OPTIONS,PUT,POST"
-    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
-    # nginx.ingress.kubernetes.io/configuration-snippet: |
-      # more_set_headers "Access-Control-Allow-Headers: Inference-Header-Content-Length,Accept-Encoding,Content-Encoding,Access-Control-Allow-Headers"
-    # nginx.ingress.kubernetes.io/enable-cors: "true"
-    # # nginx.ingress.kubernetes.io/configuration-snippet: |
+    {{- range $key, $value := .Values.ingress.annotations }}
+      {{ $key }}: {{ $value | quote }}
+    {{- end }}
 spec:
+{{- if $apiVersions.Has "networking.k8s.io/v1" }}
+  ingressClassName: {{ .Values.ingress.className }}
+{{- end }}
   rules:
-  # - host: "imjoy.duckdns.org"
-  #   http:
-  #     paths:
-  #     - pathType: Prefix
-  #       path: /triton(/|$)(.*)
-  #       backend:
-  #         service:
-  #           name: tritoninferenceserver
-  #           port:
-  #             number: 8000
-  - host: "imjoy.duckdns.org"
-    http:
-      paths:
-      - pathType: Prefix
-        path: /triton(/|$)(.*)
-        backend:
-          service:
-            name: tritoninferenceserver
-            port:
-              number: 8000
-  # tls:
-  #   - hosts:
-  #     - "imjoy.duckdns.org"
-  #     secretName: tls-secret
-
+    {{- range $host := .Values.ingress.hosts }}
+    - host: {{ $host }}
+      http:
+        paths:
+          - path: {{ $path }}
+{{- if $apiVersions.Has "networking.k8s.io/v1" }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $serviceName }}
+                port:
+                  number: {{ $servicePort }}
+{{- else }}
+            backend:
+              serviceName: {{ $serviceName }}
+              servicePort: {{ $servicePort }}
+{{- end }}
+    {{- end -}}
+  {{- if .Values.ingress.tls }}
+  tls:
+{{ toYaml .Values.ingress.tls | indent 4 }}
   {{- end -}}
+{{- end -}}
