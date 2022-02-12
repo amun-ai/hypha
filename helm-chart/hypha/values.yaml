@@ -30,9 +30,6 @@ service:
   annotations: {}
   # foo.io/bar: "true"
 
-cert-manager:
-  enabled: false
-
 ingress:
   enabled: false
   className: nginx
@@ -49,15 +46,7 @@ ingress:
     # - secretName: chart-example-tls
     #   hosts:
     #     - chart-example.local
-ingress-nginx:
-  enabled: false
-#   rbac:
-#     create: true
-#   defaultBackend:
-#     enabled: true
-#   controller:
-#     ingressClassResource:
-#       default: true
+
 
 docker-registry:
   enabled: false
