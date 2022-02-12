@@ -42,7 +42,7 @@ spec:
          - >
           python -m hypha.server \
             --host=0.0.0.0 \
-            --port=9520 \
+            --port={{ .Values.service.port }} \
             --enable-server-apps \
             --enable-s3 \
             --endpoint-url=http://hypha-minio.{{ .Values.namespace | default .Release.Namespace }}.svc.cluster.local:9000 \
@@ -81,7 +81,7 @@ spec:
         #   successThreshold: 1
         #   timeoutSeconds: 1
         ports:
-        - containerPort: 9520
+        - containerPort: {{ .Values.service.port}}
           name: http
           protocol: TCP
         # readinessProbe:

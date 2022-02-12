@@ -15,10 +15,20 @@ jwt_secret: 352esl345IEo3kjsw3fsdf39sdfl3K23KJE#D*#4d
 # s3_access_key: rootuser
 # s3_secret_key: rootpass123
 triton_url: "http://tritoninferenceserver.tritoninferenceserver.svc.cluster.local:8000"
-port: 9520
+# port: 9520
 # productionMode: false # using `letsencrypt-prod` if set to true
 service:
-  type: LoadBalancer
+  name: hypha
+  type: ClusterIP
+  # sessionAffinity: None
+  # sessionAffinityConfig: {}
+  # clusterIP:
+  port: 9520
+  # nodePort:
+  # loadBalancerIP:
+  # loadBalancerSourceRanges:
+  annotations: {}
+  # foo.io/bar: "true"
 
 cert-manager:
   enabled: false
