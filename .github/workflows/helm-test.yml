@@ -1,4 +1,4 @@
-name: Test
+name: Helm
 
 on:
   push:
@@ -12,8 +12,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-      - run: helm dependency build hypha/helm-chart/hypha
-      - run: helm install --dry-run --debug --generate-name hypha/helm-chart/hypha
+      - name: KinD (Kubernetes in Docker) Action
+        uses: engineerd/setup-kind@v0.5.0
+      - name: Testing
+        run: |
+          kubectl cluster-info
+          kubectl get pods -n kube-system
+          echo "current-context:" $(kubectl config current-context)
+          echo "environment-kubeconfig:" ${KUBECONFIG}
+      - name: kubectl
+        run: kubectl get pods -A
+      # - run: sudo apt-get update && sudo apt-get install iptables -y
+      # - uses: WyriHaximus/github-action-helm3@v2
+      - name: Install Helmsman
+        run: 'wget -c https://github.com/Praqma/helmsman/releases/download/v3.8.1/helmsman_3.8.1_linux_amd64.tar.gz -O - | tar -xz -C /usr/local/bin/'
+        # - run: which helmsman
+        # - run: ls /usr/local/bin/
+      - name: Install Helm
+        uses: azure/setup-helm@v1
+        with:
+          version: v3.7.1
+      # - uses: actions/setup-node@v2
+        # - uses: actions/setup-python@v2
+      - name: helm-diff
+        run: helm plugin install https://github.com/databus23/helm-diff
+      # - name: install helmsman
+      #   run: 'curl -L https://github.com/Praqma/helmsman/releases/download/v3.8.1/helmsman_3.8.1_linux_amd64.tar.gz | tar zx && mv helmsman /usr/local/bin/helmsman'
+      # now you can run kubectl to see the pods in the cluster
+      - run: helm dependency build helm-chart/hypha
+      - run: helm install --dry-run --debug --generate-name helm-chart/hypha
 
 
   
