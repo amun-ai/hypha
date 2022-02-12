@@ -37,10 +37,10 @@ dependencies:
   #   repository: https://helm.ngc.nvidia.com/nvidia
   #   version: 1.0.0
   #   condition: tritoninferenceserver.enabled
-  - name: cert-manager
-    version: v1.4.2
-    repository: https://charts.jetstack.io/
-    condition: cert-manager.enabled
+  # - name: cert-manager
+  #   version: v1.4.2
+  #   repository: https://charts.jetstack.io/
+  #   condition: cert-manager.enabled
   # - name: ingress-nginx
   #   version: 3.35.0
   #   repository: https://kubernetes.github.io/ingress-nginx
