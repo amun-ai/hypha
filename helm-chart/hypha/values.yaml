@@ -7,9 +7,13 @@ container: imjoy/imjoy-app-engine
 certSecretName: imjoy-app-engine-tls
 imjoyHostName: engine.imjoy.io
 s3ConsoleHostName: s3-console.imjoy.io
-s3_endpoint_url: ""
-s3_access_key: "AKIAIOSFODNN7EXAMPLE"
-s3_secret_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+# s3_endpoint_url: ""
+auth0_audience: https://imjoy.eu.auth0.com/api/v2/
+auth0_domain: imjoy.eu.auth0.com
+jwt_secret: 352esl345IEo3kjsw3fsdf39sdfl3K23KJE#D*#4d
+
+# s3_access_key: rootuser
+# s3_secret_key: rootpass123
 triton_url: "http://tritoninferenceserver.tritoninferenceserver.svc.cluster.local:8000"
 port: 9520
 # productionMode: false # using `letsencrypt-prod` if set to true
@@ -50,8 +54,10 @@ docker-registry:
 
 minio:
   enabled: true
-  accessKey: "AKIAIOSFODNN7EXAMPLE"
-  secretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+  rootUser: rootuser
+  rootPassword: rootpass123
+  # accessKey: ""
+  # secretKey: ""
   replicas: 4
   ingress:
     enabled: true
