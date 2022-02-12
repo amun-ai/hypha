@@ -7,6 +7,7 @@ container: imjoy/imjoy-app-engine
 certSecretName: imjoy-app-engine-tls
 imjoyHostName: engine.imjoy.io
 s3ConsoleHostName: s3-console.imjoy.io
+s3_endpoint_url: ""
 # productionMode: false # using `letsencrypt-prod` if set to true
 service:
   type: LoadBalancer
