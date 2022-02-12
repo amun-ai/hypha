@@ -14,13 +14,6 @@ service:
 cert-manager:
   enabled: false
 
-# minio:
-#   enabled: false
-#   minioRootUser: imjoy
-#   minioRootPassword: Nbj2cbcUDGGy7QNS8RjCwMrNRXrp2Ms7UXeF
-#   minioStorageSize: 2Gi
-#   minioStoragePath: /tmp/s3
-
 ingress:
   enabled: false
 
@@ -63,7 +56,6 @@ minio:
   resources:
     requests:
       memory: 2Gi
-      
   persistence:
     size: 10Gi
 
