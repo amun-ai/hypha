@@ -48,7 +48,9 @@ spec:
             --endpoint-url=http://hypha-minio.{{ .Values.namespace | default .Release.Namespace }}.svc.cluster.local:9000 \
             --access-key-id={{ $S3_ACCESS_KEY }} \
             --secret-access-key={{ $S3_SECRET_KEY }} \
+            {{- if (index .Values "tritoninfereceserver-hypha" "enabled") }}
             --triton-servers={{ $TRITON_URL }}
+            {{- end }}
             # --triton-servers=http://tritoninferenceserver.tritoninferenceserver.svc.cluster.local:8000
             # --apps-dir=/home/hypha-apps \
             # --executable-path=/home/bin \

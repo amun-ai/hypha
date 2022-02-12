@@ -15,3 +15,9 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "triton.url" -}}
+{{- if (index .Values "tritoninfereceserver-hypha" "enabled") -}}
+{{- (index .Values "tritoninfereceserver-hypha" "Chart" "Name") }}
+{{- end -}}
+{{- end -}}
