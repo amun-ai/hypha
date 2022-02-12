@@ -8,6 +8,9 @@ certSecretName: imjoy-app-engine-tls
 imjoyHostName: engine.imjoy.io
 s3ConsoleHostName: s3-console.imjoy.io
 s3_endpoint_url: ""
+s3_access_key: "AKIAIOSFODNN7EXAMPLE"
+s3_secret_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+port: 9520
 # productionMode: false # using `letsencrypt-prod` if set to true
 service:
   type: LoadBalancer
@@ -46,6 +49,8 @@ docker-registry:
 
 minio:
   enabled: true
+  accessKey: "AKIAIOSFODNN7EXAMPLE"
+  secretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
   replicas: 4
   ingress:
     enabled: true
