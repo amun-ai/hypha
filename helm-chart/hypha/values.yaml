@@ -63,6 +63,8 @@ docker-registry:
   #   nodePort: 31822 # only valid when using NodePort
 
 minio:
+  # nameOverride: "minio"
+  fullnameOverride: "minio"
   enabled: true
   rootUser: rootuser
   rootPassword: rootpass123
@@ -84,6 +86,7 @@ minio:
 
 tritoninfereceserver-hypha:
   enabled: true
+  fullnameOverride: "tritoninfereceserver"
   replicaCount: 1
   image:
     imageName: nvcr.io/nvidia/tritonserver:21.10-py3
