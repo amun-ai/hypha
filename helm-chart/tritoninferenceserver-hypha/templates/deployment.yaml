@@ -91,14 +91,7 @@ spec:
             value: "{{ .Values.image.modelSnapshotsPath }}"
           imagePullPolicy: IfNotPresent
           resources:
-            requests:
-              nvidia.com/gpu:  {{ .Values.image.numGpus }}
-              memory: "32Gi"
-              cpu: "4"
-            limits:
-              nvidia.com/gpu:  {{ .Values.image.numGpus }}
-              memory: "32Gi"
-              cpu: "4"
+{{ toYaml .Values.resources | indent 12 }}
           command: ["/bin/sh"]
           args:
             - -c
