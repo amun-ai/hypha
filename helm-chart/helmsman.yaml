@@ -105,7 +105,7 @@ apps:
     enabled: true
     version: "3.35.0"
     valuesFiles:
-      - helmsman/nginx-ingress.yaml
+      - helmsman/ingress-nginx.yaml
 
   # minio:
   #   name: "minio"
