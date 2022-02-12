@@ -48,6 +48,8 @@ apps:
     wait: true
     group: "production"
     namespace: "hypha"
+    valuesFiles:
+      - helmsman/hypha.yaml
 
   cert-manager:
     name: "cert-manager"
