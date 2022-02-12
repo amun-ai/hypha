@@ -4,6 +4,9 @@
 {{- $S3_SECRET_KEY := .Values.s3_secret_key -}}
 {{- $S3_SECRET_KEY := .Values.s3_secret_key -}}
 {{- $TRITON_URL := .Values.triton_url}} 
+{{- $AUTH0_AUDIENCE := .Values.auth0_audience}} 
+{{- $AUTH0_DOMAIN := .Values.auth0_domain}}
+{{- $JWT_SECRET := .Values.jwt_secret}} 
 
 {{- if .Values.minio.enabled }}
 {{ $S3_ENDPOINT_URL = "http://hypha-minio:9000" }}
@@ -53,14 +56,14 @@ spec:
             # --executable-path=/home/bin \
         image: ghcr.io/ctr26/hypha:latest
         env:
-  #     AUTH0_DOMAIN: ${AUTH0_DOMAIN}
+  #     auth0_domain: ${auth0_domain}
   #     JWT_SECRET: ${JWT_SECRET}
         - name: AUTH0_AUDIENCE
-          value:  $AUTH0_AUDIENCE
+          value:  {{ $AUTH0_AUDIENCE }}
         - name: AUTH0_DOMAIN
-          value:  $AUTH0_DOMAIN
+          value:  {{ $AUTH0_DOMAIN }}
         - name: JWT_SECRET
-          value:  $JWT_SECRET
+          value:  {{ $JWT_SECRET }}
         imagePullPolicy: Always
         resources:
           limits:
@@ -102,7 +105,7 @@ spec:
   #     - imjoy-ai-engine
   #   environment:
   #     AUTH0_AUDIENCE: ${AUTH0_AUDIENCE}
-  #     AUTH0_DOMAIN: ${AUTH0_DOMAIN}
+  #     auth0_domain: ${auth0_domain}
   #     JWT_SECRET: ${JWT_SECRET}
   #   ports:
   #     - "9520:9520"
