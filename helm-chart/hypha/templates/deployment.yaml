@@ -49,7 +49,7 @@ spec:
             --access-key-id={{ $S3_ACCESS_KEY }} \
             --secret-access-key={{ $S3_SECRET_KEY }} \
             {{- if (index .Values "tritoninfereceserver-hypha" "enabled") }}
-            --triton-servers={{ $TRITON_URL }}
+            --triton-servers={{ template "triton.url" . }}
             {{- end }}
             # --triton-servers=http://tritoninferenceserver.tritoninferenceserver.svc.cluster.local:8000
             # --apps-dir=/home/hypha-apps \

@@ -2,6 +2,10 @@
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- define "namespace" -}}
+{{- .Values.namespace | default .Release.Namespace -}}
+{{- end -}}
+
 
 {{- define "hypha.fullname" -}}
 {{- if .Values.fullnameOverride -}}
@@ -18,6 +22,8 @@
 
 {{- define "triton.url" -}}
 {{- if (index .Values "tritoninfereceserver-hypha" "enabled") -}}
-{{- (index .Values "tritoninfereceserver-hypha" "Chart" "Name") }}
+{{- printf "http://tritoninferenceserver.%s.svc.cluster.local:%s" (.Values.namespace | default .Release.Namespace) "8000" -}}
+{{- else -}}
+{{ .Values.triton_url}}
 {{- end -}}
 {{- end -}}
