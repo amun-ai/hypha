@@ -41,10 +41,10 @@ dependencies:
     version: v1.4.2
     repository: https://charts.jetstack.io/
     condition: cert-manager.enabled
-  - name: ingress-nginx
-    version: 3.35.0
-    repository: https://kubernetes.github.io/ingress-nginx
-    condition: ingress-nginx.enabled
+  # - name: ingress-nginx
+  #   version: 3.35.0
+  #   repository: https://kubernetes.github.io/ingress-nginx
+  #   condition: ingress-nginx.enabled
   - name: tritoninfereceserver-hypha
     repository: "file://../tritoninferenceserver-hypha"
     version: 1.0.1

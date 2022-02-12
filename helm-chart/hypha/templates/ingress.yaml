@@ -1,14 +1,18 @@
 {{- if .Values.ingress.enabled -}}
 {{- $apiVersions := .Capabilities.APIVersions -}}
-{{- $serviceName := include "docker-registry.fullname" . -}}
+{{- $serviceName := include "hypha.fullname" . -}}
 {{- $servicePort := .Values.service.port -}}
 {{- $path := .Values.ingress.path -}}
-
-apiVersion: networking.k8s.io/v1
+apiVersion: {{- if $apiVersions.Has "networking.k8s.io/v1" }} networking.k8s.io/v1 {{- else }} networking.k8s.io/v1beta1 {{- end }}
 kind: Ingress
 metadata:
   name: {{ template "hypha.fullname" . }}
   namespace: {{ .Values.namespace | default .Release.Namespace }}
+  labels:
+    app: {{ template "hypha.name" . }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
 {{- if .Values.ingress.labels }}
 {{ toYaml .Values.ingress.labels | indent 4 }}
 {{- end }}
@@ -44,33 +48,3 @@ spec:
 {{ toYaml .Values.ingress.tls | indent 4 }}
   {{- end -}}
 {{- end -}}
-# ---
-# apiVersion: traefik.containo.us/v1alpha1
-# kind: IngressRoute
-# metadata:
-#   name: hyphaserver
-#   namespace: hyphaserver
-# spec:
-#   entryPoints:
-#     - websecure
-#   routes:
-#     - match: Host(`imjoy.duckdns.org`)
-#       kind: Rule
-#       services:
-#         - name: hyphaserver
-#           port: 80
-#   tls:
-#     secretName: tls-secret
-# ---
-# apiVersion: v1
-# kind: Service
-# metadata:
-#   name: hyphaserver
-#   namespace: hyphaserver
-# spec:
-#   selector:
-#     app: hyphaserver
-#   ports:
-#     - protocol: TCP
-#       port: 80
-#       targetPort: "http"
