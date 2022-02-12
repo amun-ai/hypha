@@ -24,42 +24,33 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-
-# replicaCount: 1
-# image.imageName: nvcr.io/nvidia/tritonserver:21.10-py3
-# image.pullPolicy: IfNotPresent
-#   # modelRepositoryPath: s3://imjoy-s3.pasteur.fr:80/model-repository
-# image.modelRepositoryPath: /model-repository
-# image.modelSnapshotsPath: /model-snapshots
-# image.numGpus: 1
-# image.s3Endpoint: https://uk1s3.embassy.ebi.ac.uk
-# image.s3Bucket: s3://model-repository/
-
-# service:
-#   type: ClusterIP
-
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: tritoninferenceserver
-#   namespace: tritoninferenceserver
+  name: {{ template "tritoninferenceserver.fullname" . }}
+  namespace: {{ .Values.namespace | default .Release.Namespace }}
   labels:
-    app: tritoninferenceserver
-    release: tritoninferenceserver
-    heritage: tritoninferenceserver
+    app: {{ template "tritoninferenceserver.name" . }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app: tritoninferenceserver
-      release: tritoninferenceserver
+      app: {{ template "tritoninferenceserver.name" . }}
+      release: {{ .Release.Name }}
   template:
     metadata:
       labels:
-        app: tritoninferenceserver
-        release: tritoninferenceserver
+        app: {{ template "tritoninferenceserver.name" . }}
+        release: {{ .Release.Name }}
+        {{- if .Values.podLabels }}
+{{ toYaml .Values.podLabels | indent 8 }}
+        {{- end }}
     spec:
       securityContext:
+        # fsGroup: 1000
         runAsUser: 0
       initContainers:
         - name: model-copy-s3
@@ -70,8 +61,6 @@ spec:
             - >
               aws --no-sign-request --endpoint-url {{ .Values.image.s3Endpoint }} s3 sync {{ .Values.image.s3Bucket }} {{ .Values.image.modelRepositoryPath }}
           volumeMounts:
-            # - mountPath: /model-repository
-            # image.modelRepositoryPath: /model-repository
             - mountPath: {{ .Values.image.modelRepositoryPath }}
               name: model-repository
       containers:
