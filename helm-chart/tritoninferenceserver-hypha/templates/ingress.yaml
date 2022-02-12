@@ -31,7 +31,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: tritoninferenceserver
-  namespace: tritoninferenceserver
+#   namespace: tritoninferenceserver
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /$2
     # # cert-manager.io/cluster-issuer: letsencrypt-production

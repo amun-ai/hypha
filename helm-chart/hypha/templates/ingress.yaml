@@ -7,8 +7,8 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: hyphaserver
-  namespace: hyphaserver
+  name: {{ template "hypha.fullname" . }}
+  namespace: {{ .Values.namespace | default .Release.Namespace }}
 {{- if .Values.ingress.labels }}
 {{ toYaml .Values.ingress.labels | indent 4 }}
 {{- end }}
