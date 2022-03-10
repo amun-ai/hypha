@@ -41,8 +41,7 @@ jobs:
       # now you can run kubectl to see the pods in the cluster
       - run: helm dependency build helm-chart/hypha
       - run: helm install --dry-run --debug --generate-name helm-chart/hypha
-
-
+      - run: helm install --debug --generate-name helm-chart/hypha
   
 
 
