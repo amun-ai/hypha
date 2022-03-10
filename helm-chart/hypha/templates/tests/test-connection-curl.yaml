@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "hypha.fullname" . }}-test-connection-curl"
+  labels:
+    {{- include "hypha.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: curl
+      image: busybox
+      command: ['curl']
+      args: ['{{ include "hypha.fullname" . }}:{{ .Values.service.port }}']
+  restartPolicy: Never
