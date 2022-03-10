@@ -60,6 +60,9 @@ autoscaling:
   targetCPUUtilizationPercentage: 80
   # targetMemoryUtilizationPercentage: 80
 
+redis:
+  enabled: true
+
 docker-registry:
   enabled: false
   # storage: s3

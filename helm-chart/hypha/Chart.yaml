@@ -49,3 +49,7 @@ dependencies:
     repository: "file://../tritoninferenceserver-hypha"
     version: 1.0.1
     condition: tritoninfereceserver-hypha.enabled
+  - name: redis
+    repository: "https://charts.bitnami.com/bitnami"
+    version: 16.5.2
+    condition: redis.enabled
