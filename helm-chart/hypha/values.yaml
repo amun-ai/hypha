@@ -3,7 +3,7 @@
 # Declare variables to be passed into your templates.
 replicaCount: 1
 acmeEmail: "oeway007@gmail.com"
-container: imjoy/imjoy-app-engine
+# container:
 certSecretName: imjoy-app-engine-tls
 imjoyHostName: engine.imjoy.io
 s3ConsoleHostName: s3-console.imjoy.io
@@ -12,18 +12,24 @@ auth0_audience: https://imjoy.eu.auth0.com/api/v2/
 auth0_domain: imjoy.eu.auth0.com
 jwt_secret: 352esl345IEo3kjsw3fsdf39sdfl3K23KJE#D*#4d
 
+image:
+  repository: ghcr.io/ctr26/hypha
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: "latest"
+
 # s3_access_key: rootuser
 # s3_secret_key: rootpass123
 triton_url: "http://tritoninferenceserver.tritoninferenceserver.svc.cluster.local:8000"
 # port: 9520
 # productionMode: false # using `letsencrypt-prod` if set to true
 service:
-  name: hypha
+  # name: hypha
   type: ClusterIP
   # sessionAffinity: None
   # sessionAffinityConfig: {}
   # clusterIP:
-  port: 9520
+  port: 80
   # nodePort:
   # loadBalancerIP:
   # loadBalancerSourceRanges:
@@ -31,12 +37,12 @@ service:
   # foo.io/bar: "true"
 
 ingress:
-  enabled: false
+  enabled: true
   className: nginx
   path: /
   # Used to create an Ingress record.
   hosts:
-    - chart-example.local
+    - staging.imjoy.duckdns.org
   annotations: {}
     # kubernetes.io/ingress.class: nginx
     # kubernetes.io/tls-acme: "true"
@@ -47,6 +53,12 @@ ingress:
     #   hosts:
     #     - chart-example.local
 
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
 
 docker-registry:
   enabled: false
@@ -110,8 +122,8 @@ tritoninfereceserver-hypha:
       nvidia.com/gpu: 1
       memory: "32Gi"
       cpu: "4"
-# service:
-#   type: ClusterIP
+  # service:
+  #   type: ClusterIP
 
   service:
     type: ClusterIP
