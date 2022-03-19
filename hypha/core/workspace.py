@@ -901,7 +901,7 @@ class WorkspaceManager:
             "config": {
                 "require_context": True,
                 "workspace": self._workspace,
-                "visibility": "protected",
+                "visibility": "protected" if self._workspace != "public" else "public",
             },
             "echo": self.echo,
             "log": self.log,

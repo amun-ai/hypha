@@ -106,7 +106,7 @@ class RedisStore:
             await self.register_user(self._root_user)
         return self._root_user
 
-    async def init(self, loop, reset_redis=False):
+    async def init(self, loop, reset_redis):
         """Setup the store."""
         if reset_redis:
             logger.warning("RESETTING ALL REDIS DATA!!!")
@@ -137,6 +137,7 @@ class RedisStore:
                 raise
 
         self._ready = True
+        self.get_event_bus().emit("startup", target="local")
 
     async def _register_public_service(self, service: dict):
         """Register the public service."""

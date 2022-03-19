@@ -172,8 +172,11 @@ def start_builtin_services(
     @app.on_event("startup")
     async def startup_event():
         loop = asyncio.get_running_loop()
-        await store.init(loop, reset_redis=args.reset_redis)
-        store.get_event_bus().emit("startup", target="local")
+        # Note: Here we need to make sure we call init with the asyncio loop
+        # otherwise, it cause issue for http file response
+        # the exact reason is unknow,
+        # maybe because fastapi use a different event loop
+        loop.call_soon(store.init, loop, args.reset_redis)
 
     @app.on_event("shutdown")
     def shutdown_event():
