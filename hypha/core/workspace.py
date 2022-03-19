@@ -840,7 +840,8 @@ class WorkspaceManager:
             self._event_bus,
             self._server_info,
         )
-        await manager.setup()
+        await manager.setup(client_id="workspace-manager")
+        assert await self.check_client_exists("workspace-manager", workspace), "Failed to setup the workspace manager"
         return await manager.get_workspace()
 
     async def _update_workspace(self, config: dict, context=None):
