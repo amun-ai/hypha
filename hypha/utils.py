@@ -5,9 +5,11 @@ import os
 import posixpath
 import secrets
 import string
+import stat
 from datetime import datetime
 from typing import Callable, List, Optional
 
+from fastapi.responses import FileResponse
 from fastapi.routing import APIRoute
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.middleware.cors import CORSMiddleware
@@ -414,3 +416,44 @@ class PatchedCORSMiddleware(CORSMiddleware):
 
         message["headers"] = headers.raw
         await send(message)
+
+
+class SyncFileResponse(FileResponse):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if self.stat_result is None:
+            try:
+                stat_result = os.stat(self.path)
+                self.set_stat_headers(stat_result)
+            except FileNotFoundError:
+                raise RuntimeError(f"File at path {self.path} does not exist.")
+            else:
+                mode = stat_result.st_mode
+                if not stat.S_ISREG(mode):
+                    raise RuntimeError(f"File at path {self.path} is not a file.")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": self.status_code,
+                "headers": self.raw_headers,
+            }
+        )
+        if self.send_header_only:
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+        else:
+            # Here we need to change to sync read when we use the
+            # FastAPI startup event to initalize the store
+            # The exact reason is unknown
+            with open(self.path, mode="rb") as file:
+                more_body = True
+                while more_body:
+                    chunk = file.read(self.chunk_size)
+                    more_body = len(chunk) == self.chunk_size
+                    await send(
+                        {
+                            "type": "http.response.body",
+                            "body": chunk,
+                            "more_body": more_body,
+                        }
+                    )
+        if self.background is not None:
+            await self.background()

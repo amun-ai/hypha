@@ -227,8 +227,9 @@ class RedisEventBus(EventBus):
         self._redis = redis
         self._local_event_bus = EventBus(logger)
 
-    async def init(self, loop):
+    async def init(self):
         """Setup the event bus."""
+        loop = asyncio.get_running_loop()
         self._ready = loop.create_future()
         self._loop = loop
         loop.create_task(self._subscribe_redis())

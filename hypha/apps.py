@@ -17,7 +17,7 @@ import multihash
 import shortuuid
 from aiobotocore.session import get_session
 from fastapi import APIRouter
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from jinja2 import Environment, PackageLoader, select_autoescape
 from starlette.responses import Response
 
@@ -32,6 +32,7 @@ from hypha.utils import (
     list_objects_async,
     remove_objects_async,
     safe_join,
+    SyncFileResponse,
 )
 
 logging.basicConfig(stream=sys.stdout)
@@ -142,7 +143,7 @@ class ServerAppController:
                     )
             path = safe_join(str(self.apps_dir), workspace, path)
             if os.path.exists(path):
-                return FileResponse(path)
+                return SyncFileResponse(path)
 
             return JSONResponse(
                 status_code=404,

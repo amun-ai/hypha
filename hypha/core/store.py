@@ -106,13 +106,13 @@ class RedisStore:
             await self.register_user(self._root_user)
         return self._root_user
 
-    async def init(self, loop, reset_redis):
+    async def init(self, reset_redis):
         """Setup the store."""
         if reset_redis:
             logger.warning("RESETTING ALL REDIS DATA!!!")
             await self._redis.flushall()
             assert len(await self._redis.hgetall("public:services")) == 0
-        await self._event_bus.init(loop)
+        await self._event_bus.init()
         await self.setup_root_user()
 
         try:
