@@ -685,8 +685,9 @@ class WorkspaceManager:
             if "/" in service_id:
                 workspace = service_id.split("/")[0]
                 if workspace != self._workspace:
-                    ws = await self.get_workspace(workspace)
-                    return await ws.get_service(service_id)
+                    rpc = await self.setup()
+                    service_api = await rpc.get_remote_service(service_id)
+                    return service_api
             if "/" not in service_id:
                 service_id = self._workspace + "/" + service_id
                 workspace = self._workspace
