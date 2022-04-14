@@ -584,8 +584,11 @@ class WorkspaceManager:
         workspace_info = WorkspaceInfo.parse_obj(json.loads(workspace_info.decode()))
         return workspace_info
 
-    async def _get_workspace_info_dict(self, workspace: str = None) -> dict:
-        info = await self.get_workspace_info()
+    async def _get_workspace_info_dict(self, workspace: str = None, context=None) -> dict:
+        user_info = UserInfo.parse_obj(context["user"])
+        if not await self.check_permission(user_info):
+            raise Exception(f"Permission denied for workspace {self._workspace}.")
+        info = await self.get_workspace_info(workspace)
         return info.dict()
 
     async def _launch_application_by_service(
