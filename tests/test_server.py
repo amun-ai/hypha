@@ -178,18 +178,7 @@ async def test_workspace(fastapi_server):
         },
         overwrite=True,
     )
-    await ws.log("hello")
-    with pytest.raises(
-        Exception, match=r".*Service must be registered in the same workspace.*"
-    ):
-        service_info = await ws.register_service(
-            {
-                "id": "test_service",
-                "name": "test_service",
-                "type": "#test",
-                "add3": lambda x: x + 3,
-            }
-        )
+    assert ws["name"] == "my-test-workspace"
 
     def test(context=None):
         return context
@@ -199,7 +188,7 @@ async def test_workspace(fastapi_server):
     assert len(ss2) == 0
 
     # let's generate a token for the my-test-workspace
-    token = await ws.generate_token()
+    token = await api.generate_token({"scopes": ["my-test-workspace"]})
 
     # now if we connect directly to the workspace
     # we should be able to get the my-test-workspace services
@@ -253,8 +242,8 @@ async def test_workspace(fastapi_server):
     with pytest.raises(Exception, match=r".*Client not found: my-plugin-2.*"):
         await api.get_plugin("my-plugin-2")
 
-    ws2 = await api.get_workspace("my-test-workspace")
-    assert ws.config == ws2.config
+    ws2 = await api.get_workspace_info("my-test-workspace")
+    assert ws.name == ws2.name
 
     await ws2.set({"docs": "https://imjoy.io"})
     with pytest.raises(Exception, match=r".*Changing workspace name is not allowed.*"):
@@ -362,8 +351,9 @@ async def test_server_scalability(fastapi_server, fastapi_server_backup):
         },
         overwrite=True,
     )
+    assert ws["name"] == "my-test-workspace"
 
-    token = await ws.generate_token()
+    token = await api.generate_token({"scopes": ["my-test-workspace"]})
 
     # Connect from two different servers
     api88 = await connect_to_server(

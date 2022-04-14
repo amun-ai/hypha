@@ -169,7 +169,8 @@ class WorkspaceManager:
         await self._redis.hset("workspaces", workspace.name, workspace.json())
         # Clear the workspace
         await self.remove_clients(workspace.name)
-        return await self.get_workspace(workspace.name, context=context)
+        workspace_info = await self.get_workspace_info(workspace.name)
+        return workspace_info.dict()
 
     async def remove_clients(self, workspace: str = None):
         """Remove all the clients in the workspace."""
@@ -227,7 +228,7 @@ class WorkspaceManager:
             raise Exception(
                 "Scopes must be empty or contains a list of workspace names."
             )
-        else:
+        elif not "scopes" in config:
             config["scopes"] = [self._workspace]
         token_config = TokenConfig.parse_obj(config)
         for ws in config["scopes"]:
@@ -583,6 +584,10 @@ class WorkspaceManager:
         workspace_info = WorkspaceInfo.parse_obj(json.loads(workspace_info.decode()))
         return workspace_info
 
+    async def _get_workspace_info_dict(self, workspace: str = None) -> dict:
+        info = await self.get_workspace_info()
+        return info.dict()
+
     async def _launch_application_by_service(
         self,
         query: dict,
@@ -930,8 +935,10 @@ class WorkspaceManager:
             "createWorkspace": self.create_workspace,
             "register_service": self.register_service,
             "registerService": self.register_service,
-            "get_workspace": self.get_workspace,
-            "getWorkspace": self.get_workspace,
+            # "get_workspace": self.get_workspace,
+            # "getWorkspace": self.get_workspace,
+            "get_workspace_info": self._get_workspace_info_dict,
+            "getWorkspaceInfo": self._get_workspace_info_dict,
             "set": self._update_workspace,
             "install_application": self.install_application,
             "installApplication": self.install_application,

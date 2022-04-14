@@ -128,9 +128,11 @@ class WebsocketServer:
                 return
             if not await workspace_manager.check_permission(user_info):
                 logger.error(
-                    "Permission denied (client: %s, workspace: %s)",
-                    client_id,
+                    "Permission denied (workspace: %s, user: %s, client: %s, scopes: %s)",
                     workspace,
+                    user_info.id,
+                    client_id,
+                    user_info.scopes,
                 )
                 await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
                 return

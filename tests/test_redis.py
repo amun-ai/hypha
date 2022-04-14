@@ -53,10 +53,10 @@ async def test_redis_store(redis_store):
         ),
         overwrite=True,
     )
-    assert ws.config["workspace"] == "test-2"
-    assert await ws.list_clients() == ["workspace-manager"]
-    ws2 = await ws.get_workspace("test-2")
-    assert ws2.log
+    assert ws["name"] == "test-2"
+    # assert await ws.list_clients() == ["workspace-manager"]
+    ws2 = await ws.get_workspace_info("test-2")
+    assert ws2["name"] == "test-2"
 
     def echo(data):
         return data
