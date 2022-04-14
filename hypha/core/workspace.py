@@ -495,6 +495,9 @@ class WorkspaceManager:
         client_info = await self._redis.hget(f"{workspace}:clients", client_id)
         if client_info is None:
             raise KeyError(f"Client does not exist: {workspace}/{client_id}")
+
+        # TODO: Remove child clients, so the workspace can be removed
+
         client_info = ClientInfo.parse_obj(json.loads(client_info.decode()))
         await self._redis.srem(
             f"user:{client_info.user_info.id}:clients", client_info.id
@@ -584,7 +587,9 @@ class WorkspaceManager:
         workspace_info = WorkspaceInfo.parse_obj(json.loads(workspace_info.decode()))
         return workspace_info
 
-    async def _get_workspace_info_dict(self, workspace: str = None, context=None) -> dict:
+    async def _get_workspace_info_dict(
+        self, workspace: str = None, context=None
+    ) -> dict:
         user_info = UserInfo.parse_obj(context["user"])
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
@@ -850,10 +855,11 @@ class WorkspaceManager:
             self._server_info,
         )
         await manager.setup(client_id="workspace-manager")
-        assert await self.check_client_exists(
-            "workspace-manager", workspace
-        ), "Failed to setup the workspace manager"
-        return await manager.get_workspace()
+        rpc = await self.setup()
+        wm = await rpc.get_remote_service(
+            workspace + "/workspace-manager:default", timeout=10
+        )
+        return wm
 
     async def _update_workspace(self, config: dict, context=None):
         """Update the workspace config."""
@@ -894,7 +900,7 @@ class WorkspaceManager:
     async def delete(self, force: bool = False):
         """Delete the workspace."""
         winfo = await self.get_workspace_info(self._workspace)
-        if not winfo.persistent or force:
+        if force:
             await self.remove_clients(self._workspace)
             await self._redis.hdel("workspaces", self._workspace)
             self._event_bus.emit("workspace_removed", winfo.dict())
@@ -902,8 +908,8 @@ class WorkspaceManager:
             client_keys = await self._redis.hkeys(f"{self._workspace}:clients")
             if b"workspace-manager" in client_keys:
                 client_keys.remove(b"workspace-manager")
-            if not client_keys:
-                self.delete(force=True)
+            if not client_keys and not winfo.persistent:
+                await self.delete(force=True)
 
     def create_service(self, service_id, service_name=None):
         interface = {

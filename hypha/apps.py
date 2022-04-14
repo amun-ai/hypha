@@ -10,7 +10,6 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from urllib.request import urlopen
-import aiofiles
 import base58
 import jose
 import multihash
@@ -310,8 +309,8 @@ class ServerAppController:
                     ), f"Failed to download file: {key}, status code: {response_code}"
                 assert "ETag" in response
                 data = await response["Body"].read()
-                async with aiofiles.open(local_path, "wb") as fil:
-                    await fil.write(data)
+                with open(local_path, "wb") as fil:
+                    fil.write(data)
 
             # Upload the source code and attachments
             await download_file(
@@ -321,10 +320,8 @@ class ServerAppController:
                 os.path.join(app_dir, "rdf.json"), local_app_dir / "rdf.json"
             )
 
-            async with aiofiles.open(
-                local_app_dir / "rdf.json", "r", encoding="utf-8"
-            ) as fil:
-                rdf = RDF.parse_obj(json.loads(await fil.read()))
+            with open(local_app_dir / "rdf.json", "r", encoding="utf-8") as fil:
+                rdf = RDF.parse_obj(json.loads(fil.read()))
 
             if rdf.attachments:
                 files = rdf.attachments.get("files")

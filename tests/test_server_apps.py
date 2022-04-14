@@ -222,6 +222,10 @@ async def test_non_persistent_workspace(fastapi_server):
     count = stats["user_count"]
     workspace_info = find_item(stats["workspaces"], "name", workspace)
     assert workspace_info is not None
+
+    # We need to stop it manually for now,
+    # since the app client won't be removed automatically
+    await controller.stop(config.id)
     await api.disconnect()
     await asyncio.sleep(1)
 
