@@ -1,6 +1,7 @@
 """Test S3 services."""
 import os
 
+import asyncio
 import aioboto3
 import pytest
 import requests
@@ -26,25 +27,9 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
     s3controller = await api.get_service("public/*:s3-storage")
     info = await s3controller.generate_credential()
     print("Testing s3 client access...")
-    async with aioboto3.Session().resource(
-        "s3",
-        endpoint_url=info["endpoint_url"],
-        aws_access_key_id=info["access_key_id"],
-        aws_secret_access_key=info["secret_access_key"],
-        region_name="EU",
-    ) as s3_client:
-        bucket = await s3_client.Bucket(info["bucket"])
 
-        # Listing the root folder should fail
-        with pytest.raises(Exception, match=r".*An error occurred (AccessDenied)*"):
-            async for s3_object in bucket.objects.all():
-                print(s3_object)
-
-        obj = await s3_client.Object(info["bucket"], info["prefix"] + "hello.txt")
-        with open("/tmp/hello.txt", "w", encoding="utf-8") as fil:
-            fil.write("hello")
-        await obj.upload_file("/tmp/hello.txt")
-
+    def test_file_requests():
+        print("Uploading small file...")
         # Upload small file (<5MB)
         content = os.urandom(2 * 1024 * 1024)
         response = requests.put(
@@ -56,8 +41,9 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
             response.status_code == 200
         ), f"failed to upload {response.reason}: {response.text}"
 
-        # Upload large file with 100MB
-        content = os.urandom(100 * 1024 * 1024)
+        print("Uploading large file...")
+        # Upload large file with 100MB (>5M will trigger multi-part upload)
+        content = os.urandom(10 * 1024 * 1024)
         response = requests.put(
             f"{SERVER_URL}/{workspace}/files/my-data-large.txt",
             headers={"Authorization": f"Bearer {token}"},
@@ -104,6 +90,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
         # Should fail if we don't pass the token
         response = requests.get(f"{SERVER_URL}/{workspace}/files/hello.txt")
         assert not response.ok
+        assert response.status_code == 403
 
         response = requests.get(
             f"{SERVER_URL}/{workspace}/files/",
@@ -123,6 +110,28 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 404
+
+    async with aioboto3.Session().resource(
+        "s3",
+        endpoint_url=info["endpoint_url"],
+        aws_access_key_id=info["access_key_id"],
+        aws_secret_access_key=info["secret_access_key"],
+        region_name="EU",
+    ) as s3_client:
+        bucket = await s3_client.Bucket(info["bucket"])
+
+        # Listing the root folder should fail
+        with pytest.raises(Exception, match=r".*An error occurred (AccessDenied)*"):
+            async for s3_object in bucket.objects.all():
+                print(s3_object)
+
+        obj = await s3_client.Object(info["bucket"], info["prefix"] + "hello.txt")
+        with open("/tmp/hello.txt", "w", encoding="utf-8") as fil:
+            fil.write("hello")
+        await obj.upload_file("/tmp/hello.txt")
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, test_file_requests)
 
         items = [item async for item in bucket.objects.filter(Prefix=info["prefix"])]
         assert find_item(
@@ -154,7 +163,6 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
         response = requests.delete(
             f"{SERVER_URL}/{workspace}/files/",
             headers={"Authorization": f"Bearer {token}"},
-            data=content,
         )
         assert (
             response.status_code == 200
