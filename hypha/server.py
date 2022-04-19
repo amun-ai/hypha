@@ -1,6 +1,5 @@
 """Provide the server."""
 import argparse
-import asyncio
 import logging
 import sys
 from os import environ as env
@@ -166,8 +165,8 @@ def start_builtin_services(
     async def liveness(req: Request) -> JSONResponse:
         if store.is_ready():
             return JSONResponse({"status": "OK"})
-        else:
-            return JSONResponse({"status": "DOWN"}, status_code=503)
+
+        return JSONResponse({"status": "DOWN"}, status_code=503)
 
     @app.on_event("startup")
     async def startup_event():

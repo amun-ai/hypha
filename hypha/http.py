@@ -103,9 +103,7 @@ class HTTPProxy:
                         status_code=403,
                         content={
                             "success": False,
-                            "detail": "Permission denied to workspace: {}".format(
-                                workspace
-                            ),
+                            "detail": f"Permission denied to workspace: {workspace}",
                         },
                     )
                 workspace_info = await store.get_workspace(workspace)
@@ -126,8 +124,8 @@ class HTTPProxy:
         ):
             """Route for get services under a workspace."""
             try:
-                wm = await store.get_workspace_manager(workspace)
-                services = await wm.list_services(context={"user": user_info})
+                manager = await store.get_workspace_manager(workspace)
+                services = await manager.list_services(context={"user": user_info})
                 info = serialize(services)
                 return JSONResponse(
                     status_code=200,

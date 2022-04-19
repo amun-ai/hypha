@@ -548,10 +548,11 @@ class ServerAppController:
         client_id=None,
         timeout: float = 60,
         loop_count=0,
-        wait_for_service: str = None,
+        wait_for_service: Union[str, bool] = None,
     ):
         """Start the app and keep it alive."""
-        wait_for_service = "default" if wait_for_service == True else wait_for_service
+        if wait_for_service is True:
+            wait_for_service = "default"
         if workspace is None:
             workspace = self.store.current_workspace.get()
         if workspace != app_id.split("/")[0]:
@@ -570,18 +571,22 @@ class ServerAppController:
             client_id = shortuuid.uuid()
 
         await self.prepare_application(app_id)
+        server_url = self.local_base_url.replace("http://", "ws://")
+        server_url = server_url.replace("https://", "wss://")
         local_url = (
             f"{self.local_base_url}/apps/{app_id}/index.html?"
             + f"client_id={client_id}&workspace={workspace}"
-            + f'&server_url={self.local_base_url.replace("http://", "ws://").replace("https://", "wss://")}/ws'
+            + f"&server_url={server_url}/ws"
             + f"&token={token}"
             if token
             else ""
         )
+        server_url = self.public_base_url.replace("http://", "ws://")
+        server_url = server_url.replace("https://", "wss://")
         public_url = (
             f"{self.public_base_url}/apps/{app_id}/index.html?"
             + f"client_id={client_id}&workspace={workspace}"
-            + f'&server_url={self.public_base_url.replace("http://", "ws://").replace("https://", "wss://")}/ws'
+            + f"&server_url={server_url}/ws"
             + f"&token={token}"
             if token
             else ""
@@ -618,7 +623,9 @@ class ServerAppController:
                     del callbacks["wait_for_service"]
                     fut.set_exception(
                         Exception(
-                            f"Failed to get service {wait_for_service} in {client.workspace}/{client.id}, error: {traceback.format_exc()}"
+                            f"Failed to get service {wait_for_service}"
+                            f"in {client.workspace}/{client.id}, "
+                            f"error: {traceback.format_exc()}"
                         )
                     )
                     return
@@ -784,7 +791,7 @@ class ServerAppController:
         }
         if wait_for_service:
             svc_fut = asyncio.Future()
-            service_id = "default" if wait_for_service == True else wait_for_service
+            service_id = "default" if wait_for_service is True else wait_for_service
             self._client_callbacks[page_id]["wait_for_service"] = service_id, svc_fut
 
         if timeout > 0:
