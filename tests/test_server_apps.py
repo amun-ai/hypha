@@ -291,6 +291,9 @@ async def test_lazy_service(fastapi_server):
     assert service.echo is not None
     assert await service.echo("hello") == "hello"
 
+    long_string = "h" * 10000000  # 10MB
+    assert await service.echo(long_string) == long_string
+
     await controller.uninstall(app_info.id)
 
     await api.disconnect()
