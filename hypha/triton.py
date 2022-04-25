@@ -85,7 +85,11 @@ class TritonProxy:
         if server_url is None:
             server_url = random.choice(self.servers)
         results = await execute(
-            inputs, server_url=server_url, model_name=model_name, **kwargs
+            inputs,
+            server_url=server_url,
+            model_name=model_name,
+            cache_config=False,
+            **kwargs,
         )
         return results
 
