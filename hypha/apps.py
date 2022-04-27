@@ -215,7 +215,11 @@ class ServerAppController:
             items = await list_objects_async(s3_client, self.workspace_bucket, "/")
         return [item["Key"] for item in items]
 
-    async def list_apps(self, workspace: str = None):
+    async def list_apps(
+        self,
+        workspace: str = None,
+        context: Optional[dict] = None,
+    ):
         """List applications in the workspace."""
         if not workspace:
             workspace = self.store.current_workspace.get()
@@ -345,7 +349,7 @@ class ServerAppController:
             "name": "Server Apps",
             "id": "server-apps",
             "type": "server-apps",
-            "config": {"visibility": "public"},
+            "config": {"visibility": "public", "require_context": True},
             "install": self.install,
             "uninstall": self.uninstall,
             "launch": self.launch,
@@ -367,6 +371,7 @@ class ServerAppController:
         template: Optional[str] = None,
         attachments: List[dict] = None,
         workspace: Optional[str] = None,
+        context: Optional[dict] = None,
     ) -> str:
         """Save a server app."""
         if template is None:
@@ -454,7 +459,7 @@ class ServerAppController:
         await ws.install_application(rdf.dict())
         return rdf_obj
 
-    async def uninstall(self, app_id: str) -> None:
+    async def uninstall(self, app_id: str, context: Optional[dict] = None) -> None:
         """Uninstall a server app."""
         if "/" not in app_id:
             raise Exception(
@@ -488,6 +493,7 @@ class ServerAppController:
         config: Optional[Dict[str, Any]] = None,
         attachments: List[dict] = None,
         wait_for_service: str = None,
+        context: Optional[dict] = None,
     ) -> dotdict:
         """Start a server app instance."""
         if token:
@@ -549,6 +555,7 @@ class ServerAppController:
         timeout: float = 60,
         loop_count=0,
         wait_for_service: Union[str, bool] = None,
+        context: Optional[dict] = None,
     ):
         """Start the app and keep it alive."""
         if wait_for_service is True:
@@ -818,7 +825,9 @@ class ServerAppController:
         asyncio.get_running_loop().create_task(keep_alive(api, loop_count))
         return config
 
-    async def stop(self, client_id: str, raise_exception=True) -> None:
+    async def stop(
+        self, client_id: str, raise_exception=True, context: Optional[dict] = None
+    ) -> None:
         """Stop a server app instance."""
         workspace = self.store.current_workspace.get()
         page_id = workspace + "/" + client_id
@@ -849,6 +858,7 @@ class ServerAppController:
         type: str = None,  # pylint: disable=redefined-builtin
         offset: int = 0,
         limit: Optional[int] = None,
+        context: Optional[dict] = None,
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get server app instance log."""
         workspace = self.store.current_workspace.get()
@@ -860,7 +870,7 @@ class ServerAppController:
         else:
             raise Exception(f"Server app instance not found: {client_id}")
 
-    async def list_running(self) -> List[str]:
+    async def list_running(self, context: Optional[dict] = None) -> List[str]:
         """List the running sessions for the current workspace."""
         workspace = self.store.current_workspace.get()
         sessions = [
