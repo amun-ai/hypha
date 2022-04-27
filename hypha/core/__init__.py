@@ -206,7 +206,7 @@ class RedisRPCConnection:
         pubsub = self._redis.pubsub()
         await pubsub.subscribe(f"{self._workspace}/{self._client_id}:msg")
         while True:
-            msg = await pubsub.get_message()
+            msg = await pubsub.get_message(timeout=10)
             if msg and msg.get("type") == "message":
                 assert (
                     msg.get("channel")
@@ -266,7 +266,7 @@ class RedisEventBus(EventBus):
             await pubsub.subscribe("global_event_bus")
             self._ready.set_result(True)
             while True:
-                msg = await pubsub.get_message()
+                msg = await pubsub.get_message(timeout=10)
                 if msg and msg.get("type") == "message":
                     data = json.loads(msg["data"].decode())
                     super().emit(data["type"], data["data"])
