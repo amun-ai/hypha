@@ -60,7 +60,7 @@ def execute(inputs, server_url, model_name, **kwargs):
     raise Exception(f"Failed to execute {model_name}: {response.text}")
 
 
-# @pytest.mark.skip(reason="requires a triton server")
+@pytest.mark.skip(reason="requires a triton server")
 def test_trition_execute(fastapi_server):
     """Test trition execute."""
     image_array = np.random.randint(0, 255, [3, 256, 256]).astype("float32")
