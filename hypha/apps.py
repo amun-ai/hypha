@@ -6,26 +6,30 @@ import os
 import random
 import shutil
 import sys
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from urllib.request import urlopen
 
+import aiofiles
 import base58
+import jose
 import multihash
 import shortuuid
 from aiobotocore.session import get_session
 from fastapi import APIRouter
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from jinja2 import Environment, PackageLoader, select_autoescape
 from starlette.responses import Response
 
-from hypha.core import StatusEnum, RDF
-from hypha.core.interface import CoreInterface
-from hypha.core.plugin import DynamicPlugin
-from hypha.plugin_parser import parse_imjoy_plugin, convert_config_to_rdf
+from hypha.core import RDF, ClientInfo, StatusEnum
+from hypha.core.auth import parse_user
+from hypha.core.store import RedisStore
+from hypha.plugin_parser import convert_config_to_rdf, parse_imjoy_plugin
 from hypha.runner.browser import BrowserAppRunner
 from hypha.utils import (
     PLUGIN_CONFIG_FIELDS,
+    SyncFileResponse,
     dotdict,
     list_objects_async,
     remove_objects_async,
@@ -56,7 +60,7 @@ class ServerAppController:
 
     def __init__(
         self,
-        core_interface: CoreInterface,
+        store: RedisStore,
         port: int,
         in_docker: bool = False,
         apps_dir: str = "./apps",
@@ -79,54 +83,81 @@ class ServerAppController:
         self.s3_enabled = endpoint_url is not None
         self.workspace_bucket = workspace_bucket
         self.user_applications_dir = user_applications_dir
-        self.local_base_url = core_interface.local_base_url
-        self.public_base_url = core_interface.public_base_url
+        self.local_base_url = store.local_base_url
+        self.public_base_url = store.public_base_url
 
-        event_bus = self.event_bus = core_interface.event_bus
-        self.core_interface = core_interface
-        core_interface.register_service_as_root(self.get_service_api())
+        event_bus = store.get_event_bus()
+        self.store = store
+        event_bus.on("workspace_removed", self._on_workspace_removed)
+        store.register_public_service(self.get_service_api())
         self.jinja_env = Environment(
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
         )
         self.templates_dir = Path(__file__).parent / "templates"
-        self.builtin_apps_dir = Path(__file__).parent / "apps"
-        os.makedirs(self.apps_dir / "built-in", exist_ok=True)
+        self.builtin_apps_dir = Path(__file__).parent / "built-in"
+        shutil.rmtree(self.apps_dir / "built-in", ignore_errors=True)
         # copy files inside the builtin apps dir to the apps dir (overwrite if exists)
-        for file in self.builtin_apps_dir.glob("*"):
-            shutil.copy(file, self.apps_dir / "built-in" / file.name)
+        shutil.copytree(self.builtin_apps_dir, self.apps_dir / "built-in")
         router = APIRouter()
         self._initialize_future: Optional[asyncio.Future] = None
-        self._runners = {}
+        self._client_callbacks = {}
+        self._runners = []
+        for _ in range(2):
+            self._runners.append(BrowserAppRunner(self.store, in_docker=self.in_docker))
+        self._runner_services = {}
 
         @router.get("/apps/{workspace}/{path:path}")
-        def get_app_file(workspace: str, path: str, token: str) -> Response:
-            user_info = core_interface.get_user_info_from_token(token)
-            if not core_interface.check_permission(workspace, user_info):
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "success": False,
-                        "detail": (
-                            f"{user_info['username']} has no"
-                            f" permission to access {workspace}"
-                        ),
-                    },
-                )
+        async def get_app_file(
+            workspace: str, path: str, token: str = None
+        ) -> Response:
+            if workspace != "built-in":
+                if token is None:
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "success": False,
+                            "detail": (f"Token not provided for {workspace}/{path}"),
+                        },
+                    )
+                try:
+                    user_info = parse_user(token)
+                except jose.exceptions.JWTError:
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "success": False,
+                            "detail": (
+                                f"Invalid token not provided for {workspace}/{path}"
+                            ),
+                        },
+                    )
+                if not await store.check_permission(workspace, user_info):
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "success": False,
+                            "detail": (
+                                f"{user_info['username']} has no"
+                                f" permission to access {workspace}"
+                            ),
+                        },
+                    )
             path = safe_join(str(self.apps_dir), workspace, path)
             if os.path.exists(path):
-                return FileResponse(path)
+                return SyncFileResponse(path)
 
             return JSONResponse(
                 status_code=404,
                 content={"success": False, "detail": f"File not found: {path}"},
             )
 
-        core_interface.register_router(router)
+        store.register_router(router)
 
         def close() -> None:
             asyncio.ensure_future(self.close())
 
-        event_bus.on("shutdown", close)
+        event_bus.on_local("shutdown", close)
+        event_bus.on("client_updated", self._client_updated)
         asyncio.ensure_future(self.initialize())
 
     async def initialize(self) -> None:
@@ -140,21 +171,10 @@ class ServerAppController:
         self._status = StatusEnum.initializing
         self._initialize_future = asyncio.Future()
         try:
-            # Start 2 instances of browser
-            brwoser_runner = BrowserAppRunner(
-                self.core_interface, in_docker=self.in_docker
-            )
-            await brwoser_runner.initialize()
-
-            brwoser_runner = BrowserAppRunner(
-                self.core_interface, in_docker=self.in_docker
-            )
-            await brwoser_runner.initialize()
-
-            self._runners = await self.core_interface.list_services(
+            self._runner_services = await self.store.list_public_services(
                 {"type": "plugin-runner"}
             )
-            assert len(self._runners) > 0, "No plugin runner is available."
+            assert len(self._runner_services) > 0, "No plugin runner is available."
             # TODO: check if the plugins are marked as startup plugin
             # and if yes, we will run it directly
 
@@ -177,6 +197,18 @@ class ServerAppController:
             region_name="EU",
         )
 
+    def _on_workspace_removed(self, workspace: dict):
+        # Shutdown the apps in the workspace
+        self.store.current_workspace.set(workspace["name"])
+        for app in self._apps.values():
+            if app["workspace"] == workspace["name"]:
+                logger.info(
+                    "Shutting down app %s (since workspace %s has been removed)",
+                    app["id"],
+                    workspace["name"],
+                )
+                asyncio.ensure_future(self.stop(app["id"]))
+
     async def list_saved_workspaces(
         self,
     ):
@@ -185,12 +217,16 @@ class ServerAppController:
             items = await list_objects_async(s3_client, self.workspace_bucket, "/")
         return [item["Key"] for item in items]
 
-    async def list_apps(self, workspace: str = None):
+    async def list_apps(
+        self,
+        workspace: str = None,
+        context: Optional[dict] = None,
+    ):
         """List applications in the workspace."""
         if not workspace:
-            workspace = self.core_interface.current_workspace.get()
-        else:
-            workspace = await self.core_interface.get_workspace(workspace)
+            workspace = self.store.current_workspace.get()
+
+        workspace = await self.store.get_workspace(workspace)
         return [app_info.dict() for app_info in workspace.applications.values()]
 
     async def save_application(
@@ -279,8 +315,8 @@ class ServerAppController:
                     ), f"Failed to download file: {key}, status code: {response_code}"
                 assert "ETag" in response
                 data = await response["Body"].read()
-                with open(local_path, "wb") as fil:
-                    fil.write(data)
+                async with aiofiles.open(local_path, "wb") as fil:
+                    await fil.write(data)
 
             # Upload the source code and attachments
             await download_file(
@@ -289,8 +325,11 @@ class ServerAppController:
             await download_file(
                 os.path.join(app_dir, "rdf.json"), local_app_dir / "rdf.json"
             )
-            with open(local_app_dir / "rdf.json", "r", encoding="utf-8") as fil:
-                rdf = RDF.parse_obj(json.load(fil))
+
+            async with aiofiles.open(
+                local_app_dir / "rdf.json", "r", encoding="utf-8"
+            ) as fil:
+                rdf = RDF.parse_obj(json.loads(await fil.read()))
 
             if rdf.attachments:
                 files = rdf.attachments.get("files")
@@ -311,9 +350,10 @@ class ServerAppController:
         """Get a list of service api."""
         # TODO: check permission for each function
         controller = {
-            "name": "server-apps",
+            "name": "Server Apps",
+            "id": "server-apps",
             "type": "server-apps",
-            "config": {"visibility": "public"},
+            "config": {"visibility": "public", "require_context": True},
             "install": self.install,
             "uninstall": self.uninstall,
             "launch": self.launch,
@@ -335,6 +375,7 @@ class ServerAppController:
         template: Optional[str] = None,
         attachments: List[dict] = None,
         workspace: Optional[str] = None,
+        context: Optional[dict] = None,
     ) -> str:
         """Save a server app."""
         if template is None:
@@ -343,12 +384,12 @@ class ServerAppController:
             else:
                 template = "imjoy"
         if not workspace:
-            workspace = self.core_interface.current_workspace.get()
-        else:
-            workspace = await self.core_interface.get_workspace(workspace)
+            workspace = self.store.current_workspace.get()
 
-        user_info = self.core_interface.current_user.get()
-        if not self.core_interface.check_permission(workspace, user_info):
+        workspace = await self.store.get_workspace(workspace)
+
+        user_info = self.store.current_user.get()
+        if not await self.store.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
                 f" to install apps in workspace {workspace}"
@@ -382,6 +423,7 @@ class ServerAppController:
                     config={k: config[k] for k in config if k in PLUGIN_CONFIG_FIELDS},
                     script=config["script"],
                     requirements=config["requirements"],
+                    local_base_url=self.local_base_url,
                 )
             except Exception as err:
                 raise Exception(
@@ -392,6 +434,7 @@ class ServerAppController:
             default_config = {
                 "name": "Untitled Plugin",
                 "version": "0.1.0",
+                "local_base_url": self.local_base_url,
             }
             default_config.update(config or {})
             config = default_config
@@ -416,24 +459,28 @@ class ServerAppController:
         )
         rdf = RDF.parse_obj(rdf_obj)
         await self.save_application(app_id, rdf, source, attachments)
-        workspace.install_application(rdf)
+        ws = await self.store.get_workspace_interface(workspace.name)
+        await ws.install_application(rdf.dict())
         return rdf_obj
 
-    async def uninstall(self, app_id: str) -> None:
+    async def uninstall(self, app_id: str, context: Optional[dict] = None) -> None:
         """Uninstall a server app."""
         if "/" not in app_id:
             raise Exception(
                 f"Invalid app id: {app_id}, the correct format is `user-id/app-id`"
             )
         workspace_name, mhash = app_id.split("/")
-        workspace = await self.core_interface.get_workspace(workspace_name)
+        workspace = await self.store.get_workspace(workspace_name)
 
-        user_info = self.core_interface.current_user.get()
-        if not self.core_interface.check_permission(workspace, user_info):
+        user_info = self.store.current_user.get()
+        if not await self.store.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
                 f" to uninstall apps in workspace {workspace.name}"
             )
+
+        ws = await self.store.get_workspace_interface(workspace.name)
+        await ws.uninstall_application(app_id)
 
         async with self.create_client_async() as s3_client:
             app_dir = f"{workspace.name}/{self.user_applications_dir}/{mhash}/"
@@ -449,16 +496,18 @@ class ServerAppController:
         timeout: float = 60,
         config: Optional[Dict[str, Any]] = None,
         attachments: List[dict] = None,
+        wait_for_service: str = None,
+        context: Optional[dict] = None,
     ) -> dotdict:
         """Start a server app instance."""
         if token:
-            user_info = self.core_interface.get_user_info_from_token(token)
+            user_info = parse_user(token)
         else:
-            user_info = self.core_interface.current_user.get()
-        if not self.core_interface.check_permission(workspace, user_info):
+            user_info = self.store.current_user.get()
+        if not await self.store.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
-                " to run app in workspace {workspace}."
+                f" to run app in workspace {workspace}."
             )
 
         app_info = await self.install(
@@ -469,14 +518,36 @@ class ServerAppController:
         )
         app_id = app_info["id"]
 
-        if len(self._runners) <= 0:
+        if len(self._runner_services) <= 0:
             await self.initialize()
 
-        assert len(self._runners) > 0, "No plugin runner is available"
+        assert len(self._runner_services) > 0, "No plugin runner is available"
 
         return await self.start(
-            app_id, workspace=workspace, token=token, timeout=timeout
+            app_id,
+            workspace=workspace,
+            token=token,
+            timeout=timeout,
+            wait_for_service=wait_for_service,
         )
+
+    def _client_updated(self, client: dict) -> None:
+        """Callback when client is updated."""
+        client = ClientInfo.parse_obj(client)
+        page_id = f"{client.workspace}/{client.id}"
+        if page_id in self._client_callbacks:
+            callbacks = self._client_callbacks[page_id]
+            if "connect" in callbacks:
+                connect = callbacks["connect"]
+                del callbacks["connect"]
+                connect(client)
+            if "wait_for_service" in callbacks:
+                service_id, svc_fut = callbacks["wait_for_service"]
+                if not svc_fut.done():
+                    for service in client.services:
+                        if service.id.endswith(":" + service_id):
+                            svc_fut.set_result(service)
+                            break
 
     # pylint: disable=too-many-statements,too-many-locals
     async def start(
@@ -484,50 +555,59 @@ class ServerAppController:
         app_id,
         workspace=None,
         token=None,
-        plugin_id=None,
+        client_id=None,
         timeout: float = 60,
         loop_count=0,
+        wait_for_service: Union[str, bool] = None,
+        context: Optional[dict] = None,
     ):
         """Start the app and keep it alive."""
+        if wait_for_service is True:
+            wait_for_service = "default"
         if workspace is None:
-            workspace = self.core_interface.current_workspace.get().name
+            workspace = self.store.current_workspace.get()
         if workspace != app_id.split("/")[0]:
             raise Exception("Workspace mismatch between app_id and workspace.")
         if token is None:
-            ws = self.core_interface.get_workspace_interface(workspace)
+            ws = await self.store.get_workspace_interface(workspace)
             token = ws.generate_token()
-        user_info = self.core_interface.get_user_info_from_token(token)
-        if not self.core_interface.check_permission(workspace, user_info):
+        user_info = parse_user(token)
+        if not await self.store.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
                 f" to run app {app_id} in workspace {workspace}."
             )
 
-        if plugin_id is None:
-            plugin_id = shortuuid.uuid()
+        if client_id is None:
+            client_id = shortuuid.uuid()
 
         await self.prepare_application(app_id)
+        server_url = self.local_base_url.replace("http://", "ws://")
+        server_url = server_url.replace("https://", "wss://")
         local_url = (
             f"{self.local_base_url}/apps/{app_id}/index.html?"
-            + f"id={plugin_id}&workspace={workspace}"
-            + f"&server_url={self.local_base_url}"
+            + f"client_id={client_id}&workspace={workspace}"
+            + f"&server_url={server_url}/ws"
             + f"&token={token}"
             if token
             else ""
         )
+        server_url = self.public_base_url.replace("http://", "ws://")
+        server_url = server_url.replace("https://", "wss://")
         public_url = (
             f"{self.public_base_url}/apps/{app_id}/index.html?"
-            + f"id={plugin_id}&workspace={workspace}"
-            + f"&server_url={self.public_base_url}"
+            + f"client_id={client_id}&workspace={workspace}"
+            + f"&server_url={server_url}/ws"
             + f"&token={token}"
             if token
             else ""
         )
 
-        page_id = workspace + "/" + plugin_id
+        page_id = workspace + "/" + client_id
         app_info = {
-            "id": plugin_id,
+            "id": client_id,
             "name": app_id,
+            "workspace": workspace,
             "local_url": local_url,
             "public_url": public_url,
             "status": "connecting",
@@ -536,19 +616,39 @@ class ServerAppController:
         }
 
         def stop_plugin():
-            logger.warning("Plugin %s is stopping...", plugin_id)
-            asyncio.create_task(self.stop(plugin_id, False))
+            logger.warning("Plugin %s is stopping...", client_id)
+            asyncio.create_task(self.stop(client_id, False))
 
-        async def check_ready(plugin, config):
-            api = await plugin.get_api()
-            plugin.register_exit_callback(stop_plugin)
-            readiness_probe = config.get("readiness_probe", {})
+        async def check_ready(client):
+            api = await self.store.get_service_as_user(
+                client.workspace, f"{client.id}:default", user_info
+            )
+            if wait_for_service:
+                callbacks = self._client_callbacks[page_id]
+                try:
+                    service_id, svc_fut = callbacks["wait_for_service"]
+                    logger.info("Waiting for service %s:%s", client_id, service_id)
+                    await asyncio.wait_for(svc_fut, timeout=timeout)
+                    del callbacks["wait_for_service"]
+                except Exception:
+                    del callbacks["wait_for_service"]
+                    fut.set_exception(
+                        Exception(
+                            f"Failed to get service {wait_for_service}"
+                            f"in {client.workspace}/{client.id}, "
+                            f"error: {traceback.format_exc()}"
+                        )
+                    )
+                    return
+            client.name = api.name
+            # plugin.register_exit_callback(stop_plugin)
+            readiness_probe = api.config.get("readiness_probe", {})
             exec_func = readiness_probe.get("exec")
             if exec_func and exec_func not in api:
                 fut.set_exception(
                     Exception(
                         f"readiness_probe.exec function ({exec_func})"
-                        f" does not exist in plugin ({plugin.name})"
+                        f" does not exist in plugin ({client.name})"
                     )
                 )
                 return
@@ -558,8 +658,8 @@ class ServerAppController:
             period = readiness_probe.get("period_seconds", 10)
             success_threshold = readiness_probe.get("success_threshold", 1)
             failure_threshold = readiness_probe.get("failure_threshold", 3)
-            timeout = readiness_probe.get("timeout", 5)
-            assert timeout >= 1
+            readiness_timeout = readiness_probe.get("timeout", 5)
+            assert readiness_timeout >= 1
             # check if it's ready
             if exec_func:
                 await asyncio.sleep(initial_delay)
@@ -568,11 +668,13 @@ class ServerAppController:
                 while True:
                     try:
                         logger.warning(
-                            "Waiting for plugin %s to be ready...%s",
-                            plugin.name,
+                            "Waiting for client %s to be ready...%s",
+                            client.name,
                             failure,
                         )
-                        is_ready = await asyncio.wait_for(exec_func(), timeout)
+                        is_ready = await asyncio.wait_for(
+                            exec_func(), readiness_timeout
+                        )
                         if is_ready:
                             success += 1
                             if success >= success_threshold:
@@ -581,23 +683,27 @@ class ServerAppController:
                         failure += 1
                         if failure >= failure_threshold:
                             # mark as failed
-                            plugin.set_status("unready")
-                            await asyncio.wait_for(api.teriminate(), timeout)
+                            api.config["__status__"] = "unready"
+                            await api.disconnect()
                             return
                         await asyncio.sleep(period)
 
-            logger.warning("Plugin `%s` is ready.", plugin.name)
-            fut.set_result((plugin, config))
+            logger.info("Client `%s` is ready.", client.id)
+            fut.set_result(
+                (
+                    client,
+                    api,
+                )
+            )
 
-        async def keep_alive(plugin, config, loop_count):
-            api = await plugin.get_api()
-            liveness_probe = config.get("liveness_probe", {})
+        async def keep_alive(api, loop_count):
+            liveness_probe = api.config.get("liveness_probe", {})
             exec_func = liveness_probe.get("exec")
             if exec_func and exec_func not in api:
                 fut.set_exception(
                     Exception(
                         f"liveness_probe.exec function ({exec_func})"
-                        f" does not exist in plugin ({plugin.name})"
+                        f" does not exist in plugin ({api.name})"
                     )
                 )
                 return
@@ -622,70 +728,82 @@ class ServerAppController:
                     if not is_alive:
                         raise TimeoutError
                     # Restore status
-                    if plugin.get_status() == "failing":
-                        plugin.set_status("ready")
+                    if api.config["__status__"] == "failing":
+                        api.config["__status__"] = "ready"
                     await asyncio.sleep(period)
                 except TimeoutError:
                     failure += 1
                     # Mark as failed
-                    plugin.set_status("failing")
-                    logger.warning("Plugin %s is failing... %s", plugin.name, failure)
+                    api.config["__status__"] = "failing"
+                    logger.warning("Plugin %s is failing... %s", api.name, failure)
                     if failure >= failure_threshold:
                         logger.warning(
                             "Plugin %s failed too" " many times, restarting now...",
-                            plugin.name,
+                            api.name,
                         )
 
                         loop_count += 1
                         if loop_count > 10:
-                            plugin.set_status("crash-loop-back-off")
+                            api.config["__status__"] = "crash-loop-back-off"
                             app_info["watch"] = False
                             return
                         # Mark it as restarting
-                        plugin.set_status("restarting")
+                        api.config["__status__"] = "restarting"
 
                         try:
-                            await asyncio.wait_for(plugin.terminate(), timeout)
+                            await asyncio.wait_for(await api.disconnect(), timeout)
                         except TimeoutError:
-                            logger.error("Failed to terminate plugin %s", plugin.name)
+                            logger.error("Failed to terminate plugin %s", api.name)
                         # start a new one
                         await self.start(
                             app_id,
                             workspace=workspace,
                             token=token,
-                            plugin_id=plugin_id,
+                            client_id=client_id,
                             timeout=timeout,
                             loop_count=loop_count,
+                            wait_for_service=wait_for_service,
                         )
 
                     else:
                         await asyncio.sleep(period)
 
         fut = asyncio.Future()
-        plugin_event_bus = DynamicPlugin.create_plugin_event_bus(plugin_id)
 
-        def cleanup(*args):
-            app_info["watch"] = False
-            print("cleaning up", plugin_id)
-            # asyncio.create_task(self.stop(plugin_id))
+        def kill_on_error(fut):
+            if fut.exception():
+                logger.error(
+                    "Failed to start plugin %s, error: %s",
+                    client_id,
+                    fut.exception(),
+                )
+                asyncio.ensure_future(self.stop(client_id, False))
 
-        def connected(plugin):
-            config = dotdict(plugin.config)
+        fut.add_done_callback(kill_on_error)
+
+        def connect(client):
+            config = dotdict()
             config.local_url = local_url
-            config.id = plugin_id
+            config.id = client.id
+            config.workspace = client.workspace
             config.app_id = app_id
             config.public_url = public_url
             self._apps[page_id].update(config)
             self._apps[page_id]["status"] = "connected"
-            asyncio.get_running_loop().create_task(check_ready(plugin, config))
+            asyncio.ensure_future(check_ready(config))
 
-        def failed(detail):
+        def cleanup(detail):
             app_info["watch"] = False
             fut.set_exception(Exception(detail))
 
-        plugin_event_bus.on("connected", connected)
-        plugin_event_bus.on("failed", failed)
-        plugin_event_bus.on("disconnected", cleanup)
+        self._client_callbacks[page_id] = {
+            "connect": connect,
+            "cleanup": cleanup,
+        }
+        if wait_for_service:
+            svc_fut = asyncio.Future()
+            service_id = "default" if wait_for_service is True else wait_for_service
+            self._client_callbacks[page_id]["wait_for_service"] = service_id, svc_fut
 
         if timeout > 0:
 
@@ -695,66 +813,73 @@ class ServerAppController:
                 if fut.done() or fut.cancelled():
                     return
                 fut.set_exception(Exception("Failed to start app: Timeout"))
-                cleanup()
+                cleanup("Failed to start app: Timeout")
 
             timer = startup_timer()
             asyncio.get_running_loop().create_task(timer)
 
-        runner_info = random.choice(self._runners)
-        with self.core_interface.set_root_user():
-            runner = await self.core_interface.get_service(runner_info)
-            await runner.start(url=local_url, plugin_id=plugin_id)
+        runner_info = random.choice(self._runner_services)
+        runner = await self.store.get_public_service(runner_info)
+        await runner.start(url=local_url, client_id=client_id)
 
         app_info["runner"] = runner
         self._apps[page_id] = app_info
 
-        plugin, config = await fut
-        asyncio.get_running_loop().create_task(keep_alive(plugin, config, loop_count))
+        config, api = await fut
+        asyncio.get_running_loop().create_task(keep_alive(api, loop_count))
         return config
 
-    async def stop(self, plugin_id: str, raise_exception=True) -> None:
+    async def stop(
+        self, client_id: str, raise_exception=True, context: Optional[dict] = None
+    ) -> None:
         """Stop a server app instance."""
-        workspace = self.core_interface.current_workspace.get()
-        page_id = workspace.name + "/" + plugin_id
+        workspace = self.store.current_workspace.get()
+        page_id = workspace + "/" + client_id
+        if page_id in self._client_callbacks:
+            callbacks = self._client_callbacks[page_id]
+            if "wait_for_service" in callbacks:
+                _, svc_fut = callbacks["wait_for_service"]
+                if not svc_fut.done():
+                    svc_fut.set_exception(Exception("App stopped"))
+            del self._client_callbacks[page_id]
+
         if page_id in self._apps:
             logger.info("Stopping app: %s...", page_id)
 
             app_info = self._apps[page_id]
-            plugin = workspace.get_plugin_by_id(app_info["id"])
-            if plugin:
-                await plugin.terminate()
-            with self.core_interface.set_root_user():
-                app_info["watch"] = False  # make sure we don't keep-alive
-                await app_info["runner"].stop(plugin_id)
+            # TODO: Disconnect the app
+
+            app_info["watch"] = False  # make sure we don't keep-alive
+            await app_info["runner"].stop(client_id)
             if page_id in self._apps:
                 del self._apps[page_id]
         elif raise_exception:
-            raise Exception(f"Server app instance not found: {plugin_id}")
+            raise Exception(f"Server app instance not found: {client_id}")
 
     async def get_log(
         self,
-        plugin_id: str,
+        client_id: str,
         type: str = None,  # pylint: disable=redefined-builtin
         offset: int = 0,
         limit: Optional[int] = None,
+        context: Optional[dict] = None,
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get server app instance log."""
-        workspace = self.core_interface.current_workspace.get()
-        page_id = workspace.name + "/" + plugin_id
+        workspace = self.store.current_workspace.get()
+        page_id = workspace + "/" + client_id
         if page_id in self._apps:
-            with self.core_interface.set_root_user():
-                return await self._apps[page_id]["runner"].get_log(
-                    plugin_id, type=type, offset=offset, limit=limit
-                )
+            return await self._apps[page_id]["runner"].get_log(
+                client_id, type=type, offset=offset, limit=limit
+            )
         else:
-            raise Exception(f"Server app instance not found: {plugin_id}")
+            raise Exception(f"Server app instance not found: {client_id}")
 
-    async def list_running(self) -> List[str]:
+    async def list_running(self, context: Optional[dict] = None) -> List[str]:
         """List the running sessions for the current workspace."""
-        workspace = self.core_interface.current_workspace.get()
+        workspace = self.store.current_workspace.get()
         sessions = [
             {k: v for k, v in page_info.items() if k != "runner"}
             for page_id, page_info in self._apps.items()
-            if page_id.startswith(workspace.name + "/")
+            if page_id.startswith(workspace + "/")
         ]
         return sessions

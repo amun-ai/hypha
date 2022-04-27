@@ -14,12 +14,11 @@ from starlette.responses import JSONResponse
 
 from hypha import __version__ as VERSION
 from hypha.asgi import ASGIGateway
-from hypha.core.interface import CoreInterface
+from hypha.core.store import RedisStore
 from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
-from hypha.websocket import WebsocketServer
 from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
-from hypha.socketio import SocketIOServer
+from hypha.websocket import WebsocketServer
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("server")
@@ -86,26 +85,26 @@ def create_application(allow_origins) -> FastAPI:
 
 def start_builtin_services(
     app: FastAPI,
-    core_interface: CoreInterface,
+    store: RedisStore,
     args: argparse.Namespace,
 ) -> None:
-    """Set up the socketio server."""
+    """Set up the builtin services."""
     # pylint: disable=too-many-arguments,too-many-locals
 
     def norm_url(url):
         return args.base_path.rstrip("/") + url
 
-    WebsocketServer(core_interface)
+    WebsocketServer(store, path=norm_url("/ws"))
 
-    HTTPProxy(core_interface)
+    HTTPProxy(store)
     if args.triton_servers:
         TritonProxy(
-            core_interface,
+            store,
             triton_servers=args.triton_servers.split(","),
             allow_origins=args.allow_origins,
         )
     ASGIGateway(
-        core_interface,
+        store,
         allow_origins=args.allow_origins,
         allow_methods=ALLOW_METHODS,
         allow_headers=ALLOW_HEADERS,
@@ -121,13 +120,14 @@ def start_builtin_services(
 
     @app.get(norm_url("/api/stats"))
     async def stats():
-        users = core_interface.get_all_users()
-        client_count = len(users)
+        users = await store.get_all_users()
+        user_count = len(users)
+        all_workspaces = await store.get_all_workspace()
         return {
-            "plugin_count": client_count,
-            "workspace_count": len(core_interface.get_all_workspace()),
-            "workspaces": [w.get_summary() for w in core_interface.get_all_workspace()],
+            "user_count": user_count,
             "users": [u.id for u in users],
+            "workspace_count": len(all_workspaces),
+            "workspaces": [w.dict() for w in all_workspaces],
         }
 
     if args.enable_s3:
@@ -136,7 +136,7 @@ def start_builtin_services(
         from hypha.s3 import S3Controller
 
         s3_controller = S3Controller(
-            core_interface,
+            store,
             endpoint_url=args.endpoint_url,
             access_key_id=args.access_key_id,
             secret_access_key=args.secret_access_key,
@@ -144,16 +144,14 @@ def start_builtin_services(
             executable_path=args.executable_path,
         )
 
-        RDFController(
-            core_interface, s3_controller=s3_controller, rdf_bucket=args.rdf_bucket
-        )
+        RDFController(store, s3_controller=s3_controller, rdf_bucket=args.rdf_bucket)
 
     if args.enable_server_apps:
         # pylint: disable=import-outside-toplevel
         from hypha.apps import ServerAppController
 
         ServerAppController(
-            core_interface,
+            store,
             port=args.port,
             apps_dir=args.apps_dir,
             in_docker=args.in_docker,
@@ -165,31 +163,22 @@ def start_builtin_services(
 
     @app.get(norm_url("/health/liveness"))
     async def liveness(req: Request) -> JSONResponse:
-        try:
-            await sio_server.is_alive()
-        except Exception:  # pylint: disable=broad-except
-            return JSONResponse({"status": "DOWN"}, status_code=503)
-        return JSONResponse({"status": "OK"})
+        if store.is_ready():
+            return JSONResponse({"status": "OK"})
+
+        return JSONResponse({"status": "DOWN"}, status_code=503)
 
     @app.on_event("startup")
     async def startup_event():
-        core_interface.event_bus.emit("startup")
+        await store.init(args.reset_redis)
 
     @app.on_event("shutdown")
     def shutdown_event():
-        core_interface.event_bus.emit("shutdown")
-
-    # SocketIO server should be the last one to be registered
-    # otherwise the server won'te be able to start properly
-    sio_server = SocketIOServer(
-        core_interface,
-        socketio_path=norm_url("/socket.io"),
-        allow_origins=args.allow_origins,
-    )
+        store.get_event_bus().emit("shutdown", target="local")
 
 
 def start_server(args):
-    """Start the socketio server."""
+    """Start the server."""
     if args.allow_origins:
         args.allow_origins = args.allow_origins.split(",")
     else:
@@ -202,11 +191,15 @@ def start_server(args):
         public_base_url = args.public_base_url.strip("/")
     else:
         public_base_url = local_base_url
-    core_interface = CoreInterface(
-        application, public_base_url=public_base_url, local_base_url=local_base_url
+    store = RedisStore(
+        application,
+        public_base_url=public_base_url,
+        local_base_url=local_base_url,
+        redis_uri=args.redis_uri,
+        redis_port=args.redis_port,
     )
 
-    start_builtin_services(application, core_interface, args)
+    start_builtin_services(application, store, args)
     if args.host in ("127.0.0.1", "localhost"):
         print(
             "***Note: If you want to enable access from another host, "
@@ -241,6 +234,23 @@ def get_argparser():
         type=str,
         default="/",
         help="the base path for the server",
+    )
+    parser.add_argument(
+        "--redis-uri",
+        type=str,
+        default="/tmp/redis.db",
+        help="the URI (a URL or database file path) for the redis database",
+    )
+    parser.add_argument(
+        "--reset-redis",
+        action="store_true",
+        help="reset and clear all the data in the redis database",
+    )
+    parser.add_argument(
+        "--redis-port",
+        type=int,
+        default=6383,
+        help="the port for the redis database",
     )
     parser.add_argument(
         "--public-base-url",

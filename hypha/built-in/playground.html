@@ -4,10 +4,10 @@
    <meta charset="utf-8">
    <meta name="viewport" content="width=device-width, initial-scale=1">
    <title>ImJoy Playground</title>
-   <meta name="description" content="Template for ImJoy plugin">
+   <meta name="description" content="A playground for developing ImJoy plugins">
    <meta name="author" content="ImJoy-Team">
    <link rel="stylesheet" data-name="vs/editor/editor.main" href="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.20.0/min/vs/editor/editor.main.min.css">
-   <script src="https://cdn.jsdelivr.net/npm/imjoy-rpc@0.4.3/dist/imjoy-rpc-socketio.min.js"></script>
+   <script src="https://cdn.jsdelivr.net/npm/imjoy-rpc@0.5.7/dist/hypha-rpc-websocket.min.js"></script>
    <scrpt src="https://cdn.jsdelivr.net/npm/imjoy-core@0.13.82/src/pluginParser.js"></scrpt>
 <script>
 window.default_plugin = `
@@ -57,7 +57,7 @@ async def setup():
         print(f'{scope["client"]} - {scope["method"]} - {scope["path"]}')
         await fastapi_app(args["scope"], args["receive"], args["send"])
     await api.register_service({
-        "name": "hello-fastapi",
+        "id": "hello-fastapi",
         "type": "ASGI",
         "serve": serve_fastapi,
         "config":{
@@ -90,7 +90,7 @@ api.export({"setup": setup})
             if(!config.server_url) config.server_url = window.location.origin;
             // make the plugin passive so we don't need to export api
             config.passive = true
-            imjoyRPCSocketIO.connectToServer(config).then(async (api)=>{
+            hyphaWebsocketClient.connectToServer(config).then(async (api)=>{
                 console.log("connected to server", api)
                 const token = await api.generateToken()
                 const workspace = await api.config.workspace;
@@ -120,7 +120,7 @@ api.export({"setup": setup})
                 }
                 window.start = async function(pid){
                     const config = await controller.start(pid, workspace, token)
-                    const plugin = await api.get_plugin(config.name)
+                    const plugin = await api.get_plugin(config.id)
                     alert("Plugin started: " + config.name)
                 }
                 window.kill = async function(pid){

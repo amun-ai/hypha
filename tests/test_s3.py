@@ -1,30 +1,116 @@
 """Test S3 services."""
 import os
 
+import asyncio
 import aioboto3
 import pytest
 import requests
-from imjoy_rpc import connect_to_server
+from imjoy_rpc.hypha.websocket_client import connect_to_server
 
-from . import SIO_SERVER_URL, find_item
+from . import WS_SERVER_URL, SERVER_URL, find_item
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
 
 
 # pylint: disable=too-many-statements
-async def test_s3(minio_server, socketio_server, test_user_token):
+async def test_s3(minio_server, fastapi_server, test_user_token):
     """Test s3 service."""
     api = await connect_to_server(
-        {"name": "test client", "server_url": SIO_SERVER_URL, "token": test_user_token}
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
     )
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
     s3controller = await api.get_service("s3-storage")
     assert s3controller
-    s3controller = await api.get_service({"workspace": "root", "name": "s3-storage"})
+    s3controller = await api.get_service("public/*:s3-storage")
     info = await s3controller.generate_credential()
+    print("Testing s3 client access...")
+
+    def test_file_requests():
+        print("Uploading small file...")
+        # Upload small file (<5MB)
+        content = os.urandom(2 * 1024 * 1024)
+        response = requests.put(
+            f"{SERVER_URL}/{workspace}/files/my-data-small.txt",
+            headers={"Authorization": f"Bearer {token}"},
+            data=content,
+        )
+        assert (
+            response.status_code == 200
+        ), f"failed to upload {response.reason}: {response.text}"
+
+        print("Uploading large file...")
+        # Upload large file with 100MB (>5M will trigger multi-part upload)
+        content = os.urandom(10 * 1024 * 1024)
+        response = requests.put(
+            f"{SERVER_URL}/{workspace}/files/my-data-large.txt",
+            headers={"Authorization": f"Bearer {token}"},
+            data=content,
+        )
+        assert (
+            response.status_code == 200
+        ), f"failed to upload {response.reason}: {response.text}"
+
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/files/",
+            headers={"Authorization": f"Bearer {token}"},
+        ).json()
+        assert find_item(response["children"], "name", "my-data-small.txt")
+        assert find_item(response["children"], "name", "my-data-large.txt")
+
+        # Test request with range
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/files/my-data-large.txt",
+            headers={"Authorization": f"Bearer {token}", "Range": "bytes=10-1033"},
+            data=content,
+        )
+        assert len(response.content) == 1024
+        assert response.content == content[10:1034]
+        assert response.ok
+
+        # Delete the large file
+        response = requests.delete(
+            f"{SERVER_URL}/{workspace}/files/my-data-large.txt",
+            headers={"Authorization": f"Bearer {token}"},
+            data=content,
+        )
+        assert (
+            response.status_code == 200
+        ), f"failed to delete {response.reason}: {response.text}"
+
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/files/",
+            headers={"Authorization": f"Bearer {token}"},
+        ).json()
+        assert find_item(response["children"], "name", "my-data-small.txt")
+        assert not find_item(response["children"], "name", "my-data-large.txt")
+
+        # Should fail if we don't pass the token
+        response = requests.get(f"{SERVER_URL}/{workspace}/files/hello.txt")
+        assert not response.ok
+        assert response.status_code == 403
+
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/files/",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/files/hello.txt",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.ok
+        assert response.content == b"hello"
+
+        response = requests.get(
+            f"{SERVER_URL}/{workspace}/files/he",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 404
+
     async with aioboto3.Session().resource(
         "s3",
         endpoint_url=info["endpoint_url"],
@@ -44,84 +130,8 @@ async def test_s3(minio_server, socketio_server, test_user_token):
             fil.write("hello")
         await obj.upload_file("/tmp/hello.txt")
 
-        # Upload small file (<5MB)
-        content = os.urandom(2 * 1024 * 1024)
-        response = requests.put(
-            f"{SIO_SERVER_URL}/{workspace}/files/my-data-small.txt",
-            headers={"Authorization": f"Bearer {token}"},
-            data=content,
-        )
-        assert (
-            response.status_code == 200
-        ), f"failed to upload {response.reason}: {response.text}"
-
-        # Upload large file with 100MB
-        content = os.urandom(100 * 1024 * 1024)
-        response = requests.put(
-            f"{SIO_SERVER_URL}/{workspace}/files/my-data-large.txt",
-            headers={"Authorization": f"Bearer {token}"},
-            data=content,
-        )
-        assert (
-            response.status_code == 200
-        ), f"failed to upload {response.reason}: {response.text}"
-
-        response = requests.get(
-            f"{SIO_SERVER_URL}/{workspace}/files/",
-            headers={"Authorization": f"Bearer {token}"},
-        ).json()
-        assert find_item(response["children"], "name", "my-data-small.txt")
-        assert find_item(response["children"], "name", "my-data-large.txt")
-
-        # Test request with range
-        response = requests.get(
-            f"{SIO_SERVER_URL}/{workspace}/files/my-data-large.txt",
-            headers={"Authorization": f"Bearer {token}", "Range": "bytes=10-1033"},
-            data=content,
-        )
-        assert len(response.content) == 1024
-        assert response.content == content[10:1034]
-        assert response.ok
-
-        # Delete the large file
-        response = requests.delete(
-            f"{SIO_SERVER_URL}/{workspace}/files/my-data-large.txt",
-            headers={"Authorization": f"Bearer {token}"},
-            data=content,
-        )
-        assert (
-            response.status_code == 200
-        ), f"failed to delete {response.reason}: {response.text}"
-
-        response = requests.get(
-            f"{SIO_SERVER_URL}/{workspace}/files/",
-            headers={"Authorization": f"Bearer {token}"},
-        ).json()
-        assert find_item(response["children"], "name", "my-data-small.txt")
-        assert not find_item(response["children"], "name", "my-data-large.txt")
-
-        # Should fail if we don't pass the token
-        response = requests.get(f"{SIO_SERVER_URL}/{workspace}/files/hello.txt")
-        assert not response.ok
-
-        response = requests.get(
-            f"{SIO_SERVER_URL}/{workspace}/files/",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert response.status_code == 200
-
-        response = requests.get(
-            f"{SIO_SERVER_URL}/{workspace}/files/hello.txt",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert response.ok
-        assert response.content == b"hello"
-
-        response = requests.get(
-            f"{SIO_SERVER_URL}/{workspace}/files/he",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert response.status_code == 404
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, test_file_requests)
 
         items = [item async for item in bucket.objects.filter(Prefix=info["prefix"])]
         assert find_item(
@@ -151,9 +161,8 @@ async def test_s3(minio_server, socketio_server, test_user_token):
 
         # Delete the entire folder
         response = requests.delete(
-            f"{SIO_SERVER_URL}/{workspace}/files/",
+            f"{SERVER_URL}/{workspace}/files/",
             headers={"Authorization": f"Bearer {token}"},
-            data=content,
         )
         assert (
             response.status_code == 200

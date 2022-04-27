@@ -4,9 +4,10 @@ import logging
 import sys
 from typing import Any, Dict, List, Optional, Union
 
+import shortuuid
 from playwright.async_api import Page, async_playwright
 
-from hypha.core.interface import CoreInterface
+from hypha.core.store import RedisStore
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("browser")
@@ -22,7 +23,7 @@ def _capture_logs_from_browser_tabs(page: Page, logs: dict) -> None:
     def _app_info(message: Any) -> None:
         """Log message at info level."""
         msg_type = message.type
-        logger.error("%s: %s", msg_type, message.text)
+        logger.info("%s: %s", msg_type, message.text)
         if msg_type not in logs:
             logs[msg_type] = []
         logs[msg_type].append(message.text)
@@ -48,7 +49,7 @@ class BrowserAppRunner:
 
     def __init__(
         self,
-        core_interface: CoreInterface,
+        store: RedisStore,
         in_docker: bool = False,
     ):
         """Initialize the class."""
@@ -57,14 +58,14 @@ class BrowserAppRunner:
         self.controller_id = str(BrowserAppRunner.instance_counter)
         BrowserAppRunner.instance_counter += 1
         self.in_docker = in_docker
-        self.event_bus = core_interface.event_bus
-        core_interface.register_service_as_root(self.get_service_api())
-        self.core_interface = core_interface
+        self.event_bus = store.get_event_bus()
+        store.register_public_service(self.get_service_api())
+        self.store = store
 
         def close() -> None:
             asyncio.get_running_loop().create_task(self.close())
 
-        self.event_bus.on("shutdown", close)
+        self.event_bus.on_local("shutdown", close)
         # asyncio.ensure_future(self.initialize())
 
     async def initialize(self) -> None:
@@ -91,10 +92,10 @@ class BrowserAppRunner:
     async def start(
         self,
         url: str,
-        plugin_id: str,
+        client_id: str,
     ):
         """Start a browser app instance."""
-        user_info = self.core_interface.current_user.get()
+        user_info = self.store.current_user.get()
         user_id = user_info.id
 
         if not self.browser:
@@ -102,7 +103,7 @@ class BrowserAppRunner:
             # raise Exception("The app controller is not ready yet")
         # context = await self.browser.createIncognitoBrowserContext()
         page = await self.browser.new_page()
-        page_id = user_id + "/" + plugin_id
+        page_id = user_id + "/" + client_id
         logs = {}
         self.browser_pages[page_id] = {
             "url": url,
@@ -115,31 +116,33 @@ class BrowserAppRunner:
         # TODO: dispose await context.close()
 
         try:
-            response = await page.goto(url)
+            logger.info("Loading page: %s", url)
+            response = await page.goto(url, timeout=0, wait_until="load")
             assert response.status == 200, (
                 "Failed to start browser app instance, "
                 f"status: {response.status}, url: {url}"
             )
+            logger.info("Paged loaded")
         except Exception:
             await page.close()
             del self.browser_pages[page_id]
             raise
 
-    async def stop(self, plugin_id: str) -> None:
+    async def stop(self, client_id: str) -> None:
         """Stop a browser app instance."""
-        user_info = self.core_interface.current_user.get()
+        user_info = self.store.current_user.get()
         user_id = user_info.id
-        page_id = user_id + "/" + plugin_id
+        page_id = user_id + "/" + client_id
         if page_id in self.browser_pages:
             await self.browser_pages[page_id]["page"].close()
             if page_id in self.browser_pages:
                 del self.browser_pages[page_id]
         else:
-            raise Exception(f"browser app instance not found: {plugin_id}")
+            raise Exception(f"browser app instance not found: {client_id}")
 
     async def list(self) -> List[str]:
         """List the browser apps for the current user."""
-        user_info = self.core_interface.current_user.get()
+        user_info = self.store.current_user.get()
         user_id = user_info.id
         sessions = [
             {k: v for k, v in page_info.items() if k != "page"}
@@ -150,26 +153,27 @@ class BrowserAppRunner:
 
     async def get_log(
         self,
-        plugin_id: str,
+        client_id: str,
         type: str = None,  # pylint: disable=redefined-builtin
         offset: int = 0,
         limit: Optional[int] = None,
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get the logs for a browser app instance."""
-        user_info = self.core_interface.current_user.get()
+        user_info = self.store.current_user.get()
         user_id = user_info.id
-        page_id = user_id + "/" + plugin_id
+        page_id = user_id + "/" + client_id
         if page_id in self.browser_pages:
             if type is None:
                 return self.browser_pages[page_id]["logs"]
             if limit is None:
                 limit = MAXIMUM_LOG_ENTRIES
             return self.browser_pages[page_id]["logs"][type][offset : offset + limit]
-        raise Exception(f"browser app instance not found: {plugin_id}")
+        raise Exception(f"browser app instance not found: {client_id}")
 
     def get_service_api(self) -> Dict[str, Any]:
         """Get a list of service api."""
         controller = {
+            "id": "browser-runner-" + shortuuid.uuid(),
             "name": "browser-app-runner",
             "type": "plugin-runner",
             "config": {"visibility": "protected"},

@@ -7,11 +7,10 @@ from typing import Any
 import msgpack
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
-from imjoy_rpc.rpc import RPC
 
-from hypha.core import UserInfo
+from imjoy_rpc.hypha import RPC
 from hypha.core.auth import login_optional
-from hypha.core.interface import CoreInterface
+from hypha.core.store import RedisStore
 from hypha.utils import GzipRoute
 
 
@@ -65,62 +64,52 @@ def get_value(keys, service):
     return value
 
 
-async def get_service_as_user(
-    core_interface: CoreInterface,
-    user_info: UserInfo,
-    workspace_name: str,
-    service_name: str,
-):
-    """Get service as a specified user."""
-    core_interface.current_user.set(user_info)
-    # There won't be any plugin created in this case
-    # so we assume the user is in the public workspace
-    core_interface.current_workspace.set(await core_interface.get_workspace("public"))
-    ws = await core_interface.get_workspace_interface("public")
-    service = await ws.get_service(
-        {"workspace": workspace_name, "name": service_name, "launch": True}
-    )
-    return service
-
-
-async def list_services_as_user(
-    core_interface: CoreInterface,
-    user_info: UserInfo,
-    workspace_name: str,
-):
-    """List service as a specified user."""
-    core_interface.current_user.set(user_info)
-    # There won't be any plugin created in this case
-    # so we assume the user is in the public workspace
-    workspace = await core_interface.get_workspace("public")
-    core_interface.current_workspace.set(workspace)
-    ws = await core_interface.get_workspace_interface("public")
-    services = await ws.list_services({"workspace": workspace_name})
-    return services
-
-
 class HTTPProxy:
     """A proxy for accessing services from HTTP."""
 
-    def __init__(self, core_interface: CoreInterface) -> None:
+    def __init__(self, store: RedisStore) -> None:
         """Initialize the http proxy."""
         # pylint: disable=broad-except
         router = APIRouter()
         router.route_class = GzipRoute
-        self.core_interface = core_interface
+        self.store = store
 
-        @router.get("/services")
-        async def get_all_services(
+        @router.get("/workspaces")
+        async def get_all_workspaces(
             user_info: login_optional = Depends(login_optional),
         ):
             """Route for listing all the services."""
             try:
-                core_interface.current_user.set(user_info)
-                services = await core_interface.list_services()
-                info = serialize(services)
+                workspaces = await store.list_all_workspaces()
                 return JSONResponse(
                     status_code=200,
-                    content=info,
+                    content=workspaces,
+                )
+            except Exception as exp:
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "detail": str(exp)},
+                )
+
+        @router.get("/{workspace}/info")
+        async def get_workspace_info(
+            workspace: str,
+            user_info: login_optional = Depends(login_optional),
+        ):
+            """Route for get detailed info of a workspace."""
+            try:
+                if not await store.check_permission(workspace, user_info):
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "success": False,
+                            "detail": f"Permission denied to workspace: {workspace}",
+                        },
+                    )
+                workspace_info = await store.get_workspace(workspace)
+                return JSONResponse(
+                    status_code=200,
+                    content=workspace_info.dict(),
                 )
             except Exception as exp:
                 return JSONResponse(
@@ -135,9 +124,8 @@ class HTTPProxy:
         ):
             """Route for get services under a workspace."""
             try:
-                services = await list_services_as_user(
-                    core_interface, user_info, workspace
-                )
+                manager = await store.get_workspace_manager(workspace)
+                services = await manager.list_services(context={"user": user_info})
                 info = serialize(services)
                 return JSONResponse(
                     status_code=200,
@@ -157,9 +145,7 @@ class HTTPProxy:
         ):
             """Route for checking details of a service."""
             try:
-                service = await get_service_as_user(
-                    core_interface, user_info, workspace, service
-                )
+                service = await store.get_service_as_user(workspace, service, user_info)
                 return JSONResponse(
                     status_code=200,
                     content=serialize(service),
@@ -184,9 +170,7 @@ class HTTPProxy:
             It can contain dot to refer to deeper object.
             """
             try:
-                service = await get_service_as_user(
-                    core_interface, user_info, workspace, service
-                )
+                service = await store.get_service_as_user(workspace, service, user_info)
                 value = get_value(keys, service)
                 if not value:
                     return JSONResponse(
@@ -224,13 +208,13 @@ class HTTPProxy:
                     )
                 if not callable(value):
                     return JSONResponse(status_code=200, content=serialize(value))
-                _rpc = RPC(None, None)
+                _rpc = RPC(None, "anon")
                 try:
-                    kwargs = _rpc.unwrap(kwargs, False)
+                    kwargs = _rpc.decode(kwargs)
                     results = value(**kwargs)
                     if inspect.isawaitable(results):
                         results = await results
-                    results = _rpc.wrap(results, False)
+                    results = _rpc.encode(results)
                 except Exception:
                     return JSONResponse(
                         status_code=500,
@@ -257,4 +241,4 @@ class HTTPProxy:
                     content={"success": False, "detail": traceback.format_exc()},
                 )
 
-        core_interface.register_router(router)
+        store.register_router(router)

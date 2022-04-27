@@ -1,5 +1,5 @@
 include hypha/VERSION
 include hypha/templates/*
-include hypha/apps/*
+include hypha/built-in/*
 include hypha/static_files/*
 include LICENSE

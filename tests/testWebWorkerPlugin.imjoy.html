@@ -28,6 +28,7 @@ class ImJoyPlugin {
     async setup() {
         await api.log('initialized')
         await api.register_service({
+            "id": "echo",
             "name": "echo",
             "type": "echo",
             "config": {

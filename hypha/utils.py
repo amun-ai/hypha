@@ -4,10 +4,13 @@ import gzip
 import os
 import posixpath
 import secrets
+import stat
 import string
 from datetime import datetime
 from typing import Callable, List, Optional
 
+import aiofiles
+from fastapi.responses import FileResponse
 from fastapi.routing import APIRoute
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.middleware.cors import CORSMiddleware
@@ -43,9 +46,10 @@ PLUGIN_CONFIG_FIELDS = [
 class EventBus:
     """An event bus class."""
 
-    def __init__(self):
+    def __init__(self, logger=None):
         """Initialize the event bus."""
         self._callbacks = {}
+        self._logger = logger
 
     def on(self, event_name, func):
         """Register an event callback."""
@@ -62,9 +66,18 @@ class EventBus:
     def emit(self, event_name, *data):
         """Trigger an event."""
         for func in self._callbacks.get(event_name, []):
-            func(*data)
-            if hasattr(func, "once"):
-                self.off(event_name, func)
+            try:
+                func(*data)
+                if hasattr(func, "once"):
+                    self.off(event_name, func)
+            except Exception as e:
+                if self._logger:
+                    self._logger.error(
+                        "Error in event callback: %s, %s, error: %s",
+                        event_name,
+                        func,
+                        e,
+                    )
 
     def off(self, event_name, func=None):
         """Remove an event callback."""
@@ -404,3 +417,41 @@ class PatchedCORSMiddleware(CORSMiddleware):
 
         message["headers"] = headers.raw
         await send(message)
+
+
+class SyncFileResponse(FileResponse):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if self.stat_result is None:
+            try:
+                stat_result = os.stat(self.path)
+                self.set_stat_headers(stat_result)
+            except FileNotFoundError:
+                raise RuntimeError(f"File at path {self.path} does not exist.")
+            else:
+                mode = stat_result.st_mode
+                if not stat.S_ISREG(mode):
+                    raise RuntimeError(f"File at path {self.path} is not a file.")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": self.status_code,
+                "headers": self.raw_headers,
+            }
+        )
+        if self.send_header_only:
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+        else:
+            async with aiofiles.open(self.path, mode="rb") as file:
+                more_body = True
+                while more_body:
+                    chunk = await file.read(self.chunk_size)
+                    more_body = len(chunk) == self.chunk_size
+                    await send(
+                        {
+                            "type": "http.response.body",
+                            "body": chunk,
+                            "more_body": more_body,
+                        }
+                    )
+        if self.background is not None:
+            await self.background()
