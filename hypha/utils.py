@@ -4,11 +4,12 @@ import gzip
 import os
 import posixpath
 import secrets
-import string
 import stat
+import string
 from datetime import datetime
 from typing import Callable, List, Optional
 
+import aiofiles
 from fastapi.responses import FileResponse
 from fastapi.routing import APIRoute
 from starlette.datastructures import Headers, MutableHeaders
@@ -440,13 +441,10 @@ class SyncFileResponse(FileResponse):
         if self.send_header_only:
             await send({"type": "http.response.body", "body": b"", "more_body": False})
         else:
-            # Here we need to change to sync read when we use the
-            # FastAPI startup event to initalize the store
-            # The exact reason is unknown
-            with open(self.path, mode="rb") as file:
+            async with aiofiles.open(self.path, mode="rb") as file:
                 more_body = True
                 while more_body:
-                    chunk = file.read(self.chunk_size)
+                    chunk = await file.read(self.chunk_size)
                     more_body = len(chunk) == self.chunk_size
                     await send(
                         {

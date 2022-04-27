@@ -9,10 +9,11 @@ import sys
 import urllib.request
 from types import ModuleType
 
+import aiofiles
 import yaml
+from imjoy_rpc.hypha.websocket_client import connect_to_server
 
 from hypha.utils import dotdict
-from imjoy_rpc.hypha.websocket_client import connect_to_server
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("plugin-runner")
@@ -58,8 +59,8 @@ async def run_plugin(plugin_file, default_config, quit_on_ready=False):
     """Load plugin file."""
     loop = asyncio.get_event_loop()
     if os.path.isfile(plugin_file):
-        with open(plugin_file, "r", encoding="utf-8") as fil:
-            content = fil.read()
+        async with aiofiles.open(plugin_file, "r", encoding="utf-8") as fil:
+            content = await fil.read()
     elif plugin_file.startswith("http"):
         with urllib.request.urlopen(plugin_file) as response:
             content = response.read().decode("utf-8")
