@@ -34,10 +34,3 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-      # - uses: actions/checkout@v4
-      # - name: Publish to Registry
-      #   uses: elgohr/Publish-Docker-Github-Action@v4
-      #   with:
-      #     name: ghcr.io/imjoy-team/hypha
-      #     username: ${{ secrets.DOCKER_USERNAME }}
-      #     password: ${{ secrets.DOCKER_PASSWORD }}
