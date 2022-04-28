@@ -61,3 +61,4 @@ jobs:
           tag: "${{ steps.check-version.outputs.tag }}"
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+
