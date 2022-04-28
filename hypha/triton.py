@@ -7,19 +7,19 @@ from fastapi import APIRouter, Depends, Request, Response
 from pyotritonclient import execute, get_config
 
 from hypha.core.auth import login_optional
-from hypha.core.interface import CoreInterface
+from hypha.core.store import RedisStore
 
 
 class TritonProxy:
     """A proxy for accessing triton inference servers."""
 
     def __init__(
-        self, core_interface: CoreInterface, triton_servers: str, allow_origins: str
+        self, store: RedisStore, triton_servers: str, allow_origins: str
     ) -> None:
         """Initialize the triton proxy."""
         # pylint: disable=broad-except
         router = APIRouter()
-        self.core_interface = core_interface
+        self.store = store
         self.servers = list(filter(lambda x: x.strip(), triton_servers))
         self.servers = list(map(lambda x: x.rstrip("/"), self.servers))
 
@@ -75,8 +75,8 @@ class TritonProxy:
                     ).encode("utf-8")
                     return response
 
-        core_interface.register_router(router)
-        core_interface.register_service_as_root(self.get_triton_service())
+        store.register_router(router)
+        store.register_public_service(self.get_triton_service())
 
     async def execute(
         self, model_name: str, inputs: List[Any], server_url=None, **kwargs
@@ -85,7 +85,11 @@ class TritonProxy:
         if server_url is None:
             server_url = random.choice(self.servers)
         results = await execute(
-            inputs, server_url=server_url, model_name=model_name, **kwargs
+            inputs,
+            server_url=server_url,
+            model_name=model_name,
+            cache_config=False,
+            **kwargs,
         )
         return results
 
@@ -98,8 +102,8 @@ class TritonProxy:
     def get_triton_service(self):
         """Return the triton service."""
         return {
-            "_rintf": True,
-            "name": "triton-client",
+            "id": "triton-client",
+            "name": "Triton Client",
             "type": "triton-client",
             "config": {"visibility": "public"},
             "execute": self.execute,

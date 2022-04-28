@@ -10,10 +10,10 @@ DESCRIPTION = (
 )
 
 REQUIREMENTS = [
-    "aiobotocore>=1.4.2",
+    "aiobotocore>=2.1.0",
     "aiofiles",
     "fastapi>=0.70.0",
-    "imjoy-rpc>=0.4.3",
+    "imjoy-rpc==0.5.7",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=1.8.2",
@@ -23,13 +23,13 @@ REQUIREMENTS = [
     "python-dotenv>=0.19.0",
     "python-engineio==4.1.0",
     "python-jose==3.3.0",
-    "python-socketio[asyncio_client]==5.4.1",
     "pyyaml",
-    "redislite>=4.1.0",
+    "redislite>=6.0.674960",
+    "aioredis>=2.0.1",
     "shortuuid>=1.0.1",
     "uvicorn>=0.13.4",
     "httpx>=0.21.1",
-    "pyotritonclient>=0.1.36",
+    "pyotritonclient>=0.2.0a1",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()
@@ -56,7 +56,7 @@ setup(
     extras_require={
         "server-apps": [
             "requests>=2.26.0",
-            "playwright>=1.15.0",
+            "playwright>=1.18.1",
             "base58>=2.1.0",
             "pymultihash>=0.8.2",
         ],

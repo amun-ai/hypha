@@ -4,9 +4,9 @@ import asyncio
 import requests
 
 import pytest
-from imjoy_rpc import connect_to_server
+from imjoy_rpc.hypha.websocket_client import connect_to_server
 
-from . import SIO_SERVER_URL, find_item
+from . import WS_SERVER_URL, SERVER_URL, find_item
 
 # pylint: disable=too-many-statements
 
@@ -37,54 +37,42 @@ api.export({
 """
 
 
-async def test_server_apps(socketio_server):
+async def test_server_apps(fastapi_server):
     """Test the server apps."""
-    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 30}
+    )
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
-    objects = await api.list_remote_objects()
-    assert len(objects) == 1
+    # objects = await api.list_remote_objects()
+    # assert len(objects) == 1
 
     # Test plugin with custom template
     controller = await api.get_service("server-apps")
 
-    objects = await api.list_remote_objects()
-    assert len(objects) == 2
+    # objects = await api.list_remote_objects()
+    # assert len(objects) == 2
 
     config = await controller.launch(
         source=TEST_APP_CODE,
         config={"type": "window"},
         workspace=workspace,
         token=token,
+        wait_for_service="default",
     )
     assert "app_id" in config
-    plugin = await api.get_plugin(config.name)
+    plugin = await api.get_service(f"{workspace}/{config.id}:default")
 
-    objects = await api.list_remote_objects()
-    assert len(objects) == 3
+    # objects = await api.list_remote_objects()
+    # assert len(objects) == 3
 
     assert "execute" in plugin
     result = await plugin.execute(2, 4)
     assert result == 6
     webgpu_available = await plugin.check_webgpu()
     assert webgpu_available is True
-    # only pass name so the app won't be removed
-    await controller.stop(config.id)
 
-    config = await controller.launch(
-        source=TEST_APP_CODE,
-        config={"type": "window"},
-        workspace=workspace,
-        token=token,
-    )
-    assert "id" in config
-    plugin = await api.get_plugin(config.name)
-    assert "execute" in plugin
-    result = await plugin.execute(2, 4)
-    assert result == 6
-    webgpu_available = await plugin.check_webgpu()
-    assert webgpu_available is True
     # Test logs
     logs = await controller.get_log(config.id)
     assert "log" in logs and "error" in logs
@@ -92,6 +80,7 @@ async def test_server_apps(socketio_server):
     assert len(logs) == 1
 
     await controller.stop(config.id)
+
     # Test window plugin
     source = (
         (Path(__file__).parent / "testWindowPlugin1.imjoy.html")
@@ -105,16 +94,16 @@ async def test_server_apps(socketio_server):
         token=token,
     )
     assert "app_id" in config
-    plugin = await api.get_plugin(config)
+    plugin = await api.get_service(f"{workspace}/{config.id}:default")
     assert "add2" in plugin
     result = await plugin.add2(4)
     assert result == 6
     await controller.stop(config.id)
 
 
-async def test_web_python_apps(socketio_server):
+async def test_web_python_apps(fastapi_server):
     """Test webpython plugin."""
-    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+    api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
@@ -129,7 +118,8 @@ async def test_web_python_apps(socketio_server):
         workspace=workspace,
         token=token,
     )
-    plugin = await api.get_plugin(config.name)
+    assert config.name == "WebPythonPlugin"
+    plugin = await api.get_service(f"{workspace}/{config.id}:default")
     assert "add2" in plugin
     result = await plugin.add2(4)
     assert result == 6
@@ -145,7 +135,7 @@ async def test_web_python_apps(socketio_server):
         workspace=workspace,
         token=token,
     )
-    plugin = await api.get_plugin(config.name)
+    plugin = await api.get_service(f"{workspace}/{config.id}:default")
     assert "add2" in plugin
     result = await plugin.add2(4)
     assert result == 6
@@ -157,14 +147,14 @@ async def test_web_python_apps(socketio_server):
         source="https://raw.githubusercontent.com/imjoy-team/"
         "ImJoy/master/web/src/plugins/webWorkerTemplate.imjoy.html",
     )
-    assert config.name == "Untitled Plugin"
+    # assert config.name == "Untitled Plugin"
     apps = await controller.list_running()
     assert find_item(apps, "id", config.id)
 
 
-async def test_readiness_liveness(socketio_server):
+async def test_readiness_liveness(fastapi_server):
     """Test readiness and liveness probes."""
-    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+    api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
@@ -183,8 +173,8 @@ async def test_readiness_liveness(socketio_server):
         token=token,
     )
 
-    assert config.name == "Unreliable Plugin"
-    plugin = await api.get_plugin(config.name)
+    # assert config.name == "Unreliable Plugin"
+    plugin = await api.get_service(f"{workspace}/{config.id}:default")
     assert plugin
     await asyncio.sleep(5)
 
@@ -192,19 +182,18 @@ async def test_readiness_liveness(socketio_server):
     failing_count = 0
     while plugin is None:
         try:
-            plugin = await api.get_plugin(config.name)
+            plugin = await api.get_service(f"{workspace}/{config.id}:default")
         except Exception:  # pylint: disable=broad-except
             failing_count += 1
             if failing_count > 30:
                 raise
             await asyncio.sleep(1)
     assert plugin
-    await plugin.exit()
 
 
-async def test_non_persistent_workspace(socketio_server):
+async def test_non_persistent_workspace(fastapi_server):
     """Test non-persistent workspace."""
-    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+    api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
@@ -223,36 +212,37 @@ async def test_non_persistent_workspace(socketio_server):
         token=token,
     )
 
-    plugin = await api.get_plugin(config.name)
+    plugin = await api.get_service(f"{workspace}/{config.id}:default")
     assert plugin is not None
 
     # It should exist in the stats
-    response = requests.get(f"{SIO_SERVER_URL}/api/stats")
+    response = requests.get(f"{SERVER_URL}/api/stats")
     assert response.status_code == 200
     stats = response.json()
+    count = stats["user_count"]
     workspace_info = find_item(stats["workspaces"], "name", workspace)
     assert workspace_info is not None
-    count = 0
-    for workspace in stats["workspaces"]:
-        count += len(workspace["plugins"])
-    assert stats["plugin_count"] == count
-    plugins = workspace_info["plugins"]
-    assert find_item(plugins, "id", plugin.config["id"]) is not None
 
+    # We need to stop it manually for now,
+    # since the app client won't be removed automatically
+    await controller.stop(config.id)
     await api.disconnect()
+    await asyncio.sleep(1)
 
     # now it should disappear from the stats
-    response = requests.get(f"{SIO_SERVER_URL}/api/stats")
+    response = requests.get(f"{SERVER_URL}/api/stats")
     assert response.status_code == 200
     stats = response.json()
     workspace_info = find_item(stats["workspaces"], "name", workspace)
     assert workspace_info is None
-    assert stats["plugin_count"] == count - 2
+    assert stats["user_count"] == count - 1
 
 
-async def test_lazy_plugin(socketio_server):
+async def test_lazy_plugin(fastapi_server):
     """Test lazy plugin loading."""
-    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 60}
+    )
 
     # Test plugin with custom template
     controller = await api.get_service("server-apps")
@@ -270,7 +260,7 @@ async def test_lazy_plugin(socketio_server):
     apps = await controller.list_apps()
     assert find_item(apps, "id", app_info.id)
 
-    plugin = await api.get_plugin({"name": app_info.name, "launch": True})
+    plugin = await api.get_service({"client_name": app_info.name, "launch": True})
     assert plugin is not None
 
     await controller.uninstall(app_info.id)
@@ -278,9 +268,11 @@ async def test_lazy_plugin(socketio_server):
     await api.disconnect()
 
 
-async def test_lazy_service(socketio_server):
+async def test_lazy_service(fastapi_server):
     """Test lazy service loading."""
-    api = await connect_to_server({"name": "test client", "server_url": SIO_SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 120}
+    )
 
     # Test plugin with custom template
     controller = await api.get_service("server-apps")
@@ -295,9 +287,12 @@ async def test_lazy_service(socketio_server):
         source=source,
     )
 
-    service = await api.get_service({"name": "echo", "launch": True})
+    service = await api.get_service({"id": "echo", "launch": True})
     assert service.echo is not None
     assert await service.echo("hello") == "hello"
+
+    long_string = "h" * 10000000  # 10MB
+    assert await service.echo(long_string) == long_string
 
     await controller.uninstall(app_info.id)
 

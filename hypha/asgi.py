@@ -1,4 +1,7 @@
 """Support ASGI web server apps."""
+import asyncio
+import logging
+import sys
 import traceback
 
 from starlette.datastructures import Headers
@@ -6,6 +9,10 @@ from starlette.types import Receive, Scope, Send
 
 from hypha.core import ServiceInfo
 from hypha.utils import PatchedCORSMiddleware
+
+logging.basicConfig(stream=sys.stdout)
+logger = logging.getLogger("asgi")
+logger.setLevel(logging.INFO)
 
 
 class RemoteASGIApp:
@@ -30,17 +37,13 @@ class RemoteASGIApp:
                 "scope": scope,
                 "receive": receive,
                 "send": send,
-                "_rintf": True,
             }
             await self.service.serve(interface)
-            # clear the object store to avoid gabage collection issue
-            # this means the service plugin cannot have extra interface registered
-            self.service._provider.dispose_object(interface)
         elif self.service.type == "functions":
             func_name = scope["path"].split("/", 1)[-1] or "index"
             func_name = func_name.rstrip("/")
-            service = self.service.dict()
-            if func_name in service and callable(service[func_name]):
+
+            if func_name in self.service and callable(self.service[func_name]):
                 scope["query_string"] = scope["query_string"].decode("utf-8")
                 scope["raw_path"] = scope["raw_path"].decode("latin-1")
                 scope["headers"] = dict(Headers(scope=scope).items())
@@ -49,7 +52,7 @@ class RemoteASGIApp:
                 while event.get("more_body"):
                     body += await receive()["body"]
                 scope["body"] = body or None
-                func = service[func_name]
+                func = self.service[func_name]
                 context = {}
                 try:
                     result = await func(scope, context)
@@ -116,25 +119,42 @@ class ASGIGateway:
 
     def __init__(
         self,
-        core_interface,
+        store,
         allow_origins=None,
         allow_methods=None,
         allow_headers=None,
         expose_headers=None,
     ):
         """Initialize the gateway."""
-        self.core_interface = core_interface
+        self.store = store
         self.allow_origins = allow_origins
         self.allow_methods = allow_methods
         self.allow_headers = allow_headers
         self.expose_headers = expose_headers
-        core_interface.event_bus.on("service_registered", self.mount_asgi_app)
-        core_interface.event_bus.on("service_unregistered", self.umount_asgi_app)
+        # TODO: query the current services and mount them
+        event_bus = store.get_event_bus()
+        event_bus.on(
+            "service_registered",
+            lambda service: asyncio.ensure_future(self.mount_asgi_app(service)),
+        )
+        event_bus.on(
+            "service_unregistered",
+            lambda service: asyncio.ensure_future(self.umount_asgi_app(service)),
+        )
 
-    def mount_asgi_app(self, service):
+    async def mount_asgi_app(self, service: dict):
         """Mount the ASGI apps from new services."""
+        service = ServiceInfo.parse_obj(service)
+
         if service.type in ["ASGI", "functions"]:
-            subpath = f"/{service.config.workspace}/apps/{service.name}"
+            workspace = service.config.workspace
+            # TODO: extract the user info and pass it
+            # TODO: Support multiple worker processes
+            service = await self.store.get_service_as_user(workspace, service.id)
+            service_id = service.id
+            if ":" in service_id:  # Remove client_id
+                service_id = service_id.split(":")[-1]
+            subpath = f"/{workspace}/apps/{service_id}"
             app = PatchedCORSMiddleware(
                 RemoteASGIApp(service),
                 allow_origins=self.allow_origins or ["*"],
@@ -144,10 +164,16 @@ class ASGIGateway:
                 allow_credentials=True,
             )
 
-            self.core_interface.mount_app(subpath, app, priority=-1)
+            self.store.mount_app(subpath, app, priority=-1)
+            logger.info("Mounted ASGI app %s", subpath)
 
-    def umount_asgi_app(self, service):
+    async def umount_asgi_app(self, service: dict):
         """Unmount the ASGI apps."""
+        service = ServiceInfo.parse_obj(service)
         if service.type in ["ASGI", "functions"]:
-            subpath = f"/{service.config.workspace}/apps/{service.name}"
-            self.core_interface.umount_app(subpath)
+            service_id = service.id
+            if ":" in service_id:  # Remove client_id
+                service_id = service_id.split(":")[-1]
+            subpath = f"/{service.config.workspace}/apps/{service_id}"
+            self.store.unmount_app(subpath)
+            logger.info("Unmounted ASGI app %s", subpath)

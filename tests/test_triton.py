@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import requests
 
-from . import SIO_SERVER_URL
+from . import SERVER_URL
 
 
 def execute(inputs, server_url, model_name, **kwargs):
@@ -61,13 +61,13 @@ def execute(inputs, server_url, model_name, **kwargs):
 
 
 @pytest.mark.skip(reason="requires a triton server")
-def test_trition_execute():
+def test_trition_execute(fastapi_server):
     """Test trition execute."""
     image_array = np.random.randint(0, 255, [3, 256, 256]).astype("float32")
     params = {"diameter": 30}
     results = execute(
         inputs=[image_array, params],
-        server_url=SIO_SERVER_URL,
+        server_url=SERVER_URL,
         model_name="cellpose-python",
         decode_json=True,
     )

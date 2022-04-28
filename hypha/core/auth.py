@@ -28,6 +28,7 @@ if ENV_FILE:
 
 AUTH0_DOMAIN = env.get("AUTH0_DOMAIN", "imjoy.eu.auth0.com")
 AUTH0_AUDIENCE = env.get("AUTH0_AUDIENCE", "https://imjoy.eu.auth0.com/api/v2/")
+AUTH0_ISSUER = env.get("AUTH0_ISSUER", "https://imjoy.io/")
 JWT_SECRET = env.get("JWT_SECRET")
 if not JWT_SECRET:
     logger.warning("JWT_SECRET is not defined")
@@ -199,9 +200,9 @@ def generate_anonymouse_user():
     iat = time.time()
     return ValidToken(
         credentials={
-            "iss": "https://imjoy.eu.auth0.com/",
+            "iss": AUTH0_ISSUER,
             "sub": shortuuid.uuid(),  # user_id
-            "aud": "https://imjoy.eu.auth0.com/api/v2/",
+            "aud": AUTH0_AUDIENCE,
             "iat": iat,
             "exp": iat + 600,
             "azp": "aormkFV0l7T0shrIwjdeQIUmNLt09DmA",
@@ -250,13 +251,15 @@ def parse_token(authorization: str, allow_anonymouse=False):
             JWT_SECRET,
             algorithms=["HS256"],
             audience=AUTH0_AUDIENCE,
-            issuer="https://imjoy.io/",
+            issuer=AUTH0_ISSUER,
         )
         info = ValidToken(credentials=payload, scopes=payload["scope"].split(" "))
     return get_user_info(info)
 
 
-def generate_presigned_token(user_info: UserInfo, config: TokenConfig):
+def generate_presigned_token(
+    user_info: UserInfo, config: TokenConfig, child: bool = True
+):
     """Generate presigned tokens.
 
     This will generate a token which will be connected as a child user.
@@ -264,27 +267,99 @@ def generate_presigned_token(user_info: UserInfo, config: TokenConfig):
     """
     scopes = config.scopes
 
-    # always generate a new user id
-    uid = shortuuid.uuid()
+    if child:
+        # always generate a new user id
+        uid = shortuuid.uuid()
+        parent = user_info.parent if user_info.parent else user_info.id
+        email = config.email
+    else:
+        uid = user_info.id
+        parent = user_info.parent
+        email = user_info.email
+
     expires_in = config.expires_in or 10800
-    expires_at = time.time() + expires_in
-
-    parent = user_info.parent if user_info.parent else user_info.id
-
+    current_time = time.time()
+    expires_at = current_time + expires_in
     token = jwt.encode(
         {
-            "iss": "https://imjoy.io/",
+            "iss": AUTH0_ISSUER,
             "sub": uid,  # user_id
-            "aud": "https://imjoy.eu.auth0.com/api/v2/",
-            "iat": expires_in,
+            "aud": AUTH0_AUDIENCE,
+            "iat": current_time,
             "exp": expires_at,
             "scope": " ".join(scopes),
             "parent": parent,
             "gty": "client-credentials",
             "https://api.imjoy.io/roles": [],
-            "https://api.imjoy.io/email": config.email,
+            "https://api.imjoy.io/email": email,
         },
         JWT_SECRET,
         algorithm="HS256",
     )
     return uid + "@imjoy@" + token
+
+
+def generate_reconnection_token(
+    user_info: UserInfo, client_id: str, workspace: str, expires_in: int = 10800
+):
+    """Generate a token for reconnection."""
+    current_time = time.time()
+    expires_at = current_time + expires_in
+    ret = jwt.encode(
+        {
+            "iss": AUTH0_ISSUER,
+            "sub": user_info.id,
+            "aud": AUTH0_AUDIENCE,
+            "iat": current_time,
+            "exp": expires_at,
+            "gty": "client-credentials",
+            "cid": client_id,
+            "ws": workspace,
+            "https://api.imjoy.io/email": user_info.email,
+            "https://api.imjoy.io/roles": user_info.roles,
+            "parent": user_info.parent,
+            "scope": " ".join(user_info.scopes),
+        },
+        JWT_SECRET,
+        algorithm="HS256",
+    )
+    return ret
+
+
+def parse_reconnection_token(token):
+    """Parse a reconnection token."""
+    payload = jwt.decode(
+        token,
+        JWT_SECRET,
+        algorithms=["HS256"],
+        audience=AUTH0_AUDIENCE,
+        issuer=AUTH0_ISSUER,
+    )
+    info = ValidToken(credentials=payload, scopes=payload["scope"].split(" "))
+    return get_user_info(info), payload["ws"], payload["cid"]
+
+
+def parse_user(token):
+    """Parse user info from a token."""
+    if token:
+        user_info = parse_token(token)
+        uid = user_info.id
+        logger.info("User connected: %s", uid)
+    else:
+        uid = shortuuid.uuid()
+        user_info = UserInfo(
+            id=uid,
+            is_anonymous=True,
+            email=None,
+            parent=None,
+            roles=[],
+            scopes=[],
+            expires_at=None,
+        )
+        logger.info("Anonymized User connected: %s", uid)
+
+    if uid == "root":
+        logger.error("Root user is not allowed to connect remotely")
+        raise Exception("Root user is not allowed to connect remotely")
+
+    return user_info

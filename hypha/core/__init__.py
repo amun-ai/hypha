@@ -1,13 +1,15 @@
 """Provide the ImJoy core API interface."""
 import asyncio
+import inspect
+import io
 import json
 import logging
-import random
 import sys
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-import shortuuid
+import aioredis
+import msgpack
 from pydantic import (  # pylint: disable=no-name-in-module
     BaseModel,
     EmailStr,
@@ -16,7 +18,6 @@ from pydantic import (  # pylint: disable=no-name-in-module
 )
 
 from hypha.utils import EventBus
-from hypha.core.plugin import DynamicPlugin
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("core")
@@ -50,8 +51,8 @@ class ServiceConfig(BaseModel):
     """Represent service config."""
 
     visibility: VisibilityEnum = VisibilityEnum.protected
-    require_context: bool = False
-    workspace: str
+    require_context: Union[Tuple[str], List[str], bool] = False
+    workspace: str = None
     flags: List[str] = []
 
 
@@ -59,11 +60,9 @@ class ServiceInfo(BaseModel):
     """Represent service."""
 
     config: ServiceConfig
+    id: str
     name: str
     type: str
-
-    _provider: DynamicPlugin = PrivateAttr(default_factory=lambda: None)
-    _id: str = PrivateAttr(default_factory=shortuuid.uuid)
 
     class Config:
         """Set the config for pydantic."""
@@ -73,31 +72,6 @@ class ServiceInfo(BaseModel):
     def is_singleton(self):
         """Check if the service is singleton."""
         return "single-instance" in self.config.flags
-
-    def set_provider(self, provider: DynamicPlugin) -> None:
-        """Set the provider plugin."""
-        self._provider = provider
-
-    def get_provider(self) -> DynamicPlugin:
-        """Get the provider plugin."""
-        return self._provider
-
-    def get_summary(self) -> dict:
-        """Get a summary about the service."""
-        summary = {
-            "name": self.name,
-            "type": self.type,
-            "id": self._id,
-            "visibility": self.config.visibility.value,
-            "provider": self._provider and self._provider.name,
-            "provider_id": self._provider and self._provider.id,
-        }
-        summary.update(json.loads(self.config.json()))
-        return summary
-
-    def get_id(self) -> str:
-        """Get service id."""
-        return self._id
 
 
 class UserInfo(BaseModel):
@@ -113,29 +87,20 @@ class UserInfo(BaseModel):
     _metadata: Dict[str, Any] = PrivateAttr(
         default_factory=lambda: {}
     )  # e.g. s3 credential
-    _plugins: Dict[str, DynamicPlugin] = PrivateAttr(
-        default_factory=lambda: {}
-    )  # id:plugin
 
     def get_metadata(self) -> Dict[str, Any]:
         """Return the metadata."""
         return self._metadata
 
-    def get_plugins(self) -> Dict[str, DynamicPlugin]:
-        """Return the plugins."""
-        return self._plugins
 
-    def get_plugin(self, plugin_id: str) -> Optional[DynamicPlugin]:
-        """Return a plugin by id."""
-        return self._plugins.get(plugin_id)
+class ClientInfo(BaseModel):
+    """Represent service."""
 
-    def add_plugin(self, plugin: DynamicPlugin) -> None:
-        """Add a plugin."""
-        self._plugins[plugin.id] = plugin
-
-    def remove_plugin(self, plugin: DynamicPlugin) -> None:
-        """Remove a plugin by id."""
-        del self._plugins[plugin.id]
+    id: str
+    name: Optional[str]
+    workspace: str
+    services: List[ServiceInfo] = []
+    user_info: UserInfo
 
 
 class RDF(BaseModel):
@@ -186,163 +151,124 @@ class WorkspaceInfo(BaseModel):
     deny_list: Optional[List[str]]
     read_only: bool = False
     applications: Dict[str, RDF] = {}  # installed applications
-    interfaces: Dict[str, Dict[str, Any]] = {}
-    _logger: Optional[logging.Logger] = PrivateAttr(default_factory=lambda: logger)
-    _plugins: Dict[str, DynamicPlugin] = PrivateAttr(
-        default_factory=lambda: {}
-    )  # name: plugin
-    _services: Dict[str, ServiceInfo] = PrivateAttr(default_factory=lambda: {})
-    _event_bus: EventBus = PrivateAttr(default_factory=EventBus)
-    _global_event_bus: EventBus = PrivateAttr(default_factory=lambda: None)
+    interfaces: Dict[str, List[Any]] = {}
 
-    def set_global_event_bus(self, event_bus: EventBus) -> None:
-        """Set the global event bus."""
-        self._global_event_bus = event_bus
 
-    def get_logger(self) -> Optional[logging.Logger]:
-        """Return the logger."""
-        return self._logger
+class RedisRPCConnection:
+    """Represent a redis connection."""
 
-    def set_logger(self, workspace_logger: logging.Logger) -> None:
-        """Return the logger."""
-        self._logger = workspace_logger
+    def __init__(
+        self, redis: aioredis.Redis, workspace: str, client_id: str, user_info: UserInfo
+    ):
+        self._redis = redis
+        self._handle_message = None
+        self._subscribe_task = None
+        self._workspace = workspace
+        self._client_id = client_id
+        assert "/" not in client_id
+        self._user_info = user_info.dict()
 
-    def get_plugins(self, status: str = "*") -> Dict[str, DynamicPlugin]:
-        """Return the plugins."""
-        if status == "*":
-            return self._plugins
-        return {k: v for k, v in self._plugins.items() if v.get_status() == status}
+    def on_message(self, handler: Callable):
+        self._handle_message = handler
+        self._is_async = inspect.iscoroutinefunction(handler)
+        self._subscribe_task = asyncio.ensure_future(self._subscribe_redis())
 
-    def get_plugin_by_name(
-        self, plugin_name: str, status: str = "ready"
-    ) -> Optional[DynamicPlugin]:
-        """Return a plugin by its name (randomly select one if multiple exists)."""
-        plugins = [
-            plugin
-            for plugin in self._plugins.values()
-            if plugin.name == plugin_name
-            and (status == "*" or plugin.get_status() == status)
-        ]
-        if len(plugins) > 0:
-            return random.choice(plugins)
-        return None
+    async def emit_message(self, data: Union[dict, bytes]):
+        assert self._handle_message is not None, "No handler for message"
+        assert isinstance(data, bytes)
+        unpacker = msgpack.Unpacker(io.BytesIO(data))
+        message = unpacker.unpack()  # Only unpack the main message
+        pos = unpacker.tell()
+        target_id = message["to"]
+        if "/" not in target_id:
+            target_id = self._workspace + "/" + target_id
+        source_id = self._workspace + "/" + self._client_id
+        message.update(
+            {
+                "to": target_id,
+                "from": source_id,
+                "user": self._user_info,
+            }
+        )
+        # Pack more context info to the package
+        data = msgpack.packb(message) + data[pos:]
+        await self._redis.publish(f"{target_id}:msg", data)
 
-    def get_plugin_by_id(
-        self, plugin_id: str, status: str = "*"
-    ) -> Optional[DynamicPlugin]:
-        """Return a plugin by its id."""
-        plugins = [
-            plugin
-            for plugin in self._plugins.values()
-            if plugin.id == plugin_id
-            and (status == "*" or plugin.get_status() == status)
-        ]
-        if len(plugins) > 0:
-            return plugins[0]
-        return None
+    async def disconnect(self, reason=None):
+        self._redis = None
+        self._handle_message = None
+        if self._subscribe_task:
+            self._subscribe_task.cancel()
+            self._subscribe_task = None
+        logger.info("Redis connection disconnected (%s)", reason)
 
-    def add_plugin(self, plugin: DynamicPlugin) -> None:
-        """Add a plugin."""
-        if plugin.id in self._plugins:
-            raise Exception(
-                f"Plugin with the same id({plugin.id})"
-                " already exists in the workspace ({self.name})"
+    async def _subscribe_redis(self):
+        pubsub = self._redis.pubsub()
+        await pubsub.subscribe(f"{self._workspace}/{self._client_id}:msg")
+        while True:
+            msg = await pubsub.get_message(timeout=10)
+            if msg and msg.get("type") == "message":
+                assert (
+                    msg.get("channel")
+                    == f"{self._workspace}/{self._client_id}:msg".encode()
+                )
+                if self._is_async:
+                    await self._handle_message(msg["data"])
+                else:
+                    self._handle_message(msg["data"])
+
+
+class RedisEventBus(EventBus):
+    """Represent a redis event bus."""
+
+    def __init__(self, redis) -> None:
+        """Initialize the event bus."""
+        super().__init__(logger)
+        self._redis = redis
+        self._local_event_bus = EventBus(logger)
+
+    async def init(self):
+        """Setup the event bus."""
+        loop = asyncio.get_running_loop()
+        self._ready = loop.create_future()
+        self._loop = loop
+        loop.create_task(self._subscribe_redis())
+        await self._ready
+
+    def on_local(self, *args, **kwargs):
+        """Register a callback for a local event."""
+        return self._local_event_bus.on(*args, **kwargs)
+
+    def off_local(self, *args, **kwargs):
+        """Unregister a callback for a local event."""
+        return self._local_event_bus.off(*args, **kwargs)
+
+    def once_local(self, *args, **kwargs):
+        """Register a callback for a local event and remove it once triggered."""
+        return self._local_event_bus.once(*args, **kwargs)
+
+    def emit(self, event_type, data=None, target: str = "global"):
+        """Emit an event to the event bus."""
+        assert target in ["local", "global", "remote"]
+        if target != "remote":
+            self._local_event_bus.emit(event_type, data)
+        if target is None or target == "global":
+            assert self._ready.result(), "Event bus not ready"
+            self._loop.create_task(
+                self._redis.publish(
+                    "global_event_bus", json.dumps({"type": event_type, "data": data})
+                )
             )
 
-        if plugin.is_singleton():
-            for plg in self._plugins.values():
-                if plg.name == plugin.name:
-                    logger.info(
-                        "Terminating other plugins with the same name"
-                        " (%s) due to single-instance flag",
-                        plugin.name,
-                    )
-                    asyncio.ensure_future(plg.terminate())
-        self._plugins[plugin.id] = plugin
-        self._event_bus.emit("plugin_connected", plugin.config)
-
-    def remove_plugin(self, plugin: DynamicPlugin) -> None:
-        """Remove a plugin form the workspace."""
-        plugin_id = plugin.id
-        if plugin_id not in self._plugins:
-            raise KeyError(f"Plugin not fould (id={plugin_id})")
-        del self._plugins[plugin_id]
-        self._event_bus.emit("plugin_disconnected", plugin.config)
-
-    def get_services_by_plugin(self, plugin: DynamicPlugin) -> List[ServiceInfo]:
-        """Get services by plugin."""
-        return [
-            self._services[k]
-            for k in self._services
-            if self._services[k].get_provider() == plugin
-        ]
-
-    def get_services(self) -> Dict[str, ServiceInfo]:
-        """Return the services."""
-        return self._services
-
-    def add_service(self, service: ServiceInfo) -> None:
-        """Add a service."""
-        duplicated_service = self.get_service_by_name(service.name)
-        # check if it's a singleton service or
-        # the service with the same name and provider exists
-        if service.is_singleton() or (
-            duplicated_service is not None
-            and duplicated_service.get_provider() == service.get_provider()
-        ):
-            for svc in list(self._services.values()):
-                if svc.name == service.name:
-                    logger.info(
-                        "Unregistering other services with the same name"
-                        " (%s) due to single-instance flag",
-                        svc.name,
-                    )
-                    # TODO: we need to emit unregister event here
-                    self.remove_service(svc)
-        self._services[service.get_id()] = service
-        self._global_event_bus.emit("service_registered", service)
-
-    def get_service_by_name(self, service_name: str) -> ServiceInfo:
-        """Return a service by its name (randomly select one if multiple exists)."""
-        services = [
-            service
-            for service in self._services.values()
-            if service.name == service_name
-        ]
-        if len(services) > 0:
-            return random.choice(services)
-        return None
-
-    def remove_service(self, service: ServiceInfo) -> None:
-        """Remove a service."""
-        del self._services[service.get_id()]
-        self._global_event_bus.emit("service_unregistered", service)
-
-    def get_event_bus(self):
-        """Get the workspace event bus."""
-        return self._event_bus
-
-    def get_summary(self) -> dict:
-        """Get a summary about the workspace."""
-        summary = {
-            "name": self.name,
-            "plugin_count": len(self._plugins),
-            "service_count": len(self._services),
-            "visibility": self.visibility.value,
-            "plugins": [
-                {"name": plugin.name, "id": plugin.id, "type": plugin.config.type}
-                for plugin in self._plugins.values()
-            ],
-            "services": [service.get_summary() for service in self._services.values()],
-        }
-        return summary
-
-    def install_application(self, rdf: RDF):
-        """Install a application to the workspace."""
-        self.applications[rdf.id] = rdf
-        self._global_event_bus.emit("workspace_changed", self)
-
-    def uninstall_application(self, rdf_id: str):
-        """Uninstall a application from the workspace."""
-        del self.applications[rdf_id]
-        self._global_event_bus.emit("workspace_changed", self)
+    async def _subscribe_redis(self):
+        pubsub = self._redis.pubsub()
+        try:
+            await pubsub.subscribe("global_event_bus")
+            self._ready.set_result(True)
+            while True:
+                msg = await pubsub.get_message(timeout=10)
+                if msg and msg.get("type") == "message":
+                    data = json.loads(msg["data"].decode())
+                    super().emit(data["type"], data["data"])
+        except Exception as exp:
+            self._ready.set_exception(exp)

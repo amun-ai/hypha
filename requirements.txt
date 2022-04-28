@@ -1,22 +1,22 @@
-aiobotocore==2.0.1
+aiobotocore==2.1.0
 aiofiles==0.8.0
 base58==2.1.1
 fastapi==0.70.1
-imjoy-rpc==0.4.3
+imjoy-rpc==0.5.7
 jinja2==3.0.3
 lxml==4.7.1
 msgpack==1.0.3
 numpy==1.21.2  # needs to stay compatible with latest tensorflow
-playwright==1.17.2
+playwright==1.18.1
 pydantic[email]==1.8.2
 pymultihash==0.8.2
 python-dotenv==0.19.2
 python-jose==3.3.0
-python-socketio[asyncio_client]==5.4.1  # pin for now to solve unknown connection issue
 pyyaml==6.0
 requests==2.26.0
 shortuuid==1.0.8
-uvicorn==0.16.0
+uvicorn==0.17.1
 httpx==0.21.1
-pyotritonclient==0.1.36
-redislite==5.0.322
+pyotritonclient==0.2.0a1
+redislite==6.0.674960
+aioredis==2.0.1

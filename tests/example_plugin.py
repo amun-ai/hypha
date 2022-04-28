@@ -15,10 +15,12 @@ class ImJoyPlugin:
 
         service_info = await api.register_service(
             {
+                "id": "test-service",
                 "name": "echo service",
                 "type": "echo",
                 "echo": lambda x: print("echo: " + str(x)),
-            }
+            },
+            overwrite=True,
         )
         service = await api.get_service(service_info)
         await service.echo("a message")
@@ -29,4 +31,4 @@ class ImJoyPlugin:
         await api.log("hello world")
 
 
-api.export(ImJoyPlugin(), config={"name": "test-plugin", "workspace": "123"})
+api.export(ImJoyPlugin(), config={"name": "test-plugin"})

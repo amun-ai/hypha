@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ImJoy Plugin Template</title>
+    <title>ImJoy Plugin (web-python)</title>
     <meta name="description" content="Template for ImJoy plugin">
     <meta name="author" content="ImJoy-Team">
 </head>
@@ -15,8 +15,66 @@
 <script id="worker" type="javascript/worker">
 const window = self;
 const src = `
+import sys
+import asyncio
+from types import ModuleType
+import inspect
+from js import console
+import traceback
+from imjoy_rpc.hypha.utils import dotdict
+from imjoy_rpc.hypha.websocket_client import connect_to_server
+
+async def export_service(plugin_api, config, imjoy_rpc):
+    try:
+        wm = await connect_to_server(config)
+        imjoy_rpc.api.update(wm) # make the api available to the plugin
+        rpc = wm.rpc
+        if not isinstance(plugin_api, dict) and inspect.isclass(type(plugin_api)):
+            plugin_api = {a: getattr(plugin_api, a) for a in dir(plugin_api)}
+        # Copy the plugin name as the default name
+        plugin_api["id"] = "default"
+        plugin_api["name"] = config.get("name", "default")
+        await rpc.register_service(plugin_api, overwrite=True)
+        # svc = await rpc.get_remote_service(rpc._client_id + ":default")
+        # if svc.setup:
+        #     await svc.setup()
+    except Exception as exp:
+        logger.exception(exp)
+        console.error("Failed to export service: ", traceback.format_exc())
+
+
+async def patch_imjoy_rpc(default_config):
+    def export(api, config=None):
+        default_config.update(config or {})
+        imjoy_rpc.ready = asyncio.ensure_future(
+            export_service(api, default_config, imjoy_rpc)
+        )
+
+    # create a fake imjoy_rpc to patch hypha rpc
+    imjoy_rpc = ModuleType("imjoy_rpc")
+    sys.modules["imjoy_rpc"] = imjoy_rpc
+    sys.modules["imjoy"] = imjoy_rpc
+    imjoy_rpc.api = dotdict(export=export)
+    return imjoy_rpc
+
+
+async def run():
+    from js import config, script_src
+    config = config.to_py()
+    try:
+        imjoy_rpc = await patch_imjoy_rpc(config)
+        exec(script_src, globals())
+    except Exception as exp:
+        console.error("Failed to run script: ", traceback.format_exc())
+        logger.exception(exp)
+
+asyncio.ensure_future(run())
+`
+
+self.script_src = `
 {{ script | safe }}
 `
+
 const startupScript = `
 import js
 import micropip
@@ -35,11 +93,7 @@ del m
 
 async def run():
     try:
-        await micropip.install(["imjoy-rpc>=0.4.3", {% for req in requirements %}"{{req}}", {% endfor %}])
-        # map imjoy_rpc to imjoy
-        import imjoy_rpc
-        sys.modules
-        sys.modules["imjoy"] = imjoy_rpc
+        await micropip.install(["imjoy-rpc==0.5.7", {% for req in requirements %}"{{req}}", {% endfor %}])
         js.__resolve()
     except Exception as e:
         js.__reject(traceback.format_exc())
@@ -67,8 +121,6 @@ const toObject = (x) => {
     }
 }
 
-importScripts("https://cdn.jsdelivr.net/npm/socket.io-client@4.0.1/dist/socket.io.min.js")
-
 async function setupPyodide() {
     if(self.pyodide) return;
     importScripts('https://cdn.jsdelivr.net/pyodide/v0.18.1/full/pyodide.js');
@@ -85,98 +137,55 @@ async function setupPyodide() {
     await installPackage()
 }
 
-self.onmessage = function(e) {
+self.onmessage = async function(e) {
     const config = e.data
     self.config = config
-    const url = config.server_url
-    const extraHeaders = {};
-    if (config.token) {
-        extraHeaders.Authorization = "Bearer " + config.token;
+    try {
+        await setupPyodide()
+        self.pyodide.runPython(src);
+    } catch (err) {
+        console.error("Failed to start the script", err);
+        self.postMessage({type: "stderr", "content": err})
+        socket.disconnect();
     }
-    // const basePath = new URL(url).pathname;
-    // Note: extraHeaders only works for polling transport (the default)
-    // If we switch to websocket only, the headers won't be respected
-    const socket = io(url, {
-        withCredentials: true,
-        extraHeaders,
-    });
-    socket.on("connect", () => {
-        self.sendMessage = async function(data){
-            data = toObject(data)
-            socket.emit("plugin_message", data)
-        }
-        setupPyodide().then(()=>{
-            socket.emit("register_plugin", config, async (result) => {
-                if (!result.success) {
-                    console.error(result.detail);
-                    reject(result.detail);
-                    self.postMessage({type: "stderr", "content": result.detail})
-                    return;
-                }
-
-                self.postMessage({type: "stdout", "content": "Plugin registered: " + config.name})
-                self.postMessage({type: "title", "content": config.name})
-                self.setMessageCallback = (cb)=>{
-                    socket.on("plugin_message", cb);
-                }
-                try {
-                    self.pyodide.runPython(src);
-                } catch (err) {
-                    console.error("Failed to start the script", err);
-                    self.postMessage({type: "stderr", "content": err})
-                    socket.disconnect();
-                }
-            })
-        }).catch(err=>{
-            console.error("Failed to load pyodide", err);
-            self.postMessage({type: "stderr", "content": err})
-            socket.disconnect();
-        })
-        socket.on("connect_error", (error) => {
-            console.error("connection error", error);
-        });
-        socket.on("disconnect", () => {
-            console.error("disconnected");
-        });
-    })
-    
 }
     
 </script>
 <script>
-const consoleElem = document.getElementById('console');
-const blob = new Blob([
-    document.querySelector('#worker').textContent
-], { type: "text/javascript" })
-const worker = new Worker(window.URL.createObjectURL(blob));
-worker.onerror = console.error
-worker.onmessage = (e)=>{
-    if(e.data.type === 'title'){
-        document.title = e.data.content;
-        return
+window.onload = function() {
+    const consoleElem = document.getElementById('console');
+    const blob = new Blob([
+        document.querySelector('#worker').textContent
+    ], { type: "text/javascript" })
+    const worker = new Worker(window.URL.createObjectURL(blob));
+    worker.onerror = console.error
+    worker.onmessage = (e)=>{
+        if(e.data.type === 'title'){
+            document.title = e.data.content;
+            return
+        }
+        if(e.data.type === 'stdout'){
+            const li = document.createElement('li')
+            li.innerHTML = e.data.content;
+            li.style.color ="blue";
+            consoleElem.appendChild(li)
+        }
+        else if(e.data.type === 'stderr'){
+            const li = document.createElement('li')
+            li.innerHTML = e.data.content;
+            li.style.color ="red";
+            consoleElem.appendChild(li)
+        }
+        // make sure we don't have too many elements in the dom
+        if(consoleElem.children.length>1024){
+            consoleElem.removeChild(consoleElem.firstChild)
+        }
     }
-    if(e.data.type === 'stdout'){
-        const li = document.createElement('li')
-        li.innerHTML = e.data.content;
-        li.style.color ="blue";
-        consoleElem.appendChild(li)
-    }
-    else if(e.data.type === 'stderr'){
-        const li = document.createElement('li')
-        li.innerHTML = e.data.content;
-        li.style.color ="red";
-        consoleElem.appendChild(li)
-    }
-    // make sure we don't have too many elements in the dom
-    if(consoleElem.children.length>1024){
-        consoleElem.removeChild(consoleElem.firstChild)
-    }
+    const cfg = {{ config | tojson(indent=2) }}
+    const config = Object.assign(cfg, Object.fromEntries(new URLSearchParams(window.location.search)));
+    if(!config.server_url) config.server_url = window.location.origin;
+    worker.postMessage(config); 
 }
-const cfg = {{ config | tojson(indent=2) }}
-const config = Object.assign(cfg, Object.fromEntries(new URLSearchParams(window.location.search)));
-if(!config.server_url) config.server_url = window.location.origin;
-worker.postMessage(config); 
-
 </script>
 </body>
 </html>
