@@ -32,6 +32,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN conda update pip -y
 # ADD hypha /app
 # RUN cd /app && pip install .[server-apps]
+COPY . . 
 RUN pip install --no-cache-dir .
 RUN pip install --no-cache-dir playwright && playwright install
 EXPOSE 3000
