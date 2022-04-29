@@ -495,11 +495,11 @@ class S3Controller:
             region_name="EU",
         )
 
-    def create_client_async(self):
+    def create_client_async(self, public=False):
         """Create client async."""
         return get_session().create_client(
             "s3",
-            endpoint_url=self.endpoint_url,
+            endpoint_url=self.endpoint_url_public if public else self.endpoint_url,
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
             region_name="EU",
@@ -663,7 +663,7 @@ class S3Controller:
         # Make sure the user is in the workspace
         self.minio_client.admin_group_add(workspace, user_info.id)
         return {
-            "endpoint_url": self.endpoint_url_public, # Return the public endpoint
+            "endpoint_url": self.endpoint_url_public,  # Return the public endpoint
             "access_key_id": user_info.id,
             "secret_access_key": password,
             "bucket": self.workspace_bucket,
@@ -701,19 +701,13 @@ class S3Controller:
                     f"Permission denied: bucket name must be {self.workspace_bucket} "
                     "and the object name should be prefixed with workspace name + '/'."
                 )
-            async with self.create_client_async() as s3_client:
+            async with self.create_client_async(public=True) as s3_client:
                 url = await s3_client.generate_presigned_url(
                     client_method,
                     Params={"Bucket": bucket_name, "Key": object_name},
                     ExpiresIn=expiration,
                 )
-                # Check if it's a public url
-                if "." in self.endpoint_url:
-                    return url
-                # Assuming it's the same server as hypha and hosted under /s3 endpoint
-                url = url[len(self.endpoint_url) :]
-                url = url[1:] if url.startswith("/") else url
-                return f"{self.endpoint_url_public}/{url}"
+                return url
 
         except ClientError as err:
             logging.error(
