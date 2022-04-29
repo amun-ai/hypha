@@ -209,6 +209,7 @@ class S3Controller:
         endpoint_url=None,
         access_key_id=None,
         secret_access_key=None,
+        endpoint_url_public=None,
         workspace_bucket="hypha-workspaces",
         local_log_dir="./logs",
         workspace_etc_dir="etc",
@@ -224,6 +225,7 @@ class S3Controller:
             secret_access_key,
             executable_path=executable_path,
         )
+        self.endpoint_url_public = endpoint_url_public or endpoint_url
         self.store = store
         self.workspace_bucket = workspace_bucket
         self.local_log_dir = Path(local_log_dir)
@@ -573,6 +575,18 @@ class S3Controller:
                         "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
                     },
                     {
+                        "Sid": "AllowRootAndHomeListingOfWorkspaceBucket",
+                        "Action": ["s3:ListBucket"],
+                        "Effect": "Allow",
+                        "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
+                        "Condition": {
+                            "StringEquals": {
+                                "s3:prefix": ["", f"{workspace.name}"],
+                                "s3:delimiter": ["/"],
+                            }
+                        },
+                    },
+                    {
                         "Sid": "AllowListingOfWorkspaceFolder",
                         "Action": ["s3:ListBucket"],
                         "Effect": "Allow",
@@ -649,7 +663,7 @@ class S3Controller:
         # Make sure the user is in the workspace
         self.minio_client.admin_group_add(workspace, user_info.id)
         return {
-            "endpoint_url": self.endpoint_url,
+            "endpoint_url": self.endpoint_url_public, # Return the public endpoint
             "access_key_id": user_info.id,
             "secret_access_key": password,
             "bucket": self.workspace_bucket,

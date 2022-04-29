@@ -140,6 +140,7 @@ def start_builtin_services(
             endpoint_url=args.endpoint_url,
             access_key_id=args.access_key_id,
             secret_access_key=args.secret_access_key,
+            endpoint_url_public=args.endpoint_url_public,
             workspace_bucket=args.workspace_bucket,
             executable_path=args.executable_path,
         )
@@ -285,6 +286,12 @@ def get_argparser():
         type=str,
         default=None,
         help="set endpoint URL for S3",
+    )
+    parser.add_argument(
+        "--endpoint-url-public",
+        type=str,
+        default=None,
+        help="set public endpoint URL for S3 (if different from the local endpoint one)",
     )
     parser.add_argument(
         "--access-key-id",
