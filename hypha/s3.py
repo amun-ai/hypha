@@ -209,6 +209,7 @@ class S3Controller:
         endpoint_url=None,
         access_key_id=None,
         secret_access_key=None,
+        endpoint_url_public=None,
         workspace_bucket="hypha-workspaces",
         local_log_dir="./logs",
         workspace_etc_dir="etc",
@@ -224,6 +225,7 @@ class S3Controller:
             secret_access_key,
             executable_path=executable_path,
         )
+        self.endpoint_url_public = endpoint_url_public or endpoint_url
         self.store = store
         self.workspace_bucket = workspace_bucket
         self.local_log_dir = Path(local_log_dir)
@@ -493,11 +495,11 @@ class S3Controller:
             region_name="EU",
         )
 
-    def create_client_async(self):
+    def create_client_async(self, public=False):
         """Create client async."""
         return get_session().create_client(
             "s3",
-            endpoint_url=self.endpoint_url,
+            endpoint_url=self.endpoint_url_public if public else self.endpoint_url,
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
             region_name="EU",
@@ -571,6 +573,18 @@ class S3Controller:
                         "Action": ["s3:ListAllMyBuckets", "s3:GetBucketLocation"],
                         "Effect": "Allow",
                         "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
+                    },
+                    {
+                        "Sid": "AllowRootAndHomeListingOfWorkspaceBucket",
+                        "Action": ["s3:ListBucket"],
+                        "Effect": "Allow",
+                        "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
+                        "Condition": {
+                            "StringEquals": {
+                                "s3:prefix": ["", f"{workspace.name}"],
+                                "s3:delimiter": ["/"],
+                            }
+                        },
                     },
                     {
                         "Sid": "AllowListingOfWorkspaceFolder",
@@ -649,7 +663,7 @@ class S3Controller:
         # Make sure the user is in the workspace
         self.minio_client.admin_group_add(workspace, user_info.id)
         return {
-            "endpoint_url": self.endpoint_url,
+            "endpoint_url": self.endpoint_url_public,  # Return the public endpoint
             "access_key_id": user_info.id,
             "secret_access_key": password,
             "bucket": self.workspace_bucket,
@@ -687,19 +701,13 @@ class S3Controller:
                     f"Permission denied: bucket name must be {self.workspace_bucket} "
                     "and the object name should be prefixed with workspace name + '/'."
                 )
-            async with self.create_client_async() as s3_client:
+            async with self.create_client_async(public=True) as s3_client:
                 url = await s3_client.generate_presigned_url(
                     client_method,
                     Params={"Bucket": bucket_name, "Key": object_name},
                     ExpiresIn=expiration,
                 )
-                # Check if it's a public url
-                if "." in self.endpoint_url:
-                    return url
-                # Assuming it's the same server as hypha and hosted under /s3 endpoint
-                url = url[len(self.endpoint_url) :]
-                url = url[1:] if url.startswith("/") else url
-                return f"{self.store.public_base_url}/s3/{url}"
+                return url
 
         except ClientError as err:
             logging.error(
