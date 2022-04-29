@@ -713,7 +713,7 @@ class S3Controller:
                 # Assuming it's the same server as hypha and hosted under /s3 endpoint
                 url = url[len(self.endpoint_url) :]
                 url = url[1:] if url.startswith("/") else url
-                return f"{self.store.public_base_url}/s3/{url}"
+                return f"{self.endpoint_url_public}/{url}"
 
         except ClientError as err:
             logging.error(
