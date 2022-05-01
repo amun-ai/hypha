@@ -4,8 +4,6 @@ import logging
 import random
 import asyncio
 import sys
-from contextvars import ContextVar, copy_context
-from functools import partial
 from typing import Dict, List
 
 import aioredis
@@ -210,8 +208,8 @@ class RedisStore:
         if overwrite:
             # clean up the clients and users in the workspace
             client_keys = await self._redis.hkeys(f"{workspace.name}:clients")
-            for k in client_keys:
-                client_id = k.decode()
+            for client_id in client_keys:
+                client_id = client_id.decode()
                 client_info = await self._redis.hget(
                     f"{workspace.name}:clients", client_id
                 )
