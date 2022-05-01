@@ -52,6 +52,7 @@ class WebsocketServer:
                 await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
                 return
 
+            parent_client = None
             if reconnection_token:
                 logger.info(
                     f"Reconnecting client via token: {reconnection_token[:5]}..."
@@ -78,6 +79,7 @@ class WebsocketServer:
                 if token:
                     try:
                         user_info = parse_token(token)
+                        parent_client = user_info.get_metadata("parent_client")
                         await store.register_user(user_info)
                     except Exception:
                         logger.error("Invalid token: %s", token)
@@ -160,6 +162,7 @@ class WebsocketServer:
             await workspace_manager.register_client(
                 ClientInfo(
                     id=client_id,
+                    parent=parent_client,
                     workspace=workspace_manager._workspace,
                     user_info=user_info,
                 )

@@ -228,7 +228,7 @@ class WorkspaceManager:
             raise Exception(
                 "Scopes must be empty or contains a list of workspace names."
             )
-        elif not "scopes" in config:
+        elif "scopes" not in config:
             config["scopes"] = [self._workspace]
         token_config = TokenConfig.parse_obj(config)
         for ws in config["scopes"]:
@@ -478,6 +478,13 @@ class WorkspaceManager:
         await self._redis.sadd(
             f"user:{client_info.user_info.id}:clients", client_info.id
         )
+        if client_info.parent:
+            # parent must be an absolute client id
+            assert "/" in client_info.parent
+            await self._redis.sadd(
+                f"client:{client_info.parent}:children",
+                self._workspace + "/" + client_info.id,
+            )
         self._event_bus.emit("client_registered", client_info.dict())
         logger.info("New client registered: %s/%s", self._workspace, client_info.id)
 
@@ -496,8 +503,6 @@ class WorkspaceManager:
         if client_info is None:
             raise KeyError(f"Client does not exist: {workspace}/{client_id}")
 
-        # TODO: Remove child clients, so the workspace can be removed
-
         client_info = ClientInfo.parse_obj(json.loads(client_info.decode()))
         await self._redis.srem(
             f"user:{client_info.user_info.id}:clients", client_info.id
@@ -508,6 +513,21 @@ class WorkspaceManager:
             service.config.workspace = workspace
             self._event_bus.emit("service_unregistered", service.dict())
         logger.info("Client deleted: %s/%s", workspace, client_id)
+
+        if client_info.parent:
+            # Remove from the parent's children
+            await self._redis.srem(
+                f"client:{client_info.parent}:children",
+                workspace + "/" + client_info.id,
+            )
+
+        client_keys = await self._redis.smembers(
+            f"client:{workspace}/{client_info.id}:children"
+        )
+        children = [k.decode() for k in client_keys]
+        for client_id in children:
+            ws, cid = client_id.split("/")
+            await self.delete_client(cid, ws)
 
         user_info = client_info.user_info
         if user_info.is_anonymous:

@@ -30,6 +30,7 @@ class TokenConfig(BaseModel):
     scopes: List[str]
     expires_in: Optional[int]
     email: Optional[EmailStr]
+    parent_client: Optional[str]
 
 
 class VisibilityEnum(str, Enum):
@@ -88,15 +89,22 @@ class UserInfo(BaseModel):
         default_factory=lambda: {}
     )  # e.g. s3 credential
 
-    def get_metadata(self) -> Dict[str, Any]:
+    def get_metadata(self, key=None) -> Dict[str, Any]:
         """Return the metadata."""
+        if key:
+            return self._metadata.get(key)
         return self._metadata
+
+    def set_metadata(self, key, value):
+        """Set the metadata."""
+        self._metadata[key] = value
 
 
 class ClientInfo(BaseModel):
     """Represent service."""
 
     id: str
+    parent: Optional[str]
     name: Optional[str]
     workspace: str
     services: List[ServiceInfo] = []

@@ -8,6 +8,7 @@ import shortuuid
 from playwright.async_api import Page, async_playwright
 
 from hypha.core.store import RedisStore
+from hypha.core import UserInfo
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("browser")
@@ -93,9 +94,10 @@ class BrowserAppRunner:
         self,
         url: str,
         client_id: str,
+        context: dict = None,
     ):
         """Start a browser app instance."""
-        user_info = self.store.current_user.get()
+        user_info = UserInfo.parse_obj(context["user"])
         user_id = user_info.id
 
         if not self.browser:
@@ -128,9 +130,9 @@ class BrowserAppRunner:
             del self.browser_pages[page_id]
             raise
 
-    async def stop(self, client_id: str) -> None:
+    async def stop(self, client_id: str, context: dict = None) -> None:
         """Stop a browser app instance."""
-        user_info = self.store.current_user.get()
+        user_info = UserInfo.parse_obj(context["user"])
         user_id = user_info.id
         page_id = user_id + "/" + client_id
         if page_id in self.browser_pages:
@@ -140,9 +142,9 @@ class BrowserAppRunner:
         else:
             raise Exception(f"browser app instance not found: {client_id}")
 
-    async def list(self) -> List[str]:
+    async def list(self, context: dict = None) -> List[str]:
         """List the browser apps for the current user."""
-        user_info = self.store.current_user.get()
+        user_info = UserInfo.parse_obj(context["user"])
         user_id = user_info.id
         sessions = [
             {k: v for k, v in page_info.items() if k != "page"}
@@ -157,9 +159,10 @@ class BrowserAppRunner:
         type: str = None,  # pylint: disable=redefined-builtin
         offset: int = 0,
         limit: Optional[int] = None,
+        context: dict = None,
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get the logs for a browser app instance."""
-        user_info = self.store.current_user.get()
+        user_info = UserInfo.parse_obj(context["user"])
         user_id = user_info.id
         page_id = user_id + "/" + client_id
         if page_id in self.browser_pages:

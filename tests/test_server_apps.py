@@ -223,11 +223,12 @@ async def test_non_persistent_workspace(fastapi_server):
     workspace_info = find_item(stats["workspaces"], "name", workspace)
     assert workspace_info is not None
 
-    # We need to stop it manually for now,
-    # since the app client won't be removed automatically
-    await controller.stop(config.id)
+    # We don't need to stop manually, since it should be removed
+    # when the parent client exits
+    # await controller.stop(config.id)
+
     await api.disconnect()
-    await asyncio.sleep(1)
+    await asyncio.sleep(0.1)
 
     # now it should disappear from the stats
     response = requests.get(f"{SERVER_URL}/api/stats")
