@@ -541,6 +541,7 @@ class WorkspaceManager:
                     user_info.id,
                     len(remain_clients),
                 )
+        self._event_bus.emit("client_deleted", client_info.dict())
 
     def _create_rpc(
         self, client_id: str, default_context=None, user_info: UserInfo = None

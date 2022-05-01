@@ -158,6 +158,7 @@ class ServerAppController:
 
         event_bus.on_local("shutdown", close)
         event_bus.on("client_updated", self._client_updated)
+        event_bus.on("client_deleted", self._client_deleted)
         asyncio.ensure_future(self.initialize())
 
     async def initialize(self) -> None:
@@ -532,6 +533,17 @@ class ServerAppController:
             context=context,
         )
 
+    def _client_deleted(self, client: dict) -> None:
+        """Callback when client is deleted."""
+        client = ClientInfo.parse_obj(client)
+        page_id = f"{client.workspace}/{client.id}"
+        if page_id in self._client_callbacks:
+            callbacks = self._client_callbacks[page_id]
+            if "deleted" in callbacks:
+                deleted = callbacks["deleted"]
+                del callbacks["deleted"]
+                deleted(client)
+
     def _client_updated(self, client: dict) -> None:
         """Callback when client is updated."""
         client = ClientInfo.parse_obj(client)
@@ -804,10 +816,15 @@ class ServerAppController:
             app_info["watch"] = False
             fut.set_exception(Exception(detail))
 
+        def deleted(client):
+            asyncio.ensure_future(self.stop(client.id, False, context=context))
+
         self._client_callbacks[page_id] = {
             "connect": connect,
             "cleanup": cleanup,
+            "deleted": deleted,
         }
+
         if wait_for_service:
             svc_fut = asyncio.Future()
             service_id = "default" if wait_for_service is True else wait_for_service
