@@ -491,8 +491,6 @@ class ServerAppController:
     async def launch(
         self,
         source: str,
-        workspace: str,
-        token: Optional[str] = None,
         timeout: float = 60,
         config: Optional[Dict[str, Any]] = None,
         attachments: List[dict] = None,
@@ -500,16 +498,7 @@ class ServerAppController:
         context: Optional[dict] = None,
     ) -> dotdict:
         """Start a server app instance."""
-        if token:
-            user_info = parse_user(token)
-        else:
-            user_info = UserInfo.parse_obj(context["user"])
-        if not await self.store.check_permission(workspace, user_info):
-            raise Exception(
-                f"User {user_info.id} does not have permission"
-                f" to run app in workspace {workspace}."
-            )
-
+        workspace = context["from"].split("/")[0]
         app_info = await self.install(
             source,
             attachments=attachments,
@@ -526,8 +515,6 @@ class ServerAppController:
 
         return await self.start(
             app_id,
-            workspace=workspace,
-            token=token,
             timeout=timeout,
             wait_for_service=wait_for_service,
             context=context,
@@ -566,8 +553,6 @@ class ServerAppController:
     async def start(
         self,
         app_id,
-        workspace=None,
-        token=None,
         client_id=None,
         timeout: float = 60,
         loop_count=0,
@@ -577,15 +562,10 @@ class ServerAppController:
         """Start the app and keep it alive."""
         if wait_for_service is True:
             wait_for_service = "default"
-        if workspace is not None:
-            print("WARNING: Passing workspace is not necessary anymore")
 
         workspace = context["from"].split("/")[0]
         if workspace != app_id.split("/")[0]:
             raise Exception("Workspace mismatch between app_id and workspace.")
-
-        if token is not None:
-            print("WARNING: Passing token is not necessary anymore")
 
         ws = await self.store.get_workspace_interface(workspace)
         token = await ws.generate_token({"parent_client": context["from"]})
@@ -776,8 +756,6 @@ class ServerAppController:
                         # start a new one
                         await self.start(
                             app_id,
-                            workspace=workspace,
-                            token=token,
                             client_id=client_id,
                             timeout=timeout,
                             loop_count=loop_count,

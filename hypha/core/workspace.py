@@ -634,7 +634,6 @@ class WorkspaceManager:
         if workspace == "*":
             workspace = self._workspace
         # Check if the user has permission to this workspace and the one to be launched
-        token = await self.generate_token({"scopes": [workspace]}, context=context)
         workspace = await self.get_workspace_info(workspace)
         controller = await self.get_service("public/workspace-manager:server-apps")
         if not controller:
@@ -657,8 +656,6 @@ class WorkspaceManager:
         client_id = shortuuid.uuid()
         config = await controller.start(
             app_id,
-            workspace=workspace.name,
-            token=token,
             client_id=client_id,
             timeout=timeout,
             wait_for_service=service_id,
@@ -673,7 +670,8 @@ class WorkspaceManager:
         )
 
     async def get_service(self, query: Union[dict, str], context=None):
-        # Note: No authorization required because the access is controlled by the client itself
+        # Note: No authorization required
+        # because the access is controlled by the client itself
         if isinstance(query, dict):
             if "id" not in query:
                 service_id = query.get("service_id", "*")
@@ -690,7 +688,8 @@ class WorkspaceManager:
             query["workspace"] = service_id.split("/")[0]
             if "client_id" in query and query["client_id"] != service_id.split("/")[1]:
                 raise ValueError(
-                    f"client_id ({query['client_id']}) does not match service_id ({service_id})"
+                    f"client_id ({query['client_id']}) does"
+                    f" not match service_id ({service_id})"
                 )
             query["client_id"] = service_id.split("/")[1]
         elif "/" not in service_id and ":" not in service_id:
@@ -732,7 +731,7 @@ class WorkspaceManager:
                 rpc = await self.setup()
                 service_api = await rpc.get_remote_service(service_id)
                 return self.patch_service_config(workspace, service_api)
-            elif "launch" in query and query["launch"] == True:
+            elif "launch" in query and query["launch"] is True:
                 service_api = await self._launch_application_by_service(
                     query,
                     context=context,
@@ -771,7 +770,7 @@ class WorkspaceManager:
             )
 
         if not services:
-            if "launch" in query and query["launch"] == True:
+            if "launch" in query and query["launch"] is True:
                 service_api = await self._launch_application_by_service(
                     query,
                     context=context,
@@ -794,7 +793,7 @@ class WorkspaceManager:
         workspaces = await self._redis.hgetall("workspaces")
         return [
             WorkspaceInfo.parse_obj(json.loads(v.decode()))
-            for k, v in workspaces.items()
+            for v in workspaces.values()
         ]
 
     async def check_permission(

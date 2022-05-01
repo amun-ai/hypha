@@ -57,8 +57,6 @@ async def test_server_apps(fastapi_server):
     config = await controller.launch(
         source=TEST_APP_CODE,
         config={"type": "window"},
-        workspace=workspace,
-        token=token,
         wait_for_service="default",
     )
     assert "app_id" in config
@@ -90,8 +88,6 @@ async def test_server_apps(fastapi_server):
 
     config = await controller.launch(
         source=source,
-        workspace=workspace,
-        token=token,
     )
     assert "app_id" in config
     plugin = await api.get_service(f"{workspace}/{config.id}:default")
@@ -115,8 +111,6 @@ async def test_web_python_apps(fastapi_server):
     )
     config = await controller.launch(
         source=source,
-        workspace=workspace,
-        token=token,
     )
     assert config.name == "WebPythonPlugin"
     plugin = await api.get_service(f"{workspace}/{config.id}:default")
@@ -132,8 +126,6 @@ async def test_web_python_apps(fastapi_server):
     )
     config = await controller.launch(
         source=source,
-        workspace=workspace,
-        token=token,
     )
     plugin = await api.get_service(f"{workspace}/{config.id}:default")
     assert "add2" in plugin
@@ -142,8 +134,6 @@ async def test_web_python_apps(fastapi_server):
     await controller.stop(config.id)
 
     config = await controller.launch(
-        workspace=workspace,
-        token=token,
         source="https://raw.githubusercontent.com/imjoy-team/"
         "ImJoy/master/web/src/plugins/webWorkerTemplate.imjoy.html",
     )
@@ -169,8 +159,6 @@ async def test_readiness_liveness(fastapi_server):
 
     config = await controller.launch(
         source=source,
-        workspace=workspace,
-        token=token,
     )
 
     # assert config.name == "Unreliable Plugin"
@@ -208,8 +196,6 @@ async def test_non_persistent_workspace(fastapi_server):
 
     config = await controller.launch(
         source=source,
-        workspace=workspace,
-        token=token,
     )
 
     plugin = await api.get_service(f"{workspace}/{config.id}:default")
@@ -272,7 +258,7 @@ async def test_lazy_plugin(fastapi_server):
 async def test_lazy_service(fastapi_server):
     """Test lazy service loading."""
     api = await connect_to_server(
-        {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 120}
+        {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 5}
     )
 
     # Test plugin with custom template

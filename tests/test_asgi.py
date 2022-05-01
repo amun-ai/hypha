@@ -16,7 +16,6 @@ async def test_asgi(fastapi_server):
     """Test the ASGI gateway apps."""
     api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
     workspace = api.config["workspace"]
-    token = await api.generate_token()
 
     # Test plugin with custom template
     controller = await api.get_service("server-apps")
@@ -28,8 +27,6 @@ async def test_asgi(fastapi_server):
     )
     config = await controller.launch(
         source=source,
-        workspace=workspace,
-        token=token,
         wait_for_service="default",  # execute the setup() function after started
     )
     # plugin = await api.get_plugin(config.id)
@@ -54,7 +51,6 @@ async def test_functions(fastapi_server):
     """Test the functions service."""
     api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
     workspace = api.config["workspace"]
-    token = await api.generate_token()
 
     # Test plugin with custom template
     controller = await api.get_service("server-apps")
@@ -66,8 +62,6 @@ async def test_functions(fastapi_server):
     )
     config = await controller.launch(
         source=source,
-        workspace=workspace,
-        token=token,
         wait_for_service="default",  # execute the setup() function after started
     )
     # plugin = await api.get_plugin(config.id)
