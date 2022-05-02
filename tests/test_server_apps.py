@@ -109,6 +109,7 @@ async def test_web_python_apps(fastapi_server):
     )
     config = await controller.launch(
         source=source,
+        wait_for_service="default",
     )
     assert config.name == "WebPythonPlugin"
     plugin = await api.get_service(f"{workspace}/{config.id}:default")
@@ -124,6 +125,7 @@ async def test_web_python_apps(fastapi_server):
     )
     config = await controller.launch(
         source=source,
+        wait_for_service="default",
     )
     plugin = await api.get_service(f"{workspace}/{config.id}:default")
     assert "add2" in plugin
