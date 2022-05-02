@@ -523,13 +523,15 @@ class WorkspaceManager:
                 workspace + "/" + client_info.id,
             )
 
-        client_keys = await self._redis.smembers(
-            f"client:{workspace}/{client_info.id}:children"
-        )
-        children = [k.decode() for k in client_keys]
-        for client_id in children:
-            ws, cid = client_id.split("/")
-            await self.delete_client(cid, ws)
+        # Remove children if the user is anonymous
+        if client_info.user_info.is_anonymous:
+            client_keys = await self._redis.smembers(
+                f"client:{workspace}/{client_info.id}:children"
+            )
+            children = [k.decode() for k in client_keys]
+            for client_id in children:
+                ws, cid = client_id.split("/")
+                await self.delete_client(cid, ws)
 
         user_info = client_info.user_info
         if user_info.is_anonymous:
