@@ -18,7 +18,7 @@ import multihash
 import shortuuid
 from aiobotocore.session import get_session
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from jinja2 import Environment, PackageLoader, select_autoescape
 from starlette.responses import Response
 
@@ -29,7 +29,6 @@ from hypha.plugin_parser import convert_config_to_rdf, parse_imjoy_plugin
 from hypha.runner.browser import BrowserAppRunner
 from hypha.utils import (
     PLUGIN_CONFIG_FIELDS,
-    SyncFileResponse,
     dotdict,
     list_objects_async,
     remove_objects_async,
@@ -144,7 +143,7 @@ class ServerAppController:
                     )
             path = safe_join(str(self.apps_dir), workspace, path)
             if os.path.exists(path):
-                return SyncFileResponse(path)
+                return FileResponse(path)
 
             return JSONResponse(
                 status_code=404,
@@ -521,7 +520,7 @@ class ServerAppController:
         )
 
     def _client_deleted(self, client: dict) -> None:
-        """Callback when client is deleted."""
+        """Called when client is deleted."""
         client = ClientInfo.parse_obj(client)
         page_id = f"{client.workspace}/{client.id}"
         if page_id in self._client_callbacks:
@@ -532,7 +531,7 @@ class ServerAppController:
                 deleted(client)
 
     def _client_updated(self, client: dict) -> None:
-        """Callback when client is updated."""
+        """Called when client is updated."""
         client = ClientInfo.parse_obj(client)
         page_id = f"{client.workspace}/{client.id}"
         if page_id in self._client_callbacks:

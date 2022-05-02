@@ -620,20 +620,19 @@ class S3Controller:
         items = list_objects_sync(self.s3client, self.workspace_bucket, log_base_name)
         # sort the log files based on the last number
         items = sorted(items, key=lambda file: -int(file["name"].split(".")[-1]))
-        if len(items) > 0:
-            start_index = int(items[0]["name"].split(".")[-1]) + 1
-        else:
-            start_index = 0
+        # if len(items) > 0:
+        #     start_index = int(items[0]["name"].split(".")[-1]) + 1
+        # else:
+        #     start_index = 0
 
-        ready_logger = setup_logger(
-            self.s3client,
-            self.workspace_bucket,
-            workspace.name,
-            start_index,
-            workspace.name,
-            log_base_name,
-        )
-        # workspace.set_logger(ready_logger)
+        # ready_logger = setup_logger(
+        #     self.s3client,
+        #     self.workspace_bucket,
+        #     workspace.name,
+        #     start_index,
+        #     workspace.name,
+        #     log_base_name,
+        # )
 
     def _save_workspace_config(self, workspace: dict):
         """Save workspace."""
@@ -656,7 +655,8 @@ class S3Controller:
             workspace, user_info
         ):
             raise PermissionError(
-                f"User {user_info.id} does not have write permission to the workspace {workspace}"
+                f"User {user_info.id} does not have write"
+                f" permission to the workspace {workspace}"
             )
         password = generate_password()
         self.minio_client.admin_user_add(user_info.id, password)

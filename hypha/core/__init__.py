@@ -168,6 +168,7 @@ class RedisRPCConnection:
     def __init__(
         self, redis: aioredis.Redis, workspace: str, client_id: str, user_info: UserInfo
     ):
+        """Intialize Redis RPC Connection"""
         self._redis = redis
         self._handle_message = None
         self._subscribe_task = None
@@ -177,11 +178,13 @@ class RedisRPCConnection:
         self._user_info = user_info.dict()
 
     def on_message(self, handler: Callable):
+        """Setting message handler."""
         self._handle_message = handler
         self._is_async = inspect.iscoroutinefunction(handler)
         self._subscribe_task = asyncio.ensure_future(self._subscribe_redis())
 
     async def emit_message(self, data: Union[dict, bytes]):
+        """Send message."""
         assert self._handle_message is not None, "No handler for message"
         assert isinstance(data, bytes)
         unpacker = msgpack.Unpacker(io.BytesIO(data))
@@ -203,6 +206,7 @@ class RedisRPCConnection:
         await self._redis.publish(f"{target_id}:msg", data)
 
     async def disconnect(self, reason=None):
+        """Disconnect."""
         self._redis = None
         self._handle_message = None
         if self._subscribe_task:

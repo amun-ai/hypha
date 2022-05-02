@@ -201,9 +201,11 @@ class WorkspaceManager:
         """Register a service"""
         user_info = UserInfo.parse_obj(context["user"])
         source_workspace = context["from"].split("/")[0]
-        assert (
-            source_workspace == self._workspace
-        ), f"Service must be registered in the same workspace: {source_workspace} != {self._workspace} (current workspace)."
+        assert source_workspace == self._workspace, (
+            f"Service must be registered in the same workspace: "
+            f"{source_workspace} != {self._workspace} (current workspace)."
+        )
+
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
         logger.info("Registering service %s to %s", service.id, self._workspace)
@@ -792,8 +794,7 @@ class WorkspaceManager:
         """Get all workspaces."""
         workspaces = await self._redis.hgetall("workspaces")
         return [
-            WorkspaceInfo.parse_obj(json.loads(v.decode()))
-            for v in workspaces.values()
+            WorkspaceInfo.parse_obj(json.loads(v.decode())) for v in workspaces.values()
         ]
 
     async def check_permission(

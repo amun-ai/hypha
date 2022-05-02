@@ -43,7 +43,6 @@ async def test_server_apps(fastapi_server):
         {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 30}
     )
     workspace = api.config["workspace"]
-    token = await api.generate_token()
 
     # objects = await api.list_remote_objects()
     # assert len(objects) == 1
@@ -101,7 +100,6 @@ async def test_web_python_apps(fastapi_server):
     """Test webpython plugin."""
     api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
     workspace = api.config["workspace"]
-    token = await api.generate_token()
 
     controller = await api.get_service("server-apps")
     source = (
@@ -146,7 +144,6 @@ async def test_readiness_liveness(fastapi_server):
     """Test readiness and liveness probes."""
     api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
     workspace = api.config["workspace"]
-    token = await api.generate_token()
 
     # Test plugin with custom template
     controller = await api.get_service("server-apps")
@@ -183,7 +180,6 @@ async def test_non_persistent_workspace(fastapi_server):
     """Test non-persistent workspace."""
     api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
     workspace = api.config["workspace"]
-    token = await api.generate_token()
 
     # Test plugin with custom template
     controller = await api.get_service("server-apps")

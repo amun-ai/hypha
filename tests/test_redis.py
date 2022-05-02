@@ -1,12 +1,11 @@
+import asyncio
 import time
-import os
 
 import numpy as np
 import pytest
-import asyncio
 import pytest_asyncio
-
 from imjoy_rpc.hypha.websocket_client import connect_to_server
+
 from hypha.core.store import RedisStore
 
 from . import SIO_PORT, find_item
@@ -16,6 +15,7 @@ pytestmark = pytest.mark.asyncio
 
 @pytest_asyncio.fixture()
 async def redis_store():
+    """Represent the redis store."""
     store = RedisStore(None, redis_uri="/tmp/redis-temp.db", redis_port=6388)
     await store.init(reset_redis=True)
     yield store
@@ -180,7 +180,7 @@ async def test_websocket_server(fastapi_server, test_user_token):
         }
     )
     with pytest.raises(Exception, match=r".*Permission denied for protected method.*"):
-        await remote_echo(123) == 123
+        await remote_echo(123)
 
     wm2 = await connect_to_server(
         dict(
