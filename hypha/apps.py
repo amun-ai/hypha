@@ -352,7 +352,7 @@ class ServerAppController:
             "name": "Server Apps",
             "id": "server-apps",
             "type": "server-apps",
-            "config": {"visibility": "public", "__require_context__": True},
+            "config": {"visibility": "public", "require_context": True},
             "install": self.install,
             "uninstall": self.uninstall,
             "launch": self.launch,
