@@ -529,6 +529,11 @@ class WorkspaceManager:
                 f"client:{workspace}/{client_info.id}:children"
             )
             children = [k.decode() for k in client_keys]
+            logger.info(
+                "Removing children client of %s (count: %d)",
+                client_info.id,
+                len(children),
+            )
             for client_id in children:
                 ws, cid = client_id.split("/")
                 await self.delete_client(cid, ws)

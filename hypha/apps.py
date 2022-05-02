@@ -858,9 +858,15 @@ class ServerAppController:
             # TODO: Disconnect the app
 
             app_info["watch"] = False  # make sure we don't keep-alive
-            await app_info["runner"].stop(client_id)
             if page_id in self._apps:
                 del self._apps[page_id]
+            try:
+                await app_info["runner"].stop(client_id)
+            except Exception as exp:
+                if raise_exception:
+                    raise
+                else:
+                    logger.warning("Failed to stop browser tab: %s", exp)
         elif raise_exception:
             raise Exception(f"Server app instance not found: {client_id}")
 
