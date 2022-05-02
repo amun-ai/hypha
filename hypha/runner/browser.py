@@ -179,11 +179,10 @@ class BrowserAppRunner:
             "id": "browser-runner-" + shortuuid.uuid(),
             "name": "browser-app-runner",
             "type": "plugin-runner",
-            "config": {"visibility": "protected"},
+            "config": {"visibility": "protected", "require_context": True},
             "start": self.start,
             "stop": self.stop,
             "list": self.list,
             "get_log": self.get_log,
-            "_rintf": True,
         }
         return controller

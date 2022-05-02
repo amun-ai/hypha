@@ -361,7 +361,6 @@ class ServerAppController:
             "list_apps": self.list_apps,
             "list_running": self.list_running,
             "get_log": self.get_log,
-            "_rintf": True,
         }
         return controller
 
