@@ -390,8 +390,6 @@ class RedisStore:
             "require_context" not in service
         ), "`require_context` should be placed inside `config`"
         formated_service = ServiceInfo.parse_obj(service)
-        # Force to require context
-        formated_service.config.require_context = True
         # service["_rintf"] = True
         # Note: service can set its `visibility` to `public` or `protected`
         self._public_services.append(ServiceInfo.parse_obj(formated_service))
