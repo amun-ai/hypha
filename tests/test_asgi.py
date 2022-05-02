@@ -62,7 +62,7 @@ async def test_functions(fastapi_server):
     )
     config = await controller.launch(
         source=source,
-        wait_for_service="hello-functions",  # execute the setup() function after started
+        wait_for_service="hello-functions",
     )
 
     service = await api.get_service(
