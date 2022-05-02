@@ -62,13 +62,8 @@ async def test_functions(fastapi_server):
     )
     config = await controller.launch(
         source=source,
-        wait_for_service="default",  # execute the setup() function after started
+        wait_for_service="hello-functions",  # execute the setup() function after started
     )
-    # plugin = await api.get_plugin(config.id)
-    # await plugin.setup()
-
-    # Wait for the setup() to finish
-    await asyncio.sleep(1)
 
     service = await api.get_service(
         {"workspace": config.workspace, "id": "hello-functions"}
