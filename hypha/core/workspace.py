@@ -539,9 +539,7 @@ class WorkspaceManager:
                 try:
                     await self.delete_client(cid, ws)
                 except Exception as exp:
-                    logger.warning(
-                        "Failed to remove client: %s, error: %s", cid, exp
-                    )
+                    logger.warning("Failed to remove client: %s, error: %s", cid, exp)
 
         user_info = client_info.user_info
         if user_info.is_anonymous:

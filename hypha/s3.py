@@ -581,18 +581,13 @@ class S3Controller:
                         "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
                         "Condition": {
                             "StringEquals": {
-                                "s3:prefix": ["", f"{workspace.name}"],
+                                "s3:prefix": [
+                                    "",
+                                    f"{workspace.name}/",
+                                    f"{workspace.name}/*",
+                                ],
                                 "s3:delimiter": ["/"],
                             }
-                        },
-                    },
-                    {
-                        "Sid": "AllowListingOfWorkspaceFolder",
-                        "Action": ["s3:ListBucket"],
-                        "Effect": "Allow",
-                        "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
-                        "Condition": {
-                            "StringLike": {"s3:prefix": [f"{workspace.name}/*"]}
                         },
                     },
                     {
