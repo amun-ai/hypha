@@ -6,6 +6,7 @@ from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from hypha.core import UserInfo
 from hypha.core.auth import login_optional
 from hypha.utils import (
     safe_join,
@@ -70,9 +71,9 @@ class RDFController:
         store.register_router(router)
         store.register_public_service(self.get_rdf_service())
 
-    def save(self, name, source):
+    def save(self, name, source, context: dict = None):
         """Save an RDF."""
-        user_info = self.store.current_user.get()
+        user_info = UserInfo.parse_obj(context["user"])
         response = self.s3client.put_object(
             ACL="public-read",
             Body=source,
@@ -85,9 +86,9 @@ class RDFController:
         ), f"Failed to deploy app: {name}"
         self.event_bus.emit("rdf_added", f"{user_info.id}/{name}")
 
-    def remove(self, name):
+    def remove(self, name, context: dict = None):
         """Remove an RDF."""
-        user_info = self.store.current_user.get()
+        user_info = UserInfo.parse_obj(context["user"])
         response = self.s3client.delete_object(
             Bucket=self.rdf_bucket,
             Key=f"{user_info.id}/{name}",
@@ -98,7 +99,7 @@ class RDFController:
         ), f"Failed to undeploy app: {name}"
         self.event_bus.emit("rdf_removed", f"{user_info.id}/{name}")
 
-    def list(self, user: str = None):
+    def list(self, user: str = None, context: dict = None):
         """List all the RDFs."""
         items = list_objects_sync(
             self.s3client, self.rdf_bucket, prefix=user, delimeter=""
@@ -119,7 +120,7 @@ class RDFController:
         """Get rdf controller."""
         return {
             "id": "rdf",
-            "config": {"visibility": "public"},
+            "config": {"visibility": "public", "require_context": True},
             "name": "RDF",
             "type": "rdf",
             "save": self.save,

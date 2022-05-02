@@ -30,6 +30,7 @@ class TokenConfig(BaseModel):
     scopes: List[str]
     expires_in: Optional[int]
     email: Optional[EmailStr]
+    parent_client: Optional[str]
 
 
 class VisibilityEnum(str, Enum):
@@ -88,15 +89,22 @@ class UserInfo(BaseModel):
         default_factory=lambda: {}
     )  # e.g. s3 credential
 
-    def get_metadata(self) -> Dict[str, Any]:
+    def get_metadata(self, key=None) -> Dict[str, Any]:
         """Return the metadata."""
+        if key:
+            return self._metadata.get(key)
         return self._metadata
+
+    def set_metadata(self, key, value):
+        """Set the metadata."""
+        self._metadata[key] = value
 
 
 class ClientInfo(BaseModel):
     """Represent service."""
 
     id: str
+    parent: Optional[str]
     name: Optional[str]
     workspace: str
     services: List[ServiceInfo] = []
@@ -160,6 +168,7 @@ class RedisRPCConnection:
     def __init__(
         self, redis: aioredis.Redis, workspace: str, client_id: str, user_info: UserInfo
     ):
+        """Intialize Redis RPC Connection"""
         self._redis = redis
         self._handle_message = None
         self._subscribe_task = None
@@ -169,11 +178,13 @@ class RedisRPCConnection:
         self._user_info = user_info.dict()
 
     def on_message(self, handler: Callable):
+        """Setting message handler."""
         self._handle_message = handler
         self._is_async = inspect.iscoroutinefunction(handler)
         self._subscribe_task = asyncio.ensure_future(self._subscribe_redis())
 
     async def emit_message(self, data: Union[dict, bytes]):
+        """Send message."""
         assert self._handle_message is not None, "No handler for message"
         assert isinstance(data, bytes)
         unpacker = msgpack.Unpacker(io.BytesIO(data))
@@ -195,6 +206,7 @@ class RedisRPCConnection:
         await self._redis.publish(f"{target_id}:msg", data)
 
     async def disconnect(self, reason=None):
+        """Disconnect."""
         self._redis = None
         self._handle_message = None
         if self._subscribe_task:

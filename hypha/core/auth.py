@@ -106,7 +106,7 @@ def get_user_info(token):
     """Return the user info from the token."""
     credentials = token.credentials
     expires_at = credentials["exp"]
-    return UserInfo(
+    info = UserInfo(
         id=credentials.get("sub"),
         is_anonymous=False,
         email=credentials.get("https://api.imjoy.io/email"),
@@ -115,6 +115,9 @@ def get_user_info(token):
         scopes=token.scopes,
         expires_at=expires_at,
     )
+    if credentials.get("pc"):
+        info.set_metadata("parent_client", credentials.get("pc"))
+    return info
 
 
 JWKS = None
@@ -289,6 +292,7 @@ def generate_presigned_token(
             "exp": expires_at,
             "scope": " ".join(scopes),
             "parent": parent,
+            "pc": config.parent_client,
             "gty": "client-credentials",
             "https://api.imjoy.io/roles": [],
             "https://api.imjoy.io/email": email,

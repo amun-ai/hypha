@@ -52,6 +52,7 @@ class WebsocketServer:
                 await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
                 return
 
+            parent_client = None
             if reconnection_token:
                 logger.info(
                     f"Reconnecting client via token: {reconnection_token[:5]}..."
@@ -59,7 +60,8 @@ class WebsocketServer:
                 user_info, ws, cid = parse_reconnection_token(reconnection_token)
                 if await store.get_workspace(ws) is None:
                     logger.error(
-                        "Failed to recover the connection (client: %s), workspace has been removed: %s",
+                        "Failed to recover the connection (client: %s),"
+                        " workspace has been removed: %s",
                         cid,
                         ws,
                     )
@@ -78,6 +80,7 @@ class WebsocketServer:
                 if token:
                     try:
                         user_info = parse_token(token)
+                        parent_client = user_info.get_metadata("parent_client")
                         await store.register_user(user_info)
                     except Exception:
                         logger.error("Invalid token: %s", token)
@@ -128,7 +131,8 @@ class WebsocketServer:
                 return
             if not await workspace_manager.check_permission(user_info):
                 logger.error(
-                    "Permission denied (workspace: %s, user: %s, client: %s, scopes: %s)",
+                    "Permission denied (workspace: %s,"
+                    " user: %s, client: %s, scopes: %s)",
                     workspace,
                     user_info.id,
                     client_id,
@@ -139,7 +143,8 @@ class WebsocketServer:
 
             if await workspace_manager.check_client_exists(client_id):
                 logger.error(
-                    "Another client with the same id %s already connected to workspace: %s",
+                    "Another client with the same id %s"
+                    " already connected to workspace: %s",
                     client_id,
                     workspace,
                 )
@@ -160,6 +165,7 @@ class WebsocketServer:
             await workspace_manager.register_client(
                 ClientInfo(
                     id=client_id,
+                    parent=parent_client,
                     workspace=workspace_manager._workspace,
                     user_info=user_info,
                 )
@@ -180,7 +186,8 @@ class WebsocketServer:
                     await workspace_manager.delete()
                 else:
                     logger.error(
-                        "Websocket (client=%s) disconnected unexpectedly: %s (will be removed in %s seconds)",
+                        "Websocket (client=%s) disconnected"
+                        " unexpectedly: %s (will be removed in %s seconds)",
                         client_id,
                         exp,
                         DISCONNECT_DELAY,

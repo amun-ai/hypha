@@ -4,8 +4,6 @@ import logging
 import random
 import asyncio
 import sys
-from contextvars import ContextVar, copy_context
-from functools import partial
 from typing import Dict, List
 
 import aioredis
@@ -45,8 +43,6 @@ class RedisStore:
         redis_port=6383,
     ):
         """Initialize the redis store."""
-        self.current_user = ContextVar("current_user")
-        self.current_workspace = ContextVar("current_workspace")
         self._all_users: Dict[str, UserInfo] = {}  # uid:user_info
         self._all_workspaces: Dict[str, WorkspaceInfo] = {}  # wid:workspace_info
         self._workspace_loader = None
@@ -212,8 +208,8 @@ class RedisStore:
         if overwrite:
             # clean up the clients and users in the workspace
             client_keys = await self._redis.hkeys(f"{workspace.name}:clients")
-            for k in client_keys:
-                client_id = k.decode()
+            for client_id in client_keys:
+                client_id = client_id.decode()
                 client_info = await self._redis.hget(
                     f"{workspace.name}:clients", client_id
                 )
@@ -394,25 +390,6 @@ class RedisStore:
             "require_context" not in service
         ), "`require_context` should be placed inside `config`"
         formated_service = ServiceInfo.parse_obj(service)
-        # Force to require context
-        formated_service.config.require_context = True
-        service_dict = formated_service.dict()
-
-        for key in service_dict:
-            if callable(service_dict[key]):
-
-                def wrap_func(func, *args, context=None, **kwargs):
-                    user_info = UserInfo.parse_obj(context["user"])
-                    self.current_user.set(user_info)
-                    source_workspace = context["from"].split("/")[0]
-                    self.current_workspace.set(source_workspace)
-                    ctx = copy_context()
-                    return ctx.run(func, *args, **kwargs)
-
-                wrapped = partial(wrap_func, service_dict[key])
-                wrapped.__name__ = key
-                setattr(formated_service, key, wrapped)
-        # service["_rintf"] = True
         # Note: service can set its `visibility` to `public` or `protected`
         self._public_services.append(ServiceInfo.parse_obj(formated_service))
         return {

@@ -50,7 +50,7 @@ async def patch_imjoy_rpc(default_config):
 
     # create a fake imjoy_rpc to patch hypha rpc
     imjoy_rpc = ModuleType("imjoy_rpc")
-    sys.modules[imjoy_rpc.__name__] = imjoy_rpc
+    sys.modules["imjoy_rpc"] = imjoy_rpc
     imjoy_rpc.api = dotdict(export=export)
     return imjoy_rpc
 

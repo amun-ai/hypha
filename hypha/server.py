@@ -291,7 +291,8 @@ def get_argparser():
         "--endpoint-url-public",
         type=str,
         default=None,
-        help="set public endpoint URL for S3 (if different from the local endpoint one)",
+        help="set public endpoint URL for S3"
+        "(if different from the local endpoint one)",
     )
     parser.add_argument(
         "--access-key-id",

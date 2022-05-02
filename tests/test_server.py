@@ -2,7 +2,6 @@
 import os
 import subprocess
 import sys
-import asyncio
 
 
 import pytest
@@ -151,7 +150,7 @@ async def test_workspace(fastapi_server):
             "client_id": "my-plugin",
             "name": "my plugin",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 1000,
+            "method_timeout": 20,
         }
     )
     await api.log("hi")
@@ -199,7 +198,7 @@ async def test_workspace(fastapi_server):
             "workspace": "my-test-workspace",
             "server_url": WS_SERVER_URL,
             "token": token,
-            "method_timeout": 100,
+            "method_timeout": 20,
         }
     )
     await api2.log("hi")

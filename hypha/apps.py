@@ -18,18 +18,17 @@ import multihash
 import shortuuid
 from aiobotocore.session import get_session
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from jinja2 import Environment, PackageLoader, select_autoescape
 from starlette.responses import Response
 
-from hypha.core import RDF, ClientInfo, StatusEnum
+from hypha.core import RDF, ClientInfo, StatusEnum, UserInfo
 from hypha.core.auth import parse_user
 from hypha.core.store import RedisStore
 from hypha.plugin_parser import convert_config_to_rdf, parse_imjoy_plugin
 from hypha.runner.browser import BrowserAppRunner
 from hypha.utils import (
     PLUGIN_CONFIG_FIELDS,
-    SyncFileResponse,
     dotdict,
     list_objects_async,
     remove_objects_async,
@@ -144,7 +143,7 @@ class ServerAppController:
                     )
             path = safe_join(str(self.apps_dir), workspace, path)
             if os.path.exists(path):
-                return SyncFileResponse(path)
+                return FileResponse(path)
 
             return JSONResponse(
                 status_code=404,
@@ -158,6 +157,7 @@ class ServerAppController:
 
         event_bus.on_local("shutdown", close)
         event_bus.on("client_updated", self._client_updated)
+        event_bus.on("client_deleted", self._client_deleted)
         asyncio.ensure_future(self.initialize())
 
     async def initialize(self) -> None:
@@ -199,7 +199,6 @@ class ServerAppController:
 
     def _on_workspace_removed(self, workspace: dict):
         # Shutdown the apps in the workspace
-        self.store.current_workspace.set(workspace["name"])
         for app in self._apps.values():
             if app["workspace"] == workspace["name"]:
                 logger.info(
@@ -207,7 +206,7 @@ class ServerAppController:
                     app["id"],
                     workspace["name"],
                 )
-                asyncio.ensure_future(self.stop(app["id"]))
+                asyncio.ensure_future(self.stop(app["id"], workspace=workspace["name"]))
 
     async def list_saved_workspaces(
         self,
@@ -224,7 +223,7 @@ class ServerAppController:
     ):
         """List applications in the workspace."""
         if not workspace:
-            workspace = self.store.current_workspace.get()
+            workspace = context["from"].split("/")[0]
 
         workspace = await self.store.get_workspace(workspace)
         return [app_info.dict() for app_info in workspace.applications.values()]
@@ -362,7 +361,6 @@ class ServerAppController:
             "list_apps": self.list_apps,
             "list_running": self.list_running,
             "get_log": self.get_log,
-            "_rintf": True,
         }
         return controller
 
@@ -384,11 +382,11 @@ class ServerAppController:
             else:
                 template = "imjoy"
         if not workspace:
-            workspace = self.store.current_workspace.get()
+            workspace = context["from"].split("/")[0]
 
+        user_info = UserInfo.parse_obj(context["user"])
         workspace = await self.store.get_workspace(workspace)
 
-        user_info = self.store.current_user.get()
         if not await self.store.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
@@ -472,7 +470,7 @@ class ServerAppController:
         workspace_name, mhash = app_id.split("/")
         workspace = await self.store.get_workspace(workspace_name)
 
-        user_info = self.store.current_user.get()
+        user_info = UserInfo.parse_obj(context["user"])
         if not await self.store.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
@@ -491,8 +489,6 @@ class ServerAppController:
     async def launch(
         self,
         source: str,
-        workspace: str,
-        token: Optional[str] = None,
         timeout: float = 60,
         config: Optional[Dict[str, Any]] = None,
         attachments: List[dict] = None,
@@ -500,21 +496,13 @@ class ServerAppController:
         context: Optional[dict] = None,
     ) -> dotdict:
         """Start a server app instance."""
-        if token:
-            user_info = parse_user(token)
-        else:
-            user_info = self.store.current_user.get()
-        if not await self.store.check_permission(workspace, user_info):
-            raise Exception(
-                f"User {user_info.id} does not have permission"
-                f" to run app in workspace {workspace}."
-            )
-
+        workspace = context["from"].split("/")[0]
         app_info = await self.install(
             source,
             attachments=attachments,
             config=config,
             workspace=workspace,
+            context=context,
         )
         app_id = app_info["id"]
 
@@ -525,14 +513,24 @@ class ServerAppController:
 
         return await self.start(
             app_id,
-            workspace=workspace,
-            token=token,
             timeout=timeout,
             wait_for_service=wait_for_service,
+            context=context,
         )
 
+    def _client_deleted(self, client: dict) -> None:
+        """Called when client is deleted."""
+        client = ClientInfo.parse_obj(client)
+        page_id = f"{client.workspace}/{client.id}"
+        if page_id in self._client_callbacks:
+            callbacks = self._client_callbacks[page_id]
+            if "deleted" in callbacks:
+                deleted = callbacks["deleted"]
+                del callbacks["deleted"]
+                deleted(client)
+
     def _client_updated(self, client: dict) -> None:
-        """Callback when client is updated."""
+        """Called when client is updated."""
         client = ClientInfo.parse_obj(client)
         page_id = f"{client.workspace}/{client.id}"
         if page_id in self._client_callbacks:
@@ -553,8 +551,6 @@ class ServerAppController:
     async def start(
         self,
         app_id,
-        workspace=None,
-        token=None,
         client_id=None,
         timeout: float = 60,
         loop_count=0,
@@ -564,14 +560,15 @@ class ServerAppController:
         """Start the app and keep it alive."""
         if wait_for_service is True:
             wait_for_service = "default"
-        if workspace is None:
-            workspace = self.store.current_workspace.get()
+
+        workspace = context["from"].split("/")[0]
         if workspace != app_id.split("/")[0]:
             raise Exception("Workspace mismatch between app_id and workspace.")
-        if token is None:
-            ws = await self.store.get_workspace_interface(workspace)
-            token = ws.generate_token()
-        user_info = parse_user(token)
+
+        ws = await self.store.get_workspace_interface(workspace)
+        token = await ws.generate_token({"parent_client": context["from"]})
+
+        user_info = UserInfo.parse_obj(context["user"])
         if not await self.store.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
@@ -757,12 +754,11 @@ class ServerAppController:
                         # start a new one
                         await self.start(
                             app_id,
-                            workspace=workspace,
-                            token=token,
                             client_id=client_id,
                             timeout=timeout,
                             loop_count=loop_count,
                             wait_for_service=wait_for_service,
+                            context=context,
                         )
 
                     else:
@@ -796,10 +792,15 @@ class ServerAppController:
             app_info["watch"] = False
             fut.set_exception(Exception(detail))
 
+        def deleted(client):
+            asyncio.ensure_future(self.stop(client.id, False, context=context))
+
         self._client_callbacks[page_id] = {
             "connect": connect,
             "cleanup": cleanup,
+            "deleted": deleted,
         }
+
         if wait_for_service:
             svc_fut = asyncio.Future()
             service_id = "default" if wait_for_service is True else wait_for_service
@@ -830,10 +831,17 @@ class ServerAppController:
         return config
 
     async def stop(
-        self, client_id: str, raise_exception=True, context: Optional[dict] = None
+        self,
+        client_id: str,
+        raise_exception=True,
+        workspace=None,
+        context: Optional[dict] = None,
     ) -> None:
         """Stop a server app instance."""
-        workspace = self.store.current_workspace.get()
+        if context:
+            assert workspace is None
+            workspace = context["from"].split("/")[0]
+
         page_id = workspace + "/" + client_id
         if page_id in self._client_callbacks:
             callbacks = self._client_callbacks[page_id]
@@ -865,7 +873,7 @@ class ServerAppController:
         context: Optional[dict] = None,
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get server app instance log."""
-        workspace = self.store.current_workspace.get()
+        workspace = context["from"].split("/")[0]
         page_id = workspace + "/" + client_id
         if page_id in self._apps:
             return await self._apps[page_id]["runner"].get_log(
@@ -876,7 +884,7 @@ class ServerAppController:
 
     async def list_running(self, context: Optional[dict] = None) -> List[str]:
         """List the running sessions for the current workspace."""
-        workspace = self.store.current_workspace.get()
+        workspace = context["from"].split("/")[0]
         sessions = [
             {k: v for k, v in page_info.items() if k != "runner"}
             for page_id, page_info in self._apps.items()

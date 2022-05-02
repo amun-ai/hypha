@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, Response
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
-from hypha.core import ClientInfo, WorkspaceInfo
+from hypha.core import ClientInfo, WorkspaceInfo, UserInfo
 from hypha.core.auth import login_optional
 from hypha.core.store import RedisStore
 from hypha.minio import MinioClient
@@ -620,20 +620,19 @@ class S3Controller:
         items = list_objects_sync(self.s3client, self.workspace_bucket, log_base_name)
         # sort the log files based on the last number
         items = sorted(items, key=lambda file: -int(file["name"].split(".")[-1]))
-        if len(items) > 0:
-            start_index = int(items[0]["name"].split(".")[-1]) + 1
-        else:
-            start_index = 0
+        # if len(items) > 0:
+        #     start_index = int(items[0]["name"].split(".")[-1]) + 1
+        # else:
+        #     start_index = 0
 
-        ready_logger = setup_logger(
-            self.s3client,
-            self.workspace_bucket,
-            workspace.name,
-            start_index,
-            workspace.name,
-            log_base_name,
-        )
-        # workspace.set_logger(ready_logger)
+        # ready_logger = setup_logger(
+        #     self.s3client,
+        #     self.workspace_bucket,
+        #     workspace.name,
+        #     start_index,
+        #     workspace.name,
+        #     log_base_name,
+        # )
 
     def _save_workspace_config(self, workspace: dict):
         """Save workspace."""
@@ -648,15 +647,16 @@ class S3Controller:
             and response["ResponseMetadata"]["HTTPStatusCode"] == 200
         ), f"Failed to save workspace ({workspace.name}) config: {response}"
 
-    async def generate_credential(self):
+    async def generate_credential(self, context: dict = None):
         """Generate credential."""
-        user_info = self.store.current_user.get()
-        workspace = self.store.current_workspace.get()
+        workspace = context["from"].split("/")[0]
+        user_info = UserInfo.parse_obj(context["user"])
         if workspace == "public" or not await self.store.check_permission(
             workspace, user_info
         ):
             raise PermissionError(
-                f"User {user_info.id} does not have write permission to the workspace {workspace}"
+                f"User {user_info.id} does not have write"
+                f" permission to the workspace {workspace}"
             )
         password = generate_password()
         self.minio_client.admin_user_add(user_info.id, password)
@@ -671,10 +671,13 @@ class S3Controller:
         }
 
     async def list_files(
-        self, path: str = "", max_length: int = 1000
+        self,
+        path: str = "",
+        max_length: int = 1000,
+        context: dict = None,
     ) -> Dict[str, Any]:
         """List files in the folder."""
-        workspace = self.store.current_workspace.get()
+        workspace = context["from"].split("/")[0]
         path = safe_join(workspace, path)
         async with self.create_client_async() as s3_client:
             # List files in the folder
@@ -689,11 +692,16 @@ class S3Controller:
             return items
 
     async def generate_presigned_url(
-        self, bucket_name, object_name, client_method="get_object", expiration=3600
+        self,
+        bucket_name,
+        object_name,
+        client_method="get_object",
+        expiration=3600,
+        context: dict = None,
     ):
         """Generate presigned url."""
         try:
-            workspace = self.store.current_workspace.get()
+            workspace = context["from"].split("/")[0]
             if bucket_name != self.workspace_bucket or not object_name.startswith(
                 workspace + "/"
             ):
@@ -721,7 +729,7 @@ class S3Controller:
             "id": "s3-storage",
             "name": "S3 Storage",
             "type": "s3-storage",
-            "config": {"visibility": "public"},
+            "config": {"visibility": "public", "require_context": True},
             "list_files": self.list_files,
             "generate_credential": self.generate_credential,
             "generate_presigned_url": self.generate_presigned_url,

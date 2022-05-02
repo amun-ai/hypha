@@ -43,7 +43,6 @@ async def test_server_apps(fastapi_server):
         {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 30}
     )
     workspace = api.config["workspace"]
-    token = await api.generate_token()
 
     # objects = await api.list_remote_objects()
     # assert len(objects) == 1
@@ -57,8 +56,6 @@ async def test_server_apps(fastapi_server):
     config = await controller.launch(
         source=TEST_APP_CODE,
         config={"type": "window"},
-        workspace=workspace,
-        token=token,
         wait_for_service="default",
     )
     assert "app_id" in config
@@ -90,8 +87,6 @@ async def test_server_apps(fastapi_server):
 
     config = await controller.launch(
         source=source,
-        workspace=workspace,
-        token=token,
     )
     assert "app_id" in config
     plugin = await api.get_service(f"{workspace}/{config.id}:default")
@@ -105,7 +100,6 @@ async def test_web_python_apps(fastapi_server):
     """Test webpython plugin."""
     api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
     workspace = api.config["workspace"]
-    token = await api.generate_token()
 
     controller = await api.get_service("server-apps")
     source = (
@@ -115,8 +109,7 @@ async def test_web_python_apps(fastapi_server):
     )
     config = await controller.launch(
         source=source,
-        workspace=workspace,
-        token=token,
+        wait_for_service="default",
     )
     assert config.name == "WebPythonPlugin"
     plugin = await api.get_service(f"{workspace}/{config.id}:default")
@@ -132,8 +125,7 @@ async def test_web_python_apps(fastapi_server):
     )
     config = await controller.launch(
         source=source,
-        workspace=workspace,
-        token=token,
+        wait_for_service="default",
     )
     plugin = await api.get_service(f"{workspace}/{config.id}:default")
     assert "add2" in plugin
@@ -142,8 +134,6 @@ async def test_web_python_apps(fastapi_server):
     await controller.stop(config.id)
 
     config = await controller.launch(
-        workspace=workspace,
-        token=token,
         source="https://raw.githubusercontent.com/imjoy-team/"
         "ImJoy/master/web/src/plugins/webWorkerTemplate.imjoy.html",
     )
@@ -156,7 +146,6 @@ async def test_readiness_liveness(fastapi_server):
     """Test readiness and liveness probes."""
     api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
     workspace = api.config["workspace"]
-    token = await api.generate_token()
 
     # Test plugin with custom template
     controller = await api.get_service("server-apps")
@@ -169,8 +158,6 @@ async def test_readiness_liveness(fastapi_server):
 
     config = await controller.launch(
         source=source,
-        workspace=workspace,
-        token=token,
     )
 
     # assert config.name == "Unreliable Plugin"
@@ -195,7 +182,6 @@ async def test_non_persistent_workspace(fastapi_server):
     """Test non-persistent workspace."""
     api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
     workspace = api.config["workspace"]
-    token = await api.generate_token()
 
     # Test plugin with custom template
     controller = await api.get_service("server-apps")
@@ -208,8 +194,6 @@ async def test_non_persistent_workspace(fastapi_server):
 
     config = await controller.launch(
         source=source,
-        workspace=workspace,
-        token=token,
     )
 
     plugin = await api.get_service(f"{workspace}/{config.id}:default")
@@ -223,11 +207,12 @@ async def test_non_persistent_workspace(fastapi_server):
     workspace_info = find_item(stats["workspaces"], "name", workspace)
     assert workspace_info is not None
 
-    # We need to stop it manually for now,
-    # since the app client won't be removed automatically
-    await controller.stop(config.id)
+    # We don't need to stop manually, since it should be removed
+    # when the parent client exits
+    # await controller.stop(config.id)
+
     await api.disconnect()
-    await asyncio.sleep(1)
+    await asyncio.sleep(0.1)
 
     # now it should disappear from the stats
     response = requests.get(f"{SERVER_URL}/api/stats")
@@ -271,7 +256,7 @@ async def test_lazy_plugin(fastapi_server):
 async def test_lazy_service(fastapi_server):
     """Test lazy service loading."""
     api = await connect_to_server(
-        {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 120}
+        {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 5}
     )
 
     # Test plugin with custom template
