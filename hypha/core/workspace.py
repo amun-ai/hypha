@@ -987,4 +987,5 @@ class WorkspaceManager:
             "get_summary": self.get_summary,
             "getSummary": self.get_summary,
         }
+        interface["config"].update(self._server_info)
         return interface

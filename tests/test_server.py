@@ -153,6 +153,8 @@ async def test_workspace(fastapi_server):
             "method_timeout": 20,
         }
     )
+    assert api.config.workspace is not None
+    assert api.config.public_base_url.startswith('http')
     await api.log("hi")
     token = await api.generate_token()
     assert "@imjoy@" in token
