@@ -581,7 +581,7 @@ class S3Controller:
                         "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
                         "Condition": {
                             "StringEquals": {
-                                "s3:prefix": ["", f"{workspace.name}"],
+                                "s3:prefix": ["", f"{workspace.name}/"],
                                 "s3:delimiter": ["/"],
                             }
                         },

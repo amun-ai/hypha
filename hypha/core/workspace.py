@@ -79,7 +79,7 @@ class WorkspaceManager:
             rpc = self._create_rpc(client_id + "-" + shortuuid.uuid())
             try:
                 await rpc.ping(client_id)
-            except asyncio.exceptions.TimeoutError:
+            except asyncio.TimeoutError:
                 logger.info("Removing a dead workspace-manager client: %s", client_id)
                 await self.delete_client(client_id)
             else:
@@ -529,9 +529,17 @@ class WorkspaceManager:
                 f"client:{workspace}/{client_info.id}:children"
             )
             children = [k.decode() for k in client_keys]
+            logger.info(
+                "Removing children client of %s (count: %d)",
+                client_info.id,
+                len(children),
+            )
             for client_id in children:
                 ws, cid = client_id.split("/")
-                await self.delete_client(cid, ws)
+                try:
+                    await self.delete_client(cid, ws)
+                except Exception as exp:
+                    logger.warning("Failed to remove client: %s, error: %s", cid, exp)
 
         user_info = client_info.user_info
         if user_info.is_anonymous:
@@ -865,7 +873,7 @@ class WorkspaceManager:
                     workspace + "/workspace-manager:default", timeout=10
                 )
                 return wm
-            except asyncio.exceptions.TimeoutError:
+            except asyncio.TimeoutError:
                 logger.info(
                     "Failed to get the workspace manager service of %s", workspace
                 )

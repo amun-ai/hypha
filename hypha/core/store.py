@@ -416,7 +416,7 @@ class RedisStore:
         # The default priority is -1 which assumes the last one is websocket
         self._app.routes.insert(priority, route)
 
-    def umount_app(self, path):
+    def unmount_app(self, path):
         """Unmount an app to fastapi."""
         routes_remove = [route for route in self._app.routes if route.path == path]
         for route in routes_remove:
