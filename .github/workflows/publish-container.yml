@@ -29,6 +29,7 @@ jobs:
         id: check-version
         uses: salsify/action-detect-and-tag-new-version@v2.0.1
         with:
+          create-tag: false # Do not create new tag
           version-command: |
             bash -o pipefail -c "cat hypha/VERSION | jq -r '.version'"
 
