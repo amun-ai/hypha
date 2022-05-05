@@ -16,7 +16,7 @@ pyyaml==6.0
 requests==2.26.0
 shortuuid==1.0.8
 uvicorn==0.17.1
-httpx==0.21.1
+httpx==0.22.0
 pyotritonclient==0.2.4
 redislite==6.0.674960
 aioredis==2.0.1
