@@ -13,7 +13,7 @@ REQUIREMENTS = [
     "aiobotocore>=2.1.0",
     "aiofiles",
     "fastapi>=0.70.0",
-    "imjoy-rpc==0.5.7",
+    "imjoy-rpc==0.5.10",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=1.8.2",
@@ -29,7 +29,7 @@ REQUIREMENTS = [
     "shortuuid>=1.0.1",
     "uvicorn>=0.13.4",
     "httpx>=0.21.1",
-    "pyotritonclient>=0.2.2",
+    "pyotritonclient>=0.2.4",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()
