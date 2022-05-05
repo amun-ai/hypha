@@ -81,6 +81,12 @@ class WebsocketServer:
                     try:
                         user_info = parse_token(token)
                         parent_client = user_info.get_metadata("parent_client")
+                        if parent_client:
+                            logger.info(
+                                "Registering user %s (parent_client: %s)",
+                                user_info.id,
+                                parent_client,
+                            )
                         await store.register_user(user_info)
                     except Exception:
                         logger.error("Invalid token: %s", token)
@@ -177,13 +183,19 @@ class WebsocketServer:
                     await conn.emit_message(data)
             except WebSocketDisconnect as exp:
                 logger.info("Client disconnected: %s", client_id)
-                await workspace_manager.delete_client(client_id)
+                try:
+                    await workspace_manager.delete_client(client_id)
+                except KeyError:
+                    logger.info("Client already deleted: %s", client_id)
                 if exp.code in [
                     status.WS_1000_NORMAL_CLOSURE,
                     status.WS_1001_GOING_AWAY,
                 ]:
-                    # Clean up if the client is disconnected normally
-                    await workspace_manager.delete()
+                    try:
+                        # Clean up if the client is disconnected normally
+                        await workspace_manager.delete()
+                    except KeyError:
+                        logger.info("Workspace already deleted: %s", workspace)
                 else:
                     logger.error(
                         "Websocket (client=%s) disconnected"
