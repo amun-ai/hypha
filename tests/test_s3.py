@@ -132,7 +132,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
 
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, test_file_requests)
-
+        await asyncio.sleep(0.1)
         items = [item async for item in bucket.objects.filter(Prefix=info["prefix"])]
         assert find_item(
             items,
