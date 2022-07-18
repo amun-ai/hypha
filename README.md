@@ -12,7 +12,7 @@ Run the following command:
 pip install -U hypha
 ```
 
-If you want full support with server-side browser applications:
+If you want full support with server-side browser applications, run the following command instead:
 ```
 pip install -U hypha[server-apps]
 playwright install
@@ -30,7 +30,7 @@ python3 -m hypha.server --host=0.0.0.0 --port=9000
 If you want to enable server apps (i.e. browsers running on the server side), run:
 
 ```
-python -m hypha.server --port=9527 --enable-server-apps
+python -m hypha.server --host=0.0.0.0 --port=9000 --enable-server-apps
 ```
 
 
