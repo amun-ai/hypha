@@ -75,8 +75,8 @@ async def start_server(server_url):
         "hello": hello
     })
     
-    print(f"hello world service regisered at workspace: {api.config.workspace}")
-    print(f"Test it with the http proxy: {server_url}/{api.config.workspace}/services/hello-world/hello?name=John")
+    print(f"hello world service regisered at workspace: {server.config.workspace}")
+    print(f"Test it with the http proxy: {server_url}/{server.config.workspace}/services/hello-world/hello?name=John")
 
 if __name__ == "__main__":
     server_url = "http://localhost:9000"
