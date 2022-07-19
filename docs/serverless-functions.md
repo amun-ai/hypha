@@ -1,4 +1,4 @@
-## Serverless Functions
+# Serverless Functions
 
 You can register serverless function services which will be served as http endpoints.
 
