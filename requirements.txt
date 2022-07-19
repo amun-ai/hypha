@@ -10,7 +10,7 @@ numpy==1.21.2  # needs to stay compatible with latest tensorflow
 playwright==1.18.1
 pydantic[email]==1.9.1
 pymultihash==0.8.2
-python-dotenv==0.19.2
+python-dotenv==0.20.0
 python-jose==3.3.0
 pyyaml==6.0
 requests==2.26.0
