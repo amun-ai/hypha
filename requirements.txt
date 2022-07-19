@@ -6,7 +6,7 @@ imjoy-rpc==0.5.15
 jinja2==3.1.2
 lxml==4.9.1
 msgpack==1.0.4
-numpy==1.21.2  # needs to stay compatible with latest tensorflow
+numpy==1.22.0  # needs to stay compatible with latest tensorflow
 playwright==1.23.1
 pydantic[email]==1.9.1
 pymultihash==0.8.2
