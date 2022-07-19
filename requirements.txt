@@ -2,7 +2,7 @@ aiobotocore==2.1.0
 aiofiles==0.8.0
 base58==2.1.1
 fastapi==0.75.2
-imjoy-rpc==0.5.14
+imjoy-rpc==0.5.15
 jinja2==3.0.3
 lxml==4.7.1
 msgpack==1.0.3
