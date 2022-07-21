@@ -6,4 +6,4 @@ Hypha is an application framework for large-scale data management and AI model s
 Hypha server act as a hub for connecting different components through [imjoy-rpc](https://github.com/imjoy-team/imjoy-rpc).
 
 
-See https://amun-ai.github.io/hypha/ for more details.
+See https://ha.amun.ai for more detailed usage.
