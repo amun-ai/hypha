@@ -8,7 +8,7 @@ lxml==4.9.1
 msgpack==1.0.4
 numpy==1.21.2  # needs to stay compatible with latest tensorflow
 playwright==1.24.1
-pydantic[email]==1.9.1
+pydantic[email]==1.9.2
 pymultihash==0.8.2
 python-dotenv==0.20.0
 python-jose==3.3.0
