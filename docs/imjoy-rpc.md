@@ -39,7 +39,6 @@ ImJoy RPC is built on top of two-way transport layer. The data representation is
 
 Notes:
  - `_encode(...)` in the imjoy-rpc representation means the type will be recursively encoded (decoded).
- - For any JS object or Python dictonary, if it has a key named `_rintf` and the value is set to true, then this object will be treated as an interface. All functions contained in the object/dictionary, including all the children dictionary at any level, will be treated as `interface` function. Otherwise, it will be encoded as `callback`. The difference is `interface` function can be called many times, but the `callback` function can only be called once (Also see "Remote Objects" below).
  - For n-D numpy array, there is no established n-D array library in javascript, the current behavior is, if there is `tf`(Tensorflow.js) detected, then it will be decoded into `tf.Tensor`. If `nj`(numjs) is detected, then it will be decoded into `nj.array`.
  - Typed array will be represented as numpy array if available, otherwise it will be converted to raw bytes.    
     Type Conversion
