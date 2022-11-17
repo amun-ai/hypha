@@ -4,6 +4,14 @@ Symmetrical Transparent Remote Procedure Calls
 
 The core library that powers [ImJoy](https://imjoy.io).
 
+The imjoy-rpc v2 is wrapped under a submodule `imjoy_rpc.hypha`:
+
+```python
+from imjoy_rpc.hypha import connect_to_server
+
+server = await connect_to_server({"server_url": server_url})
+```
+
 
 ## Data type representation
 
@@ -22,11 +30,10 @@ ImJoy RPC is built on top of two-way transport layer. The data representation is
 | Set | Set | {_rtype: "set", _rvalue: _encode(Array.from(v))} |
 | Map | OrderedDict  |{_rtype: "orderedmap", _rvalue: _encode(Array.from(v))} |
 | Error | Exception | { _rtype: "error", _rvalue: v.toString() } |
-| Blob | BytesIO/StringIO  | { _rtype: "blob", _rvalue: v, _rmime: v.type } |
 | DataView | memoryview  |  { _rtype: "memoryview", _rvalue: v.buffer }|
 | TypedArray | 1-D numpy array*  |{_rtype: "typedarray", _rvalue: v.buffer, _rdtype: dtype} |
 | tf.Tensor/nj.array | numpy array  |{_rtype: "ndarray", _rvalue: v.buffer, _rshape: shape, _rdtype: _dtype} |
-| Function* | function/callable* | {_rtype: "interface", _rid: _rid, _rvalue: name} <br> {_rtype: "callback", _rvalue: id} |
+| Function* | function/callable* | {_rtype: "method", _rtarget: _rtarget, _rmethod: name, _rpromise: true/false } |
 | Class | class/dotdict()* | {...} |
 | custom | custom | encoder(v) (default `_rtype` = encoder name) |
 
@@ -53,9 +60,9 @@ Notes:
  - In Python, file instances (inherit from `io.IOBase`) will be automatically encoded.
 
  ## Encoding and decoding custom objects
- For the data or object types that are not in the table above, for example, a custom class, you can support them by register your own `codec`(i.e. encoder and decoder) with `api.registerCodec()`.
+ For the data or object types that are not in the table above, for example, a custom class, you can support them by register your own `codec`(i.e. encoder and decoder) with `server.register_codec()`.
 
- You need to provide a `name`, a `type`, `encoder` and `decoder` function. For example: in javascript, you can call `api.registerCodec({"name": "my_custom_codec", "type": MyClass, "encoder": (obj)=>{ ... return encoded;}, "decoder": (obj)=>{... return decoded;})`, or in Python you can do `api.registerCodec(name="my_custom_codec", type=MyClass, encoder=my_encoder_func, decoder=my_decoder_func)`.
+ You need to provide a `name`, a `type`, `encoder` and `decoder` function. For example: in javascript, you can call `server.register_codec({"name": "my_custom_codec", "type": MyClass, "encoder": (obj)=>{ ... return encoded;}, "decoder": (obj)=>{... return decoded;})`, or in Python you can do `server.register_codec(name="my_custom_codec", type=MyClass, encoder=my_encoder_func, decoder=my_decoder_func)`.
  
 
  The basic idea of using a custom codec is to use the `encoder` to represent your custom data type into array/dictionary of primitive types (string, number etc.) such that they can be send via the transport layer of imjoy-rpc. Then use the `decoder` to reconstruct the object remotely based on the representation.
