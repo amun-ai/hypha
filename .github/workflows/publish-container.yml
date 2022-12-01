@@ -27,7 +27,7 @@ jobs:
 
       - name: Detect and tag new version
         id: check-version
-        uses: salsify/action-detect-and-tag-new-version@v2.0.2
+        uses: salsify/action-detect-and-tag-new-version@v2.0.3
         with:
           create-tag: false # Do not create new tag
           version-command: |
