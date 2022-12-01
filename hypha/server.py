@@ -209,9 +209,9 @@ def start_server(args):
     uvicorn.run(application, host=args.host, port=int(args.port))
 
 
-def get_argparser():
+def get_argparser(add_help=True):
     """Return the argument parser."""
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(add_help=add_help)
     parser.add_argument(
         "--host",
         type=str,
