@@ -1,5 +1,5 @@
 aioboto3==10.4.0
-aiofiles==22.1.0
+aiofiles==23.1.0
 base58==2.1.1
 fastapi==0.89.1
 imjoy-rpc==0.5.15
