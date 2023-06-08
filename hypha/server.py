@@ -192,6 +192,12 @@ def start_server(args):
         public_base_url = args.public_base_url.strip("/")
     else:
         public_base_url = local_base_url
+    if args.static_mounts:
+        for index, mount in enumerate(args.static_mounts):
+            mountpath, localdir = mount.split(':')
+            static_folder = str(Path(__file__).parent / "static_files")
+            application.mount(mountpath, StaticFiles(directory=localdir),
+                              name=f"static-mount-{index}")
     store = RedisStore(
         application,
         public_base_url=public_base_url,
@@ -329,6 +335,12 @@ def get_argparser():
         type=str,
         default="bin",
         help="temporary directory for storing executables (e.g. mc, minio)",
+    )
+    parser.add_argument(
+        "--static-mounts",
+        type=str,
+        nargs='*',
+        help="extra directories to serve static files in the form <mountpath>:<localdir>, (e.g. /mystatic:./static/)",
     )
     return parser
 
