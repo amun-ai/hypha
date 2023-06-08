@@ -10,10 +10,9 @@ DESCRIPTION = (
 )
 
 REQUIREMENTS = [
-    "aiobotocore>=2.1.0",
     "aiofiles",
     "fastapi>=0.70.0",
-    "imjoy-rpc==0.5.15",
+    "imjoy-rpc>=0.5.16",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=1.8.2",
@@ -21,8 +20,7 @@ REQUIREMENTS = [
     "jinja2>=3",
     "lxml",
     "python-dotenv>=0.19.0",
-    "python-engineio==4.1.0",
-    "python-jose==3.3.0",
+    "python-jose>=3.3.0",
     "pyyaml",
     "redislite>=6.0.674960",
     "aioredis>=2.0.1",
@@ -54,7 +52,11 @@ setup(
     include_package_data=True,
     install_requires=REQUIREMENTS,
     extras_require={
+        "s3":[
+            "aiobotocore>=2.1.0",
+        ],
         "server-apps": [
+            "aiobotocore>=2.1.0",
             "requests>=2.26.0",
             "playwright>=1.18.1",
             "base58>=2.1.0",

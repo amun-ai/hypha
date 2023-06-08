@@ -102,10 +102,6 @@ class FSFileResponse(FileResponse):
                         {"type": "http.response.body", "body": b"", "more_body": False}
                     )
                 else:
-                    # Tentatively ignoring type checking failure to work around the
-                    # wrong type definitions for aiofiles that come with typeshed. See
-                    # https://github.com/python/typeshed/pull/4650
-
                     total_size = obj_info["ContentLength"]
                     sent_size = 0
                     chunks = obj_info["Body"].iter_chunks(chunk_size=self.chunk_size)
