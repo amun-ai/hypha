@@ -102,17 +102,9 @@ def fastapi_server_fixture(minio_server):
         proc.terminate()
 
 
-@pytest_asyncio.fixture(name="start_redis_server", scope="session")
-def start_redis_server():
-    import redislite
-
-    redislite.Redis(serverconfig={"port": REDIS_PORT})
-
-
 @pytest_asyncio.fixture(name="fastapi_server_redis_1", scope="session")
-def fastapi_server_redis_1(start_redis_server, minio_server):
+def fastapi_server_redis_1(minio_server):
     """Start server as test fixture and tear down after test."""
-
     with subprocess.Popen(
         [
             sys.executable,
@@ -147,7 +139,7 @@ def fastapi_server_redis_1(start_redis_server, minio_server):
 
 
 @pytest_asyncio.fixture(name="fastapi_server_redis_2", scope="session")
-def fastapi_server_redis_2(start_redis_server, minio_server, fastapi_server):
+def fastapi_server_redis_2(minio_server, fastapi_server):
     """Start a backup server as test fixture and tear down after test."""
     with subprocess.Popen(
         [

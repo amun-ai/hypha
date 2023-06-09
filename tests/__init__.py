@@ -14,7 +14,7 @@ MINIO_SERVER_URL = f"http://127.0.0.1:{MINIO_PORT}"
 MINIO_SERVER_URL_PUBLIC = f"http://localhost:{MINIO_PORT}"
 MINIO_ROOT_USER = "minio"
 MINIO_ROOT_PASSWORD = str(uuid.uuid4())
-REDIS_PORT = 6383
+REDIS_PORT = 6379
 
 TRITON_SERVERS = "https://ai.imjoy.io/triton"
 
