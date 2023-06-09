@@ -342,7 +342,7 @@ class MinioClient:
                 tmp.flush()
                 file = tmp.name
                 return self._execute(
-                    "mc {flags} admin policy add {alias} {name} {file}",
+                    "mc {flags} admin policy create {alias} {name} {file}",
                     alias=self.alias,
                     name=name,
                     file=file,
@@ -351,7 +351,7 @@ class MinioClient:
         else:
             file = policy
             return self._execute(
-                "mc {flags} admin policy add {alias} {name} {file}",
+                "mc {flags} admin policy create {alias} {name} {file}",
                 alias=self.alias,
                 name=name,
                 file=file,
