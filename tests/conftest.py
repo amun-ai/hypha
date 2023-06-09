@@ -110,7 +110,7 @@ def start_redis_server():
 
 
 @pytest_asyncio.fixture(name="fastapi_server_redis_1", scope="session")
-def fastapi_server_fixture(start_redis_server, minio_server):
+def fastapi_server_redis_1(start_redis_server, minio_server):
     """Start server as test fixture and tear down after test."""
 
     with subprocess.Popen(
@@ -147,7 +147,7 @@ def fastapi_server_fixture(start_redis_server, minio_server):
 
 
 @pytest_asyncio.fixture(name="fastapi_server_redis_2", scope="session")
-def fastapi_server_backup_fixture(start_redis_server, minio_server, fastapi_server):
+def fastapi_server_redis_2(start_redis_server, minio_server, fastapi_server):
     """Start a backup server as test fixture and tear down after test."""
     with subprocess.Popen(
         [
