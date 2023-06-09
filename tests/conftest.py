@@ -127,7 +127,7 @@ def fastapi_server_redis_1(minio_server):
         timeout = 10
         while timeout > 0:
             try:
-                response = requests.get(f"http://127.0.0.1:{SIO_PORT}/health/liveness")
+                response = requests.get(f"http://127.0.0.1:{SIO_PORT_REDIS_1}/health/liveness")
                 if response.ok:
                     break
             except RequestException:
