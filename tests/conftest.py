@@ -25,7 +25,8 @@ from . import (
     SIO_PORT,
     SIO_PORT2,
     REDIS_PORT,
-    BACKUP_SIO_PORT,
+    SIO_PORT_REDIS_1,
+    SIO_PORT_REDIS_2,
     TRITON_SERVERS,
 )
 
@@ -110,7 +111,7 @@ def fastapi_server_redis_1(minio_server):
             sys.executable,
             "-m",
             "hypha.server",
-            f"--port={SIO_PORT}",
+            f"--port={SIO_PORT_REDIS_1}",
             "--enable-server-apps",
             "--enable-s3",
             f"--redis-uri=redis://127.0.0.1:{REDIS_PORT}/0",
@@ -146,7 +147,7 @@ def fastapi_server_redis_2(minio_server, fastapi_server):
             sys.executable,
             "-m",
             "hypha.server",
-            f"--port={BACKUP_SIO_PORT}",
+            f"--port={SIO_PORT_REDIS_2}",
             "--enable-server-apps",
             "--enable-s3",
             f"--redis-uri=redis://127.0.0.1:{REDIS_PORT}/0",
@@ -162,7 +163,7 @@ def fastapi_server_redis_2(minio_server, fastapi_server):
         while timeout > 0:
             try:
                 response = requests.get(
-                    f"http://127.0.0.1:{BACKUP_SIO_PORT}/health/liveness"
+                    f"http://127.0.0.1:{SIO_PORT_REDIS_2}/health/liveness"
                 )
                 if response.ok:
                     break
