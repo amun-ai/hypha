@@ -197,7 +197,6 @@ class MinioClient:
 
     def _execute(self, *args, **kwargs):
         if "target" in kwargs:
-
             kwargs["target"] = self.alias + "/" + kwargs["target"].lstrip("/")
         return execute_command(*args, self.mc_executable, **kwargs)
 

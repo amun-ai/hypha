@@ -78,9 +78,7 @@ def fastapi_server_fixture(minio_server):
             f"--port={SIO_PORT}",
             "--enable-server-apps",
             "--enable-s3",
-            "--redis-uri=/tmp/redis.db",
             "--reset-redis",
-            f"--redis-port={REDIS_PORT}",
             f"--endpoint-url={MINIO_SERVER_URL}",
             f"--access-key-id={MINIO_ROOT_USER}",
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
@@ -89,7 +87,6 @@ def fastapi_server_fixture(minio_server):
         ],
         env=test_env,
     ) as proc:
-
         timeout = 10
         while timeout > 0:
             try:
@@ -105,8 +102,52 @@ def fastapi_server_fixture(minio_server):
         proc.terminate()
 
 
-@pytest_asyncio.fixture(name="fastapi_server_backup", scope="session")
-def fastapi_server_backup_fixture(minio_server, fastapi_server):
+@pytest_asyncio.fixture(name="start_redis_server", scope="session")
+def start_redis_server():
+    import redislite
+
+    redislite.Redis(serverconfig={"port": REDIS_PORT})
+
+
+@pytest_asyncio.fixture(name="fastapi_server_redis_1", scope="session")
+def fastapi_server_fixture(start_redis_server, minio_server):
+    """Start server as test fixture and tear down after test."""
+
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "hypha.server",
+            f"--port={SIO_PORT}",
+            "--enable-server-apps",
+            "--enable-s3",
+            f"--redis-uri=redis://127.0.0.1:{REDIS_PORT}/0",
+            "--reset-redis",
+            f"--endpoint-url={MINIO_SERVER_URL}",
+            f"--access-key-id={MINIO_ROOT_USER}",
+            f"--secret-access-key={MINIO_ROOT_PASSWORD}",
+            f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            f"--triton-servers={TRITON_SERVERS}",
+        ],
+        env=test_env,
+    ) as proc:
+        timeout = 10
+        while timeout > 0:
+            try:
+                response = requests.get(f"http://127.0.0.1:{SIO_PORT}/health/liveness")
+                if response.ok:
+                    break
+            except RequestException:
+                pass
+            timeout -= 0.1
+            time.sleep(0.1)
+        yield
+        proc.kill()
+        proc.terminate()
+
+
+@pytest_asyncio.fixture(name="fastapi_server_redis_2", scope="session")
+def fastapi_server_backup_fixture(start_redis_server, minio_server, fastapi_server):
     """Start a backup server as test fixture and tear down after test."""
     with subprocess.Popen(
         [
@@ -125,7 +166,6 @@ def fastapi_server_backup_fixture(minio_server, fastapi_server):
         ],
         env=test_env,
     ) as proc:
-
         timeout = 10
         while timeout > 0:
             try:
@@ -156,7 +196,6 @@ def fastapi_subpath_server_fixture(minio_server):
         ],
         env=test_env,
     ) as proc:
-
         timeout = 10
         while timeout > 0:
             try:
@@ -192,7 +231,6 @@ def minio_server_fixture():
         ],
         env=my_env,
     ) as proc:
-
         timeout = 10
         print(
             "Trying to connect to the minio server...",

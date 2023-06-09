@@ -6,10 +6,8 @@ import asyncio
 import sys
 from typing import Dict, List
 
-import aioredis
 import pkg_resources
 import shortuuid
-from redislite import Redis
 from starlette.routing import Mount
 
 from hypha.core import (
@@ -39,8 +37,7 @@ class RedisStore:
         app,
         public_base_url=None,
         local_base_url=None,
-        redis_uri="/tmp/redis.db",
-        redis_port=6383,
+        redis_uri=None,
     ):
         """Initialize the redis store."""
         self._all_users: Dict[str, UserInfo] = {}  # uid:user_info
@@ -72,14 +69,15 @@ class RedisStore:
             "local_base_url": self.local_base_url,
         }
 
-        if redis_uri.startswith("redis://"):
-            self._redis_server = None
+        if redis_uri and redis_uri.startswith("redis://"):
+            import aioredis
+
             self._redis = aioredis.from_url(redis_uri)
-        else:  #  Create a redis server with redislite
-            self._redis_server = Redis(
-                redis_uri, serverconfig={"port": str(redis_port)}
-            )
-            self._redis = aioredis.from_url(f"redis://127.0.0.1:{redis_port}/0")
+        else:  #  Create a redis server with fakeredis
+            from fakeredis import aioredis
+
+            self._redis = aioredis.FakeRedis.from_url("redis://localhost:9997/11")
+
         self._root_user = None
         self._event_bus = RedisEventBus(self._redis)
 
@@ -111,10 +109,7 @@ class RedisStore:
         await self._event_bus.init()
         await self.setup_root_user()
 
-        try:
-            await self.register_workspace(self._public_workspace, overwrite=False)
-        except Exception:
-            logger.warning("Public workspace already exists")
+        await self.register_workspace(self._public_workspace, overwrite=False)
         manager = await self.get_workspace_manager("public")
         self._public_workspace_interface = await manager.get_workspace()
         self._event_bus.on_local(
@@ -424,6 +419,4 @@ class RedisStore:
 
     def teardown(self):
         """Teardown the server."""
-        if self._redis_server:
-            logger.info("Shutting down the redis server.")
-            self._redis_server.shutdown()
+        pass

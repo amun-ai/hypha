@@ -336,7 +336,7 @@ async def test_services(fastapi_server):
     # assert (await api.get_service("test_service"))["idx"] == 4
 
 
-async def test_server_scalability(fastapi_server, fastapi_server_backup):
+async def test_server_scalability(fastapi_server_redis_1, fastapi_server_redis_2):
     """Test services."""
     api = await connect_to_server(
         {"client_id": "my-plugin-99", "server_url": BACKUP_WS_SERVER_URL}
