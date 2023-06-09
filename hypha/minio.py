@@ -392,14 +392,14 @@ class MinioClient:
 
         if "group" in kwargs:
             return self._execute(
-                "mc {flags} mc admin policy attach {alias} {name} group={group}",
+                "mc {flags} admin policy attach {alias} {name} --group {group}",
                 alias=self.alias,
                 name=name,
                 **kwargs,
             )
 
         return self._execute(
-            "mc {flags} mc admin policy attach {alias} {name} user={user}",
+            "mc {flags} admin policy attach {alias} {name} --user {user}",
             alias=self.alias,
             name=name,
             **kwargs,
