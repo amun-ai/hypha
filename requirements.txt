@@ -6,7 +6,7 @@ imjoy-rpc==0.5.17
 jinja2==3.1.2
 lxml==4.9.2
 msgpack==1.0.5
-numpy==1.24.3
+numpy>=1.21.6
 playwright==1.31.1
 pydantic[email]==1.10.6
 pymultihash==0.8.2
