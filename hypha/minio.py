@@ -332,7 +332,7 @@ class MinioClient:
             **kwargs,
         )
 
-    def admin_policy_add(self, name, policy, **kwargs):
+    def admin_policy_create(self, name, policy, **kwargs):
         """Add new canned policy on MinIO."""
         if isinstance(policy, dict):
             content = json.dumps(policy)
@@ -385,21 +385,21 @@ class MinioClient:
             **kwargs,
         )
 
-    def admin_policy_set(self, name, **kwargs):
+    def admin_policy_attach(self, name, **kwargs):
         """Set IAM policy on a user or group."""
         if {"user", "group"}.issubset(kwargs.keys()):
             raise KeyError("Only one of user or group arguments can be set.")
 
         if "group" in kwargs:
             return self._execute(
-                "mc {flags} admin policy set {alias} {name} group={group}",
+                "mc {flags} mc admin policy attach {alias} {name} group={group}",
                 alias=self.alias,
                 name=name,
                 **kwargs,
             )
 
         return self._execute(
-            "mc {flags} admin policy set {alias} {name} user={user}",
+            "mc {flags} mc admin policy attach {alias} {name} user={user}",
             alias=self.alias,
             name=name,
             **kwargs,
@@ -426,7 +426,7 @@ if __name__ == "__main__":
 
     mc.admin_user_remove(USER_NAME + "2")
     print(mc.admin_user_list())
-    mc.admin_policy_add(
+    mc.admin_policy_create(
         "admins",
         {
             "Version": "2012-10-17",
@@ -443,6 +443,6 @@ if __name__ == "__main__":
     assert response["policy"] == "admins"
     response = mc.admin_policy_list()
     assert len(response) > 1
-    mc.admin_policy_set("admins", user=USER_NAME)
+    mc.admin_policy_attach("admins", user=USER_NAME)
     response = mc.admin_user_info(USER_NAME)
     assert response["policyName"] == "admins"

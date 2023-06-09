@@ -559,7 +559,7 @@ class S3Controller:
         policy_name = "policy-ws-" + workspace.name
         # policy example:
         # https://aws.amazon.com/premiumsupport/knowledge-center/iam-s3-user-specific-folder/
-        self.minio_client.admin_policy_add(
+        self.minio_client.admin_policy_create(
             policy_name,
             {
                 "Version": "2012-10-17",
@@ -603,7 +603,7 @@ class S3Controller:
             },
         )
 
-        self.minio_client.admin_policy_set(policy_name, group=workspace.name)
+        self.minio_client.admin_policy_attach(policy_name, group=workspace.name)
 
         # Save the workspace info
         workspace_dir = self.local_log_dir / workspace.name

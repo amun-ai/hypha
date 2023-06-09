@@ -73,7 +73,7 @@ async def test_minio(minio_server):
     ginfo = minio_client.admin_group_info("my-group")
     assert ginfo["groupStatus"] == "enabled"
 
-    minio_client.admin_policy_add(
+    minio_client.admin_policy_create(
         "admins",
         {
             "Version": "2012-10-17",
@@ -92,10 +92,10 @@ async def test_minio(minio_server):
     print(policy_list)
     assert find_item(policy_list, "policy", "admins")
 
-    minio_client.admin_policy_set("admins", user=username)
+    minio_client.admin_policy_attach("admins", user=username)
     userinfo = minio_client.admin_user_info(username)
     assert userinfo["policyName"] == "admins"
 
-    minio_client.admin_policy_set("admins", group="my-group")
+    minio_client.admin_policy_attach("admins", group="my-group")
     ginfo = minio_client.admin_group_info("my-group")
     assert ginfo["groupPolicy"] == "admins"
