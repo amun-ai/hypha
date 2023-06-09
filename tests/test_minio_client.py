@@ -64,7 +64,7 @@ async def test_minio(minio_server):
     minio_client.admin_user_add(username2, "234slfj3")
     minio_client.admin_group_add("my-group", username2)
     userinfo = minio_client.admin_user_info(username2)
-    assert "my-group" in userinfo["memberOf"]
+    assert "my-group" in str(userinfo["memberOf"])
 
     ginfo = minio_client.admin_group_info("my-group")
     assert username in ginfo["members"] and username2 in ginfo["members"]
