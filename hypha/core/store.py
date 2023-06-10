@@ -70,7 +70,7 @@ class RedisStore:
         }
 
         if redis_uri and redis_uri.startswith("redis://"):
-            import aioredis
+            from redis import asyncio as aioredis
 
             self._redis = aioredis.from_url(redis_uri)
         else:  #  Create a redis server with fakeredis

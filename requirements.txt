@@ -19,4 +19,4 @@ uvicorn==0.21.0
 httpx==0.23.3
 pyotritonclient==0.2.6
 fakeredis==2.14.1
-aioredis==2.0.1
+redis==4.5.5
