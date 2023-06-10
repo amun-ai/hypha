@@ -233,8 +233,6 @@ def start_server(args):
 
     static_folder = str(Path(__file__).parent / "static_files")
     mount_static_files(application, "/static", directory=static_folder, name="static")
-    docs_folder = str(Path(__file__).parent / "../docs")
-    mount_static_files(application, "/docs", directory=docs_folder, name="docs")
 
     if args.static_mounts:
         for index, mount in enumerate(args.static_mounts):
