@@ -109,7 +109,10 @@ class RedisStore:
         await self._event_bus.init()
         await self.setup_root_user()
 
-        await self.register_workspace(self._public_workspace, overwrite=False)
+        try:
+            await self.register_workspace(self._public_workspace, overwrite=False)
+        except RuntimeError:
+            logger.warning("Public workspace already exists.")
         manager = await self.get_workspace_manager("public")
         self._public_workspace_interface = await manager.get_workspace()
         self._event_bus.on_local(
@@ -199,7 +202,7 @@ class RedisStore:
         """Add a workspace."""
         workspace = WorkspaceInfo.parse_obj(workspace)
         if not overwrite and await self._redis.hexists("workspaces", workspace.name):
-            raise Exception(f"Workspace {workspace.name} already exists.")
+            raise RuntimeError(f"Workspace {workspace.name} already exists.")
         if overwrite:
             # clean up the clients and users in the workspace
             client_keys = await self._redis.hkeys(f"{workspace.name}:clients")
