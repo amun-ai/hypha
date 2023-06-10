@@ -33,6 +33,23 @@ To test it, you should be able to visit http://localhost:9000 and see the versio
 
 In addition to run your own server, you can also use our public testing server: https://ai.imjoy.io
 
+### Serve static files
+
+Sometimes, it is useful to serve static files (e.g. HTML, JS, CSS etc.) for your own web applications. You can mount additional directories for serving static files by using the `--static-mounts` argument. This requires you to specify the mount path and the local directory. For example, to serve static files from the directory `./webtools/` at the path `/tools` on your server, you can use the following command:
+
+```
+python3 -m hypha.server --host=0.0.0.0 --port=9000 --static-mounts /tools:./webtools/
+```
+
+Multiple directories can be mounted by providing additional `--static-mounts` arguments. For instance, to mount an additional directory `./images/` at `/images`, you would use:
+
+```
+python3 -m hypha.server --host=0.0.0.0 --port=9000 --static-mounts /tools:./webtools/ --static-mounts /images:./images/
+```
+
+After running the command, you should be able to access files from these directories via your hypha server at `http://localhost:9000/tools` and `http://localhost:9000/images` respectively.
+
+Note: the server path should not 
 
 ### Connect from a client
 
