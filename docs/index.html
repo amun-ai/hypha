@@ -7,8 +7,8 @@
   <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="description" content="ImJoy Docs">
-  <meta name="author" content="ImJoy Team">
+  <meta name="description" content="Hypha Documentation">
+  <meta name="author" content="Amun AI AB">
   <link rel="icon" href="https://imjoy.io/static/icons/favicon.ico" type="image/x-icon" />
   <meta name="theme-color" content="#ffffff">
   <link rel="stylesheet" href="https://imjoy-team.github.io/imjoy-docs/static/vue.css" />
@@ -22,12 +22,16 @@
     const githubUser = 'amun-ai' // your github user name
     const githubRepo = 'hypha' // your github repo name
     const homepage = "getting-started.md" // the home page markdown file (relative path to the current folder)
-    const name = 'ImJoy Docs' // name of this documentation
+    const name = 'Hypha Documentation' // name of this documentation
     const logo = 'https://amun.ai/images/amun-ai-logo-tight.svg' // a logo show on the upper-left corner
     // window.ImJoyConfig = {"imjoy_core_version": "latest"}
     //--------------------------End------------------------------------
     const repo = `https://github.com/${githubUser}/${githubRepo}`;
-    const basePath = window.location.pathname;
+    let basePath = window.location.pathname;
+    // strip off the 'index.html' part if exists
+    if (basePath.endsWith('index.html')) {
+      basePath = basePath.slice(0, -10);
+    }
     document.title = `${githubUser}|${name}`;
     window.$docsify = window.$docsify || {
       name,

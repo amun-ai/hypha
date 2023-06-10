@@ -9,6 +9,7 @@ import uvicorn
 from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -59,17 +60,16 @@ def create_application(allow_origins) -> FastAPI:
     # pylint: disable=unused-variable
 
     app = FastAPI(
-        title="ImJoy Core Server",
+        title="Hypha",
+        docs_url="/api-docs",
+        redoc_url="/api-redoc",
         description=(
-            "A server for managing imjoy plugins and \
-                enabling remote procedure calls"
+            "A serverless application framework for \
+                large-scale data management and AI model serving"
         ),
         version=VERSION,
     )
     app.router.route_class = GzipRoute
-
-    static_folder = str(Path(__file__).parent / "static_files")
-    app.mount("/static", StaticFiles(directory=static_folder), name="static")
 
     app.add_middleware(GZipMiddleware, minimum_size=1000)
     app.add_middleware(
@@ -183,6 +183,11 @@ def mount_static_files(app, new_route, directory, name="static"):
     top_level_route_paths = [
         route.path.split("/")[1] for route in app.routes if route.path.count("/") == 1
     ]
+    
+    # Make sure the new route starts with a "/"
+    assert new_route.startswith("/"), "The new route must start with a '/'."
+
+    assert "/" not in new_route.strip("/"), "Only top-level routes are supported."
 
     # Check if new route collides with existing top-level paths
     if new_route.strip("/") in top_level_route_paths:
@@ -194,7 +199,12 @@ def mount_static_files(app, new_route, directory, name="static"):
 
     # If no collision, mount static files
     app.mount(new_route, StaticFiles(directory=directory), name=name)
-
+    
+    if Path(f"{directory}/index.html").exists():
+        # Add a new route that serves index.html directly
+        @app.get(new_route)
+        async def root():
+            return FileResponse(f"{directory}/index.html")
 
 def start_server(args):
     """Start the server."""
@@ -219,6 +229,11 @@ def start_server(args):
     )
 
     start_builtin_services(application, store, args)
+
+    static_folder = str(Path(__file__).parent / "static_files")
+    mount_static_files(application, "/static", directory=static_folder, name="static")
+    docs_folder = str(Path(__file__).parent / "../docs")
+    mount_static_files(application, "/docs", directory=docs_folder, name="docs")
 
     if args.static_mounts:
         for index, mount in enumerate(args.static_mounts):
