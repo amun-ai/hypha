@@ -178,6 +178,24 @@ def start_builtin_services(
         store.get_event_bus().emit("shutdown", target="local")
 
 
+def mount_static_files(app, new_route, directory, name="static"):
+    # Get top level route paths
+    top_level_route_paths = [
+        route.path.split("/")[1] for route in app.routes if route.path.count("/") == 1
+    ]
+
+    # Check if new route collides with existing top-level paths
+    if new_route.strip("/") in top_level_route_paths:
+        raise ValueError(f"The route '{new_route}' collides with an existing route.")
+
+    # Check if the directory exists
+    if not Path(directory).exists():
+        raise FileNotFoundError(f"The directory '{directory}' does not exist.")
+
+    # If no collision, mount static files
+    app.mount(new_route, StaticFiles(directory=directory), name=name)
+
+
 def start_server(args):
     """Start the server."""
     if args.allow_origins:
@@ -192,12 +210,7 @@ def start_server(args):
         public_base_url = args.public_base_url.strip("/")
     else:
         public_base_url = local_base_url
-    if args.static_mounts:
-        for index, mount in enumerate(args.static_mounts):
-            mountpath, localdir = mount.split(':')
-            static_folder = str(Path(__file__).parent / "static_files")
-            application.mount(mountpath, StaticFiles(directory=localdir),
-                              name=f"static-mount-{index}")
+
     store = RedisStore(
         application,
         public_base_url=public_base_url,
@@ -206,6 +219,14 @@ def start_server(args):
     )
 
     start_builtin_services(application, store, args)
+
+    if args.static_mounts:
+        for index, mount in enumerate(args.static_mounts):
+            mountpath, localdir = mount.split(":")
+            mount_static_files(
+                application, mountpath, localdir, name=f"static-mount-{index}"
+            )
+
     if args.host in ("127.0.0.1", "localhost"):
         print(
             "***Note: If you want to enable access from another host, "
@@ -338,7 +359,7 @@ def get_argparser():
     parser.add_argument(
         "--static-mounts",
         type=str,
-        nargs='*',
+        nargs="*",
         help="extra directories to serve static files in the form <mountpath>:<localdir>, (e.g. /mystatic:./static/)",
     )
     return parser
