@@ -183,7 +183,7 @@ def mount_static_files(app, new_route, directory, name="static"):
     top_level_route_paths = [
         route.path.split("/")[1] for route in app.routes if route.path.count("/") == 1
     ]
-    
+
     # Make sure the new route starts with a "/"
     assert new_route.startswith("/"), "The new route must start with a '/'."
 
@@ -199,12 +199,13 @@ def mount_static_files(app, new_route, directory, name="static"):
 
     # If no collision, mount static files
     app.mount(new_route, StaticFiles(directory=directory), name=name)
-    
+
     if Path(f"{directory}/index.html").exists():
         # Add a new route that serves index.html directly
         @app.get(new_route)
         async def root():
             return FileResponse(f"{directory}/index.html")
+
 
 def start_server(args):
     """Start the server."""
