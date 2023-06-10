@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import uuid
+from threading import Thread
 
 import requests
 from requests import RequestException
@@ -25,8 +26,9 @@ from . import (
     SIO_PORT,
     SIO_PORT2,
     REDIS_PORT,
-    BACKUP_SIO_PORT,
-    TRITON_SERVERS,
+    SIO_PORT_REDIS_1,
+    SIO_PORT_REDIS_2,
+    TRITON_PORT,
 )
 
 JWT_SECRET = str(uuid.uuid4())
@@ -67,6 +69,28 @@ def generate_authenticated_user():
     yield token
 
 
+@pytest_asyncio.fixture(name="triton_server", scope="session")
+def triton_server():
+    """Start a triton server as test fixture and tear down after test."""
+    from .start_pytriton_server import start_triton_server
+
+    thread = Thread(
+        target=start_triton_server, args=(TRITON_PORT, TRITON_PORT + 1), daemon=True
+    )
+    thread.start()
+    timeout = 10
+    while timeout > 0:
+        try:
+            response = requests.get(f"http://127.0.0.1:{TRITON_PORT}/v2/health/live")
+            if response.ok:
+                break
+        except RequestException:
+            pass
+        timeout -= 0.1
+        time.sleep(0.1)
+    yield
+
+
 @pytest_asyncio.fixture(name="fastapi_server", scope="session")
 def fastapi_server_fixture(minio_server):
     """Start server as test fixture and tear down after test."""
@@ -78,18 +102,16 @@ def fastapi_server_fixture(minio_server):
             f"--port={SIO_PORT}",
             "--enable-server-apps",
             "--enable-s3",
-            "--redis-uri=/tmp/redis.db",
             "--reset-redis",
-            f"--redis-port={REDIS_PORT}",
             f"--endpoint-url={MINIO_SERVER_URL}",
             f"--access-key-id={MINIO_ROOT_USER}",
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
-            f"--triton-servers={TRITON_SERVERS}",
+            f"--triton-servers=http://127.0.0.1:{TRITON_PORT}",
+            f"--static-mounts=/tests:./tests",
         ],
         env=test_env,
     ) as proc:
-
         timeout = 10
         while timeout > 0:
             try:
@@ -105,15 +127,52 @@ def fastapi_server_fixture(minio_server):
         proc.terminate()
 
 
-@pytest_asyncio.fixture(name="fastapi_server_backup", scope="session")
-def fastapi_server_backup_fixture(minio_server, fastapi_server):
+@pytest_asyncio.fixture(name="fastapi_server_redis_1", scope="session")
+def fastapi_server_redis_1(minio_server):
+    """Start server as test fixture and tear down after test."""
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "hypha.server",
+            f"--port={SIO_PORT_REDIS_1}",
+            "--enable-server-apps",
+            "--enable-s3",
+            f"--redis-uri=redis://127.0.0.1:{REDIS_PORT}/0",
+            "--reset-redis",
+            f"--endpoint-url={MINIO_SERVER_URL}",
+            f"--access-key-id={MINIO_ROOT_USER}",
+            f"--secret-access-key={MINIO_ROOT_PASSWORD}",
+            f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+        ],
+        env=test_env,
+    ) as proc:
+        timeout = 10
+        while timeout > 0:
+            try:
+                response = requests.get(
+                    f"http://127.0.0.1:{SIO_PORT_REDIS_1}/health/liveness"
+                )
+                if response.ok:
+                    break
+            except RequestException:
+                pass
+            timeout -= 0.1
+            time.sleep(0.1)
+        yield
+        proc.kill()
+        proc.terminate()
+
+
+@pytest_asyncio.fixture(name="fastapi_server_redis_2", scope="session")
+def fastapi_server_redis_2(minio_server, fastapi_server):
     """Start a backup server as test fixture and tear down after test."""
     with subprocess.Popen(
         [
             sys.executable,
             "-m",
             "hypha.server",
-            f"--port={BACKUP_SIO_PORT}",
+            f"--port={SIO_PORT_REDIS_2}",
             "--enable-server-apps",
             "--enable-s3",
             f"--redis-uri=redis://127.0.0.1:{REDIS_PORT}/0",
@@ -121,16 +180,14 @@ def fastapi_server_backup_fixture(minio_server, fastapi_server):
             f"--access-key-id={MINIO_ROOT_USER}",
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
-            f"--triton-servers={TRITON_SERVERS}",
         ],
         env=test_env,
     ) as proc:
-
         timeout = 10
         while timeout > 0:
             try:
                 response = requests.get(
-                    f"http://127.0.0.1:{BACKUP_SIO_PORT}/health/liveness"
+                    f"http://127.0.0.1:{SIO_PORT_REDIS_2}/health/liveness"
                 )
                 if response.ok:
                     break
@@ -156,7 +213,6 @@ def fastapi_subpath_server_fixture(minio_server):
         ],
         env=test_env,
     ) as proc:
-
         timeout = 10
         while timeout > 0:
             try:
@@ -192,7 +248,6 @@ def minio_server_fixture():
         ],
         env=my_env,
     ) as proc:
-
         timeout = 10
         print(
             "Trying to connect to the minio server...",

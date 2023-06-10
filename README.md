@@ -1,4 +1,4 @@
-![PyPI](https://img.shields.io/pypi/v/imjoy.svg?style=popout)
+![PyPI](https://img.shields.io/pypi/v/hypha.svg?style=popout)
 # Hypha
 
 Hypha is an application framework for large-scale data management and AI model serving, it allows creating computational platforms consists of computational and user interface components.

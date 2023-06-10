@@ -8,7 +8,7 @@ import sys
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-import aioredis
+from fakeredis import aioredis
 import msgpack
 from pydantic import (  # pylint: disable=no-name-in-module
     BaseModel,
@@ -166,7 +166,11 @@ class RedisRPCConnection:
     """Represent a redis connection."""
 
     def __init__(
-        self, redis: aioredis.Redis, workspace: str, client_id: str, user_info: UserInfo
+        self,
+        redis: aioredis.FakeRedis,
+        workspace: str,
+        client_id: str,
+        user_info: UserInfo,
     ):
         """Intialize Redis RPC Connection"""
         self._redis = redis
