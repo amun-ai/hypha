@@ -112,7 +112,7 @@ def fastapi_server_fixture(minio_server):
         ],
         env=test_env,
     ) as proc:
-        timeout = 10
+        timeout = 20
         while timeout > 0:
             try:
                 response = requests.get(f"http://127.0.0.1:{SIO_PORT}/health/liveness")
@@ -122,6 +122,8 @@ def fastapi_server_fixture(minio_server):
                 pass
             timeout -= 0.1
             time.sleep(0.1)
+        if timeout <= 0:
+            raise TimeoutError("Server (fastapi_server) did not start in time")
         yield
         proc.kill()
         proc.terminate()
@@ -147,7 +149,7 @@ def fastapi_server_redis_1(minio_server):
         ],
         env=test_env,
     ) as proc:
-        timeout = 10
+        timeout = 20
         while timeout > 0:
             try:
                 response = requests.get(
@@ -159,6 +161,8 @@ def fastapi_server_redis_1(minio_server):
                 pass
             timeout -= 0.1
             time.sleep(0.1)
+        if timeout <= 0:
+            raise TimeoutError("Server (fastapi_server_redis_1) did not start in time")
         yield
         proc.kill()
         proc.terminate()
@@ -183,7 +187,7 @@ def fastapi_server_redis_2(minio_server, fastapi_server):
         ],
         env=test_env,
     ) as proc:
-        timeout = 10
+        timeout = 20
         while timeout > 0:
             try:
                 response = requests.get(
@@ -195,6 +199,8 @@ def fastapi_server_redis_2(minio_server, fastapi_server):
                 pass
             timeout -= 0.1
             time.sleep(0.1)
+        if timeout <= 0:
+            raise TimeoutError("Server (fastapi_server_redis_2) did not start in time")
         yield
         proc.kill()
         proc.terminate()
