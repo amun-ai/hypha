@@ -49,8 +49,6 @@ python3 -m hypha.server --host=0.0.0.0 --port=9000 --static-mounts /tools:./webt
 
 After running the command, you should be able to access files from these directories via your hypha server at `http://localhost:9000/tools` and `http://localhost:9000/images` respectively.
 
-Note: the server path should not 
-
 ### Connect from a client
 
 We currently provide native support for both Python and Javascript client, for other languages, you can use access services using the built-in HTTP proxy of Hypha.
