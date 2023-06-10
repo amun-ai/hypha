@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import uuid
+from threading import Thread
 
 import requests
 from requests import RequestException
@@ -27,7 +28,7 @@ from . import (
     REDIS_PORT,
     SIO_PORT_REDIS_1,
     SIO_PORT_REDIS_2,
-    TRITON_SERVERS,
+    TRITON_PORT,
 )
 
 JWT_SECRET = str(uuid.uuid4())
@@ -68,6 +69,28 @@ def generate_authenticated_user():
     yield token
 
 
+@pytest_asyncio.fixture(name="triton_server", scope="session")
+def triton_server():
+    """Start a triton server as test fixture and tear down after test."""
+    from .start_pytriton_server import start_triton_server
+
+    thread = Thread(
+        target=start_triton_server, args=(TRITON_PORT, TRITON_PORT + 1), daemon=True
+    )
+    thread.start()
+    timeout = 10
+    while timeout > 0:
+        try:
+            response = requests.get(f"http://127.0.0.1:{TRITON_PORT}/v2/health/live")
+            if response.ok:
+                break
+        except RequestException:
+            pass
+        timeout -= 0.1
+        time.sleep(0.1)
+    yield
+
+
 @pytest_asyncio.fixture(name="fastapi_server", scope="session")
 def fastapi_server_fixture(minio_server):
     """Start server as test fixture and tear down after test."""
@@ -84,7 +107,7 @@ def fastapi_server_fixture(minio_server):
             f"--access-key-id={MINIO_ROOT_USER}",
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
-            f"--triton-servers={TRITON_SERVERS}",
+            f"--triton-servers=http://127.0.0.1:{TRITON_PORT}",
         ],
         env=test_env,
     ) as proc:
@@ -120,7 +143,6 @@ def fastapi_server_redis_1(minio_server):
             f"--access-key-id={MINIO_ROOT_USER}",
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
-            f"--triton-servers={TRITON_SERVERS}",
         ],
         env=test_env,
     ) as proc:
@@ -157,7 +179,6 @@ def fastapi_server_redis_2(minio_server, fastapi_server):
             f"--access-key-id={MINIO_ROOT_USER}",
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
-            f"--triton-servers={TRITON_SERVERS}",
         ],
         env=test_env,
     ) as proc:
