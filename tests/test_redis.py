@@ -16,7 +16,7 @@ pytestmark = pytest.mark.asyncio
 @pytest_asyncio.fixture()
 async def redis_store():
     """Represent the redis store."""
-    store = RedisStore(None, redis_uri="/tmp/redis-temp.db", redis_port=6388)
+    store = RedisStore(None, redis_uri=None)
     await store.init(reset_redis=True)
     yield store
     store.teardown()
@@ -112,7 +112,7 @@ async def test_websocket_server(fastapi_server, test_user_token):
             "config": {"visibility": "public"},
             "setup": print,
             "echo": echo,
-            "square": lambda x: x ** 2,
+            "square": lambda x: x**2,
         }
     )
 
@@ -158,7 +158,7 @@ async def test_websocket_server(fastapi_server, test_user_token):
             "config": {"visibility": "protected"},
             "setup": print,
             "echo": echo,
-            "square": lambda x: x ** 2,
+            "square": lambda x: x**2,
         },
         overwrite=True,
     )
@@ -217,7 +217,7 @@ async def test_websocket_server(fastapi_server, test_user_token):
         {
             "id": "default",
             "add_one": lambda x: x + 1,
-            "inner": {"square": lambda y: y ** 2},
+            "inner": {"square": lambda y: y**2},
         }
     )
     svc5 = await rpc2.get_remote_service(svc5_info["id"])

@@ -6,7 +6,7 @@ import sys
 from typing import Optional, Union
 
 import shortuuid
-from aioredis.client import Redis
+from fakeredis import aioredis
 
 from hypha.core import (
     RDF,
@@ -29,13 +29,12 @@ SERVICE_SUMMARY_FIELD = ["id", "name", "type", "config"]
 
 
 class WorkspaceManager:
-
     _managers = {}
 
     @staticmethod
     def get_manager(
         workspace: str,
-        redis: Redis,
+        redis: aioredis.FakeRedis,
         root_user: UserInfo,
         event_bus: EventBus,
         server_info: dict,
@@ -48,7 +47,7 @@ class WorkspaceManager:
     def __init__(
         self,
         workspace: str,
-        redis: Redis,
+        redis: aioredis.FakeRedis,
         root_user: UserInfo,
         event_bus: EventBus,
         server_info: dict,

@@ -1,5 +1,6 @@
 """Test the triton server proxy."""
 import gzip
+import sys
 
 import msgpack
 import numpy as np
@@ -60,16 +61,25 @@ def execute(inputs, server_url, model_name, **kwargs):
     raise Exception(f"Failed to execute {model_name}: {response.text}")
 
 
-@pytest.mark.skip(reason="requires a triton server")
-def test_trition_execute(fastapi_server):
+@pytest.mark.skipif(
+    sys.version_info.major != 3 or sys.version_info.minor != 8,
+    reason="requires python3.8 to run the pytriton server",
+)
+def test_trition_execute(triton_server, fastapi_server):
     """Test trition execute."""
-    image_array = np.random.randint(0, 255, [3, 256, 256]).astype("float32")
-    params = {"diameter": 30}
+    image_array = np.random.randint(
+        0,
+        255,
+        [
+            1,
+            256,
+        ],
+    ).astype("float32")
     results = execute(
-        inputs=[image_array, params],
+        inputs=[image_array],
         server_url=SERVER_URL,
-        model_name="cellpose-python",
+        model_name="AddOne",
         decode_json=True,
     )
-    mask = results["mask"]
-    assert mask.shape == (1, 256, 256)
+    result = results["OUTPUT_1"]
+    assert np.allclose(result, image_array + 1.0)

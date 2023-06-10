@@ -6,7 +6,13 @@ import sys
 
 import pytest
 from imjoy_rpc.hypha.websocket_client import connect_to_server
-from . import SIO_PORT2, WS_SERVER_URL, BACKUP_WS_SERVER_URL, find_item
+from . import (
+    SIO_PORT2,
+    WS_SERVER_URL,
+    SERVER_URL_REDIS_1,
+    SERVER_URL_REDIS_2,
+    find_item,
+)
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
@@ -336,10 +342,10 @@ async def test_services(fastapi_server):
     # assert (await api.get_service("test_service"))["idx"] == 4
 
 
-async def test_server_scalability(fastapi_server, fastapi_server_backup):
+async def test_server_scalability(fastapi_server_redis_1, fastapi_server_redis_2):
     """Test services."""
     api = await connect_to_server(
-        {"client_id": "my-plugin-99", "server_url": BACKUP_WS_SERVER_URL}
+        {"client_id": "my-plugin-99", "server_url": SERVER_URL_REDIS_2}
     )
 
     ws = await api.create_workspace(
@@ -360,7 +366,7 @@ async def test_server_scalability(fastapi_server, fastapi_server_backup):
     api88 = await connect_to_server(
         {
             "client_id": "my-plugin-88",
-            "server_url": WS_SERVER_URL,
+            "server_url": SERVER_URL_REDIS_1,
             "workspace": "my-test-workspace",
             "token": token,
         }
@@ -369,7 +375,7 @@ async def test_server_scalability(fastapi_server, fastapi_server_backup):
     api77 = await connect_to_server(
         {
             "client_id": "my-plugin-77",
-            "server_url": BACKUP_WS_SERVER_URL,
+            "server_url": SERVER_URL_REDIS_2,
             "workspace": "my-test-workspace",
             "token": token,
         }

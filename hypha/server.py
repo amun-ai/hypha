@@ -197,7 +197,6 @@ def start_server(args):
         public_base_url=public_base_url,
         local_base_url=local_base_url,
         redis_uri=args.redis_uri,
-        redis_port=args.redis_port,
     )
 
     start_builtin_services(application, store, args)
@@ -239,7 +238,7 @@ def get_argparser():
     parser.add_argument(
         "--redis-uri",
         type=str,
-        default="/tmp/redis.db",
+        default=None,
         help="the URI (a URL or database file path) for the redis database",
     )
     parser.add_argument(

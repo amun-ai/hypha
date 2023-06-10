@@ -102,10 +102,6 @@ class FSFileResponse(FileResponse):
                         {"type": "http.response.body", "body": b"", "more_body": False}
                     )
                 else:
-                    # Tentatively ignoring type checking failure to work around the
-                    # wrong type definitions for aiofiles that come with typeshed. See
-                    # https://github.com/python/typeshed/pull/4650
-
                     total_size = obj_info["ContentLength"]
                     sent_size = 0
                     chunks = obj_info["Body"].iter_chunks(chunk_size=self.chunk_size)
@@ -563,7 +559,7 @@ class S3Controller:
         policy_name = "policy-ws-" + workspace.name
         # policy example:
         # https://aws.amazon.com/premiumsupport/knowledge-center/iam-s3-user-specific-folder/
-        self.minio_client.admin_policy_add(
+        self.minio_client.admin_policy_create(
             policy_name,
             {
                 "Version": "2012-10-17",
@@ -607,7 +603,7 @@ class S3Controller:
             },
         )
 
-        self.minio_client.admin_policy_set(policy_name, group=workspace.name)
+        self.minio_client.admin_policy_attach(policy_name, group=workspace.name)
 
         # Save the workspace info
         workspace_dir = self.local_log_dir / workspace.name
