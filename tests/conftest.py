@@ -108,6 +108,7 @@ def fastapi_server_fixture(minio_server):
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
             f"--triton-servers=http://127.0.0.1:{TRITON_PORT}",
+            f"--static-mounts=/tests:./tests",
         ],
         env=test_env,
     ) as proc:

@@ -3,11 +3,12 @@ import os
 import subprocess
 import sys
 
-
 import pytest
+import requests
 from imjoy_rpc.hypha.websocket_client import connect_to_server
 from . import (
     SIO_PORT2,
+    SERVER_URL,
     WS_SERVER_URL,
     SERVER_URL_REDIS_1,
     SERVER_URL_REDIS_2,
@@ -91,6 +92,13 @@ def test_plugin_runner_subpath(fastapi_subpath_server):
         output = out.decode("utf8")
         assert "Generated token: " in output and "@imjoy@" in output
         assert "echo: a message" in output
+
+
+async def test_extra_mounts(fastapi_server):
+    """Test mounting extra static files."""
+    response = requests.get(f"{SERVER_URL}/tests/testWindowPlugin1.imjoy.html")
+    assert response.ok
+    assert "Test Window Plugin" in response.text
 
 
 async def test_plugin_runner_workspace(fastapi_server):
