@@ -7,7 +7,7 @@ jinja2==3.1.2
 lxml==4.9.2
 msgpack==1.0.5
 numpy>=1.21.6
-playwright==1.31.1
+playwright==1.34.0
 pydantic[email]==1.10.6
 pymultihash==0.8.2
 python-dotenv==0.21.1
