@@ -41,7 +41,7 @@ jobs:
 
       - name: Build and push Docker image (version tag)
         if: steps.check-version.outputs.current-version
-        uses: docker/build-push-action@v4.0.0
+        uses: docker/build-push-action@v4.1.1
         with:
           context: .
           push: true
@@ -50,7 +50,7 @@ jobs:
 
       - name: Build and push Docker image (latest tag)
         if: steps.check-version.outputs.current-version
-        uses: docker/build-push-action@v4.0.0
+        uses: docker/build-push-action@v4.1.1
         with:
           context: .
           push: true
