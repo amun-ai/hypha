@@ -48,7 +48,7 @@ setup(
     author_email="info@amun.ai",
     license="MIT",
     packages=find_packages(),
-    python_requires=">=3.7",
+    python_requires=">=3.8",
     include_package_data=True,
     install_requires=REQUIREMENTS,
     extras_require={
