@@ -201,9 +201,9 @@ async def register_services(server, **kwargs):
 It contains the following fields:
  * `command`: The command to be executed, it can be a list of strings or a string. You can also provide a `command` with a command string, the command string can contain the following variables:
     - `{server_url}`: The server url
-    - `{workspace}`: The workspace, if the workspace is not specified, it will be "public", otherwise, it will be the workspace id specified in the config below.
+    - `{workspace}`: The workspace, if the workspace is not specified, it will be "public"
     - `{token}`: The token
- * `workspace`: The workspace to be used, if not specified, it will be "public".
+ * `workspace`: The workspace to be used, currently, only "public" is supported.
  * `check_services`: A list of service ids to be checked after starting the command, if any of the service is not available, the server will be stopped.
 
 For example, one can write a hypha client script which can be started together with the server. For instance, you can save the following content as `./external_services.py`:
