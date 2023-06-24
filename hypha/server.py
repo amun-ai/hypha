@@ -8,8 +8,8 @@ from pathlib import Path
 import uvicorn
 from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -169,9 +169,19 @@ def start_builtin_services(
 
         return JSONResponse({"status": "DOWN"}, status_code=503)
 
+    @app.get(norm_url("/health/services_loaded"))
+    async def services_loaded(req: Request) -> JSONResponse:
+        if store.is_services_loaded():
+            return JSONResponse({"status": "OK"})
+
+        return JSONResponse({"status": "DOWN"}, status_code=503)
+
     @app.on_event("startup")
     async def startup_event():
-        await store.init(args.reset_redis)
+        if args.services_config:
+            await store.init(args.reset_redis, services_config=args.services_config)
+        else:
+            await store.init(args.reset_redis)
 
     @app.on_event("shutdown")
     def shutdown_event():
@@ -375,6 +385,12 @@ def get_argparser(add_help=True):
         type=str,
         nargs="*",
         help="extra directories to serve static files in the form <mountpath>:<localdir>, (e.g. /mystatic:./static/)",
+    )
+    parser.add_argument(
+        "--services-config",
+        type=str,
+        default=None,
+        help="external services defined in a services config file, (e.g. ./services_config.yaml)",
     )
     return parser
 

@@ -1,16 +1,13 @@
 import numpy as np
 from pytriton.decorators import batch
-from pytriton.triton import TritonConfig
+from pytriton.model_config import ModelConfig, Tensor
+from pytriton.triton import Triton, TritonConfig
 
 
 @batch
 def infer_func(**inputs: np.ndarray):
     (input1_batch,) = inputs.values()
     return [input1_batch + 1.0]
-
-
-from pytriton.model_config import ModelConfig, Tensor
-from pytriton.triton import Triton
 
 
 def start_triton_server(http_port=9930, grpc_port=9920, model_repository=None):
