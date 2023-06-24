@@ -27,6 +27,7 @@ REQUIREMENTS = [
     "uvicorn>=0.13.4",
     "httpx>=0.21.1",
     "pyotritonclient>=0.2.4",
+    "simpervisor>=1.0",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()
@@ -47,7 +48,7 @@ setup(
     author_email="info@amun.ai",
     license="MIT",
     packages=find_packages(),
-    python_requires=">=3.7",
+    python_requires=">=3.8",
     include_package_data=True,
     install_requires=REQUIREMENTS,
     extras_require={

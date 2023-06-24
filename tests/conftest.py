@@ -9,9 +9,9 @@ import time
 import uuid
 from threading import Thread
 
+import pytest_asyncio
 import requests
 from requests import RequestException
-import pytest_asyncio
 
 from hypha.core import TokenConfig, UserInfo, auth
 from hypha.core.auth import generate_presigned_token
@@ -23,9 +23,9 @@ from . import (
     MINIO_ROOT_USER,
     MINIO_SERVER_URL,
     MINIO_SERVER_URL_PUBLIC,
+    REDIS_PORT,
     SIO_PORT,
     SIO_PORT2,
-    REDIS_PORT,
     SIO_PORT_REDIS_1,
     SIO_PORT_REDIS_2,
     TRITON_PORT,
@@ -109,6 +109,7 @@ def fastapi_server_fixture(minio_server):
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
             f"--triton-servers=http://127.0.0.1:{TRITON_PORT}",
             f"--static-mounts=/tests:./tests",
+            f"--services-config=./tests/test_services_config.yaml",
         ],
         env=test_env,
     ) as proc:

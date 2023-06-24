@@ -1,26 +1,27 @@
 """A scalable state store based on Redis."""
+import asyncio
 import json
 import logging
 import random
-import asyncio
 import sys
+from pathlib import Path
 from typing import Dict, List
 
-import pkg_resources
 import shortuuid
+from imjoy_rpc.hypha import RPC
 from starlette.routing import Mount
 
 from hypha.core import (
     ClientInfo,
+    RedisEventBus,
+    RedisRPCConnection,
     ServiceInfo,
     UserInfo,
-    WorkspaceInfo,
-    RedisRPCConnection,
-    RedisEventBus,
     VisibilityEnum,
+    WorkspaceInfo,
 )
-from hypha.core.workspace import WorkspaceManager, SERVICE_SUMMARY_FIELD
-from imjoy_rpc.hypha import RPC
+from hypha.core.workspace import SERVICE_SUMMARY_FIELD, WorkspaceManager
+from hypha.services import load_services
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("redis-store")
@@ -51,7 +52,7 @@ class RedisStore:
         self.local_base_url = local_base_url
         self._public_services: List[ServiceInfo] = []
         self._ready = False
-        self.load_extensions()
+        self._services_loaded = False
         self._public_workspace = WorkspaceInfo.parse_obj(
             {
                 "name": "public",
@@ -100,7 +101,7 @@ class RedisStore:
             await self.register_user(self._root_user)
         return self._root_user
 
-    async def init(self, reset_redis):
+    async def init(self, reset_redis, services_config=None):
         """Setup the store."""
         if reset_redis:
             logger.warning("RESETTING ALL REDIS DATA!!!")
@@ -131,6 +132,24 @@ class RedisStore:
                 raise
 
         self._ready = True
+        if services_config:
+            logger.info(f"Loading services from {services_config}")
+            import yaml
+
+            yaml_file = Path(services_config)
+            assert (
+                yaml_file.exists()
+            ), f"Services config file {yaml_file} does not exist."
+            services_config = yaml.safe_load(yaml_file.read_text())
+            assert (
+                services_config["format_version"] == 1
+            ), "Only format_version 1 is supported."
+            loop = asyncio.get_running_loop()
+
+            def callback(ready):
+                self._services_loaded = ready
+
+            loop.create_task(load_services(self, services_config, callback))
         self.get_event_bus().emit("startup", target="local")
 
     async def _register_public_service(self, service: dict):
@@ -197,6 +216,10 @@ class RedisStore:
             WorkspaceInfo.parse_obj(json.loads(v.decode()))
             for k, v in workspaces.items()
         ]
+
+    async def workspace_exists(self, workspace_name: str):
+        """Check if a workspace exists."""
+        return await self._redis.hexists("workspaces", workspace_name)
 
     async def register_workspace(self, workspace: dict, overwrite=False):
         """Add a workspace."""
@@ -304,19 +327,6 @@ class RedisStore:
         """Set the workspace loader."""
         self._workspace_loader = loader
 
-    def load_extensions(self):
-        """Load hypha extensions."""
-        # Support hypha extensions
-        # See how it works:
-        # https://packaging.python.org/guides/creating-and-discovering-plugins/
-        for entry_point in pkg_resources.iter_entry_points("hypha_extension"):
-            try:
-                setup_extension = entry_point.load()
-                setup_extension(self)
-            except Exception:
-                logger.exception("Failed to setup extension: %s", entry_point.name)
-                raise
-
     async def list_public_services(self, query=None):
         """List all public services."""
         return await self._public_workspace_interface.list_services(query)
@@ -324,6 +334,10 @@ class RedisStore:
     async def get_public_service(self, query=None):
         """Get public service."""
         return await self._public_workspace_interface.get_service(query)
+
+    def get_public_workspace_interface(self):
+        """Get public workspace interface."""
+        return self._public_workspace_interface
 
     async def list_services_as_user(self, query, user_info: UserInfo = None):
         """List all services as user."""
@@ -399,6 +413,10 @@ class RedisStore:
     def is_ready(self):
         """Check if the server is alive."""
         return self._ready
+
+    def is_services_loaded(self):
+        """Check if the services are loaded"""
+        return self._services_loaded
 
     def register_router(self, router):
         """Register a router."""
