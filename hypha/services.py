@@ -43,25 +43,11 @@ async def load_services(store: any, services_config: str, set_ready: callable):
     for service in services:
         if "command" in service:
             cmd = service["command"]
-            workspace = service.get("workspace")
-
-            if workspace and not await store.workspace_exists(workspace):
-                ws = await server.create_workspace(
-                    dict(
-                        name=workspace,
-                        owners=[],
-                        visibility="protected",
-                        persistent=True,
-                        read_only=False,
-                    ),
-                    overwrite=False,
-                )
-                workspace_name = ws.config["workspace"]
-                token = await ws.generate_token()
-            else:
-                ws = store.get_public_workspace_interface()
-                workspace_name = ws.config["workspace"]
-                token = await ws.generate_token()
+            workspace = service.get("workspace", "public")
+            assert workspace == "public", "Only public workspace is supported"
+            ws = store.get_public_workspace_interface()
+            workspace_name = ws.config["workspace"]
+            token = await ws.generate_token()
             # format the cmd so we fill in the {server_url} placeholder
             cmd = cmd.format(
                 server_url=store.local_base_url, workspace=workspace_name, token=token
@@ -80,7 +66,9 @@ async def load_services(store: any, services_config: str, set_ready: callable):
                 if check_services:
                     for service_id in check_services:
                         try:
-                            await ws.get_service(service_id)
+                            await ws.get_service(
+                                {"id": service_id, "workspace": "public"}
+                            )
                         except Exception as e:
                             logger.info(f"Service {service_id} not ready: {e}")
                             return False

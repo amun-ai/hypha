@@ -27,7 +27,9 @@ async def test_external_services(fastapi_server):
     # Wait for the external service to be ready
     # The ready check function need at least 5 seconds to be called
     await asyncio.sleep(5)
-    external_service = await api.get_service("external-test-service")
+    external_service = await api.get_service(
+        {"id": "external-test-service", "workspace": "public"}
+    )
     assert external_service.id == "external-test-service"
     assert external_service.test("hello")
 
