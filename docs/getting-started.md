@@ -140,7 +140,7 @@ async function main(){
 }
 ```
 
-### Service Authorization
+### Service authorization
 
 In the above example, we registered a public service (`config.visibility = "public"`) which can be access by any clients. There are two ways for providing authorization if you want to limit the service access to a subset of the client.
 
@@ -148,9 +148,11 @@ In the above example, we registered a public service (`config.visibility = "publ
  2. Using user context. When registering a service, set `config.require_context` to `True` and `config.visibility` to `"public"` (you can also set `config.visibility` to `"private"` if yo want to limit the access for clients from the same workspace). Each of the service functions will need to accept a keyword argument called `context`. For each service function call the server will be responsible to providing the context information containing `user`. Each service function can then check whether the `context.user.id` is allowed to access the service. On the client which uses the service, it need to login and generate a token from https://ai.imjoy.io/apps/built-in/account-manager.html. The token is then used in `connect_to_server({"token": xxxx, "server_url": xxxx})`.
  
 
-### Starting Services with the Server
+### Custom initialization and service integration with hypha server
 
-Services can be registered via scripts running on either the same host as the server or a different host. In many applications, it's beneficial to have "built-in" services that start along with the server. For this purpose, we offer the `--startup-function-uri` option, which allows you to specify a URI to a startup function. The URI format is `<python module or script file>:<entrypoint function name>`:
+Hypha's flexibility allows for services to be registered from scripts running either on the same host as the server or a different one. To further accommodate complex applications, Hypha supports the initiation of "built-in" services in tandem with server startup. This is achieved through the `--startup-function-uri` option. 
+
+This command-line argument enables users to provide a URI pointing to a Python function intended for custom server initialization tasks. The specified function can conduct a variety of tasks such as registering services, configuring the server, or even launching additional processes. The URI should adhere to the format `<python module or script file>:<entrypoint function name>`, providing a direct and straightforward way to customize your server's startup behavior.
 
 ```bash
 python -m hypha.server --host=0.0.0.0 --port=9000 --startup-function-uri=./example-startup-function.py:hypha_startup
