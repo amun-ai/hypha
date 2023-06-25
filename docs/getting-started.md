@@ -44,7 +44,7 @@ python3 -m hypha.server --host=0.0.0.0 --port=9000 --static-mounts /tools:./webt
 Multiple directories can be mounted by providing additional `--static-mounts` arguments. For instance, to mount an additional directory `./images/` at `/images`, you would use:
 
 ```
-python3 -m hypha.server --host=0.0.0.0 --port=9000 --static-mounts /tools:./webtools/ --static-mounts /images:./images/
+python3 -m hypha.server --host=0.0.0.0 --port=9000 --static-mounts /tools:./webtools/ /images:./images/
 ```
 
 After running the command, you should be able to access files from these directories via your hypha server at `http://localhost:9000/tools` and `http://localhost:9000/images` respectively.
@@ -150,12 +150,12 @@ In the above example, we registered a public service (`config.visibility = "publ
 
 ### Custom initialization and service integration with hypha server
 
-Hypha's flexibility allows for services to be registered from scripts running either on the same host as the server or a different one. To further accommodate complex applications, Hypha supports the initiation of "built-in" services in tandem with server startup. This is achieved through the `--startup-function` option. 
+Hypha's flexibility allows for services to be registered from scripts running either on the same host as the server or a different one. To further accommodate complex applications, Hypha supports the initiation of "built-in" services in tandem with server startup. This is achieved through the `--startup-functions` option. 
 
 This command-line argument enables users to provide a URI pointing to a Python function intended for custom server initialization tasks. The specified function can conduct a variety of tasks such as registering services, configuring the server, or even launching additional processes. The URI should adhere to the format `<python module or script file>:<entrypoint function name>`, providing a direct and straightforward way to customize your server's startup behavior.
 
 ```bash
-python -m hypha.server --host=0.0.0.0 --port=9000 --startup-function=./example-startup-function.py:hypha_startup
+python -m hypha.server --host=0.0.0.0 --port=9000 --startup-functions=./example-startup-function.py:hypha_startup
 ```
 
 Here's an example of `example-startup-function.py`:
@@ -182,13 +182,19 @@ async def hypha_startup(server):
 
 Note that the startup function file will be loaded as a Python module, but you can also specify an installed python module e.g. `my_pip_module:hypha_startup`. In both cases, don't forget to specify the entrypoint function name (`hypha_startup` in this case). This function should accept a single positional argument, `server`, which is the server object, the same as the one used in the client script.
 
+Multiple startup functions can be specified by providing additional `--startup-functions` arguments. For instance, to specify two startup functions, you would use:
+
+```bash
+python -m hypha.server --host=0.0.0.0 --port=9000 --startup-functions=./example-startup-function.py:hypha_startup ./example-startup-function2.py:hypha_startup
+```
+
 #### Launching External Services Using Commands
 
 Sometimes, the services you want to start with your server may not be written in Python or might require a different Python environment from your Hypha server. For instance, you might want to register a service written in Javascript.
 
 In these situations, we offer a utility function, `launch_external_services`, which is available in the [Hypha utils module](../hypha/utils.py). This function enables you to launch external services from within your startup function.
 
-Consider the following example (which can be used in a startup function initiated with the `--startup-function` option):
+Consider the following example (which can be used in a startup function initiated with the `--startup-functions` option):
 
 ```python
 from hypha.utils import launch_external_services

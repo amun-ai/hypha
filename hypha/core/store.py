@@ -100,7 +100,7 @@ class RedisStore:
             await self.register_user(self._root_user)
         return self._root_user
 
-    async def init(self, reset_redis, startup_function_uri=None):
+    async def init(self, reset_redis, startup_functions=None):
         """Setup the store."""
         if reset_redis:
             logger.warning("RESETTING ALL REDIS DATA!!!")
@@ -130,10 +130,11 @@ class RedisStore:
                 logger.exception("Failed to register public service: %s", service)
                 raise
 
+        if startup_functions:
+            for startup_function in startup_functions:
+                logger.info(f"Running startup function: {startup_function}")
+                await run_start_function(self, startup_function)
         self._ready = True
-        if startup_function_uri:
-            logger.info(f"Loading services from {startup_function_uri}")
-            await run_start_function(self, startup_function_uri)
 
         self.get_event_bus().emit("startup", target="local")
 
