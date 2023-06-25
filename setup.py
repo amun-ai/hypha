@@ -27,6 +27,7 @@ REQUIREMENTS = [
     "uvicorn>=0.13.4",
     "httpx>=0.21.1",
     "pyotritonclient>=0.2.4",
+    "simpervisor>=1.0",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()

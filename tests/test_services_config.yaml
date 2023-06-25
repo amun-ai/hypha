@@ -1,0 +1,10 @@
+format_version: 1
+services:
+    - module: ./tests/external_services.py
+      entrypoint: register_services
+      kwargs:
+        service_id: "internal-test-service"
+    - command: python ./tests/external_services.py --server-url={server_url} --service-id=external-test-service --workspace={workspace} --token={token}
+      workspace: "public"
+      check_services:
+        - external-test-service

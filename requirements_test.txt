@@ -6,4 +6,3 @@ pytest-timeout==2.1.0
 requests==2.28.2
 websocket-client==1.5.1
 nvidia-pytriton==0.2.0; python_version == '3.8'
-simpervisor==1.0.0
