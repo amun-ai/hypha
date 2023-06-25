@@ -4,7 +4,7 @@ import json
 import logging
 import random
 import sys
-from pathlib import Path
+import traceback
 from typing import Dict, List
 
 import shortuuid
@@ -21,7 +21,7 @@ from hypha.core import (
     WorkspaceInfo,
 )
 from hypha.core.workspace import SERVICE_SUMMARY_FIELD, WorkspaceManager
-from hypha.services import load_services
+from hypha.startup import run_start_function
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("redis-store")
@@ -101,7 +101,7 @@ class RedisStore:
             await self.register_user(self._root_user)
         return self._root_user
 
-    async def init(self, reset_redis, services_config=None):
+    async def init(self, reset_redis, startup_function_uri=None):
         """Setup the store."""
         if reset_redis:
             logger.warning("RESETTING ALL REDIS DATA!!!")
@@ -132,24 +132,35 @@ class RedisStore:
                 raise
 
         self._ready = True
-        if services_config:
-            logger.info(f"Loading services from {services_config}")
-            import yaml
-
-            yaml_file = Path(services_config)
-            assert (
-                yaml_file.exists()
-            ), f"Services config file {yaml_file} does not exist."
-            services_config = yaml.safe_load(yaml_file.read_text())
-            assert (
-                services_config["format_version"] == 1
-            ), "Only format_version 1 is supported."
+        if startup_function_uri:
+            logger.info(f"Loading services from {startup_function_uri}")
             loop = asyncio.get_running_loop()
 
-            def callback(ready):
-                self._services_loaded = ready
+            def callback(future):
+                exc = future.exception()
+                if exc:
+                    logger.error(
+                        "Failed to load services: %s",
+                        "".join(
+                            traceback.format_exception(None, exc, exc.__traceback__)
+                        ),
+                    )
+                    self._services_loaded = {
+                        "done": True,
+                        "success": False,
+                        "error": str(exc),
+                    }
+                    loop.stop()
+                else:
+                    self._services_loaded = {
+                        "done": True,
+                        "success": True,
+                        "error": str(exc),
+                    }
 
-            loop.create_task(load_services(self, services_config, callback))
+            task = loop.create_task(run_start_function(self, startup_function_uri))
+            task.add_done_callback(callback)
+
         self.get_event_bus().emit("startup", target="local")
 
     async def _register_public_service(self, service: dict):
