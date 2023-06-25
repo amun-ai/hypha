@@ -52,7 +52,6 @@ class RedisStore:
         self.local_base_url = local_base_url
         self._public_services: List[ServiceInfo] = []
         self._ready = False
-        self._services_loaded = False
         self._public_workspace = WorkspaceInfo.parse_obj(
             {
                 "name": "public",
@@ -134,32 +133,7 @@ class RedisStore:
         self._ready = True
         if startup_function_uri:
             logger.info(f"Loading services from {startup_function_uri}")
-            loop = asyncio.get_running_loop()
-
-            def callback(future):
-                exc = future.exception()
-                if exc:
-                    logger.error(
-                        "Failed to load services: %s",
-                        "".join(
-                            traceback.format_exception(None, exc, exc.__traceback__)
-                        ),
-                    )
-                    self._services_loaded = {
-                        "done": True,
-                        "success": False,
-                        "error": str(exc),
-                    }
-                    loop.stop()
-                else:
-                    self._services_loaded = {
-                        "done": True,
-                        "success": True,
-                        "error": str(exc),
-                    }
-
-            task = loop.create_task(run_start_function(self, startup_function_uri))
-            task.add_done_callback(callback)
+            await run_start_function(self, startup_function_uri)
 
         self.get_event_bus().emit("startup", target="local")
 
@@ -424,10 +398,6 @@ class RedisStore:
     def is_ready(self):
         """Check if the server is alive."""
         return self._ready
-
-    def is_services_loaded(self):
-        """Check if the services are loaded"""
-        return self._services_loaded
 
     def register_router(self, router):
         """Register a router."""

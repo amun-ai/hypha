@@ -169,14 +169,6 @@ def start_builtin_services(
 
         return JSONResponse({"status": "DOWN"}, status_code=503)
 
-    @app.get(norm_url("/health/services_loaded"))
-    async def services_loaded(req: Request) -> JSONResponse:
-        loaded = store.is_services_loaded()
-        if loaded is not False:
-            return JSONResponse(loaded)
-
-        return JSONResponse({"done": False}, status_code=503)
-
     @app.on_event("startup")
     async def startup_event():
         if args.startup_function:
