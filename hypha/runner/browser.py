@@ -63,7 +63,7 @@ class BrowserAppRunner:
         store.register_public_service(self.get_service_api())
         self.store = store
 
-        def close() -> None:
+        def close(_) -> None:
             asyncio.get_running_loop().create_task(self.close())
 
         self.event_bus.on_local("shutdown", close)

@@ -148,46 +148,27 @@ In the above example, we registered a public service (`config.visibility = "publ
  2. Using user context. When registering a service, set `config.require_context` to `True` and `config.visibility` to `"public"` (you can also set `config.visibility` to `"private"` if yo want to limit the access for clients from the same workspace). Each of the service functions will need to accept a keyword argument called `context`. For each service function call the server will be responsible to providing the context information containing `user`. Each service function can then check whether the `context.user.id` is allowed to access the service. On the client which uses the service, it need to login and generate a token from https://ai.imjoy.io/apps/built-in/account-manager.html. The token is then used in `connect_to_server({"token": xxxx, "server_url": xxxx})`.
  
 
-### Start services with server
+### Starting Services with the Server
 
-Services can be registered from scripts running from the same or different host of the server. In many applications, it is useful to provide "builit-in" services which can be started together with the server. We provide the `--services-config` option to specify a service config yaml file:
-```
-python -m hypha.server --host=0.0.0.0 --port=9000 --services-config=./services_config.yaml
-```
+Services can be registered via scripts running on either the same host as the server or a different host. In many applications, it's beneficial to have "built-in" services that start along with the server. For this purpose, we offer the `--startup-function-uri` option, which allows you to specify a URI to a startup function. The URI format is `<python module file>:<entrypoint function name>`:
 
-Here is an exmaple of the `services_config.yaml`:
-```yaml
-format_version: 1
-services:
-    - module: ./tests/external_services.py
-      entrypoint: register_services
-      kwargs:
-        service_id: "internal-test-service"
-    - command: python ./tests/external_services.py --server-url={server_url} --service-id=external-test-service --workspace={workspace} --token={token}
-      workspace: "public"
-      check_services:
-        - external-test-service
+```bash
+python -m hypha.server --host=0.0.0.0 --port=9000 --startup-function-uri=./example-startup-function.py:hypha_startup
 ```
 
-There are two services in the above example for two types of services provided via a python module and command.
-
-#### Specify service via Python module
-It contains the following fields:
- * `module`: The python module, a python file path to be loaded.
- * `entrypoint`: The entrypoint function name, the function should accept a single positional argument `server` which is the server object, additional keyword arguments can be provided via `kwargs`.
- * `kwargs`: Additional keyword arguments to be passed to the entrypoint function.
-
-With the above fields, you can provide a python file which contains an entrypoint function, define a function where you can register_services to the server. For example, you can save the following content as `./external_services.py`:
+Here's an example of `example-startup-function.py`:
 
 ```python
-async def register_services(server, **kwargs):
-    """Register the services."""
+"""Example startup function file for Hypha."""
 
-    # The server object is the same as the one in the client script
-    # You can register more functions or call other functions in the server object
+async def hypha_startup(server):
+    """Hypha startup function."""
+
+    # The server object passed into this function is identical to the one in the client script.
+    # You can register more functions or call other functions using this server object.
     await server.register_service(
         {
-            "id": kwargs["service_id"],
+            "id": "test-service",
             "config": {
                 "visibility": "public",
                 "require_context": True,
@@ -197,92 +178,32 @@ async def register_services(server, **kwargs):
     )
 ```
 
-#### Specify service via command
-It contains the following fields:
- * `command`: The command to be executed, it can be a list of strings or a string. You can also provide a `command` with a command string, the command string can contain the following variables:
-    - `{server_url}`: The server url
-    - `{workspace}`: The workspace, if the workspace is not specified, it will be "public"
-    - `{token}`: The token
- * `workspace`: The workspace to be used, currently, only "public" is supported.
- * `check_services`: A list of service ids to be checked after starting the command, if any of the service is not available, the server will be stopped.
+Note that the startup function file will be loaded as a Python module, and you must also specify the entrypoint function name (`hypha_startup` in this case). This function should accept a single positional argument, `server`, which is the server object, the same as the one used in the client script.
 
-For example, one can write a hypha client script which can be started together with the server. For instance, you can save the following content as `./external_services.py`:
+#### Launching External Services Using Commands
+
+Sometimes, the services you want to start with your server may not be written in Python or might require a different Python environment from your Hypha server. For instance, you might want to register a service written in Javascript.
+
+In these situations, we offer a utility function, `launch_external_services`, which is available in the [Hypha utils module](../hypha/utils.py). This function enables you to launch external services from within your startup function.
+
+Consider the following example (which can be used in a startup function initiated with the `--startup-function-uri` option):
 
 ```python
-import argparse
-import asyncio
-import logging
+from hypha.utils import launch_external_services
 
-from imjoy_rpc.hypha import connect_to_server
+async def hypha_startup(server):
+    # ...
 
-async def start_service(server_url, service_id, workspace=None, token=None):
-    """Start the service."""
-    client_id = service_id + "-client"
-    print(f"Starting service...")
-    server = await connect_to_server(
-        {
-            "client_id": client_id,
-            "server_url": server_url,
-            "workspace": workspace,
-            "token": token,
-        }
+    await launch_external_services(
+        server,
+        "python ./tests/example_service_script.py --server-url={server_url} --service-id=external-test-service --workspace={workspace} --token={token}",
+        name="example_service_script",
+        check_services=["external-test-service"],
     )
-    await server.register_service(
-        {
-            "id": service_id,
-            "config": {
-                "visibility": "public",
-                "require_context": True,
-            },
-            "test": lambda x: print(f"Test: {x}"),
-        }
-    )
-    print(
-        f"Service (client_id={client_id}, service_id={service_id}) started successfully, available at {server_url}/{server.config.workspace}/services"
-    )
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Test services")
-    parser.add_argument(
-        "--server-url", type=str, default="https://ai.imjoy.io/", help="The server url"
-    )
-    parser.add_argument(
-        "--service-id", type=str, default="test-service", help="The service id"
-    )
-    parser.add_argument(
-        "--workspace", type=str, default=None, help="The workspace name"
-    )
-    parser.add_argument("--token", type=str, default=None, help="The token")
-    parser.add_argument("--verbose", "-v", action="count")
-    args = parser.parse_args()
-
-    if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
-    else:
-        logging.basicConfig(level=logging.INFO)
-
-    loop = asyncio.get_event_loop()
-    loop.create_task(
-        start_service(
-            args.server_url,
-            args.service_id,
-            workspace=args.workspace,
-            token=args.token,
-        )
-    )
-    loop.run_forever()
 ```
 
-Then you can add the following service config to the `services_config.yaml`:
+In this snippet, `launch_external_services` initiates an external service defined in `./tests/example_service_script.py`. The command string uses placeholders like `{server_url}`, `{workspace}`, and `{token}`, which the utility function automatically replaces with their actual values during execution.
 
-```yaml
-format_version: 1
-services:
-    - command: python ./tests/external_services.py --server-url={server_url} --service-id=external-test-service --workspace={workspace} --token={token}
-      workspace: "public"
-      check_services:
-        - external-test-service
-```
+You can find the contents of the `./tests/example_service_script.py` script [here](../tests/example_service_script.py).
 
-
+By using `launch_external_services`, you can seamlessly integrate external services into your Hypha server, regardless of the programming language or Python environment they utilize.

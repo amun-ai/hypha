@@ -152,7 +152,7 @@ class ServerAppController:
 
         store.register_router(router)
 
-        def close() -> None:
+        def close(_) -> None:
             asyncio.ensure_future(self.close())
 
         event_bus.on_local("shutdown", close)
