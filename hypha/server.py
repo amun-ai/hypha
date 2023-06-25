@@ -179,9 +179,9 @@ def start_builtin_services(
 
     @app.on_event("startup")
     async def startup_event():
-        if args.startup_function_uri:
+        if args.startup_function:
             await store.init(
-                args.reset_redis, startup_function_uri=args.startup_function_uri
+                args.reset_redis, startup_function_uri=args.startup_function
             )
         else:
             await store.init(args.reset_redis)
@@ -390,7 +390,7 @@ def get_argparser(add_help=True):
         help="extra directories to serve static files in the form <mountpath>:<localdir>, (e.g. /mystatic:./static/)",
     )
     parser.add_argument(
-        "--startup-function-uri",
+        "--startup-function",
         type=str,
         default=None,
         help="Specifies a URI for the startup function. The URI should be in the format '<python module or script>:<entrypoint function name>'. This function is executed at server startup to perform initialization tasks such as loading services, configuring the server, or launching additional processes.",

@@ -150,12 +150,12 @@ In the above example, we registered a public service (`config.visibility = "publ
 
 ### Custom initialization and service integration with hypha server
 
-Hypha's flexibility allows for services to be registered from scripts running either on the same host as the server or a different one. To further accommodate complex applications, Hypha supports the initiation of "built-in" services in tandem with server startup. This is achieved through the `--startup-function-uri` option. 
+Hypha's flexibility allows for services to be registered from scripts running either on the same host as the server or a different one. To further accommodate complex applications, Hypha supports the initiation of "built-in" services in tandem with server startup. This is achieved through the `--startup-function` option. 
 
 This command-line argument enables users to provide a URI pointing to a Python function intended for custom server initialization tasks. The specified function can conduct a variety of tasks such as registering services, configuring the server, or even launching additional processes. The URI should adhere to the format `<python module or script file>:<entrypoint function name>`, providing a direct and straightforward way to customize your server's startup behavior.
 
 ```bash
-python -m hypha.server --host=0.0.0.0 --port=9000 --startup-function-uri=./example-startup-function.py:hypha_startup
+python -m hypha.server --host=0.0.0.0 --port=9000 --startup-function=./example-startup-function.py:hypha_startup
 ```
 
 Here's an example of `example-startup-function.py`:
@@ -188,7 +188,7 @@ Sometimes, the services you want to start with your server may not be written in
 
 In these situations, we offer a utility function, `launch_external_services`, which is available in the [Hypha utils module](../hypha/utils.py). This function enables you to launch external services from within your startup function.
 
-Consider the following example (which can be used in a startup function initiated with the `--startup-function-uri` option):
+Consider the following example (which can be used in a startup function initiated with the `--startup-function` option):
 
 ```python
 from hypha.utils import launch_external_services

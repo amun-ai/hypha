@@ -28,16 +28,16 @@ async def test_external_services(fastapi_server):
     assert await internal_service.test(1) == 100
 
 
-def test_module_startup_function():
-    """Test the wrong service config."""
+def test_startup_function_module():
+    """Test startup function from a module."""
     with subprocess.Popen(
         [
             sys.executable,
             "-m",
             "hypha.server",
-            f"--port={SIO_PORT+9}",
+            f"--port={SIO_PORT+10}",
             "--reset-redis",
-            "--startup-function-uri=hypha.example_startup:hypha_startup",
+            "--startup-function=hypha.utils:_example_hypha_startup",
         ],
         env=os.environ.copy(),
     ) as proc:
@@ -45,7 +45,7 @@ def test_module_startup_function():
         while timeout > 0:
             try:
                 response = requests.get(
-                    f"http://127.0.0.1:{SIO_PORT+9}/health/services_loaded"
+                    f"http://127.0.0.1:{SIO_PORT+10}/health/services_loaded", timeout=1
                 )
                 if response.ok:
                     break
@@ -53,11 +53,9 @@ def test_module_startup_function():
                 pass
             timeout -= 0.1
             time.sleep(1)
-        assert (
-            timeout <= 0
-        )  # The server should fail to start due to wrong service config
         proc.kill()
         proc.terminate()
+        assert timeout >= 0  # The server should not fail
 
 
 @pytest.mark.asyncio

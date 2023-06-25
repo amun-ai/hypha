@@ -521,3 +521,17 @@ async def launch_external_services(
             logger.exception(f"External services ({name}) failed to start")
         raise
     return proc
+
+
+async def _example_hypha_startup(server):
+    """An example hypha startup module."""
+    await server.register_service(
+        {
+            "id": "example-startup-service",
+            "config": {
+                "visibility": "public",
+                "require_context": False,
+            },
+            "test": lambda x: x + 22,
+        }
+    )

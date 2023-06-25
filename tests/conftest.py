@@ -109,7 +109,7 @@ def fastapi_server_fixture(minio_server):
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
             f"--triton-servers=http://127.0.0.1:{TRITON_PORT}",
             f"--static-mounts=/tests:./tests",
-            f"--startup-function-uri=./tests/example-startup-function.py:hypha_startup",
+            f"--startup-function=./tests/example-startup-function.py:hypha_startup",
         ],
         env=test_env,
     ) as proc:
