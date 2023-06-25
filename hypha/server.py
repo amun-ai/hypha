@@ -179,8 +179,10 @@ def start_builtin_services(
 
     @app.on_event("startup")
     async def startup_event():
-        if args.services_config:
-            await store.init(args.reset_redis, services_config=args.services_config)
+        if args.startup_function_uri:
+            await store.init(
+                args.reset_redis, startup_function_uri=args.startup_function_uri
+            )
         else:
             await store.init(args.reset_redis)
 
@@ -391,7 +393,7 @@ def get_argparser(add_help=True):
         "--startup-function-uri",
         type=str,
         default=None,
-        help="Specifies a URI for the startup function. The URI should be in the format '<python module file>:<entrypoint function name>'. This function is executed at server startup to perform initialization tasks such as loading services, configuring the server, or launching additional processes.",
+        help="Specifies a URI for the startup function. The URI should be in the format '<python module or script>:<entrypoint function name>'. This function is executed at server startup to perform initialization tasks such as loading services, configuring the server, or launching additional processes.",
     )
 
     return parser

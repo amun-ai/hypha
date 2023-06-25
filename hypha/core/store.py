@@ -101,7 +101,7 @@ class RedisStore:
             await self.register_user(self._root_user)
         return self._root_user
 
-    async def init(self, reset_redis, services_config=None):
+    async def init(self, reset_redis, startup_function_uri=None):
         """Setup the store."""
         if reset_redis:
             logger.warning("RESETTING ALL REDIS DATA!!!")
@@ -132,8 +132,8 @@ class RedisStore:
                 raise
 
         self._ready = True
-        if services_config:
-            logger.info(f"Loading services from {services_config}")
+        if startup_function_uri:
+            logger.info(f"Loading services from {startup_function_uri}")
             loop = asyncio.get_running_loop()
 
             def callback(future):
@@ -158,7 +158,7 @@ class RedisStore:
                         "error": str(exc),
                     }
 
-            task = loop.create_task(run_start_function(self, services_config))
+            task = loop.create_task(run_start_function(self, startup_function_uri))
             task.add_done_callback(callback)
 
         self.get_event_bus().emit("startup", target="local")

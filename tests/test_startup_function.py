@@ -28,7 +28,7 @@ async def test_external_services(fastapi_server):
     assert await internal_service.test(1) == 100
 
 
-def test_wrong_startup_function():
+def test_module_startup_function():
     """Test the wrong service config."""
     with subprocess.Popen(
         [
@@ -37,7 +37,7 @@ def test_wrong_startup_function():
             "hypha.server",
             f"--port={SIO_PORT+9}",
             "--reset-redis",
-            "--startup-function-uri=./tests/example-startup-function-failed.py:hypha_startup",
+            "--startup-function-uri=hypha.example_startup:hypha_startup",
         ],
         env=os.environ.copy(),
     ) as proc:

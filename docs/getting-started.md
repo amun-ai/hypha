@@ -150,7 +150,7 @@ In the above example, we registered a public service (`config.visibility = "publ
 
 ### Starting Services with the Server
 
-Services can be registered via scripts running on either the same host as the server or a different host. In many applications, it's beneficial to have "built-in" services that start along with the server. For this purpose, we offer the `--startup-function-uri` option, which allows you to specify a URI to a startup function. The URI format is `<python module file>:<entrypoint function name>`:
+Services can be registered via scripts running on either the same host as the server or a different host. In many applications, it's beneficial to have "built-in" services that start along with the server. For this purpose, we offer the `--startup-function-uri` option, which allows you to specify a URI to a startup function. The URI format is `<python module or script file>:<entrypoint function name>`:
 
 ```bash
 python -m hypha.server --host=0.0.0.0 --port=9000 --startup-function-uri=./example-startup-function.py:hypha_startup
@@ -178,7 +178,7 @@ async def hypha_startup(server):
     )
 ```
 
-Note that the startup function file will be loaded as a Python module, and you must also specify the entrypoint function name (`hypha_startup` in this case). This function should accept a single positional argument, `server`, which is the server object, the same as the one used in the client script.
+Note that the startup function file will be loaded as a Python module, but you can also specify an installed python module e.g. `my_pip_module:hypha_startup`. In both cases, don't forget to specify the entrypoint function name (`hypha_startup` in this case). This function should accept a single positional argument, `server`, which is the server object, the same as the one used in the client script.
 
 #### Launching External Services Using Commands
 
