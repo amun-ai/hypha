@@ -45,7 +45,7 @@ def test_startup_function_module():
         while timeout > 0:
             try:
                 response = requests.get(
-                    f"http://127.0.0.1:{SIO_PORT+10}/health/services_loaded", timeout=1
+                    f"http://127.0.0.1:{SIO_PORT+10}/health/liveness", timeout=1
                 )
                 if response.ok:
                     break
