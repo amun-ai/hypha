@@ -23,13 +23,16 @@ async def test_external_services(fastapi_server):
             "server_url": WS_SERVER_URL,
         }
     )
-    internal_service = await server.get_service("test-service")
-    assert internal_service.id == "test-service"
-    assert await internal_service.test(1) == 100
+    svc = await server.get_service("test-service")
+    assert svc.id == "test-service"
+    assert await svc.test(1) == 100
+
+    svc = await server.get_service("example-startup-service")
+    assert await svc.test(3) == 22 + 3
 
 
-def test_startup_function_module():
-    """Test startup function from a module."""
+def test_failed_startup_function():
+    """Test failed startup function from a module."""
     with subprocess.Popen(
         [
             sys.executable,
@@ -37,7 +40,7 @@ def test_startup_function_module():
             "hypha.server",
             f"--port={SIO_PORT+10}",
             "--reset-redis",
-            "--startup-function=hypha.utils:_example_hypha_startup",
+            "--startup-functions=hypha.non_existing_module:non_existing_function",
         ],
         env=os.environ.copy(),
     ) as proc:
@@ -55,7 +58,7 @@ def test_startup_function_module():
             time.sleep(1)
         proc.kill()
         proc.terminate()
-        assert timeout >= 0  # The server should not fail
+        assert timeout < 0  # The server should fail
 
 
 @pytest.mark.asyncio
