@@ -5,6 +5,20 @@ import logging
 from imjoy_rpc.hypha import connect_to_server
 
 
+async def register_services(server, **kwargs):
+    """Register the services."""
+    await server.register_service(
+        {
+            "id": kwargs["service_id"],
+            "config": {
+                "visibility": "public",
+                "require_context": True,
+            },
+            "test": lambda x: print(f"Test: {x}"),
+        }
+    )
+
+
 async def start_service(server_url, service_id, workspace=None, token=None):
     """Start the service."""
     client_id = service_id + "-client"
@@ -17,14 +31,15 @@ async def start_service(server_url, service_id, workspace=None, token=None):
             "token": token,
         }
     )
+    # print("======> Workspace: ", workspace, "Token:", await server.generate_token({"expires_in": 3600*24*100}))
     await server.register_service(
         {
             "id": service_id,
             "config": {
                 "visibility": "public",
-                "require_context": False,
+                "require_context": True,
             },
-            "test": lambda x: x + 99,
+            "test": lambda x: print(f"Test: {x}"),
         }
     )
     print(

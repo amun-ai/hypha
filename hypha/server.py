@@ -171,18 +171,15 @@ def start_builtin_services(
 
     @app.get(norm_url("/health/services_loaded"))
     async def services_loaded(req: Request) -> JSONResponse:
-        loaded = store.is_services_loaded()
-        if loaded is not False:
-            return JSONResponse(loaded)
+        if store.is_services_loaded():
+            return JSONResponse({"status": "OK"})
 
-        return JSONResponse({"done": False}, status_code=503)
+        return JSONResponse({"status": "DOWN"}, status_code=503)
 
     @app.on_event("startup")
     async def startup_event():
-        if args.startup_function_uri:
-            await store.init(
-                args.reset_redis, startup_function_uri=args.startup_function_uri
-            )
+        if args.services_config:
+            await store.init(args.reset_redis, services_config=args.services_config)
         else:
             await store.init(args.reset_redis)
 
@@ -390,12 +387,11 @@ def get_argparser(add_help=True):
         help="extra directories to serve static files in the form <mountpath>:<localdir>, (e.g. /mystatic:./static/)",
     )
     parser.add_argument(
-        "--startup-function-uri",
+        "--services-config",
         type=str,
         default=None,
-        help="Specifies a URI for the startup function. The URI should be in the format '<python module or script>:<entrypoint function name>'. This function is executed at server startup to perform initialization tasks such as loading services, configuring the server, or launching additional processes.",
+        help="external services defined in a services config file, (e.g. ./services_config.yaml)",
     )
-
     return parser
 
 

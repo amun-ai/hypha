@@ -1,0 +1,6 @@
+format_version: 1
+services:
+    - command: python ./tests/external_services.py --server-url={server_url} --service-id=external-test-service --workspace={workspace} --token={token}
+      workspace: "public"
+      check_services:
+        - non-exist-service
