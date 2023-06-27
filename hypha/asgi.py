@@ -8,6 +8,7 @@ from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
 from hypha.core import ServiceInfo
+from hypha.core.auth import parse_token
 from hypha.utils import PatchedCORSMiddleware
 
 logging.basicConfig(stream=sys.stdout)
@@ -23,6 +24,9 @@ class RemoteASGIApp:
         self.service = service
         assert self.service.type in ["ASGI", "functions"]
         if self.service.type == "ASGI":
+            assert not self.service.config.get(
+                "require_context"
+            ), "require_context must be False/None for ASGI apps"
             assert self.service.serve is not None, "No serve function defined"
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -53,9 +57,13 @@ class RemoteASGIApp:
                     body += await receive()["body"]
                 scope["body"] = body or None
                 func = self.service[func_name]
-                context = {}
                 try:
-                    result = await func(scope, context)
+                    if self.service.config["require_context"]:
+                        authorization = scope["headers"].get("authorization")
+                        user_info = parse_token(authorization, allow_anonymouse=True)
+                        result = await func(scope, {"user": user_info.dict()})
+                    else:
+                        result = await func(scope)
                     headers = Headers(headers=result.get("headers"))
                     body = result.get("body")
                     status = result.get("status", 200)

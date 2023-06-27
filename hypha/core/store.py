@@ -21,7 +21,7 @@ from hypha.core import (
     WorkspaceInfo,
 )
 from hypha.core.workspace import SERVICE_SUMMARY_FIELD, WorkspaceManager
-from hypha.startup import run_start_function
+from hypha.startup import run_startup_function
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("redis-store")
@@ -133,7 +133,7 @@ class RedisStore:
         if startup_functions:
             for startup_function in startup_functions:
                 logger.info(f"Running startup function: {startup_function}")
-                await run_start_function(self, startup_function)
+                await run_startup_function(self, startup_function)
         self._ready = True
 
         self.get_event_bus().emit("startup", target="local")

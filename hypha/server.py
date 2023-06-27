@@ -171,10 +171,9 @@ def start_builtin_services(
 
     @app.on_event("startup")
     async def startup_event():
-        if args.startup_functions:
-            await store.init(args.reset_redis, startup_functions=args.startup_functions)
-        else:
-            await store.init(args.reset_redis)
+        # Here we can register all the startup functions
+        args.startup_functions.append("hypha.core.auth:register_login_service")
+        await store.init(args.reset_redis, startup_functions=args.startup_functions)
 
     @app.on_event("shutdown")
     def shutdown_event():

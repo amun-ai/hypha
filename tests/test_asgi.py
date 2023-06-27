@@ -44,6 +44,7 @@ async def test_functions(fastapi_server):
     """Test the functions service."""
     api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
     workspace = api.config["workspace"]
+    token = await api.generate_token()
 
     # Test plugin with custom template
     controller = await api.get_service("server-apps")
@@ -64,10 +65,15 @@ async def test_functions(fastapi_server):
     assert "hello-world" in service
 
     response = requests.get(
-        f"{SERVER_URL}/{workspace}/apps/hello-functions/hello-world"
+        f"{SERVER_URL}/{workspace}/apps/hello-functions/hello-world",
+        headers={"Authorization": f"Bearer {token}"},
     )
     assert response.ok
-    assert response.json()["message"] == "Hello World"
+    ret = response.json()
+    assert ret["message"] == "Hello World"
+    assert "user" in ret["context"]
+    user_info = ret["context"]["user"]
+    assert user_info["parent"] == api.config["workspace"]
 
     response = requests.get(
         f"{SERVER_URL}/{workspace}/apps/hello-functions/hello-world/"

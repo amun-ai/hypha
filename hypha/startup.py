@@ -22,7 +22,7 @@ def _load_function(module_path, entrypoint):
     return getattr(module, entrypoint)
 
 
-async def run_start_function(store: any, startup_function_uri: str):
+async def run_startup_function(store: any, startup_function_uri: str):
     parts = startup_function_uri.split(":")
     module_path = parts[0]
     assert not module_path.endswith(".py") or os.path.exists(

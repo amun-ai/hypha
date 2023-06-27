@@ -1,22 +1,24 @@
 """Provide authentication."""
+import asyncio
 import json
 import logging
 import ssl
 import sys
 import time
 import traceback
-import uuid
 from os import environ as env
 from typing import List
 from urllib.request import urlopen
-import shortuuid
 
+import shortuuid
 from dotenv import find_dotenv, load_dotenv
 from fastapi import Header, HTTPException
+from jinja2 import Environment, PackageLoader, select_autoescape
 from jose import jwt
 from pydantic import BaseModel  # pylint: disable=no-name-in-module
 
-from hypha.core import UserInfo, TokenConfig
+from hypha.core import TokenConfig, UserInfo
+from hypha.utils import AsyncTTLCache
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("auth")
@@ -26,13 +28,16 @@ ENV_FILE = find_dotenv()
 if ENV_FILE:
     load_dotenv(ENV_FILE)
 
+MAXIMUM_LOGIN_TIME = env.get("MAXIMUM_LOGIN_TIME", "180")  # 3 minutes
+AUTH0_CLIENT_ID = env.get("AUTH0_CLIENT_ID", "ofsvx6A7LdMhG0hklr5JCAEawLv4Pyse")
 AUTH0_DOMAIN = env.get("AUTH0_DOMAIN", "imjoy.eu.auth0.com")
 AUTH0_AUDIENCE = env.get("AUTH0_AUDIENCE", "https://imjoy.eu.auth0.com/api/v2/")
 AUTH0_ISSUER = env.get("AUTH0_ISSUER", "https://imjoy.io/")
 JWT_SECRET = env.get("JWT_SECRET")
+
 if not JWT_SECRET:
     logger.warning("JWT_SECRET is not defined")
-    JWT_SECRET = str(uuid.uuid4())
+    JWT_SECRET = str(shortuuid.uuid())
 
 
 class AuthError(Exception):
@@ -78,7 +83,7 @@ def login_required(authorization: str = Header(None)):
 def admin_required(authorization: str = Header(None)):
     """Return user info if the authorization code has an admin role."""
     token = parse_token(authorization)
-    roles = token.credentials.get("https://api.imjoy.io/roles", [])
+    roles = token.credentials.get(AUTH0_ISSUER + "roles", [])
     if "admin" not in roles:
         raise HTTPException(status_code=401, detail="Admin required")
     return token
@@ -86,7 +91,7 @@ def admin_required(authorization: str = Header(None)):
 
 def is_admin(token):
     """Check if token has an admin role."""
-    roles = token.credentials.get("https://api.imjoy.io/roles", [])
+    roles = token.credentials.get(AUTH0_ISSUER + "roles", [])
     if "admin" not in roles:
         return False
     return True
@@ -94,7 +99,7 @@ def is_admin(token):
 
 def get_user_email(token):
     """Return the user email from the token."""
-    return token.credentials.get("https://api.imjoy.io/email")
+    return token.credentials.get(AUTH0_ISSUER + "email")
 
 
 def get_user_id(token):
@@ -109,9 +114,9 @@ def get_user_info(token):
     info = UserInfo(
         id=credentials.get("sub"),
         is_anonymous=False,
-        email=credentials.get("https://api.imjoy.io/email"),
+        email=credentials.get(AUTH0_ISSUER + "email"),
         parent=credentials.get("parent", None),
-        roles=credentials.get("https://api.imjoy.io/roles", []),
+        roles=credentials.get(AUTH0_ISSUER + "roles", []),
         scopes=token.scopes,
         expires_at=expires_at,
     )
@@ -152,11 +157,11 @@ def simulate_user_token(returned_token, request):
     if "user_id" in request.query_params:
         returned_token.credentials["sub"] = request.query_params["user_id"]
     if "email" in request.query_params:
-        returned_token.credentials["https://api.imjoy.io/email"] = request.query_params[
+        returned_token.credentials[AUTH0_ISSUER + "email"] = request.query_params[
             "email"
         ]
     if "roles" in request.query_params:
-        returned_token.credentials["https://api.imjoy.io/roles"] = request.query_params[
+        returned_token.credentials[AUTH0_ISSUER + "roles"] = request.query_params[
             "roles"
         ].split(",")
 
@@ -211,8 +216,8 @@ def generate_anonymouse_user():
             "azp": "aormkFV0l7T0shrIwjdeQIUmNLt09DmA",
             "scope": "",
             "gty": "client-credentials",
-            "https://api.imjoy.io/roles": [],
-            "https://api.imjoy.io/email": "anonymous@imjoy.io",
+            AUTH0_ISSUER + "roles": [],
+            AUTH0_ISSUER + "email": "anonymous@amum.ai",
         },
         scopes=[],
     )
@@ -294,8 +299,8 @@ def generate_presigned_token(
             "parent": parent,
             "pc": config.parent_client,
             "gty": "client-credentials",
-            "https://api.imjoy.io/roles": [],
-            "https://api.imjoy.io/email": email,
+            AUTH0_ISSUER + "roles": [],
+            AUTH0_ISSUER + "email": email,
         },
         JWT_SECRET,
         algorithm="HS256",
@@ -319,8 +324,8 @@ def generate_reconnection_token(
             "gty": "client-credentials",
             "cid": client_id,
             "ws": workspace,
-            "https://api.imjoy.io/email": user_info.email,
-            "https://api.imjoy.io/roles": user_info.roles,
+            AUTH0_ISSUER + "email": user_info.email,
+            AUTH0_ISSUER + "roles": user_info.roles,
             "parent": user_info.parent,
             "scope": " ".join(user_info.scopes),
         },
@@ -367,3 +372,85 @@ def parse_user(token):
         raise Exception("Root user is not allowed to connect remotely")
 
     return user_info
+
+
+async def register_login_service(server):
+    """Hypha startup function for registering additional services."""
+    cache = AsyncTTLCache(ttl=int(MAXIMUM_LOGIN_TIME))
+    server_url = server.config["public_base_url"]
+    login_url = f"{server_url}/{server.config['workspace']}/apps/hypha-login/"
+    report_url = (
+        f"{server_url}/{server.config['workspace']}/services/hypha-login/report"
+    )
+
+    jinja_env = Environment(
+        loader=PackageLoader("hypha"), autoescape=select_autoescape()
+    )
+    temp = jinja_env.get_template("login_template.html")
+    login_page = temp.render(
+        report_url=report_url,
+        auth0_client_id=AUTH0_CLIENT_ID,
+        auth0_domain=AUTH0_DOMAIN,
+        auth0_audience=AUTH0_AUDIENCE,
+        auth0_issuer=AUTH0_ISSUER,
+    )
+
+    login_page = login_page.replace("{{ TOKEN_REPORT_URL }}", report_url)
+
+    async def start_login():
+        """Start the login process."""
+        key = str(shortuuid.uuid())
+        await cache.add(key, False)
+        return {
+            "login_url": f"{login_url}?key={key}",
+            "key": key,
+            "report_url": report_url,
+        }
+
+    async def index(event, context=None):
+        """Index function to serve the login page."""
+        return {
+            "status": 200,
+            "headers": {"Content-Type": "text/html"},
+            "body": login_page,
+        }
+
+    async def check_login(key, timeout=MAXIMUM_LOGIN_TIME):
+        """Check the status of a login session."""
+        assert key in cache, "Invalid key, key does not exist"
+        if timeout <= 0:
+            return await cache.get(key)
+        count = 0
+        while True:
+            token = await cache.get(key)
+            if token is None:
+                raise Exception(
+                    f"Login session expired, the maximum login time is {MAXIMUM_LOGIN_TIME} seconds"
+                )
+            if token:
+                del cache[key]
+                return token
+            await asyncio.sleep(1)
+            count += 1
+            if count > timeout:
+                raise Exception("Login timeout")
+
+    async def report_token(key, token):
+        """Report a token associated with a login session."""
+        await cache.update(key, token)
+
+    await server.register_service(
+        {
+            "name": "Hypha Login",
+            "id": "hypha-login",
+            "type": "functions",
+            "config": {"visibility": "public"},
+            "index": index,
+            "start": start_login,
+            "check": check_login,
+            "report": report_token,
+        }
+    )
+
+    logger.info("Login service is ready.")
+    logger.info(f"To preview the login page, visit: {login_url}")
