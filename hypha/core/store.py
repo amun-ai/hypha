@@ -4,8 +4,7 @@ import json
 import logging
 import random
 import sys
-import traceback
-from typing import Dict, List
+from typing import Dict, List, Union
 
 import shortuuid
 from imjoy_rpc.hypha import RPC
@@ -283,9 +282,11 @@ class RedisStore:
         rpc = RPC(connection, client_id=client_id, default_context=default_context)
         return rpc
 
-    async def check_permission(self, workspace: str, user_info: UserInfo):
+    async def check_permission(
+        self, workspace: Union[str, WorkspaceInfo], user_info: UserInfo
+    ):
         """Check user permission for a workspace."""
-        if not isinstance(workspace, str):
+        if isinstance(workspace, WorkspaceInfo):
             workspace = workspace.name
         manager = await self.get_workspace_manager(workspace, setup=False)
         return await manager.check_permission(user_info, workspace)

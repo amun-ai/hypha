@@ -751,7 +751,9 @@ class WorkspaceManager:
                 # because the service is already patched
                 return service_api
             else:
-                raise Exception(f"Client not found: {client_id}")
+                raise Exception(
+                    f"Client not found: {client_id} (service: {service_id})"
+                )
         else:
             workspace, sname = service_id.split("/")
             cid, sid = sname.split(":")

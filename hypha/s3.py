@@ -646,6 +646,9 @@ class S3Controller:
     async def generate_credential(self, context: dict = None):
         """Generate credential."""
         workspace = context["from"].split("/")[0]
+        ws = await self.store.get_workspace(workspace)
+        if ws.read_only:
+            raise Exception("Permission denied: workspace is read-only")
         user_info = UserInfo.parse_obj(context["user"])
         if workspace == "public" or not await self.store.check_permission(
             workspace, user_info
@@ -698,6 +701,9 @@ class S3Controller:
         """Generate presigned url."""
         try:
             workspace = context["from"].split("/")[0]
+            ws = await self.store.get_workspace(workspace)
+            if ws.read_only and client_method != "get_object":
+                raise Exception("Permission denied: workspace is read-only")
             if bucket_name != self.workspace_bucket or not object_name.startswith(
                 workspace + "/"
             ):

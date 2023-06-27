@@ -58,7 +58,7 @@ class RemoteASGIApp:
                 scope["body"] = body or None
                 func = self.service[func_name]
                 try:
-                    if self.service.config["require_context"]:
+                    if self.service.config.get("require_context"):
                         authorization = scope["headers"].get("authorization")
                         user_info = parse_token(authorization, allow_anonymouse=True)
                         result = await func(scope, {"user": user_info.dict()})

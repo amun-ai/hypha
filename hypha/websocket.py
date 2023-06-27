@@ -117,7 +117,7 @@ class WebsocketServer:
                                 owners=[user_info.id],
                                 visibility="protected",
                                 persistent=persistent,
-                                read_only=False,
+                                read_only=user_info.is_anonymous,
                             ),
                             overwrite=False,
                         )

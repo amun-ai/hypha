@@ -4,7 +4,7 @@ import requests
 import asyncio
 import httpx
 
-from imjoy_rpc.hypha import login
+from imjoy_rpc.hypha import login, connect_to_server
 from . import (
     SERVER_URL,
 )
@@ -15,6 +15,9 @@ pytestmark = pytest.mark.asyncio
 
 async def test_login(fastapi_server):
     """Test login to the server."""
+    api = await connect_to_server({"name": "test client", "server_url": SERVER_URL})
+    svc = await api.get_service("public/*:hypha-login")
+    assert svc and callable(svc.start)
 
     TOKEN = "sf31df234"
 
