@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Hypha Login</title>
+    <meta name="description" content="Login to Hypha">
+    <meta name="author" content="Amun AI AB">
+    <script src="https://cdn.auth0.com/js/auth0-spa-js/2.0/auth0-spa-js.production.js"> </script>
+    <link rel="stylesheet" href="https://unpkg.com/spectre.css/dist/spectre.min.css">
+    <link rel="stylesheet" href="https://unpkg.com/spectre.css/dist/spectre-exp.min.css">
+    <link rel="stylesheet" href="https://unpkg.com/spectre.css/dist/spectre-icons.min.css">
+    <style>
+        /* Style for the login button */
+        .login-btn {
+            height: 65px;
+            width: 300px;
+            font-size: 1.5em;
+            /* Makes the text larger */
+            padding: 20px 40px;
+            /* Increases the size of the button */
+            background-color: #007BFF;
+            /* Blue background */
+            color: white;
+            /* White text */
+            border: none;
+            /* Removes border */
+            display: block;
+            /* Allows for centering with margin */
+            margin: 0 auto;
+            /* Centers the button horizontally */
+            cursor: pointer;
+            /* Changes the cursor on hover */
+            transition: background-color 0.3s ease;
+            /* Makes color change smoother */
+        }
+
+        /* Style for the button on hover */
+        .login-btn:hover {
+            background-color: #0056b3;
+            /* Darker blue */
+        }
+
+        /* Style for the button on click */
+        .login-btn:active {
+            background-color: #003d7a;
+            /* Even darker blue */
+        }
+
+        /* Style for the login window */
+        .login-window {
+            width: 100%;
+            max-width: 400px;
+            /* Adjust this value according to your needs */
+            margin: 0 auto;
+            /* This will center the login window horizontally */
+        }
+
+        /* Style for the title */
+        .center-title {
+            text-align: center;
+        }
+
+        /* Style for the bg-gray and hero classes, if they are not already defined */
+        .bg-gray {
+            background-color: #f0f0f0;
+            /* This is an example color, adjust as needed */
+        }
+
+        .hero {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            /* This will center the content vertically */
+            padding: 2rem;
+            /* Padding around the edges, adjust as needed */
+        }
+    </style>
+</head>
+
+<body>
+    <noscript>
+        <div class="toast toast-error">
+            <button class="btn btn-clear float-right"></button>
+            <p>Hypha Login requires JavaScript to be enabled.</p>
+        </div>
+    </noscript>
+    <div class="hero bg-gray">
+        <div class="hero-body login-window">
+            <h1 class="center-title">Hypha Login</h1>
+            <button onclick="login()" id="login-btn" class="btn login-btn">Login</button>
+            <div class="panel" style="display:none;" id="info-panel">
+                <div class="panel-header text-center">
+                    <figure class="avatar avatar-lg"><img id="picture" alt="Avatar"></figure>
+                    <div class="panel-title h5 mt-10" id="name"></div>
+
+                </div>
+                <nav class="panel-nav">
+                    <ul class="tab tab-block">
+                        <li class="tab-item active"><a href="#panels">Profile</a></li>
+                    </ul>
+                </nav>
+                <div class="panel-body">
+                    <div class="tile tile-centered">
+                        <div class="tile-content">
+                            <div class="tile-title text-bold">E-mail</div>
+                            <div class="tile-subtitle" id="email"></div>
+                            <div class="tile-subtitle" id="email-verification"></div>
+                        </div>
+                    </div>
+
+                    <div class="tile tile-centered">
+                        <div class="tile-content">
+                            <div class="tile-title text-bold">User ID</div>
+                            <div class="tile-subtitle" id="user-id"></div>
+                        </div>
+                    </div>
+
+                    <div class="tile tile-centered">
+                        <div class="tile-content">
+                            <div class="tile-title text-bold">Access Token</div>
+                            <div class="tile-subtitle" id="access-token"></div>
+                        </div>
+                        <div class="tile-action">
+                            <button class="btn btn-link btn-action btn-lg" onclick="copyToken()"><i
+                                    class="icon icon-copy"></i></button>
+                        </div>
+
+                    </div>
+
+                </div>
+                <div class="panel-footer">
+                    <div class="toast" id="toast" style="display:none;">
+                    </div>
+                    <button onclick="logout()" class="btn btn-primary btn-block">Logout</button>
+                </div>
+            </div>
+
+        </div>
+    </div>
+    <div>
+        <script>
+            const AUTH0_AUDIENCE = '{{ auth0_audience }}'
+            const auth0 = new window.auth0.Auth0Client({
+                domain: '{{ auth0_domain }}',
+                clientId: '{{ auth0_client_id }}',
+                authorizationParams: {
+                    audience: AUTH0_AUDIENCE,
+                },
+                cacheLocation: 'localstorage',
+                useRefreshTokens: true,
+                useRefreshTokensFallback: true,
+            })
+            document.addEventListener('DOMContentLoaded', async () => {
+                try{
+                   await window.showUserProfile();
+                }
+                catch(e){
+                    console.error(e)
+                }
+                if(window.location.search.split('logout=')[1]){
+                    logout();
+                }
+            });
+            window.showUserProfile = async ()=>{
+                let user = await auth0.getUser();
+                    if (user) {
+                        if (!user.email_verified) {
+                            reject(`Please verify your email (${user.email}) by clicking the link sent from Auth0.`)
+                            return
+                        }
+                        console.log(user);
+                    }
+                    else {
+                        throw new Error("User not found")
+                    }
+                    const accessToken = await auth0.getTokenSilently({ audience: AUTH0_AUDIENCE });
+
+                    document.getElementById("login-btn").style.display = "none";
+                    document.getElementById("name").innerHTML = user.name;
+                    document.getElementById("email").innerHTML = user.email;
+                    document.getElementById("email-verification").innerHTML = user.email_verified ? "Verified" : "Not Verified";
+                    // make email-verification in red if not verified
+                    if (!user.email_verified) {
+                        document.getElementById("email-verification").style.color = "red";
+                    }
+                    document.getElementById("picture").src = user.picture;
+                    document.getElementById("user-id").innerHTML = user.sub;
+                    document.getElementById("access-token").innerHTML = accessToken;
+                    document.getElementById("info-panel").style.display = "block";
+
+                    const key = window.location.search.split('key=')[1];
+                    const report_url = "{{ report_url }}";
+                    if (key && report_url.startsWith('http')) {
+                        const response = await fetch(`${report_url}?key=${key}&token=${accessToken}`)
+                        if(response.ok)
+                            window.close();
+                        else{
+                            console.error("Failed to report token: ", response.status, response.statusText)
+                        }
+                    }
+            }
+            
+            window.logout = async ()=>{
+                const href = window.location.href;
+                await auth0.logout({ returnTo: href});         
+            }
+    
+            window.login = async () => {
+                await auth0.loginWithPopup({ audience: AUTH0_AUDIENCE });
+                await showUserProfile();
+            }
+
+            window.copyToken = ()=>{
+                const el = document.createElement('textarea');
+                el.value = document.getElementById("access-token").innerHTML;
+                document.body.appendChild(el);
+                el.select();
+                document.execCommand('copy');
+                document.body.removeChild(el);
+                // display a toast
+                document.getElementById("toast").innerHTML = "Access token copied to clipboard!";
+                document.getElementById("toast").style.display = "block";
+                setTimeout(()=>{
+                    document.getElementById("toast").style.display = "none";
+                }, 2000);
+            }
+        </script>
+
+
+</body>
+
+</html>

@@ -36,13 +36,13 @@ class ImJoyPlugin {
                 return {
                     status: 200,
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({message: "Hello World"})
+                    body: JSON.stringify({message: "Hello World", context})
                 };
             },
             "index": async function(event, context) {
                 return {
                     status: 200,
-                    body: "Home page"
+                    body: `Home page`
                 };
             }
 

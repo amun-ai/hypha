@@ -17,6 +17,21 @@ pytestmark = pytest.mark.asyncio
 async def test_s3(minio_server, fastapi_server, test_user_token):
     """Test s3 service."""
     api = await connect_to_server(
+        {"name": "anonymous client", "server_url": WS_SERVER_URL}
+    )
+    s3controller = await api.get_service("s3-storage")
+    with pytest.raises(
+        Exception, match=r".*Permission denied: workspace is read-only.*"
+    ):
+        info = await s3controller.generate_credential()
+    with pytest.raises(
+        Exception, match=r".*Permission denied: workspace is read-only.*"
+    ):
+        info = await s3controller.generate_presigned_url(
+            "", "", client_method="put_object"
+        )
+
+    api = await connect_to_server(
         {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
     )
     workspace = api.config["workspace"]

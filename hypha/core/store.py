@@ -4,8 +4,7 @@ import json
 import logging
 import random
 import sys
-import traceback
-from typing import Dict, List
+from typing import Dict, List, Union
 
 import shortuuid
 from imjoy_rpc.hypha import RPC
@@ -21,7 +20,7 @@ from hypha.core import (
     WorkspaceInfo,
 )
 from hypha.core.workspace import SERVICE_SUMMARY_FIELD, WorkspaceManager
-from hypha.startup import run_start_function
+from hypha.startup import run_startup_function
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("redis-store")
@@ -133,7 +132,7 @@ class RedisStore:
         if startup_functions:
             for startup_function in startup_functions:
                 logger.info(f"Running startup function: {startup_function}")
-                await run_start_function(self, startup_function)
+                await run_startup_function(self, startup_function)
         self._ready = True
 
         self.get_event_bus().emit("startup", target="local")
@@ -283,9 +282,11 @@ class RedisStore:
         rpc = RPC(connection, client_id=client_id, default_context=default_context)
         return rpc
 
-    async def check_permission(self, workspace: str, user_info: UserInfo):
+    async def check_permission(
+        self, workspace: Union[str, WorkspaceInfo], user_info: UserInfo
+    ):
         """Check user permission for a workspace."""
-        if not isinstance(workspace, str):
+        if isinstance(workspace, WorkspaceInfo):
             workspace = workspace.name
         manager = await self.get_workspace_manager(workspace, setup=False)
         return await manager.check_permission(user_info, workspace)
