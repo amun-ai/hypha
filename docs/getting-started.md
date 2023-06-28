@@ -207,7 +207,7 @@ token = await login(
 
 If no `login_callback` is passed, the login URL will be printed to the console. You can also pass a callback function as `login_callback` to perform custom actions during the login process.
 
-For example, here is a callback function for displaying the login URL, QR code, or launching a browser for the user to log in:
+For example, here is a callback function for displaying the login URL, QR code (e.g. using [qrcodeT](https://github.com/Khalil-Youssefi/qrcodeT) to print the QR code to the console), or launching a browser for the user to log in:
 
 ```python
 async def callback(context):
