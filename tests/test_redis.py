@@ -84,13 +84,13 @@ async def test_redis_store(redis_store):
     assert await service.echo("hello") == "hello"
 
 
-async def test_websocket_server(fastapi_server, test_user_token):
+async def test_websocket_server(fastapi_server, test_user_token_2):
     """Test the websocket server."""
     wm = await connect_to_server(
         dict(
             server_url=f"ws://127.0.0.1:{SIO_PORT}/ws",
             client_id="test-plugin-1",
-            token=test_user_token,
+            token=test_user_token_2,
         )
     )
     await wm.log("hello")
@@ -187,7 +187,7 @@ async def test_websocket_server(fastapi_server, test_user_token):
             server_url=f"ws://127.0.0.1:{SIO_PORT}/ws",
             workspace=wm.config.workspace,
             client_id="test-plugin-6",
-            token=test_user_token,
+            token=test_user_token_2,
             method_timeout=3,
         )
     )

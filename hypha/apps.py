@@ -172,7 +172,7 @@ class ServerAppController:
         self._initialize_future = asyncio.Future()
         try:
             self._runner_services = await self.store.list_public_services(
-                {"type": "plugin-runner"}
+                {"type": "browser-runner"}
             )
             assert len(self._runner_services) > 0, "No plugin runner is available."
             # TODO: check if the plugins are marked as startup plugin
@@ -376,6 +376,7 @@ class ServerAppController:
         context: Optional[dict] = None,
     ) -> str:
         """Save a server app."""
+        assert context["user"]["is_anonymous"] is False, "User must be authenticated"
         if template is None:
             if config:
                 template = config.get("type") + "-plugin.html"
@@ -463,6 +464,7 @@ class ServerAppController:
 
     async def uninstall(self, app_id: str, context: Optional[dict] = None) -> None:
         """Uninstall a server app."""
+        assert context["user"]["is_anonymous"] is False, "User must be authenticated"
         if "/" not in app_id:
             raise Exception(
                 f"Invalid app id: {app_id}, the correct format is `user-id/app-id`"
@@ -496,6 +498,7 @@ class ServerAppController:
         context: Optional[dict] = None,
     ) -> dotdict:
         """Start a server app instance."""
+        assert context["user"]["is_anonymous"] is False, "User must be authenticated"
         workspace = context["from"].split("/")[0]
         app_info = await self.install(
             source,
@@ -558,6 +561,7 @@ class ServerAppController:
         context: Optional[dict] = None,
     ):
         """Start the app and keep it alive."""
+        assert context["user"]["is_anonymous"] is False, "User must be authenticated"
         if wait_for_service is True:
             wait_for_service = "default"
 
@@ -839,6 +843,9 @@ class ServerAppController:
     ) -> None:
         """Stop a server app instance."""
         if context:
+            assert (
+                context["user"]["is_anonymous"] is False
+            ), "User must be authenticated"
             assert workspace is None
             workspace = context["from"].split("/")[0]
 
@@ -879,6 +886,7 @@ class ServerAppController:
         context: Optional[dict] = None,
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get server app instance log."""
+        assert context["user"]["is_anonymous"] is False, "User must be authenticated"
         workspace = context["from"].split("/")[0]
         page_id = workspace + "/" + client_id
         if page_id in self._apps:
@@ -890,6 +898,7 @@ class ServerAppController:
 
     async def list_running(self, context: Optional[dict] = None) -> List[str]:
         """List the running sessions for the current workspace."""
+        assert context["user"]["is_anonymous"] is False, "User must be authenticated"
         workspace = context["from"].split("/")[0]
         sessions = [
             {k: v for k, v in page_info.items() if k != "runner"}

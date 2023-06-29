@@ -16,7 +16,7 @@ from imjoy_rpc.hypha.websocket_client import connect_to_server
 from hypha.utils import dotdict
 
 logging.basicConfig(stream=sys.stdout)
-logger = logging.getLogger("plugin-runner")
+logger = logging.getLogger("browser-runner")
 logger.setLevel(logging.INFO)
 
 

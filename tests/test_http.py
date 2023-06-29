@@ -49,11 +49,16 @@ api.export({
 
 
 # pylint: disable=too-many-statements
-async def test_http_proxy(minio_server, fastapi_server):
+async def test_http_proxy(minio_server, fastapi_server, test_user_token):
     """Test http proxy."""
     # WS_SERVER_URL = "http://127.0.0.1:9527"
     api = await connect_to_server(
-        {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 10}
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 10,
+            "token": test_user_token,
+        }
     )
     workspace = api.config["workspace"]
     token = await api.generate_token()

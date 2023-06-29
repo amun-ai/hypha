@@ -162,30 +162,23 @@ Here is an example of how the login process works using the `login()` function:
 ```python
 from imjoy_rpc.hypha import login, connect_to_server
 
-token = await login(
-    {
-        "server_url": "https://ai.imjoy.io"
-    }
-)
+token = await login({"server_url": "https://ai.imjoy.io"})
 # A login URL will be printed to the console
 # The user needs to open the URL in a browser and log in
 # Once the user logs in, the login function will return
-# with the token
-
-server = await connect_to_server(
-    {
-        "server_url": "https://ai.imjoy.io",
-        "token": token
-    })
-# user the server...
+# with the token for connecting to the server
+server = await connect_to_server({"server_url": "https://ai.imjoy.io", "token": token})
+# ...use the server api...
 ```
+
+**NOTE: In Python, the recommended way to interact with the server to use asynchronous functions with `asyncio`. However, if you need to use synchronous functions, you can use `from imjoy_rpc.hypha import login_sync, connect_to_server_sync` (available since `imjoy-rpc>=0.5.25.post0`), then use  `login_sync()` and `connect_to_server_sync` functions instead. The have the exact same arguments as the asynchronous versions.**
 
 Login in javascript:
 ```javascript
 async function main(){
     const token = await hyphaWebsocketClient.login({"server_url": "http://localhost:9000"})
     const server = await hyphaWebsocketClient.connectToServer({"server_url": "http://localhost:9000", "token": token})
-    // ... use the server
+    // ... use the server...
 }
 ```
 
@@ -207,9 +200,13 @@ token = await login(
 
 If no `login_callback` is passed, the login URL will be printed to the console. You can also pass a callback function as `login_callback` to perform custom actions during the login process.
 
-For example, here is a callback function for displaying the login URL, QR code (e.g. using [qrcodeT](https://github.com/Khalil-Youssefi/qrcodeT) to print the QR code to the console), or launching a browser for the user to log in:
+For example, here is a callback function for displaying the login URL, QR code to print the QR code to the console), or launching a browser for the user to log in:
 
 ```python
+
+# Require `pip install qrcode[pil]`
+from hypha.utils.qrcode import display_qrcode
+
 async def callback(context):
     """
     Callback function for login.
@@ -223,7 +220,8 @@ async def callback(context):
      - key: the key for the login
     """
     print(f"By passing login: {context['login_url']}")
-
+    # Show the QR code for login
+    display_qrcode(context["login_url"])
 ```
 
 ### Service Authorization

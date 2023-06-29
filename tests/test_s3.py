@@ -165,7 +165,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
         assert response.content == b"hello"
 
         items = await s3controller.list_files()
-        assert len(items) == 2
+        assert len(items) == 3 # 2 files and 1 folder (applications)
         assert find_item(items, "name", "my-data-small.txt")
         assert find_item(items, "name", "hello.txt")
 

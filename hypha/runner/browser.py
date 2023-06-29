@@ -98,6 +98,7 @@ class BrowserAppRunner:
     ):
         """Start a browser app instance."""
         user_info = UserInfo.parse_obj(context["user"])
+        assert user_info.is_anonymous is False, "User must be authenticated"
         user_id = user_info.id
 
         if not self.browser:
@@ -133,6 +134,7 @@ class BrowserAppRunner:
     async def stop(self, client_id: str, context: dict = None) -> None:
         """Stop a browser app instance."""
         user_info = UserInfo.parse_obj(context["user"])
+        assert user_info.is_anonymous is False, "User must be authenticated"
         user_id = user_info.id
         page_id = user_id + "/" + client_id
         if page_id in self.browser_pages:
@@ -145,6 +147,7 @@ class BrowserAppRunner:
     async def list(self, context: dict = None) -> List[str]:
         """List the browser apps for the current user."""
         user_info = UserInfo.parse_obj(context["user"])
+        assert user_info.is_anonymous is False, "User must be authenticated"
         user_id = user_info.id
         sessions = [
             {k: v for k, v in page_info.items() if k != "page"}
@@ -163,6 +166,7 @@ class BrowserAppRunner:
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get the logs for a browser app instance."""
         user_info = UserInfo.parse_obj(context["user"])
+        assert user_info.is_anonymous is False, "User must be authenticated"
         user_id = user_info.id
         page_id = user_id + "/" + client_id
         if page_id in self.browser_pages:
@@ -178,7 +182,7 @@ class BrowserAppRunner:
         controller = {
             "id": "browser-runner-" + shortuuid.uuid(),
             "name": "browser-app-runner",
-            "type": "plugin-runner",
+            "type": "browser-runner",
             "config": {"visibility": "protected", "require_context": True},
             "start": self.start,
             "stop": self.stop,

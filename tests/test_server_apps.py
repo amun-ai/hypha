@@ -37,10 +37,33 @@ api.export({
 """
 
 
-async def test_server_apps(fastapi_server):
+async def test_server_apps_unauthorized(fastapi_server):
     """Test the server apps."""
     api = await connect_to_server(
         {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 30}
+    )
+    controller = await api.get_service("server-apps")
+
+    with pytest.raises(
+        Exception, match=r".*AssertionError: User must be authenticated.*"
+    ):
+        await controller.launch(
+            source=TEST_APP_CODE,
+            config={"type": "window"},
+            wait_for_service="default",
+        )
+    await api.disconnect()
+
+
+async def test_server_apps(fastapi_server, test_user_token):
+    """Test the server apps."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
     )
     workspace = api.config["workspace"]
 
@@ -96,9 +119,11 @@ async def test_server_apps(fastapi_server):
     await controller.stop(config.id)
 
 
-async def test_web_python_apps(fastapi_server):
+async def test_web_python_apps(fastapi_server, test_user_token):
     """Test webpython plugin."""
-    api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
     workspace = api.config["workspace"]
 
     controller = await api.get_service("server-apps")
@@ -142,9 +167,11 @@ async def test_web_python_apps(fastapi_server):
     assert find_item(apps, "id", config.id)
 
 
-async def test_readiness_liveness(fastapi_server):
+async def test_readiness_liveness(fastapi_server, test_user_token):
     """Test readiness and liveness probes."""
-    api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
     workspace = api.config["workspace"]
 
     # Test plugin with custom template
@@ -178,9 +205,15 @@ async def test_readiness_liveness(fastapi_server):
     assert plugin
 
 
-async def test_non_persistent_workspace(fastapi_server):
+async def test_non_persistent_workspace(fastapi_server, test_user_token_temporary):
     """Test non-persistent workspace."""
-    api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token_temporary,
+        }
+    )
     workspace = api.config["workspace"]
 
     # Test plugin with custom template
@@ -223,10 +256,15 @@ async def test_non_persistent_workspace(fastapi_server):
     assert stats["user_count"] == count - 1
 
 
-async def test_lazy_plugin(fastapi_server):
+async def test_lazy_plugin(fastapi_server, test_user_token):
     """Test lazy plugin loading."""
     api = await connect_to_server(
-        {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 60}
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 60,
+            "token": test_user_token,
+        }
     )
 
     # Test plugin with custom template
@@ -253,10 +291,15 @@ async def test_lazy_plugin(fastapi_server):
     await api.disconnect()
 
 
-async def test_lazy_service(fastapi_server):
+async def test_lazy_service(fastapi_server, test_user_token):
     """Test lazy service loading."""
     api = await connect_to_server(
-        {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 5}
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 5,
+            "token": test_user_token,
+        }
     )
 
     # Test plugin with custom template
