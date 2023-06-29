@@ -407,7 +407,7 @@ async def register_login_service(server):
             "report_url": report_url,
         }
 
-    async def index(event, context=None):
+    async def index(event):
         """Index function to serve the login page."""
         return {
             "status": 200,
