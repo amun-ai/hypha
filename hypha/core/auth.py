@@ -285,6 +285,9 @@ def generate_presigned_token(
         parent = user_info.parent
         email = user_info.email
 
+    # Inherit roles from parent
+    roles = user_info.roles
+
     expires_in = config.expires_in or 10800
     current_time = time.time()
     expires_at = current_time + expires_in
@@ -299,7 +302,7 @@ def generate_presigned_token(
             "parent": parent,
             "pc": config.parent_client,
             "gty": "client-credentials",
-            AUTH0_ISSUER + "roles": [],
+            AUTH0_ISSUER + "roles": roles,
             AUTH0_ISSUER + "email": email,
         },
         JWT_SECRET,

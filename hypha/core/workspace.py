@@ -412,8 +412,8 @@ class WorkspaceManager:
         """Update the client info."""
         assert "/" not in client_info.id
         if not await self._redis.hexists(f"{self._workspace}:clients", client_info.id):
-            raise Exception(f"Client {client_info.id} not found.")
-
+            logger.info(f"Failed to update client, client {client_info.id} not found.")
+            return
         for service in client_info.services:
             # Add workspace info to the service
             service.config.workspace = self._workspace
@@ -522,8 +522,21 @@ class WorkspaceManager:
                 workspace + "/" + client_info.id,
             )
 
-        # Remove children if the user is anonymous
-        if client_info.user_info.is_anonymous:
+        workspace_info = await self.get_workspace_info(workspace)
+        user_info = client_info.user_info
+
+        # clients in the same workspace
+        client_ids = await self.list_clients()
+        remain_clients = await self.list_user_clients({"user": user_info.dict()})
+        # filter out the clients in the same workspace
+        remain_clients = [c for c in remain_clients if c not in client_ids]
+
+        # Remove children if the workspace belongs to the client and it is not persistent
+        if (
+            client_info.user_info.id == workspace
+            and len(remain_clients) <= 0
+            and not workspace_info.persistent
+        ):
             client_keys = await self._redis.smembers(
                 f"client:{workspace}/{client_info.id}:children"
             )
@@ -540,15 +553,13 @@ class WorkspaceManager:
                 except Exception as exp:
                     logger.warning("Failed to remove client: %s, error: %s", cid, exp)
 
-        user_info = client_info.user_info
-        if user_info.is_anonymous:
-            remain_clients = await self.list_user_clients({"user": user_info.dict()})
+        if user_info.is_anonymous or "temporary" in user_info.roles:
             if len(remain_clients) <= 0:
                 await self._redis.hdel("users", user_info.id)
-                logger.info("Anonymous user (%s) removed.", user_info.id)
+                logger.info("Anonymous or temporary user (%s) removed.", user_info.id)
             else:
                 logger.info(
-                    "Anonymous user (%s) client removed (remaining clients: %s)",
+                    "Anonymous or temporary user (%s) client removed (remaining clients: %s)",
                     user_info.id,
                     len(remain_clients),
                 )
@@ -658,9 +669,9 @@ class WorkspaceManager:
             if client_name and client_name == app_info.name:
                 app_id = aid
                 break
-            if app_info.services and service_id in app_info.services:
-                app_id = aid
-                break
+            # if app_info.services and service_id in app_info.services:
+            #     app_id = aid
+            #     break
         if app_id is None:
             raise Exception(f"Service id {service_id} not found")
 

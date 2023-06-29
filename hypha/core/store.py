@@ -92,7 +92,7 @@ class RedisStore:
                 is_anonymous=False,
                 email=None,
                 parent=None,
-                roles=[],
+                roles=["admin"],
                 scopes=[],
                 expires_at=None,
             )

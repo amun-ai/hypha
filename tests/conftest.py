@@ -47,9 +47,7 @@ def pytest_sessionfinish(session, exitstatus):
     asyncio.get_event_loop().close()
 
 
-@pytest_asyncio.fixture(name="test_user_token", scope="session")
-def generate_authenticated_user():
-    """Generate a test user token."""
+def _generate_token(roles):
     # Patch the JWT_SECRET
     auth.JWT_SECRET = JWT_SECRET
 
@@ -58,7 +56,7 @@ def generate_authenticated_user():
         is_anonymous=False,
         email=None,
         parent=None,
-        roles=[],
+        roles=roles,
         scopes=[],
         expires_at=None,
     )
@@ -67,6 +65,18 @@ def generate_authenticated_user():
     token_config = TokenConfig.parse_obj(config)
     token = generate_presigned_token(user_info, token_config)
     yield token
+
+
+@pytest_asyncio.fixture(name="test_user_token", scope="session")
+def generate_authenticated_user():
+    """Generate a test user token."""
+    yield from _generate_token([])
+
+
+@pytest_asyncio.fixture(name="test_user_token_temporary", scope="session")
+def generate_authenticated_user_temporary():
+    """Generate a temporary test user token."""
+    yield from _generate_token(["temporary"])
 
 
 @pytest_asyncio.fixture(name="triton_server", scope="session")

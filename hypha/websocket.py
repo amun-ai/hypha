@@ -107,7 +107,10 @@ class WebsocketServer:
 
             if workspace is None:
                 workspace = user_info.id
-                persistent = not user_info.is_anonymous
+                # Anonymous and Temporary users are not allowed to create persistant workspaces
+                persistent = (
+                    not user_info.is_anonymous and "temporary" not in user_info.roles
+                )
                 # If the user disconnected unexpectedly, the workspace will be preserved
                 if not await store.get_user_workspace(user_info.id):
                     try:
