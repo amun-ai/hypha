@@ -65,8 +65,8 @@ class ServiceInfo(BaseModel):
     id: str
     name: str
     type: str
-    description: Optional[constr(max_length=256)]
-    docs: Optional[Dict[str, constr(max_length=1024)]]
+    description: Optional[constr(max_length=256)] = ""
+    docs: Optional[Dict[str, constr(max_length=1024)]] = {}
 
     class Config:
         """Set the config for pydantic."""
