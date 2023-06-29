@@ -25,7 +25,7 @@ logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("workspace")
 logger.setLevel(logging.INFO)
 
-SERVICE_SUMMARY_FIELD = ["id", "name", "type", "config"]
+SERVICE_SUMMARY_FIELD = ["id", "name", "type", "description", "config"]
 
 
 class WorkspaceManager:
@@ -139,7 +139,7 @@ class WorkspaceManager:
                 "clients": clients,
                 "service_count": len(services),
                 "services": [
-                    {k: service[k] for k in SERVICE_SUMMARY_FIELD}
+                    {k: service[k] for k in SERVICE_SUMMARY_FIELD if k in service}
                     for service in services
                 ],
             }

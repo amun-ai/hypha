@@ -447,6 +447,7 @@ async def register_login_service(server):
             "name": "Hypha Login",
             "id": "hypha-login",
             "type": "functions",
+            "description": "Login service for Hypha",
             "config": {"visibility": "public"},
             "index": index,
             "start": start_login,

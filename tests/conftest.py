@@ -51,7 +51,7 @@ def _generate_token(roles):
     # Patch the JWT_SECRET
     auth.JWT_SECRET = JWT_SECRET
 
-    user_info = UserInfo(
+    root_user_info = UserInfo(
         id="root",
         is_anonymous=False,
         email=None,
@@ -63,7 +63,7 @@ def _generate_token(roles):
     config = {}
     config["scopes"] = []
     token_config = TokenConfig.parse_obj(config)
-    token = generate_presigned_token(user_info, token_config)
+    token = generate_presigned_token(root_user_info, token_config)
     yield token
 
 
