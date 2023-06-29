@@ -11,9 +11,11 @@ from . import WS_SERVER_URL, SERVER_URL
 pytestmark = pytest.mark.asyncio
 
 
-async def test_asgi(fastapi_server):
+async def test_asgi(fastapi_server, test_user_token):
     """Test the ASGI gateway apps."""
-    api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
     workspace = api.config["workspace"]
 
     # Test plugin with custom template
@@ -40,9 +42,11 @@ async def test_asgi(fastapi_server):
     await controller.stop(config.id)
 
 
-async def test_functions(fastapi_server):
+async def test_functions(fastapi_server, test_user_token):
     """Test the functions service."""
-    api = await connect_to_server({"name": "test client", "server_url": WS_SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
