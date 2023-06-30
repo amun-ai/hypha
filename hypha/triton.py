@@ -105,6 +105,7 @@ class TritonProxy:
             "id": "triton-client",
             "name": "Triton Client",
             "type": "triton-client",
+            "description": "Triton Inference Server Client",
             "config": {"visibility": "public"},
             "execute": self.execute,
             "get_config": self.get_config,

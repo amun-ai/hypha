@@ -958,6 +958,7 @@ class WorkspaceManager:
         interface = {
             "id": service_id,
             "name": service_name or service_id,
+            "description": "Services for managing workspace.",
             # Note: We make these services public by default, and assuming we will do authorization in each function
             "config": {
                 "require_context": True,

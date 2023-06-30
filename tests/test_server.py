@@ -176,6 +176,9 @@ async def test_workspace(fastapi_server):
     public_svc = await api.list_services("public")
     assert len(public_svc) > 0
 
+    login_svc = find_item(public_svc, "id", "public/workspace-manager:hypha-login")
+    assert len(login_svc["description"]) > 0
+
     s3_svc = await api.list_services({"workspace": "public", "type": "s3-storage"})
     assert len(s3_svc) == 1
 
