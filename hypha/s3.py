@@ -259,18 +259,29 @@ class S3Controller:
         ):
             """Upload file."""
             ws = await store.get_workspace(workspace)
+            if ws.read_only:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "success": False,
+                        "detail": f"Permission denied: workspace ({workspace}) is read-only",
+                    },
+                )
             if not ws:
                 return JSONResponse(
                     status_code=404,
                     content={
                         "success": False,
-                        "detail": f"Workspace does not exists: {ws}",
+                        "detail": f"Workspace does not exists: {workspace}",
                     },
                 )
             if not await store.check_permission(ws, user_info):
                 return JSONResponse(
                     status_code=403,
-                    content={"success": False, "detail": f"Permission denied: {ws}"},
+                    content={
+                        "success": False,
+                        "detail": f"Permission denied: {workspace}",
+                    },
                 )
             path = safe_join(workspace, path)
 
@@ -292,19 +303,30 @@ class S3Controller:
                     status_code=404,
                     content={
                         "success": False,
-                        "detail": f"Workspace does not exists: {ws}",
+                        "detail": f"Workspace does not exists: {workspace}",
                     },
                 )
             if not await store.check_permission(ws, user_info):
                 return JSONResponse(
                     status_code=403,
-                    content={"success": False, "detail": f"Permission denied: {ws}"},
+                    content={
+                        "success": False,
+                        "detail": f"Permission denied: {workspace}",
+                    },
                 )
             path = safe_join(workspace, path)
             if request.method == "GET":
                 return await self._get_files(path, max_length)
 
             if request.method == "DELETE":
+                if ws.read_only:
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "success": False,
+                            "detail": f"Permission denied: workspace ({workspace}) is read-only",
+                        },
+                    )
                 return await self._delete_files(path)
 
         store.register_router(router)
