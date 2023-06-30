@@ -5,7 +5,6 @@ import sys
 from os import environ as env
 from pathlib import Path
 
-import uvicorn
 from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -20,6 +19,16 @@ from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
 from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
 from hypha.websocket import WebsocketServer
+
+try:
+    # For pyodide, we need to patch http
+    import pyodide
+    import pyodide_http
+
+    pyodide_http.patch_all()  # Patch all libraries
+except ImportError:
+    pass
+
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("server")
@@ -53,34 +62,6 @@ EXPOSE_HEADERS = [
     "Origin",
     "Content-Type",
 ]
-
-
-def create_application(allow_origins) -> FastAPI:
-    """Set up the server application."""
-    # pylint: disable=unused-variable
-
-    app = FastAPI(
-        title="Hypha",
-        docs_url="/api-docs",
-        redoc_url="/api-redoc",
-        description=(
-            "A serverless application framework for \
-                large-scale data management and AI model serving"
-        ),
-        version=VERSION,
-    )
-    app.router.route_class = GzipRoute
-
-    app.add_middleware(GZipMiddleware, minimum_size=1000)
-    app.add_middleware(
-        PatchedCORSMiddleware,
-        allow_origins=allow_origins,
-        allow_methods=ALLOW_METHODS,
-        allow_headers=ALLOW_HEADERS,
-        expose_headers=EXPOSE_HEADERS,
-        allow_credentials=True,
-    )
-    return app
 
 
 def start_builtin_services(
@@ -210,13 +191,35 @@ def mount_static_files(app, new_route, directory, name="static"):
             return FileResponse(f"{directory}/index.html")
 
 
-def start_server(args):
-    """Start the server."""
-    if args.allow_origins:
+def create_application(args):
+    """Create a hypha application."""
+    if args.allow_origins and isinstance(args.allow_origins, str):
         args.allow_origins = args.allow_origins.split(",")
     else:
         args.allow_origins = env.get("ALLOW_ORIGINS", "*").split(",")
-    application = create_application(args.allow_origins)
+
+    application = FastAPI(
+        title="Hypha",
+        docs_url="/api-docs",
+        redoc_url="/api-redoc",
+        description=(
+            "A serverless application framework for \
+                large-scale data management and AI model serving"
+        ),
+        version=VERSION,
+    )
+    application.router.route_class = GzipRoute
+
+    application.add_middleware(GZipMiddleware, minimum_size=1000)
+    application.add_middleware(
+        PatchedCORSMiddleware,
+        allow_origins=args.allow_origins,
+        allow_methods=ALLOW_METHODS,
+        allow_headers=ALLOW_HEADERS,
+        expose_headers=EXPOSE_HEADERS,
+        allow_credentials=True,
+    )
+
     local_base_url = f"http://127.0.0.1:{args.port}/{args.base_path.strip('/')}".strip(
         "/"
     )
@@ -245,11 +248,33 @@ def start_server(args):
             )
 
     if args.host in ("127.0.0.1", "localhost"):
-        print(
+        logger.info(
             "***Note: If you want to enable access from another host, "
             "please start with `--host=0.0.0.0`.***"
         )
-    uvicorn.run(application, host=args.host, port=int(args.port))
+    return application
+
+
+def create_application_from_env():
+    """Create a hypha application using environment variables."""
+
+    # Retrieve the arguments from environment variables
+    parser = get_argparser(add_help=False)
+    args = parser.parse_args([])
+    for arg_name in vars(args):
+        env_var = "HYPHA_" + arg_name.upper().replace("-", "_")
+        if env_var in env:
+            setattr(args, arg_name, env[env_var])
+
+    return create_application(args)
+
+
+def start_server(args):
+    """Start the server."""
+    import uvicorn
+
+    app = create_application(args)
+    uvicorn.run(app, host=args.host, port=int(args.port))
 
 
 def get_argparser(add_help=True):
@@ -390,6 +415,10 @@ def get_argparser(add_help=True):
 
 
 if __name__ == "__main__":
+    import uvicorn
+
     arg_parser = get_argparser()
     opt = arg_parser.parse_args()
-    start_server(opt)
+    app = create_application(opt)
+
+    uvicorn.run(app, host=opt.host, port=int(opt.port))

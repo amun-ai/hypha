@@ -27,6 +27,11 @@ REQUIREMENTS = [
     "uvicorn>=0.13.4",
     "httpx>=0.21.1",
     "pyotritonclient>=0.2.4",
+    # add email-validator for pyodide
+    # see https://github.com/pyodide/pyodide/issues/3969
+    "email-validator>=2.0.0;platform_system=='Emscripten'",
+    "pyodide-http;platform_system=='Emscripten'",
+    "ssl;platform_system=='Emscripten'",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()
