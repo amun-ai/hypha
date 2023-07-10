@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import logging
 import random
@@ -7,18 +8,18 @@ from typing import Optional, Union
 
 import shortuuid
 from fakeredis import aioredis
+from imjoy_rpc.hypha import RPC
 
 from hypha.core import (
     RDF,
     ClientInfo,
+    RedisRPCConnection,
     TokenConfig,
     UserInfo,
     VisibilityEnum,
     WorkspaceInfo,
-    RedisRPCConnection,
 )
 from hypha.core.auth import generate_presigned_token, generate_reconnection_token
-from imjoy_rpc.hypha import RPC
 from hypha.utils import EventBus
 
 logging.basicConfig(stream=sys.stdout)
@@ -902,6 +903,9 @@ class WorkspaceManager:
         wm = await rpc.get_remote_service(
             workspace + "/workspace-manager:default", timeout=10
         )
+        wm.rpc = rpc
+        wm.disconnect = rpc.disconnect
+        wm.register_codec = rpc.register_codec
         return wm
 
     async def _update_workspace(self, config: dict, context=None):
