@@ -12,7 +12,7 @@ DESCRIPTION = (
 REQUIREMENTS = [
     "aiofiles",
     "fastapi>=0.70.0",
-    "imjoy-rpc>=0.5.30.post0",
+    "imjoy-rpc>=0.5.31",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=1.8.2,<2.0.0",
@@ -62,6 +62,7 @@ setup(
         "server-apps": [
             "redis>=4.5.5",
             "aiobotocore>=2.1.0",
+            "aiortc>=1.5.0",
             "requests>=2.26.0",
             "playwright>=1.18.1",
             "base58>=2.1.0",
