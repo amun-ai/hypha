@@ -15,8 +15,6 @@ logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket-server")
 logger.setLevel(logging.INFO)
 
-DISCONNECT_DELAY = 180
-
 
 class WebsocketServer:
     """Represent an Websocket server."""
@@ -53,12 +51,20 @@ class WebsocketServer:
                 return
 
             parent_client = None
+            workspace_manager = None
             if reconnection_token:
                 logger.info(
                     f"Reconnecting client via token: {reconnection_token[:5]}..."
                 )
                 user_info, ws, cid = parse_reconnection_token(reconnection_token)
-                if await store.get_workspace(ws) is None:
+                if client_id not in disconnected_clients:
+                    logger.warning(
+                        "Client %s was not in the disconnected client list", client_id
+                    )
+                    await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
+                    return
+                _workspace = await store.get_workspace(ws)
+                if _workspace is None:
                     logger.error(
                         "Failed to recover the connection (client: %s),"
                         " workspace has been removed: %s",
@@ -67,6 +73,7 @@ class WebsocketServer:
                     )
                     await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
                     return
+
                 if client_id != cid:
                     logger.error(
                         "Client ID mismatch in the reconnection token %s", client_id
@@ -74,8 +81,9 @@ class WebsocketServer:
                     await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
                     return
                 logger.info("Client successfully reconnected: %s", cid)
-                disconnected_clients[client_id].cancel()
-                del disconnected_clients[client_id]
+                if client_id in disconnected_clients:
+                    disconnected_clients[client_id].cancel()
+                    del disconnected_clients[client_id]
             else:
                 if token:
                     try:
@@ -129,9 +137,10 @@ class WebsocketServer:
                         await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
                         return
             try:
-                workspace_manager = await store.get_workspace_manager(
-                    workspace, setup=True
-                )
+                if not workspace_manager:
+                    workspace_manager = await store.get_workspace_manager(
+                        workspace, setup=True
+                    )
             except Exception as exp:
                 logger.error(
                     "Failed to get workspace manager %s, error: %s", workspace, exp
@@ -150,7 +159,9 @@ class WebsocketServer:
                 await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
                 return
 
-            if await workspace_manager.check_client_exists(client_id):
+            if not reconnection_token and await workspace_manager.check_client_exists(
+                client_id
+            ):
                 logger.error(
                     "Another client with the same id %s"
                     " already connected to workspace: %s",
@@ -171,14 +182,15 @@ class WebsocketServer:
             )
             conn.on_message(websocket.send_bytes)
 
-            await workspace_manager.register_client(
-                ClientInfo(
-                    id=client_id,
-                    parent=parent_client,
-                    workspace=workspace_manager._workspace,
-                    user_info=user_info,
+            if not reconnection_token:
+                await workspace_manager.register_client(
+                    ClientInfo(
+                        id=client_id,
+                        parent=parent_client,
+                        workspace=workspace_manager._workspace,
+                        user_info=user_info,
+                    )
                 )
-            )
 
             try:
                 while True:
@@ -186,14 +198,16 @@ class WebsocketServer:
                     await conn.emit_message(data)
             except WebSocketDisconnect as exp:
                 logger.info("Client disconnected: %s", client_id)
-                try:
-                    await workspace_manager.delete_client(client_id)
-                except KeyError:
-                    logger.info("Client already deleted: %s", client_id)
+
                 if exp.code in [
                     status.WS_1000_NORMAL_CLOSURE,
                     status.WS_1001_GOING_AWAY,
                 ]:
+                    logger.info("Client disconnected normally: %s", client_id)
+                    try:
+                        await workspace_manager.delete_client(client_id)
+                    except KeyError:
+                        logger.info("Client already deleted: %s", client_id)
                     try:
                         # Clean up if the client is disconnected normally
                         await workspace_manager.delete()
@@ -205,13 +219,18 @@ class WebsocketServer:
                         " unexpectedly: %s (will be removed in %s seconds)",
                         client_id,
                         exp,
-                        DISCONNECT_DELAY,
+                        store.disconnect_delay,
                     )
 
                     async def delayed_remove(client_id, workspace_manager):
                         try:
-                            await asyncio.sleep(DISCONNECT_DELAY)
-                            del disconnected_clients[client_id]
+                            await asyncio.sleep(store.disconnect_delay)
+                            try:
+                                await workspace_manager.delete_client(client_id)
+                            except KeyError:
+                                logger.info("Client already deleted: %s", client_id)
+                            if client_id in disconnected_clients:
+                                del disconnected_clients[client_id]
                             await workspace_manager.delete()
                         except asyncio.CancelledError:
                             pass
