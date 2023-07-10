@@ -312,7 +312,7 @@ def generate_presigned_token(
 
 
 def generate_reconnection_token(
-    user_info: UserInfo, client_id: str, workspace: str, expires_in: int = 10800
+    user_info: UserInfo, client_id: str, workspace: str, expires_in: int = 60
 ):
     """Generate a token for reconnection."""
     current_time = time.time()

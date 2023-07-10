@@ -526,6 +526,9 @@ async def launch_external_services(
 
 async def _example_hypha_startup(server):
     """An example hypha startup module."""
+    assert server.register_codec
+    assert server.rpc
+    assert server.disconnect
     await server.register_service(
         {
             "id": "example-startup-service",

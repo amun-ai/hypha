@@ -38,13 +38,14 @@ class RedisStore:
         public_base_url=None,
         local_base_url=None,
         redis_uri=None,
+        disconnect_delay=30,
     ):
         """Initialize the redis store."""
         self._all_users: Dict[str, UserInfo] = {}  # uid:user_info
         self._all_workspaces: Dict[str, WorkspaceInfo] = {}  # wid:workspace_info
         self._workspace_loader = None
         self._app = app
-        self.disconnect_delay = 1
+        self.disconnect_delay = disconnect_delay
         self._codecs = {}
         self._disconnected_plugins = []
         self.public_base_url = public_base_url

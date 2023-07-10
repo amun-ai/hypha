@@ -263,7 +263,7 @@ class WorkspaceManager:
             client_id,
             user_info.id,
         )
-        expires_in = 60 * 60 * 3  #  3 hours
+        expires_in = 60  #  1 minute
         token = generate_reconnection_token(
             user_info, client_id, ws, expires_in=expires_in
         )
@@ -565,6 +565,8 @@ class WorkspaceManager:
                     len(remain_clients),
                 )
         self._event_bus.emit("client_deleted", client_info.dict())
+        # Commented below because we want to allow reconnection
+        # self.delete_if_empty()
 
     def _create_rpc(
         self, client_id: str, default_context=None, user_info: UserInfo = None
@@ -885,6 +887,9 @@ class WorkspaceManager:
                 wm = await rpc.get_remote_service(
                     workspace + "/workspace-manager:default", timeout=10
                 )
+                wm.rpc = rpc
+                wm.disconnect = rpc.disconnect
+                wm.register_codec = rpc.register_codec
                 return wm
             except asyncio.TimeoutError:
                 logger.info(
@@ -951,6 +956,7 @@ class WorkspaceManager:
             await self.remove_clients(self._workspace)
             await self._redis.hdel("workspaces", self._workspace)
             self._event_bus.emit("workspace_removed", winfo.dict())
+            logger.info("Workspace %s deleted.", self._workspace)
         else:
             client_keys = await self._redis.hkeys(f"{self._workspace}:clients")
             if b"workspace-manager" in client_keys:
