@@ -24,7 +24,7 @@ async def test_external_services(fastapi_server):
         }
     )
     svc = await server.get_service("test-service")
-    assert svc.id == "test-service"
+    assert svc.id == "public/workspace-manager:test-service"
     assert await svc.test(1) == 100
 
     svc = await server.get_service("example-startup-service")
@@ -77,7 +77,7 @@ async def test_launch_external_services(fastapi_server):
         check_services=["external-test-service"],
     )
     external_service = await server.get_service("external-test-service")
-    assert external_service.id == "external-test-service"
+    assert external_service.id.endswith(":external-test-service")
     assert await external_service.test(1) == 100
     await proc.kill()
     await asyncio.sleep(0.1)
