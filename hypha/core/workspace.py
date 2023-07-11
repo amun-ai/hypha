@@ -263,7 +263,7 @@ class WorkspaceManager:
             client_id,
             user_info.id,
         )
-        expires_in = 60  #  1 minute
+        expires_in = 60 * 60 * 5  # 5 hours
         token = generate_reconnection_token(
             user_info, client_id, ws, expires_in=expires_in
         )
