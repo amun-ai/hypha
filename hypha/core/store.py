@@ -4,6 +4,7 @@ import json
 import logging
 import random
 import sys
+import time
 from typing import Dict, List, Union
 
 import shortuuid
@@ -123,6 +124,7 @@ class RedisStore:
             "service_unregistered",
             lambda svc: asyncio.ensure_future(self._unregister_public_service(svc)),
         )
+        await self.cleanup_disconnected_clients()
         for service in self._public_services:
             try:
                 await self._public_workspace_interface.register_service(service.dict())
@@ -168,6 +170,47 @@ class RedisStore:
             else:
                 service_id = service.id
             await self._redis.hdel("public:services", service_id)
+
+    async def add_disconnected_client(self, client_info: ClientInfo):
+        """Add a disconnected client."""
+        await self._redis.hset(
+            "clients:disconnected",
+            f"{client_info.workspace}/{client_info.id}",
+            json.dumps({"client": client_info.json(), "timestamp": time.time()}),
+        )
+
+    async def remove_disconnected_client(
+        self, full_client_id: str, remove_workspace=False
+    ):
+        """Remove a disconnected client."""
+        assert "/" in full_client_id
+        await self._redis.hdel("clients:disconnected", full_client_id)
+        if remove_workspace:
+            ws, client_id = full_client_id.split("/")
+            workspace_manager = await self.get_workspace_manager(ws, setup=False)
+            try:
+                await workspace_manager.delete_client(client_id)
+            except KeyError:
+                logger.info("Client already deleted: %s", full_client_id)
+            try:
+                await workspace_manager.delete()
+            except KeyError:
+                logger.info("Workspace does not exists: %s", ws)
+
+    async def disconnected_client_exists(self, full_client_id: str):
+        """Check if a disconnected client exists."""
+        assert "/" in full_client_id
+        ret = await self._redis.hexists("clients:disconnected", full_client_id)
+        return ret
+
+    async def cleanup_disconnected_clients(self):
+        """Cleanup disconnected clients."""
+        clients = await self._redis.hgetall("clients:disconnected")
+        clients = {k.decode(): json.loads(v.decode()) for k, v in clients.items()}
+        # check if the disconnected clients are expired
+        for key in clients.keys():
+            if clients[key]["timestamp"] + self.disconnect_delay < time.time():
+                await self.remove_disconnected_client(key, remove_workspace=True)
 
     async def register_user(self, user_info: UserInfo):
         """Register a user."""

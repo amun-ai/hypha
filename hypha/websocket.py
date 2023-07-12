@@ -25,11 +25,6 @@ class WebsocketServer:
         """Set up the websocket server."""
         if allow_origins == ["*"]:
             allow_origins = "*"
-
-        self.store = store
-
-        disconnected_clients = {}
-
         self.store = store
         app = store._app
 
@@ -51,13 +46,12 @@ class WebsocketServer:
                 return
 
             parent_client = None
-            workspace_manager = None
             if reconnection_token:
                 logger.info(
                     f"Reconnecting client via token: {reconnection_token[:5]}..."
                 )
                 user_info, ws, cid = parse_reconnection_token(reconnection_token)
-                if client_id not in disconnected_clients:
+                if not await store.disconnected_client_exists(f"{ws}/{cid}"):
                     logger.warning(
                         "Client %s was not in the disconnected client list", client_id
                     )
@@ -80,10 +74,8 @@ class WebsocketServer:
                     )
                     await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
                     return
-                logger.info("Client successfully reconnected: %s", cid)
-                if client_id in disconnected_clients:
-                    disconnected_clients[client_id].cancel()
-                    del disconnected_clients[client_id]
+                logger.info("Client successfully reconnected: %s/%s", ws, cid)
+                await store.remove_disconnected_client(f"{ws}/{cid}")
             else:
                 if token:
                     try:
@@ -137,10 +129,9 @@ class WebsocketServer:
                         await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
                         return
             try:
-                if not workspace_manager:
-                    workspace_manager = await store.get_workspace_manager(
-                        workspace, setup=True
-                    )
+                workspace_manager = await store.get_workspace_manager(
+                    workspace, setup=True
+                )
             except Exception as exp:
                 logger.error(
                     "Failed to get workspace manager %s, error: %s", workspace, exp
@@ -197,17 +188,29 @@ class WebsocketServer:
                     data = await websocket.receive_bytes()
                     await conn.emit_message(data)
             except WebSocketDisconnect as exp:
-                logger.info("Client disconnected: %s", client_id)
+                logger.info(
+                    "Client disconnected: %s/%s",
+                    workspace_manager._workspace,
+                    client_id,
+                )
 
                 if exp.code in [
                     status.WS_1000_NORMAL_CLOSURE,
                     status.WS_1001_GOING_AWAY,
                 ]:
-                    logger.info("Client disconnected normally: %s", client_id)
+                    logger.info(
+                        "Client disconnected normally: %s/%s",
+                        workspace_manager._workspace,
+                        client_id,
+                    )
                     try:
                         await workspace_manager.delete_client(client_id)
                     except KeyError:
-                        logger.info("Client already deleted: %s", client_id)
+                        logger.info(
+                            "Client already deleted: %s/%s",
+                            workspace_manager._workspace,
+                            client_id,
+                        )
                     try:
                         # Clean up if the client is disconnected normally
                         await workspace_manager.delete()
@@ -215,29 +218,35 @@ class WebsocketServer:
                         logger.info("Workspace already deleted: %s", workspace)
                 else:
                     logger.error(
-                        "Websocket (client=%s) disconnected"
+                        "Websocket (worksapce=%s, client=%s) disconnected"
                         " unexpectedly: %s (will be removed in %s seconds)",
+                        workspace_manager._workspace,
                         client_id,
                         exp,
                         store.disconnect_delay,
                     )
 
                     async def delayed_remove(client_id, workspace_manager):
-                        try:
-                            await asyncio.sleep(store.disconnect_delay)
-                            try:
-                                await workspace_manager.delete_client(client_id)
-                            except KeyError:
-                                logger.info("Client already deleted: %s", client_id)
-                            if client_id in disconnected_clients:
-                                del disconnected_clients[client_id]
-                            await workspace_manager.delete()
-                        except asyncio.CancelledError:
-                            pass
+                        full_client_id = f"{workspace_manager._workspace}/{client_id}"
+                        await asyncio.sleep(store.disconnect_delay)
+                        exists = await store.disconnected_client_exists(full_client_id)
+                        if exists:
+                            logger.info(
+                                "Removing disconnected client: %s", full_client_id
+                            )
+                            await store.remove_disconnected_client(
+                                full_client_id, remove_workspace=True
+                            )
 
-                    disconnected_clients[client_id] = asyncio.ensure_future(
-                        delayed_remove(client_id, workspace_manager)
+                    await store.add_disconnected_client(
+                        ClientInfo(
+                            id=client_id,
+                            parent=parent_client,
+                            workspace=workspace_manager._workspace,
+                            user_info=user_info,
+                        )
                     )
+                    await delayed_remove(client_id, workspace_manager)
 
     async def is_alive(self):
         """Check if the server is alive."""

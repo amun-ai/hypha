@@ -6,12 +6,13 @@ import sys
 import pytest
 import requests
 from imjoy_rpc.hypha.websocket_client import connect_to_server
+
 from . import (
-    SIO_PORT2,
     SERVER_URL,
-    WS_SERVER_URL,
     SERVER_URL_REDIS_1,
     SERVER_URL_REDIS_2,
+    SIO_PORT2,
+    WS_SERVER_URL,
     find_item,
 )
 
@@ -351,6 +352,29 @@ async def test_services(fastapi_server):
     # # it should remove other services because it's single instance service
     # assert len(await api.list_services({"name": "test_service"})) == 1
     # assert (await api.get_service("test_service"))["idx"] == 4
+
+
+async def test_server_reconnection(fastapi_server):
+    """Test reconnecting to the server."""
+    ws = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
+    await ws.register_service(
+        {
+            "name": "Hello World",
+            "id": "hello-world",
+            "description": "hello world service",
+            "config": {
+                "visibility": "protected",
+                "run_in_executor": True,
+            },
+            "hello": lambda x: "hello " + x,
+        }
+    )
+    # simulate abnormal close
+    await ws.rpc._connection._websocket.close(1010)
+    # will trigger reconnect
+    svc = await ws.get_service("hello-world")
+    assert await svc.hello("world") == "hello world"
+    # TODO: check if the server will remove the client after a while
 
 
 async def test_server_scalability(fastapi_server_redis_1, fastapi_server_redis_2):
