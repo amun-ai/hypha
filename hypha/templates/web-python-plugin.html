@@ -93,7 +93,7 @@ del m
 
 async def run():
     try:
-        await micropip.install(["imjoy-rpc==0.5.38", {% for req in requirements %}"{{req}}", {% endfor %}])
+        await micropip.install(["imjoy-rpc==0.5.40", {% for req in requirements %}"{{req}}", {% endfor %}])
         js.__resolve()
     except Exception as e:
         js.__reject(traceback.format_exc())
