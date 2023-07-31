@@ -1,6 +1,7 @@
 """Test http proxy."""
 import gzip
 
+import json
 import msgpack
 import numpy as np
 import pytest
@@ -156,6 +157,15 @@ async def test_http_proxy(minio_server, fastapi_server, test_user_token):
     )
     assert response.ok
     result = msgpack.loads(response.content)
+    assert result["data"] == 123
+
+    response = requests.post(
+        f"{SERVER_URL}/{service_ws}/services/test_service/echo",
+        data=json.dumps({"data": 123}),
+        headers={"Content-type": "application/json"},
+    )
+    assert response.ok
+    result = json.loads(response.content)
     assert result["data"] == 123
 
     response = requests.post(

@@ -113,7 +113,7 @@ def get_user_info(token):
     expires_at = credentials["exp"]
     info = UserInfo(
         id=credentials.get("sub"),
-        is_anonymous=False,
+        is_anonymous=not credentials.get(AUTH0_ISSUER + "email"),
         email=credentials.get(AUTH0_ISSUER + "email"),
         parent=credentials.get("parent", None),
         roles=credentials.get(AUTH0_ISSUER + "roles", []),
@@ -217,7 +217,7 @@ def generate_anonymouse_user():
             "scope": "",
             "gty": "client-credentials",
             AUTH0_ISSUER + "roles": [],
-            AUTH0_ISSUER + "email": "anonymous@amum.ai",
+            AUTH0_ISSUER + "email": None,
         },
         scopes=[],
     )

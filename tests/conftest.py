@@ -61,7 +61,7 @@ def _generate_token(roles):
         scopes=[],
         expires_at=None,
     )
-    config = {}
+    config = {"email": "test@test.com"}
     config["scopes"] = []
     token_config = TokenConfig.parse_obj(config)
     token = generate_presigned_token(root_user_info, token_config)
@@ -158,14 +158,14 @@ def fastapi_server_redis_1(minio_server):
             "-m",
             "hypha.server",
             f"--port={SIO_PORT_REDIS_1}",
-            "--enable-server-apps",
-            "--enable-s3",
+            # "--enable-server-apps",
+            # "--enable-s3",
             f"--redis-uri=redis://127.0.0.1:{REDIS_PORT}/0",
             "--reset-redis",
-            f"--endpoint-url={MINIO_SERVER_URL}",
-            f"--access-key-id={MINIO_ROOT_USER}",
-            f"--secret-access-key={MINIO_ROOT_PASSWORD}",
-            f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            # f"--endpoint-url={MINIO_SERVER_URL}",
+            # f"--access-key-id={MINIO_ROOT_USER}",
+            # f"--secret-access-key={MINIO_ROOT_PASSWORD}",
+            # f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
         ],
         env=test_env,
     ) as proc:
@@ -197,13 +197,13 @@ def fastapi_server_redis_2(minio_server, fastapi_server):
             "-m",
             "hypha.server",
             f"--port={SIO_PORT_REDIS_2}",
-            "--enable-server-apps",
-            "--enable-s3",
+            # "--enable-server-apps",
+            # "--enable-s3",
             f"--redis-uri=redis://127.0.0.1:{REDIS_PORT}/0",
-            f"--endpoint-url={MINIO_SERVER_URL}",
-            f"--access-key-id={MINIO_ROOT_USER}",
-            f"--secret-access-key={MINIO_ROOT_PASSWORD}",
-            f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            # f"--endpoint-url={MINIO_SERVER_URL}",
+            # f"--access-key-id={MINIO_ROOT_USER}",
+            # f"--secret-access-key={MINIO_ROOT_PASSWORD}",
+            # f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
         ],
         env=test_env,
     ) as proc:
