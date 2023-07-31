@@ -169,7 +169,7 @@ def fastapi_server_redis_1(minio_server):
         ],
         env=test_env,
     ) as proc:
-        timeout = 20
+        timeout = 40
         while timeout > 0:
             try:
                 response = requests.get(
@@ -207,7 +207,7 @@ def fastapi_server_redis_2(minio_server, fastapi_server):
         ],
         env=test_env,
     ) as proc:
-        timeout = 20
+        timeout = 40
         while timeout > 0:
             try:
                 response = requests.get(
