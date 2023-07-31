@@ -61,7 +61,7 @@ def _generate_token(roles):
         scopes=[],
         expires_at=None,
     )
-    config = {}
+    config = {"email": "test@test.com"}
     config["scopes"] = []
     token_config = TokenConfig.parse_obj(config)
     token = generate_presigned_token(root_user_info, token_config)

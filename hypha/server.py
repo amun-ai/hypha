@@ -16,6 +16,7 @@ from hypha import __version__ as VERSION
 from hypha.asgi import ASGIGateway
 from hypha.core.store import RedisStore
 from hypha.http import HTTPProxy
+from hypha.sse import SSEProxy
 from hypha.triton import TritonProxy
 from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
 from hypha.websocket import WebsocketServer
@@ -78,6 +79,7 @@ def start_builtin_services(
     WebsocketServer(store, path=norm_url("/ws"))
 
     HTTPProxy(store)
+    SSEProxy(store)
     if args.triton_servers:
         TritonProxy(
             store,

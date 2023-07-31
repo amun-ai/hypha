@@ -330,6 +330,7 @@ class GZipMiddleware:
             # Make sure we're not already gzipping
             if (
                 "gzip" in headers.get("Accept-Encoding", "")
+                and "text/event-stream" not in headers.get("Accept", "text/html")
                 and "Content-Encoding" not in headers
             ):
                 responder = GZipResponder(

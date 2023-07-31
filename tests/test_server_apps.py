@@ -253,7 +253,7 @@ async def test_non_persistent_workspace(fastapi_server, test_user_token_temporar
     stats = response.json()
     workspace_info = find_item(stats["workspaces"], "name", workspace)
     assert workspace_info is None
-    assert stats["user_count"] == count - 1
+    assert stats["user_count"] == count - 2
 
 
 async def test_lazy_plugin(fastapi_server, test_user_token):

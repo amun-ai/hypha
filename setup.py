@@ -12,7 +12,7 @@ DESCRIPTION = (
 REQUIREMENTS = [
     "aiofiles",
     "fastapi>=0.70.0",
-    "imjoy-rpc>=0.5.33",
+    "imjoy-rpc>=0.5.43",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=1.8.2,<2.0.0",
@@ -32,6 +32,7 @@ REQUIREMENTS = [
     "email-validator>=2.0.0;platform_system=='Emscripten'",
     "pyodide-http;platform_system=='Emscripten'",
     "ssl;platform_system=='Emscripten'",
+    "sse-starlette>=1.6.1",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()
