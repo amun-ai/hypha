@@ -33,6 +33,7 @@ AUTH0_CLIENT_ID = env.get("AUTH0_CLIENT_ID", "ofsvx6A7LdMhG0hklr5JCAEawLv4Pyse")
 AUTH0_DOMAIN = env.get("AUTH0_DOMAIN", "imjoy.eu.auth0.com")
 AUTH0_AUDIENCE = env.get("AUTH0_AUDIENCE", "https://imjoy.eu.auth0.com/api/v2/")
 AUTH0_ISSUER = env.get("AUTH0_ISSUER", "https://imjoy.io/")
+AUTH0_NAMESPACE = env.get("AUTH0_NAMESPACE", "https://api.imjoy.io/")
 JWT_SECRET = env.get("JWT_SECRET")
 
 if not JWT_SECRET:
@@ -83,7 +84,7 @@ def login_required(authorization: str = Header(None)):
 def admin_required(authorization: str = Header(None)):
     """Return user info if the authorization code has an admin role."""
     token = parse_token(authorization)
-    roles = token.credentials.get(AUTH0_ISSUER + "roles", [])
+    roles = token.credentials.get(AUTH0_NAMESPACE + "roles", [])
     if "admin" not in roles:
         raise HTTPException(status_code=401, detail="Admin required")
     return token
@@ -91,7 +92,7 @@ def admin_required(authorization: str = Header(None)):
 
 def is_admin(token):
     """Check if token has an admin role."""
-    roles = token.credentials.get(AUTH0_ISSUER + "roles", [])
+    roles = token.credentials.get(AUTH0_NAMESPACE + "roles", [])
     if "admin" not in roles:
         return False
     return True
@@ -99,7 +100,7 @@ def is_admin(token):
 
 def get_user_email(token):
     """Return the user email from the token."""
-    return token.credentials.get(AUTH0_ISSUER + "email")
+    return token.credentials.get(AUTH0_NAMESPACE + "email")
 
 
 def get_user_id(token):
@@ -113,10 +114,10 @@ def get_user_info(token):
     expires_at = credentials["exp"]
     info = UserInfo(
         id=credentials.get("sub"),
-        is_anonymous=not credentials.get(AUTH0_ISSUER + "email"),
-        email=credentials.get(AUTH0_ISSUER + "email"),
+        is_anonymous=not credentials.get(AUTH0_NAMESPACE + "email"),
+        email=credentials.get(AUTH0_NAMESPACE + "email"),
         parent=credentials.get("parent", None),
-        roles=credentials.get(AUTH0_ISSUER + "roles", []),
+        roles=credentials.get(AUTH0_NAMESPACE + "roles", []),
         scopes=token.scopes,
         expires_at=expires_at,
     )
@@ -157,11 +158,11 @@ def simulate_user_token(returned_token, request):
     if "user_id" in request.query_params:
         returned_token.credentials["sub"] = request.query_params["user_id"]
     if "email" in request.query_params:
-        returned_token.credentials[AUTH0_ISSUER + "email"] = request.query_params[
+        returned_token.credentials[AUTH0_NAMESPACE + "email"] = request.query_params[
             "email"
         ]
     if "roles" in request.query_params:
-        returned_token.credentials[AUTH0_ISSUER + "roles"] = request.query_params[
+        returned_token.credentials[AUTH0_NAMESPACE + "roles"] = request.query_params[
             "roles"
         ].split(",")
 
@@ -216,8 +217,8 @@ def generate_anonymouse_user():
             "azp": "aormkFV0l7T0shrIwjdeQIUmNLt09DmA",
             "scope": "",
             "gty": "client-credentials",
-            AUTH0_ISSUER + "roles": [],
-            AUTH0_ISSUER + "email": None,
+            AUTH0_NAMESPACE + "roles": [],
+            AUTH0_NAMESPACE + "email": None,
         },
         scopes=[],
     )
@@ -302,8 +303,8 @@ def generate_presigned_token(
             "parent": parent,
             "pc": config.parent_client,
             "gty": "client-credentials",
-            AUTH0_ISSUER + "roles": roles,
-            AUTH0_ISSUER + "email": email,
+            AUTH0_NAMESPACE + "roles": roles,
+            AUTH0_NAMESPACE + "email": email,
         },
         JWT_SECRET,
         algorithm="HS256",
@@ -327,8 +328,8 @@ def generate_reconnection_token(
             "gty": "client-credentials",
             "cid": client_id,
             "ws": workspace,
-            AUTH0_ISSUER + "email": user_info.email,
-            AUTH0_ISSUER + "roles": user_info.roles,
+            AUTH0_NAMESPACE + "email": user_info.email,
+            AUTH0_NAMESPACE + "roles": user_info.roles,
             "parent": user_info.parent,
             "scope": " ".join(user_info.scopes),
         },
