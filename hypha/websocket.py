@@ -21,10 +21,8 @@ class WebsocketServer:
 
     # pylint: disable=too-many-statements
 
-    def __init__(self, store, path="/ws", allow_origins="*") -> None:
+    def __init__(self, store, path="/ws") -> None:
         """Set up the websocket server."""
-        if allow_origins == ["*"]:
-            allow_origins = "*"
         self.store = store
         app = store._app
 
