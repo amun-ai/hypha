@@ -20,4 +20,4 @@ httpx==0.24.1
 pyotritonclient==0.2.6
 fakeredis==2.16.0
 redis==4.6.0
-sse-starlette==1.6.1
+sse-starlette==1.6.5
