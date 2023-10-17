@@ -182,8 +182,8 @@ def main():
 
     # Get an existing service
     # Since "hello-world" is registered as a public service, we can access it using only the name "hello-world"
-    svc = await server.get_service("hello-world")
-    ret = await svc.hello("John")
+    svc = server.get_service("hello-world")
+    ret = svc.hello("John")
     print(ret)
 
 if __name__ == "__main__":
