@@ -65,7 +65,12 @@ To register a service in Python, install the `imjoy-rpc` library:
 pip install imjoy-rpc
 ```
 
-Save the following content as `hello-world-worker.py`:
+The following code registers a service called "Hello World" with the ID "hello-world" and a function called `hello()`. The function takes a single argument, `name`, and prints "Hello" followed by the name. The function also returns a string containing "Hello" followed by the name.
+
+We provide two versions of the code: an asynchronous version for native CPython or Pyodide-based Python in the browser (without thread support), and a synchronous version for native Python with thread support (more details about the [synchronous wrapper](/imjoy-rpc?id=synchronous-wrapper)):
+
+<!-- tabs:start -->
+#### ** Asynchronous Worker **
 
 ```python
 import asyncio
@@ -92,12 +97,40 @@ async def start_server(server_url):
 
 if __name__ == "__main__":
     server_url = "http://localhost:9000"
-    loop = asyncio.get_event_loop
-
-()
+    loop = asyncio.get_event_loop()
     loop.create_task(start_server(server_url))
     loop.run_forever()
 ```
+
+#### ** Synchronous Worker **
+
+```python
+from imjoy_rpc.hypha.sync import connect_to_server
+
+def start_server(server_url):
+    server = connect_to_server({"server_url": server_url})
+    
+    def hello(name):
+        print("Hello " + name)
+        return "Hello " + name
+
+    server.register_service({
+        "name": "Hello World",
+        "id": "hello-world",
+        "config": {
+            "visibility": "public"
+        },
+        "hello": hello
+    })
+    
+    print(f"Hello world service registered at workspace: {server.config.workspace}")
+    print(f"Test it with the HTTP proxy: {server_url}/{server.config.workspace}/services/hello-world/hello?name=John")
+
+if __name__ == "__main__":
+    server_url = "http://localhost:9000"
+    start_server(server_url)
+```
+<!-- tabs:end -->
 
 Run the server via `python hello-world-worker.py`.
 
@@ -115,7 +148,12 @@ Install the `imjoy-rpc` library:
 pip install imjoy-rpc
 ```
 
-Use the following code to connect to the server and access an existing service:
+Use the following code to connect to the server and access the service. The code first connects to the server and then gets the service by its ID. The service can then be used like a normal Python object.
+
+Similarily, you can also use the `connect_to_server_sync` function to connect to the server synchronously (available since `imjoy-rpc>=0.5.25.post0`).
+
+<!-- tabs:start -->
+#### ** Asynchronous Client **
 
 ```python
 import asyncio
@@ -129,9 +167,31 @@ async def main():
     svc = await server.get_service("hello-world")
     ret = await svc.hello("John")
     print(ret)
-
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
+
+#### ** Synchronous Client **
+
+```python
+import asyncio
+from imjoy_rpc.hypha.sync import connect_to_server
+
+def main():
+    server = connect_to_server({"server_url": "http://localhost:9000"})
+
+    # Get an existing service
+    # Since "hello-world" is registered as a public service, we can access it using only the name "hello-world"
+    svc = await server.get_service("hello-world")
+    ret = await svc.hello("John")
+    print(ret)
+
+if __name__ == "__main__":
+    main()
+```
+<!-- tabs:end -->
+
+**NOTE: In Python, the recommended way to interact with the server to use asynchronous functions with `asyncio`. However, if you need to use synchronous functions, you can use `from imjoy_rpc.hypha.sync import login, connect_to_server` (available since `imjoy-rpc>=0.5.25.post0`) instead. The have the exact same arguments as the asynchronous versions. For more information, see [Synchronous Wrapper](/#/imjoy-rpc?id=synchronous-wrapper)**
 
 #### JavaScript Client
 
@@ -152,12 +212,18 @@ async function main(){
 }
 ```
 
+### Peer-to-Peer Connection via WebRTC
+
+By default all the clients connected to Hypha server communicate via the websocket connection or the HTTP proxy. This is suitable for most use cases which involves lightweight data exchange. However, if you need to transfer large data or perform real-time communication, you can use the WebRTC connection between clients. With imjoy-rpc, you can easily create a WebRTC connection between two clients easily. See the [WebRTC support in ImJoy RPC V2](/#/imjoy-rpc?id=peer-to-peer-connection-via-webrtc) for more details.
 
 ### User Login and Token-Based Authentication
 
 To access the full features of the Hypha server, users need to log in and obtain a token for authentication. The new `login()` function provides a convenient way to display a login URL, once the user click it and login, it can then return the token for connecting to the server.
 
 Here is an example of how the login process works using the `login()` function:
+
+<!-- tabs:start -->
+#### ** Asynchronous Client **
 
 ```python
 from imjoy_rpc.hypha import login, connect_to_server
@@ -171,7 +237,17 @@ server = await connect_to_server({"server_url": "https://ai.imjoy.io", "token": 
 # ...use the server api...
 ```
 
-**NOTE: In Python, the recommended way to interact with the server to use asynchronous functions with `asyncio`. However, if you need to use synchronous functions, you can use `from imjoy_rpc.hypha import login_sync, connect_to_server_sync` (available since `imjoy-rpc>=0.5.25.post0`), then use  `login_sync()` and `connect_to_server_sync` functions instead. The have the exact same arguments as the asynchronous versions.**
+#### ** Synchronous Client **
+
+```python
+from imjoy_rpc.hypha.sync import login, connect_to_server
+
+token = login({"server_url": "https://ai.imjoy.io"})
+server = connect_to_server({"server_url": "https://ai.imjoy.io", "token": token})
+
+# ...use the server api...
+```
+<!-- tabs:end -->
 
 Login in javascript:
 ```javascript
