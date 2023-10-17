@@ -191,7 +191,7 @@ if __name__ == "__main__":
 ```
 <!-- tabs:end -->
 
-**NOTE: In Python, the recommended way to interact with the server to use asynchronous functions with `asyncio`. However, if you need to use synchronous functions, you can use `from imjoy_rpc.hypha.sync import login, connect_to_server` (available since `imjoy-rpc>=0.5.25.post0`) instead. The have the exact same arguments as the asynchronous versions. For more information, see [Synchronous Wrapper](/#/imjoy-rpc?id=synchronous-wrapper)**
+**NOTE: In Python, the recommended way to interact with the server to use asynchronous functions with `asyncio`. However, if you need to use synchronous functions, you can use `from imjoy_rpc.hypha.sync import login, connect_to_server` (available since `imjoy-rpc>=0.5.25.post0`) instead. The have the exact same arguments as the asynchronous versions. For more information, see [Synchronous Wrapper](/imjoy-rpc?id=synchronous-wrapper)**
 
 #### JavaScript Client
 
@@ -214,7 +214,7 @@ async function main(){
 
 ### Peer-to-Peer Connection via WebRTC
 
-By default all the clients connected to Hypha server communicate via the websocket connection or the HTTP proxy. This is suitable for most use cases which involves lightweight data exchange. However, if you need to transfer large data or perform real-time communication, you can use the WebRTC connection between clients. With imjoy-rpc, you can easily create a WebRTC connection between two clients easily. See the [WebRTC support in ImJoy RPC V2](/#/imjoy-rpc?id=peer-to-peer-connection-via-webrtc) for more details.
+By default all the clients connected to Hypha server communicate via the websocket connection or the HTTP proxy. This is suitable for most use cases which involves lightweight data exchange. However, if you need to transfer large data or perform real-time communication, you can use the WebRTC connection between clients. With imjoy-rpc, you can easily create a WebRTC connection between two clients easily. See the [WebRTC support in ImJoy RPC V2](/imjoy-rpc?id=peer-to-peer-connection-via-webrtc) for more details.
 
 ### User Login and Token-Based Authentication
 
