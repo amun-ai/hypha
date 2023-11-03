@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, Response
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
-from hypha.core import ClientInfo, WorkspaceInfo, UserInfo
+from hypha.core import ClientInfo, UserInfo, WorkspaceInfo
 from hypha.core.auth import login_optional
 from hypha.core.store import RedisStore
 from hypha.minio import MinioClient
@@ -243,10 +243,21 @@ class S3Controller:
         store.register_public_service(self.get_s3_service())
         store.set_workspace_loader(self._workspace_loader)
 
-        event_bus.on_local("workspace_registered", lambda w: asyncio.ensure_future(self._setup_workspace(w)))
-        event_bus.on_local("workspace_changed", lambda w: asyncio.ensure_future(self._save_workspace_config(w)))
-        event_bus.on_local("workspace_removed", lambda w: asyncio.ensure_future(self._cleanup_workspace(w)))
-        event_bus.on_local("client_registered", lambda w: asyncio.ensure_future(self._setup_client(w)))
+        event_bus.on_local(
+            "workspace_registered",
+            lambda w: asyncio.ensure_future(self._setup_workspace(w)),
+        )
+        event_bus.on_local(
+            "workspace_changed",
+            lambda w: asyncio.ensure_future(self._save_workspace_config(w)),
+        )
+        event_bus.on_local(
+            "workspace_removed",
+            lambda w: asyncio.ensure_future(self._cleanup_workspace(w)),
+        )
+        event_bus.on_local(
+            "client_registered", lambda w: asyncio.ensure_future(self._setup_client(w))
+        )
 
         router = APIRouter()
 
@@ -527,6 +538,8 @@ class S3Controller:
         """Set up client."""
         client = ClientInfo.parse_obj(client)
         user_info = client.user_info
+        if user_info.id == "root" or user_info.is_anonymous:
+            return
         # Make sure we created an account for the user
         try:
             await self.minio_client.admin_user_info(user_info.id)
@@ -554,7 +567,9 @@ class S3Controller:
         # We should empty the group before removing it
         group_info = await self.minio_client.admin_group_info(workspace.name)
         # remove all the members
-        await self.minio_client.admin_group_remove(workspace.name, group_info["members"])
+        await self.minio_client.admin_group_remove(
+            workspace.name, group_info["members"]
+        )
         # now remove the empty group
         await self.minio_client.admin_group_remove(workspace.name)
 
@@ -654,6 +669,9 @@ class S3Controller:
 
     def _save_workspace_config(self, workspace: dict):
         """Save workspace."""
+        workspace = WorkspaceInfo.parse_obj(workspace)
+        if workspace.read_only:
+            return
         workspace = WorkspaceInfo.parse_obj(workspace)
         response = self.s3client.put_object(
             Body=workspace.json().encode("utf-8"),

@@ -1,6 +1,6 @@
 """A module for minio client operations."""
-import json
 import asyncio
+import json
 import logging
 import os
 import re
@@ -102,6 +102,7 @@ def generate_command(cmd_template, **kwargs):
     kwargs.setdefault("flags", flags)
     return cmd_template.format(**kwargs)
 
+
 def execute_command_sync(cmd_template, mc_executable, **kwargs):
     """Execute the command synchronously."""
     command_string = generate_command(cmd_template, json=True, **kwargs)
@@ -135,6 +136,7 @@ async def execute_command(cmd_template, mc_executable, **kwargs):
 
     success, output = await loop.run_in_executor(None, subprocess_call)
     return parse_output(success, output, command_string)
+
 
 def parse_output(success, output, command_string):
     if success:
@@ -220,7 +222,7 @@ class MinioClient:
             kwargs["target"] = self.alias + "/" + kwargs["target"].lstrip("/")
         return await execute_command(*args, self.mc_executable, **kwargs)
 
-    async def _execute_sync(self, *args, **kwargs):
+    def _execute_sync(self, *args, **kwargs):
         if "target" in kwargs:
             kwargs["target"] = self.alias + "/" + kwargs["target"].lstrip("/")
         return execute_command_sync(*args, self.mc_executable, **kwargs)
@@ -238,7 +240,7 @@ class MinioClient:
             password=password,
             **kwargs,
         )
-    
+
     def admin_user_add_sync(self, username, password, **kwargs):
         """Add a new user on MinIO."""
         return self._execute_sync(
@@ -442,6 +444,7 @@ class MinioClient:
 
 
 if __name__ == "__main__":
+
     async def main():
         mc = MinioClient(
             "http://127.0.0.1:9555",
