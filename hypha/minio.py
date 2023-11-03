@@ -1,4 +1,5 @@
 """A module for minio client operations."""
+import asyncio
 import json
 import logging
 import os
@@ -102,31 +103,52 @@ def generate_command(cmd_template, **kwargs):
     return cmd_template.format(**kwargs)
 
 
-def execute_command(cmd_template, mc_executable, **kwargs):
-    """Execute the command."""
+def execute_command_sync(cmd_template, mc_executable, **kwargs):
+    """Execute the command synchronously."""
     command_string = generate_command(cmd_template, json=True, **kwargs)
-    # override the executable
     command_string = mc_executable + command_string.lstrip("mc")
     try:
         _output = subprocess.check_output(
             command_string.split(),
             stderr=subprocess.STDOUT,
         )
+        success, output = True, _output.decode("utf-8")
     except subprocess.CalledProcessError as err:
-        output = err.output.decode("utf-8")
-        status = "failed"
-        content = output
-    else:
-        output = _output.decode("utf-8")
+        success, output = False, err.output.decode("utf-8")
+    return parse_output(success, output, command_string)
+
+
+async def execute_command(cmd_template, mc_executable, **kwargs):
+    """Execute the command asynchronously."""
+    loop = asyncio.get_event_loop()
+    command_string = generate_command(cmd_template, json=True, **kwargs)
+    command_string = mc_executable + command_string.lstrip("mc")
+
+    def subprocess_call():
+        try:
+            _output = subprocess.check_output(
+                command_string.split(),
+                stderr=subprocess.STDOUT,
+            )
+        except subprocess.CalledProcessError as err:
+            return (False, err.output.decode("utf-8"))
+        return (True, _output.decode("utf-8"))
+
+    success, output = await loop.run_in_executor(None, subprocess_call)
+    return parse_output(success, output, command_string)
+
+
+def parse_output(success, output, command_string):
+    if success:
         try:
             content = convert_to_json(output)
-            if isinstance(content, dict):
-                status = content.get("status", "success")
-            else:
-                status = "success"
+            status = "success" if isinstance(content, dict) else "success"
         except json.decoder.JSONDecodeError:
             status = "success"
             content = output
+    else:
+        status = "failed"
+        content = output
 
     if status == "success":
         logger.debug("mc command[status='%s', command='%s']", status, command_string)
@@ -186,27 +208,32 @@ class MinioClient:
         self.endpoint_url = endpoint_url
         self.access_key_id = access_key_id
         self.secret_access_key = secret_access_key
-        self._execute(
+        self._execute_sync(
             "mc alias set {alias} {endpoint_url} {username} {password}",
             alias=self.alias,
-            endpoint_url=endpoint_url,
-            username=access_key_id,
-            password=secret_access_key,
+            endpoint_url=self.endpoint_url,
+            username=self.access_key_id,
+            password=self.secret_access_key,
             **kwargs,
         )
 
-    def _execute(self, *args, **kwargs):
+    async def _execute(self, *args, **kwargs):
         if "target" in kwargs:
             kwargs["target"] = self.alias + "/" + kwargs["target"].lstrip("/")
-        return execute_command(*args, self.mc_executable, **kwargs)
+        return await execute_command(*args, self.mc_executable, **kwargs)
 
-    def list(self, target, **kwargs):
+    def _execute_sync(self, *args, **kwargs):
+        if "target" in kwargs:
+            kwargs["target"] = self.alias + "/" + kwargs["target"].lstrip("/")
+        return execute_command_sync(*args, self.mc_executable, **kwargs)
+
+    async def list(self, target, **kwargs):
         """List files on MinIO."""
-        return self._execute("mc ls {flags} {target}", target=target, **kwargs)
+        return await self._execute("mc ls {flags} {target}", target=target, **kwargs)
 
-    def admin_user_add(self, username, password, **kwargs):
+    async def admin_user_add(self, username, password, **kwargs):
         """Add a new user on MinIO."""
-        return self._execute(
+        return await self._execute(
             "mc {flags} admin user add {alias} {username} {password}",
             alias=self.alias,
             username=username,
@@ -214,52 +241,62 @@ class MinioClient:
             **kwargs,
         )
 
-    def admin_user_remove(self, username, **kwargs):
+    def admin_user_add_sync(self, username, password, **kwargs):
+        """Add a new user on MinIO."""
+        return self._execute_sync(
+            "mc {flags} admin user add {alias} {username} {password}",
+            alias=self.alias,
+            username=username,
+            password=password,
+            **kwargs,
+        )
+
+    async def admin_user_remove(self, username, **kwargs):
         """Remove user on MinIO."""
-        return self._execute(
+        return await self._execute(
             "mc {flags} admin user remove {alias} {username}",
             alias=self.alias,
             username=username,
             **kwargs,
         )
 
-    def admin_user_enable(self, username, **kwargs):
+    async def admin_user_enable(self, username, **kwargs):
         """Enable a user on MinIO."""
-        return self._execute(
+        return await self._execute(
             "mc {flags} admin user enable {alias} {username}",
             alias=self.alias,
             username=username,
             **kwargs,
         )
 
-    def admin_user_disable(self, username, **kwargs):
+    async def admin_user_disable(self, username, **kwargs):
         """Disable a user on MinIO."""
-        return self._execute(
+        return await self._execute(
             "mc {flags} admin user disable {alias} {username}",
             alias=self.alias,
             username=username,
             **kwargs,
         )
 
-    def admin_user_list(self, **kwargs):
+    async def admin_user_list(self, **kwargs):
         """List all users on MinIO."""
-        ret = self._execute(
+        ret = await self._execute(
             "mc {flags} admin user list {alias}", alias=self.alias, **kwargs
         )
         if isinstance(ret, dict):
             ret = [ret]
         return ret
 
-    def admin_user_info(self, username, **kwargs):
+    async def admin_user_info(self, username, **kwargs):
         """Display info of a user."""
-        return self._execute(
+        return await self._execute(
             "mc {flags} admin user info {alias} {username}",
             alias=self.alias,
             username=username,
             **kwargs,
         )
 
-    def admin_group_add(self, group, members, **kwargs):
+    async def admin_group_add(self, group, members, **kwargs):
         """Add a user to a group.
 
         Creates the group if it does not exist.
@@ -267,7 +304,7 @@ class MinioClient:
         if not isinstance(members, str):
             members = " ".join(members)
 
-        return self._execute(
+        return await self._execute(
             "mc {flags} admin group add {alias} {group} {members}",
             alias=self.alias,
             group=group,
@@ -275,12 +312,12 @@ class MinioClient:
             **kwargs,
         )
 
-    def admin_group_remove(self, group, members=None, **kwargs):
+    async def admin_group_remove(self, group, members=None, **kwargs):
         """Remove group or members from a group."""
         if members:
             if not isinstance(members, str):
                 members = " ".join(members)
-            return self._execute(
+            return await self._execute(
                 "mc {flags} admin group remove {alias} {group} {members}",
                 alias=self.alias,
                 group=group,
@@ -289,50 +326,50 @@ class MinioClient:
             )
 
         # If members is None and the group is empty, then the group will be removed
-        return self._execute(
+        return await self._execute(
             "mc {flags} admin group remove {alias} {group}",
             alias=self.alias,
             group=group,
             **kwargs,
         )
 
-    def admin_group_info(self, group, **kwargs):
+    async def admin_group_info(self, group, **kwargs):
         """Display group info."""
-        return self._execute(
+        return await self._execute(
             "mc {flags} admin group info {alias} {group}",
             alias=self.alias,
             group=group,
             **kwargs,
         )
 
-    def admin_group_list(self, **kwargs):
+    async def admin_group_list(self, **kwargs):
         """Display list of groups."""
-        ret = self._execute(
+        ret = await self._execute(
             "mc {flags} admin group list {alias}", alias=self.alias, **kwargs
         )
         if isinstance(ret, dict):
             ret = [ret]
         return ret
 
-    def admin_group_enable(self, group, **kwargs):
+    async def admin_group_enable(self, group, **kwargs):
         """Enable a group."""
-        return self._execute(
+        return await self._execute(
             "mc {flags} admin group enable {alias} {group}",
             alias=self.alias,
             group=group,
             **kwargs,
         )
 
-    def admin_group_disable(self, group, **kwargs):
+    async def admin_group_disable(self, group, **kwargs):
         """Disable a group."""
-        return self._execute(
+        return await self._execute(
             "mc {flags} admin group disable {alias} {group}",
             alias=self.alias,
             group=group,
             **kwargs,
         )
 
-    def admin_policy_create(self, name, policy, **kwargs):
+    async def admin_policy_create(self, name, policy, **kwargs):
         """Add new canned policy on MinIO."""
         if isinstance(policy, dict):
             content = json.dumps(policy)
@@ -341,7 +378,7 @@ class MinioClient:
                 tmp.write(content.encode("utf-8"))
                 tmp.flush()
                 file = tmp.name
-                return self._execute(
+                return await self._execute(
                     "mc {flags} admin policy create {alias} {name} {file}",
                     alias=self.alias,
                     name=name,
@@ -350,7 +387,7 @@ class MinioClient:
                 )
         else:
             file = policy
-            return self._execute(
+            return await self._execute(
                 "mc {flags} admin policy create {alias} {name} {file}",
                 alias=self.alias,
                 name=name,
@@ -358,47 +395,47 @@ class MinioClient:
                 **kwargs,
             )
 
-    def admin_policy_remove(self, name, **kwargs):
+    async def admin_policy_remove(self, name, **kwargs):
         """Remove canned policy from MinIO."""
-        return self._execute(
+        return await self._execute(
             "mc {flags} admin policy remove {alias} {name}",
             alias=self.alias,
             name=name,
             **kwargs,
         )
 
-    def admin_policy_list(self, **kwargs):
+    async def admin_policy_list(self, **kwargs):
         """List all policies on MinIO."""
-        ret = self._execute(
+        ret = await self._execute(
             "mc {flags} admin policy list {alias}", alias=self.alias, **kwargs
         )
         if isinstance(ret, dict):
             ret = [ret]
         return ret
 
-    def admin_policy_info(self, name, **kwargs):
+    async def admin_policy_info(self, name, **kwargs):
         """Show info on a policy."""
-        return self._execute(
+        return await self._execute(
             "mc {flags} admin policy info {alias} {name}",
             alias=self.alias,
             name=name,
             **kwargs,
         )
 
-    def admin_policy_attach(self, name, **kwargs):
+    async def admin_policy_attach(self, name, **kwargs):
         """Set IAM policy on a user or group."""
         if {"user", "group"}.issubset(kwargs.keys()):
             raise KeyError("Only one of user or group arguments can be set.")
 
         if "group" in kwargs:
-            return self._execute(
+            return await self._execute(
                 "mc {flags} admin policy attach {alias} {name} --group {group}",
                 alias=self.alias,
                 name=name,
                 **kwargs,
             )
 
-        return self._execute(
+        return await self._execute(
             "mc {flags} admin policy attach {alias} {name} --user {user}",
             alias=self.alias,
             name=name,
@@ -407,42 +444,46 @@ class MinioClient:
 
 
 if __name__ == "__main__":
-    mc = MinioClient(
-        "http://127.0.0.1:9555",
-        "minio",
-        "miniostorage",
-    )
-    USER_NAME = "tmp-user"
-    # print(mc.ls("/", recursive=True))
-    mc.admin_user_add(USER_NAME, "239udslfj3")
-    mc.admin_user_add(USER_NAME + "2", "234slfj3")
-    user_list = mc.admin_user_list()
-    assert len(user_list) >= 2
-    mc.admin_user_disable(USER_NAME)
-    print(mc.admin_user_list())
-    mc.admin_user_enable(USER_NAME)
-    print(mc.admin_user_info(USER_NAME))
-    print(mc.admin_user_list())
 
-    mc.admin_user_remove(USER_NAME + "2")
-    print(mc.admin_user_list())
-    mc.admin_policy_create(
-        "admins",
-        {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Action": ["s3:ListAllMyBuckets"],
-                    "Resource": ["arn:aws:s3:::*"],
-                }
-            ],
-        },
-    )
-    response = mc.admin_policy_info("admins")
-    assert response["policy"] == "admins"
-    response = mc.admin_policy_list()
-    assert len(response) > 1
-    mc.admin_policy_attach("admins", user=USER_NAME)
-    response = mc.admin_user_info(USER_NAME)
-    assert response["policyName"] == "admins"
+    async def main():
+        mc = MinioClient(
+            "http://127.0.0.1:9555",
+            "minio",
+            "miniostorage",
+        )
+        USER_NAME = "tmp-user"
+        # print(mc.ls("/", recursive=True))
+        await mc.admin_user_add(USER_NAME, "239udslfj3")
+        await mc.admin_user_add(USER_NAME + "2", "234slfj3")
+        user_list = await mc.admin_user_list()
+        assert len(user_list) >= 2
+        await mc.admin_user_disable(USER_NAME)
+        print(await mc.admin_user_list())
+        await mc.admin_user_enable(USER_NAME)
+        print(await mc.admin_user_info(USER_NAME))
+        print(await mc.admin_user_list())
+
+        await mc.admin_user_remove(USER_NAME + "2")
+        print(await mc.admin_user_list())
+        await mc.admin_policy_create(
+            "admins",
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": ["s3:ListAllMyBuckets"],
+                        "Resource": ["arn:aws:s3:::*"],
+                    }
+                ],
+            },
+        )
+        response = await mc.admin_policy_info("admins")
+        assert response["policy"] == "admins"
+        response = await mc.admin_policy_list()
+        assert len(response) > 1
+        await mc.admin_policy_attach("admins", user=USER_NAME)
+        response = await mc.admin_user_info(USER_NAME)
+        assert response["policyName"] == "admins"
+
+    asyncio.run(main())

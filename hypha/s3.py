@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, Response
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
-from hypha.core import ClientInfo, WorkspaceInfo, UserInfo
+from hypha.core import ClientInfo, UserInfo, WorkspaceInfo
 from hypha.core.auth import login_optional
 from hypha.core.store import RedisStore
 from hypha.minio import MinioClient
@@ -239,14 +239,25 @@ class S3Controller:
 
         self.s3client = s3client
 
-        self.minio_client.admin_user_add("root", generate_password())
+        self.minio_client.admin_user_add_sync("root", generate_password())
         store.register_public_service(self.get_s3_service())
         store.set_workspace_loader(self._workspace_loader)
 
-        event_bus.on_local("workspace_registered", self._setup_workspace)
-        event_bus.on_local("workspace_changed", self._save_workspace_config)
-        event_bus.on_local("workspace_removed", self._cleanup_workspace)
-        event_bus.on_local("client_registered", self._setup_client)
+        event_bus.on_local(
+            "workspace_registered",
+            lambda w: asyncio.ensure_future(self._setup_workspace(w)),
+        )
+        event_bus.on_local(
+            "workspace_changed",
+            lambda w: asyncio.ensure_future(self._save_workspace_config(w)),
+        )
+        event_bus.on_local(
+            "workspace_removed",
+            lambda w: asyncio.ensure_future(self._cleanup_workspace(w)),
+        )
+        event_bus.on_local(
+            "client_registered", lambda w: asyncio.ensure_future(self._setup_client(w))
+        )
 
         router = APIRouter()
 
@@ -523,18 +534,20 @@ class S3Controller:
             region_name="EU",
         )
 
-    def _setup_client(self, client: dict):
+    async def _setup_client(self, client: dict):
         """Set up client."""
         client = ClientInfo.parse_obj(client)
         user_info = client.user_info
+        if user_info.id == "root" or user_info.is_anonymous:
+            return
         # Make sure we created an account for the user
         try:
-            self.minio_client.admin_user_info(user_info.id)
+            await self.minio_client.admin_user_info(user_info.id)
         except Exception:  # pylint: disable=broad-except
             # Note: we don't store the credentials, it can only be regenerated
-            self.minio_client.admin_user_add(user_info.id, generate_password())
+            await self.minio_client.admin_user_add(user_info.id, generate_password())
 
-        self.minio_client.admin_group_add(client.workspace, client.user_info.id)
+        await self.minio_client.admin_group_add(client.workspace, client.user_info.id)
 
     async def list_users(
         self,
@@ -545,18 +558,20 @@ class S3Controller:
             items = await list_objects_async(s3_client, self.workspace_bucket, path)
         return items
 
-    def _cleanup_workspace(self, workspace: dict):
+    async def _cleanup_workspace(self, workspace: dict):
         """Clean up workspace."""
         workspace = WorkspaceInfo.parse_obj(workspace)
         if workspace.read_only:
             return
         # TODO: if the program shutdown unexpectedly, we need to clean it up
         # We should empty the group before removing it
-        group_info = self.minio_client.admin_group_info(workspace.name)
+        group_info = await self.minio_client.admin_group_info(workspace.name)
         # remove all the members
-        self.minio_client.admin_group_remove(workspace.name, group_info["members"])
+        await self.minio_client.admin_group_remove(
+            workspace.name, group_info["members"]
+        )
         # now remove the empty group
-        self.minio_client.admin_group_remove(workspace.name)
+        await self.minio_client.admin_group_remove(workspace.name)
 
         # TODO: we will remove the files if it's not persistent
         if not workspace.persistent:
@@ -571,17 +586,17 @@ class S3Controller:
                 self.s3client, self.workspace_bucket, workspace.name + "/"
             )
 
-    def _setup_workspace(self, workspace: dict):
+    async def _setup_workspace(self, workspace: dict):
         """Set up workspace."""
         workspace = WorkspaceInfo.parse_obj(workspace)
         if workspace.read_only:
             return
         # make sure we have the root user in every workspace
-        self.minio_client.admin_group_add(workspace.name, "root")
+        await self.minio_client.admin_group_add(workspace.name, "root")
         policy_name = "policy-ws-" + workspace.name
         # policy example:
         # https://aws.amazon.com/premiumsupport/knowledge-center/iam-s3-user-specific-folder/
-        self.minio_client.admin_policy_create(
+        await self.minio_client.admin_policy_create(
             policy_name,
             {
                 "Version": "2012-10-17",
@@ -625,7 +640,7 @@ class S3Controller:
             },
         )
 
-        self.minio_client.admin_policy_attach(policy_name, group=workspace.name)
+        await self.minio_client.admin_policy_attach(policy_name, group=workspace.name)
 
         # Save the workspace info
         workspace_dir = self.local_log_dir / workspace.name
@@ -655,6 +670,9 @@ class S3Controller:
     def _save_workspace_config(self, workspace: dict):
         """Save workspace."""
         workspace = WorkspaceInfo.parse_obj(workspace)
+        if workspace.read_only:
+            return
+        workspace = WorkspaceInfo.parse_obj(workspace)
         response = self.s3client.put_object(
             Body=workspace.json().encode("utf-8"),
             Bucket=self.workspace_bucket,
@@ -680,9 +698,9 @@ class S3Controller:
                 f" permission to the workspace {workspace}"
             )
         password = generate_password()
-        self.minio_client.admin_user_add(user_info.id, password)
+        await self.minio_client.admin_user_add(user_info.id, password)
         # Make sure the user is in the workspace
-        self.minio_client.admin_group_add(workspace, user_info.id)
+        await self.minio_client.admin_group_add(workspace, user_info.id)
         return {
             "endpoint_url": self.endpoint_url_public,  # Return the public endpoint
             "access_key_id": user_info.id,
