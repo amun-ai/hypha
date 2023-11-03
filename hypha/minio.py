@@ -112,9 +112,9 @@ def execute_command_sync(cmd_template, mc_executable, **kwargs):
             command_string.split(),
             stderr=subprocess.STDOUT,
         )
+        success, output = True, _output.decode("utf-8")
     except subprocess.CalledProcessError as err:
         success, output = False, err.output.decode("utf-8")
-    success, output = True, _output.decode("utf-8")
     return parse_output(success, output, command_string)
 
 
