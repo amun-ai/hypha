@@ -281,7 +281,7 @@ For example, here is a callback function for displaying the login URL, QR code t
 ```python
 
 # Require `pip install qrcode[pil]`
-from hypha.utils.qrcode import display_qrcode
+from imjoy_rpc.qr import display_qrcode
 
 async def callback(context):
     """
