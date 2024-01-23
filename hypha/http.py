@@ -93,7 +93,7 @@ class HTTPProxy:
                     data=form_data
                 )
                 return JSONResponse(
-                    status_code=500,
+                    status_code=200,
                     content=auth0_response.json()
                 )
 
