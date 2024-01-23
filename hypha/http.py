@@ -92,7 +92,10 @@ class HTTPProxy:
                     f"https://{AUTH0_DOMAIN}/oauth/token",
                     data=form_data
                 )
-                return auth0_response.json()
+                return JSONResponse(
+                    status_code=500,
+                    content=auth0_response.json()
+                )
 
         @router.get("/workspaces")
         async def get_all_workspaces(
