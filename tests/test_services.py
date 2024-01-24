@@ -1,7 +1,5 @@
 """Test services."""
 import pytest
-import requests
-import asyncio
 import httpx
 
 from imjoy_rpc.hypha import login, connect_to_server
