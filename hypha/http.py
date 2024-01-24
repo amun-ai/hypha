@@ -90,12 +90,29 @@ class HTTPProxy:
             async with httpx.AsyncClient() as client:
                 auth0_response = await client.post(
                     f"https://{AUTH0_DOMAIN}/oauth/token",
-                    data=form_data
+                    data=form_data,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"}
                 )
-                return JSONResponse(
-                    status_code=200,
-                    content=auth0_response.json()
-                )
+
+                # Log the response for debugging
+                print("==========token_proxy==========")
+                print("Status Code:", auth0_response.status_code)
+                print("Headers:", auth0_response.headers)
+                print("Body:", auth0_response.text)
+
+                # Check if the response is JSON, handle accordingly
+                if auth0_response.headers["Content-Type"] == "application/json":
+                    return JSONResponse(
+                        status_code=200,
+                        content=auth0_response.json()
+                    )
+                else:
+                    # Handle non-JSON responses or add more specific error handling
+                    return JSONResponse(
+                        status_code=auth0_response.status_code,
+                        content={"error": "Unexpected response format"}
+                    )
+
 
         @router.get("/workspaces")
         async def get_all_workspaces(
