@@ -94,24 +94,10 @@ class HTTPProxy:
                     headers={"Content-Type": "application/x-www-form-urlencoded"}
                 )
 
-                # Log the response for debugging
-                print("==========token_proxy==========")
-                print("Status Code:", auth0_response.status_code)
-                print("Headers:", auth0_response.headers)
-                print("Body:", auth0_response.text)
-
-                # Check if the response is JSON, handle accordingly
-                if auth0_response.headers["Content-Type"] == "application/json":
-                    return JSONResponse(
-                        status_code=200,
-                        content=auth0_response.json()
-                    )
-                else:
-                    # Handle non-JSON responses or add more specific error handling
-                    return JSONResponse(
-                        status_code=auth0_response.status_code,
-                        content={"error": "Unexpected response format"}
-                    )
+                return JSONResponse(
+                    status_code=200,
+                    content=auth0_response.json()
+                )
 
 
         @router.get("/workspaces")

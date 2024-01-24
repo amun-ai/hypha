@@ -21,6 +21,7 @@ REQUIREMENTS = [
     "lxml",
     "python-dotenv>=0.19.0",
     "python-jose>=3.3.0",
+    "python-multipart>=0.0.6",
     "pyyaml",
     "fakeredis>=2.14.1",
     "shortuuid>=1.0.1",
