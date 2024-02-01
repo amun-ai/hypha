@@ -20,7 +20,7 @@ SERVICES_OPENAPI_SCHEMA = {
     "info": {
         "title": "Hypha Services",
         "description": "Providing access to services in Hypha",
-        "version": VERSION,
+        "version": f"v{VERSION}",
     },
     "paths": {
         "/call": {
@@ -62,7 +62,7 @@ SERVICES_OPENAPI_SCHEMA = {
                 "deprecated": False,
             }
         },
-        "/": {
+        "/list": {
             "get": {
                 "description": "List services under a workspace",
                 "operationId": "ListServices",
@@ -167,8 +167,8 @@ class HTTPProxy:
 
                 return JSONResponse(status_code=200, content=auth0_response.json())
 
-        @router.get("/workspaces")
-        async def get_all_workspaces(
+        @router.get("/workspaces/list")
+        async def list_all_workspaces(
             user_info: login_optional = Depends(login_optional),
         ):
             """Route for listing all the workspaces."""
@@ -236,7 +236,7 @@ class HTTPProxy:
                 workspace, service_id, function_key, request, user_info
             )
 
-        @router.get("/services")
+        @router.get("/services/list")
         async def list_services(
             workspace: str,
             user_info: login_optional = Depends(login_optional),

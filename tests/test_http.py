@@ -125,7 +125,7 @@ async def test_http_proxy(minio_server, fastapi_server, test_user_token):
     service = await api.get_service("test_service_protected")
     assert await service.echo("22") == "22"
 
-    response = requests.get(f"{SERVER_URL}/workspaces")
+    response = requests.get(f"{SERVER_URL}/workspaces/list")
     assert response.ok, response.json()["detail"]
     response = response.json()
     assert workspace in response
