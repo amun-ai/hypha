@@ -145,8 +145,7 @@ async def extracted_kwargs(
     if request.method == "GET":
         kwargs = list(request.query_params.items())
         kwargs = {kwargs[k][0]: normalize(kwargs[k][1]) for k in range(len(kwargs))}
-        for key in ["workspace", "service_id", "function_key"]:
-            kwargs = {k: v for k, v in kwargs.items() if k != key}
+        kwargs = json.loads(kwargs.get('function_kwargs', "{}"))
     elif request.method == "POST":
         if content_type == "application/msgpack":
             kwargs = msgpack.loads(await request.body())
