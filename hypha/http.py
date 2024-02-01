@@ -2,7 +2,7 @@
 import inspect
 import json
 import traceback
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 import msgpack
@@ -31,14 +31,14 @@ SERVICES_OPENAPI_SCHEMA = {
                     {
                         "name": "workspace",
                         "in": "query",
-                        "description": "Workspace name",
-                        "required": True,
+                        "description": "Workspace name, optional if the service_id contains workspace name",
+                        "required": False,
                         "schema": {"type": "string"},
                     },
                     {
                         "name": "service_id",
                         "in": "query",
-                        "description": "Service ID",
+                        "description": "Service ID, format: workspace/client_id:service_id",
                         "required": True,
                         "schema": {"type": "string"},
                     },
@@ -225,13 +225,20 @@ class HTTPProxy:
         @router.get("/services/call")
         @router.post("/services/call")
         async def call_service_function(
-            workspace: str,
             service_id: str,
-            function_key: str,
-            request: Request,
+            function_key: str,   
+            workspace: Optional[str]=None,         
+            request: Request=None,
             user_info: login_optional = Depends(login_optional),
         ):
             """Call a service function by keys."""
+            if "/" in service_id:
+                _workspace, service_id = service_id.split("/")
+                if workspace:
+                    assert _workspace == workspace, f"workspace mismatch: {_workspace} != {workspace}"
+                else:
+                    workspace = _workspace
+            assert workspace, "workspace should be included in the service_id or provided separately"
             return await service_function(
                 workspace, service_id, function_key, request, user_info
             )
