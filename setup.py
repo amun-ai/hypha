@@ -34,6 +34,7 @@ REQUIREMENTS = [
     "pyodide-http;platform_system=='Emscripten'",
     "ssl;platform_system=='Emscripten'",
     "sse-starlette>=1.6.1",
+    "openapi-schema-pydantic",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()

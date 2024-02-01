@@ -5,6 +5,7 @@ import json
 import msgpack
 import numpy as np
 import pytest
+import httpx
 import requests
 from imjoy_rpc.hypha.websocket_client import connect_to_server
 
@@ -48,7 +49,48 @@ api.export({
 })
 """
 
+async def test_services(minio_server, fastapi_server, test_user_token):
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 10,
+            "token": test_user_token,
+        }
+    )
+    workspace = api.config["workspace"]
+    await api.register_service(
+        {
+            "id": "test_service",
+            "name": "test_service",
+            "type": "test_service",
+            "config": {
+                "visibility": "public",
+            },
+            "echo": lambda data: data,
+        }
+    )
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        data = await client.get(f"{SERVER_URL}/services/openapi.json")
+        data = data.json()
+        assert data["info"]["title"] == "Hypha Services"
+        paths = data["paths"]
+        assert "/call" in paths
+        assert "/" in paths
+        
+        url = f"{SERVER_URL}/services/call?workspace={workspace}&service_id=test_service&function_key=echo"
+        data = await client.post(url, json={"data": "123"})
+        assert data.status_code == 200
+        assert data.json() == "123"
+        
+        data = await client.get(f"{SERVER_URL}/services?workspace={workspace}")
+        print(data.json())
+        # [{'config': {'visibility': 'public', 'require_context': False, 'workspace': 'VRRVEdTF9of2y4cLmepzBw', 'flags': []}, 'id': '5XCPAyZrW72oBzywEk2oxP:test_service', 'name': 'test_service', 'type': 'test_service', 'description': '', 'docs': {}}]
+        assert data.status_code == 200
+        assert data.json()[0]["name"] == "test_service"
 
+    
+    
 # pylint: disable=too-many-statements
 async def test_http_proxy(minio_server, fastapi_server, test_user_token):
     """Test http proxy."""
