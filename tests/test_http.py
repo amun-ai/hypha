@@ -76,10 +76,15 @@ async def test_services(minio_server, fastapi_server, test_user_token):
         assert data["info"]["title"] == "Hypha Services"
         paths = data["paths"]
         assert "/call" in paths
-        assert "/" in paths
+        assert "/list" in paths
         
-        url = f"{SERVER_URL}/services/call?workspace={workspace}&service_id=test_service&function_key=echo"
-        data = await client.post(url, json={"data": "123"})
+        url = f"{SERVER_URL}/services/call"
+        data = await client.post(url, json={"workspace": workspace, "service_id": "test_service", "function_key": "echo", "function_kwargs": {"data": "123"}})
+        assert data.status_code == 200
+        assert data.json() == "123"
+        
+        url = url = f"{SERVER_URL}/services/call?workspace={workspace}&service_id=test_service&function_key=echo&data=123"
+        data = await client.get(url)
         assert data.status_code == 200
         assert data.json() == "123"
         

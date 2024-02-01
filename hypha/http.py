@@ -27,35 +27,14 @@ SERVICES_OPENAPI_SCHEMA = {
             "post": {
                 "description": "Call a service function",
                 "operationId": "CallServiceFunction",
-                "parameters": [
-                    {
-                        "name": "workspace",
-                        "in": "query",
-                        "description": "Workspace name, optional if the service_id contains workspace name",
-                        "required": False,
-                        "schema": {"type": "string"},
-                    },
-                    {
-                        "name": "service_id",
-                        "in": "query",
-                        "description": "Service ID, format: workspace/client_id:service_id",
-                        "required": True,
-                        "schema": {"type": "string"},
-                    },
-                    {
-                        "name": "function_key",
-                        "in": "query",
-                        "description": "Function key, can contain dot to refer to deeper object",
-                        "required": True,
-                        "schema": {"type": "string"},
-                    },
-                ],
                 "requestBody": {
-                    "required": False,
+                    "required": True,
                     "description": "The request body type depends on each service function schema",
                     "content": {
                         "application/json": {
-                            "schema": {}
+                            "schema": {
+                                "$ref": "#/components/schemas/ServiceFunctionSchema"
+                            }
                         }
                     },
                 },
@@ -80,7 +59,30 @@ SERVICES_OPENAPI_SCHEMA = {
         },
     },
     "components": {
-        "schemas": {}
+        "schemas": {
+            "ServiceFunctionSchema": {
+                "type": "object",
+                "properties": {
+                    "workspace": {
+                        "description": "Workspace name, optional if the service_id contains workspace name",
+                        "type": "string",
+                    },
+                    "service_id": {
+                        "description": "Service ID, format: workspace/client_id:service_id",
+                        "type": "string",
+                    },
+                    "function_key": {
+                        "description": "Function key, can contain dot to refer to deeper object",
+                        "type": "string",
+                    },
+                    "function_kwargs": {
+                        "description": "Function keyword arguments, must be set according to the function schema",
+                        "type": "object",
+                    },
+                },
+                "required": ["service_id", "function_key"],
+            }
+        }
     },
 }
 
@@ -135,6 +137,60 @@ def get_value(keys, service):
     return value
 
 
+async def extracted_kwargs(
+    request: Request,
+):
+    """Extract the kwargs from the request."""
+    content_type = request.headers.get("content-type", "application/json")
+    if request.method == "GET":
+        kwargs = list(request.query_params.items())
+        kwargs = {kwargs[k][0]: normalize(kwargs[k][1]) for k in range(len(kwargs))}
+        for key in ["workspace", "service_id", "function_key"]:
+            kwargs = {k: v for k, v in kwargs.items() if k != key}
+    elif request.method == "POST":
+        if content_type == "application/msgpack":
+            kwargs = msgpack.loads(await request.body())
+        elif content_type == "application/json":
+            kwargs = json.loads(await request.body())
+        else:
+            raise RuntimeError(
+                "Invalid content-type (supported types: "
+                "application/msgpack, application/json, text/plain)",
+            )
+        kwargs = kwargs.get("function_kwargs", {})
+    else:
+        raise RuntimeError(f"Invalid request method: {request.method}")
+
+    return kwargs
+
+
+async def extracted_call_info(request: Request):
+    """Extract workspace, service_id, function_key from the request."""
+    content_type = request.headers.get("content-type", "application/json")
+    if request.method == "POST":
+        if content_type == "application/msgpack":
+            kwargs = msgpack.loads(await request.body())
+        elif content_type == "application/json":
+            kwargs = json.loads(await request.body())
+        else:
+            raise RuntimeError(
+                "Invalid content-type (supported types: "
+                "application/msgpack, application/json, text/plain)",
+            )
+        workspace = kwargs.get("workspace")
+        service_id = kwargs.get("service_id")
+        function_key = kwargs.get("function_key")
+    else:
+        raise RuntimeError(f"Invalid request method: {request.method}")
+    return workspace, service_id, function_key
+
+
+def detected_response_type(request: Request):
+    """Detect the response type."""
+    content_type = request.headers.get("content-type", "application/json")
+    return content_type
+
+
 class HTTPProxy:
     """A proxy for accessing services from HTTP."""
 
@@ -184,7 +240,6 @@ class HTTPProxy:
                     content={"success": False, "detail": str(exp)},
                 )
 
-
         @router.get("/{workspace}/info")
         @router.get("/workspaces/info")
         async def get_workspace_info(
@@ -193,7 +248,9 @@ class HTTPProxy:
         ):
             """Route for get detailed info of a workspace."""
             try:
-                if workspace != "public" and not await store.check_permission(workspace, user_info):
+                if workspace != "public" and not await store.check_permission(
+                    workspace, user_info
+                ):
                     return JSONResponse(
                         status_code=403,
                         content={
@@ -220,27 +277,64 @@ class HTTPProxy:
             schema = SERVICES_OPENAPI_SCHEMA.copy()
             schema["servers"] = [{"url": f"{store.public_base_url}/services"}]
             return schema
-            
 
         @router.get("/services/call")
-        @router.post("/services/call")
-        async def call_service_function(
+        async def call_service_function_get(
             service_id: str,
-            function_key: str,   
-            workspace: Optional[str]=None,         
-            request: Request=None,
+            function_key: str,
+            workspace: Optional[str] = None,
+            function_kwargs: extracted_kwargs = Depends(extracted_kwargs),
+            response_type: detected_response_type = Depends(detected_response_type),
             user_info: login_optional = Depends(login_optional),
         ):
             """Call a service function by keys."""
             if "/" in service_id:
                 _workspace, service_id = service_id.split("/")
                 if workspace:
-                    assert _workspace == workspace, f"workspace mismatch: {_workspace} != {workspace}"
+                    assert (
+                        _workspace == workspace
+                    ), f"workspace mismatch: {_workspace} != {workspace}"
                 else:
                     workspace = _workspace
-            assert workspace, "workspace should be included in the service_id or provided separately"
+            assert (
+                workspace
+            ), "workspace should be included in the service_id or provided separately"
             return await service_function(
-                workspace, service_id, function_key, request, user_info
+                workspace,
+                service_id,
+                function_key,
+                function_kwargs,
+                response_type,
+                user_info,
+            )
+
+        @router.post("/services/call")
+        async def call_service_function_post(
+            request: Request = None,
+            user_info: login_optional = Depends(login_optional),
+        ):
+            """Call a service function by keys."""
+            workspace, service_id, function_key = await extracted_call_info(request)
+            function_kwargs = await extracted_kwargs(request)
+            response_type = detected_response_type(request)
+            if "/" in service_id:
+                _workspace, service_id = service_id.split("/")
+                if workspace:
+                    assert (
+                        _workspace == workspace
+                    ), f"workspace mismatch: {_workspace} != {workspace}"
+                else:
+                    workspace = _workspace
+            assert (
+                workspace
+            ), "workspace should be included in the service_id or provided separately"
+            return await service_function(
+                workspace,
+                service_id,
+                function_key,
+                function_kwargs,
+                response_type,
+                user_info,
             )
 
         @router.get("/services/list")
@@ -295,12 +389,24 @@ class HTTPProxy:
                     content={"success": False, "detail": str(exp)},
                 )
 
+        async def _call_service_function(func, kwargs):
+            """Call a service function by keys."""
+            _rpc = RPC(None, "anon")
+
+            kwargs = _rpc.decode(kwargs)
+            results = func(**kwargs)
+            if inspect.isawaitable(results):
+                results = await results
+            results = _rpc.encode(results)
+            return results
+
         @router.post("/{workspace}/services/{service_id}/{function_key}")
         async def service_function(
             workspace: str,
             service_id: str,
             function_key: str,
-            request: Request,
+            function_kwargs: extracted_kwargs = Depends(extracted_kwargs),
+            response_type: detected_response_type = Depends(detected_response_type),
             user_info: login_optional = Depends(login_optional),
         ):
             """Run service function by keys.
@@ -311,8 +417,8 @@ class HTTPProxy:
                 service = await store.get_service_as_user(
                     workspace, service_id, user_info
                 )
-                value = get_value(function_key, service)
-                if not value:
+                func = get_value(function_key, service)
+                if not func:
                     return JSONResponse(
                         status_code=200,
                         content={
@@ -320,46 +426,11 @@ class HTTPProxy:
                             "detail": f"{function_key} not found.",
                         },
                     )
-                content_type = request.headers.get("content-type", "application/json")
-                if request.method == "GET":
-                    kwargs = list(request.query_params.items())
-                    for key in ["workspace", "service_id", "function_key"]:
-                        kwargs = [k for k in kwargs if k[0] != key]
-                    kwargs = {
-                        kwargs[k][0]: normalize(kwargs[k][1])
-                        for k in range(len(kwargs))
-                    }
-                elif request.method == "POST":
-                    if content_type == "application/msgpack":
-                        kwargs = msgpack.loads(await request.body())
-                    elif content_type == "application/json":
-                        kwargs = json.loads(await request.body())
-                    else:
-                        return JSONResponse(
-                            status_code=500,
-                            content={
-                                "success": False,
-                                "detail": "Invalid content-type (supported types: "
-                                "application/msgpack, application/json, text/plain)",
-                            },
-                        )
-                else:
-                    return JSONResponse(
-                        status_code=500,
-                        content={
-                            "success": False,
-                            "detail": f"Invalid request method: {request.method}",
-                        },
-                    )
-                if not callable(value):
-                    return JSONResponse(status_code=200, content=serialize(value))
-                _rpc = RPC(None, "anon")
+                if not callable(func):
+                    return JSONResponse(status_code=200, content=serialize(func))
+
                 try:
-                    kwargs = _rpc.decode(kwargs)
-                    results = value(**kwargs)
-                    if inspect.isawaitable(results):
-                        results = await results
-                    results = _rpc.encode(results)
+                    results = await _call_service_function(func, function_kwargs)
                 except Exception:
                     return JSONResponse(
                         status_code=500,
@@ -369,7 +440,7 @@ class HTTPProxy:
                         },
                     )
 
-                if request.method == "POST" and content_type == "application/msgpack":
+                if response_type == "application/msgpack":
                     return MsgpackResponse(
                         status_code=200,
                         content=results,
