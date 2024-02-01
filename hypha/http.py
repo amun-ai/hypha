@@ -400,6 +400,19 @@ class HTTPProxy:
             results = _rpc.encode(results)
             return results
 
+        @router.get("/{workspace}/services/{service_id}/{function_key}")
+        async def service_function_get(
+            workspace: str,
+            service_id: str,
+            function_key: str,
+            request: Request,
+            user_info: login_optional = Depends(login_optional),
+        ):
+            """Run service function by keys."""
+            function_kwargs = await extracted_kwargs(request)
+            response_type = detected_response_type(request)
+            return await service_function(workspace, service_id, function_key, function_kwargs, response_type, user_info)
+            
         @router.post("/{workspace}/services/{service_id}/{function_key}")
         async def service_function(
             workspace: str,
