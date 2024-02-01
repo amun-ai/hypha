@@ -52,9 +52,10 @@ SERVICES_OPENAPI_SCHEMA = {
                 ],
                 "requestBody": {
                     "required": False,
+                    "description": "The request body type depends on each service function schema",
                     "content": {
                         "application/json": {
-                            "schema": {"$ref": "#/components/schemas/AnyValue"}
+                            "schema": {}
                         }
                     },
                 },
@@ -79,11 +80,7 @@ SERVICES_OPENAPI_SCHEMA = {
         },
     },
     "components": {
-        "schemas": {
-            "AnyValue": {
-                "description": "Depending on each service function schema, it can be anything: string, number, array, object, etc., including `null`"
-            }
-        }
+        "schemas": {}
     },
 }
 
