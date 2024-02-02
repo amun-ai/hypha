@@ -153,7 +153,8 @@ async def extracted_kwargs(
                 if key in ["workspace", "service_id", "function_key"]:
                     del kwargs[key]
                 else:
-                    kwargs[key] = json.loads(kwargs[key])
+                    if isinstance(kwargs[key], str) and kwargs[key].startswith("{"):
+                        kwargs[key] = json.loads(kwargs[key])
 
     elif request.method == "POST":
         if content_type == "application/msgpack":
