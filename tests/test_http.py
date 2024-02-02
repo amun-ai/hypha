@@ -88,6 +88,11 @@ async def test_services(minio_server, fastapi_server, test_user_token):
         assert data.status_code == 200
         assert data.json() == "123"
         
+        url = f'{SERVER_URL}/{workspace}/services/test_service/echo'
+        data = await client.post(url, json={"data": "123"})
+        assert data.status_code == 200
+        assert data.json() == "123"
+        
         data = await client.get(f"{SERVER_URL}/services?workspace={workspace}")
         print(data.json())
         # [{'config': {'visibility': 'public', 'require_context': False, 'workspace': 'VRRVEdTF9of2y4cLmepzBw', 'flags': []}, 'id': '5XCPAyZrW72oBzywEk2oxP:test_service', 'name': 'test_service', 'type': 'test_service', 'description': '', 'docs': {}}]

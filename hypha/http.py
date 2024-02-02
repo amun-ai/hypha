@@ -139,13 +139,19 @@ def get_value(keys, service):
 
 async def extracted_kwargs(
     request: Request,
+    use_function_kwargs: bool = True,
 ):
     """Extract the kwargs from the request."""
     content_type = request.headers.get("content-type", "application/json")
     if request.method == "GET":
         kwargs = list(request.query_params.items())
         kwargs = {kwargs[k][0]: normalize(kwargs[k][1]) for k in range(len(kwargs))}
-        kwargs = json.loads(kwargs.get('function_kwargs', "{}"))
+        if use_function_kwargs:
+            kwargs = json.loads(kwargs.get('function_kwargs', "{}"))
+        else:
+            for key in ["workspace", "service_id", "function_key"]:
+                if key in kwargs:
+                    del kwargs[key]
     elif request.method == "POST":
         if content_type == "application/msgpack":
             kwargs = msgpack.loads(await request.body())
@@ -156,7 +162,12 @@ async def extracted_kwargs(
                 "Invalid content-type (supported types: "
                 "application/msgpack, application/json, text/plain)",
             )
-        kwargs = kwargs.get("function_kwargs", {})
+        if use_function_kwargs:
+            kwargs = kwargs.get("function_kwargs", {})
+        else:
+            for key in ["workspace", "service_id", "function_key"]:
+                if key in kwargs:
+                    del kwargs[key]
     else:
         raise RuntimeError(f"Invalid request method: {request.method}")
 
@@ -176,6 +187,9 @@ async def extracted_call_info(request: Request):
                 "Invalid content-type (supported types: "
                 "application/msgpack, application/json, text/plain)",
             )
+        queries = list(request.query_params.items())
+        queries = {kwargs[k][0]: normalize(queries[k][1]) for k in range(len(queries))}
+        kwargs.update(queries)
         workspace = kwargs.get("workspace")
         service_id = kwargs.get("service_id")
         function_key = kwargs.get("function_key")
@@ -299,9 +313,7 @@ class HTTPProxy:
                 workspace
             ), "workspace should be included in the service_id or provided separately"
             return await service_function(
-                workspace,
-                service_id,
-                function_key,
+                (workspace, service_id, function_key),
                 function_kwargs,
                 response_type,
                 user_info,
@@ -328,9 +340,7 @@ class HTTPProxy:
                 workspace
             ), "workspace should be included in the service_id or provided separately"
             return await service_function(
-                workspace,
-                service_id,
-                function_key,
+                (workspace, service_id, function_key),
                 function_kwargs,
                 response_type,
                 user_info,
@@ -410,13 +420,24 @@ class HTTPProxy:
             """Run service function by keys."""
             function_kwargs = await extracted_kwargs(request)
             response_type = detected_response_type(request)
-            return await service_function(workspace, service_id, function_key, function_kwargs, response_type, user_info)
+            return await service_function((workspace, service_id, function_key), function_kwargs, response_type, user_info)
             
         @router.post("/{workspace}/services/{service_id}/{function_key}")
-        async def service_function(
+        async def service_function_post(
             workspace: str,
             service_id: str,
             function_key: str,
+            request: Request,
+            user_info: login_optional = Depends(login_optional),
+        ):
+            """Run service function by keys."""
+            function_kwargs = await extracted_kwargs(request, use_function_kwargs=False)
+            response_type = detected_response_type(request)
+            return await service_function((workspace, service_id, function_key), function_kwargs, response_type, user_info)
+
+
+        async def service_function(
+            function_info: extracted_call_info= Depends(extracted_call_info),
             function_kwargs: extracted_kwargs = Depends(extracted_kwargs),
             response_type: detected_response_type = Depends(detected_response_type),
             user_info: login_optional = Depends(login_optional),
@@ -426,6 +447,7 @@ class HTTPProxy:
             It can contain dot to refer to deeper object.
             """
             try:
+                workspace, service_id, function_key = function_info
                 service = await store.get_service_as_user(
                     workspace, service_id, user_info
                 )
