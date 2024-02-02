@@ -418,7 +418,7 @@ class HTTPProxy:
             user_info: login_optional = Depends(login_optional),
         ):
             """Run service function by keys."""
-            function_kwargs = await extracted_kwargs(request)
+            function_kwargs = await extracted_kwargs(request, use_function_kwargs=False)
             response_type = detected_response_type(request)
             return await service_function((workspace, service_id, function_key), function_kwargs, response_type, user_info)
             
