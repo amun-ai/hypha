@@ -11,7 +11,7 @@ DESCRIPTION = (
 
 REQUIREMENTS = [
     "aiofiles",
-    "fastapi>=0.70.0",
+    "fastapi==0.104.1",
     "imjoy-rpc>=0.5.44",
     "msgpack>=1.0.2",
     "numpy",
