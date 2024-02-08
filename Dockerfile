@@ -3,7 +3,7 @@ WORKDIR /home
 RUN mkdir /home/bin && \
     cd /home/bin && wget https://dl.min.io/server/minio/release/linux-amd64/minio && \
     wget https://dl.min.io/client/mc/release/linux-amd64/mc && \
-    chmod -R 777 /home/bin
+    chmod -R 777 /home
 RUN mkdir /.mc && \
     chmod -R 777 /.mc
 RUN apt-get update && apt-get install -y --no-install-recommends \
