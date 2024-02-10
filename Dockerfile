@@ -1,12 +1,16 @@
-FROM continuumio/miniconda3
+FROM mambaorg/micromamba:latest
+
 WORKDIR /home
-RUN mkdir /home/bin && \
-    cd /home/bin && wget https://dl.min.io/server/minio/release/linux-amd64/minio && \
-    wget https://dl.min.io/client/mc/release/linux-amd64/mc && \
-    chmod -R 777 /home
-RUN mkdir /.mc && \
-    chmod -R 777 /.mc
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Copy your environment.yml into the image
+COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yml env.yaml
+COPY --chown=$MAMBA_USER:$MAMBA_USER . .
+RUN micromamba install -y -n base --file env.yaml
+RUN micromamba clean --all --yes 
+
+ARG MAMBA_DOCKERFILE_ACTIVATE=1  # (otherwise python will not be found)
+
+USER root
+RUN apt-get update --fix-missing && apt-get install -y --no-install-recommends \
     fonts-liberation\
     libasound2\
     libatk-bridge2.0-0\
@@ -29,9 +33,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxext6\
     libxfixes3\
     libxrandr2
-RUN conda update pip -y
-ADD . .
-RUN pip install .[server-apps]
-# RUN pip install --no-cache-dir .
-RUN pip install --no-cache-dir playwright && playwright install
+
+USER $MAMBA_USER 
+EXPOSE 9527
 EXPOSE 3000
+ENTRYPOINT ["/usr/local/bin/_entrypoint.sh","python", "-m","hypha.server" ]
