@@ -1,0 +1,11 @@
+channels:
+  - anaconda
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - conda-forge::minio 
+  - pip
+  - pip:
+    - playwright
+    - -e .[server-apps]
