@@ -16,7 +16,7 @@ python-multipart==0.0.6
 pyyaml==6.0.1
 requests==2.31.0
 shortuuid==1.0.11
-uvicorn==0.23.2
+uvicorn==0.27.1
 httpx==0.26.0
 pyotritonclient==0.2.6
 fakeredis==2.20.0
