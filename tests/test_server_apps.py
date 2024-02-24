@@ -2,6 +2,7 @@
 from pathlib import Path
 import asyncio
 import requests
+import os
 
 import pytest
 from imjoy_rpc.hypha.websocket_client import connect_to_server

@@ -199,13 +199,26 @@ class WebsocketServer:
         try:
             if code in [status.WS_1000_NORMAL_CLOSURE, status.WS_1001_GOING_AWAY]:
                 # Client disconnected normally, remove immediately
-                await workspace_manager.delete_client(client_id, workspace)
+                logger.info(f"Client disconnected normally: {workspace}/{client_id}")
+                try:
+                    await workspace_manager.delete_client(client_id, workspace)
+                except KeyError:
+                    logger.info(
+                        "Client already deleted: %s/%s",
+                        workspace,
+                        client_id,
+                    )
+                try:
+                    # Clean up if the client is disconnected normally
+                    await workspace_manager.delete()
+                except KeyError:
+                    logger.info("Workspace already deleted: %s", workspace)
             else:
                 # Client disconnected unexpectedly, mark for delayed removal
                 disconnected_client_info = ClientInfo(
                     id=client_id,
                     parent=parent_client,
-                    workspace=workspace_manager._workspace,
+                    workspace=workspace,
                     user_info=user_info,
                 )
                 await self.store.add_disconnected_client(disconnected_client_info)

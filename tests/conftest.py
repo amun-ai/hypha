@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import socket
 import tempfile
 import time
 import uuid
@@ -33,7 +34,7 @@ from . import (
 
 JWT_SECRET = str(uuid.uuid4())
 os.environ["JWT_SECRET"] = JWT_SECRET
-os.environ["DISCONNECT_DELAY"] = "3"
+os.environ["DISCONNECT_DELAY"] = "1"
 test_env = os.environ.copy()
 
 
@@ -149,8 +150,59 @@ def fastapi_server_fixture(minio_server):
         proc.terminate()
 
 
+@pytest_asyncio.fixture(name="redis_server", scope="session")
+def redis_server():
+    """Start Redis server as test fixture and tear down after test."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", 6333))
+    except socket.error as e:
+        print("Redis server seems to be running already.")
+        yield
+    else:
+        # Check if a container named "my-redis" already exists
+        result = subprocess.run(
+            ["docker", "ps", "-aq", "--filter", "name=my-redis"], stdout=subprocess.PIPE
+        )
+        container_id = result.stdout.decode().strip()
+
+        # If it exists, remove it
+        if container_id:
+            subprocess.run(["docker", "rm", "-f", container_id])
+
+        with subprocess.Popen(
+            [
+                "docker",
+                "run",
+                "-d",
+                "-p",
+                "6333:6379",
+                "--name",
+                "my-redis",
+                "redis:6.2",
+            ],
+        ) as proc:
+            timeout = 20
+            while timeout > 0:
+                try:
+                    response = requests.get("http://127.0.0.1:6333")
+                    if response.ok:
+                        break
+                except RequestException:
+                    pass
+                timeout -= 0.1
+                time.sleep(0.1)
+            if timeout <= 0:
+                raise TimeoutError("Redis server did not start in time")
+            yield
+            proc.kill()
+            proc.terminate()
+    finally:
+        s.close()
+
+
 @pytest_asyncio.fixture(name="fastapi_server_redis_1", scope="session")
-def fastapi_server_redis_1(minio_server):
+def fastapi_server_redis_1(redis_server, minio_server):
     """Start server as test fixture and tear down after test."""
     with subprocess.Popen(
         [
@@ -189,7 +241,7 @@ def fastapi_server_redis_1(minio_server):
 
 
 @pytest_asyncio.fixture(name="fastapi_server_redis_2", scope="session")
-def fastapi_server_redis_2(minio_server, fastapi_server):
+def fastapi_server_redis_2(redis_server, minio_server, fastapi_server):
     """Start a backup server as test fixture and tear down after test."""
     with subprocess.Popen(
         [
