@@ -217,6 +217,31 @@ class HTTPProxy:
         router = APIRouter()
         router.route_class = GzipRoute
         self.store = store
+        
+        @router.get("/authorize")
+        async def auth_proxy(request: Request):
+            # Construct the full URL for the Auth0 authorize endpoint with the query parameters
+            auth0_authorize_url = f"https://{AUTH0_DOMAIN}/authorize?{request.query_params}"
+
+            # Redirect the client to the constructed URL
+            return RedirectResponse(url=auth0_authorize_url)
+
+
+        @router.post("/oauth/token")
+        async def token_proxy(request: Request):
+            form_data = await request.form()
+            async with httpx.AsyncClient() as client:
+                auth0_response = await client.post(
+                    f"https://{AUTH0_DOMAIN}/oauth/token",
+                    data=form_data,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"}
+                )
+
+                return JSONResponse(
+                    status_code=200,
+                    content=auth0_response.json()
+                )
+
 
         @router.get("/authorize")
         async def auth_proxy(request: Request):
