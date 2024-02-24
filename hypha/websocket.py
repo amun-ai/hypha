@@ -9,6 +9,7 @@ from hypha.core import ClientInfo, UserInfo
 from hypha.core.store import RedisRPCConnection
 from hypha.core.auth import parse_reconnection_token, parse_token
 import shortuuid
+import json
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket-server")
@@ -29,6 +30,24 @@ class WebsocketServer:
             token: str = Query(None),
             reconnection_token: str = Query(None),
         ):
+            # If none of the authentication parameters are provided, wait for the first message
+            if not workspace and not client_id and not token and not reconnection_token:
+                # Wait for the first message which should contain the authentication information
+                auth_info = await websocket.receive_text()
+                # Parse the authentication information, e.g., JSON with token and/or reconnection_token
+                try:
+                    auth_data = json.loads(auth_info)
+                    token = auth_data.get("token")
+                    reconnection_token = auth_data.get("reconnection_token")
+                    # Optionally, you can also update workspace and client_id if they are sent in the first message
+                    workspace = auth_data.get("workspace")
+                    client_id = auth_data.get("client_id")
+                except json.JSONDecodeError:
+                    logger.error("Failed to decode authentication information")
+                    await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
+                    return
+            else:
+                logger.warning("For enhanced security, it is recommended to use the first message for authentication")
             await self.handle_websocket_connection(
                 websocket, workspace, client_id, token, reconnection_token
             )
