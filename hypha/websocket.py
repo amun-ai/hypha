@@ -54,7 +54,12 @@ class WebsocketServer:
             )
 
             await self.establish_websocket_communication(
-                websocket, workspace_manager, client_id, user_info, parent_client
+                websocket,
+                workspace_manager,
+                client_id,
+                user_info,
+                parent_client,
+                reconnection_token,
             )
         except Exception as e:
             logger.error(f"Error handling WebSocket connection: {str(e)}")
@@ -106,9 +111,7 @@ class WebsocketServer:
             workspace = user_info.id
 
         # Anonymous and Temporary users are not allowed to create persistant workspaces
-        persistent = (
-            not user_info.is_anonymous and "temporary" not in user_info.roles
-        )
+        persistent = not user_info.is_anonymous and "temporary" not in user_info.roles
 
         # Ensure calls to store for workspace existence and permissions check
         workspace_exists = await self.store.workspace_exists(workspace)
@@ -135,7 +138,13 @@ class WebsocketServer:
             return workspace_manager
 
     async def establish_websocket_communication(
-        self, websocket, workspace_manager, client_id, user_info, parent_client
+        self,
+        websocket,
+        workspace_manager,
+        client_id,
+        user_info,
+        parent_client,
+        reconnection_token,
     ):
         """Establish and manage websocket communication."""
         try:
@@ -146,13 +155,16 @@ class WebsocketServer:
                 self.store._redis, workspace, client_id, user_info
             )
             conn.on_message(websocket.send_bytes)
-            client_info = ClientInfo(
-                id=client_id,
-                parent=parent_client,
-                workspace=workspace,
-                user_info=user_info,
-            )
-            await workspace_manager.register_client(client_info)
+            if reconnection_token:
+                await self.store.remove_disconnected_client(f"{workspace}/{client_id}")
+            else:
+                client_info = ClientInfo(
+                    id=client_id,
+                    parent=parent_client,
+                    workspace=workspace,
+                    user_info=user_info,
+                )
+                await workspace_manager.register_client(client_info)
 
             while True:
                 data = await websocket.receive_bytes()
@@ -162,15 +174,27 @@ class WebsocketServer:
                 f"Client disconnected: {workspace}/{client_id}, code: {exp.code}"
             )
             await self.handle_disconnection(
-                workspace_manager, workspace, client_id, exp.code, parent_client, user_info
+                workspace_manager,
+                workspace,
+                client_id,
+                exp.code,
+                parent_client,
+                user_info,
             )
         except Exception as e:
             logger.error(f"Error handling WebSocket communication: {str(e)}")
             await self.handle_disconnection(
-                workspace_manager, workspace, client_id, status.WS_1011_INTERNAL_ERROR, parent_client, user_info
+                workspace_manager,
+                workspace,
+                client_id,
+                status.WS_1011_INTERNAL_ERROR,
+                parent_client,
+                user_info,
             )
 
-    async def handle_disconnection(self, workspace_manager, workspace, client_id, code, parent_client, user_info):
+    async def handle_disconnection(
+        self, workspace_manager, workspace, client_id, code, parent_client, user_info
+    ):
         """Handle client disconnection with delayed removal for unexpected disconnections."""
         try:
             if code in [status.WS_1000_NORMAL_CLOSURE, status.WS_1001_GOING_AWAY]:
