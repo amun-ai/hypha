@@ -400,7 +400,7 @@ class RedisStore:
             )
             if not services:
                 raise KeyError(f"Service {service_id} not found")
-            service = random.choice(services)
+            service = services[0]
             service_id = service["id"]
 
         rpc = self.create_rpc(

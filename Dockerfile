@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrandr2
 RUN conda update pip -y
 ADD . .
-RUN pip install .[server-apps]
-# RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir .[server-apps]
 RUN pip install --no-cache-dir playwright && playwright install
 EXPOSE 3000

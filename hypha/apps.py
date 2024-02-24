@@ -848,7 +848,7 @@ class ServerAppController:
             ), "User must be authenticated"
             assert workspace is None
             workspace = context["from"].split("/")[0]
-
+        assert workspace is not None
         page_id = workspace + "/" + client_id
         if page_id in self._client_callbacks:
             callbacks = self._client_callbacks[page_id]

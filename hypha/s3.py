@@ -230,8 +230,16 @@ class S3Controller:
 
         s3client = self.create_client_sync()
         try:
-            s3client.create_bucket(Bucket=self.workspace_bucket)
-            logger.info("Bucket created: %s", self.workspace_bucket)
+            ret = s3client.create_bucket(Bucket=self.workspace_bucket)
+
+            # make sure ret['ResponseMetadata']['HTTPStatusCode'] == 200
+            if "ResponseMetadata" in ret and "HTTPStatusCode" in ret["ResponseMetadata"]:
+                if ret["ResponseMetadata"]["HTTPStatusCode"] != 200:
+                    logger.info("Failed to create bucket: %s, details: %s", self.workspace_bucket, ret)
+                    raise Exception(f"Failed to create bucket: {self.workspace_bucket}, details: {ret}")
+            else:
+                raise Exception(f"Invalid response from s3 client (creating  {self.workspace_bucket})")
+            logger.info("Bucket created: %s, details: %s", self.workspace_bucket, ret)
         except s3client.exceptions.BucketAlreadyExists:
             pass
         except s3client.exceptions.BucketAlreadyOwnedByYou:
@@ -645,7 +653,7 @@ class S3Controller:
         # Save the workspace info
         workspace_dir = self.local_log_dir / workspace.name
         os.makedirs(workspace_dir, exist_ok=True)
-        self._save_workspace_config(workspace.dict())
+        await self._save_workspace_config(workspace.dict())
 
         # find out the latest log file number
         log_base_name = str(workspace_dir / "log.txt")
@@ -667,21 +675,22 @@ class S3Controller:
         #     log_base_name,
         # )
 
-    def _save_workspace_config(self, workspace: dict):
+    async def _save_workspace_config(self, workspace: dict):
         """Save workspace."""
         workspace = WorkspaceInfo.parse_obj(workspace)
         if workspace.read_only:
             return
         workspace = WorkspaceInfo.parse_obj(workspace)
-        response = self.s3client.put_object(
-            Body=workspace.json().encode("utf-8"),
-            Bucket=self.workspace_bucket,
-            Key=f"{self.workspace_etc_dir}/{workspace.name}/config.json",
-        )
-        assert (
-            "ResponseMetadata" in response
-            and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-        ), f"Failed to save workspace ({workspace.name}) config: {response}"
+        async with self.create_client_async(public=True) as s3_client:
+            response = await s3_client.put_object(
+                Body=workspace.json().encode("utf-8"),
+                Bucket=self.workspace_bucket,
+                Key=f"{self.workspace_etc_dir}/{workspace.name}/config.json",
+            )
+            assert (
+                "ResponseMetadata" in response
+                and response["ResponseMetadata"]["HTTPStatusCode"] == 200
+            ), f"Failed to save workspace ({workspace.name}) config: {response}"
 
     async def generate_credential(self, context: dict = None):
         """Generate credential."""
