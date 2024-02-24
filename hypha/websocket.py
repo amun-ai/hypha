@@ -162,15 +162,15 @@ class WebsocketServer:
                 f"Client disconnected: {workspace}/{client_id}, code: {exp.code}"
             )
             await self.handle_disconnection(
-                workspace_manager, workspace, client_id, exp.code
+                workspace_manager, workspace, client_id, exp.code, parent_client, user_info
             )
         except Exception as e:
             logger.error(f"Error handling WebSocket communication: {str(e)}")
             await self.handle_disconnection(
-                workspace_manager, workspace, client_id, status.WS_1011_INTERNAL_ERROR
+                workspace_manager, workspace, client_id, status.WS_1011_INTERNAL_ERROR, parent_client, user_info
             )
 
-    async def handle_disconnection(self, workspace_manager, workspace, client_id, code):
+    async def handle_disconnection(self, workspace_manager, workspace, client_id, code, parent_client, user_info):
         """Handle client disconnection with delayed removal for unexpected disconnections."""
         try:
             if code in [status.WS_1000_NORMAL_CLOSURE, status.WS_1001_GOING_AWAY]:
@@ -180,8 +180,9 @@ class WebsocketServer:
                 # Client disconnected unexpectedly, mark for delayed removal
                 disconnected_client_info = ClientInfo(
                     id=client_id,
-                    workspace=workspace,
-                    # Assuming user_info and other fields are handled within the store method
+                    parent=parent_client,
+                    workspace=workspace_manager._workspace,
+                    user_info=user_info,
                 )
                 await self.store.add_disconnected_client(disconnected_client_info)
 
