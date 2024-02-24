@@ -153,23 +153,8 @@ def fastapi_server_fixture(minio_server):
         proc.terminate()
 
 
-@pytest_asyncio.fixture(name="redis_server", scope="session")
-def redis_server():
-    """Start Redis server as test fixture and tear down after test."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        s.bind(("127.0.0.1", REDIS_PORT))
-    except socket.error as e:
-        print("Redis server seems to be running already.")
-        yield
-    else:
-        raise Exception(
-            "Please start the Redis server manually: `sh utils/start-redis.sh`"
-        )
-
-
 @pytest_asyncio.fixture(name="fastapi_server_redis_1", scope="session")
-def fastapi_server_redis_1(redis_server, minio_server):
+def fastapi_server_redis_1(minio_server):
     """Start server as test fixture and tear down after test."""
     with subprocess.Popen(
         [
@@ -208,7 +193,7 @@ def fastapi_server_redis_1(redis_server, minio_server):
 
 
 @pytest_asyncio.fixture(name="fastapi_server_redis_2", scope="session")
-def fastapi_server_redis_2(redis_server, minio_server, fastapi_server):
+def fastapi_server_redis_2(minio_server, fastapi_server):
     """Start a backup server as test fixture and tear down after test."""
     with subprocess.Popen(
         [
