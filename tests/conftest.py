@@ -40,6 +40,7 @@ test_env = os.environ.copy()
 # fix the seed for random.choice to make tests deterministic
 random.seed(0)
 
+
 @pytest_asyncio.fixture
 def event_loop():
     """Create an event loop for each test."""
@@ -157,50 +158,14 @@ def redis_server():
     """Start Redis server as test fixture and tear down after test."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        s.bind(("127.0.0.1", 6333))
+        s.bind(("127.0.0.1", REDIS_PORT))
     except socket.error as e:
         print("Redis server seems to be running already.")
         yield
     else:
-        # Check if a container named "my-redis" already exists
-        result = subprocess.run(
-            ["docker", "ps", "-aq", "--filter", "name=my-redis"], stdout=subprocess.PIPE
+        raise Exception(
+            "Please start the Redis server manually: `sh utils/start-redis.sh`"
         )
-        container_id = result.stdout.decode().strip()
-
-        # If it exists, remove it
-        if container_id:
-            subprocess.run(["docker", "rm", "-f", container_id])
-
-        with subprocess.Popen(
-            [
-                "docker",
-                "run",
-                "-d",
-                "-p",
-                "6333:6379",
-                "--name",
-                "my-redis",
-                "redis:6.2",
-            ],
-        ) as proc:
-            timeout = 20
-            while timeout > 0:
-                try:
-                    response = requests.get("http://127.0.0.1:6333")
-                    if response.ok:
-                        break
-                except RequestException:
-                    pass
-                timeout -= 0.1
-                time.sleep(0.1)
-            if timeout <= 0:
-                raise TimeoutError("Redis server did not start in time")
-            yield
-            proc.kill()
-            proc.terminate()
-    finally:
-        s.close()
 
 
 @pytest_asyncio.fixture(name="fastapi_server_redis_1", scope="session")
