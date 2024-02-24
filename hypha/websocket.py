@@ -105,6 +105,11 @@ class WebsocketServer:
         if workspace is None:
             workspace = user_info.id
 
+        # Anonymous and Temporary users are not allowed to create persistant workspaces
+        persistent = (
+            not user_info.is_anonymous and "temporary" not in user_info.roles
+        )
+
         # Ensure calls to store for workspace existence and permissions check
         workspace_exists = await self.store.workspace_exists(workspace)
         if not workspace_exists:
@@ -112,7 +117,7 @@ class WebsocketServer:
             await self.store.register_workspace(
                 {
                     "name": workspace,
-                    "persistent": False,  # Determine based on actual logic
+                    "persistent": persistent,
                     "owners": [user_info.id],
                     "visibility": "protected",
                     "read_only": user_info.is_anonymous,
