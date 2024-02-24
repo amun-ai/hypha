@@ -35,7 +35,7 @@ from . import (
 
 JWT_SECRET = str(uuid.uuid4())
 os.environ["JWT_SECRET"] = JWT_SECRET
-os.environ["DISCONNECT_DELAY"] = "1"
+os.environ["DISCONNECT_DELAY"] = "0.5"
 test_env = os.environ.copy()
 # fix the seed for random.choice to make tests deterministic
 random.seed(0)

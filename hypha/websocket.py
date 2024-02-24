@@ -240,7 +240,9 @@ class WebsocketServer:
             logger.info(
                 f"Removing disconnected client after delay: {workspace}/{client_id}"
             )
-            await self.store.remove_disconnected_client(f"{workspace}/{client_id}")
+            await self.store.remove_disconnected_client(
+                f"{workspace}/{client_id}", remove_workspace=True
+            )
         else:
             logger.info(f"Client reconnected, not removing: {workspace}/{client_id}")
 

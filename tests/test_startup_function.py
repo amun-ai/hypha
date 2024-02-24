@@ -80,7 +80,7 @@ async def test_launch_external_services(fastapi_server):
     assert external_service.id.endswith(":external-test-service")
     assert await external_service.test(1) == 100
     await proc.kill()
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(float(os.environ["DISCONNECT_DELAY"]) + 0.5)
     with pytest.raises(
         Exception, match=r".*IndexError: Service not found: external-test-service.*"
     ):
