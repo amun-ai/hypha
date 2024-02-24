@@ -147,7 +147,7 @@ async def extracted_kwargs(
         kwargs = list(request.query_params.items())
         kwargs = {kwargs[k][0]: normalize(kwargs[k][1]) for k in range(len(kwargs))}
         if use_function_kwargs:
-            kwargs = json.loads(kwargs.get('function_kwargs', "{}"))
+            kwargs = json.loads(kwargs.get("function_kwargs", "{}"))
         else:
             for key in kwargs:
                 if key in ["workspace", "service_id", "function_key"]:
@@ -424,8 +424,13 @@ class HTTPProxy:
             """Run service function by keys."""
             function_kwargs = await extracted_kwargs(request, use_function_kwargs=False)
             response_type = detected_response_type(request)
-            return await service_function((workspace, service_id, function_key), function_kwargs, response_type, user_info)
-            
+            return await service_function(
+                (workspace, service_id, function_key),
+                function_kwargs,
+                response_type,
+                user_info,
+            )
+
         @router.post("/{workspace}/services/{service_id}/{function_key}")
         async def service_function_post(
             workspace: str,
@@ -437,11 +442,15 @@ class HTTPProxy:
             """Run service function by keys."""
             function_kwargs = await extracted_kwargs(request, use_function_kwargs=False)
             response_type = detected_response_type(request)
-            return await service_function((workspace, service_id, function_key), function_kwargs, response_type, user_info)
-
+            return await service_function(
+                (workspace, service_id, function_key),
+                function_kwargs,
+                response_type,
+                user_info,
+            )
 
         async def service_function(
-            function_info: extracted_call_info= Depends(extracted_call_info),
+            function_info: extracted_call_info = Depends(extracted_call_info),
             function_kwargs: extracted_kwargs = Depends(extracted_kwargs),
             response_type: detected_response_type = Depends(detected_response_type),
             user_info: login_optional = Depends(login_optional),

@@ -233,12 +233,23 @@ class S3Controller:
             ret = s3client.create_bucket(Bucket=self.workspace_bucket)
 
             # make sure ret['ResponseMetadata']['HTTPStatusCode'] == 200
-            if "ResponseMetadata" in ret and "HTTPStatusCode" in ret["ResponseMetadata"]:
+            if (
+                "ResponseMetadata" in ret
+                and "HTTPStatusCode" in ret["ResponseMetadata"]
+            ):
                 if ret["ResponseMetadata"]["HTTPStatusCode"] != 200:
-                    logger.info("Failed to create bucket: %s, details: %s", self.workspace_bucket, ret)
-                    raise Exception(f"Failed to create bucket: {self.workspace_bucket}, details: {ret}")
+                    logger.info(
+                        "Failed to create bucket: %s, details: %s",
+                        self.workspace_bucket,
+                        ret,
+                    )
+                    raise Exception(
+                        f"Failed to create bucket: {self.workspace_bucket}, details: {ret}"
+                    )
             else:
-                raise Exception(f"Invalid response from s3 client (creating  {self.workspace_bucket})")
+                raise Exception(
+                    f"Invalid response from s3 client (creating  {self.workspace_bucket})"
+                )
             logger.info("Bucket created: %s, details: %s", self.workspace_bucket, ret)
         except s3client.exceptions.BucketAlreadyExists:
             pass

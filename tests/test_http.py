@@ -54,6 +54,7 @@ api.export({
 })
 """
 
+
 async def test_services(minio_server, fastapi_server, test_user_token):
     api = await connect_to_server(
         {
@@ -78,36 +79,47 @@ async def test_services(minio_server, fastapi_server, test_user_token):
     async with httpx.AsyncClient(timeout=60.0) as client:
         data = await client.get(f"{SERVER_URL}/services/openapi.json")
         data = data.json()
-        assert data.get('detail') != 'Not Found'
+        assert data.get("detail") != "Not Found"
         assert data["info"]["title"] == "Hypha Services"
         paths = data["paths"]
         assert "/call" in paths
         assert "/list" in paths
-        
+
         url = f"{SERVER_URL}/services/call"
-        data = await client.post(url, json={"workspace": workspace, "service_id": "test_service", "function_key": "echo", "function_kwargs": {"data": "123"}})
+        data = await client.post(
+            url,
+            json={
+                "workspace": workspace,
+                "service_id": "test_service",
+                "function_key": "echo",
+                "function_kwargs": {"data": "123"},
+            },
+        )
         assert data.status_code == 200
         assert data.json() == "123"
-        
-        url = f'{SERVER_URL}/services/call?workspace={workspace}&service_id=test_service&function_key=echo&function_kwargs=' + json.dumps({"data": "123"})
+
+        url = (
+            f"{SERVER_URL}/services/call?workspace={workspace}&service_id=test_service&function_key=echo&function_kwargs="
+            + json.dumps({"data": "123"})
+        )
         data = await client.get(url)
         assert data.status_code == 200
         assert data.json() == "123"
-        
-        url = f'{SERVER_URL}/{workspace}/services/test_service/echo'
+
+        url = f"{SERVER_URL}/{workspace}/services/test_service/echo"
         data = await client.post(url, json={"data": "123"})
         assert data.status_code == 200
         assert data.json() == "123"
-        
+
         data = await client.get(f"{SERVER_URL}/services/list?workspace={workspace}")
         print(data.json())
         # [{'config': {'visibility': 'public', 'require_context': False, 'workspace': 'VRRVEdTF9of2y4cLmepzBw', 'flags': []}, 'id': '5XCPAyZrW72oBzywEk2oxP:test_service', 'name': 'test_service', 'type': 'test_service', 'description': '', 'docs': {}}]
         assert data.status_code == 200
         assert data.json()[0]["name"] == "test_service"
-    
+
     await api.disconnect()
-    
-    
+
+
 # pylint: disable=too-many-statements
 async def test_http_proxy(minio_server, fastapi_server, test_user_token):
     """Test http proxy."""
@@ -136,10 +148,10 @@ async def test_http_proxy(minio_server, fastapi_server, test_user_token):
 
     service_ws = plugin.config.workspace
     assert service_ws
-    service = await api.get_service(svc1['id'])
+    service = await api.get_service(svc1["id"])
     assert await service.echo("233d") == "233d"
 
-    service = await api.get_service(svc2['id'])
+    service = await api.get_service(svc2["id"])
     assert await service.echo("22") == "22"
 
     response = requests.get(f"{SERVER_URL}/workspaces/list")
