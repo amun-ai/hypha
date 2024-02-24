@@ -163,17 +163,37 @@ class WebsocketServer:
             logger.error(f"Error handling WebSocket communication: {str(e)}")
             await self.disconnect(websocket, code=status.WS_1011_INTERNAL_ERROR)
 
-    async def handle_disconnection(self, workspace_manager, workspace, client_id, code):
-        """Handle client disconnection."""
+    async def handle_disconnection(self, workspace, client_id, code):
+        """Handle client disconnection with delayed removal for unexpected disconnections."""
         try:
             if code in [status.WS_1000_NORMAL_CLOSURE, status.WS_1001_GOING_AWAY]:
-                await workspace_manager.delete_client(client_id)
+                # Client disconnected normally, remove immediately
+                await self.store.delete_client(client_id, workspace)
             else:
-                await self.store.add_disconnected_client(
-                    ClientInfo(id=client_id, workspace=workspace)
+                # Client disconnected unexpectedly, mark for delayed removal
+                disconnected_client_info = ClientInfo(
+                    id=client_id,
+                    workspace=workspace,
+                    # Assuming user_info and other fields are handled within the store method
                 )
+                await self.store.add_disconnected_client(disconnected_client_info)
+                
+                # Start a delayed task for removal
+                asyncio.create_task(self.delayed_remove_client(workspace, client_id))
         except Exception as e:
             logger.error(f"Error handling disconnection: {str(e)}")
+
+    async def delayed_remove_client(self, workspace, client_id):
+        """Remove a disconnected client after a delay."""
+        delay_period = self.store.disconnect_delay  # Assuming disconnect_delay is defined in the store
+        await asyncio.sleep(delay_period)
+        
+        # Check if the client is still marked as disconnected before removal
+        if await self.store.disconnected_client_exists(f"{workspace}/{client_id}"):
+            logger.info(f"Removing disconnected client after delay: {workspace}/{client_id}")
+            await self.store.remove_disconnected_client(client_id, workspace)
+        else:
+            logger.info(f"Client reconnected, not removing: {workspace}/{client_id}")
 
     async def disconnect(self, websocket, code=status.WS_1000_NORMAL_CLOSURE):
         """Disconnect the websocket connection."""
