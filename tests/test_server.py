@@ -38,12 +38,12 @@ async def test_connect_to_server(fastapi_server):
             await self._ws.log("hello world")
 
     # test workspace is an exception, so it can pass directly
-    # rpc = await connect_to_server(
-    #     {"name": "my plugin", "workspace": "public", "server_url": WS_SERVER_URL}
-    # )
+    rpc = await connect_to_server(
+        {"name": "my plugin", "workspace": "test", "server_url": WS_SERVER_URL}
+    )
     with pytest.raises(Exception, match=r".*Permission denied for.*"):
         rpc = await connect_to_server(
-            {"name": "my plugin", "workspace": "test", "server_url": WS_SERVER_URL}
+            {"name": "my plugin", "workspace": "public", "server_url": WS_SERVER_URL}
         )
     wm = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
     rpc = wm.rpc

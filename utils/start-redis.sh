@@ -1,0 +1,1 @@
+docker run -p 6333:6379 --name my-redis redis:6.2
