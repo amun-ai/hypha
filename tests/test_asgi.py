@@ -38,6 +38,10 @@ async def test_asgi(fastapi_server, test_user_token):
     response = requests.get(f"{SERVER_URL}/{workspace}/apps/hello-fastapi/")
     assert response.ok
     assert response.json()["message"] == "Hello World"
+    
+    response = requests.get(f"{SERVER_URL}/{workspace}/apps/hello-fastapi/files/path/to/file")
+    assert response.ok
+    assert response.json()["file_path"] == "path/to/file"
 
     await controller.stop(config.id)
 

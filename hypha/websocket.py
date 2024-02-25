@@ -56,7 +56,7 @@ class WebsocketServer:
                     websocket, workspace, client_id, token, reconnection_token
                 )
             except Exception as e:
-                if not websocket.closed:
+                if websocket.client_state.name == 'CONNECTED' or websocket.client_state.name == 'CONNECTING':
                     logger.error(f"Error handling WebSocket connection: {str(e)}")
                     await self.disconnect(websocket, code=status.WS_1011_INTERNAL_ERROR)
 
@@ -155,7 +155,7 @@ class WebsocketServer:
         """Setup workspace and check permissions."""
         if workspace is None:
             workspace = user_info.id
-        elif user_info.is_anonymous:
+        elif user_info.is_anonymous and user_info.parent != "root":
             logger.error("Anonymous users are not allowed to create workspaces")
             raise PermissionError(
                 "Anonymous users are not allowed to create workspaces"

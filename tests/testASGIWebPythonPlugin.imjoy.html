@@ -35,6 +35,10 @@ def create_fastapi_app():
     async def root():
         return {"message": "Hello World"}
 
+    @app.get("/files/{file_path:path}")
+    async def files(file_path):
+        return {"file_path": file_path}
+
     return app
 
 
