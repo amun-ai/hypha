@@ -150,13 +150,18 @@ class WebsocketServer:
         """Setup workspace and check permissions."""
         if workspace is None:
             workspace = user_info.id
-
+        elif user_info.is_anonymous:
+            logger.error("Anonymous users are not allowed to create workspaces")
+            raise PermissionError(
+                "Anonymous users are not allowed to create workspaces"
+            )
         # Anonymous and Temporary users are not allowed to create persistant workspaces
         persistent = not user_info.is_anonymous and "temporary" not in user_info.roles
 
         # Ensure calls to store for workspace existence and permissions check
         workspace_exists = await self.store.workspace_exists(workspace)
         if not workspace_exists:
+            assert workspace == user_info.id, "Workspace does not exist."
             # Simplified logic for workspace creation, ensure this matches the actual store method signatures
             await self.store.register_workspace(
                 {
@@ -167,6 +172,8 @@ class WebsocketServer:
                     "read_only": user_info.is_anonymous,
                 }
             )
+            logger.info(f"Created workspace: {workspace}")
+
         workspace_manager = await self.store.get_workspace_manager(
             workspace, setup=True
         )
@@ -188,9 +195,9 @@ class WebsocketServer:
         reconnection_token,
     ):
         """Establish and manage websocket communication."""
+        winfo = await workspace_manager.get_workspace_info()
+        workspace = winfo.name
         try:
-            winfo = await workspace_manager.get_workspace_info()
-            workspace = winfo.name
             conn = RedisRPCConnection(
                 self.store._redis, workspace, client_id, user_info
             )
