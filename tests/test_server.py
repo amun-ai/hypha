@@ -374,6 +374,14 @@ async def test_server_reconnection(fastapi_server):
     # will trigger reconnect
     svc = await ws.get_service("hello-world")
     assert await svc.hello("world") == "hello world"
+
+    # check if the server can reconnect even if we restart the server
+    await ws.rpc._connection._websocket.close(1010)
+    restart_server = fastapi_server
+    restart_server()
+    svc = await ws.get_service("hello-world")
+    assert await svc.hello("world") == "hello world"
+
     # TODO: check if the server will remove the client after a while
 
 

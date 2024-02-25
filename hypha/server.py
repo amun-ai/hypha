@@ -237,7 +237,7 @@ def create_application(args):
         public_base_url=public_base_url,
         local_base_url=local_base_url,
         redis_uri=args.redis_uri,
-        disconnect_delay=float(env.get("DISCONNECT_DELAY", "30")),
+        disconnect_delay=float(env.get("DISCONNECT_DELAY", "3600")),
     )
 
     start_builtin_services(application, store, args)

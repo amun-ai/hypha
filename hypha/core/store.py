@@ -66,6 +66,7 @@ class RedisStore:
         )
         self._public_workspace_interface = None
         self._server_info = {
+            "disconnect_delay": self.disconnect_delay,
             "public_base_url": self.public_base_url,
             "local_base_url": self.local_base_url,
         }

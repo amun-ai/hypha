@@ -251,6 +251,7 @@ class WorkspaceManager:
         client_info["user_info"] = user_info
         client_info["workspace"] = self._workspace
         await self._update_client(ClientInfo.parse_obj(client_info))
+        logger.info("Client info (with services) updated: %s/%s", ws, client_id)
 
     async def get_connection_info(self, context=None):
         """Get the connection info."""
@@ -263,7 +264,8 @@ class WorkspaceManager:
             client_id,
             user_info.id,
         )
-        expires_in = 60 * 60 * 5  # 5 hours
+        disconnect_delay = self._server_info.get("disconnect_delay", 3600)
+        expires_in = disconnect_delay * 2
         token = generate_reconnection_token(
             user_info, client_id, ws, expires_in=expires_in
         )
@@ -413,8 +415,9 @@ class WorkspaceManager:
         """Update the client info."""
         assert "/" not in client_info.id
         if not await self._redis.hexists(f"{self._workspace}:clients", client_info.id):
-            logger.info(f"Failed to update client, client {client_info.id} not found.")
-            return
+            logger.info(f"Client {client_info.id} not found, registering a new one.")
+            await self.register_client(client_info)
+
         for service in client_info.services:
             # Add workspace info to the service
             service.config.workspace = self._workspace
@@ -489,6 +492,21 @@ class WorkspaceManager:
             )
         self._event_bus.emit("client_registered", client_info.dict())
         logger.info("New client registered: %s/%s", self._workspace, client_info.id)
+
+    async def update_client_services(self, client_info: ClientInfo):
+        rpc = await self.get_rpc()
+        sv = await rpc.get_remote_service(
+            self._workspace + "/" + client_info.id + ":built-in"
+        )
+        if sv.get_client_info:
+            client_info_dict = await sv.get_client_info()
+            await self.update_client_info(
+                client_info_dict,
+                context={
+                    "from": self._workspace + "/" + client_info.id,
+                    "user": self._root_user.dict(),
+                },
+            )
 
     async def check_client_exists(self, client_id: str, workspace: str = None):
         """Check if a client exists."""

@@ -35,7 +35,7 @@ from . import (
 
 JWT_SECRET = str(uuid.uuid4())
 os.environ["JWT_SECRET"] = JWT_SECRET
-os.environ["DISCONNECT_DELAY"] = "0.5"
+os.environ["DISCONNECT_DELAY"] = os.environ.get("DISCONNECT_DELAY", "0.5")
 test_env = os.environ.copy()
 # fix the seed for random.choice to make tests deterministic
 random.seed(0)
@@ -115,27 +115,31 @@ def triton_server():
 @pytest_asyncio.fixture(name="fastapi_server", scope="session")
 def fastapi_server_fixture(minio_server):
     """Start server as test fixture and tear down after test."""
-    with subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "hypha.server",
-            f"--port={SIO_PORT}",
-            "--enable-server-apps",
-            "--enable-s3",
-            "--reset-redis",
-            f"--endpoint-url={MINIO_SERVER_URL}",
-            f"--access-key-id={MINIO_ROOT_USER}",
-            f"--secret-access-key={MINIO_ROOT_PASSWORD}",
-            f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
-            f"--triton-servers=http://127.0.0.1:{TRITON_PORT}",
-            "--static-mounts=/tests:./tests",
-            "--startup-functions",
-            "hypha.utils:_example_hypha_startup",
-            "./tests/example-startup-function.py:hypha_startup",
-        ],
-        env=test_env,
-    ) as proc:
+    proc = None
+
+    def start_server(reset_redis=True):
+        nonlocal proc
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "hypha.server",
+                f"--port={SIO_PORT}",
+                "--enable-server-apps",
+                "--enable-s3",
+                f"--endpoint-url={MINIO_SERVER_URL}",
+                f"--access-key-id={MINIO_ROOT_USER}",
+                f"--secret-access-key={MINIO_ROOT_PASSWORD}",
+                f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+                f"--triton-servers=http://127.0.0.1:{TRITON_PORT}",
+                "--static-mounts=/tests:./tests",
+                "--startup-functions",
+                "hypha.utils:_example_hypha_startup",
+                "./tests/example-startup-function.py:hypha_startup",
+            ]
+            + (["--reset-redis"] if reset_redis else []),
+            env=test_env,
+        )
         timeout = 20
         while timeout > 0:
             try:
@@ -148,9 +152,18 @@ def fastapi_server_fixture(minio_server):
             time.sleep(0.1)
         if timeout <= 0:
             raise TimeoutError("Server (fastapi_server) did not start in time")
-        yield
+
+    start_server()
+
+    def restart_server():
+        # Kill the existing server process
         proc.kill()
         proc.terminate()
+        start_server(reset_redis=False)
+
+    yield restart_server
+    proc.kill()
+    proc.terminate()
 
 
 @pytest_asyncio.fixture(name="fastapi_server_redis_1", scope="session")
