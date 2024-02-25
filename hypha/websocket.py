@@ -51,9 +51,14 @@ class WebsocketServer:
                 logger.warning(
                     "For enhanced security, it is recommended to use the first message for authentication"
                 )
-            await self.handle_websocket_connection(
-                websocket, workspace, client_id, token, reconnection_token
-            )
+            try:
+                await self.handle_websocket_connection(
+                    websocket, workspace, client_id, token, reconnection_token
+                )
+            except Exception as e:
+                if not websocket.closed:
+                    logger.error(f"Error handling WebSocket connection: {str(e)}")
+                    await self.disconnect(websocket, code=status.WS_1011_INTERNAL_ERROR)
 
     async def handle_websocket_connection(
         self, websocket, workspace, client_id, token, reconnection_token
