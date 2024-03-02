@@ -805,7 +805,7 @@ class WorkspaceManager:
                 # No need to patch the service config
                 # because the service is already patched
                 return service_api
-            raise IndexError(f"Service not found: {sid} in workspace {workspace}")
+            return None
         service_info = random.choice(services)
         rpc = await self.setup()
         service_api = await rpc.get_remote_service(service_info["id"])

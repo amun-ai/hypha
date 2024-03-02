@@ -1,3 +1,4 @@
+**/.minio.sys
 *.DS_Store
 *.app
 logs/
