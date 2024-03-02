@@ -101,6 +101,19 @@ class RedisStore:
             await self.register_user(self._root_user)
         return self._root_user
 
+    async def _run_startup_functions(self, startup_functions):
+        """Run the startup functions in the background."""
+        try:
+            if startup_functions:
+                for startup_function in startup_functions:
+                    logger.info(f"Running startup function: {startup_function}")
+                    await asyncio.sleep(0)
+                    await run_startup_function(self, startup_function)
+        except Exception as e:
+            logger.exception(f"Error running startup function: {e}")
+            # Stop the entire event loop if an error occurs
+            asyncio.get_running_loop().stop()
+
     async def init(self, reset_redis, startup_functions=None):
         """Setup the store."""
         if reset_redis:
@@ -133,9 +146,7 @@ class RedisStore:
                 raise
 
         if startup_functions:
-            for startup_function in startup_functions:
-                logger.info(f"Running startup function: {startup_function}")
-                await run_startup_function(self, startup_function)
+            asyncio.create_task(self._run_startup_functions(startup_functions))
         self._ready = True
 
         self.get_event_bus().emit("startup", target="local")
