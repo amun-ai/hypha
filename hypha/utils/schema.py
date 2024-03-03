@@ -172,7 +172,7 @@ def get_service_openapi_schema(service_config, service_url="/"):
             func, func_name=path.replace(".", "_")
         )
 
-    open_api = OpenAPI.parse_obj(
+    open_api = OpenAPI.model_validate(
         {
             "info": {"title": service_config["name"], "version": "v0.1.0"},
             "servers": [{"url": service_url or "/"}],

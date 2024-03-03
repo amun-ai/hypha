@@ -15,7 +15,7 @@ REQUIREMENTS = [
     "imjoy-rpc>=0.5.44",
     "msgpack>=1.0.2",
     "numpy",
-    "pydantic[email]>=1.8.2,<2.0.0",
+    "pydantic[email]>=2.6.1",
     "typing-extensions>=3.7.4.3",  # required by pydantic
     "jinja2>=3",
     "lxml",

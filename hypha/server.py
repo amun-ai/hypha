@@ -110,7 +110,7 @@ def start_builtin_services(
             "user_count": user_count,
             "users": [u.id for u in users],
             "workspace_count": len(all_workspaces),
-            "workspaces": [w.dict() for w in all_workspaces],
+            "workspaces": [w.model_dump() for w in all_workspaces],
         }
 
     if args.enable_s3:

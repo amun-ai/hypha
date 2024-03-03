@@ -61,7 +61,7 @@ class RemoteASGIApp:
                     if self.service.config.get("require_context"):
                         authorization = scope["headers"].get("authorization")
                         user_info = parse_token(authorization, allow_anonymouse=True)
-                        result = await func(scope, {"user": user_info.dict()})
+                        result = await func(scope, {"user": user_info.model_dump()})
                     else:
                         result = await func(scope)
                     headers = Headers(headers=result.get("headers"))
@@ -152,7 +152,7 @@ class ASGIGateway:
 
     async def mount_asgi_app(self, service: dict):
         """Mount the ASGI apps from new services."""
-        service = ServiceInfo.parse_obj(service)
+        service = ServiceInfo.model_validate(service)
 
         if service.type in ["ASGI", "functions"]:
             workspace = service.config.workspace
@@ -177,7 +177,7 @@ class ASGIGateway:
 
     async def umount_asgi_app(self, service: dict):
         """Unmount the ASGI apps."""
-        service = ServiceInfo.parse_obj(service)
+        service = ServiceInfo.model_validate(service)
         if service.type in ["ASGI", "functions"]:
             service_id = service.id
             if ":" in service_id:  # Remove client_id

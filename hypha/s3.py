@@ -369,7 +369,7 @@ class S3Controller:
                 return None
             data = await response["Body"].read()
             config = json.loads(data.decode("utf-8"))
-            workspace = WorkspaceInfo.parse_obj(config)
+            workspace = WorkspaceInfo.model_validate(config)
             logger.info("Loaded workspace from s3: %s", workspace_name)
             return workspace
 
@@ -536,7 +536,7 @@ class S3Controller:
 
     async def _setup_client(self, client: dict):
         """Set up client."""
-        client = ClientInfo.parse_obj(client)
+        client = ClientInfo.model_validate(client)
         user_info = client.user_info
         if user_info.id == "root" or user_info.is_anonymous:
             return
@@ -560,7 +560,7 @@ class S3Controller:
 
     async def _cleanup_workspace(self, workspace: dict):
         """Clean up workspace."""
-        workspace = WorkspaceInfo.parse_obj(workspace)
+        workspace = WorkspaceInfo.model_validate(workspace)
         if workspace.read_only:
             return
         # TODO: if the program shutdown unexpectedly, we need to clean it up
@@ -588,7 +588,7 @@ class S3Controller:
 
     async def _setup_workspace(self, workspace: dict):
         """Set up workspace."""
-        workspace = WorkspaceInfo.parse_obj(workspace)
+        workspace = WorkspaceInfo.model_validate(workspace)
         if workspace.read_only:
             return
         # make sure we have the root user in every workspace
@@ -645,7 +645,7 @@ class S3Controller:
         # Save the workspace info
         workspace_dir = self.local_log_dir / workspace.name
         os.makedirs(workspace_dir, exist_ok=True)
-        self._save_workspace_config(workspace.dict())
+        self._save_workspace_config(workspace.model_dump())
 
         # find out the latest log file number
         log_base_name = str(workspace_dir / "log.txt")
@@ -669,12 +669,12 @@ class S3Controller:
 
     def _save_workspace_config(self, workspace: dict):
         """Save workspace."""
-        workspace = WorkspaceInfo.parse_obj(workspace)
+        workspace = WorkspaceInfo.model_validate(workspace)
         if workspace.read_only:
             return
-        workspace = WorkspaceInfo.parse_obj(workspace)
+        workspace = WorkspaceInfo.model_validate(workspace)
         response = self.s3client.put_object(
-            Body=workspace.json().encode("utf-8"),
+            Body=workspace.model_dump_json().encode("utf-8"),
             Bucket=self.workspace_bucket,
             Key=f"{self.workspace_etc_dir}/{workspace.name}/config.json",
         )
@@ -689,7 +689,7 @@ class S3Controller:
         ws = await self.store.get_workspace(workspace)
         if ws.read_only:
             raise Exception("Permission denied: workspace is read-only")
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         if workspace == "public" or not await self.store.check_permission(
             workspace, user_info
         ):
