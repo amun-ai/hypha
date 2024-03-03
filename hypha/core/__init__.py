@@ -28,7 +28,7 @@ class TokenConfig(BaseModel):
     """Represent a token configuration."""
 
     scopes: List[str]
-    expires_in: Optional[int] = None
+    expires_in: Optional[float] = None
     email: Optional[EmailStr] = None
     parent_client: Optional[str] = None
 
@@ -86,7 +86,7 @@ class UserInfo(BaseModel):
     email: Optional[EmailStr] = None
     parent: Optional[str] = None
     scopes: Optional[List[str]] = None  # a list of workspace
-    expires_at: Optional[int] = None
+    expires_at: Optional[float] = None
     _metadata: Dict[str, Any] = PrivateAttr(
         default_factory=lambda: {}
     )  # e.g. s3 credential
