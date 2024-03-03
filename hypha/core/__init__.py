@@ -70,7 +70,7 @@ class ServiceInfo(BaseModel):
     class Config:
         """Set the config for pydantic."""
 
-        extra='allow'
+        extra = "allow"
 
     def is_singleton(self):
         """Check if the service is singleton."""
@@ -137,7 +137,7 @@ class RDF(BaseModel):
     class Config:
         """Set the config for pydantic."""
 
-        extra='allow'
+        extra = "allow"
 
 
 class ApplicationInfo(RDF):

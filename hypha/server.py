@@ -20,6 +20,7 @@ from hypha.sse import SSEProxy
 from hypha.triton import TritonProxy
 from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
 from hypha.websocket import WebsocketServer
+from contextlib import asynccontextmanager
 
 try:
     # For pyodide, we need to patch http
@@ -152,17 +153,6 @@ def start_builtin_services(
 
         return JSONResponse({"status": "DOWN"}, status_code=503)
 
-    @app.on_event("startup")
-    async def startup_event():
-        # Here we can register all the startup functions
-        args.startup_functions = args.startup_functions or []
-        args.startup_functions.append("hypha.core.auth:register_login_service")
-        await store.init(args.reset_redis, startup_functions=args.startup_functions)
-
-    @app.on_event("shutdown")
-    def shutdown_event():
-        store.get_event_bus().emit("shutdown", target="local")
-
 
 def mount_static_files(app, new_route, directory, name="static"):
     # Get top level route paths
@@ -200,8 +190,19 @@ def create_application(args):
     else:
         args.allow_origins = env.get("ALLOW_ORIGINS", "*").split(",")
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Here we can register all the startup functions
+        args.startup_functions = args.startup_functions or []
+        args.startup_functions.append("hypha.core.auth:register_login_service")
+        await store.init(args.reset_redis, startup_functions=args.startup_functions)
+        yield
+        # Emit the shutdown event
+        store.get_event_bus().emit("shutdown", target="local")
+
     application = FastAPI(
         title="Hypha",
+        lifespan=lifespan,
         docs_url="/api-docs",
         redoc_url="/api-redoc",
         description=(
