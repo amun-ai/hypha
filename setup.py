@@ -12,7 +12,7 @@ DESCRIPTION = (
 REQUIREMENTS = [
     "aiofiles",
     "fastapi>=0.70.0",
-    "imjoy-rpc>=0.5.44",
+    "imjoy-rpc>=0.5.48.post1",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=2.6.1",

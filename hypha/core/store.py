@@ -140,7 +140,9 @@ class RedisStore:
         await self.cleanup_disconnected_clients()
         for service in self._public_services:
             try:
-                await self._public_workspace_interface.register_service(service.model_dump())
+                await self._public_workspace_interface.register_service(
+                    service.model_dump()
+                )
             except Exception:  # pylint: disable=broad-except
                 logger.exception("Failed to register public service: %s", service)
                 raise
@@ -187,7 +189,9 @@ class RedisStore:
         await self._redis.hset(
             "clients:disconnected",
             f"{client_info.workspace}/{client_info.id}",
-            json.dumps({"client": client_info.model_dump_json(), "timestamp": time.time()}),
+            json.dumps(
+                {"client": client_info.model_dump_json(), "timestamp": time.time()}
+            ),
         )
 
     async def remove_disconnected_client(
@@ -239,14 +243,17 @@ class RedisStore:
         workspace_info = await self._redis.hget("workspaces", user_id)
         if workspace_info is None:
             return None
-        workspace_info = WorkspaceInfo.model_validate(json.loads(workspace_info.decode()))
+        workspace_info = WorkspaceInfo.model_validate(
+            json.loads(workspace_info.decode())
+        )
         return workspace_info
 
     async def get_all_users(self):
         """Get all users."""
         users = await self._redis.hgetall("users")
         return [
-            UserInfo.model_validate(json.loads(user.decode())) for user in users.values()
+            UserInfo.model_validate(json.loads(user.decode()))
+            for user in users.values()
         ]
 
     async def get_all_workspace(self):
@@ -278,14 +285,18 @@ class RedisStore:
                     raise KeyError(
                         f"Client does not exist: {workspace.name}/{client_id}"
                     )
-                client_info = ClientInfo.model_validate(json.loads(client_info.decode()))
+                client_info = ClientInfo.model_validate(
+                    json.loads(client_info.decode())
+                )
                 await self._redis.srem(
                     f"user:{client_info.user_info.id}:clients", client_info.id
                 )
                 # assert ret >= 1, f"Client not found in user({client_info.user_info.id})'s clients list: {client_info.id}"
                 await self._redis.hdel(f"{workspace.name}:clients", client_id)
             await self._redis.delete(f"{workspace}:clients")
-        await self._redis.hset("workspaces", workspace.name, workspace.model_dump_json())
+        await self._redis.hset(
+            "workspaces", workspace.name, workspace.model_dump_json()
+        )
         await self.get_workspace_manager(workspace.name, setup=True)
 
         self._event_bus.emit("workspace_registered", workspace.model_dump())
