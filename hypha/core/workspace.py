@@ -93,7 +93,7 @@ class WorkspaceManager:
             ClientInfo(
                 id=client_id,
                 workspace=self._workspace,
-                user_info=self._root_user.dict(),
+                user_info=self._root_user.model_dump(),
             )
         )
         rpc = self._create_rpc(client_id)
@@ -104,7 +104,7 @@ class WorkspaceManager:
                     rpc.get_client_info(),
                     context={
                         "from": self._workspace + "/" + client_id,
-                        "user": self._root_user.dict(),
+                        "user": self._root_user.model_dump(),
                     },
                 )
             )
@@ -125,11 +125,11 @@ class WorkspaceManager:
     async def get_summary(self, context: Optional[dict] = None) -> dict:
         """Get a summary about the workspace."""
         if context:
-            user_info = UserInfo.parse_obj(context["user"])
+            user_info = UserInfo.model_validate(context["user"])
             if not await self.check_permission(user_info):
                 raise Exception(f"Permission denied for workspace {self._workspace}.")
         workspace_info = await self.get_workspace_info()
-        workspace_info = workspace_info.dict()
+        workspace_info = workspace_info.model_dump()
         workspace_summary_fields = ["name", "description"]
         clients = await self.list_clients(context=context)
         services = await self.list_services(context=context)
@@ -151,13 +151,13 @@ class WorkspaceManager:
         self, config: dict, overwrite=False, context: Optional[dict] = None
     ):
         """Create a new workspace."""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
         config["persistent"] = config.get("persistent") or False
         if user_info.is_anonymous and config["persistent"]:
             raise Exception("Only registered user can create persistent workspace.")
-        workspace = WorkspaceInfo.parse_obj(config)
+        workspace = WorkspaceInfo.model_validate(config)
         # make sure we add the user's email to owners
         _id = user_info.email or user_info.id
         if _id not in workspace.owners:
@@ -166,11 +166,11 @@ class WorkspaceManager:
 
         if not overwrite and await self._redis.hexists("workspaces", workspace.name):
             raise Exception(f"Workspace {workspace.name} already exists.")
-        await self._redis.hset("workspaces", workspace.name, workspace.json())
+        await self._redis.hset("workspaces", workspace.name, workspace.model_dump_json())
         # Clear the workspace
         await self.remove_clients(workspace.name)
         workspace_info = await self.get_workspace_info(workspace.name)
-        return workspace_info.dict()
+        return workspace_info.model_dump()
 
     async def remove_clients(self, workspace: str = None):
         """Remove all the clients in the workspace."""
@@ -183,11 +183,11 @@ class WorkspaceManager:
 
     async def install_application(self, rdf: dict, context: Optional[dict] = None):
         """Install an application to the workspace."""
-        rdf = RDF.parse_obj(rdf)
+        rdf = RDF.model_validate(rdf)
         # TODO: check if the application is already installed
         workspace_info = await self.get_workspace_info()
-        workspace_info.applications[rdf.id] = rdf.dict()
-        await self._update_workspace(workspace_info.dict(), context)
+        workspace_info.applications[rdf.id] = rdf.model_dump()
+        await self._update_workspace(workspace_info.model_dump(), context)
 
     async def uninstall_application(self, rdf_id: str, context: Optional[dict] = None):
         """Uninstall a application from the workspace."""
@@ -195,11 +195,11 @@ class WorkspaceManager:
         if rdf_id not in workspace_info.applications:
             raise KeyError("Application not found: " + rdf_id)
         del workspace_info.applications[rdf_id]
-        await self._update_workspace(workspace_info.dict(), context)
+        await self._update_workspace(workspace_info.model_dump(), context)
 
     async def register_service(self, service, context: Optional[dict] = None, **kwargs):
         """Register a service"""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         source_workspace = context["from"].split("/")[0]
         assert source_workspace == self._workspace, (
             f"Service must be registered in the same workspace: "
@@ -222,7 +222,7 @@ class WorkspaceManager:
         self, config: Optional[dict] = None, context: Optional[dict] = None
     ):
         """Generate a token for the current workspace."""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
         config = config or {}
@@ -232,7 +232,7 @@ class WorkspaceManager:
             )
         elif "scopes" not in config:
             config["scopes"] = [self._workspace]
-        token_config = TokenConfig.parse_obj(config)
+        token_config = TokenConfig.model_validate(config)
         for ws in config["scopes"]:
             if not await self.check_permission(user_info, ws):
                 raise PermissionError(f"User has no permission to workspace: {ws}")
@@ -242,7 +242,7 @@ class WorkspaceManager:
     async def update_client_info(self, client_info: dict, context=None):
         """Update the client info."""
         assert context is not None
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
         ws, client_id = context["from"].split("/")
@@ -250,13 +250,13 @@ class WorkspaceManager:
         assert ws == self._workspace
         client_info["user_info"] = user_info
         client_info["workspace"] = self._workspace
-        await self._update_client(ClientInfo.parse_obj(client_info))
+        await self._update_client(ClientInfo.model_validate(client_info))
 
     async def get_connection_info(self, context=None):
         """Get the connection info."""
         assert context is not None
         ws, client_id = context["from"].split("/")
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         # Generate a new toke for the client to reconnect
         logger.info(
             "Generating new reconnection token for client %s (user id: %s)",
@@ -284,7 +284,7 @@ class WorkspaceManager:
 
     async def list_clients(self, context: Optional[dict] = None):
         if context:
-            user_info = UserInfo.parse_obj(context["user"])
+            user_info = UserInfo.model_validate(context["user"])
             if not await self.check_permission(user_info):
                 raise Exception(f"Permission denied for workspace {self._workspace}.")
         client_keys = await self._redis.hkeys(f"{self._workspace}:clients")
@@ -292,7 +292,7 @@ class WorkspaceManager:
 
     async def list_user_clients(self, context: Optional[dict] = None):
         """List all the clients belongs to the user."""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         client_keys = await self._redis.smembers(f"user:{user_info.id}:clients")
         return [k.decode() for k in client_keys]
 
@@ -304,7 +304,7 @@ class WorkspaceManager:
         # if workspace is not set, then it means current workspace
         # if workspace = *, it means search globally
         # otherwise, it search the specified workspace
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         if query is None:
             query = {}
 
@@ -425,12 +425,12 @@ class WorkspaceManager:
         previous_client_info = await self._redis.hget(
             f"{self._workspace}:clients", client_info.id
         )
-        previous_client_info = ClientInfo.parse_obj(
+        previous_client_info = ClientInfo.model_validate(
             json.loads(previous_client_info.decode())
         )
 
         await self._redis.hset(
-            f"{self._workspace}:clients", client_info.id, client_info.json()
+            f"{self._workspace}:clients", client_info.id, client_info.model_dump_json()
         )
         await self._redis.sadd(
             f"user:{client_info.user_info.id}:clients", client_info.id
@@ -440,7 +440,7 @@ class WorkspaceManager:
             client_info.id,
             [s.id for s in client_info.services],
         )
-        self._event_bus.emit("client_updated", client_info.dict())
+        self._event_bus.emit("client_updated", client_info.model_dump())
 
         # Detect changes
         service_ids = [service.id for service in client_info.services]
@@ -449,12 +449,12 @@ class WorkspaceManager:
         for service in previous_client_info.services:
             if service.id not in service_ids:
                 service.config.workspace = self._workspace
-                self._event_bus.emit("service_unregistered", service.dict())
+                self._event_bus.emit("service_unregistered", service.model_dump())
         # Detect new services
         for service in client_info.services:
             if service.id not in previous_service_ids:
                 service.config.workspace = self._workspace
-                self._event_bus.emit("service_registered", service.dict())
+                self._event_bus.emit("service_registered", service.model_dump())
                 # Try to execute the setup function for the default service
                 if service.id.endswith(":default"):
                     rpc = await self.setup()
@@ -475,7 +475,7 @@ class WorkspaceManager:
             )
 
         await self._redis.hset(
-            f"{self._workspace}:clients", client_info.id, client_info.json()
+            f"{self._workspace}:clients", client_info.id, client_info.model_dump_json()
         )
         await self._redis.sadd(
             f"user:{client_info.user_info.id}:clients", client_info.id
@@ -487,7 +487,7 @@ class WorkspaceManager:
                 f"client:{client_info.parent}:children",
                 self._workspace + "/" + client_info.id,
             )
-        self._event_bus.emit("client_registered", client_info.dict())
+        self._event_bus.emit("client_registered", client_info.model_dump())
         logger.info("New client registered: %s/%s", self._workspace, client_info.id)
 
     async def check_client_exists(self, client_id: str, workspace: str = None):
@@ -505,7 +505,7 @@ class WorkspaceManager:
         if client_info is None:
             raise KeyError(f"Client does not exist: {workspace}/{client_id}")
 
-        client_info = ClientInfo.parse_obj(json.loads(client_info.decode()))
+        client_info = ClientInfo.model_validate(json.loads(client_info.decode()))
         await self._redis.srem(
             f"user:{client_info.user_info.id}:clients", client_info.id
         )
@@ -513,7 +513,7 @@ class WorkspaceManager:
         # Unregister all the services
         for service in client_info.services:
             service.config.workspace = workspace
-            self._event_bus.emit("service_unregistered", service.dict())
+            self._event_bus.emit("service_unregistered", service.model_dump())
         logger.info("Client deleted: %s/%s", workspace, client_id)
 
         if client_info.parent:
@@ -528,7 +528,7 @@ class WorkspaceManager:
 
         # clients in the same workspace
         client_ids = await self.list_clients()
-        remain_clients = await self.list_user_clients({"user": user_info.dict()})
+        remain_clients = await self.list_user_clients({"user": user_info.model_dump()})
         # filter out the clients in the same workspace
         remain_clients = [c for c in remain_clients if c not in client_ids]
 
@@ -564,7 +564,7 @@ class WorkspaceManager:
                     user_info.id,
                     len(remain_clients),
                 )
-        self._event_bus.emit("client_deleted", client_info.dict())
+        self._event_bus.emit("client_deleted", client_info.model_dump())
         # Commented below because we want to allow reconnection
         # self.delete_if_empty()
 
@@ -584,42 +584,42 @@ class WorkspaceManager:
 
     async def echo(self, data, context=None):
         """Log a plugin message."""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
         return data
 
     async def log(self, msg, context=None):
         """Log a plugin message."""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
         logger.info("%s: %s", context["from"], msg)
 
     async def info(self, msg, context=None):
         """Log a plugin message."""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
         logger.info("%s: %s", context["from"], msg)
 
     async def warning(self, msg, context=None):
         """Log a plugin message (warning)."""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
         logger.warning("WARNING: %s: %s", context["from"], msg)
 
     async def error(self, msg, context=None):
         """Log a plugin error message (error)."""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
         logger.error("%s: %s", context["from"], msg)
 
     async def critical(self, msg, context=None):
         """Log a plugin error message (critical)."""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
         logger.critical("%s: %s", context["from"], msg)
@@ -630,17 +630,17 @@ class WorkspaceManager:
         workspace_info = await self._redis.hget("workspaces", workspace)
         if workspace_info is None:
             raise KeyError(f"Workspace not found: {workspace}")
-        workspace_info = WorkspaceInfo.parse_obj(json.loads(workspace_info.decode()))
+        workspace_info = WorkspaceInfo.model_validate(json.loads(workspace_info.decode()))
         return workspace_info
 
     async def _get_workspace_info_dict(
         self, workspace: str = None, context=None
     ) -> dict:
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         if not await self.check_permission(user_info):
             raise Exception(f"Permission denied for workspace {self._workspace}.")
         info = await self.get_workspace_info(workspace)
-        return info.dict()
+        return info.model_dump()
 
     async def _launch_application_by_service(
         self,
@@ -819,7 +819,7 @@ class WorkspaceManager:
         """Get all workspaces."""
         workspaces = await self._redis.hgetall("workspaces")
         return [
-            WorkspaceInfo.parse_obj(json.loads(v.decode())) for v in workspaces.values()
+            WorkspaceInfo.model_validate(json.loads(v.decode())) for v in workspaces.values()
         ]
 
     async def check_permission(
@@ -843,7 +843,7 @@ class WorkspaceManager:
             parent = await self._redis.hget("users", user_info.parent)
             if not parent:
                 return False
-            parent = UserInfo.parse_obj(json.loads(parent.decode()))
+            parent = UserInfo.model_validate(json.loads(parent.decode()))
             if not await self.check_permission(parent):
                 return False
             # if the parent has access
@@ -877,7 +877,7 @@ class WorkspaceManager:
         if not workspace:
             workspace = self._workspace
         if context:
-            user_info = UserInfo.parse_obj(context["user"])
+            user_info = UserInfo.model_validate(context["user"])
             if not await self.check_permission(user_info, workspace):
                 raise Exception(f"Permission denied for workspace {self._workspace}.")
 
@@ -915,12 +915,12 @@ class WorkspaceManager:
 
     async def _update_workspace(self, config: dict, context=None):
         """Update the workspace config."""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         if not await self.check_permission(user_info):
             raise PermissionError(f"Permission denied for workspace {self._workspace}")
 
         workspace_info = await self._redis.hget("workspaces", self._workspace)
-        workspace = WorkspaceInfo.parse_obj(json.loads(workspace_info.decode()))
+        workspace = WorkspaceInfo.model_validate(json.loads(workspace_info.decode()))
         if "name" in config and config["name"] != workspace.name:
             raise Exception("Changing workspace name is not allowed.")
 
@@ -938,8 +938,8 @@ class WorkspaceManager:
         if _id not in workspace.owners:
             workspace.owners.append(_id)
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
-        await self._redis.hset("workspaces", workspace.name, workspace.json())
-        self._event_bus.emit("workspace_changed", workspace.dict())
+        await self._redis.hset("workspaces", workspace.name, workspace.model_dump_json())
+        self._event_bus.emit("workspace_changed", workspace.model_dump())
 
     async def delete_if_empty(self):
         """Delete the workspace if it is empty."""
@@ -955,7 +955,7 @@ class WorkspaceManager:
         if force:
             await self.remove_clients(self._workspace)
             await self._redis.hdel("workspaces", self._workspace)
-            self._event_bus.emit("workspace_removed", winfo.dict())
+            self._event_bus.emit("workspace_removed", winfo.model_dump())
             logger.info("Workspace %s deleted.", self._workspace)
         else:
             client_keys = await self._redis.hkeys(f"{self._workspace}:clients")

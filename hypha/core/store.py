@@ -53,7 +53,7 @@ class RedisStore:
         self.local_base_url = local_base_url
         self._public_services: List[ServiceInfo] = []
         self._ready = False
-        self._public_workspace = WorkspaceInfo.parse_obj(
+        self._public_workspace = WorkspaceInfo.model_validate(
             {
                 "name": "public",
                 "persistent": True,
@@ -140,7 +140,7 @@ class RedisStore:
         await self.cleanup_disconnected_clients()
         for service in self._public_services:
             try:
-                await self._public_workspace_interface.register_service(service.dict())
+                await self._public_workspace_interface.register_service(service.model_dump())
             except Exception:  # pylint: disable=broad-except
                 logger.exception("Failed to register public service: %s", service)
                 raise
@@ -153,14 +153,14 @@ class RedisStore:
 
     async def _register_public_service(self, service: dict):
         """Register the public service."""
-        service = ServiceInfo.parse_obj(service)
+        service = ServiceInfo.model_validate(service)
         assert ":" in service.id and service.config.workspace
         # Add public service to the registry
         if (
             service.config.visibility == VisibilityEnum.public
             and not service.id.endswith(":built-in")
         ):
-            service_dict = service.dict()
+            service_dict = service.model_dump()
             service_summary = {k: service_dict[k] for k in SERVICE_SUMMARY_FIELD}
             if "/" not in service.id:
                 service_id = service.config.workspace + "/" + service.id
@@ -171,7 +171,7 @@ class RedisStore:
             )
 
     async def _unregister_public_service(self, service: dict):
-        service = ServiceInfo.parse_obj(service)
+        service = ServiceInfo.model_validate(service)
         if (
             service.config.visibility == VisibilityEnum.public
             and not service.id.endswith(":built-in")
@@ -187,7 +187,7 @@ class RedisStore:
         await self._redis.hset(
             "clients:disconnected",
             f"{client_info.workspace}/{client_info.id}",
-            json.dumps({"client": client_info.json(), "timestamp": time.time()}),
+            json.dumps({"client": client_info.model_dump_json(), "timestamp": time.time()}),
         )
 
     async def remove_disconnected_client(
@@ -225,35 +225,35 @@ class RedisStore:
 
     async def register_user(self, user_info: UserInfo):
         """Register a user."""
-        await self._redis.hset("users", user_info.id, user_info.json())
+        await self._redis.hset("users", user_info.id, user_info.model_dump_json())
 
     async def get_user(self, user_id: str):
         """Get a user."""
         user_info = await self._redis.hget("users", user_id)
         if user_info is None:
             return None
-        return UserInfo.parse_obj(json.loads(user_info.decode()))
+        return UserInfo.model_validate(json.loads(user_info.decode()))
 
     async def get_user_workspace(self, user_id: str):
         """Get a user."""
         workspace_info = await self._redis.hget("workspaces", user_id)
         if workspace_info is None:
             return None
-        workspace_info = WorkspaceInfo.parse_obj(json.loads(workspace_info.decode()))
+        workspace_info = WorkspaceInfo.model_validate(json.loads(workspace_info.decode()))
         return workspace_info
 
     async def get_all_users(self):
         """Get all users."""
         users = await self._redis.hgetall("users")
         return [
-            UserInfo.parse_obj(json.loads(user.decode())) for user in users.values()
+            UserInfo.model_validate(json.loads(user.decode())) for user in users.values()
         ]
 
     async def get_all_workspace(self):
         """Get all workspaces."""
         workspaces = await self._redis.hgetall("workspaces")
         return [
-            WorkspaceInfo.parse_obj(json.loads(v.decode()))
+            WorkspaceInfo.model_validate(json.loads(v.decode()))
             for k, v in workspaces.items()
         ]
 
@@ -263,7 +263,7 @@ class RedisStore:
 
     async def register_workspace(self, workspace: dict, overwrite=False):
         """Add a workspace."""
-        workspace = WorkspaceInfo.parse_obj(workspace)
+        workspace = WorkspaceInfo.model_validate(workspace)
         if not overwrite and await self._redis.hexists("workspaces", workspace.name):
             raise RuntimeError(f"Workspace {workspace.name} already exists.")
         if overwrite:
@@ -278,17 +278,17 @@ class RedisStore:
                     raise KeyError(
                         f"Client does not exist: {workspace.name}/{client_id}"
                     )
-                client_info = ClientInfo.parse_obj(json.loads(client_info.decode()))
+                client_info = ClientInfo.model_validate(json.loads(client_info.decode()))
                 await self._redis.srem(
                     f"user:{client_info.user_info.id}:clients", client_info.id
                 )
                 # assert ret >= 1, f"Client not found in user({client_info.user_info.id})'s clients list: {client_info.id}"
                 await self._redis.hdel(f"{workspace.name}:clients", client_id)
             await self._redis.delete(f"{workspace}:clients")
-        await self._redis.hset("workspaces", workspace.name, workspace.json())
+        await self._redis.hset("workspaces", workspace.name, workspace.model_dump_json())
         await self.get_workspace_manager(workspace.name, setup=True)
 
-        self._event_bus.emit("workspace_registered", workspace.dict())
+        self._event_bus.emit("workspace_registered", workspace.model_dump())
 
     async def connect_to_workspace(self, workspace: str, client_id: str):
         """Connect to a workspace."""
@@ -443,9 +443,9 @@ class RedisStore:
         assert (
             "require_context" not in service
         ), "`require_context` should be placed inside `config`"
-        formated_service = ServiceInfo.parse_obj(service)
+        formated_service = ServiceInfo.model_validate(service)
         # Note: service can set its `visibility` to `public` or `protected`
-        self._public_services.append(ServiceInfo.parse_obj(formated_service))
+        self._public_services.append(ServiceInfo.model_validate(formated_service))
         return {
             "id": formated_service.id,
             "workspace": "public",

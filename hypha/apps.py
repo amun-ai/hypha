@@ -226,7 +226,7 @@ class ServerAppController:
             workspace = context["from"].split("/")[0]
 
         workspace = await self.store.get_workspace(workspace)
-        return [app_info.dict() for app_info in workspace.applications.values()]
+        return [app_info.model_dump() for app_info in workspace.applications.values()]
 
     async def save_application(
         self,
@@ -278,7 +278,7 @@ class ServerAppController:
                     await save_file(f"{app_dir}/{att['name']}", att["source"])
                     files.append(att["name"])
 
-            content = json.dumps(rdf.dict(), indent=4)
+            content = json.dumps(rdf.model_dump(), indent=4)
             await save_file(f"{app_dir}/rdf.json", content)
         logger.info("Saved application (%s)to workspace: %s", mhash, workspace)
 
@@ -328,7 +328,7 @@ class ServerAppController:
             async with aiofiles.open(
                 local_app_dir / "rdf.json", "r", encoding="utf-8"
             ) as fil:
-                rdf = RDF.parse_obj(json.loads(await fil.read()))
+                rdf = RDF.model_validate(json.loads(await fil.read()))
 
             if rdf.attachments:
                 files = rdf.attachments.get("files")
@@ -385,7 +385,7 @@ class ServerAppController:
         if not workspace:
             workspace = context["from"].split("/")[0]
 
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         workspace = await self.store.get_workspace(workspace)
 
         if not await self.store.check_permission(workspace, user_info):
@@ -456,10 +456,10 @@ class ServerAppController:
                 "public_url": public_url,
             }
         )
-        rdf = RDF.parse_obj(rdf_obj)
+        rdf = RDF.model_validate(rdf_obj)
         await self.save_application(app_id, rdf, source, attachments)
         ws = await self.store.get_workspace_interface(workspace.name)
-        await ws.install_application(rdf.dict())
+        await ws.install_application(rdf.model_dump())
         return rdf_obj
 
     async def uninstall(self, app_id: str, context: Optional[dict] = None) -> None:
@@ -472,7 +472,7 @@ class ServerAppController:
         workspace_name, mhash = app_id.split("/")
         workspace = await self.store.get_workspace(workspace_name)
 
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         if not await self.store.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"
@@ -523,7 +523,7 @@ class ServerAppController:
 
     def _client_deleted(self, client: dict) -> None:
         """Called when client is deleted."""
-        client = ClientInfo.parse_obj(client)
+        client = ClientInfo.model_validate(client)
         page_id = f"{client.workspace}/{client.id}"
         if page_id in self._client_callbacks:
             callbacks = self._client_callbacks[page_id]
@@ -534,7 +534,7 @@ class ServerAppController:
 
     def _client_updated(self, client: dict) -> None:
         """Called when client is updated."""
-        client = ClientInfo.parse_obj(client)
+        client = ClientInfo.model_validate(client)
         page_id = f"{client.workspace}/{client.id}"
         if page_id in self._client_callbacks:
             callbacks = self._client_callbacks[page_id]
@@ -572,7 +572,7 @@ class ServerAppController:
         ws = await self.store.get_workspace_interface(workspace)
         token = await ws.generate_token({"parent_client": context["from"]})
 
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         if not await self.store.check_permission(workspace, user_info):
             raise Exception(
                 f"User {user_info.id} does not have permission"

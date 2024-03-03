@@ -97,7 +97,7 @@ class BrowserAppRunner:
         context: dict = None,
     ):
         """Start a browser app instance."""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         assert user_info.is_anonymous is False, "User must be authenticated"
         user_id = user_info.id
 
@@ -133,7 +133,7 @@ class BrowserAppRunner:
 
     async def stop(self, client_id: str, context: dict = None) -> None:
         """Stop a browser app instance."""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         assert user_info.is_anonymous is False, "User must be authenticated"
         user_id = user_info.id
         page_id = user_id + "/" + client_id
@@ -146,7 +146,7 @@ class BrowserAppRunner:
 
     async def list(self, context: dict = None) -> List[str]:
         """List the browser apps for the current user."""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         assert user_info.is_anonymous is False, "User must be authenticated"
         user_id = user_info.id
         sessions = [
@@ -165,7 +165,7 @@ class BrowserAppRunner:
         context: dict = None,
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get the logs for a browser app instance."""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         assert user_info.is_anonymous is False, "User must be authenticated"
         user_id = user_info.id
         page_id = user_id + "/" + client_id

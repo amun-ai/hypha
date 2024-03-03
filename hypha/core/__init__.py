@@ -13,7 +13,6 @@ import msgpack
 from pydantic import (  # pylint: disable=no-name-in-module
     BaseModel,
     EmailStr,
-    Extra,
     PrivateAttr,
     constr,
 )
@@ -29,9 +28,9 @@ class TokenConfig(BaseModel):
     """Represent a token configuration."""
 
     scopes: List[str]
-    expires_in: Optional[int]
-    email: Optional[EmailStr]
-    parent_client: Optional[str]
+    expires_in: Optional[int] = None
+    email: Optional[EmailStr] = None
+    parent_client: Optional[str] = None
 
 
 class VisibilityEnum(str, Enum):
@@ -71,7 +70,7 @@ class ServiceInfo(BaseModel):
     class Config:
         """Set the config for pydantic."""
 
-        extra = Extra.allow
+        extra='allow'
 
     def is_singleton(self):
         """Check if the service is singleton."""
@@ -84,10 +83,10 @@ class UserInfo(BaseModel):
     id: str
     roles: List[str]
     is_anonymous: bool
-    email: Optional[EmailStr]
-    parent: Optional[str]
-    scopes: Optional[List[str]]  # a list of workspace
-    expires_at: Optional[int]
+    email: Optional[EmailStr] = None
+    parent: Optional[str] = None
+    scopes: Optional[List[str]] = None  # a list of workspace
+    expires_at: Optional[int] = None
     _metadata: Dict[str, Any] = PrivateAttr(
         default_factory=lambda: {}
     )  # e.g. s3 credential
@@ -107,8 +106,8 @@ class ClientInfo(BaseModel):
     """Represent service."""
 
     id: str
-    parent: Optional[str]
-    name: Optional[str]
+    parent: Optional[str] = None
+    name: Optional[str] = None
     workspace: str
     services: List[ServiceInfo] = []
     user_info: UserInfo
@@ -120,25 +119,25 @@ class RDF(BaseModel):
     name: str
     id: str
     tags: List[str]
-    documentation: Optional[str]
-    covers: Optional[List[str]]
-    badges: Optional[List[str]]
-    authors: Optional[List[Dict[str, str]]]
-    attachments: Optional[Dict[str, List[Any]]]
-    config: Optional[Dict[str, Any]]
+    documentation: Optional[str] = None
+    covers: Optional[List[str]] = None
+    badges: Optional[List[str]] = None
+    authors: Optional[List[Dict[str, str]]] = None
+    attachments: Optional[Dict[str, List[Any]]] = None
+    config: Optional[Dict[str, Any]] = None
     type: str
     format_version: str = "0.2.1"
     version: str = "0.1.0"
-    links: Optional[List[str]]
-    maintainers: Optional[List[Dict[str, str]]]
-    license: Optional[str]
-    git_repo: Optional[str]
-    source: Optional[str]
+    links: Optional[List[str]] = None
+    maintainers: Optional[List[Dict[str, str]]] = None
+    license: Optional[str] = None
+    git_repo: Optional[str] = None
+    source: Optional[str] = None
 
     class Config:
         """Set the config for pydantic."""
 
-        extra = Extra.allow
+        extra='allow'
 
 
 class ApplicationInfo(RDF):
@@ -154,15 +153,15 @@ class WorkspaceInfo(BaseModel):
     persistent: bool
     owners: List[str]
     visibility: VisibilityEnum
-    description: Optional[str]
-    icon: Optional[str]
-    covers: Optional[List[str]]
-    docs: Optional[str]
-    allow_list: Optional[List[str]]
-    deny_list: Optional[List[str]]
     read_only: bool = False
-    applications: Dict[str, RDF] = {}  # installed applications
-    interfaces: Dict[str, List[Any]] = {}
+    description: Optional[str] = None
+    icon: Optional[str] = None
+    covers: Optional[List[str]] = None
+    docs: Optional[str] = None
+    allow_list: Optional[List[str]] = None
+    deny_list: Optional[List[str]] = None
+    applications: Optional[Dict[str, RDF]] = {}  # installed applications
+    interfaces: Optional[Dict[str, List[Any]]] = {}
 
 
 class RedisRPCConnection:
@@ -182,7 +181,7 @@ class RedisRPCConnection:
         self._workspace = workspace
         self._client_id = client_id
         assert "/" not in client_id
-        self._user_info = user_info.dict()
+        self._user_info = user_info.model_dump()
 
     def on_message(self, handler: Callable):
         """Setting message handler."""

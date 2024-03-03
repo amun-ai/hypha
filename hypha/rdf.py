@@ -73,7 +73,7 @@ class RDFController:
 
     def save(self, name, source, context: dict = None):
         """Save an RDF."""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         response = self.s3client.put_object(
             ACL="public-read",
             Body=source,
@@ -88,7 +88,7 @@ class RDFController:
 
     def remove(self, name, context: dict = None):
         """Remove an RDF."""
-        user_info = UserInfo.parse_obj(context["user"])
+        user_info = UserInfo.model_validate(context["user"])
         response = self.s3client.delete_object(
             Bucket=self.rdf_bucket,
             Key=f"{user_info.id}/{name}",

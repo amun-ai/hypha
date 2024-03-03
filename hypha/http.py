@@ -300,7 +300,7 @@ class HTTPProxy:
                 workspace_info = await store.get_workspace(workspace)
                 return JSONResponse(
                     status_code=200,
-                    content=workspace_info.dict(),
+                    content=workspace_info.model_dump(),
                 )
             except Exception as exp:
                 return JSONResponse(
