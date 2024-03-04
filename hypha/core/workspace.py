@@ -166,7 +166,9 @@ class WorkspaceManager:
 
         if not overwrite and await self._redis.hexists("workspaces", workspace.name):
             raise Exception(f"Workspace {workspace.name} already exists.")
-        await self._redis.hset("workspaces", workspace.name, workspace.model_dump_json())
+        await self._redis.hset(
+            "workspaces", workspace.name, workspace.model_dump_json()
+        )
         # Clear the workspace
         await self.remove_clients(workspace.name)
         workspace_info = await self.get_workspace_info(workspace.name)
@@ -630,7 +632,9 @@ class WorkspaceManager:
         workspace_info = await self._redis.hget("workspaces", workspace)
         if workspace_info is None:
             raise KeyError(f"Workspace not found: {workspace}")
-        workspace_info = WorkspaceInfo.model_validate(json.loads(workspace_info.decode()))
+        workspace_info = WorkspaceInfo.model_validate(
+            json.loads(workspace_info.decode())
+        )
         return workspace_info
 
     async def _get_workspace_info_dict(
@@ -819,7 +823,8 @@ class WorkspaceManager:
         """Get all workspaces."""
         workspaces = await self._redis.hgetall("workspaces")
         return [
-            WorkspaceInfo.model_validate(json.loads(v.decode())) for v in workspaces.values()
+            WorkspaceInfo.model_validate(json.loads(v.decode()))
+            for v in workspaces.values()
         ]
 
     async def check_permission(
@@ -938,7 +943,9 @@ class WorkspaceManager:
         if _id not in workspace.owners:
             workspace.owners.append(_id)
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
-        await self._redis.hset("workspaces", workspace.name, workspace.model_dump_json())
+        await self._redis.hset(
+            "workspaces", workspace.name, workspace.model_dump_json()
+        )
         self._event_bus.emit("workspace_changed", workspace.model_dump())
 
     async def delete_if_empty(self):
