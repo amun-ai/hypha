@@ -205,6 +205,7 @@
             window.logout = async ()=>{
                 const href = window.location.href;
                 await auth0.logout({ returnTo: href});         
+                window.close()
             }
     
             window.login = async () => {
