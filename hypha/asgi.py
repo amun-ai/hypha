@@ -61,7 +61,7 @@ class RemoteASGIApp:
                     if self.service.config.get("require_context"):
                         authorization = scope["headers"].get("authorization")
                         user_info = parse_token(authorization, allow_anonymouse=True)
-                        result = await func(scope, {"user": user_info.model_dump()})
+                        result = await func(scope, context={"user": user_info.model_dump()})
                     else:
                         result = await func(scope)
                     headers = Headers(headers=result.get("headers"))
