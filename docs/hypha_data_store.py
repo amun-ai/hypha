@@ -33,9 +33,11 @@ class HyphaDataStore:
         if obj_type == 'file':
             data = value
             assert isinstance(data, (str, bytes)), "Value must be a string or bytes"
-            if isinstance(data, str):
-                assert os.path.isfile(data), "String value must be a file path"
-                with open(data, 'rb') as fil:
+            if isinstance(data, str) and data.startswith("file://"):
+                # File URL examples:
+                # Absolute URL: `file:///home/data/myfile.png`
+                # Relative URL: `file://./myimage.png`, or `file://myimage.png`
+                with open(data.replace("file://", ""), 'rb') as fil:
                     data = fil.read()
             mime_type, _ = mimetypes.guess_type(name)
             self.storage[obj_id] = {
@@ -114,22 +116,24 @@ async def test_data_store(server_url="https://ai.imjoy.io"):
     from imjoy_rpc.hypha import connect_to_server, login
     token = await login({"server_url": server_url})
     server = await connect_to_server({"server_url": server_url, "token": token})
-    
+
     ds = HyphaDataStore()
     # Setup would need to be completed in an ASGI compatible environment
     await ds.setup(server)
 
     # Test PUT operation
-    file_id = ds.put('file', b'Some binary content', 'example.bin')
+    file_id = ds.put('file', 'file:///home/data.txt', 'data.txt')
+    binary_id = ds.put('file', b'Some binary content', 'example.bin')
     json_id = ds.put('json', {'hello': 'world'}, 'example.json')
 
     # Test GET operation
     assert ds.get(file_id)['type'] == 'file'
+    assert ds.get(binary_id)['type'] == 'file'
     assert ds.get(json_id)['type'] == 'json'
 
     # Test GET URL generation
-
     print("URL for getting file", ds.get_url(file_id))
+    print("URL for getting binary object", ds.get_url(binary_id))
     print("URL for getting json object", ds.get_url(json_id))
 
 if __name__ == "__main__":
