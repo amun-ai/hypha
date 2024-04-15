@@ -49,3 +49,9 @@ In the above example, `hello-world` is a function served under `/{workspace}/app
 You can define multiple functions in a single service. 
 
 Specficially for the index or home page, you can define a function named `index`, and it will be served under `/{workspace}/apps/hello-functions/` (note the trailing slash) and `/{workspace}/apps/hello-functions/index`.
+
+## Serverless Functions Example: Creating a Data Store Service
+
+While the Hypha platform excels at providing services that can be easily shared and utilized via Hypha clients, there is a growing need in the technology landscape to interface seamlessly with web applications. This requirement is particularly pronounced when dealing with outputs from various computational or data-driven services that need to be integrated directly into web environments—for example, displaying generated image files within a Markdown page or embedding JSON data into a web application for dynamic content generation.
+
+To demonstrate how serverless functions can be used in this case, we provide an example implementation of `HyphaDataStore` for storing, managing, and retrieving data through the Hypha serverless functions. See the [Hypha Data Store](./hypha_data_store.py) implementation for more details. This service allows users to share files and JSON-serializable objects with others by generating accessible HTTP URLs.
