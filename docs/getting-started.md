@@ -322,13 +322,18 @@ It will return something like:
 ```json
 {"login_url":"https://ai.imjoy.io/public/apps/hypha-login/?key=mihDumpHGYxkPdSEKB7GgM","key":"mihDumpHGYxkPdSEKB7GgM","report_url":"https://ai.imjoy.io/public/services/hypha-login/report"}
 ```
-Now you can print the `login_url` to the console or open it in a browser to login. After the user logs in, you can obtain the token calling `check`:
-```bash
-curl -X POST "https://ai.imjoy.io/public/services/hypha-login/check" -H "Content-Type: application/json" -d '{"key":"mihDumpHGYxkPdSEKB7GgM", "timeout": 1}'
-```
-(replace `mihDumpHGYxkPdSEKB7GgM` with the actual key you obtained from the `start` function)
+Now you can print the `login_url` to the console or open it in a browser to login.
 
-This should return the token if the user has successfully logged in.
+Immediately after displaying the url, you can call `check` to wait for the user to login and get the token, for example:
+```bash
+curl -X POST "https://ai.imjoy.io/public/services/hypha-login/check" -H "Content-Type: application/json" -d '{"key":"mihDumpHGYxkPdSEKB7GgM", "timeout": 10}'
+```
+
+For the above request:
+ - replace `mihDumpHGYxkPdSEKB7GgM` with the actual key you obtained from the `start` function
+ - and you can adjust the `timeout` to wait for the user to login, the above example will wait for 10 seconds.
+
+This should wait and return the token if the user has successfully logged in, otherwise, it will return a timeout error.
 
 For details, see the python implementation of the login function [here](https://github.com/imjoy-team/imjoy-rpc/blob/master/python/imjoy_rpc/hypha/websocket_client.py#L175).
 
