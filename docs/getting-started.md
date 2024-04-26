@@ -53,7 +53,7 @@ After running the command, you can access files from these directories via the H
 
 ## Connecting from a Client
 
-Hypha provides native support for Python and JavaScript clients. For other languages, you can use the built-in HTTP proxy of Hypha.
+Hypha provides native support for Python and JavaScript clients. For other languages, you can use the built-in HTTP proxy of Hypha (see details in a later section about "Login and Using Services from the HTTP proxy").
 
 Ensure that the server is running, and you can connect to it using the `hypha` module under `imjoy-rpc` in a client script. You can either register a service or use an existing service.
 
@@ -308,6 +308,37 @@ In the previous example, we registered a public service (`config.visibility = "p
 2. Using User Context: When registering a service, set `config.require_context` to `True` and `config.visibility` to `"public"` (or `"private"` to limit access for clients from the same workspace). Each service function needs to accept a keyword argument called `context`. The server will provide the context information containing `user` for each service function call. The service function can then check whether `context.user["id"]` is allowed to access the service. On the client side, you need to log in and generate a token by calling the `login({"server_url": xxxx})` function. The token is then used in `connect_to_server({"token": xxxx, "server_url": xxxx})`.
 
 By default, hypha server uses a user authentication system based on [Auth0](https://auth0.com) controlled by us. You can also setup your own auth0 account to use it with your own hypha server. See [Setup Authentication](./setup-authentication) for more details.
+
+### Login and Using Services from the HTTP proxy
+
+#### Obtain login token via http requests
+For clients other than Python or javascript (without imjoy-rpc) support, you can use Hypha server's built-in HTTP proxy for services to obtain the token. Here is an example of how to obtain the token via HTTP requests:
+
+First, let's initiate the login process by calling the `start` function of the `hypha-login` service:
+```bash
+curl -X POST "https://ai.imjoy.io/public/services/hypha-login/start" -H "Content-Type: application/json" -d '{}'
+```
+It will return something like:
+```json
+{"login_url":"https://ai.imjoy.io/public/apps/hypha-login/?key=mihDumpHGYxkPdSEKB7GgM","key":"mihDumpHGYxkPdSEKB7GgM","report_url":"https://ai.imjoy.io/public/services/hypha-login/report"}
+```
+Now you can print the `login_url` to the console or open it in a browser to login. After the user logs in, you can obtain the token calling `check`:
+```bash
+curl -X POST "https://ai.imjoy.io/public/services/hypha-login/check" -H "Content-Type: application/json" -d '{"key":"mihDumpHGYxkPdSEKB7GgM", "timeout": 1}'
+```
+(replace `mihDumpHGYxkPdSEKB7GgM` with the actual key you obtained from the `start` function)
+
+This should return the token if the user has successfully logged in.
+
+For details, see the python implementation of the login function [here](https://github.com/imjoy-team/imjoy-rpc/blob/master/python/imjoy_rpc/hypha/websocket_client.py#L175).
+
+#### Using the Token in Service Requests
+
+With the token, you can now request any protected service by passing the `token` as `Authorization: Bearer <token>` in the header, for example:
+```bash
+curl -X POST "https://ai.imjoy.io/public/services/hello-world/hello" -H "Content-Type: application/json" -H "Authorization : Bearer <token>" -d '{"name": "John"}'
+```
+For more details, see the service request api endpoint [here](https://ai.imjoy.io/api-docs#/default/service_function__workspace__services__service___keys__post).
 
 ### Custom Initialization and Service Integration with Hypha Server
 
