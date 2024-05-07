@@ -46,8 +46,8 @@ async def serve_fastapi(args):
     await app(args["scope"], args["receive"], args["send"])
 
 svc_info = await server.register_service({
-    "id": "cellpose",
-    "name": "cellpose",
+    "id": "cat",
+    "name": "cat",
     "type": "ASGI",
     "serve": serve_fastapi,
     "config":{
