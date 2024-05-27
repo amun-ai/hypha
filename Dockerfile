@@ -34,4 +34,5 @@ ADD . .
 RUN pip install .[server-apps]
 # RUN pip install --no-cache-dir .
 RUN pip install --no-cache-dir playwright && playwright install
-EXPOSE 3000
+EXPOSE 9520
+CMD python -m hypha.server --host=0.0.0.0 --port=9520 
