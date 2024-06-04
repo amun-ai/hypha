@@ -15,9 +15,8 @@ It takes two arguments:
     - `query_string`: a string (instead of bytes) with the query string
     - `raw_path`: a string (instead of bytes) with the raw path
     - `headers`: a dictionary (instead of an iterable) with the headers
-    - `body`: the request body (bytes or arrayBuffer), will be None if empty 
- * `context`: Contains user and environment related information. Only available if `require_context` is set to True when registering the service.
-
+    - `body`: the request body (bytes or arrayBuffer), will be None if empty
+    - `context`: Contains user and environment related information.
 
 To register the functions, call `api.register_service` with `type="functions"`.
 
@@ -27,16 +26,15 @@ await api.register_service({
     "type": "functions",
     "config": {
         "visibility": "public",
-        "require_context": true
     },
-    "hello-world": async function(event, context) {
+    "hello-world": async function(event) {
         return {
             status: 200,
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({message: "Hello World"})
         };
     },
-    "index": async function(event, context) {
+    "index": async function(event) {
         return {
             status: 200,
             body: "Home page"
