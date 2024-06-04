@@ -30,16 +30,15 @@ class ImJoyPlugin {
             "type": "functions",
             "config": {
                 "visibility": "public",
-                "require_context": true
             },
-            "hello-world": async function(event, context) {
+            "hello-world": async function(event) {
                 return {
                     status: 200,
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({message: "Hello World", context})
+                    body: JSON.stringify({message: "Hello World", context: event.context})
                 };
             },
-            "index": async function(event, context) {
+            "index": async function(event) {
                 return {
                     status: 200,
                     body: `Home page`
