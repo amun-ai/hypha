@@ -10,6 +10,7 @@ from hypha.core import ClientInfo, UserInfo
 from hypha.core.store import RedisRPCConnection
 from hypha.core.auth import parse_reconnection_token, parse_token
 import shortuuid
+from jose import jwt
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket-server")
@@ -48,7 +49,12 @@ class WebsocketServer:
                 logger.info(
                     f"Reconnecting client via token: {reconnection_token[:5]}..."
                 )
-                user_info, ws, cid = parse_reconnection_token(reconnection_token)
+                try:
+                    user_info, ws, cid = parse_reconnection_token(reconnection_token)
+                except jwt.JWTError as err:
+                    logger.error("Invalid reconnection token: %s", {reconnection_token[:5]})
+                    await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
+                    return
                 if not await store.disconnected_client_exists(f"{ws}/{cid}"):
                     logger.warning(
                         "Client %s was not in the disconnected client list", client_id
