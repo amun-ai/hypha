@@ -1,6 +1,6 @@
 FROM mambaorg/micromamba:latest
 
-WORKDIR /home
+# WORKDIR /home
 # Copy your environment.yml into the image
 COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yml env.yaml
 COPY --chown=$MAMBA_USER:$MAMBA_USER . .
@@ -37,4 +37,4 @@ RUN apt-get update --fix-missing && apt-get install -y --no-install-recommends \
 USER $MAMBA_USER 
 EXPOSE 9527
 EXPOSE 3000
-ENTRYPOINT ["/usr/local/bin/_entrypoint.sh","python", "-m","hypha.server" ]
+ENTRYPOINT ["/usr/local/bin/_entrypoint.sh", "python", "-m","hypha.server" ]
