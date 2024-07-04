@@ -52,7 +52,9 @@ class WebsocketServer:
                 try:
                     user_info, ws, cid = parse_reconnection_token(reconnection_token)
                 except jwt.JWTError as err:
-                    logger.error("Invalid reconnection token: %s", {reconnection_token[:5]})
+                    logger.error(
+                        "Invalid reconnection token: %s", {reconnection_token[:5]}
+                    )
                     await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
                     return
                 if not await store.disconnected_client_exists(f"{ws}/{cid}"):
