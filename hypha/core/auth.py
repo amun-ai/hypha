@@ -38,7 +38,7 @@ JWT_SECRET = env.get("JWT_SECRET")
 
 if not JWT_SECRET:
     logger.warning("JWT_SECRET is not defined")
-    JWT_SECRET = str(shortuuid.uuid())
+    JWT_SECRET = shortuuid.ShortUUID().random(length=22)
 
 
 class AuthError(Exception):
@@ -135,8 +135,7 @@ def get_rsa_key(kid, refresh=False):
     if JWKS is None or refresh:
         with urlopen(
             f"https://{AUTH0_DOMAIN}/.well-known/jwks.json",
-            # pylint: disable=protected-access
-            context=ssl._create_unverified_context(),
+            context=ssl._create_default_https_context(),
         ) as jsonurl:
             JWKS = json.loads(jsonurl.read())
     rsa_key = {}

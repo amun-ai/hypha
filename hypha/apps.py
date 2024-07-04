@@ -272,6 +272,10 @@ class ServerAppController:
                         "name" in att and "source" in att
                     ), "Attachment should contain `name` and `source`"
                     if att["source"].startswith("http") and "\n" not in att["source"]:
+                        if not att["source"].startswith("https://"):
+                            raise Exception(
+                                "Only https sources are allowed: " + att["source"]
+                            )
                         with urlopen(att["source"]) as stream:
                             output = stream.read()
                         att["source"] = output
@@ -395,6 +399,8 @@ class ServerAppController:
             )
 
         if source.startswith("http"):
+            if not source.startswith("https://"):
+                raise Exception("Only https sources are allowed: " + source)
             with urlopen(source) as stream:
                 output = stream.read()
             source = output.decode("utf-8")
