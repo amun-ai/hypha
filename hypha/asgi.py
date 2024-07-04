@@ -64,7 +64,7 @@ class RemoteASGIApp:
                         user_info = user_info.model_dump()
                     else:
                         user_info = None
-                    scope['context'] = {"user": user_info, "_rkwargs": True}
+                    scope["context"] = {"user": user_info, "_rkwargs": True}
                     result = await func(scope)
                     headers = Headers(headers=result.get("headers"))
                     body = result.get("body")
