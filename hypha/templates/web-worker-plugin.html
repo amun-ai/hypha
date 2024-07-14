@@ -15,7 +15,7 @@ window = self;
 self.onmessage = function(e) {
 const config = e.data
 
-importScripts("https://cdn.jsdelivr.net/npm/imjoy-rpc@0.5.48/dist/hypha-rpc-websocket.min.js")
+importScripts("https://cdn.jsdelivr.net/npm/imjoy-rpc@0.5.57/dist/hypha-rpc-websocket.min.js")
 
 hyphaWebsocketClient.connectToServer(config).then(async (api)=>{
 await hyphaWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
