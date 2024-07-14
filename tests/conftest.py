@@ -261,6 +261,7 @@ def minio_server_fixture():
     """Start minio server as test fixture and tear down after test."""
     setup_minio_executables("./bin")
     dirpath = tempfile.mkdtemp()
+    print(f"Minio data directory: {dirpath}")
     my_env = os.environ.copy()
     my_env["MINIO_ROOT_USER"] = MINIO_ROOT_USER
     my_env["MINIO_ROOT_PASSWORD"] = MINIO_ROOT_PASSWORD

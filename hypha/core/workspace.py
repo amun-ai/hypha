@@ -19,6 +19,7 @@ from hypha.core import (
     VisibilityEnum,
     WorkspaceInfo,
 )
+from hypha.core.queue import create_queue_service
 from hypha.core.auth import generate_presigned_token, generate_reconnection_token
 from hypha.utils import EventBus
 
@@ -112,6 +113,7 @@ class WorkspaceManager:
         rpc.on("service-updated", save_client_info)
         management_service = self.create_service(service_id, service_name)
         await rpc.register_service(management_service, notify=False)
+        await rpc.register_service(create_queue_service(self._redis, self._workspace), notify=False)
         await save_client_info(None)
         self._rpc = rpc
         self._initialized = True

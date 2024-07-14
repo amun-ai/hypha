@@ -223,13 +223,14 @@ class RedisRPCConnection:
     async def _subscribe_redis(self):
         pubsub = self._redis.pubsub()
         await pubsub.subscribe(f"{self._workspace}/{self._client_id}:msg")
+        await pubsub.subscribe(f"{self._workspace}/*:msg")
         while True:
             msg = await pubsub.get_message(timeout=10)
             if msg and msg.get("type") == "message":
-                assert (
-                    msg.get("channel")
-                    == f"{self._workspace}/{self._client_id}:msg".encode()
-                )
+                assert msg.get("channel") in [
+                    f"{self._workspace}/{self._client_id}:msg".encode(),
+                    f"{self._workspace}/*:msg".encode(),
+                ]
                 if self._is_async:
                     await self._handle_message(msg["data"])
                 else:
