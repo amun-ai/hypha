@@ -8,7 +8,7 @@ lxml==4.9.3
 msgpack==1.0.5
 numpy>=1.21.6
 playwright==1.39.0
-pydantic[email]==2.6.1
+pydantic[email]==2.8.2
 pymultihash==0.8.2
 python-dotenv==0.21.1
 python-jose==3.3.0
