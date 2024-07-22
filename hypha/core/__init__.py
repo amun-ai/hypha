@@ -195,7 +195,7 @@ class WorkspaceInfo(BaseModel):
     allow_list: Optional[List[str]] = None
     deny_list: Optional[List[str]] = None
     applications: Optional[Dict[str, Card]] = {}  # installed applications
-    interfaces: Optional[Dict[str, List[Any]]] = {}
+    config: Optional[Dict[str, Any]] = {}  # workspace custom config
 
     @classmethod
     def model_validate(cls, data):

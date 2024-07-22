@@ -266,7 +266,7 @@ def parse_token(authorization: str, allow_anonymouse=False):
 
 
 def generate_presigned_token(
-    user_info: UserInfo, config: TokenConfig, child: bool = True
+    user_info: UserInfo, config: TokenConfig, child: bool = False
 ):
     """Generate presigned tokens.
 

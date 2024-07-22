@@ -47,6 +47,7 @@ class WorkspaceManager:
         root_user: UserInfo,
         event_bus: EventBus,
         server_info: dict,
+        workspace_loader: Optional[callable] = None,
     ):
         self._redis = redis
         self._initialized = False
@@ -55,6 +56,7 @@ class WorkspaceManager:
         self._event_bus = event_bus
         self._server_info = server_info
         self._client_id = None
+        self._workspace_loader = workspace_loader
 
     def get_client_id(self):
         assert self._client_id is not None, "Manager client id not set."
@@ -85,7 +87,7 @@ class WorkspaceManager:
         user_info = UserInfo.model_validate(context["user"])
         if not await self.check_permission(user_info, context=context):
             raise Exception(f"Permission denied for workspace {ws}.")
-        workspace_info = await self._load_workspace_info(ws)
+        workspace_info = await self.load_workspace_info(ws)
         workspace_info = workspace_info.model_dump()
         workspace_summary_fields = ["name", "description"]
         clients = await self.list_clients(context=context)
@@ -103,6 +105,60 @@ class WorkspaceManager:
             }
         )
         return summary
+
+    def validate_workspace_name(self, name):
+        """Validate the workspace name."""
+        if not name:
+            raise ValueError("Workspace name must not be empty.")
+        if "/" in name:
+            raise ValueError("Workspace name must not contain '/'")
+        if ":" in name:
+            raise ValueError("Workspace name must not contain ':'")
+        if "@" in name:
+            raise ValueError("Workspace name must not contain '@'")
+        if name in [
+            "*",
+            "public",
+            "protected",
+            "private",
+            "default",
+            "built-in",
+            "all",
+            "root",
+            "admin",
+            "system",
+            "server",
+        ]:
+            raise ValueError("Invalid workspace name: " + name)
+        return name
+
+    async def _bookmark_workspace(
+        self,
+        workspace: WorkspaceInfo,
+        user_info: UserInfo,
+        context: Optional[dict] = None,
+    ):
+        """Bookmark the workspace for the user."""
+        assert isinstance(workspace, WorkspaceInfo) and isinstance(user_info, UserInfo)
+        user_workspace = await self.load_workspace_info(user_info.id)
+        user_workspace.config = user_workspace.config or {}
+        if "bookmarks" not in user_workspace.config:
+            user_workspace.config["bookmarks"] = []
+        user_workspace.config["bookmarks"].append(
+            {
+                "type": "workspace",
+                "name": workspace.name,
+                "description": workspace.description,
+            }
+        )
+        await self._update_workspace(user_workspace, user_info)
+
+    async def _get_bookmarked_workspaces(
+        self, user_info: UserInfo, context: Optional[dict] = None
+    ) -> list[dict]:
+        """Get the bookmarked workspaces for the user."""
+        user_workspace = await self.load_workspace_info(user_info.id)
+        return user_workspace.config.get("bookmarks", [])
 
     async def create_workspace(
         self,
@@ -122,46 +178,61 @@ class WorkspaceManager:
         if user_info.is_anonymous and config["persistent"]:
             raise Exception("Only registered user can create persistent workspace.")
         workspace = WorkspaceInfo.model_validate(config)
+        if user_info.id != "root":
+            # only need to check if the user is not root
+            self.validate_workspace_name(workspace.name)
         # make sure we add the user's email to owners
         _id = user_info.email or user_info.id
         if _id not in workspace.owners:
             workspace.owners.append(_id)
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
 
-        if not overwrite and await self._redis.hexists("workspaces", workspace.name):
-            raise RuntimeError(f"Workspace {workspace.name} already exists.")
+        # user workspace, let's store all the created workspaces
+        if user_info.id == workspace.name:
+            workspace.config = workspace.config or {}
+            workspace.config["bookmarks"] = [
+                {
+                    "type": "workspace",
+                    "name": workspace.name,
+                    "description": workspace.description,
+                }
+            ]
         await self._redis.hset(
             "workspaces", workspace.name, workspace.model_dump_json()
         )
-        # TODO: save the workspace info to s3 or other storage
-        self._event_bus.emit("workspace_registered", workspace.model_dump())
+        await self._event_bus.emit("workspace_loaded", workspace.model_dump())
+        if user_info.id != workspace.name:
+            await self._bookmark_workspace(workspace, user_info, context=context)
         return workspace.model_dump()
 
     async def install_application(self, card: dict, context: Optional[dict] = None):
         """Install an application to the workspace."""
         ws = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
         card = Card.model_validate(card)
         # TODO: check if the application is already installed
-        workspace_info = await self._load_workspace_info(ws)
+        workspace_info = await self.load_workspace_info(ws)
         workspace_info.applications[card.id] = card
         logger.info("Installing application %s to %s", card.id, ws)
-        await self._update_workspace(workspace_info.model_dump(), context)
+        await self._update_workspace(workspace_info, user_info)
 
     async def uninstall_application(self, card_id: str, context: Optional[dict] = None):
         """Uninstall a application from the workspace."""
         ws = context["ws"]
-        workspace_info = await self._load_workspace_info(ws)
+        user_info = UserInfo.model_validate(context["user"])
+        workspace_info = await self.load_workspace_info(ws)
         if card_id not in workspace_info.applications:
             raise KeyError("Application not found: " + card_id)
         del workspace_info.applications[card_id]
         logger.info("Uninstalling application %s from %s", card_id, ws)
-        await self._update_workspace(workspace_info.model_dump(), context)
+        await self._update_workspace(workspace_info, user_info)
 
     async def register_service(self, service, context: Optional[dict] = None, **kwargs):
         """Register a service"""
         assert context is not None
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
+
         source_workspace = context["ws"]
         assert source_workspace == ws, (
             f"Service must be registered in the same workspace: "
@@ -190,6 +261,12 @@ class WorkspaceManager:
         user_info = UserInfo.model_validate(context["user"])
         if not await self.check_permission(user_info, context=context):
             raise Exception(f"Permission denied for workspace {ws}.")
+        if set(config.keys()) - {"scopes", "expires_in"}:
+            raise ValueError(
+                "Invalid keys in token config: "
+                + str(set(config.keys()) - {"scopes", "expires_in"})
+            )
+
         config = config or {}
         if "scopes" in config and not isinstance(config["scopes"], list):
             raise Exception(
@@ -197,6 +274,7 @@ class WorkspaceManager:
             )
         elif "scopes" not in config:
             config["scopes"] = [ws]
+        config["email"] = user_info.email
         token_config = TokenConfig.model_validate(config)
         for ws in config["scopes"]:
             if not await self.check_permission(user_info, ws, context=context):
@@ -583,21 +661,38 @@ class WorkspaceManager:
             raise Exception(f"Permission denied for workspace {ws}.")
         logger.critical("%s: %s", context["from"], msg)
 
-    async def _load_workspace_info(self, workspace: str) -> WorkspaceInfo:
+    async def load_workspace_info(self, workspace: str, load=True) -> WorkspaceInfo:
         """Load info of the current workspace from the redis store."""
         assert workspace is not None
-        workspace_info = await self._redis.hget("workspaces", workspace)
-        if workspace_info is None:
-            raise KeyError(f"Workspace not found: {workspace}")
         try:
+            workspace_info = await self._redis.hget("workspaces", workspace)
+            if workspace_info is None:
+                raise KeyError(f"Workspace not found: {workspace}")
             workspace_info = WorkspaceInfo.model_validate(
                 json.loads(workspace_info.decode())
             )
+            return workspace_info
+        except KeyError:
+            if load and self._workspace_loader:
+                workspace_info = await self._workspace_loader(
+                    workspace, self._root_user
+                )
+                if not workspace_info:
+                    raise KeyError(f"Workspace not found: {workspace}")
+                await self._redis.hset(
+                    "workspaces", workspace_info.name, workspace_info.model_dump_json()
+                )
+                self._event_bus.emit("workspace_loaded", workspace_info.model_dump())
+                return workspace_info
+            elif load and not self._workspace_loader:
+                raise RuntimeError(
+                    "Workspace not found and the workspace loader is not configured."
+                )
+            else:
+                raise KeyError(f"Workspace not found: {workspace}")
         except Exception as e:
-            logger.error("Failed to load workspace info: %s", e)
-            logger.error("Workspace info: %s", workspace_info.decode())
-            raise
-        return workspace_info
+            logger.error(f"Failed to load workspace info: {e}")
+            raise e
 
     async def get_workspace_info(self, workspace: str = None, context=None) -> dict:
         """Get the workspace info."""
@@ -607,7 +702,7 @@ class WorkspaceManager:
         user_info = UserInfo.model_validate(context["user"])
         if not await self.check_permission(user_info, workspace, context=context):
             raise Exception(f"Permission denied for workspace {workspace}.")
-        workspace_info = await self._load_workspace_info(workspace)
+        workspace_info = await self.load_workspace_info(workspace)
         return workspace_info.model_dump()
 
     async def _launch_application_for_service(
@@ -641,7 +736,7 @@ class WorkspaceManager:
         ], f"Invalid service id: {service_id}"
 
         # Check if the user has permission to this workspace and the one to be launched
-        workspace = await self._load_workspace_info(workspace)
+        workspace = await self.load_workspace_info(workspace)
         if app_id not in workspace.applications:
             raise KeyError(
                 f"Application id `{app_id}` not found in workspace {workspace.name}"
@@ -830,13 +925,11 @@ class WorkspaceManager:
         service_api["config"]["workspace"] = workspace
         return service_api
 
-    async def _get_all_workspace(self):
+    async def list_workspaces(self, context=None):
         """Get all workspaces."""
-        workspaces = await self._redis.hgetall("workspaces")
-        return [
-            WorkspaceInfo.model_validate(json.loads(v.decode()))
-            for v in workspaces.values()
-        ]
+        user_info = UserInfo.model_validate(context["user"])
+        workspaces = await self._get_bookmarked_workspaces(user_info, context=context)
+        return workspaces
 
     async def check_permission(
         self,
@@ -866,7 +959,7 @@ class WorkspaceManager:
             return False
 
         if isinstance(workspace, str):
-            workspace = await self._load_workspace_info(workspace)
+            workspace = await self.load_workspace_info(workspace)
 
         if workspace.name == user_info.id:
             return True
@@ -903,37 +996,28 @@ class WorkspaceManager:
         wm.register_codec = rpc.register_codec
         return wm
 
-    async def _update_workspace(self, config: dict, context=None):
+    async def _update_workspace(
+        self, workspace: WorkspaceInfo, user_info: UserInfo, overwrite=False
+    ):
         """Update the workspace config."""
-        ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        if not await self.check_permission(user_info, context=context):
-            raise PermissionError(f"Permission denied for workspace {ws}")
+        assert isinstance(workspace, WorkspaceInfo) and isinstance(user_info, UserInfo)
+        if not await self.check_permission(user_info, workspace, context=None):
+            raise PermissionError(f"Permission denied for workspace {workspace}")
 
-        workspace_info = await self._redis.hget("workspaces", ws)
-        workspace = WorkspaceInfo.model_validate(json.loads(workspace_info.decode()))
-        if "name" in config and config["name"] != workspace.name:
-            raise Exception("Changing workspace name is not allowed.")
-
-        # make sure all the keys are valid
-        # TODO: verify the type
-        for key in config:
-            if key.startswith("_") or not hasattr(workspace, key):
-                raise KeyError(f"Invalid key: {key}")
-            if key in "applications":
-                for app_id in config[key]:
-                    app_info = config[key][app_id]
-                    # make sure applications are valid models
-                    if isinstance(app_info, dict):
-                        config[key][app_id] = Card.model_validate(app_info)
-        # update the workspace
-        workspace = workspace.model_copy(update=config, deep=True)
-        # make sure we add the user's email to owners
+        workspace_info = await self._redis.hget("workspaces", workspace.name)
+        if not overwrite and workspace_info is None:
+            raise KeyError(f"Workspace not found: {workspace.name}")
+        else:
+            existing_workspace = WorkspaceInfo.model_validate(
+                json.loads(workspace_info.decode())
+            )
+            assert existing_workspace.name == workspace.name, "Workspace name mismatch."
         _id = user_info.email or user_info.id
         if _id not in workspace.owners:
             workspace.owners.append(_id)
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
         logger.info("Updating workspace %s", workspace.name)
+
         await self._redis.hset(
             "workspaces", workspace.name, workspace.model_dump_json()
         )
@@ -981,9 +1065,9 @@ class WorkspaceManager:
         user_info = UserInfo.model_validate(context["user"])
         if not await self.check_permission(user_info, context=context):
             raise PermissionError(f"Permission denied for workspace {ws}")
-        winfo = await self._load_workspace_info(ws)
+        winfo = await self.load_workspace_info(ws)
         await self._redis.hdel("workspaces", ws)
-        self._event_bus.emit("workspace_removed", winfo.model_dump())
+        self._event_bus.emit("workspace_unloaded", winfo.model_dump())
         # list all the clients in the workspace and send a meesage to delete them
         client_keys = await self.list_clients(context=context)
         if len(client_keys) > 0:
@@ -1015,6 +1099,8 @@ class WorkspaceManager:
             "error": self.error,
             "warning": self.warning,
             "critical": self.critical,
+            "list_workspaces": self.list_workspaces,
+            "listWorkspaces": self.list_workspaces,
             "listServices": self.list_services,
             "list_services": self.list_services,
             "listClients": self.list_clients,
@@ -1035,7 +1121,6 @@ class WorkspaceManager:
             "checkPermission": self.check_permission,
             "get_workspace_info": self.get_workspace_info,
             "getWorkspaceInfo": self.get_workspace_info,
-            "set": self._update_workspace,
             "install_application": self.install_application,
             "installApplication": self.install_application,
             "uninstall_application": self.uninstall_application,

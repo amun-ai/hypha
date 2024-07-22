@@ -196,7 +196,7 @@ def create_application(args):
         args.startup_functions.append("hypha.core.auth:register_login_service")
         await store.init(args.reset_redis, startup_functions=args.startup_functions)
         yield
-        websocket_server.stop()
+        await websocket_server.stop()
         # Emit the shutdown event
         await store.get_event_bus().emit_local("shutdown")
 

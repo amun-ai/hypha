@@ -86,7 +86,7 @@ class ServerAppController:
         # self._rpc_lib_script = "http://localhost:9099/hypha-rpc-websocket.js"
         self.event_bus = store.get_event_bus()
         self.store = store
-        self.event_bus.on("workspace_removed", self._on_workspace_removed)
+        self.event_bus.on("workspace_unloaded", self._on_workspace_unloaded)
         store.register_public_service(self.get_service_api())
         self.jinja_env = Environment(
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
@@ -185,7 +185,7 @@ class ServerAppController:
             region_name="EU",
         )
 
-    async def _on_workspace_removed(self, workspace: dict):
+    async def _on_workspace_unloaded(self, workspace: dict):
         # Shutdown the apps in the workspace
         for app in self._sessions.values():
             if app["workspace"] == workspace["name"]:
@@ -637,8 +637,7 @@ class ServerAppController:
             # save the services
             workspace_info.applications[app_id].services = collected_services
             Card.model_validate(workspace_info.applications[app_id])
-            async with self.store.get_workspace_interface(workspace, user_info) as ws:
-                await ws.set(workspace_info.model_dump())
+            await self.store.set_workspace(workspace, user_info)
         except asyncio.TimeoutError:
             raise Exception(
                 f"Failed to start the app: {workspace}/{app_id}, timeout reached."

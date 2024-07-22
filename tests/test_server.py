@@ -292,13 +292,6 @@ async def test_workspace(fastapi_server):
     ws2 = await api.get_workspace_info("my-test-workspace")
     assert ws.name == ws2.name
 
-    # await ws2.set({"docs": "https://imjoy.io"})
-    # with pytest.raises(Exception, match=r".*Changing workspace name is not allowed.*"):
-    #     await ws2.set({"name": "new-name"})
-
-    # with pytest.raises(Exception):
-    #     await ws2.set({"covers": [], "non-exist-key": 999})
-
     # state = asyncio.Future()
 
     # def set_state(data):
