@@ -33,7 +33,6 @@ async def run_startup_function(store: any, startup_function_uri: str):
         entrypoint
     ), f"Entrypoint is required for {startup_function_uri}, please use {startup_function_uri}:entrypoint_function"
 
-     
     # load the python module and get the entrypoint
     load_func = _load_function(module_path, entrypoint)
     # make sure the load_func is a coroutine

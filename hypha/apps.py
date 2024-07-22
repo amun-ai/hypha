@@ -277,7 +277,9 @@ class ServerAppController:
 
     async def prepare_application(self, workspace, app_id):
         """Download files for an application to be run."""
-        assert "/" not in app_id, "Invalid app id: " + app_id + ", should not contain '/'"
+        assert "/" not in app_id, (
+            "Invalid app id: " + app_id + ", should not contain '/'"
+        )
         local_app_dir = self.apps_dir / workspace / app_id
         mhash = app_id
         if os.path.exists(local_app_dir):
@@ -465,19 +467,23 @@ class ServerAppController:
         except asyncio.TimeoutError:
             logger.error("Failed to start the app: %s during installation", app_id)
             await self.uninstall(app_id, context=context)
-            raise TimeoutError("Failed to start the app: %s during installation" % app_id)
+            raise TimeoutError(
+                "Failed to start the app: %s during installation" % app_id
+            )
         except Exception as exp:
             logger.exception("Failed to start the app: %s during installation", app_id)
             await self.uninstall(app_id, context=context)
             raise Exception(
                 f"Failed to start the app: {app_id} during installation, error: {exp}"
             )
-        
+
         return card_obj
 
     async def uninstall(self, app_id: str, context: Optional[dict] = None) -> None:
         """Uninstall a server app."""
-        assert "/" not in app_id, "Invalid app id: " + app_id + ", should not contain '/'"
+        assert "/" not in app_id, (
+            "Invalid app id: " + app_id + ", should not contain '/'"
+        )
         workspace_name = context["ws"]
         mhash = app_id
         workspace = await self.store.get_workspace(workspace_name)
@@ -495,7 +501,7 @@ class ServerAppController:
             app_dir = f"{workspace.name}/{self.user_applications_dir}/{mhash}/"
             await remove_objects_async(s3_client, self.workspace_bucket, app_dir)
         if (self.apps_dir / workspace.name / app_id).exists():
-            shutil.rmtree(self.apps_dir / workspace.name/ app_id, ignore_errors=True)
+            shutil.rmtree(self.apps_dir / workspace.name / app_id, ignore_errors=True)
 
     async def launch(
         self,
@@ -540,10 +546,10 @@ class ServerAppController:
 
         workspace = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
-        
+
         async with self.store.get_workspace_interface(workspace, user_info) as ws:
             token = await ws.generate_token({"parent_client": context["from"]})
-        
+
         if not await self.store.check_permission(user_info, workspace):
             raise Exception(
                 f"User {user_info.id} does not have permission"
@@ -554,7 +560,9 @@ class ServerAppController:
             client_id = shortuuid.uuid()
 
         workspace_info = await self.store.get_workspace(workspace)
-        assert app_id in workspace_info.applications, f"App {app_id} not found in workspace {workspace}, please install it first."
+        assert (
+            app_id in workspace_info.applications
+        ), f"App {app_id} not found in workspace {workspace}, please install it first."
 
         await self.prepare_application(workspace, app_id)
         server_url = self.local_base_url.replace("http://", "ws://")
@@ -581,7 +589,7 @@ class ServerAppController:
         )
 
         runner = random.choice(self._runner)
-        
+
         full_client_id = workspace + "/" + client_id
         await runner.start(url=local_url, session_id=full_client_id)
         self._sessions[full_client_id] = {
@@ -600,6 +608,7 @@ class ServerAppController:
             "workspace": workspace,
             "config": {},
         }
+
         def service_added(info: dict):
             if info["id"].startswith(full_client_id + ":"):
                 collected_services.append(ServiceInfo.model_validate(info))
@@ -607,6 +616,7 @@ class ServerAppController:
                 for key in ["config", "name", "description"]:
                     if info.get(key):
                         app_info[key] = info[key]
+
         self.event_bus.on_local("service_added", service_added)
 
         try:
@@ -615,24 +625,26 @@ class ServerAppController:
                 await self.event_bus.wait_for_local(
                     "service_added",
                     match={"id": full_client_id + ":" + wait_for_service},
-                    timeout=timeout
+                    timeout=timeout,
                 )
             else:
                 await self.event_bus.wait_for_local(
-                    "client_connected",
-                    match={"id": full_client_id},
-                    timeout=timeout
+                    "client_connected", match={"id": full_client_id}, timeout=timeout
                 )
-            
+
             # save the services
             workspace_info.applications[app_id].services = collected_services
             Card.model_validate(workspace_info.applications[app_id])
             async with self.store.get_workspace_interface(workspace, user_info) as ws:
                 await ws.set(workspace_info.model_dump())
         except asyncio.TimeoutError:
-            raise Exception(f"Failed to start the app: {workspace}/{app_id}, timeout reached.")
+            raise Exception(
+                f"Failed to start the app: {workspace}/{app_id}, timeout reached."
+            )
         except Exception as exp:
-            raise Exception(f"Failed to start the app: {workspace}/{app_id}, error: {exp}")
+            raise Exception(
+                f"Failed to start the app: {workspace}/{app_id}, error: {exp}"
+            )
         finally:
             self.event_bus.off_local("service_added", service_added)
 

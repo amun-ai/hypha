@@ -72,9 +72,7 @@ async def test_redis_store(redis_store):
 
     wm = await redis_store.connect_to_workspace("test", client_id="test-app-22")
     clients = await wm.list_clients()
-    assert set(clients) == set(
-        ["test/test-app-22", "test/test-app-99"]
-    )
+    assert set(clients) == set(["test/test-app-22", "test/test-app-99"])
     rpc = wm.rpc
     services = await wm.list_services()
     service = await rpc.get_remote_service("test-app-99:test-service")
@@ -97,7 +95,7 @@ async def test_websocket_server(fastapi_server, test_user_token_2):
 
     clients = set(await wm.list_clients())
     assert clients == {
-       wm.config.workspace + "/test-app-1",
+        wm.config.workspace + "/test-app-1",
     }
     rpc = wm.rpc
 
@@ -133,9 +131,7 @@ async def test_websocket_server(fastapi_server, test_user_token_2):
     assert await svc.echo("hello") == "hello"
 
     services = await wm.list_services()
-    assert (
-        len(services) == 3
-    )
+    assert len(services) == 3
 
     svc = await wm.get_service("test-app-1:test-service")
     assert await svc.echo("hello") == "hello"
@@ -164,11 +160,10 @@ async def test_websocket_server(fastapi_server, test_user_token_2):
 
     # It should fail due to permission error
     with pytest.raises(
-        Exception, match=r".*Permission denied for getting protected service: test-service.*"
+        Exception,
+        match=r".*Permission denied for getting protected service: test-service.*",
     ):
-        await rpc3.get_remote_service(
-            f"{wm.config.workspace}/test-app-1:test-service"
-        )
+        await rpc3.get_remote_service(f"{wm.config.workspace}/test-app-1:test-service")
 
     # Should fail if we try to get the protected service from another workspace
     with pytest.raises(

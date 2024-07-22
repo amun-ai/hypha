@@ -58,10 +58,12 @@ class EventBus:
 
     def once(self, event_name, func):
         """Register an event callback that only runs once."""
+
         def once_wrapper(*args, **kwargs):
             result = func(*args, **kwargs)
             self.off(event_name, once_wrapper)
             return result
+
         return self.on(event_name, once_wrapper)
 
     def off(self, event_name, func=None):
@@ -84,7 +86,12 @@ class EventBus:
                     tasks.append(result)
             except Exception as e:
                 if self._logger:
-                    self._logger.error("Error in event callback: %s, %s, error: %s", event_name, func, e)
+                    self._logger.error(
+                        "Error in event callback: %s, %s, error: %s",
+                        event_name,
+                        func,
+                        e,
+                    )
 
         if tasks:
             return asyncio.ensure_future(asyncio.gather(*tasks))

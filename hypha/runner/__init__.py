@@ -43,12 +43,13 @@ async def export_service(plugin_api, config, hypha_rpc):
 
 async def patch_hypha_rpc(default_config):
     import hypha_rpc
+
     def export(api, config=None):
         default_config.update(config or {})
         hypha_rpc.ready = asyncio.ensure_future(
             export_service(api, default_config, hypha_rpc)
         )
-    
+
     hypha_rpc.api = dotdict(export=export)
     return hypha_rpc
 
@@ -73,7 +74,7 @@ async def run_plugin(plugin_file, default_config, quit_on_ready=False):
         hypha_rpc = await patch_hypha_rpc(default_config)
         exec(content, globals())  # pylint: disable=exec-used
         logger.info("Plugin executed")
-        
+
         if quit_on_ready:
             hypha_rpc.ready.add_done_callback(lambda fut: loop.stop())
 

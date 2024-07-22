@@ -238,7 +238,7 @@ class S3Controller:
             pass
 
         self.s3client = s3client
-        
+
         self.minio_client.admin_user_add_sync("root", generate_password())
 
         store.register_public_service(self.get_s3_service())

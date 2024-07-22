@@ -26,8 +26,10 @@ logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("redis-store")
 logger.setLevel(logging.INFO)
 
+
 class WorkspaceInterfaceContextManager:
     """Workspace interface context manager."""
+
     def __init__(self, rpc, timeout=10):
         self.rpc = rpc
         self.timeout = timeout
@@ -48,7 +50,6 @@ class WorkspaceInterfaceContextManager:
         self.wm.disconnect = self.rpc.disconnect
         self.wm.register_codec = self.rpc.register_codec
         return self.wm
-
 
     async def __aexit__(self, exc_type, exc, tb):
         await self.rpc.disconnect()
@@ -109,7 +110,7 @@ class RedisStore:
 
         self._root_user = None
         self._event_bus = RedisEventBus(self._redis)
-    
+
     def get_redis(self):
         return self._redis
 
@@ -182,7 +183,9 @@ class RedisStore:
     async def get_public_api(self):
         """Get the public API."""
         if self._public_workspace_interface is None:
-            self._public_workspace_interface = await self.get_workspace_interface("public", self._root_user)
+            self._public_workspace_interface = await self.get_workspace_interface(
+                "public", self._root_user
+            )
         return self._public_workspace_interface
 
     async def get_user_workspace(self, user_id: str):
@@ -207,23 +210,37 @@ class RedisStore:
         """Check if a workspace exists."""
         return await self._redis.hexists("workspaces", workspace_name)
 
-    async def register_workspace(self, workspace_info: Union[dict, WorkspaceInfo], overwrite=False):
+    async def register_workspace(
+        self, workspace_info: Union[dict, WorkspaceInfo], overwrite=False
+    ):
         """Add a workspace."""
-        return await self._workspace_manager.create_workspace(workspace_info, overwrite=overwrite, context={"user": self._root_user, "ws": "public"})
+        return await self._workspace_manager.create_workspace(
+            workspace_info,
+            overwrite=overwrite,
+            context={"user": self._root_user, "ws": "public"},
+        )
 
     async def delete_client(self, workspace: str, client_id: str, user: UserInfo):
         """Delete a client."""
-        return await self._workspace_manager.delete_client(client_id, context={"user": user.model_dump(), "ws": workspace})
-    
-    async def check_permission(self, user: UserInfo, workspace: Union[str, WorkspaceInfo]):
+        return await self._workspace_manager.delete_client(
+            client_id, context={"user": user.model_dump(), "ws": workspace}
+        )
+
+    async def check_permission(
+        self, user: UserInfo, workspace: Union[str, WorkspaceInfo]
+    ):
         """Check permission."""
         return await self._workspace_manager.check_permission(user, workspace)
 
-    def connect_to_workspace(self, workspace: str, client_id: str, user_info: UserInfo=None, timeout=10):
+    def connect_to_workspace(
+        self, workspace: str, client_id: str, user_info: UserInfo = None, timeout=10
+    ):
         """Connect to a workspace."""
         # user get_workspace_interface
         user_info = user_info or self._root_user
-        return self.get_workspace_interface(workspace, user_info, client_id=client_id, timeout=timeout)
+        return self.get_workspace_interface(
+            workspace, user_info, client_id=client_id, timeout=timeout
+        )
 
     async def register_workspace_manager(self):
         """Register a workspace manager."""
@@ -236,7 +253,9 @@ class RedisStore:
         await manager.setup()
         return manager
 
-    def get_workspace_interface(self, workspace: str, user_info: UserInfo, client_id=None, timeout=10):
+    def get_workspace_interface(
+        self, workspace: str, user_info: UserInfo, client_id=None, timeout=10
+    ):
         """Get the interface of a workspace."""
         assert workspace, "Workspace name is required"
         assert user_info and isinstance(user_info, UserInfo), "User info is required"
@@ -258,20 +277,35 @@ class RedisStore:
         return [k.decode() for k in workspace_keys]
 
     def create_rpc(
-        self, workspace: str, user_info: UserInfo, client_id: str=None, default_context=None, silent=True
+        self,
+        workspace: str,
+        user_info: UserInfo,
+        client_id: str = None,
+        default_context=None,
+        silent=True,
     ):
         """Create a rpc object for a workspace."""
         client_id = client_id or "anonymous-client-" + shortuuid.uuid()
         assert "/" not in client_id
         logger.info("Creating RPC for client %s", client_id)
         assert user_info is not None, "User info is required"
-        connection = RedisRPCConnection(self._event_bus, workspace, client_id, user_info)
-        rpc = RPC(connection, client_id=client_id, default_context=default_context, manager_id=self.manager_id, silent=silent)
-        rpc.register_codec({
-            "name": "pydantic-model",
-            "type": BaseModel,
-            "encoder": lambda x: x.model_dump(),
-        })
+        connection = RedisRPCConnection(
+            self._event_bus, workspace, client_id, user_info
+        )
+        rpc = RPC(
+            connection,
+            client_id=client_id,
+            default_context=default_context,
+            manager_id=self.manager_id,
+            silent=silent,
+        )
+        rpc.register_codec(
+            {
+                "name": "pydantic-model",
+                "type": BaseModel,
+                "encoder": lambda x: x.model_dump(),
+            }
+        )
         return rpc
 
     async def get_workspace(self, name, load=True):
@@ -288,9 +322,7 @@ class RedisStore:
             if load and self._workspace_loader:
                 try:
                     # TODO: register the loaded workspace
-                    workspace = await self._workspace_loader(
-                        name, self._root_user
-                    )
+                    workspace = await self._workspace_loader(name, self._root_user)
                     if workspace:
                         self._all_workspaces[workspace.name] = workspace
                 except Exception:  # pylint: disable=broad-except
@@ -312,7 +344,9 @@ class RedisStore:
         """Get service as a specified user."""
         user_info = user_info or self._root_user
         if "/" in service_id:
-            assert service_id.split("/")[0] == workspace_name, f"Workspace name mismatch, {workspace_name} != {service_id.split('/')[0]}"
+            assert (
+                service_id.split("/")[0] == workspace_name
+            ), f"Workspace name mismatch, {workspace_name} != {service_id.split('/')[0]}"
             service_id = service_id.split("/")[1]
         if ":" not in service_id:
             service_id = "*:" + service_id

@@ -387,7 +387,9 @@ class HTTPProxy:
         ):
             """Route for get services under a workspace."""
             try:
-                async with self.store.get_workspace_interface(workspace, user_info) as manager:
+                async with self.store.get_workspace_interface(
+                    workspace, user_info
+                ) as manager:
                     services = await manager.list_services()
                 info = serialize(services)
                 # remove workspace prefix
@@ -411,7 +413,9 @@ class HTTPProxy:
         ):
             """Route for checking details of a service."""
             try:
-                async with self.store.get_workspace_interface(workspace, user_info) as api:
+                async with self.store.get_workspace_interface(
+                    workspace, user_info
+                ) as api:
                     service = await api.get_service(service_id)
                 return JSONResponse(
                     status_code=200,
@@ -494,7 +498,9 @@ class HTTPProxy:
             """
             try:
                 workspace, service_id, function_key = function_info
-                async with self.store.get_workspace_interface(workspace, user_info) as api:
+                async with self.store.get_workspace_interface(
+                    workspace, user_info
+                ) as api:
                     service = await api.get_service(service_id)
                     func = get_value(function_key, service)
                     if not func:

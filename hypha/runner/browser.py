@@ -154,6 +154,7 @@ class BrowserAppRunner:
                 return self._browser_sessions[session_id]["logs"]
             if limit is None:
                 limit = MAXIMUM_LOG_ENTRIES
-            return self._browser_sessions[session_id]["logs"][type][offset : offset + limit]
+            return self._browser_sessions[session_id]["logs"][type][
+                offset : offset + limit
+            ]
         raise Exception(f"browser app instance not found: {session_id}")
-

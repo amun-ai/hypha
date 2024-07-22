@@ -57,10 +57,12 @@ class ServiceConfig(BaseModel):
     require_context: Union[Tuple[str], List[str], bool] = False
     workspace: str = None
     flags: List[str] = []
+
     class Config:
         """Set the config for pydantic."""
 
         extra = "allow"
+
 
 class ServiceInfo(BaseModel):
     """Represent service."""
@@ -84,14 +86,17 @@ class ServiceInfo(BaseModel):
 
     def to_redis_dict(self):
         data = self.model_dump()
-        data['config'] = self.config.model_dump_json()
-        return {k: json.dumps(v) if not isinstance(v, str) else v for k, v in data.items()}
+        data["config"] = self.config.model_dump_json()
+        return {
+            k: json.dumps(v) if not isinstance(v, str) else v for k, v in data.items()
+        }
 
     @classmethod
     def model_validate(cls, data):
         data = data.copy()
-        data['config'] = ServiceConfig.model_validate(data['config'])
+        data["config"] = ServiceConfig.model_validate(data["config"])
         return super().model_validate(data)
+
 
 class UserInfo(BaseModel):
     """Represent user info."""
@@ -127,12 +132,14 @@ class ClientInfo(BaseModel):
     workspace: str
     services: List[SerializeAsAny[ServiceInfo]] = []
     user_info: UserInfo
-    
+
     @classmethod
     def model_validate(cls, data):
         data = data.copy()
-        data['user_info'] = UserInfo.model_validate(data['user_info'])
-        data['services'] = [ServiceInfo.model_validate(service) for service in data['services']]
+        data["user_info"] = UserInfo.model_validate(data["user_info"])
+        data["services"] = [
+            ServiceInfo.model_validate(service) for service in data["services"]
+        ]
         return super().model_validate(data)
 
 
@@ -166,9 +173,12 @@ class Card(BaseModel):
     @classmethod
     def model_validate(cls, data):
         data = data.copy()
-        if 'services' in data and data['services'] is not None:
-            data['services'] = [ServiceInfo.model_validate(service) for service in data['services']]
+        if "services" in data and data["services"] is not None:
+            data["services"] = [
+                ServiceInfo.model_validate(service) for service in data["services"]
+            ]
         return super().model_validate(data)
+
 
 class WorkspaceInfo(BaseModel):
     """Represent a workspace."""
@@ -186,19 +196,23 @@ class WorkspaceInfo(BaseModel):
     deny_list: Optional[List[str]] = None
     applications: Optional[Dict[str, Card]] = {}  # installed applications
     interfaces: Optional[Dict[str, List[Any]]] = {}
-    
+
     @classmethod
     def model_validate(cls, data):
         data = data.copy()
-        if 'applications' in data and data['applications'] is not None:
-            data['applications'] = {k: Card.model_validate(v) for k, v in data['applications'].items()}
+        if "applications" in data and data["applications"] is not None:
+            data["applications"] = {
+                k: Card.model_validate(v) for k, v in data["applications"].items()
+            }
         return super().model_validate(data)
 
 
 class RedisRPCConnection:
     """Represent a Redis connection for handling RPC-like messaging."""
 
-    def __init__(self, event_bus: EventBus, workspace: str, client_id: str, user_info: UserInfo):
+    def __init__(
+        self, event_bus: EventBus, workspace: str, client_id: str, user_info: UserInfo
+    ):
         """Initialize Redis RPC Connection."""
         assert workspace and "/" not in client_id, "Invalid workspace or client ID"
         self._workspace = workspace
@@ -217,7 +231,9 @@ class RedisRPCConnection:
     def on_connect(self, handler):
         """Register a connection open event handler."""
         self._handle_connect = handler
-        assert inspect.iscoroutinefunction(handler), "Connect handler must be a coroutine"
+        assert inspect.iscoroutinefunction(
+            handler
+        ), "Connect handler must be a coroutine"
 
     def on_message(self, handler: Callable):
         """Set message handler."""
@@ -239,17 +255,23 @@ class RedisRPCConnection:
         target_id = message.get("to")
         if "/" not in target_id:
             if "/workspace-manager-" in target_id:
-                raise ValueError(f"Invalid target ID: {target_id}, it appears that the target is a workspace manager (target_id should starts with */)")
+                raise ValueError(
+                    f"Invalid target ID: {target_id}, it appears that the target is a workspace manager (target_id should starts with */)"
+                )
             target_id = f"{self._workspace}/{target_id}"
 
         source_id = f"{self._workspace}/{self._client_id}"
 
-        message.update({
-            "ws": target_id.split("/")[0] if self._workspace == "*" else self._workspace,
-            "to": target_id,
-            "from": source_id,
-            "user": self._user_info,
-        })
+        message.update(
+            {
+                "ws": target_id.split("/")[0]
+                if self._workspace == "*"
+                else self._workspace,
+                "to": target_id,
+                "from": source_id,
+                "user": self._user_info,
+            }
+        )
 
         packed_message = msgpack.packb(message) + data[pos:]
         # logger.info(f"Sending message to channel {target_id}:msg")
@@ -259,12 +281,15 @@ class RedisRPCConnection:
         """Handle disconnection."""
         self._stop = True
         if self._handle_message:
-            self._event_bus.off(f"{self._workspace}/{self._client_id}:msg", self._handle_message)
+            self._event_bus.off(
+                f"{self._workspace}/{self._client_id}:msg", self._handle_message
+            )
             self._event_bus.off(f"{self._workspace}/*:msg", self._handle_message)
         self._handle_message = None
         logger.info(f"Disconnected: {reason}")
         if self._disconnect_handler:
             await self._disconnect_handler(reason)
+
 
 class RedisEventBus:
     """Represent a redis event bus."""
@@ -289,24 +314,28 @@ class RedisEventBus:
     def on(self, event_name, func):
         """Register a callback for an event from Redis."""
         self._redis_event_bus.on(event_name, func)
-    
+
     def off(self, event_name, func=None):
         """Unregister a callback for an event from Redis."""
         self._redis_event_bus.off(event_name, func)
-    
+
     def once(self, event_name, func):
         """Register a callback for an event and remove it once triggered."""
+
         def once_wrapper(*args, **kwargs):
             result = func(*args, **kwargs)
             self._redis_event_bus.off(event_name, once_wrapper)
             return result
+
         self._redis_event_bus.on(event_name, once_wrapper)
 
     async def wait_for(self, event_name, match=None, timeout=None):
         """Wait for an event from either local or Redis event bus."""
         local_future = self._local_event_bus.wait_for(event_name, match, timeout)
         redis_future = self._redis_event_bus.wait_for(event_name, match, timeout)
-        done, pending = await asyncio.wait([local_future, redis_future], return_when=asyncio.FIRST_COMPLETED)
+        done, pending = await asyncio.wait(
+            [local_future, redis_future], return_when=asyncio.FIRST_COMPLETED
+        )
         for task in pending:
             task.cancel()
         return done.pop().result()
@@ -321,12 +350,14 @@ class RedisEventBus:
 
     def once_local(self, event_name, func):
         """Register a callback for a local event and remove it once triggered."""
+
         def once_wrapper(*args, **kwargs):
             result = func(*args, **kwargs)
             self._local_event_bus.off(event_name, once_wrapper)
             return result
+
         return self._local_event_bus.on(event_name, once_wrapper)
-    
+
     async def wait_for_local(self, event_name, match=None, timeout=None):
         """Wait for local event."""
         return await self._local_event_bus.wait_for(event_name, match, timeout)
@@ -349,7 +380,7 @@ class RedisEventBus:
         local_task = self._local_event_bus.emit(event_name, data)
         if asyncio.iscoroutine(local_task):
             tasks.append(local_task)
-        
+
         # Emit globally via Redis
         data_type = "b:"
         if isinstance(data, dict):

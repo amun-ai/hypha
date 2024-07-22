@@ -105,8 +105,7 @@ def start_builtin_services(
         }
 
     store.register_public_service(create_queue_service(store))
-    
-    
+
     if args.enable_s3:
         # pylint: disable=import-outside-toplevel
         from hypha.card import CardController
@@ -122,7 +121,9 @@ def start_builtin_services(
             executable_path=args.executable_path,
         )
 
-        CardController(store, s3_controller=s3_controller, workspace_bucket=args.workspace_bucket)
+        CardController(
+            store, s3_controller=s3_controller, workspace_bucket=args.workspace_bucket
+        )
 
     if args.enable_server_apps:
         # pylint: disable=import-outside-toplevel
@@ -175,8 +176,10 @@ def mount_static_files(app, new_route, directory, name="static"):
         async def root():
             return FileResponse(f"{directory}/index.html")
 
+
 def norm_url(base_path, url):
     return base_path.rstrip("/") + url
+
 
 def create_application(args):
     """Create a hypha application."""
@@ -184,7 +187,7 @@ def create_application(args):
         args.allow_origins = args.allow_origins.split(",")
     else:
         args.allow_origins = env.get("ALLOW_ORIGINS", "*").split(",")
-    
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Here we can register all the startup functions
