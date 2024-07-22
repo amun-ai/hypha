@@ -54,3 +54,5 @@ async def test_queue(fastapi_server):
     assert task["hello"] == "world"
     task = await q2.pop("test")
     assert task["hello"] == "world"
+    await api.disconnect()
+
