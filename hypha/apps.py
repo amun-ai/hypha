@@ -549,7 +549,7 @@ class ServerAppController:
         user_info = UserInfo.model_validate(context["user"])
 
         async with self.store.get_workspace_interface(workspace, user_info) as ws:
-            token = await ws.generate_token({"parent_client": context["from"]})
+            token = await ws.generate_token()
 
         if not await self.store.check_permission(user_info, workspace):
             raise Exception(
@@ -637,7 +637,7 @@ class ServerAppController:
             # save the services
             workspace_info.applications[app_id].services = collected_services
             Card.model_validate(workspace_info.applications[app_id])
-            await self.store.set_workspace(workspace, user_info)
+            await self.store.set_workspace(workspace_info, user_info)
         except asyncio.TimeoutError:
             raise Exception(
                 f"Failed to start the app: {workspace}/{app_id}, timeout reached."

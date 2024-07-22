@@ -261,6 +261,7 @@ class WorkspaceManager:
         user_info = UserInfo.model_validate(context["user"])
         if not await self.check_permission(user_info, context=context):
             raise Exception(f"Permission denied for workspace {ws}.")
+        config = config or {}
         if set(config.keys()) - {"scopes", "expires_in"}:
             raise ValueError(
                 "Invalid keys in token config: "
@@ -275,11 +276,12 @@ class WorkspaceManager:
         elif "scopes" not in config:
             config["scopes"] = [ws]
         config["email"] = user_info.email
+        config["parent_client"] = context["from"].split(":")[0]
         token_config = TokenConfig.model_validate(config)
         for ws in config["scopes"]:
             if not await self.check_permission(user_info, ws, context=context):
                 raise PermissionError(f"User has no permission to workspace: {ws}")
-        token = generate_presigned_token(user_info, token_config, child=False)
+        token = generate_presigned_token(user_info, token_config, child=True)
         return token
 
     async def client_exists(
@@ -958,8 +960,17 @@ class WorkspaceManager:
         ):
             return False
 
+        if "admin" in user_info.roles:
+            logger.info(
+                "Allowing access to %s for admin user %s", workspace.name, user_info.id
+            )
+            return True
+
         if isinstance(workspace, str):
-            workspace = await self.load_workspace_info(workspace)
+            try:
+                workspace = await self.load_workspace_info(workspace)
+            except KeyError:
+                return False
 
         if workspace.name == user_info.id:
             return True
@@ -976,11 +987,7 @@ class WorkspaceManager:
             if workspace.allow_list and user_info.email in workspace.allow_list:
                 return True
 
-        if "admin" in user_info.roles:
-            logger.info(
-                "Allowing access to %s for admin user %s", workspace.name, user_info.id
-            )
-            return True
+
 
         return False
 
