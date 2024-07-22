@@ -987,8 +987,6 @@ class WorkspaceManager:
             if workspace.allow_list and user_info.email in workspace.allow_list:
                 return True
 
-
-
         return False
 
     async def get_workspace(self, workspace: str = None):
