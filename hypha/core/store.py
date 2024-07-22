@@ -220,10 +220,16 @@ class RedisStore:
             context={"user": self._root_user, "ws": "public"},
         )
 
-    async def delete_client(self, workspace: str, client_id: str, user: UserInfo):
+    async def delete_client(self, client_id: str, workspace: str, user: UserInfo):
         """Delete a client."""
         return await self._workspace_manager.delete_client(
             client_id, context={"user": user.model_dump(), "ws": workspace}
+        )
+
+    async def client_exists(self, client_id: str, workspace: str):
+        """Check if a client exists."""
+        return await self._workspace_manager.client_exists(
+            client_id=client_id, workspace=workspace
         )
 
     async def check_permission(
@@ -264,12 +270,6 @@ class RedisStore:
         client_id = client_id or "workspace-client-" + shortuuid.uuid()
         rpc = self.create_rpc(workspace, user_info, client_id=client_id, silent=silent)
         return WorkspaceInterfaceContextManager(rpc, timeout=timeout)
-
-    async def client_exists(self, workspace: str, client_id: str):
-        """Check if a client exists."""
-        pattern = f"services:*:{workspace}/{client_id}:built-in@*"
-        keys = await self._redis.keys(pattern)
-        return bool(keys)
 
     async def list_all_workspaces(self):
         """List all workspaces."""

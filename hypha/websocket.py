@@ -97,25 +97,8 @@ class WebsocketServer:
                 token, reconnection_token, client_id, workspace
             )
 
-            # check if client already exists
-            if await self.store.client_exists(workspace, client_id):
-                async with self.store.connect_to_workspace(
-                    workspace, "check-client-exists", user_info, timeout=5
-                ) as ws:
-                    if await ws.ping(f"{workspace}/{client_id}") == "pong":
-                        reason = f"Client already exists and is active: {workspace}/{client_id}"
-                        logger.error(reason)
-                        await self.disconnect(
-                            websocket, reason=reason, code=status.WS_1011_INTERNAL_ERROR
-                        )
-                        return
-                    else:
-                        logger.info(
-                            f"Client already exists but is inactive: {workspace}/{client_id}"
-                        )
-                        await self.store.delete_client(workspace, client_id, user_info)
-
             workspace = await self.setup_workspace_and_permissions(user_info, workspace)
+            await self.check_client(websocket, client_id, workspace, user_info)
 
             await self.establish_websocket_communication(
                 websocket,
@@ -131,6 +114,25 @@ class WebsocketServer:
                 reason=f"Error handling WebSocket connection: {str(e)}",
                 code=status.WS_1011_INTERNAL_ERROR,
             )
+
+    async def check_client(self, websocket, client_id, workspace, user_info):
+        """Check if the client is already connected."""
+        # check if client already exists
+        if await self.store.client_exists(client_id, workspace):
+            async with self.store.connect_to_workspace(
+                workspace, "check-client-exists", user_info, timeout=5
+            ) as ws:
+                if await ws.ping(f"{workspace}/{client_id}") == "pong":
+                    reason = (
+                        f"Client already exists and is active: {workspace}/{client_id}"
+                    )
+                    logger.error(reason)
+                    raise RuntimeError(reason)
+                else:
+                    logger.info(
+                        f"Client already exists but is inactive: {workspace}/{client_id}"
+                    )
+                    await self.store.delete_client(client_id, workspace, user_info)
 
     async def authenticate_user(self, token, reconnection_token, client_id, workspace):
         """Authenticate user and handle reconnection or token authentication."""
@@ -252,7 +254,7 @@ class WebsocketServer:
     ):
         """Handle client disconnection with delayed removal for unexpected disconnections."""
         try:
-            await self.store.delete_client(workspace, client_id, user_info)
+            await self.store.delete_client(client_id, workspace, user_info)
             if code in [status.WS_1000_NORMAL_CLOSURE, status.WS_1001_GOING_AWAY]:
                 # Client disconnected normally, remove immediately
                 logger.info(f"Client disconnected normally: {workspace}/{client_id}")

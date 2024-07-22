@@ -205,6 +205,16 @@ class WorkspaceManager:
         token = generate_presigned_token(user_info, token_config)
         return token
 
+    async def client_exists(
+        self, client_id: str, workspace: str = None, context: Optional[dict] = None
+    ):
+        """Check if a client exists."""
+        assert workspace is not None, "Workspace must be provided."
+        assert client_id and "/" not in client_id, "Invalid client id: " + client_id
+        pattern = f"services:*:{workspace}/{client_id}:built-in@*"
+        keys = await self._redis.keys(pattern)
+        return bool(keys)
+
     async def list_clients(self, workspace: str = None, context: Optional[dict] = None):
         """Return a list of clients based on the services."""
         assert context is not None
