@@ -2,10 +2,11 @@
 import os
 import subprocess
 import sys
+import asyncio
 
 import pytest
 import requests
-from imjoy_rpc.hypha.websocket_client import connect_to_server
+from hypha_rpc.websocket_client import connect_to_server
 
 from . import (
     SERVER_URL,
@@ -23,38 +24,53 @@ pytestmark = pytest.mark.asyncio
 async def test_connect_to_server(fastapi_server):
     """Test connecting to the server."""
 
-    class ImJoyPlugin:
-        """Represent a test plugin."""
+    class HyphaApp:
+        """Represent a test app."""
 
         def __init__(self, ws):
             self._ws = ws
 
         async def setup(self):
-            """Set up the plugin."""
+            """Set up the app."""
             await self._ws.log("initialized")
 
         async def run(self, ctx):
-            """Run the plugin."""
+            """Run the app."""
             await self._ws.log("hello world")
 
     # test workspace is an exception, so it can pass directly
     # rpc = await connect_to_server(
-    #     {"name": "my plugin", "workspace": "public", "server_url": WS_SERVER_URL}
+    #     {"name": "my app", "workspace": "public", "server_url": WS_SERVER_URL}
     # )
-    with pytest.raises(Exception, match=r".*Permission denied for.*"):
+    with pytest.raises(Exception, match=r".*User can only connect to a pre-existing workspace or their own workspace.*"):
         rpc = await connect_to_server(
-            {"name": "my plugin", "workspace": "test", "server_url": WS_SERVER_URL}
+            {"name": "my app", "workspace": "test", "server_url": WS_SERVER_URL}
         )
-    wm = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
+    wm = await connect_to_server({"name": "my app", "server_url": WS_SERVER_URL})
     rpc = wm.rpc
-    service_info = await rpc.register_service(ImJoyPlugin(wm))
+    service_info = await rpc.register_service(HyphaApp(wm))
     service = await wm.get_service(service_info)
     assert await service.run(None) is None
     await wm.log("hello")
 
+async def test_connect_to_server_two_client_same_id(fastapi_server):
+    """Test connecting to the server with the same client id."""
+    api1 = await connect_to_server(
+        {"name": "my app", "server_url": WS_SERVER_URL, "client_id": "my-app"}
+    )
+    token = await api1.generate_token()
+    assert "@hypha@" in token
+    try:
+        api2 = await connect_to_server(
+            {"name": "my app", "server_url": WS_SERVER_URL, "client_id": "my-app", "token": token, "workspace": api1.config.workspace}
+        )
+        await api2.disconnect()
+    except Exception as e:
+        assert "Client already exists and is active:" in str(e)
+    await api1.disconnect()
 
 def test_plugin_runner(fastapi_server):
-    """Test the plugin runner."""
+    """Test the app runner."""
     with subprocess.Popen(
         [
             sys.executable,
@@ -70,12 +86,12 @@ def test_plugin_runner(fastapi_server):
         out, err = proc.communicate()
         assert err.decode("utf8") == ""
         output = out.decode("utf8")
-        assert "Generated token: " in output and "@imjoy@" in output
+        assert "Generated token: " in output and "@hypha@" in output
         assert "echo: a message" in output
 
-
+@pytestmark
 def test_plugin_runner_subpath(fastapi_subpath_server):
-    """Test the plugin runner with subpath server."""
+    """Test the app runner with subpath server."""
     with subprocess.Popen(
         [
             sys.executable,
@@ -91,7 +107,7 @@ def test_plugin_runner_subpath(fastapi_subpath_server):
         out, err = proc.communicate()
         assert err.decode("utf8") == ""
         output = out.decode("utf8")
-        assert "Generated token: " in output and "@imjoy@" in output
+        assert "Generated token: " in output and "@hypha@" in output
         assert "echo: a message" in output
 
 
@@ -103,15 +119,15 @@ async def test_extra_mounts(fastapi_server):
 
 
 async def test_plugin_runner_workspace(fastapi_server):
-    """Test the plugin runner with workspace."""
+    """Test the app runner with workspace."""
     api = await connect_to_server(
         {
-            "name": "my second plugin",
+            "name": "my second app",
             "server_url": WS_SERVER_URL,
         }
     )
     token = await api.generate_token()
-    assert "@imjoy@" in token
+    assert "@hypha@" in token
 
     # The following code without passing the token should fail
     # Here we assert the output message contains "permission denied"
@@ -130,9 +146,9 @@ async def test_plugin_runner_workspace(fastapi_server):
         stderr=subprocess.PIPE,
     ) as proc:
         out, err = proc.communicate()
-        assert proc.returncode == 1
-        assert err.decode("utf8") == ""
         output = out.decode("utf8")
+        assert proc.returncode == 1, err.decode("utf8")
+        assert err.decode("utf8") == ""
         assert "Permission denied for " in output
 
     # now with the token, it should pass
@@ -154,16 +170,16 @@ async def test_plugin_runner_workspace(fastapi_server):
         output = out.decode("utf8")
         assert proc.returncode == 0, err.decode("utf8")
         assert err.decode("utf8") == ""
-        assert "Generated token: " in output and "@imjoy@" in output
+        assert "Generated token: " in output and "@hypha@" in output
         assert "echo: a message" in output
 
 
 async def test_workspace(fastapi_server):
-    """Test the plugin runner."""
+    """Test the app runner."""
     api = await connect_to_server(
         {
-            "client_id": "my-plugin",
-            "name": "my plugin",
+            "client_id": "my-app",
+            "name": "my app",
             "server_url": WS_SERVER_URL,
             "method_timeout": 20,
         }
@@ -172,12 +188,12 @@ async def test_workspace(fastapi_server):
     assert api.config.public_base_url.startswith("http")
     await api.log("hi")
     token = await api.generate_token()
-    assert "@imjoy@" in token
+    assert "@hypha@" in token
 
     public_svc = await api.list_services("public")
     assert len(public_svc) > 0
 
-    login_svc = find_item(public_svc, "id", "public/workspace-manager:hypha-login")
+    login_svc = find_item(public_svc, "name", 'Hypha Login')
     assert len(login_svc["description"]) > 0
 
     s3_svc = await api.list_services({"workspace": "public", "type": "s3-storage"})
@@ -213,8 +229,8 @@ async def test_workspace(fastapi_server):
     # we should be able to get the my-test-workspace services
     api2 = await connect_to_server(
         {
-            "client_id": "my-plugin-2",
-            "name": "my plugin 2",
+            "client_id": "my-app-2",
+            "name": "my app 2",
             "workspace": "my-test-workspace",
             "server_url": WS_SERVER_URL,
             "token": token,
@@ -243,23 +259,23 @@ async def test_workspace(fastapi_server):
     await api2.export({"foo": "bar"})
     # services = api2.rpc.get_all_local_services()
     clients = await api2.list_clients()
-    assert "my-plugin-2" in clients
+    assert "my-test-workspace/my-app-2" in clients
     ss3 = await api2.list_services({"type": "#test"})
     assert len(ss3) == 1
 
-    plugin = await api2.get_plugin("my-plugin-2")
-    assert plugin.foo == "bar"
+    app = await api2.get_app("my-app-2")
+    assert app.foo == "bar"
 
     await api2.export({"foo2": "bar2"})
-    plugin = await api2.get_plugin("my-plugin-2")
-    assert plugin.foo is None
-    assert plugin.foo2 == "bar2"
+    app = await api2.get_app("my-app-2")
+    assert app.foo is None
+    assert app.foo2 == "bar2"
 
     plugins = await api2.list_plugins()
-    assert find_item(plugins, "name", "my plugin 2")
+    assert find_item(plugins, "id", "my-test-workspace/my-app-2:built-in")
 
-    with pytest.raises(Exception, match=r".*Client not found: my-plugin-2.*"):
-        await api.get_plugin("my-plugin-2")
+    app = await api.get_app("my-app-2")
+    assert app is None
 
     ws2 = await api.get_workspace_info("my-test-workspace")
     assert ws.name == ws2.name
@@ -290,10 +306,10 @@ async def test_workspace(fastapi_server):
 
 async def test_services(fastapi_server):
     """Test services."""
-    api = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
+    api = await connect_to_server({"name": "my app", "server_url": WS_SERVER_URL})
 
     token = await api.generate_token()
-    assert "@imjoy@" in token
+    assert "@hypha@" in token
 
     service_info = await api.register_service(
         {
@@ -305,7 +321,8 @@ async def test_services(fastapi_server):
     )
     service = await api.get_service(service_info)
     assert service["name"] == "test_service"
-    assert len(await api.list_services({"name": "test_service"})) == 1
+    services = await api.list_services({"id": "test_service"})
+    assert len(services) == 1
 
     service_info = await api.register_service(
         {
@@ -317,11 +334,11 @@ async def test_services(fastapi_server):
         overwrite=True,
     )
     # It should be overwritten because it's from the same provider
-    assert len(await api.list_services({"name": "test_service"})) == 1
+    assert len(await api.list_services({"id": "test_service"})) == 1
 
     api2 = await connect_to_server(
         {
-            "name": "my plugin 2",
+            "name": "my app 2",
             "server_url": WS_SERVER_URL,
             "token": token,
             "workspace": api.config.workspace,
@@ -337,8 +354,8 @@ async def test_services(fastapi_server):
         }
     )
     # It should be co-exist because it's from a different provider
-    assert len(await api.list_services({"name": "test_service"})) == 2
-    assert len(await api2.list_services({"name": "test_service"})) == 2
+    assert len(await api.list_services({"id": "test_service"})) == 2
+    assert len(await api2.list_services({"id": "test_service"})) == 2
 
     # service_info = await api.register_service(
     #     {
@@ -356,7 +373,7 @@ async def test_services(fastapi_server):
 
 async def test_server_reconnection(fastapi_server):
     """Test reconnecting to the server."""
-    ws = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
+    ws = await connect_to_server({"name": "my app", "server_url": WS_SERVER_URL})
     await ws.register_service(
         {
             "name": "Hello World",
@@ -380,7 +397,7 @@ async def test_server_reconnection(fastapi_server):
 async def test_server_scalability(fastapi_server_redis_1, fastapi_server_redis_2):
     """Test services."""
     api = await connect_to_server(
-        {"client_id": "my-plugin-99", "server_url": SERVER_URL_REDIS_2}
+        {"client_id": "my-app-99", "server_url": SERVER_URL_REDIS_2}
     )
 
     ws = await api.create_workspace(
@@ -400,24 +417,27 @@ async def test_server_scalability(fastapi_server_redis_1, fastapi_server_redis_2
     # Connect from two different servers
     api88 = await connect_to_server(
         {
-            "client_id": "my-plugin-88",
+            "client_id": "my-app-88",
             "server_url": SERVER_URL_REDIS_1,
             "workspace": "my-test-workspace",
             "token": token,
+            "method_timeout": 90,
         }
     )
 
     api77 = await connect_to_server(
         {
-            "client_id": "my-plugin-77",
+            "client_id": "my-app-77",
             "server_url": SERVER_URL_REDIS_2,
             "workspace": "my-test-workspace",
             "token": token,
+            "method_timeout": 90,
         }
     )
+    await asyncio.sleep(0.2)
 
     clients = await api77.list_clients()
-    assert "my-plugin-77" in clients and "my-plugin-88" in clients
+    assert "my-test-workspace/my-app-77" in clients and "my-test-workspace/my-app-88" in clients
 
     await api77.register_service(
         {
@@ -427,7 +447,7 @@ async def test_server_scalability(fastapi_server_redis_1, fastapi_server_redis_2
         overwrite=True,
     )
 
-    svc = await api88.get_service("my-plugin-77:test-service")
+    svc = await api88.get_service("my-app-77:test-service")
     assert await svc.add77(1) == 78
 
     await api.disconnect()

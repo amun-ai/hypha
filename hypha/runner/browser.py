@@ -4,11 +4,9 @@ import logging
 import sys
 from typing import Any, Dict, List, Optional, Union
 
-import shortuuid
 from playwright.async_api import Page, async_playwright
 
 from hypha.core.store import RedisStore
-from hypha.core import UserInfo
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("browser")
@@ -55,12 +53,11 @@ class BrowserAppRunner:
     ):
         """Initialize the class."""
         self.browser = None
-        self.browser_pages = {}
+        self._browser_sessions = {}
         self.controller_id = str(BrowserAppRunner.instance_counter)
         BrowserAppRunner.instance_counter += 1
         self.in_docker = in_docker
         self.event_bus = store.get_event_bus()
-        store.register_public_service(self.get_service_api())
         self.store = store
 
         def close(_) -> None:
@@ -82,6 +79,7 @@ class BrowserAppRunner:
         if self.in_docker:
             args.append("--no-sandbox")
         self.browser = await playwright.chromium.launch(args=args)
+        return self.browser
 
     async def close(self) -> None:
         """Close the app controller."""
@@ -93,22 +91,16 @@ class BrowserAppRunner:
     async def start(
         self,
         url: str,
-        client_id: str,
-        context: dict = None,
+        session_id: str,
     ):
         """Start a browser app instance."""
-        user_info = UserInfo.model_validate(context["user"])
-        assert user_info.is_anonymous is False, "User must be authenticated"
-        user_id = user_info.id
-
+        assert session_id, "client_id is required"
         if not self.browser:
             await self.initialize()
-            # raise Exception("The app controller is not ready yet")
         # context = await self.browser.createIncognitoBrowserContext()
         page = await self.browser.new_page()
-        page_id = user_id + "/" + client_id
         logs = {}
-        self.browser_pages[page_id] = {
+        self._browser_sessions[session_id] = {
             "url": url,
             "status": "connecting",
             "page": page,
@@ -119,74 +111,49 @@ class BrowserAppRunner:
         # TODO: dispose await context.close()
 
         try:
-            logger.info("Loading page: %s", url)
+            logger.info("Loading browser app: %s", url)
             response = await page.goto(url, timeout=0, wait_until="load")
             assert response.status == 200, (
                 "Failed to start browser app instance, "
                 f"status: {response.status}, url: {url}"
             )
-            logger.info("Paged loaded")
+            logger.info("Browser app loaded: %s", url)
         except Exception:
             await page.close()
-            del self.browser_pages[page_id]
+            del self._browser_sessions[session_id]
             raise
 
-    async def stop(self, client_id: str, context: dict = None) -> None:
+    async def stop(self, session_id: str) -> None:
         """Stop a browser app instance."""
-        user_info = UserInfo.model_validate(context["user"])
-        assert user_info.is_anonymous is False, "User must be authenticated"
-        user_id = user_info.id
-        page_id = user_id + "/" + client_id
-        if page_id in self.browser_pages:
-            await self.browser_pages[page_id]["page"].close()
-            if page_id in self.browser_pages:
-                del self.browser_pages[page_id]
+        if session_id in self._browser_sessions:
+            await self._browser_sessions[session_id]["page"].close()
+            if session_id in self._browser_sessions:
+                del self._browser_sessions[session_id]
         else:
-            raise Exception(f"browser app instance not found: {client_id}")
+            raise Exception(f"browser app instance not found: {session_id}")
 
-    async def list(self, context: dict = None) -> List[str]:
+    async def list(self, workspace) -> List[str]:
         """List the browser apps for the current user."""
-        user_info = UserInfo.model_validate(context["user"])
-        assert user_info.is_anonymous is False, "User must be authenticated"
-        user_id = user_info.id
         sessions = [
             {k: v for k, v in page_info.items() if k != "page"}
-            for page_id, page_info in self.browser_pages.items()
-            if page_id.startswith(user_id + "/")
+            for session_id, page_info in self._browser_sessions.items()
+            if session_id.startswith(workspace + "/")
         ]
         return sessions
 
     async def get_log(
         self,
-        client_id: str,
+        session_id: str,
         type: str = None,  # pylint: disable=redefined-builtin
         offset: int = 0,
         limit: Optional[int] = None,
-        context: dict = None,
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get the logs for a browser app instance."""
-        user_info = UserInfo.model_validate(context["user"])
-        assert user_info.is_anonymous is False, "User must be authenticated"
-        user_id = user_info.id
-        page_id = user_id + "/" + client_id
-        if page_id in self.browser_pages:
+        if session_id in self._browser_sessions:
             if type is None:
-                return self.browser_pages[page_id]["logs"]
+                return self._browser_sessions[session_id]["logs"]
             if limit is None:
                 limit = MAXIMUM_LOG_ENTRIES
-            return self.browser_pages[page_id]["logs"][type][offset : offset + limit]
-        raise Exception(f"browser app instance not found: {client_id}")
+            return self._browser_sessions[session_id]["logs"][type][offset : offset + limit]
+        raise Exception(f"browser app instance not found: {session_id}")
 
-    def get_service_api(self) -> Dict[str, Any]:
-        """Get a list of service api."""
-        controller = {
-            "id": "browser-runner-" + shortuuid.uuid(),
-            "name": "browser-app-runner",
-            "type": "browser-runner",
-            "config": {"visibility": "protected", "require_context": True},
-            "start": self.start,
-            "stop": self.stop,
-            "list": self.list,
-            "get_log": self.get_log,
-        }
-        return controller

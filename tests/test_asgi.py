@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 import requests
-from imjoy_rpc.hypha.websocket_client import connect_to_server
+from hypha_rpc.websocket_client import connect_to_server
 
 from . import WS_SERVER_URL, SERVER_URL
 
@@ -18,7 +18,7 @@ async def test_asgi(fastapi_server, test_user_token):
     )
     workspace = api.config["workspace"]
 
-    # Test plugin with custom template
+    # Test app with custom template
     controller = await api.get_service("server-apps")
 
     source = (
@@ -50,7 +50,7 @@ async def test_functions(fastapi_server, test_user_token):
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
-    # Test plugin with custom template
+    # Test app with custom template
     controller = await api.get_service("server-apps")
 
     source = (

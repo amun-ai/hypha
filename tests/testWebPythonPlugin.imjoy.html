@@ -24,14 +24,14 @@
 </config>
 
 <script lang="python">
-from imjoy import api
+from hypha_rpc import api
 
-class ImJoyPlugin():
+class HyphaApp():
     async def setup(self):
         await api.log('initialized')
     
     def add2(self, a):
         return a + 2
 
-api.export(ImJoyPlugin())
+api.export(HyphaApp())
 </script>

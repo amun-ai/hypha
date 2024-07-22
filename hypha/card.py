@@ -15,12 +15,12 @@ from hypha.utils import (
 from hypha.s3 import FSFileResponse
 
 logging.basicConfig(stream=sys.stdout)
-logger = logging.getLogger("rdf")
+logger = logging.getLogger("card")
 logger.setLevel(logging.INFO)
 
 
-class RDFController:
-    """Represent an RDF controller."""
+class CardController:
+    """Represent a card controller."""
 
     # pylint: disable=too-many-statements
 
@@ -28,19 +28,19 @@ class RDFController:
         self,
         store,
         s3_controller=None,
-        rdf_bucket="hypha-apps",
+        workspace_bucket="hypha-workspaces",
     ):
         """Set up controller."""
         self.event_bus = store.get_event_bus()
         self.s3_controller = s3_controller
         self.store = store
-        self.rdf_bucket = rdf_bucket
+        self.workspace_bucket = workspace_bucket
 
         self.s3client = self.s3_controller.create_client_sync()
 
         try:
-            self.s3client.create_bucket(Bucket=self.rdf_bucket)
-            logger.info("Bucket created: %s", self.rdf_bucket)
+            self.s3client.create_bucket(Bucket=self.workspace_bucket)
+            logger.info("Bucket created: %s", self.workspace_bucket)
         except self.s3client.exceptions.BucketAlreadyExists:
             pass
         except self.s3client.exceptions.BucketAlreadyOwnedByYou:
@@ -48,16 +48,17 @@ class RDFController:
 
         router = APIRouter()
 
-        @router.get("/public/rdfs/{path:path}")
+        @router.get("/{workspace}/cards/{path:path}")
         async def get_app_file(
+            workspace: str,
             path: str,
             request: Request,
             user_info: login_optional = Depends(login_optional),
         ):
             try:
-                path = safe_join(path)
+                path = safe_join(workspace, path)
                 return FSFileResponse(
-                    self.s3_controller.create_client_async(), self.rdf_bucket, path
+                    self.s3_controller.create_client_async(), self.workspace_bucket, path
                 )
             except ClientError:
                 return JSONResponse(
@@ -69,60 +70,62 @@ class RDFController:
                 )
 
         store.register_router(router)
-        store.register_public_service(self.get_rdf_service())
+        store.register_public_service(self.get_card_service())
 
     def save(self, name, source, context: dict = None):
-        """Save an RDF."""
-        user_info = UserInfo.model_validate(context["user"])
+        """Save a card."""
+        ws = context["ws"]
         response = self.s3client.put_object(
             ACL="public-read",
             Body=source,
-            Bucket=self.rdf_bucket,
-            Key=f"{user_info.id}/{name}",
+            Bucket=self.workspace_bucket,
+            Key=f"{ws}/{name}",
         )
         assert (
             "ResponseMetadata" in response
             and response["ResponseMetadata"]["HTTPStatusCode"] == 200
         ), f"Failed to deploy app: {name}"
-        self.event_bus.emit("rdf_added", f"{user_info.id}/{name}")
+        self.event_bus.emit("card_added", f"{ws}/{name}")
 
     def remove(self, name, context: dict = None):
-        """Remove an RDF."""
-        user_info = UserInfo.model_validate(context["user"])
+        """Remove a card."""
+        ws = context["ws"]
         response = self.s3client.delete_object(
-            Bucket=self.rdf_bucket,
-            Key=f"{user_info.id}/{name}",
+            Bucket=self.workspace_bucket,
+            Key=f"{ws}/{name}",
         )
         assert (
             "ResponseMetadata" in response
             and response["ResponseMetadata"]["HTTPStatusCode"] == 204
         ), f"Failed to undeploy app: {name}"
-        self.event_bus.emit("rdf_removed", f"{user_info.id}/{name}")
+        self.event_bus.emit("card_removed", f"{ws}/{name}")
 
-    def list(self, user: str = None, context: dict = None):
-        """List all the RDFs."""
+    def list(self, prefix: str = None, context: dict = None):
+        """List all the cards."""
+        ws = context["ws"]
+        prefix = safe_join(ws, prefix)
         items = list_objects_sync(
-            self.s3client, self.rdf_bucket, prefix=user, delimeter=""
+            self.s3client, self.workspace_bucket, prefix=prefix, delimeter=""
         )
         ret = []
         for item in items:
             if item["type"] == "directory":
                 continue
             parts = os.path.split(item["name"])
-            user = parts[0]
+            ws = parts[0]
             name = "/".join(parts[1:])
             ret.append(
-                {"name": name, "user": user, "url": f"public/rdfs/{user}/{name}"}
+                {"name": name, "url": f"{ws}/cards/{item['name']}"}
             )
         return ret
 
-    def get_rdf_service(self):
-        """Get rdf controller."""
+    def get_card_service(self):
+        """Get card controller."""
         return {
-            "id": "rdf",
+            "id": "card",
             "config": {"visibility": "public", "require_context": True},
-            "name": "RDF",
-            "type": "rdf",
+            "name": "Card",
+            "type": "card",
             "save": self.save,
             "remove": self.remove,
             "list": self.list,

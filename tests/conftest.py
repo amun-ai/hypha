@@ -83,7 +83,7 @@ def generate_authenticated_user_2():
 @pytest_asyncio.fixture(name="test_user_token_temporary", scope="session")
 def generate_authenticated_user_temporary():
     """Generate a temporary test user token."""
-    yield from _generate_token(["temporary"])
+    yield from _generate_token(["temporary-test-user"])
 
 
 @pytest_asyncio.fixture(name="triton_server", scope="session")

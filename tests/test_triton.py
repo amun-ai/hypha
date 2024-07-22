@@ -12,7 +12,7 @@ from . import SERVER_URL
 
 def execute(inputs, server_url, model_name, **kwargs):
     """Execute a model on the trition server."""
-    # Represent the numpy array with imjoy_rpc encoding
+    # Represent the numpy array with hypha_rpc encoding
     # See: https://github.com/imjoy-team/imjoy-rpc#data-type-representation
     for idx, input_data in enumerate(inputs):
         if isinstance(input_data, (np.ndarray, np.generic)):

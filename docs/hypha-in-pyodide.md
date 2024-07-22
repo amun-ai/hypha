@@ -7,10 +7,10 @@ Pyodide is a Python runtime for the web, which allows you to run Python code in 
 ```python
 import micropip
 
-await micropip.install(['hypha', 'imjoy-rpc'])
+await micropip.install(['hypha', 'hypha-rpc'])
 
 import asyncio
-from imjoy_rpc.hypha import login, connect_to_server
+from hypha_rpc import login, connect_to_server
 
 from hypha.server import get_argparser, create_application
 

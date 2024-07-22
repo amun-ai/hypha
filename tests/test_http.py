@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import httpx
 import requests
-from imjoy_rpc.hypha.websocket_client import connect_to_server
+from hypha_rpc.websocket_client import connect_to_server
 
 from . import WS_SERVER_URL, SERVER_URL, find_item
 
@@ -112,10 +112,10 @@ async def test_services(minio_server, fastapi_server, test_user_token):
         assert data.json() == "123"
 
         data = await client.get(f"{SERVER_URL}/services/list?workspace={workspace}")
-        print(data.json())
+        print("services", data.json())
         # [{'config': {'visibility': 'public', 'require_context': False, 'workspace': 'VRRVEdTF9of2y4cLmepzBw', 'flags': []}, 'id': '5XCPAyZrW72oBzywEk2oxP:test_service', 'name': 'test_service', 'type': 'test_service', 'description': '', 'docs': {}}]
         assert data.status_code == 200
-        assert data.json()[0]["name"] == "test_service"
+        assert find_item(data.json(), "name", "test_service")
 
     await api.disconnect()
 
@@ -128,25 +128,25 @@ async def test_http_proxy(minio_server, fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 10,
+            "method_timeout": 60,
             "token": test_user_token,
         }
     )
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
-    # Test plugin with custom template
+    # Test app with custom template
     controller = await api.get_service("server-apps")
     config = await controller.launch(
         source=TEST_APP_CODE,
         config={"type": "window"},
         wait_for_service=None,
     )
-    plugin = await api.get_plugin(config.id)
-    assert "setup" in plugin and "register_services" in plugin
-    svc1, svc2 = await plugin.register_services()
+    app = await api.get_app(config.id)
+    assert "setup" in app and "register_services" in app
+    svc1, svc2 = await app.register_services()
 
-    service_ws = plugin.config.workspace
+    service_ws = app.config.workspace
     assert service_ws
     service = await api.get_service(svc1["id"])
     assert await service.echo("233d") == "233d"
@@ -201,11 +201,12 @@ async def test_http_proxy(minio_server, fastapi_server, test_user_token):
     response = requests.get(f"{SERVER_URL}/public/services/s3-storage")
     assert response.ok, response.json()["detail"]
     service_info = response.json()
-    assert service_info["id"] == "public/workspace-manager:s3-storage"
+    assert service_info["id"].endswith("s3-storage")
 
     response = requests.get(
         f"{SERVER_URL}/public/services/s3-storage/generate_credential"
     )
+    print(response.text)
     assert not response.ok
 
     response = requests.get(

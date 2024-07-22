@@ -2,7 +2,7 @@
 import asyncio
 
 import pytest
-from imjoy_rpc.hypha.websocket_client import connect_to_server
+from hypha_rpc.websocket_client import connect_to_server
 
 from . import (
     WS_SERVER_URL,
@@ -12,9 +12,9 @@ from . import (
 pytestmark = pytest.mark.asyncio
 
 async def test_client_to_client(fastapi_server):
-    api = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
+    api = await connect_to_server({"name": "my app", "server_url": WS_SERVER_URL})
     token = await api.generate_token()
-    api2 = await connect_to_server({"name": "my plugin 2", "server_url": WS_SERVER_URL, "workspace": api.config["workspace"], "token": token})
+    api2 = await connect_to_server({"name": "my app 2", "server_url": WS_SERVER_URL, "workspace": api.config["workspace"], "token": token})
     fut = asyncio.Future()
     def on_message(data):
         fut.set_result(data)
@@ -25,7 +25,7 @@ async def test_client_to_client(fastapi_server):
 
 async def test_broadcasting(fastapi_server):
     """Test connecting to the server."""
-    api = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
+    api = await connect_to_server({"name": "my app", "server_url": WS_SERVER_URL})
     fut = asyncio.Future()
     def on_message(data):
         fut.set_result(data)
@@ -35,7 +35,7 @@ async def test_broadcasting(fastapi_server):
     assert message["message"] == "hello world"
     
 async def test_specific_client(fastapi_server):
-    api = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
+    api = await connect_to_server({"name": "my app", "server_url": WS_SERVER_URL})
     fut = asyncio.Future()
     def on_message(data):
         fut.set_result(data)
