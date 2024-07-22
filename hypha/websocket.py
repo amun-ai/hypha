@@ -7,7 +7,11 @@ from starlette.websockets import WebSocketDisconnect
 
 from hypha.core import UserInfo
 from hypha.core.store import RedisRPCConnection, RedisStore
-from hypha.core.auth import parse_reconnection_token, generate_reconnection_token, parse_token
+from hypha.core.auth import (
+    parse_reconnection_token,
+    generate_reconnection_token,
+    parse_token,
+)
 import shortuuid
 import json
 
@@ -46,11 +50,18 @@ class WebsocketServer:
                     client_id = auth_data.get("client_id")
                 except json.JSONDecodeError:
                     logger.error("Failed to decode authentication information")
-                    self.disconnect(websocket, reason="Failed to decode authentication information", code=status.WS_1003_UNSUPPORTED_DATA)
+                    self.disconnect(
+                        websocket,
+                        reason="Failed to decode authentication information",
+                        code=status.WS_1003_UNSUPPORTED_DATA,
+                    )
                     return
             else:
                 logger.warning("Rejecting legacy imjoy-rpc client (%s)", client_id)
-                websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Connection rejected, please  upgrade to hypha-rpc which pass the authentication information in the first message")
+                websocket.close(
+                    code=status.WS_1008_POLICY_VIOLATION,
+                    reason="Connection rejected, please  upgrade to hypha-rpc which pass the authentication information in the first message",
+                )
                 return
 
             try:
@@ -58,38 +69,53 @@ class WebsocketServer:
                     websocket, workspace, client_id, token, reconnection_token
                 )
             except Exception as e:
-                if websocket.client_state.name == 'CONNECTED' or websocket.client_state.name == 'CONNECTING':
+                if (
+                    websocket.client_state.name == "CONNECTED"
+                    or websocket.client_state.name == "CONNECTING"
+                ):
                     logger.error(f"Error handling WebSocket connection: {str(e)}")
-                    await self.disconnect(websocket, reason=f"Error handling WebSocket connection: {str(e)}", code=status.WS_1011_INTERNAL_ERROR)
+                    await self.disconnect(
+                        websocket,
+                        reason=f"Error handling WebSocket connection: {str(e)}",
+                        code=status.WS_1011_INTERNAL_ERROR,
+                    )
 
     async def handle_websocket_connection(
         self, websocket, workspace, client_id, token, reconnection_token
     ):
         if client_id is None:
             logger.error("Missing query parameters: client_id")
-            await self.disconnect(websocket, reason="Missing query parameters: client_id", code=status.WS_1003_UNSUPPORTED_DATA)
+            await self.disconnect(
+                websocket,
+                reason="Missing query parameters: client_id",
+                code=status.WS_1003_UNSUPPORTED_DATA,
+            )
             return
 
         try:
             user_info, workspace = await self.authenticate_user(
                 token, reconnection_token, client_id, workspace
             )
-            
+
             # check if client already exists
             if await self.store.client_exists(workspace, client_id):
-                async with self.store.connect_to_workspace(workspace, "check-client-exists", user_info, timeout=5) as ws:
+                async with self.store.connect_to_workspace(
+                    workspace, "check-client-exists", user_info, timeout=5
+                ) as ws:
                     if await ws.ping(f"{workspace}/{client_id}") == "pong":
                         reason = f"Client already exists and is active: {workspace}/{client_id}"
                         logger.error(reason)
-                        await self.disconnect(websocket, reason=reason, code=status.WS_1011_INTERNAL_ERROR)
+                        await self.disconnect(
+                            websocket, reason=reason, code=status.WS_1011_INTERNAL_ERROR
+                        )
                         return
                     else:
-                        logger.info(f"Client already exists but is inactive: {workspace}/{client_id}")
+                        logger.info(
+                            f"Client already exists but is inactive: {workspace}/{client_id}"
+                        )
                         await self.store.delete_client(workspace, client_id, user_info)
 
-            workspace = await self.setup_workspace_and_permissions(
-                user_info, workspace
-            )
+            workspace = await self.setup_workspace_and_permissions(user_info, workspace)
 
             await self.establish_websocket_communication(
                 websocket,
@@ -97,14 +123,16 @@ class WebsocketServer:
                 client_id,
                 user_info,
             )
-            
+
         except Exception as e:
             logger.exception(f"Error handling WebSocket connection: {str(e)}")
-            await self.disconnect(websocket, reason=f"Error handling WebSocket connection: {str(e)}", code=status.WS_1011_INTERNAL_ERROR)
+            await self.disconnect(
+                websocket,
+                reason=f"Error handling WebSocket connection: {str(e)}",
+                code=status.WS_1011_INTERNAL_ERROR,
+            )
 
-    async def authenticate_user(
-        self, token, reconnection_token, client_id, workspace
-    ):
+    async def authenticate_user(self, token, reconnection_token, client_id, workspace):
         """Authenticate user and handle reconnection or token authentication."""
         # Ensure actual implementation calls for parse_reconnection_token and parse_token
         user_info = None
@@ -140,15 +168,19 @@ class WebsocketServer:
         """Setup workspace and check permissions."""
         if workspace is None:
             workspace = user_info.id
-        
+
         assert workspace != "*", "Dynamic workspace is not allowed for this endpoint"
         # Anonymous and Temporary users are not allowed to create persistant workspaces
-        persistent = not user_info.is_anonymous and "temporary-test-user" not in user_info.roles
+        persistent = (
+            not user_info.is_anonymous and "temporary-test-user" not in user_info.roles
+        )
 
         # Ensure calls to store for workspace existence and permissions check
         workspace_exists = await self.store.workspace_exists(workspace)
         if not workspace_exists:
-            assert workspace == user_info.id, "User can only connect to a pre-existing workspace or their own workspace"
+            assert (
+                workspace == user_info.id
+            ), "User can only connect to a pre-existing workspace or their own workspace"
             # Simplified logic for workspace creation, ensure this matches the actual store method signatures
             await self.store.register_workspace(
                 {
@@ -180,13 +212,15 @@ class WebsocketServer:
                 self.store._event_bus, workspace, client_id, user_info
             )
             conn.on_message(websocket.send_bytes)
-            reconnection_token = generate_reconnection_token(user_info, workspace, client_id, expires_in=2*24*60*60)
+            reconnection_token = generate_reconnection_token(
+                user_info, workspace, client_id, expires_in=2 * 24 * 60 * 60
+            )
             conn_info = {
                 "manager_id": self.store.manager_id,
                 "workspace": workspace,
                 "client_id": client_id,
                 "user": user_info.model_dump(),
-                "reconnection_token": reconnection_token
+                "reconnection_token": reconnection_token,
             }
             conn_info["success"] = True
             await websocket.send_text(json.dumps(conn_info))
@@ -232,7 +266,7 @@ class WebsocketServer:
     async def disconnect(self, websocket, reason, code=status.WS_1000_NORMAL_CLOSURE):
         """Disconnect the websocket connection."""
         # if not closed
-        if websocket.client_state.name != 'CLOSED':
+        if websocket.client_state.name != "CLOSED":
             logger.info(f"Disconnecting websocket client with reason: {reason}")
             await websocket.send_text(json.dumps({"error": reason, "success": False}))
             await websocket.close(code)
@@ -240,7 +274,7 @@ class WebsocketServer:
     async def is_alive(self):
         """Check if the server is alive."""
         return True
-    
+
     async def stop(self):
         """Stop the server."""
         self._stop = True

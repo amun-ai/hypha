@@ -42,7 +42,10 @@ async def test_connect_to_server(fastapi_server):
     # rpc = await connect_to_server(
     #     {"name": "my app", "workspace": "public", "server_url": WS_SERVER_URL}
     # )
-    with pytest.raises(Exception, match=r".*User can only connect to a pre-existing workspace or their own workspace.*"):
+    with pytest.raises(
+        Exception,
+        match=r".*User can only connect to a pre-existing workspace or their own workspace.*",
+    ):
         rpc = await connect_to_server(
             {"name": "my app", "workspace": "test", "server_url": WS_SERVER_URL}
         )
@@ -53,6 +56,7 @@ async def test_connect_to_server(fastapi_server):
     assert await service.run(None) is None
     await wm.log("hello")
 
+
 async def test_connect_to_server_two_client_same_id(fastapi_server):
     """Test connecting to the server with the same client id."""
     api1 = await connect_to_server(
@@ -62,12 +66,19 @@ async def test_connect_to_server_two_client_same_id(fastapi_server):
     assert "@hypha@" in token
     try:
         api2 = await connect_to_server(
-            {"name": "my app", "server_url": WS_SERVER_URL, "client_id": "my-app", "token": token, "workspace": api1.config.workspace}
+            {
+                "name": "my app",
+                "server_url": WS_SERVER_URL,
+                "client_id": "my-app",
+                "token": token,
+                "workspace": api1.config.workspace,
+            }
         )
         await api2.disconnect()
     except Exception as e:
         assert "Client already exists and is active:" in str(e)
     await api1.disconnect()
+
 
 def test_plugin_runner(fastapi_server):
     """Test the app runner."""
@@ -88,6 +99,7 @@ def test_plugin_runner(fastapi_server):
         output = out.decode("utf8")
         assert "Generated token: " in output and "@hypha@" in output
         assert "echo: a message" in output
+
 
 @pytestmark
 def test_plugin_runner_subpath(fastapi_subpath_server):
@@ -193,7 +205,7 @@ async def test_workspace(fastapi_server):
     public_svc = await api.list_services("public")
     assert len(public_svc) > 0
 
-    login_svc = find_item(public_svc, "name", 'Hypha Login')
+    login_svc = find_item(public_svc, "name", "Hypha Login")
     assert len(login_svc["description"]) > 0
 
     s3_svc = await api.list_services({"workspace": "public", "type": "s3-storage"})
@@ -437,7 +449,10 @@ async def test_server_scalability(fastapi_server_redis_1, fastapi_server_redis_2
     await asyncio.sleep(0.2)
 
     clients = await api77.list_clients()
-    assert "my-test-workspace/my-app-77" in clients and "my-test-workspace/my-app-88" in clients
+    assert (
+        "my-test-workspace/my-app-77" in clients
+        and "my-test-workspace/my-app-88" in clients
+    )
 
     await api77.register_service(
         {

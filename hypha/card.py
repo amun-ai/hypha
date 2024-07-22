@@ -58,7 +58,9 @@ class CardController:
             try:
                 path = safe_join(workspace, path)
                 return FSFileResponse(
-                    self.s3_controller.create_client_async(), self.workspace_bucket, path
+                    self.s3_controller.create_client_async(),
+                    self.workspace_bucket,
+                    path,
                 )
             except ClientError:
                 return JSONResponse(
@@ -114,9 +116,7 @@ class CardController:
             parts = os.path.split(item["name"])
             ws = parts[0]
             name = "/".join(parts[1:])
-            ret.append(
-                {"name": name, "url": f"{ws}/cards/{item['name']}"}
-            )
+            ret.append({"name": name, "url": f"{ws}/cards/{item['name']}"})
         return ret
 
     def get_card_service(self):

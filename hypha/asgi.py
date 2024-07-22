@@ -160,7 +160,9 @@ class ASGIGateway:
             workspace = service.config.workspace
             # TODO: extract the user info and pass it
             # TODO: Support multiple worker processes
-            async with self.store.get_workspace_interface(workspace, self.store.get_root_user()) as api:
+            async with self.store.get_workspace_interface(
+                workspace, self.store.get_root_user()
+            ) as api:
                 service = await api.get_service(service.id)
             service_id = service.id
             if ":" in service_id:  # Remove client_id

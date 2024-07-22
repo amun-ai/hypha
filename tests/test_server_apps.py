@@ -49,17 +49,17 @@ async def test_server_apps_unauthorized(fastapi_server):
         config={"type": "window"},
         wait_for_service="default",
     )
-    
+
     # the workspace should exist in the stats
     response = requests.get(f"{SERVER_URL}/api/stats")
     assert response.status_code == 200
     stats = response.json()
     workspace_info = find_item(stats["workspaces"], "name", api.config["workspace"])
     assert workspace_info
-    
+
     # Now disconnect it
     await api.disconnect()
-    
+
     # now it should disappear from the stats
     response = requests.get(f"{SERVER_URL}/api/stats")
     assert response.status_code == 200
@@ -179,6 +179,7 @@ async def test_web_python_apps(fastapi_server, test_user_token):
     apps = await controller.list_running()
     assert find_item(apps, "id", config.id)
 
+
 async def test_non_persistent_workspace(fastapi_server):
     """Test non-persistent workspace."""
     api = await connect_to_server(
@@ -292,7 +293,9 @@ async def test_lazy_service(fastapi_server, test_user_token):
     assert service.echo is not None
     assert await service.echo("hello") == "hello"
 
-    long_string = "h" * 100000 # FIXME: this is too slow, currently it fails for long strings
+    long_string = (
+        "h" * 100000
+    )  # FIXME: this is too slow, currently it fails for long strings
     assert await service.echo(long_string) == long_string
 
     await controller.uninstall(app_info.id)
