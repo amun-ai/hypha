@@ -69,8 +69,6 @@ class RedisStore:
         disconnect_delay=30,
     ):
         """Initialize the redis store."""
-        self._all_users: Dict[str, UserInfo] = {}  # uid:user_info
-        self._all_workspaces: Dict[str, WorkspaceInfo] = {}  # wid:workspace_info
         self._workspace_loader = None
         self._app = app
         self.disconnect_delay = disconnect_delay
@@ -308,7 +306,7 @@ class RedisStore:
         )
         return rpc
 
-    async def get_workspace(self, name, load=True):
+    async def get_workspace(self, name, load=False):
         """Return the workspace information."""
         try:
             workspace_info = await self._redis.hget("workspaces", name)
@@ -320,15 +318,15 @@ class RedisStore:
             return workspace_info
         except KeyError:
             if load and self._workspace_loader:
-                try:
-                    # TODO: register the loaded workspace
-                    workspace = await self._workspace_loader(name, self._root_user)
-                    if workspace:
-                        self._all_workspaces[workspace.name] = workspace
-                except Exception:  # pylint: disable=broad-except
-                    logger.exception("Failed to load workspace %s", name)
-                else:
-                    return workspace
+                workspace = await self._workspace_loader(name, self._root_user)
+                if not workspace:
+                    return None
+                await self.store.register_workspace(
+                    workspace.model_dump(), overwrite=True
+                )
+                return workspace
+            elif load and not self._workspace_loader:
+                raise RuntimeError("Workspace loader is not configured.")
         return None
 
     def set_workspace_loader(self, loader):

@@ -178,8 +178,8 @@ class WebsocketServer:
         )
 
         # Ensure calls to store for workspace existence and permissions check
-        workspace_exists = await self.store.workspace_exists(workspace)
-        if not workspace_exists:
+        workspace_info = await self.store.get_workspace(workspace, load=True)
+        if not workspace_info:
             assert (
                 workspace == user_info.id
             ), "User can only connect to a pre-existing workspace or their own workspace"

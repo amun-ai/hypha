@@ -213,7 +213,8 @@ class ServerAppController:
         if not workspace:
             workspace = context["ws"]
 
-        workspace = await self.store.get_workspace(workspace)
+        workspace = await self.store.get_workspace(workspace, load=True)
+        assert workspace, f"Workspace {workspace} not found."
         return [app_info.model_dump() for app_info in workspace.applications.values()]
 
     async def save_application(
@@ -380,8 +381,8 @@ class ServerAppController:
             workspace = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
-        workspace = await self.store.get_workspace(workspace)
-
+        workspace = await self.store.get_workspace(workspace, load=True)
+        assert workspace, f"Workspace {workspace} not found."
         if not await self.store.check_permission(user_info, workspace):
             raise Exception(
                 f"User {user_info.id} does not have permission"
@@ -486,8 +487,8 @@ class ServerAppController:
         )
         workspace_name = context["ws"]
         mhash = app_id
-        workspace = await self.store.get_workspace(workspace_name)
-
+        workspace = await self.store.get_workspace(workspace_name, load=True)
+        assert workspace, f"Workspace {workspace} not found."
         user_info = UserInfo.model_validate(context["user"])
         if not await self.store.check_permission(user_info, workspace):
             raise Exception(
@@ -559,7 +560,8 @@ class ServerAppController:
         if client_id is None:
             client_id = shortuuid.uuid()
 
-        workspace_info = await self.store.get_workspace(workspace)
+        workspace_info = await self.store.get_workspace(workspace, load=True)
+        assert workspace, f"Workspace {workspace} not found."
         assert (
             app_id in workspace_info.applications
         ), f"App {app_id} not found in workspace {workspace}, please install it first."

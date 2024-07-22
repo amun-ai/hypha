@@ -220,7 +220,15 @@ class S3Controller:
             user_info: login_optional = Depends(login_optional),
         ):
             """Upload file."""
-            ws = await store.get_workspace(workspace)
+            ws = await store.get_workspace(workspace, load=True)
+            if not ws:
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "success": False,
+                        "detail": f"Workspace does not exists: {workspace}",
+                    },
+                )
             if ws.read_only:
                 return JSONResponse(
                     status_code=403,
@@ -259,7 +267,7 @@ class S3Controller:
             user_info: login_optional = Depends(login_optional),
         ):
             """Get or delete file."""
-            ws = await store.get_workspace(workspace)
+            ws = await store.get_workspace(workspace, load=True)
             if not ws:
                 return JSONResponse(
                     status_code=404,
@@ -297,32 +305,36 @@ class S3Controller:
         """Load workspace from s3 record."""
         if not await self.store.check_permission(user_info, workspace_name):
             return None
-        config_path = f"{self.workspace_etc_dir}/{workspace_name}/config.json"
-        async with self.create_client_async() as s3_client:
-            response = await s3_client.get_object(
-                Bucket=self.workspace_bucket,
-                Key=config_path,
-            )
-            if (
-                "ResponseMetadata" in response
-                and "HTTPStatusCode" in response["ResponseMetadata"]
-            ):
-                response_code = response["ResponseMetadata"]["HTTPStatusCode"]
-                if response_code != 200:
-                    logger.info(
-                        "Failed to download file: %s, status code: %d",
-                        config_path,
-                        response_code,
-                    )
-                    return None
+        config_path = f"{self.workspace_etc_dir}/{workspace_name}/manifest.json"
+        try:
+            async with self.create_client_async() as s3_client:
+                response = await s3_client.get_object(
+                    Bucket=self.workspace_bucket,
+                    Key=config_path,
+                )
+                if (
+                    "ResponseMetadata" in response
+                    and "HTTPStatusCode" in response["ResponseMetadata"]
+                ):
+                    response_code = response["ResponseMetadata"]["HTTPStatusCode"]
+                    if response_code != 200:
+                        logger.info(
+                            "Failed to download file: %s, status code: %d",
+                            config_path,
+                            response_code,
+                        )
+                        return None
 
-            if "ETag" not in response:
+                if "ETag" not in response:
+                    return None
+                data = await response["Body"].read()
+                config = json.loads(data.decode("utf-8"))
+                workspace = WorkspaceInfo.model_validate(config)
+                logger.info("Loaded workspace from s3: %s", workspace_name)
+                return workspace
+        except ClientError as ex:
+            if ex.response['Error']['Code'] == 'NoSuchKey':
                 return None
-            data = await response["Body"].read()
-            config = json.loads(data.decode("utf-8"))
-            workspace = WorkspaceInfo.model_validate(config)
-            logger.info("Loaded workspace from s3: %s", workspace_name)
-            return workspace
 
     async def _upload_file(self, path: str, request: Request):
         """Upload file."""
@@ -596,18 +608,19 @@ class S3Controller:
             response = await s3_client.put_object(
                 Body=workspace.model_dump_json().encode("utf-8"),
                 Bucket=self.workspace_bucket,
-                Key=f"{self.workspace_etc_dir}/{workspace.name}/config.json",
+                Key=f"{self.workspace_etc_dir}/{workspace.name}/manifest.json",
             )
             assert (
                 "ResponseMetadata" in response
                 and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-            ), f"Failed to save workspace ({workspace.name}) config: {response}"
+            ), f"Failed to save workspace ({workspace.name}) manifest: {response}"
 
     async def generate_credential(self, context: dict = None):
         """Generate credential."""
         assert self.minio_client, "Minio client is not available"
         workspace = context["ws"]
-        ws = await self.store.get_workspace(workspace)
+        ws = await self.store.get_workspace(workspace, load=True)
+        assert ws, f"Workspace {workspace} not found."
         if ws.read_only:
             raise Exception("Permission denied: workspace is read-only")
         user_info = UserInfo.model_validate(context["user"])
@@ -662,7 +675,8 @@ class S3Controller:
         """Generate presigned url."""
         try:
             workspace = context["ws"]
-            ws = await self.store.get_workspace(workspace)
+            ws = await self.store.get_workspace(workspace, load=True)
+            assert ws, f"Workspace {workspace} not found."
             if ws.read_only and client_method != "get_object":
                 raise Exception("Permission denied: workspace is read-only")
             if bucket_name != self.workspace_bucket or not object_name.startswith(

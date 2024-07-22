@@ -962,20 +962,20 @@ class WorkspaceManager:
             await self._redis.delete(key)
 
         if user_info.is_anonymous and cws == user_info.id:
-            # remove temporary workspace if the user exits
-            await self.delete(context=context)
+            # unload temporary workspace if the user exits
+            await self.unload(context=context)
         else:
             # otherwise delete the workspace if it is empty
-            await self.delete_if_empty(context=context)
+            await self.unload_if_empty(context=context)
 
-    async def delete_if_empty(self, context=None):
+    async def unload_if_empty(self, context=None):
         """Delete the workspace if it is empty."""
         client_keys = await self.list_clients(context=context)
         if not client_keys:
-            await self.delete(context=context)
+            await self.unload(context=context)
 
-    async def delete(self, context=None):
-        """Delete the workspace."""
+    async def unload(self, context=None):
+        """Unload the workspace."""
         assert context is not None
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
@@ -994,10 +994,10 @@ class WorkspaceManager:
                 {
                     "to": "*",
                     "type": "force-exit",
-                    "reason": "workspace deleted",
+                    "reason": "workspace unloaded",
                 }
             )
-        logger.info("Workspace %s deleted.", ws)
+        logger.info("Workspace %s unloaded.", ws)
 
     def create_service(self, service_id, service_name=None):
         interface = {
@@ -1029,7 +1029,6 @@ class WorkspaceManager:
             "registerService": self.register_service,
             "delete_client": self.delete_client,
             "deleteClient": self.delete_client,
-            "delete": self.delete,
             # "get_workspace": self.get_workspace,
             # "getWorkspace": self.get_workspace,
             "check_permission": self.check_permission,

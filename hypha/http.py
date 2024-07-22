@@ -297,7 +297,15 @@ class HTTPProxy:
                             "detail": f"Permission denied to workspace: {workspace}",
                         },
                     )
-                workspace_info = await store.get_workspace(workspace)
+                workspace_info = await store.get_workspace(workspace, load=True)
+                if workspace_info is None:
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "success": False,
+                            "detail": f"Workspace not found: {workspace}",
+                        },
+                    )
                 return JSONResponse(
                     status_code=200,
                     content=workspace_info.model_dump(),
