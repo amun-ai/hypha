@@ -117,6 +117,7 @@ def start_builtin_services(
             access_key_id=args.access_key_id,
             secret_access_key=args.secret_access_key,
             endpoint_url_public=args.endpoint_url_public,
+            s3_admin_type=args.s3_admin_type,
             workspace_bucket=args.workspace_bucket,
             executable_path=args.executable_path,
         )
@@ -346,6 +347,12 @@ def get_argparser(add_help=True):
         "--enable-s3",
         action="store_true",
         help="enable S3 object storage",
+    )
+    parser.add_argument(
+        "--s3-admin-type",
+        type=str,
+        default="generic",
+        help="set the S3 admin interface type, depending on s3 server implementation (e.g. minio, generic)",
     )
     parser.add_argument(
         "--in-docker",

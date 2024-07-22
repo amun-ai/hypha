@@ -1,26 +1,33 @@
 """Redis queue service for Hypha."""
 
 import json
+import sys
 from fakeredis import aioredis
 from hypha.core.store import RedisStore
+import logging
+
+logging.basicConfig(stream=sys.stdout)
+logger = logging.getLogger("queue")
+logger.setLevel(logging.INFO)
 
 
 def create_queue_service(store: RedisStore):
     """Create a queue service for Hypha."""
     redis: aioredis.FakeRedis = store.get_redis()
     event_bus = store.get_event_bus()
-    
+
     async def on_workspace_removed(workspace):
         # delete all the keys that start with workspace["name"] + ":q:"
         keys_pattern = workspace["name"] + ":q:*"
-        cursor = '0'
+        cursor = "0"
 
         while cursor != 0:
             cursor, keys = await redis.scan(cursor=cursor, match=keys_pattern)
             if keys:
                 await redis.delete(*keys)
-        
-    event_bus.on("workspace_removed", on_workspace_removed)
+        logger.info("Removed queue keys for workspace: %s", workspace["name"])
+
+    event_bus.on_local("workspace_removed", on_workspace_removed)
 
     async def push_task(queue_name, task: dict, context: dict = None):
         workspace = context["ws"]

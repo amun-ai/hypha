@@ -142,58 +142,6 @@ class JSONResponse(Response):
         ).encode("utf-8")
 
 
-class FSRotatingFileHandler(logging.handlers.RotatingFileHandler):
-    """A rotating file handler for working with fsspec."""
-
-    def __init__(self, s3_client, s3_bucket, s3_prefix, start_index, *args, **kwargs):
-        """Set up the file handler."""
-        self.s3_client = s3_client
-        self.s3_bucket = s3_bucket
-        self.s3_prefix = s3_prefix
-        self.file_index = start_index
-        super().__init__(*args, **kwargs)
-
-    def doRollover(self):
-        """Rollover the file."""
-        # TODO: we need to write the logs if we logout
-        if self.stream:
-            self.stream.close()
-            self.stream = None
-            name = self.baseFilename + "." + str(self.file_index)
-            with open(self.baseFilename, "rb") as fil:
-                body = fil.read()
-            response = self.s3_client.put_object(
-                Body=body,
-                Bucket=self.s3_bucket,
-                Key=self.s3_prefix + name,
-            )
-            assert (
-                "ResponseMetadata" in response
-                and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-            ), f"Failed to save log ({self.s3_prefix + name}) to S3: {response}"
-            self.file_index += 1
-
-        super().doRollover()
-
-
-def setup_logger(
-    s3_client, bucket, prefix, start_index, name, log_file, level=logging.INFO
-):
-    """Set up a logger."""
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-
-    handler = FSRotatingFileHandler(
-        s3_client, bucket, prefix, start_index, log_file, maxBytes=2000000
-    )
-    handler.setFormatter(formatter)
-
-    named_logger = logging.getLogger(name)
-    named_logger.setLevel(level)
-    named_logger.addHandler(handler)
-
-    return named_logger
-
-
 class S3Controller:
     """Represent an S3 controller."""
 
@@ -206,6 +154,7 @@ class S3Controller:
         access_key_id=None,
         secret_access_key=None,
         endpoint_url_public=None,
+        s3_admin_type="generic",
         workspace_bucket="hypha-workspaces",
         local_log_dir="./logs",
         workspace_etc_dir="etc",
@@ -215,12 +164,16 @@ class S3Controller:
         self.endpoint_url = endpoint_url
         self.access_key_id = access_key_id
         self.secret_access_key = secret_access_key
-        self.minio_client = MinioClient(
-            endpoint_url,
-            access_key_id,
-            secret_access_key,
-            executable_path=executable_path,
-        )
+        self.s3_admin_type = s3_admin_type
+        if self.s3_admin_type == "minio":
+            self.minio_client = MinioClient(
+                endpoint_url,
+                access_key_id,
+                secret_access_key,
+                executable_path=executable_path,
+            )
+        else:
+            self.minio_client = None
         self.endpoint_url_public = endpoint_url_public or endpoint_url
         self.store = store
         self.workspace_bucket = workspace_bucket
@@ -238,8 +191,8 @@ class S3Controller:
             pass
 
         self.s3client = s3client
-
-        self.minio_client.admin_user_add_sync("root", generate_password())
+        if self.minio_client:
+            self.minio_client.admin_user_add_sync("root", generate_password())
 
         store.register_public_service(self.get_s3_service())
         store.set_workspace_loader(self._workspace_loader)
@@ -546,17 +499,7 @@ class S3Controller:
         workspace = WorkspaceInfo.model_validate(workspace)
         if workspace.read_only:
             return
-        # TODO: if the program shutdown unexpectedly, we need to clean it up
-        # We should empty the group before removing it
-        group_info = await self.minio_client.admin_group_info(workspace.name)
-        # remove all the members
-        await self.minio_client.admin_group_remove(
-            workspace.name, group_info["members"]
-        )
-        # now remove the empty group
-        await self.minio_client.admin_group_remove(workspace.name)
 
-        # TODO: we will remove the files if it's not persistent
         if not workspace.persistent:
             # remove workspace etc files
             remove_objects_sync(
@@ -569,86 +512,79 @@ class S3Controller:
                 self.s3client, self.workspace_bucket, workspace.name + "/"
             )
 
+        if self.minio_client:
+            # TODO: if the program shutdown unexpectedly, we need to clean it up
+            # We should empty the group before removing it
+            group_info = await self.minio_client.admin_group_info(workspace.name)
+            # remove all the members
+            await self.minio_client.admin_group_remove(
+                workspace.name, group_info["members"]
+            )
+            # now remove the empty group
+            await self.minio_client.admin_group_remove(workspace.name)
+
     async def _setup_workspace(self, workspace: dict):
         """Set up workspace."""
         workspace = WorkspaceInfo.model_validate(workspace)
         if workspace.read_only:
             return
-        # make sure we have the root user in every workspace
-        await self.minio_client.admin_group_add(workspace.name, "root")
-        policy_name = "policy-ws-" + workspace.name
-        # policy example:
-        # https://aws.amazon.com/premiumsupport/knowledge-center/iam-s3-user-specific-folder/
-        await self.minio_client.admin_policy_create(
-            policy_name,
-            {
-                "Version": "2012-10-17",
-                "Statement": [
-                    {
-                        "Sid": "AllowUserToSeeTheBucketInTheConsole",
-                        "Action": ["s3:ListAllMyBuckets", "s3:GetBucketLocation"],
-                        "Effect": "Allow",
-                        "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
-                    },
-                    {
-                        "Sid": "AllowRootAndHomeListingOfWorkspaceBucket",
-                        "Action": ["s3:ListBucket"],
-                        "Effect": "Allow",
-                        "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
-                        "Condition": {
-                            "StringEquals": {
-                                "s3:prefix": ["", f"{workspace.name}/"],
-                                "s3:delimiter": ["/"],
-                            }
-                        },
-                    },
-                    {
-                        "Sid": "AllowListingOfWorkspaceFolder",
-                        "Action": ["s3:ListBucket"],
-                        "Effect": "Allow",
-                        "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
-                        "Condition": {
-                            "StringLike": {"s3:prefix": [f"{workspace.name}/*"]}
-                        },
-                    },
-                    {
-                        "Sid": "AllowAllS3ActionsInWorkspaceFolder",
-                        "Action": ["s3:*"],
-                        "Effect": "Allow",
-                        "Resource": [
-                            f"arn:aws:s3:::{self.workspace_bucket}/{workspace.name}/*"
-                        ],
-                    },
-                ],
-            },
-        )
-
-        await self.minio_client.admin_policy_attach(policy_name, group=workspace.name)
-
         # Save the workspace info
         workspace_dir = self.local_log_dir / workspace.name
         os.makedirs(workspace_dir, exist_ok=True)
         await self._save_workspace_config(workspace.model_dump())
+        if self.minio_client:
+            # make sure we have the root user in every workspace
+            await self.minio_client.admin_group_add(workspace.name, "root")
+            policy_name = "policy-ws-" + workspace.name
+            # policy example:
+            # https://aws.amazon.com/premiumsupport/knowledge-center/iam-s3-user-specific-folder/
+            await self.minio_client.admin_policy_create(
+                policy_name,
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Sid": "AllowUserToSeeTheBucketInTheConsole",
+                            "Action": ["s3:ListAllMyBuckets", "s3:GetBucketLocation"],
+                            "Effect": "Allow",
+                            "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
+                        },
+                        {
+                            "Sid": "AllowRootAndHomeListingOfWorkspaceBucket",
+                            "Action": ["s3:ListBucket"],
+                            "Effect": "Allow",
+                            "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
+                            "Condition": {
+                                "StringEquals": {
+                                    "s3:prefix": ["", f"{workspace.name}/"],
+                                    "s3:delimiter": ["/"],
+                                }
+                            },
+                        },
+                        {
+                            "Sid": "AllowListingOfWorkspaceFolder",
+                            "Action": ["s3:ListBucket"],
+                            "Effect": "Allow",
+                            "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
+                            "Condition": {
+                                "StringLike": {"s3:prefix": [f"{workspace.name}/*"]}
+                            },
+                        },
+                        {
+                            "Sid": "AllowAllS3ActionsInWorkspaceFolder",
+                            "Action": ["s3:*"],
+                            "Effect": "Allow",
+                            "Resource": [
+                                f"arn:aws:s3:::{self.workspace_bucket}/{workspace.name}/*"
+                            ],
+                        },
+                    ],
+                },
+            )
 
-        # find out the latest log file number
-        log_base_name = str(workspace_dir / "log.txt")
-
-        items = list_objects_sync(self.s3client, self.workspace_bucket, log_base_name)
-        # sort the log files based on the last number
-        items = sorted(items, key=lambda file: -int(file["name"].split(".")[-1]))
-        # if len(items) > 0:
-        #     start_index = int(items[0]["name"].split(".")[-1]) + 1
-        # else:
-        #     start_index = 0
-
-        # ready_logger = setup_logger(
-        #     self.s3client,
-        #     self.workspace_bucket,
-        #     workspace.name,
-        #     start_index,
-        #     workspace.name,
-        #     log_base_name,
-        # )
+            await self.minio_client.admin_policy_attach(
+                policy_name, group=workspace.name
+            )
 
     async def _save_workspace_config(self, workspace: dict):
         """Save workspace."""
@@ -669,6 +605,7 @@ class S3Controller:
 
     async def generate_credential(self, context: dict = None):
         """Generate credential."""
+        assert self.minio_client, "Minio client is not available"
         workspace = context["ws"]
         ws = await self.store.get_workspace(workspace)
         if ws.read_only:
@@ -751,12 +688,14 @@ class S3Controller:
 
     def get_s3_service(self):
         """Get s3 controller."""
-        return {
+        svc = {
             "id": "s3-storage",
             "name": "S3 Storage",
             "type": "s3-storage",
             "config": {"visibility": "public", "require_context": True},
             "list_files": self.list_files,
-            "generate_credential": self.generate_credential,
             "generate_presigned_url": self.generate_presigned_url,
         }
+        if self.minio_client:
+            svc["generate_credential"] = self.generate_credential
+        return svc

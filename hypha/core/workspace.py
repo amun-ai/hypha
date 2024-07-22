@@ -14,7 +14,6 @@ from pydantic import BaseModel
 
 from hypha.core import (
     Card,
-    ClientInfo,
     RedisRPCConnection,
     TokenConfig,
     UserInfo,
@@ -202,7 +201,7 @@ class WorkspaceManager:
         for ws in config["scopes"]:
             if not await self.check_permission(user_info, ws, context=context):
                 raise PermissionError(f"User has no permission to workspace: {ws}")
-        token = generate_presigned_token(user_info, token_config)
+        token = generate_presigned_token(user_info, token_config, child=False)
         return token
 
     async def client_exists(
