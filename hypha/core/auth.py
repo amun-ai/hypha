@@ -248,12 +248,12 @@ def parse_token(authorization: str, allow_anonymouse=False):
     else:
         token = authorization
 
-    if "@imjoy@" not in token:
+    if "@hypha@" not in token:
         # auth0 token
         info = valid_token(token)
     else:
         # generated token
-        token = token.split("@imjoy@")[1]
+        token = token.split("@hypha@")[1]
         payload = jwt.decode(
             token,
             JWT_SECRET,
@@ -308,11 +308,11 @@ def generate_presigned_token(
         JWT_SECRET,
         algorithm="HS256",
     )
-    return uid + "@imjoy@" + token
+    return uid + "@hypha@" + token
 
 
 def generate_reconnection_token(
-    user_info: UserInfo, client_id: str, workspace: str, expires_in: int = 60
+    user_info: UserInfo, workspace: str, client_id: str, expires_in: int = 60
 ):
     """Generate a token for reconnection."""
     current_time = time.time()

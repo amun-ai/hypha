@@ -4,7 +4,7 @@ import time
 import numpy as np
 import pytest
 import pytest_asyncio
-from imjoy_rpc.hypha.websocket_client import connect_to_server
+from hypha_rpc.websocket_client import connect_to_server
 
 from hypha.core.store import RedisStore
 
@@ -37,8 +37,9 @@ async def test_redis_store(redis_store):
     )
     assert "test" in await redis_store.list_all_workspaces()
 
-    api = await redis_store.connect_to_workspace("test", client_id="test-plugin-99")
-    assert set(await api.list_clients()) == {"test-plugin-99", "workspace-manager"}
+    api = await redis_store.connect_to_workspace("test", client_id="test-app-99")
+    clients = set(await api.list_clients())
+    assert clients == {"test/test-app-99"}
     await api.log("hello")
     services = await api.list_services()
     assert len(services) == 1
@@ -54,7 +55,6 @@ async def test_redis_store(redis_store):
         overwrite=True,
     )
     assert ws["name"] == "test-2"
-    # assert await ws.list_clients() == ["workspace-manager"]
     ws2 = await api.get_workspace_info("test-2")
     assert ws2["name"] == "test-2"
 
@@ -70,14 +70,14 @@ async def test_redis_store(redis_store):
     }
     await api.register_service(interface)
 
-    wm = await redis_store.connect_to_workspace("test", client_id="test-plugin-22")
+    wm = await redis_store.connect_to_workspace("test", client_id="test-app-22")
     clients = await wm.list_clients()
     assert set(clients) == set(
-        ["workspace-manager", "test-plugin-22", "test-plugin-99"]
+        ["test/test-app-22", "test/test-app-99"]
     )
     rpc = wm.rpc
     services = await wm.list_services()
-    service = await rpc.get_remote_service("test-plugin-99:test-service")
+    service = await rpc.get_remote_service("test-app-99:test-service")
 
     assert callable(service.echo)
     assert await service.echo("hello") == "hello"
@@ -89,16 +89,15 @@ async def test_websocket_server(fastapi_server, test_user_token_2):
     wm = await connect_to_server(
         dict(
             server_url=f"ws://127.0.0.1:{SIO_PORT}/ws",
-            client_id="test-plugin-1",
+            client_id="test-app-1",
             token=test_user_token_2,
         )
     )
     await wm.log("hello")
-    assert len(await wm.list_user_clients()) == 1
 
-    assert set(await wm.list_clients()) == {
-        "test-plugin-1",
-        "workspace-manager",
+    clients = set(await wm.list_clients())
+    assert clients == {
+       wm.config.workspace + "/test-app-1",
     }
     rpc = wm.rpc
 
@@ -129,25 +128,25 @@ async def test_websocket_server(fastapi_server, test_user_token_2):
         }
     )
 
-    svc = await rpc.get_remote_service("test-plugin-1:test-service")
+    svc = await rpc.get_remote_service("test-app-1:test-service")
 
     assert await svc.echo("hello") == "hello"
 
     services = await wm.list_services()
     assert (
-        len(services) == 2
-    )  # built-in and workspace-manager.default service are not listed
+        len(services) == 3
+    )
 
-    svc = await wm.get_service("test-plugin-1:test-service")
+    svc = await wm.get_service("test-app-1:test-service")
     assert await svc.echo("hello") == "hello"
 
     # Get public service from another workspace
     wm3 = await connect_to_server({"server_url": f"ws://127.0.0.1:{SIO_PORT}/ws"})
     rpc3 = wm3.rpc
     svc7 = await rpc3.get_remote_service(
-        f"{wm.config.workspace}/test-plugin-1:test-service"
+        f"{wm.config.workspace}/test-app-1:test-service"
     )
-    svc7 = await wm3.get_service(f"{wm.config.workspace}/test-plugin-1:test-service")
+    svc7 = await wm3.get_service(f"{wm.config.workspace}/test-app-1:test-service")
     assert await svc7.square(9) == 81
 
     # Change the service to protected
@@ -165,28 +164,30 @@ async def test_websocket_server(fastapi_server, test_user_token_2):
 
     # It should fail due to permission error
     with pytest.raises(
-        Exception, match=r".*Permission denied for service: test-service.*"
+        Exception, match=r".*Permission denied for getting protected service: test-service.*"
     ):
         await rpc3.get_remote_service(
-            f"{wm.config.workspace}/test-plugin-1:test-service"
+            f"{wm.config.workspace}/test-app-1:test-service"
         )
 
-    # Should fail if we try to bypass the get_remote_service call
-    remote_echo = rpc3._generate_remote_method(
-        {
-            "_rtarget": f"{wm.config.workspace}/test-plugin-1",
-            "_rmethod": "services.test-service.echo",
-            "_rpromise": True,
-        }
-    )
-    with pytest.raises(Exception, match=r".*Permission denied for protected method.*"):
-        await remote_echo(123)
+    # Should fail if we try to get the protected service from another workspace
+    with pytest.raises(
+        Exception, match=r".*Permission denied for invoking protected method.*"
+    ):
+        remote_echo = rpc3._generate_remote_method(
+            {
+                "_rtarget": f"{wm.config.workspace}/test-app-1",
+                "_rmethod": "services.test-service.echo",
+                "_rpromise": True,
+            }
+        )
+        assert await remote_echo(123) == 123
 
     wm2 = await connect_to_server(
         dict(
             server_url=f"ws://127.0.0.1:{SIO_PORT}/ws",
             workspace=wm.config.workspace,
-            client_id="test-plugin-6",
+            client_id="test-app-6",
             token=test_user_token_2,
             method_timeout=3,
         )
@@ -194,7 +195,7 @@ async def test_websocket_server(fastapi_server, test_user_token_2):
     rpc2 = wm2.rpc
 
     svc2 = await rpc2.get_remote_service(
-        f"{wm.config.workspace}/test-plugin-1:test-service"
+        f"{wm.config.workspace}/test-app-1:test-service"
     )
     assert await svc2.echo("hello") == "hello"
     assert len(rpc2._object_store) == 1
@@ -228,10 +229,8 @@ async def test_websocket_server(fastapi_server, test_user_token_2):
     array2 = await svc6.add_one(array)
     np.testing.assert_array_equal(array2, array + 1)
 
-    assert len(await wm2.list_user_clients()) == 2
     await wm.disconnect()
     await asyncio.sleep(0.5)
-    assert len(await wm2.list_user_clients()) == 1
 
     with pytest.raises(Exception, match=r".*Service already exists: default.*"):
         await rpc2.register_service(
@@ -250,7 +249,7 @@ async def test_websocket_server(fastapi_server, test_user_token_2):
     )
 
     await rpc2.register_service({"id": "add-two", "blocking_sleep": time.sleep})
-    svc5 = await rpc2.get_remote_service(f"{wm.config.workspace}/test-plugin-6:add-two")
+    svc5 = await rpc2.get_remote_service(f"{wm.config.workspace}/test-app-6:add-two")
     # This will fail because the service is blocking
     with pytest.raises(Exception, match=r".*Method call time out:.*"):
         await svc5.blocking_sleep(4)
@@ -265,12 +264,12 @@ async def test_websocket_server(fastapi_server, test_user_token_2):
         }
     )
     svc5 = await rpc2.get_remote_service(
-        f"{wm.config.workspace}/test-plugin-6:executor-test"
+        f"{wm.config.workspace}/test-app-6:executor-test"
     )
     # This should be fine because it is run in executor
     await svc5.blocking_sleep(3)
     summary = await wm2.get_summary()
-    assert summary["client_count"] == 2
-    assert summary["service_count"] == 3
+    assert summary["client_count"] == 1
+    assert summary["service_count"] == 4
     assert find_item(summary["services"], "name", "executor-test")
     await wm2.disconnect()

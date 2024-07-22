@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, Response
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
-from hypha.core import ClientInfo, UserInfo, WorkspaceInfo
+from hypha.core import UserInfo, WorkspaceInfo
 from hypha.core.auth import login_optional
 from hypha.core.store import RedisStore
 from hypha.minio import MinioClient
@@ -238,8 +238,9 @@ class S3Controller:
             pass
 
         self.s3client = s3client
-
+        
         self.minio_client.admin_user_add_sync("root", generate_password())
+
         store.register_public_service(self.get_s3_service())
         store.set_workspace_loader(self._workspace_loader)
 
@@ -254,9 +255,6 @@ class S3Controller:
         event_bus.on_local(
             "workspace_removed",
             lambda w: asyncio.ensure_future(self._cleanup_workspace(w)),
-        )
-        event_bus.on_local(
-            "client_registered", lambda w: asyncio.ensure_future(self._setup_client(w))
         )
 
         router = APIRouter()
@@ -286,7 +284,7 @@ class S3Controller:
                         "detail": f"Workspace does not exists: {workspace}",
                     },
                 )
-            if not await store.check_permission(ws, user_info):
+            if not await store.check_permission(user_info, ws):
                 return JSONResponse(
                     status_code=403,
                     content={
@@ -317,7 +315,7 @@ class S3Controller:
                         "detail": f"Workspace does not exists: {workspace}",
                     },
                 )
-            if not await store.check_permission(ws, user_info):
+            if not await store.check_permission(user_info, ws):
                 return JSONResponse(
                     status_code=403,
                     content={
@@ -344,7 +342,7 @@ class S3Controller:
 
     async def _workspace_loader(self, workspace_name, user_info):
         """Load workspace from s3 record."""
-        if not await self.store.check_permission(workspace_name, user_info):
+        if not await self.store.check_permission(user_info, workspace_name):
             return None
         config_path = f"{self.workspace_etc_dir}/{workspace_name}/config.json"
         async with self.create_client_async() as s3_client:
@@ -534,21 +532,6 @@ class S3Controller:
             region_name="EU",
         )
 
-    async def _setup_client(self, client: dict):
-        """Set up client."""
-        client = ClientInfo.model_validate(client)
-        user_info = client.user_info
-        if user_info.id == "root" or user_info.is_anonymous:
-            return
-        # Make sure we created an account for the user
-        try:
-            await self.minio_client.admin_user_info(user_info.id)
-        except Exception:  # pylint: disable=broad-except
-            # Note: we don't store the credentials, it can only be regenerated
-            await self.minio_client.admin_user_add(user_info.id, generate_password())
-
-        await self.minio_client.admin_group_add(client.workspace, client.user_info.id)
-
     async def list_users(
         self,
     ):
@@ -645,7 +628,7 @@ class S3Controller:
         # Save the workspace info
         workspace_dir = self.local_log_dir / workspace.name
         os.makedirs(workspace_dir, exist_ok=True)
-        self._save_workspace_config(workspace.model_dump())
+        await self._save_workspace_config(workspace.model_dump())
 
         # find out the latest log file number
         log_base_name = str(workspace_dir / "log.txt")
@@ -667,31 +650,32 @@ class S3Controller:
         #     log_base_name,
         # )
 
-    def _save_workspace_config(self, workspace: dict):
+    async def _save_workspace_config(self, workspace: dict):
         """Save workspace."""
         workspace = WorkspaceInfo.model_validate(workspace)
         if workspace.read_only:
             return
         workspace = WorkspaceInfo.model_validate(workspace)
-        response = self.s3client.put_object(
-            Body=workspace.model_dump_json().encode("utf-8"),
-            Bucket=self.workspace_bucket,
-            Key=f"{self.workspace_etc_dir}/{workspace.name}/config.json",
-        )
-        assert (
-            "ResponseMetadata" in response
-            and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-        ), f"Failed to save workspace ({workspace.name}) config: {response}"
+        async with self.create_client_async() as s3_client:
+            response = await s3_client.put_object(
+                Body=workspace.model_dump_json().encode("utf-8"),
+                Bucket=self.workspace_bucket,
+                Key=f"{self.workspace_etc_dir}/{workspace.name}/config.json",
+            )
+            assert (
+                "ResponseMetadata" in response
+                and response["ResponseMetadata"]["HTTPStatusCode"] == 200
+            ), f"Failed to save workspace ({workspace.name}) config: {response}"
 
     async def generate_credential(self, context: dict = None):
         """Generate credential."""
-        workspace = context["from"].split("/")[0]
+        workspace = context["ws"]
         ws = await self.store.get_workspace(workspace)
         if ws.read_only:
             raise Exception("Permission denied: workspace is read-only")
         user_info = UserInfo.model_validate(context["user"])
         if workspace == "public" or not await self.store.check_permission(
-            workspace, user_info
+            user_info, workspace
         ):
             raise PermissionError(
                 f"User {user_info.id} does not have write"
@@ -716,7 +700,7 @@ class S3Controller:
         context: dict = None,
     ) -> Dict[str, Any]:
         """List files in the folder."""
-        workspace = context["from"].split("/")[0]
+        workspace = context["ws"]
         path = safe_join(workspace, path)
         async with self.create_client_async() as s3_client:
             # List files in the folder
@@ -740,7 +724,7 @@ class S3Controller:
     ):
         """Generate presigned url."""
         try:
-            workspace = context["from"].split("/")[0]
+            workspace = context["ws"]
             ws = await self.store.get_workspace(workspace)
             if ws.read_only and client_method != "get_object":
                 raise Exception("Permission denied: workspace is read-only")

@@ -2,7 +2,7 @@ import argparse
 import asyncio
 import logging
 
-from imjoy_rpc.hypha import connect_to_server
+from hypha_rpc import connect_to_server
 
 
 async def start_service(server_url, service_id, workspace=None, token=None):

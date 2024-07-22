@@ -1,16 +1,16 @@
 """Provide an example plugin."""
-from imjoy_rpc import api
+from hypha_rpc import api
 
 # pylint: disable=no-self-use
 
 
-class ImJoyPlugin:
-    """Represent an ImJoy plugin."""
+class HyphaApp:
+    """Represent an Hypha app."""
 
     async def setup(self):
         """Set up the plugin."""
         token = await api.generateToken()
-        assert "@imjoy@" in token
+        assert "@hypha@" in token
         print(f"Generated token: {token}")
 
         service_info = await api.register_service(
@@ -31,4 +31,4 @@ class ImJoyPlugin:
         await api.log("hello world")
 
 
-api.export(ImJoyPlugin(), config={"name": "test-plugin"})
+api.export(HyphaApp(), config={"name": "test-plugin"})

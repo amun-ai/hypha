@@ -2,23 +2,29 @@
 
 import json
 from fakeredis import aioredis
+from hypha.core.store import RedisStore
 
 
-def create_queue_service(redis: aioredis.FakeRedis, workspace: str):
+def create_queue_service(store: RedisStore):
     """Create a queue service for Hypha."""
+    redis: aioredis.FakeRedis = store.get_redis()
 
-    async def push_task(queue_name, task: dict):
+    async def push_task(queue_name, task: dict, context: dict=None):
+        workspace = context["ws"]
         await redis.lpush(workspace + ":q:" + queue_name, json.dumps(task))
 
-    async def pop_task(queue_name):
+    async def pop_task(queue_name, context: dict=None):
+        workspace = context["ws"]
         task = await redis.brpop(workspace + ":q:" + queue_name)
         return json.loads(task[1])
 
-    async def get_queue_length(queue_name):
+    async def get_queue_length(queue_name, context: dict=None):
+        workspace = context["ws"]
         length = await redis.llen(workspace + ":q:" + queue_name)
         return length
 
-    async def peek_queue(queue_name, n=1):
+    async def peek_queue(queue_name, n=1, context: dict=None):
+        workspace = context["ws"]
         tasks = await redis.lrange(workspace + ":q:" + queue_name, 0, n - 1)
         return [json.loads(task) for task in tasks]
 
@@ -27,7 +33,8 @@ def create_queue_service(redis: aioredis.FakeRedis, workspace: str):
         "name": "Queue service",
         "type": "queue",
         "config": {
-            "visibility": "protected",
+            "visibility": "public",
+            "require_context": True,
         },
         "push": push_task,
         "pop": pop_task,

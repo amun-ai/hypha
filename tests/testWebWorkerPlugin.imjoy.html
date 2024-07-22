@@ -18,13 +18,12 @@
     "env": "",
     "permissions": [],
     "requirements": [],
-    "dependencies": [],
-    "services": ["echo"]
+    "dependencies": []
 }
 </config>
 
 <script lang="javascript">
-class ImJoyPlugin {
+class HyphaApp {
     async setup() {
         await api.log('initialized')
         await api.register_service({
@@ -49,5 +48,5 @@ class ImJoyPlugin {
     }
 }
 
-api.export(new ImJoyPlugin())
+api.export(new HyphaApp())
 </script>

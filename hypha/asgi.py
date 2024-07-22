@@ -144,12 +144,12 @@ class ASGIGateway:
         # TODO: query the current services and mount them
         event_bus = store.get_event_bus()
         event_bus.on(
-            "service_registered",
-            lambda service: asyncio.ensure_future(self.mount_asgi_app(service)),
+            "service_added",
+            self.mount_asgi_app,
         )
         event_bus.on(
             "service_unregistered",
-            lambda service: asyncio.ensure_future(self.umount_asgi_app(service)),
+            self.umount_asgi_app,
         )
 
     async def mount_asgi_app(self, service: dict):
@@ -160,7 +160,8 @@ class ASGIGateway:
             workspace = service.config.workspace
             # TODO: extract the user info and pass it
             # TODO: Support multiple worker processes
-            service = await self.store.get_service_as_user(workspace, service.id)
+            async with self.store.get_workspace_interface(workspace, self.store.get_root_user()) as api:
+                service = await api.get_service(service.id)
             service_id = service.id
             if ":" in service_id:  # Remove client_id
                 service_id = service_id.split(":")[-1]

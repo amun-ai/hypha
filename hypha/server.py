@@ -15,8 +15,8 @@ from starlette.responses import JSONResponse
 from hypha import __version__ as VERSION
 from hypha.asgi import ASGIGateway
 from hypha.core.store import RedisStore
+from hypha.core.queue import create_queue_service
 from hypha.http import HTTPProxy
-from hypha.sse import SSEProxy
 from hypha.triton import TritonProxy
 from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
 from hypha.websocket import WebsocketServer
@@ -74,13 +74,7 @@ def start_builtin_services(
     """Set up the builtin services."""
     # pylint: disable=too-many-arguments,too-many-locals
 
-    def norm_url(url):
-        return args.base_path.rstrip("/") + url
-
-    WebsocketServer(store, path=norm_url("/ws"))
-
     HTTPProxy(store)
-    SSEProxy(store)
     if args.triton_servers:
         TritonProxy(
             store,
@@ -102,21 +96,20 @@ def start_builtin_services(
             "version": VERSION,
         }
 
-    @app.get(norm_url("/api/stats"))
+    @app.get(norm_url(args.base_path, "/api/stats"))
     async def stats():
-        users = await store.get_all_users()
-        user_count = len(users)
         all_workspaces = await store.get_all_workspace()
         return {
-            "user_count": user_count,
-            "users": [u.id for u in users],
             "workspace_count": len(all_workspaces),
             "workspaces": [w.model_dump() for w in all_workspaces],
         }
 
+    store.register_public_service(create_queue_service(store))
+    
+    
     if args.enable_s3:
         # pylint: disable=import-outside-toplevel
-        from hypha.rdf import RDFController
+        from hypha.card import CardController
         from hypha.s3 import S3Controller
 
         s3_controller = S3Controller(
@@ -129,7 +122,7 @@ def start_builtin_services(
             executable_path=args.executable_path,
         )
 
-        RDFController(store, s3_controller=s3_controller, rdf_bucket=args.rdf_bucket)
+        CardController(store, s3_controller=s3_controller, workspace_bucket=args.workspace_bucket)
 
     if args.enable_server_apps:
         # pylint: disable=import-outside-toplevel
@@ -146,7 +139,7 @@ def start_builtin_services(
             workspace_bucket=args.workspace_bucket,
         )
 
-    @app.get(norm_url("/health/liveness"))
+    @app.get(norm_url(args.base_path, "/health/liveness"))
     async def liveness(req: Request) -> JSONResponse:
         if store.is_ready():
             return JSONResponse({"status": "OK"})
@@ -182,6 +175,8 @@ def mount_static_files(app, new_route, directory, name="static"):
         async def root():
             return FileResponse(f"{directory}/index.html")
 
+def norm_url(base_path, url):
+    return base_path.rstrip("/") + url
 
 def create_application(args):
     """Create a hypha application."""
@@ -189,7 +184,7 @@ def create_application(args):
         args.allow_origins = args.allow_origins.split(",")
     else:
         args.allow_origins = env.get("ALLOW_ORIGINS", "*").split(",")
-
+    
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Here we can register all the startup functions
@@ -197,8 +192,9 @@ def create_application(args):
         args.startup_functions.append("hypha.core.auth:register_login_service")
         await store.init(args.reset_redis, startup_functions=args.startup_functions)
         yield
+        websocket_server.stop()
         # Emit the shutdown event
-        store.get_event_bus().emit("shutdown", target="local")
+        await store.get_event_bus().emit_local("shutdown")
 
     application = FastAPI(
         title="Hypha",
@@ -239,6 +235,7 @@ def create_application(args):
         disconnect_delay=float(env.get("DISCONNECT_DELAY", "30")),
     )
 
+    websocket_server = WebsocketServer(store, path=norm_url(args.base_path, "/ws"))
     start_builtin_services(application, store, args)
 
     static_folder = str(Path(__file__).parent / "static_files")
@@ -383,12 +380,6 @@ def get_argparser(add_help=True):
         type=str,
         default="hypha-apps",
         help="temporary directory for storing installed apps",
-    )
-    parser.add_argument(
-        "--rdf-bucket",
-        type=str,
-        default="hypha-rdfs",
-        help="S3 bucket for storing RDF files",
     )
     parser.add_argument(
         "--workspace-bucket",

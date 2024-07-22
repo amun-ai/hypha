@@ -6,7 +6,7 @@ The following example shows how to use FastAPI to create a web application in th
 
 ```python
 import asyncio
-from imjoy_rpc.hypha import connect_to_server
+from hypha_rpc import connect_to_server
 
 import micropip
 

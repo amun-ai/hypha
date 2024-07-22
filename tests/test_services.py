@@ -2,7 +2,7 @@
 import pytest
 import httpx
 
-from imjoy_rpc.hypha import login, connect_to_server
+from hypha_rpc import login, connect_to_server
 from . import (
     SERVER_URL,
 )
@@ -23,14 +23,14 @@ async def test_login(fastapi_server):
         print(f"By passing login: {context['login_url']}")
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.get(context["login_url"] + "?key=" + context["key"])
-            assert resp.status_code == 200
+            assert resp.status_code == 200, resp.text
             assert "Hypha Account" in resp.text
             assert "{{ report_url }}" not in resp.text
             assert context["report_url"] in resp.text
             resp = await client.get(
                 context["report_url"] + "?key=" + context["key"] + "&token=" + TOKEN
             )
-            assert resp.status_code == 200
+            assert resp.status_code == 200, resp.text
 
     token = await login(
         {

@@ -119,7 +119,7 @@ class HyphaDataStore:
 
 
 async def test_data_store(server_url="https://ai.imjoy.io"):
-    from imjoy_rpc.hypha import connect_to_server, login
+    from hypha_rpc import connect_to_server, login
 
     token = await login({"server_url": server_url})
     server = await connect_to_server({"server_url": server_url, "token": token})

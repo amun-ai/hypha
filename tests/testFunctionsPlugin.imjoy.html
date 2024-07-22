@@ -23,7 +23,7 @@
 </config>
 
 <script lang="javascript">
-class ImJoyPlugin {
+class HyphaApp {
     async setup() {
         await api.register_service({
             "id": "hello-functions",
@@ -49,5 +49,5 @@ class ImJoyPlugin {
     }
 }
 
-api.export(new ImJoyPlugin())
+api.export(new HyphaApp())
 </script>

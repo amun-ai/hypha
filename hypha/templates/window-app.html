@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hypha App (window)</title>
+  <meta name="description" content="Template for Hypha app">
+  <meta name="author" content="ImJoy-Team">
+  <script src="{{ rpc_lib_script }}"></script>
+</head>
+
+<body>
+<script>
+window.onload = function() {
+  const config = {{ config | tojson(indent=2) }}
+  const cfg = Object.assign(config, Object.fromEntries(new URLSearchParams(window.location.search)));
+  if(!cfg.server_url) cfg.server_url = window.location.origin;
+  hyphaWebsocketClient.connectToServer(cfg).then(async (api)=>{
+      await hyphaWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
+      {{ script | safe }}
+  }).catch(console.error)
+}
+</script>
+</body>
+</html>

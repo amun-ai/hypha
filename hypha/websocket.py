@@ -1,4 +1,3 @@
-"""Provide an s3 interface."""
 import asyncio
 import logging
 import sys
@@ -6,11 +5,11 @@ import sys
 from fastapi import Query, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
 
-from hypha.core import ClientInfo, UserInfo
-from hypha.core.store import RedisRPCConnection
-from hypha.core.auth import parse_reconnection_token, parse_token
+from hypha.core import UserInfo
+from hypha.core.store import RedisRPCConnection, RedisStore
+from hypha.core.auth import parse_reconnection_token, generate_reconnection_token, parse_token
 import shortuuid
-from jose import jwt
+import json
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket-server")
@@ -18,14 +17,11 @@ logger.setLevel(logging.INFO)
 
 
 class WebsocketServer:
-    """Represent an Websocket server."""
-
-    # pylint: disable=too-many-statements
-
-    def __init__(self, store, path="/ws") -> None:
-        """Set up the websocket server."""
+    def __init__(self, store: RedisStore, path="/ws"):
+        """Initialize websocket server with the store and set up the endpoint."""
         self.store = store
         app = store._app
+        self._stop = False
 
         @app.websocket(path)
         async def websocket_endpoint(
@@ -35,69 +31,96 @@ class WebsocketServer:
             token: str = Query(None),
             reconnection_token: str = Query(None),
         ):
-            async def disconnect(code):
-                logger.info(f"Disconnecting {code}")
-                await websocket.close(code)
-
-            if client_id is None:
-                logger.error("Missing query parameters: workspace, client_id")
-                await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
+            await websocket.accept()
+            # If none of the authentication parameters are provided, wait for the first message
+            if not workspace and not client_id and not token and not reconnection_token:
+                # Wait for the first message which should contain the authentication information
+                auth_info = await websocket.receive_text()
+                # Parse the authentication information, e.g., JSON with token and/or reconnection_token
+                try:
+                    auth_data = json.loads(auth_info)
+                    token = auth_data.get("token")
+                    reconnection_token = auth_data.get("reconnection_token")
+                    # Optionally, you can also update workspace and client_id if they are sent in the first message
+                    workspace = auth_data.get("workspace")
+                    client_id = auth_data.get("client_id")
+                except json.JSONDecodeError:
+                    logger.error("Failed to decode authentication information")
+                    self.disconnect(websocket, reason="Failed to decode authentication information", code=status.WS_1003_UNSUPPORTED_DATA)
+                    return
+            else:
+                logger.warning("Rejecting legacy imjoy-rpc client (%s)", client_id)
+                websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Connection rejected, please  upgrade to hypha-rpc which pass the authentication information in the first message")
                 return
 
-            parent_client = None
-            if reconnection_token:
-                logger.info(
-                    f"Reconnecting client via token: {reconnection_token[:5]}..."
+            try:
+                await self.handle_websocket_connection(
+                    websocket, workspace, client_id, token, reconnection_token
                 )
-                try:
-                    user_info, ws, cid = parse_reconnection_token(reconnection_token)
-                except jwt.JWTError as err:
-                    logger.error(
-                        "Invalid reconnection token: %s", {reconnection_token[:5]}
-                    )
-                    await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
-                    return
-                if not await store.disconnected_client_exists(f"{ws}/{cid}"):
-                    logger.warning(
-                        "Client %s was not in the disconnected client list", client_id
-                    )
-                    await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
-                    return
-                _workspace = await store.get_workspace(ws)
-                if _workspace is None:
-                    logger.error(
-                        "Failed to recover the connection (client: %s),"
-                        " workspace has been removed: %s",
-                        cid,
-                        ws,
-                    )
-                    await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
-                    return
+            except Exception as e:
+                if websocket.client_state.name == 'CONNECTED' or websocket.client_state.name == 'CONNECTING':
+                    logger.error(f"Error handling WebSocket connection: {str(e)}")
+                    await self.disconnect(websocket, reason=f"Error handling WebSocket connection: {str(e)}", code=status.WS_1011_INTERNAL_ERROR)
 
-                if client_id != cid:
-                    logger.error(
-                        "Client ID mismatch in the reconnection token %s", client_id
-                    )
-                    await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
-                    return
-                logger.info("Client successfully reconnected: %s/%s", ws, cid)
-                await store.remove_disconnected_client(f"{ws}/{cid}")
+    async def handle_websocket_connection(
+        self, websocket, workspace, client_id, token, reconnection_token
+    ):
+        if client_id is None:
+            logger.error("Missing query parameters: client_id")
+            await self.disconnect(websocket, reason="Missing query parameters: client_id", code=status.WS_1003_UNSUPPORTED_DATA)
+            return
+
+        try:
+            user_info, workspace = await self.authenticate_user(
+                token, reconnection_token, client_id, workspace
+            )
+            
+            # check if client already exists
+            if await self.store.client_exists(workspace, client_id):
+                async with self.store.connect_to_workspace(workspace, "check-client-exists", user_info, timeout=5) as ws:
+                    if await ws.ping(f"{workspace}/{client_id}") == "pong":
+                        reason = f"Client already exists and is active: {workspace}/{client_id}"
+                        logger.error(reason)
+                        await self.disconnect(websocket, reason=reason, code=status.WS_1011_INTERNAL_ERROR)
+                        return
+                    else:
+                        logger.info(f"Client already exists but is inactive: {workspace}/{client_id}")
+                        await self.store.delete_client(workspace, client_id, user_info)
+
+            workspace = await self.setup_workspace_and_permissions(
+                user_info, workspace
+            )
+
+            await self.establish_websocket_communication(
+                websocket,
+                workspace,
+                client_id,
+                user_info,
+            )
+            
+        except Exception as e:
+            logger.exception(f"Error handling WebSocket connection: {str(e)}")
+            await self.disconnect(websocket, reason=f"Error handling WebSocket connection: {str(e)}", code=status.WS_1011_INTERNAL_ERROR)
+
+    async def authenticate_user(
+        self, token, reconnection_token, client_id, workspace
+    ):
+        """Authenticate user and handle reconnection or token authentication."""
+        # Ensure actual implementation calls for parse_reconnection_token and parse_token
+        user_info = None
+        try:
+            if reconnection_token:
+                user_info, ws, cid = parse_reconnection_token(reconnection_token)
+                if workspace and workspace != ws:
+                    logger.error("Workspace mismatch, disconnecting")
+                    raise RuntimeError("Workspace mismatch, disconnecting")
+                elif cid != client_id:
+                    logger.error("Client id mismatch, disconnecting")
+                    raise RuntimeError("Client id mismatch, disconnecting")
+                return user_info, ws
             else:
                 if token:
-                    try:
-                        user_info = parse_token(token)
-                        parent_client = user_info.get_metadata("parent_client")
-                        if parent_client:
-                            logger.info(
-                                "Registering user %s (parent_client: %s)",
-                                user_info.id,
-                                parent_client,
-                            )
-                        await store.register_user(user_info)
-                    except Exception:
-                        logger.error("Invalid token: %s", token)
-                        await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
-                        return
+                    user_info = parse_token(token)
                 else:
                     user_info = UserInfo(
                         id=shortuuid.uuid(),
@@ -108,152 +131,116 @@ class WebsocketServer:
                         scopes=[],
                         expires_at=None,
                     )
-                    await store.register_user(user_info)
-                    logger.info("Anonymized User connected: %s", user_info.id)
+                return user_info, workspace
+        except Exception as e:
+            logger.error(f"Authentication error: {str(e)}")
+            raise RuntimeError(f"Authentication error: {str(e)}")
 
-            if workspace is None:
-                workspace = user_info.id
-                # Anonymous and Temporary users are not allowed to create persistant workspaces
-                persistent = (
-                    not user_info.is_anonymous and "temporary" not in user_info.roles
-                )
-                # If the user disconnected unexpectedly, the workspace will be preserved
-                if not await store.get_user_workspace(user_info.id):
-                    try:
-                        await store.register_workspace(
-                            dict(
-                                name=user_info.id,
-                                owners=[user_info.id],
-                                visibility="protected",
-                                persistent=persistent,
-                                read_only=user_info.is_anonymous,
-                            ),
-                            overwrite=False,
-                        )
-                    except Exception as exp:
-                        logger.error("Failed to create user workspace: %s", exp)
-                        await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
-                        return
-            try:
-                workspace_manager = await store.get_workspace_manager(
-                    workspace, setup=True
-                )
-            except Exception as exp:
-                logger.error(
-                    "Failed to get workspace manager %s, error: %s", workspace, exp
-                )
-                await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
-                return
-            if not await workspace_manager.check_permission(user_info):
-                logger.error(
-                    "Permission denied (workspace: %s,"
-                    " user: %s, client: %s, scopes: %s)",
-                    workspace,
-                    user_info.id,
-                    client_id,
-                    user_info.scopes,
-                )
-                await disconnect(code=status.WS_1003_UNSUPPORTED_DATA)
-                return
+    async def setup_workspace_and_permissions(self, user_info, workspace):
+        """Setup workspace and check permissions."""
+        if workspace is None:
+            workspace = user_info.id
+        
+        assert workspace != "*", "Dynamic workspace is not allowed for this endpoint"
+        # Anonymous and Temporary users are not allowed to create persistant workspaces
+        persistent = not user_info.is_anonymous and "temporary-test-user" not in user_info.roles
 
-            if not reconnection_token and await workspace_manager.check_client_exists(
-                client_id
-            ):
-                logger.error(
-                    "Another client with the same id %s"
-                    " already connected to workspace: %s",
-                    client_id,
-                    workspace,
-                )
-                await disconnect(code=status.WS_1013_TRY_AGAIN_LATER)
-                # await workspace_manager.delete_client(client_id)
-                return
+        # Ensure calls to store for workspace existence and permissions check
+        workspace_exists = await self.store.workspace_exists(workspace)
+        if not workspace_exists:
+            assert workspace == user_info.id, "User can only connect to a pre-existing workspace or their own workspace"
+            # Simplified logic for workspace creation, ensure this matches the actual store method signatures
+            await self.store.register_workspace(
+                {
+                    "name": workspace,
+                    "persistent": persistent,
+                    "owners": [user_info.id],
+                    "visibility": "protected",
+                    "read_only": user_info.is_anonymous,
+                }
+            )
+            logger.info(f"Created workspace: {workspace}")
 
-            await websocket.accept()
+        if not await self.store.check_permission(user_info, workspace):
+            logger.error(f"Permission denied for workspace: {workspace}")
+            raise PermissionError(f"Permission denied for workspace: {workspace}")
+        return workspace
 
+    async def establish_websocket_communication(
+        self,
+        websocket,
+        workspace,
+        client_id,
+        user_info,
+    ):
+        """Establish and manage websocket communication."""
+        conn = None
+        try:
             conn = RedisRPCConnection(
-                workspace_manager._redis,
-                workspace_manager._workspace,
-                client_id,
-                user_info,
+                self.store._event_bus, workspace, client_id, user_info
             )
             conn.on_message(websocket.send_bytes)
+            reconnection_token = generate_reconnection_token(user_info, workspace, client_id, expires_in=2*24*60*60)
+            conn_info = {
+                "manager_id": self.store.manager_id,
+                "workspace": workspace,
+                "client_id": client_id,
+                "user": user_info.model_dump(),
+                "reconnection_token": reconnection_token
+            }
+            conn_info["success"] = True
+            await websocket.send_text(json.dumps(conn_info))
+            while not self._stop:
+                data = await websocket.receive_bytes()
+                await conn.emit_message(data)
+        except WebSocketDisconnect as exp:
+            await self.handle_disconnection(
+                workspace,
+                client_id,
+                user_info,
+                exp.code,
+                exp,
+            )
+        except Exception as e:
+            await self.handle_disconnection(
+                workspace,
+                client_id,
+                user_info,
+                status.WS_1011_INTERNAL_ERROR,
+                e,
+            )
+        finally:
+            if conn:
+                await conn.disconnect()
 
-            if not reconnection_token:
-                await workspace_manager.register_client(
-                    ClientInfo(
-                        id=client_id,
-                        parent=parent_client,
-                        workspace=workspace_manager._workspace,
-                        user_info=user_info,
-                    )
-                )
-
-            try:
-                while True:
-                    data = await websocket.receive_bytes()
-                    await conn.emit_message(data)
-            except WebSocketDisconnect as exp:
+    async def handle_disconnection(
+        self, workspace: str, client_id: str, user_info: UserInfo, code, exp
+    ):
+        """Handle client disconnection with delayed removal for unexpected disconnections."""
+        try:
+            await self.store.delete_client(workspace, client_id, user_info)
+            if code in [status.WS_1000_NORMAL_CLOSURE, status.WS_1001_GOING_AWAY]:
+                # Client disconnected normally, remove immediately
+                logger.info(f"Client disconnected normally: {workspace}/{client_id}")
+            else:
                 logger.info(
-                    "Client disconnected: %s/%s",
-                    workspace_manager._workspace,
-                    client_id,
+                    f"Client disconnected unexpectedly: {workspace}/{client_id}, code: {code}, error: {exp}"
                 )
+        except Exception as e:
+            logger.error(f"Error handling disconnection: {str(e)}")
 
-                if exp.code in [
-                    status.WS_1000_NORMAL_CLOSURE,
-                    status.WS_1001_GOING_AWAY,
-                ]:
-                    logger.info(
-                        "Client disconnected normally: %s/%s",
-                        workspace_manager._workspace,
-                        client_id,
-                    )
-                    try:
-                        await workspace_manager.delete_client(client_id)
-                    except KeyError:
-                        logger.info(
-                            "Client already deleted: %s/%s",
-                            workspace_manager._workspace,
-                            client_id,
-                        )
-                    try:
-                        # Clean up if the client is disconnected normally
-                        await workspace_manager.delete()
-                    except KeyError:
-                        logger.info("Workspace already deleted: %s", workspace)
-                else:
-                    logger.error(
-                        "Websocket (worksapce=%s, client=%s) disconnected"
-                        " unexpectedly: %s (will be removed in %s seconds)",
-                        workspace_manager._workspace,
-                        client_id,
-                        exp,
-                        store.disconnect_delay,
-                    )
-
-                    async def delayed_remove(client_id, workspace_manager):
-                        full_client_id = f"{workspace_manager._workspace}/{client_id}"
-                        await asyncio.sleep(store.disconnect_delay)
-                        exists = await store.disconnected_client_exists(full_client_id)
-                        if exists:
-                            logger.info(
-                                "Removing disconnected client: %s", full_client_id
-                            )
-                            await store.remove_disconnected_client(
-                                full_client_id, remove_workspace=True
-                            )
-
-                    await store.add_disconnected_client(
-                        ClientInfo(
-                            id=client_id,
-                            parent=parent_client,
-                            workspace=workspace_manager._workspace,
-                            user_info=user_info,
-                        )
-                    )
-                    await delayed_remove(client_id, workspace_manager)
+    async def disconnect(self, websocket, reason, code=status.WS_1000_NORMAL_CLOSURE):
+        """Disconnect the websocket connection."""
+        # if not closed
+        if websocket.client_state.name != 'CLOSED':
+            logger.info(f"Disconnecting websocket client with reason: {reason}")
+            await websocket.send_text(json.dumps({"error": reason, "success": False}))
+            await websocket.close(code)
 
     async def is_alive(self):
         """Check if the server is alive."""
         return True
+    
+    async def stop(self):
+        """Stop the server."""
+        self._stop = True

@@ -17,20 +17,7 @@
     "env": "",
     "requirements": [],
     "dependencies": [],
-    "defaults": {"w": 7, "h": 7},
-    "readiness_probe": {
-        "exec": "isReady",
-        "initial_delay_seconds": 1,
-        "period_seconds": 2,
-        "success_threshold": 1,
-        "failure_threshold": 2
-    },
-    "liveness_probe":{
-        "exec": "isAlive",
-        "initial_delay_seconds": 1,
-        "period_seconds": 2,
-        "failure_threshold": 2
-    }
+    "defaults": {"w": 7, "h": 7}
 }
 </config>
 
@@ -41,7 +28,7 @@ function sleep(ms) {
 
 let ready_count = 0
 let alive_count =0
-class ImJoyPlugin {
+class HyphaApp {
     async setup() {
 
     }
@@ -64,7 +51,7 @@ class ImJoyPlugin {
     }
 }
 
-api.export(new ImJoyPlugin())
+api.export(new HyphaApp())
 </script>
 
 <window lang="html">
