@@ -48,14 +48,14 @@ def pytest_sessionfinish(session, exitstatus):
     asyncio.get_event_loop().close()
 
 
-def _generate_token(roles):
+def _generate_token(id, roles):
     # Patch the JWT_SECRET
     auth.JWT_SECRET = JWT_SECRET
 
     root_user_info = UserInfo(
-        id="root",
+        id=id,
         is_anonymous=False,
-        email=None,
+        email=id + "@test.com",
         parent=None,
         roles=roles,
         scopes=[],
@@ -64,26 +64,26 @@ def _generate_token(roles):
     config = {"email": "test@test.com"}
     config["scopes"] = []
     token_config = TokenConfig.model_validate(config)
-    token = generate_presigned_token(root_user_info, token_config)
+    token = generate_presigned_token(root_user_info, token_config, child=False)
     yield token
 
 
 @pytest_asyncio.fixture(name="test_user_token", scope="session")
 def generate_authenticated_user():
     """Generate a test user token."""
-    yield from _generate_token([])
+    yield from _generate_token("user-1", [])
 
 
 @pytest_asyncio.fixture(name="test_user_token_2", scope="session")
 def generate_authenticated_user_2():
     """Generate a test user token."""
-    yield from _generate_token([])
+    yield from _generate_token("user-2", [])
 
 
 @pytest_asyncio.fixture(name="test_user_token_temporary", scope="session")
 def generate_authenticated_user_temporary():
     """Generate a temporary test user token."""
-    yield from _generate_token(["temporary-test-user"])
+    yield from _generate_token("test-user", ["temporary-test-user"])
 
 
 @pytest_asyncio.fixture(name="triton_server", scope="session")
@@ -295,4 +295,4 @@ def minio_server_fixture():
         yield
 
         proc.terminate()
-        shutil.rmtree(dirpath, ignore_errors=True)
+        # shutil.rmtree(dirpath, ignore_errors=True)

@@ -81,17 +81,6 @@ class RedisStore:
         self._ready = False
         self._workspace_manager = None
         self.manager_id = None
-        self._public_workspace = WorkspaceInfo.model_validate(
-            {
-                "name": "public",
-                "persistent": True,
-                "owners": ["root"],
-                "allow_list": [],
-                "deny_list": [],
-                "visibility": "public",
-                "read_only": True,
-            }
-        )
         self._server_info = {
             "public_base_url": self.public_base_url,
             "local_base_url": self.local_base_url,
@@ -155,9 +144,39 @@ class RedisStore:
         await self.setup_root_user()
         self._workspace_manager = await self.register_workspace_manager()
         self.manager_id = self._workspace_manager.get_client_id()
+        try:
+            await self.register_workspace(
+                WorkspaceInfo.model_validate(
+                    {
+                        "name": "root",
+                        "persistent": True,
+                        "owners": ["root"],
+                        "allow_list": [],
+                        "deny_list": [],
+                        "visibility": "protected",
+                        "read_only": False,
+                    }
+                ),
+                overwrite=False,
+            )
+        except RuntimeError:
+            logger.warning("Root workspace already exists.")
 
         try:
-            await self.register_workspace(self._public_workspace, overwrite=False)
+            await self.register_workspace(
+                WorkspaceInfo.model_validate(
+                    {
+                        "name": "public",
+                        "persistent": True,
+                        "owners": ["root"],
+                        "allow_list": [],
+                        "deny_list": [],
+                        "visibility": "public",
+                        "read_only": True,
+                    }
+                ),
+                overwrite=False,
+            )
         except RuntimeError:
             logger.warning("Public workspace already exists.")
 
@@ -253,6 +272,7 @@ class RedisStore:
             self._root_user,
             self._event_bus,
             self._server_info,
+            self._workspace_loader,
         )
         await manager.setup()
         return manager
@@ -306,28 +326,22 @@ class RedisStore:
         )
         return rpc
 
-    async def get_workspace(self, name, load=False):
+    async def get_workspace(self, workspace: str, load: bool = False):
         """Return the workspace information."""
         try:
-            workspace_info = await self._redis.hget("workspaces", name)
-            if workspace_info is None:
-                raise KeyError(f"Workspace not found: {name}")
-            workspace_info = WorkspaceInfo.model_validate(
-                json.loads(workspace_info.decode())
+            return await self._workspace_manager.load_workspace_info(
+                workspace, load=load
             )
-            return workspace_info
         except KeyError:
-            if load and self._workspace_loader:
-                workspace = await self._workspace_loader(name, self._root_user)
-                if not workspace:
-                    return None
-                await self.store.register_workspace(
-                    workspace.model_dump(), overwrite=True
-                )
-                return workspace
-            elif load and not self._workspace_loader:
-                raise RuntimeError("Workspace loader is not configured.")
-        return None
+            return None
+
+    async def set_workspace(
+        self, workspace: WorkspaceInfo, user_info: UserInfo, overwrite: bool = False
+    ):
+        """Set the workspace information."""
+        return await self._workspace_manager._update_workspace(
+            workspace, user_info, overwrite=overwrite
+        )
 
     def set_workspace_loader(self, loader):
         """Set the workspace loader."""

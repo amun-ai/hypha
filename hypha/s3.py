@@ -156,7 +156,7 @@ class S3Controller:
         endpoint_url_public=None,
         s3_admin_type="generic",
         workspace_bucket="hypha-workspaces",
-        local_log_dir="./logs",
+        # local_log_dir="./logs",
         workspace_etc_dir="etc",
         executable_path="",
     ):
@@ -177,7 +177,7 @@ class S3Controller:
         self.endpoint_url_public = endpoint_url_public or endpoint_url
         self.store = store
         self.workspace_bucket = workspace_bucket
-        self.local_log_dir = Path(local_log_dir)
+        # self.local_log_dir = Path(local_log_dir)
         self.workspace_etc_dir = workspace_etc_dir.rstrip("/")
         event_bus = store.get_event_bus()
 
@@ -198,7 +198,7 @@ class S3Controller:
         store.set_workspace_loader(self._workspace_loader)
 
         event_bus.on_local(
-            "workspace_registered",
+            "workspace_loaded",
             lambda w: asyncio.ensure_future(self._setup_workspace(w)),
         )
         event_bus.on_local(
@@ -206,7 +206,7 @@ class S3Controller:
             lambda w: asyncio.ensure_future(self._save_workspace_config(w)),
         )
         event_bus.on_local(
-            "workspace_removed",
+            "workspace_unloaded",
             lambda w: asyncio.ensure_future(self._cleanup_workspace(w)),
         )
 
@@ -333,7 +333,7 @@ class S3Controller:
                 logger.info("Loaded workspace from s3: %s", workspace_name)
                 return workspace
         except ClientError as ex:
-            if ex.response['Error']['Code'] == 'NoSuchKey':
+            if ex.response["Error"]["Code"] == "NoSuchKey":
                 return None
 
     async def _upload_file(self, path: str, request: Request):
@@ -541,8 +541,8 @@ class S3Controller:
         if workspace.read_only:
             return
         # Save the workspace info
-        workspace_dir = self.local_log_dir / workspace.name
-        os.makedirs(workspace_dir, exist_ok=True)
+        # workspace_dir = self.local_log_dir / workspace.name
+        # os.makedirs(workspace_dir, exist_ok=True)
         await self._save_workspace_config(workspace.model_dump())
         if self.minio_client:
             # make sure we have the root user in every workspace

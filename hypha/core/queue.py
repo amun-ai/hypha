@@ -16,7 +16,7 @@ def create_queue_service(store: RedisStore):
     redis: aioredis.FakeRedis = store.get_redis()
     event_bus = store.get_event_bus()
 
-    async def on_workspace_removed(workspace):
+    async def on_workspace_unloaded(workspace):
         # delete all the keys that start with workspace["name"] + ":q:"
         keys_pattern = workspace["name"] + ":q:*"
         cursor = "0"
@@ -27,7 +27,7 @@ def create_queue_service(store: RedisStore):
                 await redis.delete(*keys)
         logger.info("Removed queue keys for workspace: %s", workspace["name"])
 
-    event_bus.on_local("workspace_removed", on_workspace_removed)
+    event_bus.on_local("workspace_unloaded", on_workspace_unloaded)
 
     async def push_task(queue_name, task: dict, context: dict = None):
         workspace = context["ws"]
