@@ -213,7 +213,8 @@ class WorkspaceManager:
         logger.info("Registering service %s to %s", service.id, self._workspace)
         rpc = await self.get_rpc()
         sv = await rpc.get_remote_service(context["from"] + ":built-in")
-        service["config"] = service.get("config", {})
+        if "config" not in service:
+            service["config"] = {}
         service["config"]["workspace"] = self._workspace
         service = await sv.register_service(service, **kwargs)
         assert "/" not in service["id"], "Service id must not contain '/'"
