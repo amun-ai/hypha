@@ -7,7 +7,6 @@ import sys
 from typing import Optional, Union
 from contextlib import asynccontextmanager
 
-import shortuuid
 from fakeredis import aioredis
 from hypha_rpc import RPC
 from pydantic import BaseModel
@@ -22,7 +21,7 @@ from hypha.core import (
     ServiceInfo,
 )
 from hypha.core.auth import generate_presigned_token
-from hypha.utils import EventBus
+from hypha.utils import EventBus, random_id
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("workspace")
@@ -70,7 +69,7 @@ class WorkspaceManager:
         """Setup the workspace manager."""
         if self._initialized:
             return self._rpc
-        self._client_id = "workspace-manager-" + shortuuid.uuid()
+        self._client_id = "workspace-manager-" + random_id(readable=False)
         rpc = self._create_rpc(self._client_id)
         self._rpc = rpc
         rpc.on("service-added", self._add_service_handler)
@@ -276,7 +275,6 @@ class WorkspaceManager:
         elif "scopes" not in config:
             config["scopes"] = [ws]
         config["email"] = user_info.email
-        config["parent_client"] = context["from"].split(":")[0]
         token_config = TokenConfig.model_validate(config)
         for ws in config["scopes"]:
             if not await self.check_permission(user_info, ws, context=context):
@@ -687,7 +685,7 @@ class WorkspaceManager:
                 self._event_bus.emit("workspace_loaded", workspace_info.model_dump())
                 return workspace_info
             elif load and not self._workspace_loader:
-                raise RuntimeError(
+                raise KeyError(
                     "Workspace not found and the workspace loader is not configured."
                 )
             else:
@@ -786,7 +784,7 @@ class WorkspaceManager:
         svc = await self.get_service(service_id, mode="random", context=context)
         # Create a rpc client for getting the launcher service as user.
         rpc = self._create_rpc(
-            "get-service-" + shortuuid.uuid(),
+            "get-service-" + random_id(readable=False),
             user_info=user_info,
             workspace=ws,
             manager_id=self._client_id,
@@ -1050,12 +1048,13 @@ class WorkspaceManager:
         for key in keys:
             await self._redis.delete(key)
 
-        if user_info.is_anonymous and cws == user_info.id:
-            # unload temporary workspace if the user exits
-            await self.unload(context=context)
-        else:
-            # otherwise delete the workspace if it is empty
-            await self.unload_if_empty(context=context)
+        if await self._redis.hexists("workspaces", cws):
+            if user_info.is_anonymous and cws == user_info.id:
+                # unload temporary workspace if the user exits
+                await self.unload(context=context)
+            else:
+                # otherwise delete the workspace if it is empty
+                await self.unload_if_empty(context=context)
 
     async def unload_if_empty(self, context=None):
         """Delete the workspace if it is empty."""
@@ -1071,21 +1070,22 @@ class WorkspaceManager:
         if not await self.check_permission(user_info, context=context):
             raise PermissionError(f"Permission denied for workspace {ws}")
         winfo = await self.load_workspace_info(ws)
-        await self._redis.hdel("workspaces", ws)
-        self._event_bus.emit("workspace_unloaded", winfo.model_dump())
+
         # list all the clients in the workspace and send a meesage to delete them
         client_keys = await self.list_clients(context=context)
         if len(client_keys) > 0:
+            # if there are too many, log the first 10
+            client_summary = ", ".join(client_keys[:10]) + (
+                "..." if len(client_keys) > 10 else ""
+            )
             logger.info(
-                f"There are {len(client_keys)} clients in the workspace, broadcasting disconnect message."
+                f"There are {len(client_keys)} clients in the workspace {ws}: "
+                + client_summary
             )
-            await self._rpc.emit(
-                {
-                    "to": "*",
-                    "type": "force-exit",
-                    "reason": "workspace unloaded",
-                }
-            )
+            self._event_bus.emit(f"unload:{ws}", "Unloading workspace: " + ws)
+
+        await self._redis.hdel("workspaces", ws)
+        self._event_bus.emit("workspace_unloaded", winfo.model_dump())
         logger.info("Workspace %s unloaded.", ws)
 
     def create_service(self, service_id, service_name=None):

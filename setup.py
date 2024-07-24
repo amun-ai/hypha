@@ -35,6 +35,7 @@ REQUIREMENTS = [
     "ssl;platform_system=='Emscripten'",
     "sse-starlette>=1.6.1",
     "openapi-schema-pydantic",
+    "friendlywords>=1.1.3",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()

@@ -9,7 +9,8 @@ import string
 import time
 from datetime import datetime
 from typing import Callable, List, Optional
-from inspect import isawaitable
+import shortuuid
+import friendlywords as fw
 
 import httpx
 from fastapi.routing import APIRoute
@@ -23,6 +24,15 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 _os_alt_seps: List[str] = list(
     sep for sep in [os.path.sep, os.path.altsep] if sep is not None and sep != "/"
 )
+
+
+def random_id(readable=True):
+    """Generate a random ID."""
+    if readable:
+        return fw.generate("po", separator="-") + "-" + str(int(time.time() * 1000))
+    else:
+        return shortuuid.uuid()
+
 
 PLUGIN_CONFIG_FIELDS = [
     "name",

@@ -2,13 +2,10 @@
 import asyncio
 import json
 import logging
-import random
 import sys
-import time
 from typing import Dict, List, Union
 from pydantic import BaseModel
 
-import shortuuid
 from hypha_rpc import RPC
 from starlette.routing import Mount
 
@@ -21,6 +18,7 @@ from hypha.core import (
 )
 from hypha.core.workspace import WorkspaceManager
 from hypha.startup import run_startup_function
+from hypha.utils import random_id
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("redis-store")
@@ -256,13 +254,18 @@ class RedisStore:
         return await self._workspace_manager.check_permission(user, workspace)
 
     def connect_to_workspace(
-        self, workspace: str, client_id: str, user_info: UserInfo = None, timeout=10
+        self,
+        workspace: str,
+        client_id: str,
+        user_info: UserInfo = None,
+        timeout=10,
+        silent=False,
     ):
         """Connect to a workspace."""
         # user get_workspace_interface
         user_info = user_info or self._root_user
         return self.get_workspace_interface(
-            workspace, user_info, client_id=client_id, timeout=timeout
+            workspace, user_info, client_id=client_id, timeout=timeout, silent=silent
         )
 
     async def register_workspace_manager(self):
@@ -278,14 +281,20 @@ class RedisStore:
         return manager
 
     def get_workspace_interface(
-        self, workspace: str, user_info: UserInfo, client_id=None, timeout=10
+        self,
+        workspace: str,
+        user_info: UserInfo,
+        client_id=None,
+        timeout=10,
+        silent=None,
     ):
         """Get the interface of a workspace."""
         assert workspace, "Workspace name is required"
         assert user_info and isinstance(user_info, UserInfo), "User info is required"
         # the client will be hidden if client_id is None
-        silent = client_id is None
-        client_id = client_id or "workspace-client-" + shortuuid.uuid()
+        if silent is None:
+            silent = client_id is None
+        client_id = client_id or "workspace-client-" + random_id(readable=False)
         rpc = self.create_rpc(workspace, user_info, client_id=client_id, silent=silent)
         return WorkspaceInterfaceContextManager(rpc, timeout=timeout)
 
@@ -303,7 +312,7 @@ class RedisStore:
         silent=True,
     ):
         """Create a rpc object for a workspace."""
-        client_id = client_id or "anonymous-client-" + shortuuid.uuid()
+        client_id = client_id or "anonymous-client-" + random_id(readable=False)
         assert "/" not in client_id
         logger.info("Creating RPC for client %s", client_id)
         assert user_info is not None, "User info is required"
