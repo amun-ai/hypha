@@ -219,9 +219,6 @@ async def test_workspace(fastapi_server):
         {
             "name": "my-test-workspace",
             "owners": ["user1@imjoy.io", "user2@imjoy.io"],
-            "allow_list": [],
-            "deny_list": [],
-            "visibility": "protected",  # or public
         },
         overwrite=True,
     )
@@ -411,9 +408,6 @@ async def test_server_scalability(fastapi_server_redis_1, fastapi_server_redis_2
         {
             "name": "my-test-workspace",
             "owners": ["user1@imjoy.io", "user2@imjoy.io"],
-            "allow_list": [],
-            "deny_list": [],
-            "visibility": "protected",  # or public
         },
         overwrite=True,
     )

@@ -30,7 +30,6 @@ async def test_workspace_loader(fastapi_server, test_user_token):
             dict(
                 name="test-2",
                 owners=[],
-                visibility="protected",
                 persistent=True,
                 read_only=False,
             ),

@@ -29,7 +29,6 @@ async def test_redis_store(redis_store):
         dict(
             name="test",
             owners=[],
-            visibility="protected",
             persistent=True,
             read_only=False,
         ),
@@ -48,7 +47,6 @@ async def test_redis_store(redis_store):
         dict(
             name="test-2",
             owners=[],
-            visibility="protected",
             persistent=True,
             read_only=False,
         ),
