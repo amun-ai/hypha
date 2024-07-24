@@ -103,7 +103,7 @@ class ServerAppController:
             BrowserAppRunner(self.store, in_docker=self.in_docker),
         ]
 
-        @router.get("/apps/{workspace}/{path:path}")
+        @router.get("/{workspace}/a/{path:path}")
         async def get_app_file(
             workspace: str, path: str, token: str = None
         ) -> Response:
@@ -445,11 +445,11 @@ class ServerAppController:
 
         app_id = f"{mhash}"
 
-        public_url = f"{self.public_base_url}/apps/{workspace.name}/{app_id}/index.html"
+        public_url = f"{self.public_base_url}/{workspace.name}/a/{app_id}/index.html"
         card_obj = convert_config_to_card(config, app_id, public_url)
         card_obj.update(
             {
-                "local_url": f"{self.local_base_url}/apps/{workspace.name}/{app_id}/index.html",
+                "local_url": f"{self.local_base_url}/{workspace.name}/a/{app_id}/index.html",
                 "public_url": public_url,
             }
         )
@@ -570,7 +570,7 @@ class ServerAppController:
         server_url = self.local_base_url.replace("http://", "ws://")
         server_url = server_url.replace("https://", "wss://")
         local_url = (
-            f"{self.local_base_url}/apps/{workspace}/{app_id}/index.html?"
+            f"{self.local_base_url}/{workspace}/a/{app_id}/index.html?"
             + f"client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}/ws"
@@ -581,7 +581,7 @@ class ServerAppController:
         server_url = self.public_base_url.replace("http://", "ws://")
         server_url = server_url.replace("https://", "wss://")
         public_url = (
-            f"{self.public_base_url}/apps/{workspace}/{app_id}/index.html?"
+            f"{self.public_base_url}/{workspace}/a/{app_id}/index.html?"
             + f"client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}/ws"
