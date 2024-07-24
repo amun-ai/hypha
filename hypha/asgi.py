@@ -45,12 +45,11 @@ class RemoteASGIApp:
         async with self.store.get_workspace_interface(self.workspace, user_info) as api:
             service = await api.get_service(self.service_id)
             if service.type == "ASGI":
-                interface = {
+                await service.serve({
                     "scope": scope,
                     "receive": receive,
                     "send": send,
-                }
-                await service.serve(interface)
+                })
             elif service.type == "functions":
                 func_name = scope["path"].split("/", 1)[-1] or "index"
                 func_name = func_name.rstrip("/")
