@@ -51,10 +51,10 @@ class WebsocketServer:
                     workspace = auth_data.get("workspace")
                     client_id = auth_data.get("client_id")
                 except json.JSONDecodeError:
-                    logger.error("Failed to decode authentication information")
-                    self.disconnect(
+                    reason = "Failed to decode authentication information"
+                    await self.disconnect(
                         websocket,
-                        reason="Failed to decode authentication information",
+                        reason=reason,
                         code=status.WS_1003_UNSUPPORTED_DATA,
                     )
                     return
@@ -62,7 +62,7 @@ class WebsocketServer:
                 logger.warning("Rejecting legacy imjoy-rpc client (%s)", client_id)
                 websocket.close(
                     code=status.WS_1008_POLICY_VIOLATION,
-                    reason="Connection rejected, please  upgrade to hypha-rpc which pass the authentication information in the first message",
+                    reason="Connection rejected, please  upgrade to `hypha-rpc` which pass the authentication information in the first message",
                 )
                 return
 
@@ -71,29 +71,16 @@ class WebsocketServer:
                     websocket, workspace, client_id, token, reconnection_token
                 )
             except Exception as e:
-                if (
-                    websocket.client_state.name == "CONNECTED"
-                    or websocket.client_state.name == "CONNECTING"
-                ):
-                    logger.error(f"Error handling WebSocket connection: {str(e)}")
-                    await self.disconnect(
-                        websocket,
-                        reason=f"Error handling WebSocket connection: {str(e)}",
-                        code=status.WS_1011_INTERNAL_ERROR,
-                    )
+                reason = f"Error handling WebSocket connection: {str(e)}"
+                await self.disconnect(
+                    websocket,
+                    reason=reason,
+                    code=status.WS_1011_INTERNAL_ERROR,
+                )
 
     async def handle_websocket_connection(
         self, websocket, workspace, client_id, token, reconnection_token
     ):
-        if client_id is None:
-            logger.error("Missing query parameters: client_id")
-            await self.disconnect(
-                websocket,
-                reason="Missing query parameters: client_id",
-                code=status.WS_1003_UNSUPPORTED_DATA,
-            )
-            return
-
         try:
             user_info, workspace = await self.authenticate_user(
                 token, reconnection_token, client_id, workspace
@@ -110,11 +97,11 @@ class WebsocketServer:
             )
 
         except Exception as e:
-            logger.exception(f"Error handling WebSocket connection: {str(e)}")
+            reason = f"Error handling WebSocket connection: {str(e)}"
             await self.disconnect(
                 websocket,
-                reason=f"Error handling WebSocket connection: {str(e)}",
-                code=status.WS_1011_INTERNAL_ERROR,
+                reason=reason,
+                code=status.WS_1003_UNSUPPORTED_DATA,
             )
 
     async def check_client(self, client_id, workspace, user_info):
@@ -286,11 +273,14 @@ class WebsocketServer:
 
     async def disconnect(self, websocket, reason, code=status.WS_1000_NORMAL_CLOSURE):
         """Disconnect the websocket connection."""
-        # if not closed
+        logger.error("Disconnecting, reason: %s", reason)
         if websocket.client_state.name == "CONNECTED":
-            logger.info(f"Disconnecting websocket client with reason: {reason}")
             await websocket.send_text(json.dumps({"error": reason, "success": False}))
-            await websocket.close(code)
+        try:
+            if websocket.client_state.name not in ["CLOSED", "CLOSING"]:
+                await websocket.close(code=code, reason=reason)
+        except Exception as e:
+            logger.error(f"Error disconnecting websocket: {str(e)}")
 
     async def is_alive(self):
         """Check if the server is alive."""
