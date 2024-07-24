@@ -1,10 +1,12 @@
 import logging
 import sys
+import json
 
 import friendlywords as fw
 from fastapi import Query, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
 
+from hypha import __version__
 from hypha.core import UserInfo
 from hypha.core.store import RedisRPCConnection, RedisStore
 from hypha.core.auth import (
@@ -13,7 +15,8 @@ from hypha.core.auth import (
     parse_token,
 )
 from hypha.utils import random_id
-import json
+
+
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket-server")
@@ -227,6 +230,9 @@ class WebsocketServer:
                 user_info, workspace, client_id, expires_in=2 * 24 * 60 * 60
             )
             conn_info = {
+                "hypha_version": __version__,
+                "public_base_url": self.store.public_base_url,
+                "local_base_url": self.store.local_base_url,
                 "manager_id": self.store.manager_id,
                 "workspace": workspace,
                 "client_id": client_id,
