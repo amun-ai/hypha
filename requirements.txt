@@ -21,5 +21,4 @@ httpx==0.26.0
 pyotritonclient==0.2.6
 fakeredis==2.20.0
 redis==4.6.0
-sse-starlette==1.6.5
 friendlywords==1.1.3
