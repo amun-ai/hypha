@@ -19,80 +19,102 @@ logger.setLevel(logging.INFO)
 class RemoteASGIApp:
     """Wrapper for a remote ASGI app."""
 
-    def __init__(self, service: ServiceInfo) -> None:
+    def __init__(self, store, workspace, service_id) -> None:
         """Initialize the ASGI app."""
-        self.service = service
-        assert self.service.type in ["ASGI", "functions"]
-        if self.service.type == "ASGI":
-            assert not self.service.config.get(
-                "require_context"
-            ), "require_context must be False/None for ASGI apps"
-            assert self.service.serve is not None, "No serve function defined"
+        self.store = store
+        self.workspace = workspace
+        self.service_id = service_id
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Handle requests for the ASGI app."""
+
         scope = {
             k: scope[k]
             for k in scope
             if isinstance(scope[k], (str, int, float, bool, tuple, list, dict, bytes))
         }
-        if self.service.type == "ASGI":
-            interface = {
-                "scope": scope,
-                "receive": receive,
-                "send": send,
-            }
-            await self.service.serve(interface)
-        elif self.service.type == "functions":
-            func_name = scope["path"].split("/", 1)[-1] or "index"
-            func_name = func_name.rstrip("/")
+        authorizations = [
+            a[1].decode("utf-8")
+            for a in scope["headers"]
+            if a[0].lower() == b"authorization"
+        ]
+        if authorizations:
+            user_info = parse_token(authorizations[0], allow_anonymous=True)
+        else:
+            user_info = parse_token(None, allow_anonymous=True)
+        async with self.store.get_workspace_interface(self.workspace, user_info) as api:
+            service = await api.get_service(self.service_id)
+            if service.type == "ASGI":
+                interface = {
+                    "scope": scope,
+                    "receive": receive,
+                    "send": send,
+                }
+                await service.serve(interface)
+            elif service.type == "functions":
+                func_name = scope["path"].split("/", 1)[-1] or "index"
+                func_name = func_name.rstrip("/")
 
-            if func_name in self.service and callable(self.service[func_name]):
-                scope["query_string"] = scope["query_string"].decode("utf-8")
-                scope["raw_path"] = scope["raw_path"].decode("latin-1")
-                scope["headers"] = dict(Headers(scope=scope).items())
-                event = await receive()
-                body = event["body"]
-                while event.get("more_body"):
-                    body += await receive()["body"]
-                scope["body"] = body or None
-                func = self.service[func_name]
-                try:
-                    authorization = scope["headers"].get("authorization")
-                    if authorization:
-                        user_info = parse_token(authorization, allow_anonymouse=True)
-                        user_info = user_info.model_dump()
-                    else:
-                        user_info = None
-                    scope["context"] = {"user": user_info, "_rkwargs": True}
-                    result = await func(scope)
-                    headers = Headers(headers=result.get("headers"))
-                    body = result.get("body")
-                    status = result.get("status", 200)
-                    assert isinstance(status, int)
-                    start = {
-                        "type": "http.response.start",
-                        "status": status,
-                        "headers": headers.raw,
-                    }
-                    if not body:
-                        start["more_body"] = False
-                    await send(start)
-                    if body:
-                        if not isinstance(body, bytes):
-                            body = body.encode()
+                if func_name in service and callable(service[func_name]):
+                    scope["query_string"] = scope["query_string"].decode("utf-8")
+                    scope["raw_path"] = scope["raw_path"].decode("latin-1")
+                    scope["headers"] = dict(Headers(scope=scope).items())
+                    event = await receive()
+                    body = event["body"]
+                    while event.get("more_body"):
+                        body += await receive()["body"]
+                    scope["body"] = body or None
+                    func = service[func_name]
+                    try:
+                        scope["context"] = {
+                            "user": user_info.model_dump(),
+                            "_rkwargs": True,
+                        }
+                        result = await func(scope)
+                        headers = Headers(headers=result.get("headers"))
+                        body = result.get("body")
+                        status = result.get("status", 200)
+                        assert isinstance(status, int)
+                        start = {
+                            "type": "http.response.start",
+                            "status": status,
+                            "headers": headers.raw,
+                        }
+                        if not body:
+                            start["more_body"] = False
+                        await send(start)
+                        if body:
+                            if not isinstance(body, bytes):
+                                body = body.encode()
+                            await send(
+                                {
+                                    "type": "http.response.body",
+                                    "body": body,
+                                    "more_body": False,
+                                }
+                            )
+                    except Exception:  # pylint: disable=broad-except
+                        await send(
+                            {
+                                "type": "http.response.start",
+                                "status": 500,
+                                "headers": [
+                                    [b"content-type", b"text/plain"],
+                                ],
+                            }
+                        )
                         await send(
                             {
                                 "type": "http.response.body",
-                                "body": body,
+                                "body": f"{traceback.format_exc()}".encode(),
                                 "more_body": False,
                             }
                         )
-                except Exception:  # pylint: disable=broad-except
+                else:
                     await send(
                         {
                             "type": "http.response.start",
-                            "status": 500,
+                            "status": 404,
                             "headers": [
                                 [b"content-type", b"text/plain"],
                             ],
@@ -101,27 +123,10 @@ class RemoteASGIApp:
                     await send(
                         {
                             "type": "http.response.body",
-                            "body": f"{traceback.format_exc()}".encode(),
+                            "body": b"Not Found",
                             "more_body": False,
                         }
                     )
-            else:
-                await send(
-                    {
-                        "type": "http.response.start",
-                        "status": 404,
-                        "headers": [
-                            [b"content-type", b"text/plain"],
-                        ],
-                    }
-                )
-                await send(
-                    {
-                        "type": "http.response.body",
-                        "body": b"Not Found",
-                        "more_body": False,
-                    }
-                )
 
 
 class ASGIGateway:
@@ -158,18 +163,12 @@ class ASGIGateway:
 
         if service.type in ["ASGI", "functions"]:
             workspace = service.config.workspace
-            # TODO: extract the user info and pass it
-            # TODO: Support multiple worker processes
-            async with self.store.get_workspace_interface(
-                workspace, self.store.get_root_user()
-            ) as api:
-                service = await api.get_service(service.id)
             service_id = service.id
             if ":" in service_id:  # Remove client_id
                 service_id = service_id.split(":")[-1]
             subpath = f"/{workspace}/apps/{service_id}"
             app = PatchedCORSMiddleware(
-                RemoteASGIApp(service),
+                RemoteASGIApp(self.store, workspace, service_id),
                 allow_origins=self.allow_origins or ["*"],
                 allow_methods=self.allow_methods or ["*"],
                 allow_headers=self.allow_headers or ["*"],

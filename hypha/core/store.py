@@ -324,6 +324,7 @@ class RedisStore:
             client_id=client_id,
             default_context=default_context,
             manager_id=self.manager_id,
+            workspace=workspace,
             silent=silent,
         )
         rpc.register_codec(

@@ -246,8 +246,10 @@ class RedisRPCConnection:
     async def emit_message(self, data: Union[dict, bytes]):
         """Send message after packing additional info."""
         assert isinstance(data, bytes), "Data must be bytes"
-        assert self._handle_message is not None, "No handler set for messages"
-
+        if self._stop:
+            raise ValueError(
+                f"Connection has already been closed (client: {self._workspace}/{self._client_id})"
+            )
         unpacker = msgpack.Unpacker(io.BytesIO(data))
         message = unpacker.unpack()
         pos = unpacker.tell()
