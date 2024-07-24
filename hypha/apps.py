@@ -187,7 +187,7 @@ class ServerAppController:
 
     async def _on_workspace_unloaded(self, workspace: dict):
         # Shutdown the apps in the workspace
-        for app in self._sessions.values():
+        for app in list(self._sessions.values()):
             if app["workspace"] == workspace["name"]:
                 logger.info(
                     "Shutting down app %s (since workspace %s has been removed)",

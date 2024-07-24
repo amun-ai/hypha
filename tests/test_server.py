@@ -326,7 +326,9 @@ async def test_services(fastapi_server):
     )
     service = await api.get_service(service_info)
     assert service["name"] == "test_service"
-    services = await api.list_services({"id": "test_service"})
+    services = await api.list_services(
+        {"workspace": api.config.workspace, "id": "test_service"}
+    )
     assert len(services) == 1
 
     service_info = await api.register_service(

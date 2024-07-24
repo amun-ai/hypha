@@ -29,7 +29,11 @@ _os_alt_seps: List[str] = list(
 def random_id(readable=True):
     """Generate a random ID."""
     if readable:
-        return fw.generate("po", separator="-") + "-" + str(int(time.time() * 1000))
+        return (
+            fw.generate("po", separator="-")
+            + "-"
+            + f"{int((time.time() % 1) * 100000000):08d}"
+        )
     else:
         return shortuuid.uuid()
 

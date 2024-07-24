@@ -156,8 +156,11 @@ class WorkspaceManager:
         self, user_info: UserInfo, context: Optional[dict] = None
     ) -> list[dict]:
         """Get the bookmarked workspaces for the user."""
-        user_workspace = await self.load_workspace_info(user_info.id)
-        return user_workspace.config.get("bookmarks", [])
+        try:
+            user_workspace = await self.load_workspace_info(user_info.id)
+            return user_workspace.config.get("bookmarks", [])
+        except KeyError:
+            return []
 
     async def create_workspace(
         self,
@@ -928,7 +931,28 @@ class WorkspaceManager:
     async def list_workspaces(self, context=None):
         """Get all workspaces."""
         user_info = UserInfo.model_validate(context["user"])
+        workspace_info = await self._redis.hget("workspaces", context["ws"])
+        if workspace_info is None:
+            logger.warning(
+                "Client is operating in a non-existing workspace: %s", context["ws"]
+            )
+            return []
+        else:
+            workspace = WorkspaceInfo.model_validate(
+                json.loads(workspace_info.decode())
+            )
         workspaces = await self._get_bookmarked_workspaces(user_info, context=context)
+        workspaces = [
+            {"name": w["name"], "description": w["description"]}
+            for w in workspaces
+            if w["name"] != workspace.name
+        ]
+        workspaces = workspaces + [
+            {
+                "name": workspace.name,
+                "description": workspace.description,
+            }
+        ]
         return workspaces
 
     async def check_permission(

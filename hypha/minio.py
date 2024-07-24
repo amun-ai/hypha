@@ -374,7 +374,6 @@ class MinioClient:
         if isinstance(policy, dict):
             content = json.dumps(policy)
             with tempfile.NamedTemporaryFile(suffix=".json") as tmp:
-                print(tmp.name)
                 tmp.write(content.encode("utf-8"))
                 tmp.flush()
                 file = tmp.name

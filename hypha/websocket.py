@@ -201,9 +201,11 @@ class WebsocketServer:
         conn = None
 
         async def force_disconnect(_):
-            self._stop = True
             logger.info(
                 f"Unloading workspace, force disconnecting websocket client: {workspace}/{client_id}"
+            )
+            await self.disconnect(
+                websocket, "Workspace unloaded: " + workspace, status.WS_1001_GOING_AWAY
             )
 
         try:
@@ -230,7 +232,11 @@ class WebsocketServer:
             while not self._stop:
                 data = await websocket.receive_bytes()
                 await conn.emit_message(data)
-            await conn.disconnect("Client disconnected normally")
+            if self._stop:
+                logger.info("Server is stopping, disconnecting client")
+                await self.disconnect(
+                    websocket, "Server is stopping", status.WS_1001_GOING_AWAY
+                )
         except WebSocketDisconnect as exp:
             await self.handle_disconnection(
                 workspace,
@@ -239,7 +245,6 @@ class WebsocketServer:
                 exp.code,
                 exp,
             )
-            await conn.disconnect("Disconnected due to error: " + str(exp))
         except Exception as e:
             await self.handle_disconnection(
                 workspace,
@@ -248,12 +253,9 @@ class WebsocketServer:
                 status.WS_1011_INTERNAL_ERROR,
                 e,
             )
-            await conn.disconnect("Disconnected due to error: " + str(e))
         finally:
+            await conn.disconnect("disconnected")
             event_bus.off_local(f"unload:{workspace}", force_disconnect)
-            await self.disconnect(
-                websocket, "Workspace Unloaded: " + workspace, status.WS_1001_GOING_AWAY
-            )
 
     async def handle_disconnection(
         self, workspace: str, client_id: str, user_info: UserInfo, code, exp
