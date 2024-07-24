@@ -73,7 +73,7 @@ def login_optional(authorization: str = Header(None)):
     If authorization code is valid the user info is returned,
     If the code is invalid an an anonymouse user is created.
     """
-    return parse_token(authorization, allow_anonymouse=True)
+    return parse_token(authorization, allow_anonymous=True)
 
 
 def login_required(authorization: str = Header(None)):
@@ -221,10 +221,10 @@ def generate_anonymouse_user():
     )
 
 
-def parse_token(authorization: str, allow_anonymouse=False):
+def parse_token(authorization: str, allow_anonymous=False):
     """Parse the token."""
     if not authorization:
-        if allow_anonymouse:
+        if allow_anonymous:
             info = generate_anonymouse_user()
             return get_user_info(info)
         raise HTTPException(status_code=401, detail="Authorization header is expected")

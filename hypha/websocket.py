@@ -17,7 +17,6 @@ from hypha.core.auth import (
 from hypha.utils import random_id
 
 
-
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket-server")
 logger.setLevel(logging.INFO)

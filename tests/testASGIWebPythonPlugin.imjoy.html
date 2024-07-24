@@ -19,7 +19,7 @@
     "env": "",
     "permissions": [],
     "requirements": ["fastapi==0.70.0"],
-    "dependencies": [],
+    "dependencies": []
 }
 </config>
 
@@ -42,6 +42,7 @@ async def setup():
     fastapi_app = create_fastapi_app()
 
     async def serve_fastapi(args):
+        print('=================>', args)
         await fastapi_app(args["scope"], args["receive"], args["send"])
 
     await api.register_service({
