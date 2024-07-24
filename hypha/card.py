@@ -49,7 +49,7 @@ class CardController:
         router = APIRouter()
 
         @router.get("/{workspace}/cards/{path:path}")
-        async def get_app_file(
+        async def get_card_file(
             workspace: str,
             path: str,
             request: Request,
@@ -102,7 +102,7 @@ class CardController:
         ), f"Failed to undeploy app: {name}"
         self.event_bus.emit("card_removed", f"{ws}/{name}")
 
-    def list(self, prefix: str = None, context: dict = None):
+    def list(self, prefix: str = "", context: dict = None):
         """List all the cards."""
         ws = context["ws"]
         prefix = safe_join(ws, prefix)
@@ -116,7 +116,7 @@ class CardController:
             parts = os.path.split(item["name"])
             ws = parts[0]
             name = "/".join(parts[1:])
-            ret.append({"name": name, "url": f"{ws}/cards/{item['name']}"})
+            ret.append({"name": name, "url": f"{ws}/cards/{name}"})
         return ret
 
     def get_card_service(self):

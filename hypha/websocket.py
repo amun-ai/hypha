@@ -277,7 +277,7 @@ class WebsocketServer:
         if websocket.client_state.name == "CONNECTED":
             await websocket.send_text(json.dumps({"error": reason, "success": False}))
         try:
-            if websocket.client_state.name not in ["CLOSED", "CLOSING"]:
+            if websocket.client_state.name not in ["CLOSED", "CLOSING", "DISCONNECTED"]:
                 await websocket.close(code=code, reason=reason)
         except Exception as e:
             logger.error(f"Error disconnecting websocket: {str(e)}")

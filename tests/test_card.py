@@ -14,16 +14,16 @@ async def test_card_controller(minio_server, fastapi_server):
     api = await connect_to_server(
         {"name": "test deploy client", "server_url": WS_SERVER_URL}
     )
-    s3controller = await api.get_service("public/*:card")
+    card_controller = await api.get_service("public/*:card")
 
     source = "api.log('hello')"
-    await s3controller.save(name="test.js", source=source)
-    apps = await s3controller.list()
+    await card_controller.save(name="test.js", source=source)
+    apps = await card_controller.list()
     assert find_item(apps, "name", "test.js")
     app = find_item(apps, "name", "test.js")
     response = requests.get(f"{SERVER_URL}/{app['url']}")
     assert response.ok
     assert response.text == source
-    await s3controller.remove(name="test.js")
-    apps = await s3controller.list()
+    await card_controller.remove(name="test.js")
+    apps = await card_controller.list()
     assert not find_item(apps, "name", "test.js")
