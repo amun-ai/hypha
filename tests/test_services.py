@@ -13,30 +13,32 @@ pytestmark = pytest.mark.asyncio
 
 async def test_login(fastapi_server):
     """Test login to the server."""
-    api = await connect_to_server({"name": "test client", "server_url": SERVER_URL})
-    svc = await api.get_service("public/*:hypha-login")
-    assert svc and callable(svc.start)
+    async with connect_to_server(
+        {"name": "test client", "server_url": SERVER_URL}
+    ) as api:
+        svc = await api.get_service("public/*:hypha-login")
+        assert svc and callable(svc.start)
 
-    TOKEN = "sf31df234"
+        TOKEN = "sf31df234"
 
-    async def callback(context):
-        print(f"By passing login: {context['login_url']}")
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(context["login_url"] + "?key=" + context["key"])
-            assert resp.status_code == 200, resp.text
-            assert "Hypha Account" in resp.text
-            assert "{{ report_url }}" not in resp.text
-            assert context["report_url"] in resp.text
-            resp = await client.get(
-                context["report_url"] + "?key=" + context["key"] + "&token=" + TOKEN
-            )
-            assert resp.status_code == 200, resp.text
+        async def callback(context):
+            print(f"By passing login: {context['login_url']}")
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.get(context["login_url"] + "?key=" + context["key"])
+                assert resp.status_code == 200, resp.text
+                assert "Hypha Account" in resp.text
+                assert "{{ report_url }}" not in resp.text
+                assert context["report_url"] in resp.text
+                resp = await client.get(
+                    context["report_url"] + "?key=" + context["key"] + "&token=" + TOKEN
+                )
+                assert resp.status_code == 200, resp.text
 
-    token = await login(
-        {
-            "server_url": SERVER_URL,
-            "login_callback": callback,
-            "login_timeout": 3,
-        }
-    )
-    assert token == TOKEN
+        token = await login(
+            {
+                "server_url": SERVER_URL,
+                "login_callback": callback,
+                "login_timeout": 3,
+            }
+        )
+        assert token == TOKEN
