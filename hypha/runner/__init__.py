@@ -7,7 +7,6 @@ import os
 import re
 import sys
 import urllib.request
-from types import ModuleType
 
 import aiofiles
 import yaml

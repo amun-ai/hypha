@@ -32,7 +32,6 @@ class TokenConfig(BaseModel):
     scopes: List[str]
     expires_in: Optional[float] = None
     email: Optional[EmailStr] = None
-    parent_client: Optional[str] = None
 
 
 class VisibilityEnum(str, Enum):
@@ -285,8 +284,9 @@ class RedisRPCConnection:
                 f"{self._workspace}/{self._client_id}:msg", self._handle_message
             )
             self._event_bus.off(f"{self._workspace}/*:msg", self._handle_message)
+
         self._handle_message = None
-        logger.info(f"Disconnected: {reason}")
+        logger.info(f"Redis Connection Disconnected: {reason}")
         if self._disconnect_handler:
             await self._disconnect_handler(reason)
 
@@ -370,7 +370,7 @@ class RedisEventBus:
         if asyncio.iscoroutine(local_task):
             await local_task
 
-    def emit(self, event_name, data=None):
+    def emit(self, event_name, data):
         """Emit an event."""
         if not self._ready.done():
             self._ready.set_result(True)
@@ -390,7 +390,9 @@ class RedisEventBus:
             data_type = "s:"
             data = data.encode("utf-8")
         else:
-            assert isinstance(data, (str, bytes)), "Data must be a string or bytes"
+            assert data and isinstance(
+                data, (str, bytes)
+            ), "Data must be a string or bytes"
         global_task = self._loop.create_task(
             self._redis.publish("event:" + data_type + event_name, data)
         )

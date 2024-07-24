@@ -22,3 +22,4 @@ pyotritonclient==0.2.6
 fakeredis==2.21.3
 redis==4.6.0
 sse-starlette==1.6.5
+friendlywords==1.1.3

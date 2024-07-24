@@ -18,7 +18,7 @@ from jose import jwt
 from pydantic import BaseModel  # pylint: disable=no-name-in-module
 
 from hypha.core import TokenConfig, UserInfo
-from hypha.utils import AsyncTTLCache
+from hypha.utils import AsyncTTLCache, random_id
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("auth")
@@ -121,8 +121,6 @@ def get_user_info(token):
         scopes=token.scopes,
         expires_at=expires_at,
     )
-    if credentials.get("pc"):
-        info.set_metadata("parent_client", credentials.get("pc"))
     return info
 
 
@@ -209,7 +207,7 @@ def generate_anonymouse_user():
     return ValidToken(
         credentials={
             "iss": AUTH0_ISSUER,
-            "sub": shortuuid.uuid(),  # user_id
+            "sub": random_id(readable=True),  # user_id
             "aud": AUTH0_AUDIENCE,
             "iat": iat,
             "exp": iat + 600,
@@ -277,7 +275,7 @@ def generate_presigned_token(
 
     if child:
         # always generate a new user id
-        uid = shortuuid.uuid()
+        uid = random_id(readable=True)
         parent = user_info.parent if user_info.parent else user_info.id
         email = config.email
     else:
@@ -300,7 +298,6 @@ def generate_presigned_token(
             "exp": expires_at,
             "scope": " ".join(scopes),
             "parent": parent,
-            "pc": config.parent_client,
             "gty": "client-credentials",
             AUTH0_NAMESPACE + "roles": roles,
             AUTH0_NAMESPACE + "email": email,
@@ -358,7 +355,7 @@ def parse_user(token):
         uid = user_info.id
         logger.info("User connected: %s", uid)
     else:
-        uid = shortuuid.uuid()
+        uid = random_id(readable=True)
         user_info = UserInfo(
             id=uid,
             is_anonymous=True,
@@ -402,7 +399,7 @@ async def register_login_service(server):
 
     async def start_login():
         """Start the login process."""
-        key = str(shortuuid.uuid())
+        key = str(random_id(readable=True))
         await cache.add(key, False)
         return {
             "login_url": f"{login_url}?key={key}",

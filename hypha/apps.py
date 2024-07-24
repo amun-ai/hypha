@@ -14,7 +14,6 @@ import aiofiles
 import base58
 import jose
 import multihash
-import shortuuid
 from aiobotocore.session import get_session
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, FileResponse
@@ -32,6 +31,7 @@ from hypha.utils import (
     list_objects_async,
     remove_objects_async,
     safe_join,
+    random_id,
 )
 
 logging.basicConfig(stream=sys.stdout)
@@ -558,7 +558,7 @@ class ServerAppController:
             )
 
         if client_id is None:
-            client_id = shortuuid.uuid()
+            client_id = random_id(readable=True)
 
         workspace_info = await self.store.get_workspace(workspace, load=True)
         assert workspace, f"Workspace {workspace} not found."

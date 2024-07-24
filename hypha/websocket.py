@@ -1,7 +1,7 @@
-import asyncio
 import logging
 import sys
 
+import friendlywords as fw
 from fastapi import Query, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
 
@@ -12,7 +12,7 @@ from hypha.core.auth import (
     generate_reconnection_token,
     parse_token,
 )
-import shortuuid
+from hypha.utils import random_id
 import json
 
 logging.basicConfig(stream=sys.stdout)
@@ -98,7 +98,7 @@ class WebsocketServer:
             )
 
             workspace = await self.setup_workspace_and_permissions(user_info, workspace)
-            await self.check_client(websocket, client_id, workspace, user_info)
+            await self.check_client(client_id, workspace, user_info)
 
             await self.establish_websocket_communication(
                 websocket,
@@ -115,12 +115,12 @@ class WebsocketServer:
                 code=status.WS_1011_INTERNAL_ERROR,
             )
 
-    async def check_client(self, websocket, client_id, workspace, user_info):
+    async def check_client(self, client_id, workspace, user_info):
         """Check if the client is already connected."""
         # check if client already exists
         if await self.store.client_exists(client_id, workspace):
             async with self.store.connect_to_workspace(
-                workspace, "check-client-exists", user_info, timeout=5
+                workspace, "check-client-exists", user_info, timeout=5, silent=True
             ) as ws:
                 if await ws.ping(f"{workspace}/{client_id}") == "pong":
                     reason = (
@@ -132,7 +132,8 @@ class WebsocketServer:
                     logger.info(
                         f"Client already exists but is inactive: {workspace}/{client_id}"
                     )
-                    await self.store.delete_client(client_id, workspace, user_info)
+            # remove dead client
+            await self.store.delete_client(client_id, workspace, user_info)
 
     async def authenticate_user(self, token, reconnection_token, client_id, workspace):
         """Authenticate user and handle reconnection or token authentication."""
@@ -153,7 +154,7 @@ class WebsocketServer:
                     user_info = parse_token(token)
                 else:
                     user_info = UserInfo(
-                        id=shortuuid.uuid(),
+                        id=random_id(readable=True),
                         is_anonymous=True,
                         email=None,
                         parent=None,
@@ -209,10 +210,18 @@ class WebsocketServer:
     ):
         """Establish and manage websocket communication."""
         conn = None
-        try:
-            conn = RedisRPCConnection(
-                self.store._event_bus, workspace, client_id, user_info
+
+        async def force_disconnect(_):
+            self._stop = True
+            logger.info(
+                f"Unloading workspace, force disconnecting websocket client: {workspace}/{client_id}"
             )
+
+        try:
+            event_bus = self.store.get_event_bus()
+            conn = RedisRPCConnection(event_bus, workspace, client_id, user_info)
+
+            event_bus.on_local(f"unload:{workspace}", force_disconnect)
             conn.on_message(websocket.send_bytes)
             reconnection_token = generate_reconnection_token(
                 user_info, workspace, client_id, expires_in=2 * 24 * 60 * 60
@@ -229,6 +238,7 @@ class WebsocketServer:
             while not self._stop:
                 data = await websocket.receive_bytes()
                 await conn.emit_message(data)
+            await conn.disconnect("Client disconnected normally")
         except WebSocketDisconnect as exp:
             await self.handle_disconnection(
                 workspace,
@@ -237,6 +247,7 @@ class WebsocketServer:
                 exp.code,
                 exp,
             )
+            await conn.disconnect("Disconnected due to error: " + str(exp))
         except Exception as e:
             await self.handle_disconnection(
                 workspace,
@@ -245,9 +256,12 @@ class WebsocketServer:
                 status.WS_1011_INTERNAL_ERROR,
                 e,
             )
+            await conn.disconnect("Disconnected due to error: " + str(e))
         finally:
-            if conn:
-                await conn.disconnect()
+            event_bus.off_local(f"unload:{workspace}", force_disconnect)
+            await self.disconnect(
+                websocket, "Workspace Unloaded: " + workspace, status.WS_1001_GOING_AWAY
+            )
 
     async def handle_disconnection(
         self, workspace: str, client_id: str, user_info: UserInfo, code, exp
@@ -268,7 +282,7 @@ class WebsocketServer:
     async def disconnect(self, websocket, reason, code=status.WS_1000_NORMAL_CLOSURE):
         """Disconnect the websocket connection."""
         # if not closed
-        if websocket.client_state.name != "CLOSED":
+        if websocket.client_state.name == "CONNECTED":
             logger.info(f"Disconnecting websocket client with reason: {reason}")
             await websocket.send_text(json.dumps({"error": reason, "success": False}))
             await websocket.close(code)
