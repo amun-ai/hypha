@@ -293,9 +293,7 @@ async def test_lazy_service(fastapi_server, test_user_token):
     assert service.echo is not None
     assert await service.echo("hello") == "hello"
 
-    long_string = (
-        "h" * 100000
-    )  # FIXME: this is too slow, currently it fails for long strings
+    long_string = "h" * 10000000
     assert await service.echo(long_string) == long_string
 
     await controller.uninstall(app_info.id)
