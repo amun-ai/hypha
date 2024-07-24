@@ -7,9 +7,6 @@ import logging
 import sys
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-from inspect import isawaitable
-
-from fakeredis import aioredis
 import msgpack
 from pydantic import (  # pylint: disable=no-name-in-module
     BaseModel,
@@ -17,6 +14,7 @@ from pydantic import (  # pylint: disable=no-name-in-module
     PrivateAttr,
     constr,
     SerializeAsAny,
+    ConfigDict,
 )
 
 from hypha.utils import EventBus
@@ -52,19 +50,18 @@ class StatusEnum(str, Enum):
 class ServiceConfig(BaseModel):
     """Represent service config."""
 
+    model_config = ConfigDict(extra="allow")
+
     visibility: VisibilityEnum = VisibilityEnum.protected
     require_context: Union[Tuple[str], List[str], bool] = False
     workspace: str = None
     flags: List[str] = []
 
-    class Config:
-        """Set the config for pydantic."""
-
-        extra = "allow"
-
 
 class ServiceInfo(BaseModel):
     """Represent service."""
+
+    model_config = ConfigDict(extra="allow")
 
     config: SerializeAsAny[ServiceConfig]
     id: str
@@ -73,11 +70,6 @@ class ServiceInfo(BaseModel):
     description: Optional[constr(max_length=256)] = ""
     docs: Optional[Dict[str, constr(max_length=1024)]] = None
     app_id: Optional[str] = None
-
-    class Config:
-        """Set the config for pydantic."""
-
-        extra = "allow"
 
     def is_singleton(self):
         """Check if the service is singleton."""
@@ -145,6 +137,8 @@ class ClientInfo(BaseModel):
 class Card(BaseModel):
     """Represent resource description file object."""
 
+    model_config = ConfigDict(extra="allow")
+
     name: str
     id: str
     tags: List[str]
@@ -163,11 +157,6 @@ class Card(BaseModel):
     git_repo: Optional[str] = None
     source: Optional[str] = None
     services: Optional[List[SerializeAsAny[ServiceInfo]]] = None
-
-    class Config:
-        """Set the config for pydantic."""
-
-        extra = "allow"
 
     @classmethod
     def model_validate(cls, data):

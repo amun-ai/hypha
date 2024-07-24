@@ -190,9 +190,8 @@ class RedisStore:
                 raise
 
         if startup_functions:
-            asyncio.create_task(self._run_startup_functions(startup_functions))
+            await self._run_startup_functions(startup_functions)
         self._ready = True
-
         await self.get_event_bus().emit_local("startup")
 
     async def get_public_api(self):
