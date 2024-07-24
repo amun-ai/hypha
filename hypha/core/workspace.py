@@ -16,7 +16,6 @@ from hypha.core import (
     RedisRPCConnection,
     TokenConfig,
     UserInfo,
-    VisibilityEnum,
     WorkspaceInfo,
     ServiceInfo,
 )
@@ -170,12 +169,19 @@ class WorkspaceManager:
     ):
         """Create a new workspace."""
         assert context is not None
-        ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        if not await self.check_permission(user_info, context=context):
-            raise Exception(f"Permission denied for workspace {ws}.")
         if isinstance(config, WorkspaceInfo):
             config = config.model_dump()
+        assert "name" in config, "Workspace name must be provided."
+        ws = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        if user_info.is_anonymous:
+            raise Exception("Only registered user can create workspace.")
+        if not await self.check_permission(user_info, context=context):
+            raise Exception(f"Permission denied for workspace {ws}.")
+        if await self._redis.hexists("workspace", config["name"]):
+            if not overwrite:
+                raise KeyError(f"Workspace already exists: {ws}")
+
         config["persistent"] = config.get("persistent") or False
         if user_info.is_anonymous and config["persistent"]:
             raise Exception("Only registered user can create persistent workspace.")
@@ -214,6 +220,8 @@ class WorkspaceManager:
         card = Card.model_validate(card)
         # TODO: check if the application is already installed
         workspace_info = await self.load_workspace_info(ws)
+        if workspace_info.read_only:
+            raise PermissionError("Workspace is read-only.")
         workspace_info.applications[card.id] = card
         logger.info("Installing application %s to %s", card.id, ws)
         await self._update_workspace(workspace_info, user_info)
@@ -223,6 +231,8 @@ class WorkspaceManager:
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         workspace_info = await self.load_workspace_info(ws)
+        if workspace_info.read_only:
+            raise PermissionError("Workspace is read-only.")
         if card_id not in workspace_info.applications:
             raise KeyError("Application not found: " + card_id)
         del workspace_info.applications[card_id]
@@ -928,7 +938,7 @@ class WorkspaceManager:
         service_api["config"]["workspace"] = workspace
         return service_api
 
-    async def list_workspaces(self, context=None):
+    async def list_workspaces(self, type=None, context=None):
         """Get all workspaces."""
         user_info = UserInfo.model_validate(context["user"])
         workspace_info = await self._redis.hget("workspaces", context["ws"])
@@ -1001,13 +1011,6 @@ class WorkspaceManager:
 
         if _id in workspace.owners:
             return True
-
-        if workspace.visibility == VisibilityEnum.public:
-            if workspace.deny_list and user_info.email not in workspace.deny_list:
-                return True
-        elif workspace.visibility == VisibilityEnum.protected:
-            if workspace.allow_list and user_info.email in workspace.allow_list:
-                return True
 
         return False
 

@@ -174,14 +174,11 @@ class WorkspaceInfo(BaseModel):
     name: str
     persistent: bool
     owners: List[str]
-    visibility: VisibilityEnum
     read_only: bool = False
     description: Optional[str] = None
     icon: Optional[str] = None
     covers: Optional[List[str]] = None
     docs: Optional[str] = None
-    allow_list: Optional[List[str]] = None
-    deny_list: Optional[List[str]] = None
     applications: Optional[Dict[str, Card]] = {}  # installed applications
     config: Optional[Dict[str, Any]] = {}  # workspace custom config
 

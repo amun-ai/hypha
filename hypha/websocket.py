@@ -179,7 +179,6 @@ class WebsocketServer:
                     "name": workspace,
                     "persistent": persistent,
                     "owners": [user_info.id],
-                    "visibility": "protected",
                     "read_only": user_info.is_anonymous,
                 }
             )

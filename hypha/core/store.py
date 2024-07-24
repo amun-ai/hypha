@@ -149,9 +149,6 @@ class RedisStore:
                         "name": "root",
                         "persistent": True,
                         "owners": ["root"],
-                        "allow_list": [],
-                        "deny_list": [],
-                        "visibility": "protected",
                         "read_only": False,
                     }
                 ),
@@ -167,9 +164,6 @@ class RedisStore:
                         "name": "public",
                         "persistent": True,
                         "owners": ["root"],
-                        "allow_list": [],
-                        "deny_list": [],
-                        "visibility": "public",
                         "read_only": True,
                     }
                 ),
