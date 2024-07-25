@@ -236,7 +236,9 @@ def create_application(args):
         public_base_url=public_base_url,
         local_base_url=local_base_url,
         redis_uri=args.redis_uri,
-        disconnect_delay=float(env.get("DISCONNECT_DELAY", "30")),
+        reconnection_token_life_time=float(
+            env.get("RECONNECTION_TOKEN_LIFE_TIME", str(2 * 24 * 60 * 60))
+        ),
     )
 
     websocket_server = WebsocketServer(store, path=norm_url(args.base_path, "/ws"))

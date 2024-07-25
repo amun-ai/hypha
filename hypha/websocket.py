@@ -219,7 +219,7 @@ class WebsocketServer:
             event_bus.on_local(f"unload:{workspace}", force_disconnect)
             conn.on_message(websocket.send_bytes)
             reconnection_token = generate_reconnection_token(
-                user_info, workspace, client_id, expires_in=2 * 24 * 60 * 60
+                user_info, workspace, client_id, expires_in=self.store.reconnection_token_life_time
             )
             conn_info = {
                 "type": "connection_info",
