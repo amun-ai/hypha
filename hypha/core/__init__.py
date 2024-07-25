@@ -196,7 +196,12 @@ class RedisRPCConnection:
     """Represent a Redis connection for handling RPC-like messaging."""
 
     def __init__(
-        self, event_bus: EventBus, workspace: str, client_id: str, user_info: UserInfo
+        self,
+        event_bus: EventBus,
+        workspace: str,
+        client_id: str,
+        user_info: UserInfo,
+        manager_id: str,
     ):
         """Initialize Redis RPC Connection."""
         assert workspace and "/" not in client_id, "Invalid workspace or client ID"
@@ -208,6 +213,7 @@ class RedisRPCConnection:
         self._handle_connect = None
         self._disconnect_handler = None
         self._handle_message = None
+        self.manager_id = manager_id
 
     def on_disconnected(self, handler):
         """Register a disconnection event handler."""

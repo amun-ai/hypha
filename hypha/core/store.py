@@ -3,7 +3,7 @@ import asyncio
 import json
 import logging
 import sys
-from typing import Dict, List, Union
+from typing import List, Union
 from pydantic import BaseModel
 
 from hypha_rpc import RPC
@@ -73,11 +73,13 @@ class RedisStore:
         self._codecs = {}
         self._disconnected_plugins = []
         self._public_workspace_interface = None
+        self._root_workspace_interface = None
         self.public_base_url = public_base_url
         self.local_base_url = local_base_url
         self._public_services: List[ServiceInfo] = []
         self._ready = False
         self._workspace_manager = None
+        self._websocket_server = None
         self.manager_id = None
         self._server_info = {
             "public_base_url": self.public_base_url,
@@ -95,6 +97,16 @@ class RedisStore:
 
         self._root_user = None
         self._event_bus = RedisEventBus(self._redis)
+
+    def set_websocket_server(self, websocket_server):
+        """Set the websocket server."""
+        self._websocket_server = websocket_server
+
+    def kickout_client(self, workspace, client_id, code, reason):
+        """Force disconnect a client."""
+        return self._websocket_server.force_disconnect(
+            workspace, client_id, code, reason
+        )
 
     def get_redis(self):
         return self._redis
@@ -171,7 +183,7 @@ class RedisStore:
             )
         except RuntimeError:
             logger.warning("Public workspace already exists.")
-
+        await self._register_root_services()
         api = await self.get_public_api()
         for service in self._public_services:
             try:
@@ -187,6 +199,23 @@ class RedisStore:
             await self._run_startup_functions(startup_functions)
         self._ready = True
         await self.get_event_bus().emit_local("startup")
+
+    async def _register_root_services(self):
+        """Register root services."""
+        self._root_workspace_interface = await self.get_workspace_interface(
+            "root", self._root_user
+        )
+        await self._root_workspace_interface.register_service(
+            {
+                "id": "admin-utils",
+                "name": "Admin Utilities",
+                "config": {
+                    "visibility": "protected",
+                    "require_context": False,
+                },
+                "kickout_client": self.kickout_client,
+            }
+        )
 
     async def get_public_api(self):
         """Get the public API."""
@@ -310,13 +339,12 @@ class RedisStore:
         logger.info("Creating RPC for client %s", client_id)
         assert user_info is not None, "User info is required"
         connection = RedisRPCConnection(
-            self._event_bus, workspace, client_id, user_info
+            self._event_bus, workspace, client_id, user_info, manager_id=self.manager_id
         )
         rpc = RPC(
             connection,
             client_id=client_id,
             default_context=default_context,
-            manager_id=self.manager_id,
             workspace=workspace,
             silent=silent,
         )

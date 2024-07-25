@@ -186,7 +186,7 @@ async def test_plugin_runner_workspace(fastapi_server):
         assert "echo: a message" in output
 
 
-async def test_workspace(fastapi_server):
+async def test_workspace(fastapi_server, test_user_token):
     """Test the app runner."""
     api = await connect_to_server(
         {
@@ -194,6 +194,7 @@ async def test_workspace(fastapi_server):
             "name": "my app",
             "server_url": WS_SERVER_URL,
             "method_timeout": 20,
+            "token": test_user_token,
         }
     )
     assert api.config.workspace is not None
@@ -338,7 +339,14 @@ async def test_services(fastapi_server):
         overwrite=True,
     )
     # It should be overwritten because it's from the same provider
-    assert len(await api.list_services({"id": "test_service"})) == 1
+    assert (
+        len(
+            await api.list_services(
+                {"workspace": api.config.workspace, "id": "test_service"}
+            )
+        )
+        == 1
+    )
 
     api2 = await connect_to_server(
         {
@@ -398,10 +406,16 @@ async def test_server_reconnection(fastapi_server):
     # TODO: check if the server will remove the client after a while
 
 
-async def test_server_scalability(fastapi_server_redis_1, fastapi_server_redis_2):
+async def test_server_scalability(
+    fastapi_server_redis_1, fastapi_server_redis_2, test_user_token
+):
     """Test services."""
     api = await connect_to_server(
-        {"client_id": "my-app-99", "server_url": SERVER_URL_REDIS_2}
+        {
+            "client_id": "my-app-99",
+            "server_url": SERVER_URL_REDIS_2,
+            "token": test_user_token,
+        }
     )
 
     ws = await api.create_workspace(

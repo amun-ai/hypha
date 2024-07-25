@@ -220,8 +220,6 @@ class WorkspaceManager:
         card = Card.model_validate(card)
         # TODO: check if the application is already installed
         workspace_info = await self.load_workspace_info(ws)
-        if workspace_info.read_only:
-            raise PermissionError("Workspace is read-only.")
         workspace_info.applications[card.id] = card
         logger.info("Installing application %s to %s", card.id, ws)
         await self._update_workspace(workspace_info, user_info)
@@ -231,8 +229,6 @@ class WorkspaceManager:
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         workspace_info = await self.load_workspace_info(ws)
-        if workspace_info.read_only:
-            raise PermissionError("Workspace is read-only.")
         if card_id not in workspace_info.applications:
             raise KeyError("Application not found: " + card_id)
         del workspace_info.applications[card_id]
@@ -607,14 +603,17 @@ class WorkspaceManager:
         logger.info("Creating RPC for client %s", client_id)
         assert isinstance(user_info, UserInfo) or user_info is None
         connection = RedisRPCConnection(
-            self._event_bus, workspace, client_id, (user_info or self._root_user)
+            self._event_bus,
+            workspace,
+            client_id,
+            (user_info or self._root_user),
+            manager_id=manager_id,
         )
         rpc = RPC(
             connection,
             workspace=workspace,
             client_id=client_id,
             default_context=default_context,
-            manager_id=manager_id,
             silent=silent,
         )
         rpc.register_codec(
