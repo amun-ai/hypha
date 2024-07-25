@@ -88,6 +88,13 @@ class WebsocketServer:
                     client_id,
                     user_info,
                 )
+            except RuntimeError as e:
+                reason = f"Failed to validate connection: {str(e)}"
+                await self.disconnect(
+                    websocket,
+                    reason=reason,
+                    code=status.WS_1008_POLICY_VIOLATION,
+                )
             except Exception as e:
                 reason = f"Error handling WebSocket connection: {str(e)}"
                 await self.disconnect(
