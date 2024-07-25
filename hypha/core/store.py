@@ -64,12 +64,11 @@ class RedisStore:
         public_base_url=None,
         local_base_url=None,
         redis_uri=None,
-        disconnect_delay=30,
+        reconnection_token_life_time=2 * 24 * 60 * 60
     ):
         """Initialize the redis store."""
         self._workspace_loader = None
         self._app = app
-        self.disconnect_delay = disconnect_delay
         self._codecs = {}
         self._disconnected_plugins = []
         self._public_workspace_interface = None
@@ -81,6 +80,7 @@ class RedisStore:
         self._workspace_manager = None
         self._websocket_server = None
         self.manager_id = None
+        self.reconnection_token_life_time = reconnection_token_life_time
         self._server_info = {
             "public_base_url": self.public_base_url,
             "local_base_url": self.local_base_url,
