@@ -283,9 +283,9 @@ class ServerAppController:
         )
         local_app_dir = self.apps_dir / workspace / app_id
         mhash = app_id
-        if os.path.exists(local_app_dir):
-            logger.info("Application (%s) is already prepared.", app_id)
-            return
+        # if os.path.exists(local_app_dir):
+        #     logger.info("Application (%s) is already prepared.", app_id)
+        #     return
 
         logger.info("Preparing application (%s).", app_id)
 
