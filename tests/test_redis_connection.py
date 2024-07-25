@@ -61,7 +61,7 @@ async def second_client_same_workspace(event_bus, user_info_user):
 
 @pytest_asyncio.fixture
 async def dynamic_workspace_rpc(event_bus, user_info_user):
-    rpc = RedisRPCConnection(event_bus, "*", "dynamic_client", user_info_user)
+    rpc = RedisRPCConnection(event_bus, "*", "dynamic_client", user_info_user, None)
     return rpc
 
 
