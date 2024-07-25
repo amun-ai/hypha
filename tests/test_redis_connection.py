@@ -43,19 +43,19 @@ async def user_info_user():
 
 @pytest_asyncio.fixture
 async def first_rpc(event_bus, user_info_admin):
-    rpc = RedisRPCConnection(event_bus, "workspace1", "client1", user_info_admin)
+    rpc = RedisRPCConnection(event_bus, "workspace1", "client1", user_info_admin, None)
     return rpc
 
 
 @pytest_asyncio.fixture
 async def another_rpc_connection(event_bus, user_info_user):
-    rpc = RedisRPCConnection(event_bus, "workspace2", "client2", user_info_user)
+    rpc = RedisRPCConnection(event_bus, "workspace2", "client2", user_info_user, None)
     return rpc
 
 
 @pytest_asyncio.fixture
 async def second_client_same_workspace(event_bus, user_info_user):
-    rpc = RedisRPCConnection(event_bus, "workspace1", "client3", user_info_user)
+    rpc = RedisRPCConnection(event_bus, "workspace1", "client3", user_info_user, None)
     return rpc
 
 

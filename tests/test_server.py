@@ -366,8 +366,8 @@ async def test_services(fastapi_server):
         }
     )
     # It should be co-exist because it's from a different provider
-    assert len(await api.list_services({"id": "test_service"})) == 2
-    assert len(await api2.list_services({"id": "test_service"})) == 2
+    assert len(await api.list_services({"workspace": api.config.workspace, "id": "test_service"})) == 2
+    assert len(await api2.list_services({"workspace": api2.config.workspace, "id": "test_service"})) == 2
 
     # service_info = await api.register_service(
     #     {
