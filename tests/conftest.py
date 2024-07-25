@@ -68,6 +68,26 @@ def _generate_token(id, roles):
     yield token
 
 
+@pytest_asyncio.fixture(name="root_user_token", scope="session")
+def generate_root_user_token():
+    """Generate a root user token."""
+    auth.JWT_SECRET = JWT_SECRET
+    root_user_info = UserInfo(
+        id="root",
+        is_anonymous=False,
+        email="root@test.com",
+        parent=None,
+        roles=[],
+        scopes=[],
+        expires_at=None,
+    )
+    config = {"email": "root@test.com"}
+    config["scopes"] = []
+    token_config = TokenConfig.model_validate(config)
+    token = generate_presigned_token(root_user_info, token_config, child=False)
+    yield token
+
+
 @pytest_asyncio.fixture(name="test_user_token", scope="session")
 def generate_authenticated_user():
     """Generate a test user token."""

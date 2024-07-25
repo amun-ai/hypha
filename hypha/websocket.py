@@ -27,7 +27,9 @@ class WebsocketServer:
         """Initialize websocket server with the store and set up the endpoint."""
         self.store = store
         app = store._app
+        self.store.set_websocket_server(self)
         self._stop = False
+        self._websockets = {}
 
         @app.websocket(path)
         async def websocket_endpoint(
@@ -60,15 +62,31 @@ class WebsocketServer:
                     return
             else:
                 logger.warning("Rejecting legacy imjoy-rpc client (%s)", client_id)
-                websocket.close(
+                await websocket.close(
                     code=status.WS_1008_POLICY_VIOLATION,
                     reason="Connection rejected, please  upgrade to `hypha-rpc` which pass the authentication information in the first message",
                 )
                 return
 
             try:
-                await self.handle_websocket_connection(
-                    websocket, workspace, client_id, token, reconnection_token
+                user_info = await self.authenticate_user(
+                    token, reconnection_token, client_id, workspace
+                )
+                workspace = await self.setup_workspace_and_permissions(
+                    user_info, workspace
+                )
+                assert workspace and client_id, (
+                    "Failed to authenticate user to workspace: %s" % workspace
+                )
+
+                self._websockets[f"{workspace}/{client_id}"] = websocket
+
+                await self.check_client(client_id, workspace, user_info)
+                await self.establish_websocket_communication(
+                    websocket,
+                    workspace,
+                    client_id,
+                    user_info,
                 )
             except Exception as e:
                 reason = f"Error handling WebSocket connection: {str(e)}"
@@ -77,32 +95,19 @@ class WebsocketServer:
                     reason=reason,
                     code=status.WS_1011_INTERNAL_ERROR,
                 )
+            finally:
+                if (
+                    workspace
+                    and client_id
+                    and f"{workspace}/{client_id}" in self._websockets
+                ):
+                    del self._websockets[f"{workspace}/{client_id}"]
 
-    async def handle_websocket_connection(
-        self, websocket, workspace, client_id, token, reconnection_token
-    ):
-        try:
-            user_info, workspace = await self.authenticate_user(
-                token, reconnection_token, client_id, workspace
-            )
-
-            workspace = await self.setup_workspace_and_permissions(user_info, workspace)
-            await self.check_client(client_id, workspace, user_info)
-
-            await self.establish_websocket_communication(
-                websocket,
-                workspace,
-                client_id,
-                user_info,
-            )
-
-        except Exception as e:
-            reason = f"Error handling WebSocket connection: {str(e)}"
-            await self.disconnect(
-                websocket,
-                reason=reason,
-                code=status.WS_1003_UNSUPPORTED_DATA,
-            )
+    async def force_disconnect(self, workspace, client_id, code, reason):
+        """Force disconnect a client."""
+        assert f"{workspace}/{client_id}" in self._websockets, "Client not connected"
+        websocket = self._websockets[f"{workspace}/{client_id}"]
+        await websocket.close(code=code, reason=reason)
 
     async def check_client(self, client_id, workspace, user_info):
         """Check if the client is already connected."""
@@ -134,10 +139,11 @@ class WebsocketServer:
                 if workspace and workspace != ws:
                     logger.error("Workspace mismatch, disconnecting")
                     raise RuntimeError("Workspace mismatch, disconnecting")
-                elif cid != client_id:
+                if cid != client_id:
                     logger.error("Client id mismatch, disconnecting")
                     raise RuntimeError("Client id mismatch, disconnecting")
-                return user_info, ws
+                logger.info(f"Client reconnected: {ws}/{cid} using reconnection token")
+                return user_info
             else:
                 if token:
                     user_info = parse_token(token)
@@ -151,7 +157,7 @@ class WebsocketServer:
                         scopes=[],
                         expires_at=None,
                     )
-                return user_info, workspace
+                return user_info
         except Exception as e:
             logger.error(f"Authentication error: {str(e)}")
             raise RuntimeError(f"Authentication error: {str(e)}")
@@ -209,14 +215,14 @@ class WebsocketServer:
 
         try:
             event_bus = self.store.get_event_bus()
-            conn = RedisRPCConnection(event_bus, workspace, client_id, user_info)
-
+            conn = RedisRPCConnection(event_bus, workspace, client_id, user_info, None)
             event_bus.on_local(f"unload:{workspace}", force_disconnect)
             conn.on_message(websocket.send_bytes)
             reconnection_token = generate_reconnection_token(
                 user_info, workspace, client_id, expires_in=2 * 24 * 60 * 60
             )
             conn_info = {
+                "type": "connection_info",
                 "hypha_version": __version__,
                 "public_base_url": self.store.public_base_url,
                 "local_base_url": self.store.local_base_url,
@@ -225,17 +231,44 @@ class WebsocketServer:
                 "client_id": client_id,
                 "user": user_info.model_dump(),
                 "reconnection_token": reconnection_token,
+                "success": True,
             }
-            conn_info["success"] = True
             await websocket.send_text(json.dumps(conn_info))
             while not self._stop:
-                data = await websocket.receive_bytes()
-                await conn.emit_message(data)
+                data = await websocket.receive()
+                if "bytes" in data:
+                    data = data["bytes"]
+                    await conn.emit_message(data)
+                elif "text" in data:
+                    try:
+                        data = data["text"]
+                        if len(data) > 1000:
+                            logger.warning(
+                                "Ignoring long text message: %s...", data[:1000]
+                            )
+                            continue
+                        data = json.loads(data)
+                        if data.get("type") == "ping":
+                            await websocket.send_text(json.dumps({"type": "pong"}))
+                        else:
+                            logger.info("Unknown message type: %s", data.get("type"))
+                    except json.JSONDecodeError:
+                        logger.error("Failed to decode message: %s...", data[:10])
+
             if self._stop:
                 logger.info("Server is stopping, disconnecting client")
                 await self.disconnect(
                     websocket, "Server is stopping", status.WS_1001_GOING_AWAY
                 )
+        except RuntimeError as exp:
+            # this happens when the websocket is closed
+            await self.handle_disconnection(
+                workspace,
+                client_id,
+                user_info,
+                status.WS_1000_NORMAL_CLOSURE,
+                exp,
+            )
         except WebSocketDisconnect as exp:
             await self.handle_disconnection(
                 workspace,
@@ -244,6 +277,8 @@ class WebsocketServer:
                 exp.code,
                 exp,
             )
+        except KeyError as exp:
+            logger.exception(f"KeyError: {str(exp)}")
         except Exception as e:
             await self.handle_disconnection(
                 workspace,
@@ -263,7 +298,6 @@ class WebsocketServer:
         try:
             await self.store.delete_client(client_id, workspace, user_info)
             if code in [status.WS_1000_NORMAL_CLOSURE, status.WS_1001_GOING_AWAY]:
-                # Client disconnected normally, remove immediately
                 logger.info(f"Client disconnected normally: {workspace}/{client_id}")
             else:
                 logger.info(
@@ -276,7 +310,7 @@ class WebsocketServer:
         """Disconnect the websocket connection."""
         logger.error("Disconnecting, reason: %s", reason)
         if websocket.client_state.name == "CONNECTED":
-            await websocket.send_text(json.dumps({"error": reason, "success": False}))
+            await websocket.send_text(json.dumps({"type": "error", "message": reason}))
         try:
             if websocket.client_state.name not in ["CLOSED", "CLOSING", "DISCONNECTED"]:
                 await websocket.close(code=code, reason=reason)

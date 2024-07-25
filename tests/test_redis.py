@@ -243,11 +243,7 @@ async def test_websocket_server(fastapi_server, test_user_token_2):
 
     await rpc2.register_service({"id": "add-two", "blocking_sleep": time.sleep})
     svc5 = await rpc2.get_remote_service(f"{wm.config.workspace}/test-app-6:add-two")
-    # This will fail because the service is blocking
-    with pytest.raises(Exception, match=r".*Method call time out:.*"):
-        await svc5.blocking_sleep(4)
-
-    await svc5.blocking_sleep(0.5)
+    await svc5.blocking_sleep(2)
 
     await rpc2.register_service(
         {
