@@ -4,7 +4,7 @@ import json
 import logging
 import random
 import sys
-from typing import Optional, Union
+from typing import Optional, Union, List
 from contextlib import asynccontextmanager
 
 from fakeredis import aioredis
@@ -153,7 +153,7 @@ class WorkspaceManager:
 
     async def _get_bookmarked_workspaces(
         self, user_info: UserInfo, context: Optional[dict] = None
-    ) -> list[dict]:
+    ) -> List[dict]:
         """Get the bookmarked workspaces for the user."""
         try:
             user_workspace = await self.load_workspace_info(user_info.id)
