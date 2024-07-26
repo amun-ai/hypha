@@ -220,18 +220,18 @@ class RedisRPCConnection:
         self._user_info = user_info.model_dump()
         self._stop = False
         self._event_bus = event_bus
-        self._handle_connect = None
-        self._disconnect_handler = None
+        self._handle_connected = None
+        self._handle_disconnected = None
         self._handle_message = None
         self.manager_id = manager_id
 
     def on_disconnected(self, handler):
         """Register a disconnection event handler."""
-        self._disconnect_handler = handler
+        self._handle_disconnected = handler
 
-    def on_connect(self, handler):
+    def on_connected(self, handler):
         """Register a connection open event handler."""
-        self._handle_connect = handler
+        self._handle_connected = handler
         assert inspect.iscoroutinefunction(
             handler
         ), "Connect handler must be a coroutine"
@@ -242,8 +242,8 @@ class RedisRPCConnection:
         self._event_bus.on(f"{self._workspace}/{self._client_id}:msg", handler)
         # for broadcast messages
         self._event_bus.on(f"{self._workspace}/*:msg", handler)
-        if self._handle_connect:
-            asyncio.create_task(self._handle_connect(self))
+        if self._handle_connected:
+            asyncio.create_task(self._handle_connected(self))
 
     async def emit_message(self, data: Union[dict, bytes]):
         """Send message after packing additional info."""
@@ -291,8 +291,8 @@ class RedisRPCConnection:
 
         self._handle_message = None
         logger.info(f"Redis Connection Disconnected: {reason}")
-        if self._disconnect_handler:
-            await self._disconnect_handler(reason)
+        if self._handle_disconnected:
+            await self._handle_disconnected(reason)
 
 
 class RedisEventBus:
@@ -301,7 +301,7 @@ class RedisEventBus:
     def __init__(self, redis, logger=None) -> None:
         """Initialize the event bus."""
         self._redis = redis
-        self._handle_connect = None
+        self._handle_connected = None
         self._stop = False
         self._local_event_bus = EventBus(logger)
         self._redis_event_bus = EventBus(logger)
