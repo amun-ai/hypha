@@ -17,7 +17,7 @@ from jinja2 import Environment, PackageLoader, select_autoescape
 from jose import jwt
 from pydantic import BaseModel  # pylint: disable=no-name-in-module
 
-from hypha.core import TokenConfig, UserInfo
+from hypha.core import TokenConfig, UserInfo, UserTokenInfo
 from hypha.utils import AsyncTTLCache, random_id
 
 logging.basicConfig(stream=sys.stdout)
@@ -379,23 +379,18 @@ async def register_login_service(server):
     cache = AsyncTTLCache(ttl=int(MAXIMUM_LOGIN_TIME))
     server_url = server.config["public_base_url"]
     login_url = f"{server_url}/{server.config['workspace']}/apps/hypha-login/"
-    report_url = (
-        f"{server_url}/{server.config['workspace']}/services/hypha-login/report"
-    )
-
+    login_service_url=f"{server_url}/{server.config['workspace']}/services/hypha-login"
     jinja_env = Environment(
         loader=PackageLoader("hypha"), autoescape=select_autoescape()
     )
     temp = jinja_env.get_template("login_template.html")
     login_page = temp.render(
-        report_url=report_url,
+        login_service_url=login_service_url,
         auth0_client_id=AUTH0_CLIENT_ID,
         auth0_domain=AUTH0_DOMAIN,
         auth0_audience=AUTH0_AUDIENCE,
         auth0_issuer=AUTH0_ISSUER,
     )
-
-    login_page = login_page.replace("{{ TOKEN_REPORT_URL }}", report_url)
 
     async def start_login():
         """Start the login process."""
@@ -404,7 +399,9 @@ async def register_login_service(server):
         return {
             "login_url": f"{login_url}?key={key}",
             "key": key,
-            "report_url": report_url,
+            "report_url": f"{login_service_url}/report",
+            "check_url": f"{login_service_url}/check",
+            "generate_url": f"{login_service_url}/generate",
         }
 
     async def index(event):
@@ -415,29 +412,44 @@ async def register_login_service(server):
             "body": login_page,
         }
 
-    async def check_login(key, timeout=MAXIMUM_LOGIN_TIME):
+    async def check_login(key, timeout=MAXIMUM_LOGIN_TIME, profile=False):
         """Check the status of a login session."""
         assert key in cache, "Invalid key, key does not exist"
         if timeout <= 0:
-            return await cache.get(key)
+            user_info = await cache.get(key)
+            if user_info:
+                del cache[key]
+            return user_info.model_dump(mode="json") if profile else (user_info and user_info.token)
         count = 0
         while True:
-            token = await cache.get(key)
-            if token is None:
+            user_info = await cache.get(key)
+            if user_info is None:
                 raise Exception(
                     f"Login session expired, the maximum login time is {MAXIMUM_LOGIN_TIME} seconds"
                 )
-            if token:
+            if user_info:
                 del cache[key]
-                return token
+                return user_info.model_dump(mode="json") if profile else user_info.token
             await asyncio.sleep(1)
             count += 1
             if count > timeout:
                 raise Exception("Login timeout")
 
-    async def report_token(key, token):
+    async def report_login(key, token, email=None, email_verified=None, name=None, nickname=None, user_id=None, picture=None):
         """Report a token associated with a login session."""
-        await cache.update(key, token)
+        assert key in cache, "Invalid key, key does not exist or expired"
+        kwargs = {"token": token, "email": email, "email_verified": email_verified, "name": name, "nickname": nickname, "user_id": user_id, "picture": picture}
+        user_info = UserTokenInfo.model_validate(kwargs)
+        await cache.update(key, user_info)
+    
+    async def generate_token(token: str, expires_in: int):
+        """Generate a new user token."""
+        # limit the expiration time to 1 year
+        expires_in = int(expires_in)
+        if expires_in > 31536000:
+            raise ValueError("The maximum expiration time is 1 year (31536000 seconds)")
+        user_info = parse_token(token)
+        return generate_presigned_token(user_info, TokenConfig(scopes=[], expires_in=expires_in))
 
     await server.register_service(
         {
@@ -449,7 +461,8 @@ async def register_login_service(server):
             "index": index,
             "start": start_login,
             "check": check_login,
-            "report": report_token,
+            "report": report_login,
+            "generate": generate_token,
         }
     )
 

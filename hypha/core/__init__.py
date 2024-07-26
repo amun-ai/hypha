@@ -15,6 +15,7 @@ from pydantic import (  # pylint: disable=no-name-in-module
     constr,
     SerializeAsAny,
     ConfigDict,
+    AnyHttpUrl,
 )
 
 from hypha.utils import EventBus
@@ -67,8 +68,8 @@ class ServiceInfo(BaseModel):
     id: str
     name: str
     type: str
-    description: Optional[constr(max_length=256)] = ""
-    docs: Optional[Dict[str, constr(max_length=1024)]] = None
+    description: Optional[constr(max_length=256)] = "" # type: ignore
+    docs: Optional[Dict[str, constr(max_length=1024)]] = None # type: ignore
     app_id: Optional[str] = None
 
     def is_singleton(self):
@@ -88,6 +89,15 @@ class ServiceInfo(BaseModel):
         data["config"] = ServiceConfig.model_validate(data["config"])
         return super().model_validate(data)
 
+class UserTokenInfo(BaseModel):
+    """Represent user profile."""
+    token: constr(max_length=1024) # type: ignore
+    email: Optional[EmailStr] = None
+    email_verified: Optional[bool] = None
+    name: Optional[constr(max_length=64)] = None # type: ignore
+    nickname: Optional[constr(max_length=64)] = None # type: ignore
+    user_id: Optional[constr(max_length=64)] = None # type: ignore
+    picture: Optional[AnyHttpUrl] = None
 
 class UserInfo(BaseModel):
     """Represent user info."""

@@ -6,229 +6,191 @@
     <title>Hypha Account</title>
     <meta name="description" content="Login to Hypha">
     <meta name="author" content="Amun AI AB">
-    <script src="https://cdn.auth0.com/js/auth0-spa-js/2.0/auth0-spa-js.production.js"> </script>
-    <link rel="stylesheet" href="https://unpkg.com/spectre.css/dist/spectre.min.css">
-    <link rel="stylesheet" href="https://unpkg.com/spectre.css/dist/spectre-exp.min.css">
-    <link rel="stylesheet" href="https://unpkg.com/spectre.css/dist/spectre-icons.min.css">
-    <style>
-        /* Style for the login button */
-        .login-btn {
-            height: 65px;
-            width: 300px;
-            font-size: 1.5em;
-            /* Makes the text larger */
-            padding: 20px 40px;
-            /* Increases the size of the button */
-            background-color: #007BFF;
-            /* Blue background */
-            color: white;
-            /* White text */
-            border: none;
-            /* Removes border */
-            display: block;
-            /* Allows for centering with margin */
-            margin: 0 auto;
-            /* Centers the button horizontally */
-            cursor: pointer;
-            /* Changes the cursor on hover */
-            transition: background-color 0.3s ease;
-            /* Makes color change smoother */
-        }
-
-        /* Style for the button on hover */
-        .login-btn:hover {
-            background-color: #0056b3;
-            /* Darker blue */
-        }
-
-        /* Style for the button on click */
-        .login-btn:active {
-            background-color: #003d7a;
-            /* Even darker blue */
-        }
-
-        /* Style for the login window */
-        .login-window {
-            width: 100%;
-            max-width: 400px;
-            /* Adjust this value according to your needs */
-            margin: 0 auto;
-            /* This will center the login window horizontally */
-        }
-
-        /* Style for the title */
-        .center-title {
-            text-align: center;
-        }
-
-        /* Style for the bg-gray and hero classes, if they are not already defined */
-        .bg-gray {
-            background-color: #f0f0f0;
-            /* This is an example color, adjust as needed */
-        }
-
-        .hero {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            /* This will center the content vertically */
-            padding: 2rem;
-            /* Padding around the edges, adjust as needed */
-        }
-    </style>
+    <script src="https://cdn.auth0.com/js/auth0-spa-js/2.0/auth0-spa-js.production.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
 </head>
-
-<body>
+<body class="bg-gray-100">
     <noscript>
-        <div class="toast toast-error">
-            <button class="btn btn-clear float-right"></button>
-            <p>Hypha Account requires JavaScript to be enabled.</p>
+        <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+            <span class="block sm:inline">Hypha Account requires JavaScript to be enabled.</span>
         </div>
     </noscript>
-    <div class="hero bg-gray">
-        <div class="hero-body login-window">
-            <h1 class="center-title">Hypha Account</h1>
-            <button onclick="login()" id="login-btn" class="btn login-btn">Login / Sign up</button>
-            <div class="panel" style="display:none;" id="info-panel">
-                <div class="panel-header text-center">
-                    <figure class="avatar avatar-lg"><img id="picture" alt="Avatar"></figure>
-                    <div class="panel-title h5 mt-10" id="name"></div>
-
+    <div class="flex items-center justify-center min-h-screen">
+        <div class="w-full max-w-lg bg-white rounded-lg shadow-md p-8">
+            <img src="/static/img/hypha-logo-black.svg" alt="Hypha Account" class="mx-auto h-20 mb-5">
+            <button onclick="login()" id="login-btn" class="w-full bg-blue-500 text-white py-3 rounded-lg text-lg">
+                Login / Sign up
+            </button>
+            <div class="mt-8" id="info-panel" style="display:none;">
+                <div class="text-center mb-4">
+                    <img id="picture" alt="Avatar" class="w-20 h-20 rounded-full mx-auto">
+                    <div class="mt-4 text-lg font-semibold" id="name"></div>
                 </div>
-                <nav class="panel-nav">
-                    <ul class="tab tab-block">
-                        <li class="tab-item active"><a href="#panels">Profile</a></li>
-                    </ul>
-                </nav>
-                <div class="panel-body">
-                    <div class="tile tile-centered">
-                        <div class="tile-content">
-                            <div class="tile-title text-bold">E-mail</div>
-                            <div class="tile-subtitle" id="email"></div>
-                            <div class="tile-subtitle" id="email-verification"></div>
-                        </div>
-                    </div>
-
-                    <div class="tile tile-centered">
-                        <div class="tile-content">
-                            <div class="tile-title text-bold">User ID</div>
-                            <div class="tile-subtitle" id="user-id"></div>
-                        </div>
-                    </div>
-
-                    <div class="tile tile-centered">
-                        <div class="tile-content">
-                            <div class="tile-title text-bold">Access Token</div>
-                            <div class="tile-subtitle" id="access-token"></div>
-                        </div>
-                        <div class="tile-action">
-                            <button class="btn btn-link btn-action btn-lg" onclick="copyToken()"><i
-                                    class="icon icon-copy"></i></button>
-                        </div>
-
-                    </div>
-
+                <div class="mt-8">
+                    <button onclick="logout()" class="w-full bg-red-500 text-white py-2 rounded">Logout</button>
                 </div>
-                <div class="panel-footer">
-                    <div class="toast" id="toast" style="display:none;">
+                <div class="border-t border-gray-200">
+                    <div class="p-4">
+                        <div class="font-semibold">E-mail</div>
+                        <div id="email"></div>
+                        <div id="email-verification"></div>
                     </div>
-                    <button onclick="logout()" class="btn btn-primary btn-block">Logout</button>
+                    <div class="p-4 border-t border-gray-200">
+                        <div class="font-semibold">User ID</div>
+                        <div id="user-id"></div>
+                    </div>
+                    <details class="p-4 border-t border-gray-200">
+                        <summary class="font-semibold cursor-pointer">Get Access Token</summary>
+                        <p>Use the access token to authenticate with the Hypha API.</p>
+                        <div class="toast mt-4 bg-green-100 border-t-4 border-green-500 rounded-b text-green-900 px-4 py-3 shadow-md" id="toast" style="display:none;"></div>
+                        <pre id="access-token" class="bg-gray-200 whitespace-pre-wrap max-h-24 overflow-y-auto break-words"></pre>
+                        <div class="mt-4">
+                            <button class="bg-gray-500 text-white py-1 px-4 rounded mr-2" onclick="copyToken()">Copy Token</button>
+                        </div>
+                        <div class="mt-4">
+                            <label for="expiry-time" class="block text-sm font-medium text-gray-700" value="3600">Expiry Time (seconds)</label>
+                            <input type="number" id="expiry-time" name="expiry-time" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" placeholder="3600">
+                        </div>
+                        <div class="mt-2 flex items-center">
+                            <button class="bg-blue-500 text-white py-1 px-4 rounded" onclick="generateToken()">Generate New Token</button>
+                        </div>
+                    </details>
+                    
                 </div>
             </div>
-
+            <div class="mt-8">
+                <details class="bg-gray-200 p-4 rounded-lg">
+                    <summary class="font-semibold cursor-pointer">Having trouble logging in?</summary>
+                    <div class="mt-4">
+                        <p class="mb-2">Ensure that pop-ups are enabled in your browser:</p>
+                        <ul class="list-disc list-inside">
+                            <li><strong>Chrome:</strong> Go to Settings > Privacy and security > Site Settings > Pop-ups and redirects, and allow pop-ups for this site.</li>
+                            <li><strong>Firefox:</strong> Go to Settings > Privacy & Security > Permissions > Block pop-up windows, and add an exception for this site.</li>
+                            <li><strong>Safari:</strong> Go to Preferences > Websites > Pop-up Windows, and allow pop-ups for this site.</li>
+                            <li><strong>Edge:</strong> Go to Settings > Cookies and site permissions > Pop-ups and redirects, and allow pop-ups for this site.</li>
+                        </ul>
+                    </div>
+                </details>
+            </div>
         </div>
     </div>
-    <div>
-        <script>
-            const AUTH0_AUDIENCE = '{{ auth0_audience }}'
-            const auth0 = new window.auth0.Auth0Client({
-                domain: '{{ auth0_domain }}',
-                clientId: '{{ auth0_client_id }}',
-                authorizationParams: {
-                    audience: AUTH0_AUDIENCE,
-                },
-                cacheLocation: 'localstorage',
-                useRefreshTokens: true,
-                useRefreshTokensFallback: true,
-            })
-            document.addEventListener('DOMContentLoaded', async () => {
-                try{
-                   await window.showUserProfile();
-                }
-                catch(e){
-                    console.error(e)
-                }
-                if(window.location.search.split('logout=')[1]){
-                    logout();
-                }
-            });
-            window.showUserProfile = async ()=>{
-                let user = await auth0.getUser();
-                    if (user) {
-                        if (!user.email_verified) {
-                            reject(`Please verify your email (${user.email}) by clicking the link sent from Auth0.`)
-                            return
-                        }
-                        console.log(user);
-                    }
-                    else {
-                        throw new Error("User not found")
-                    }
-                    const accessToken = await auth0.getTokenSilently({ audience: AUTH0_AUDIENCE });
+    <script>
+        const AUTH0_AUDIENCE = '{{ auth0_audience }}';
+        const auth0 = new window.auth0.Auth0Client({
+            domain: '{{ auth0_domain }}',
+            clientId: '{{ auth0_client_id }}',
+            authorizationParams: {
+                audience: AUTH0_AUDIENCE,
+            },
+            cacheLocation: 'localstorage',
+            useRefreshTokens: true,
+            useRefreshTokensFallback: true,
+        });
 
-                    document.getElementById("login-btn").style.display = "none";
-                    document.getElementById("name").innerHTML = user.name;
-                    document.getElementById("email").innerHTML = user.email;
-                    document.getElementById("email-verification").innerHTML = user.email_verified ? "Verified" : "Not Verified";
-                    // make email-verification in red if not verified
-                    if (!user.email_verified) {
-                        document.getElementById("email-verification").style.color = "red";
-                    }
-                    document.getElementById("picture").src = user.picture;
-                    document.getElementById("user-id").innerHTML = user.sub;
-                    document.getElementById("access-token").innerHTML = accessToken;
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                await window.showUserProfile();
+            } catch (e) {
+                console.log("Not logged in, showing login button.");
+            }
+            if (window.location.search.split('logout=')[1]) {
+                logout();
+            }
+        });
+
+        window.generateToken = async () => {
+            const expires_in = document.getElementById("expiry-time").value || 3600; // Default to 1 hour if not specified
+            const accessToken = await auth0.getTokenSilently({ audience: AUTH0_AUDIENCE });
+            const generate_token_url = "{{ login_service_url }}/generate";
+            if (generate_token_url.startsWith('http')) {
+                const response = await fetch(`${generate_token_url}?token=${accessToken}&expires_in=${expires_in}`);
+                if (response.ok) {
+                    const token = await response.json();
+                    document.getElementById("access-token").innerHTML = token;
                     document.getElementById("info-panel").style.display = "block";
+                    document.getElementById("toast").innerHTML = "New access token generated successfully!";
+                    document.getElementById("toast").style.display = "block";
+                    setTimeout(() => {
+                        document.getElementById("toast").style.display = "none";
+                    }, 2000);
+                } else {
+                    console.error("Failed to generate token: ", response.status, response.statusText);
+                    alert(`Failed to generate token. Please try again later. (${response.status}: ${response.statusText})`);
+                }
+            } else {
+                console.error("Invalid generate_token_url: ", generate_token_url);
+                alert("Invalid generate_token_url. Please contact the site administrator.");
+            }
+        };
 
-                    const key = window.location.search.split('key=')[1];
-                    const report_url = "{{ report_url }}";
-                    if (key && report_url.startsWith('http')) {
-                        const response = await fetch(`${report_url}?key=${key}&token=${accessToken}`)
-                        if(response.ok)
-                            window.close();
-                        else{
-                            console.error("Failed to report token: ", response.status, response.statusText)
-                        }
-                    }
+        window.showUserProfile = async () => {
+            let user = await auth0.getUser();
+            if (user) {
+                if (!user.email_verified) {
+                    alert(`Please verify your email (${user.email}) by clicking the link sent from Auth0.`);
+                    return;
+                }
+                console.log(user);
+            } else {
+                throw new Error("User not found");
             }
-            
-            window.logout = async ()=>{
-                const href = window.location.href;
-                await auth0.logout({ returnTo: href});         
+            const accessToken = await auth0.getTokenSilently({ audience: AUTH0_AUDIENCE });
+
+            document.getElementById("login-btn").style.display = "none";
+            document.getElementById("name").innerHTML = user.name;
+            document.getElementById("email").innerHTML = user.email;
+            document.getElementById("email-verification").innerHTML = user.email_verified ? "Verified" : "Not Verified";
+            if (!user.email_verified) {
+                document.getElementById("email-verification").classList.add("text-red-500");
             }
-    
-            window.login = async () => {
+            document.getElementById("picture").src = user.picture;
+            document.getElementById("user-id").innerHTML = user.sub;
+            document.getElementById("access-token").innerHTML = accessToken;
+            document.getElementById("info-panel").style.display = "block";
+
+            const key = window.location.search.split('key=')[1];
+            const report_url = "{{ login_service_url }}/report";
+            if (key && report_url.startsWith('http')) {
+                const url = `${report_url}?key=${key}&token=${accessToken}&email=${user.email}&email_verified=${user.email_verified}&name=${user.name}&nickname=${user.nickname}&user_id=${user.sub}&picture=${user.picture}`;
+                const response = await fetch(url);
+                if (response.ok) {
+                    window.close();
+                } else {
+                    console.error("Failed to report token: ", response.status, response.statusText);
+                    alert(`Failed to report token. Please try again later. (${response.status}: ${response.statusText})`);
+                    window.close();
+                }
+            }
+        };
+
+        window.logout = async () => {
+            const href = window.location.href;
+            await auth0.logout({ logoutParams: { returnTo: href } });
+        };
+
+        window.login = async () => {
+            try {
                 await auth0.loginWithPopup({ audience: AUTH0_AUDIENCE });
                 await showUserProfile();
+            } catch (e) {
+                alert("Failed to open login window. Please allow pop-ups for this site.");
+                console.error(e);
             }
+        };
 
-            window.copyToken = ()=>{
-                const el = document.createElement('textarea');
-                el.value = document.getElementById("access-token").innerHTML;
-                document.body.appendChild(el);
-                el.select();
-                document.execCommand('copy');
-                document.body.removeChild(el);
-                // display a toast
-                document.getElementById("toast").innerHTML = "Access token copied to clipboard!";
-                document.getElementById("toast").style.display = "block";
-                setTimeout(()=>{
-                    document.getElementById("toast").style.display = "none";
-                }, 2000);
-            }
-        </script>
-
-
+        window.copyToken = () => {
+            const el = document.createElement('textarea');
+            el.value = document.getElementById("access-token").innerHTML;
+            document.body.appendChild(el);
+            el.select();
+            document.execCommand('copy');
+            document.body.removeChild(el);
+            document.getElementById("toast").innerHTML = "Access token copied to clipboard!";
+            document.getElementById("toast").style.display = "block";
+            setTimeout(() => {
+                document.getElementById("toast").style.display = "none";
+            }, 2000);
+        };
+    </script>
 </body>
-
 </html>

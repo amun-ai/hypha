@@ -270,19 +270,15 @@ class WorkspaceManager:
         if not await self.check_permission(user_info, context=context):
             raise Exception(f"Permission denied for workspace {ws}.")
         config = config or {}
-        if set(config.keys()) - {"scopes", "expires_in"}:
+        if set(config.keys()) - {"expires_in"}:
             raise ValueError(
                 "Invalid keys in token config: "
-                + str(set(config.keys()) - {"scopes", "expires_in"})
+                + str(set(config.keys()) - {"expires_in"})
             )
 
         config = config or {}
-        if "scopes" in config and not isinstance(config["scopes"], list):
-            raise Exception(
-                "Scopes must be empty or contains a list of workspace names."
-            )
-        elif "scopes" not in config:
-            config["scopes"] = [ws]
+        # the token should only have access to the current workspace
+        config["scopes"] = [ws]
         config["email"] = user_info.email
         token_config = TokenConfig.model_validate(config)
         for ws in config["scopes"]:
@@ -981,8 +977,9 @@ class WorkspaceManager:
             assert "ws" in context, "Workspace not provided in the context."
             workspace = context["ws"]
 
-        if workspace in user_info.scopes:
-            return True
+        if user_info.scopes:
+            if workspace in user_info.scopes:
+                return True
 
         if (
             workspace == "*"
