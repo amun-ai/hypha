@@ -23,7 +23,7 @@ async def test_login(fastapi_server):
 
         async def callback(context):
             print(f"By passing login: {context['login_url']}")
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=20.0) as client:
                 resp = await client.get(context["login_url"] + "?key=" + context["key"])
                 assert resp.status_code == 200, resp.text
                 assert "Hypha Account" in resp.text

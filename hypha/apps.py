@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from jinja2 import Environment, PackageLoader, select_autoescape
 from starlette.responses import Response
 
-from hypha.core import Card, UserInfo, ServiceInfo
+from hypha.core import Card, UserInfo, ServiceInfo, UserPermission
 from hypha.core.auth import parse_user
 from hypha.core.store import RedisStore
 from hypha.plugin_parser import convert_config_to_card, parse_imjoy_plugin
@@ -86,7 +86,7 @@ class ServerAppController:
         # self._rpc_lib_script = "http://localhost:9099/hypha-rpc-websocket.js"
         self.event_bus = store.get_event_bus()
         self.store = store
-        self.event_bus.on("workspace_unloaded", self._on_workspace_unloaded)
+        # self.event_bus.on("workspace_unloaded", self._on_workspace_unloaded)
         store.register_public_service(self.get_service_api())
         self.jinja_env = Environment(
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
@@ -147,7 +147,7 @@ class ServerAppController:
                             ),
                         },
                     )
-                if not await store.check_permission(user_info, workspace):
+                if not user_info.check_permission(workspace, UserPermission.read):
                     return JSONResponse(
                         status_code=403,
                         content={
@@ -381,12 +381,12 @@ class ServerAppController:
             workspace = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
-        workspace = await self.store.get_workspace(workspace, load=True)
-        assert workspace, f"Workspace {workspace} not found."
-        if not await self.store.check_permission(user_info, workspace):
+        workspace_info = await self.store.get_workspace(workspace, load=True)
+        assert workspace_info, f"Workspace {workspace} not found."
+        if not user_info.check_permission(workspace_info.name, UserPermission.read_write):
             raise Exception(
                 f"User {user_info.id} does not have permission"
-                f" to install apps in workspace {workspace}"
+                f" to install apps in workspace {workspace_info.name}"
             )
 
         if source.startswith("http"):
@@ -445,17 +445,17 @@ class ServerAppController:
 
         app_id = f"{mhash}"
 
-        public_url = f"{self.public_base_url}/{workspace.name}/a/{app_id}/index.html"
+        public_url = f"{self.public_base_url}/{workspace_info.name}/a/{app_id}/index.html"
         card_obj = convert_config_to_card(config, app_id, public_url)
         card_obj.update(
             {
-                "local_url": f"{self.local_base_url}/{workspace.name}/a/{app_id}/index.html",
+                "local_url": f"{self.local_base_url}/{workspace_info.name}/a/{app_id}/index.html",
                 "public_url": public_url,
             }
         )
         card = Card.model_validate(card_obj)
-        await self.save_application(workspace.name, app_id, card, source, attachments)
-        async with self.store.get_workspace_interface(workspace.name, user_info) as ws:
+        await self.save_application(workspace_info.name, app_id, card, source, attachments)
+        async with self.store.get_workspace_interface(workspace_info.name, user_info) as ws:
             await ws.install_application(card.model_dump())
         try:
             info = await self.start(
@@ -490,7 +490,7 @@ class ServerAppController:
         workspace = await self.store.get_workspace(workspace_name, load=True)
         assert workspace, f"Workspace {workspace} not found."
         user_info = UserInfo.model_validate(context["user"])
-        if not await self.store.check_permission(user_info, workspace):
+        if not user_info.check_permission(workspace.name, UserPermission.read_write):
             raise Exception(
                 f"User {user_info.id} does not have permission"
                 f" to uninstall apps in workspace {workspace.name}"
@@ -551,7 +551,7 @@ class ServerAppController:
         async with self.store.get_workspace_interface(workspace, user_info) as ws:
             token = await ws.generate_token()
 
-        if not await self.store.check_permission(user_info, workspace):
+        if not user_info.check_permission(workspace, UserPermission.read):
             raise Exception(
                 f"User {user_info.id} does not have permission"
                 f" to run app {app_id} in workspace {workspace}."

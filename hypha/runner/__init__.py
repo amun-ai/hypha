@@ -75,7 +75,12 @@ async def run_plugin(plugin_file, default_config, quit_on_ready=False):
         logger.info("Plugin executed")
 
         if quit_on_ready:
-            hypha_rpc.ready.add_done_callback(lambda fut: loop.stop())
+            def done_callback(fut):
+                if fut.done():
+                    if fut.exception():
+                        logger.error(fut.exception())
+                loop.stop()
+            hypha_rpc.ready.add_done_callback(done_callback)
 
     elif plugin_file.endswith(".imjoy.html"):
         # load config

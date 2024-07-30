@@ -17,6 +17,7 @@ const window = self;
 const src = `
 import sys
 import asyncio
+import json
 from types import ModuleType
 import inspect
 from js import console
@@ -35,7 +36,7 @@ async def export_service(plugin_api, config, hypha_rpc):
         plugin_api["id"] = "default"
         plugin_api["name"] = config.get("name", "default")
         await rpc.register_service(plugin_api, overwrite=True)
-        console.log("Application initialized successfully:", plugin_api)
+        console.log("Application initialized successfully:", str(plugin_api))
     except Exception as exp:
         console.error("Failed to export service: ", traceback.format_exc())
         print(traceback.format_exc())

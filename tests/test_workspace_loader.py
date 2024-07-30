@@ -34,7 +34,7 @@ async def test_workspace_loader(fastapi_server, test_user_token):
                 read_only=False,
             ),
         )
-        token = await api.generate_token({"scopes": [ws.name], "expires_in": 3600000})
+        token = await api.generate_token({"expires_in": 3600000, "workspace": ws.name, "permission": "read_write"})
         workspaces = await api.list_workspaces()
         assert find_item(workspaces, "name", ws.name)
 

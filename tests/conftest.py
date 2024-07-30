@@ -13,8 +13,8 @@ import pytest_asyncio
 import requests
 from requests import RequestException
 
-from hypha.core import TokenConfig, UserInfo, auth
-from hypha.core.auth import generate_presigned_token
+from hypha.core import UserInfo, auth, UserPermission
+from hypha.core.auth import generate_presigned_token, create_scope
 from hypha.minio import setup_minio_executables
 
 from . import (
@@ -57,13 +57,10 @@ def _generate_token(id, roles):
         email=id + "@test.com",
         parent=None,
         roles=roles,
-        scopes=[],
+        scope=create_scope(workspaces={id: UserPermission.admin}),
         expires_at=None,
     )
-    config = {"email": "test@test.com"}
-    config["scopes"] = []
-    token_config = TokenConfig.model_validate(config)
-    token = generate_presigned_token(root_user_info, token_config, child=False)
+    token = generate_presigned_token(root_user_info)
     yield token
 
 
@@ -77,13 +74,10 @@ def generate_root_user_token():
         email="root@test.com",
         parent=None,
         roles=[],
-        scopes=[],
+        scope=create_scope(workspaces={"*": UserPermission.admin}),
         expires_at=None,
     )
-    config = {"email": "root@test.com"}
-    config["scopes"] = []
-    token_config = TokenConfig.model_validate(config)
-    token = generate_presigned_token(root_user_info, token_config, child=False)
+    token = generate_presigned_token(root_user_info)
     yield token
 
 

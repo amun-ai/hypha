@@ -16,6 +16,7 @@ from hypha.core import (
     UserInfo,
     WorkspaceInfo,
 )
+from hypha.core.auth import create_scope
 from hypha.core.workspace import WorkspaceManager
 from hypha.startup import run_startup_function
 from hypha.utils import random_id
@@ -100,6 +101,7 @@ class RedisStore:
 
     def set_websocket_server(self, websocket_server):
         """Set the websocket server."""
+        assert self._websocket_server is None, "Websocket server already set"
         self._websocket_server = websocket_server
 
     def kickout_client(self, workspace, client_id, code, reason):
@@ -123,7 +125,7 @@ class RedisStore:
             email=None,
             parent=None,
             roles=["admin"],
-            scopes=[],
+            scope=create_scope("*#a"),
             expires_at=None,
         )
         return self._root_user
@@ -153,6 +155,7 @@ class RedisStore:
         await self._event_bus.init()
         await self.setup_root_user()
         self._workspace_manager = await self.register_workspace_manager()
+
         self.manager_id = self._workspace_manager.get_client_id()
         try:
             await self.register_workspace(
@@ -224,7 +227,22 @@ class RedisStore:
                 "public", self._root_user
             )
         return self._public_workspace_interface
+    
+    async def client_exists(
+        self, client_id: str, workspace: str = None
+    ):
+        """Check if a client exists."""
+        assert workspace is not None, "Workspace must be provided."
+        assert client_id and "/" not in client_id, "Invalid client id: " + client_id
+        pattern = f"services:*:{workspace}/{client_id}:built-in@*"
+        keys = await self._redis.keys(pattern)
+        return bool(keys)
 
+    async def remove_client(self, client_id, workspace, user_info):
+        """Remove a client."""
+        context = {"user": self._root_user.model_dump(), "ws": workspace}
+        return await self._workspace_manager.delete_client(client_id, workspace, user_info, context=context)
+        
     async def get_user_workspace(self, user_id: str):
         """Get a user."""
         workspace_info = await self._redis.hget("workspaces", user_id)
@@ -249,31 +267,14 @@ class RedisStore:
 
     async def register_workspace(
         self, workspace_info: Union[dict, WorkspaceInfo], overwrite=False
-    ):
+    ) -> WorkspaceInfo:
         """Add a workspace."""
-        return await self._workspace_manager.create_workspace(
+        info = await self._workspace_manager.create_workspace(
             workspace_info,
             overwrite=overwrite,
             context={"user": self._root_user, "ws": "public"},
         )
-
-    async def delete_client(self, client_id: str, workspace: str, user: UserInfo):
-        """Delete a client."""
-        return await self._workspace_manager.delete_client(
-            client_id, context={"user": user.model_dump(), "ws": workspace}
-        )
-
-    async def client_exists(self, client_id: str, workspace: str):
-        """Check if a client exists."""
-        return await self._workspace_manager.client_exists(
-            client_id=client_id, workspace=workspace
-        )
-
-    async def check_permission(
-        self, user: UserInfo, workspace: Union[str, WorkspaceInfo]
-    ):
-        """Check permission."""
-        return await self._workspace_manager.check_permission(user, workspace)
+        return WorkspaceInfo.model_validate(info)
 
     def connect_to_workspace(
         self,

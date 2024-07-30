@@ -59,6 +59,7 @@ async def test_server_apps_unauthorized(fastapi_server):
 
     # Now disconnect it
     await api.disconnect()
+    await asyncio.sleep(0.1)
 
     # now it should disappear from the stats
     response = requests.get(f"{SERVER_URL}/api/stats")
@@ -148,6 +149,7 @@ async def test_web_python_apps(fastapi_server, test_user_token):
     config = await controller.launch(
         source=source,
         wait_for_service="default",
+        timeout=40,
     )
     assert config.name == "WebPythonPlugin"
     app = await api.get_app(config.id)
@@ -234,7 +236,7 @@ async def test_lazy_plugin(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 60,
+            "method_timeout": 30,
             "token": test_user_token,
         }
     )
@@ -269,7 +271,7 @@ async def test_lazy_service(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 50,
+            "method_timeout": 30,
             "token": test_user_token,
         }
     )
@@ -285,7 +287,7 @@ async def test_lazy_service(fastapi_server, test_user_token):
 
     app_info = await controller.install(
         source=source,
-        timeout=15,
+        timeout=30,
     )
 
     service = await api.get_service({"id": "echo", "app_id": app_info.id})

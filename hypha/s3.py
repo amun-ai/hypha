@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, Response
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
-from hypha.core import UserInfo, WorkspaceInfo
+from hypha.core import UserInfo, WorkspaceInfo, UserPermission
 from hypha.core.auth import login_optional
 from hypha.core.store import RedisStore
 from hypha.minio import MinioClient
@@ -245,7 +245,7 @@ class S3Controller:
                         "detail": f"Workspace does not exists: {workspace}",
                     },
                 )
-            if not await store.check_permission(user_info, ws):
+            if not user_info.check_permission(ws.name, UserPermission.read_write):
                 return JSONResponse(
                     status_code=403,
                     content={
@@ -276,7 +276,7 @@ class S3Controller:
                         "detail": f"Workspace does not exists: {workspace}",
                     },
                 )
-            if not await store.check_permission(user_info, ws):
+            if not user_info.check_permission(ws.name, UserPermission.read_write):
                 return JSONResponse(
                     status_code=403,
                     content={
@@ -303,7 +303,7 @@ class S3Controller:
 
     async def _workspace_loader(self, workspace_name, user_info):
         """Load workspace from s3 record."""
-        if not await self.store.check_permission(user_info, workspace_name):
+        if not user_info.check_permission(workspace_name, UserPermission.read_write):
             return None
         config_path = f"{self.workspace_etc_dir}/{workspace_name}/manifest.json"
         try:
@@ -624,9 +624,7 @@ class S3Controller:
         if ws.read_only:
             raise Exception("Permission denied: workspace is read-only")
         user_info = UserInfo.model_validate(context["user"])
-        if workspace == "public" or not await self.store.check_permission(
-            user_info, workspace
-        ):
+        if not user_info.check_permission(ws.name, UserPermission.read_write):
             raise PermissionError(
                 f"User {user_info.id} does not have write"
                 f" permission to the workspace {workspace}"

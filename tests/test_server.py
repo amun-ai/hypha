@@ -63,7 +63,6 @@ async def test_connect_to_server_two_client_same_id(fastapi_server):
         {"name": "my app", "server_url": WS_SERVER_URL, "client_id": "my-app"}
     )
     token = await api1.generate_token()
-    assert "@hypha@" in token
     try:
         api2 = await connect_to_server(
             {
@@ -97,12 +96,11 @@ def test_plugin_runner(fastapi_server):
         out, err = proc.communicate()
         assert err.decode("utf8") == ""
         output = out.decode("utf8")
-        assert "Generated token: " in output and "@hypha@" in output
+        assert "This is a test" in output
         assert "echo: a message" in output
 
 
-@pytestmark
-def test_plugin_runner_subpath(fastapi_subpath_server):
+async def test_plugin_runner_subpath(fastapi_subpath_server):
     """Test the app runner with subpath server."""
     with subprocess.Popen(
         [
@@ -119,7 +117,7 @@ def test_plugin_runner_subpath(fastapi_subpath_server):
         out, err = proc.communicate()
         assert err.decode("utf8") == ""
         output = out.decode("utf8")
-        assert "Generated token: " in output and "@hypha@" in output
+        assert "This is a test" in output
         assert "echo: a message" in output
 
 
@@ -138,8 +136,8 @@ async def test_plugin_runner_workspace(fastapi_server):
             "server_url": WS_SERVER_URL,
         }
     )
+    # Issue an admin token so the plugin can generate new token
     token = await api.generate_token()
-    assert "@hypha@" in token
 
     # The following code without passing the token should fail
     # Here we assert the output message contains "permission denied"
@@ -182,12 +180,12 @@ async def test_plugin_runner_workspace(fastapi_server):
         output = out.decode("utf8")
         assert proc.returncode == 0, err.decode("utf8")
         assert err.decode("utf8") == ""
-        assert "Generated token: " in output and "@hypha@" in output
+        assert "This is a test" in output
         assert "echo: a message" in output
 
 
 async def test_workspace(fastapi_server, test_user_token):
-    """Test the app runner."""
+    """Test workspace."""
     api = await connect_to_server(
         {
             "client_id": "my-app",
@@ -201,7 +199,7 @@ async def test_workspace(fastapi_server, test_user_token):
     assert api.config.public_base_url.startswith("http")
     await api.log("hi")
     token = await api.generate_token()
-    assert "@hypha@" in token
+    assert token is not None
 
     public_svc = await api.list_services("public")
     assert len(public_svc) > 0
@@ -233,7 +231,7 @@ async def test_workspace(fastapi_server, test_user_token):
     assert len(ss2) == 0
 
     # let's generate a token for the my-test-workspace
-    token = await api.generate_token({"scopes": ["my-test-workspace"]})
+    token = await api.generate_token({"workspace": "my-test-workspace"})
 
     # now if we connect directly to the workspace
     # we should be able to get the my-test-workspace services
@@ -312,7 +310,7 @@ async def test_services(fastapi_server):
     api = await connect_to_server({"name": "my app", "server_url": WS_SERVER_URL})
 
     token = await api.generate_token()
-    assert "@hypha@" in token
+    assert token is not None
 
     service_info = await api.register_service(
         {
@@ -427,7 +425,7 @@ async def test_server_scalability(
     )
     assert ws["name"] == "my-test-workspace"
 
-    token = await api.generate_token({"scopes": ["my-test-workspace"]})
+    token = await api.generate_token({"workspace": "my-test-workspace"})
 
     # Connect from two different servers
     api88 = await connect_to_server(
@@ -436,7 +434,7 @@ async def test_server_scalability(
             "server_url": SERVER_URL_REDIS_1,
             "workspace": "my-test-workspace",
             "token": token,
-            "method_timeout": 90,
+            "method_timeout": 30,
         }
     )
 
@@ -446,7 +444,7 @@ async def test_server_scalability(
             "server_url": SERVER_URL_REDIS_2,
             "workspace": "my-test-workspace",
             "token": token,
-            "method_timeout": 90,
+            "method_timeout": 30,
         }
     )
     await asyncio.sleep(0.2)

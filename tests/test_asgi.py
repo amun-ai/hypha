@@ -29,7 +29,7 @@ async def test_asgi(fastapi_server, test_user_token):
     config = await controller.launch(
         source=source,
         wait_for_service="hello-fastapi",
-        timeout=60,
+        timeout=30,
     )
     service = await api.get_service(
         {"workspace": config.workspace, "id": "hello-fastapi"}
@@ -41,6 +41,7 @@ async def test_asgi(fastapi_server, test_user_token):
     assert response.json()["message"] == "Hello World"
 
     await controller.stop(config.id)
+    await api.disconnect()
 
 
 async def test_functions(fastapi_server, test_user_token):
@@ -62,11 +63,11 @@ async def test_functions(fastapi_server, test_user_token):
     config = await controller.launch(
         source=source,
         wait_for_service="hello-functions",
-        timeout=60,
+        timeout=30,
     )
 
     service = await api.get_service(
-        {"workspace": config.workspace, "id": "hello-functions"}
+        {"workspace": config.workspace, "id": "hello-functions"}, skip_timeout=False
     )
     assert "hello-world" in service
 
@@ -79,7 +80,7 @@ async def test_functions(fastapi_server, test_user_token):
     assert ret["message"] == "Hello World"
     assert "user" in ret["context"]
     user_info = ret["context"]["user"]
-    assert user_info["parent"] == "user-1"
+    assert user_info["scope"]["workspaces"]["user-1"] == "rw"
 
     response = requests.get(
         f"{SERVER_URL}/{workspace}/apps/hello-functions/hello-world/"
@@ -99,3 +100,4 @@ async def test_functions(fastapi_server, test_user_token):
     assert response.content == b"Home page"
 
     await controller.stop(config.id)
+    await api.disconnect()

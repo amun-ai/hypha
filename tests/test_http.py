@@ -55,7 +55,7 @@ api.export({
 """
 
 
-async def test_services(minio_server, fastapi_server, test_user_token):
+async def test_http_services(minio_server, fastapi_server, test_user_token):
     api = await connect_to_server(
         {
             "name": "test client",
@@ -76,7 +76,7 @@ async def test_services(minio_server, fastapi_server, test_user_token):
             "echo": lambda data: data,
         }
     )
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=20.0) as client:
         data = await client.get(f"{SERVER_URL}/services/openapi.json")
         data = data.json()
         assert data.get("detail") != "Not Found"
@@ -128,7 +128,7 @@ async def test_http_proxy(minio_server, fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 60,
+            "method_timeout": 30,
             "token": test_user_token,
         }
     )

@@ -9,9 +9,8 @@ class HyphaApp:
 
     async def setup(self):
         """Set up the plugin."""
-        token = await api.generateToken()
-        assert "@hypha@" in token
-        print(f"Generated token: {token}")
+        message = await api.echo("This is a test")
+        print(message)
 
         service_info = await api.register_service(
             {

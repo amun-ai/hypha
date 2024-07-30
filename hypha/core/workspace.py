@@ -14,12 +14,12 @@ from pydantic import BaseModel
 from hypha.core import (
     Card,
     RedisRPCConnection,
-    TokenConfig,
     UserInfo,
     WorkspaceInfo,
     ServiceInfo,
+    UserPermission
 )
-from hypha.core.auth import generate_presigned_token
+from hypha.core.auth import generate_presigned_token, create_scope
 from hypha.utils import EventBus, random_id
 
 logging.basicConfig(stream=sys.stdout)
@@ -82,9 +82,6 @@ class WorkspaceManager:
         """Get a summary about the workspace."""
         assert context is not None
         ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        if not await self.check_permission(user_info, context=context):
-            raise Exception(f"Permission denied for workspace {ws}.")
         workspace_info = await self.load_workspace_info(ws)
         workspace_info = workspace_info.model_dump()
         workspace_summary_fields = ["name", "description"]
@@ -104,25 +101,21 @@ class WorkspaceManager:
         )
         return summary
 
-    def validate_workspace_name(self, name):
+    def _validate_workspace_name(self, name):
         """Validate the workspace name."""
         if not name:
             raise ValueError("Workspace name must not be empty.")
-        if "/" in name:
-            raise ValueError("Workspace name must not contain '/'")
-        if ":" in name:
-            raise ValueError("Workspace name must not contain ':'")
-        if "@" in name:
-            raise ValueError("Workspace name must not contain '@'")
+        # only allow numbers, letters in lower case, hyphens, underscores and |
+        # use a regex to validate the workspace name
+        pattern = re.compile(r"^[a-z0-9-_|]*$")
+        if not pattern.match(name):
+            raise ValueError(f"Invalid workspace name: {name}, must match {pattern}")
         if name in [
-            "*",
-            "public",
             "protected",
             "private",
             "default",
             "built-in",
             "all",
-            "root",
             "admin",
             "system",
             "server",
@@ -176,8 +169,6 @@ class WorkspaceManager:
         user_info = UserInfo.model_validate(context["user"])
         if user_info.is_anonymous:
             raise Exception("Only registered user can create workspace.")
-        if not await self.check_permission(user_info, context=context):
-            raise Exception(f"Permission denied for workspace {ws}.")
         if await self._redis.hexists("workspace", config["name"]):
             if not overwrite:
                 raise KeyError(f"Workspace already exists: {ws}")
@@ -186,9 +177,9 @@ class WorkspaceManager:
         if user_info.is_anonymous and config["persistent"]:
             raise Exception("Only registered user can create persistent workspace.")
         workspace = WorkspaceInfo.model_validate(config)
-        if user_info.id != "root":
-            # only need to check if the user is not root
-            self.validate_workspace_name(workspace.name)
+        if user_info.id not in workspace.owners:
+            workspace.owners.append(user_info.id)
+        self._validate_workspace_name(workspace.name)
         # make sure we add the user's email to owners
         _id = user_info.email or user_info.id
         if _id not in workspace.owners:
@@ -239,16 +230,11 @@ class WorkspaceManager:
         """Register a service"""
         assert context is not None
         ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-
         source_workspace = context["ws"]
         assert source_workspace == ws, (
             f"Service must be registered in the same workspace: "
             f"{source_workspace} != {ws} (current workspace)."
         )
-
-        if not await self.check_permission(user_info, context=context):
-            raise Exception(f"Permission denied for workspace {ws}.")
         logger.info("Registering service %s to %s", service.id, ws)
         sv = await self._rpc.get_remote_service(context["from"] + ":built-in")
         service["config"] = service.get("config", {})
@@ -267,35 +253,47 @@ class WorkspaceManager:
         assert context is not None
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
-        if not await self.check_permission(user_info, context=context):
-            raise Exception(f"Permission denied for workspace {ws}.")
         config = config or {}
-        if set(config.keys()) - {"expires_in"}:
+        if set(config.keys()) - {"expires_in", "workspace", "permission", "extra_scopes"}:
             raise ValueError(
                 "Invalid keys in token config: "
-                + str(set(config.keys()) - {"expires_in"})
+                + str(set(config.keys()) - {"expires_in", "workspace", "permission", "extra_scopes"})
             )
+        
+        extra_scopes = []
+        if "extra_scopes" in config:
+            assert isinstance(config["extra_scopes"], list), "Permissions must be a list"
+            for scope in config["extra_scopes"]:
+                assert isinstance(scope, str), "Permission must be a string"
+                if ":" in scope and scope.count(":") == 1:
+                    assert scope.split(":")[0] not in ["ws", "cid"], "Invalid scope, cannot start with ws or cid"
+                extra_scopes.append(scope)
 
-        config = config or {}
-        # the token should only have access to the current workspace
-        config["scopes"] = [ws]
-        config["email"] = user_info.email
-        token_config = TokenConfig.model_validate(config)
-        for ws in config["scopes"]:
-            if not await self.check_permission(user_info, ws, context=context):
-                raise PermissionError(f"User has no permission to workspace: {ws}")
-        token = generate_presigned_token(user_info, token_config, child=True)
+        if "workspace" in config:
+            allowed_workspace = config["workspace"]
+        else:
+            # limit to the current workspace
+            allowed_workspace = ws
+        
+        maximum_permission = user_info.get_permission(allowed_workspace)
+        if not maximum_permission:
+            workspace_info = await self.load_workspace_info(allowed_workspace)
+            if workspace_info.owners and user_info.id in workspace_info.owners:
+                maximum_permission = UserPermission.admin
+            else:
+                raise PermissionError(f"You do not have any permission for workspace: {config['workspace']}")
+        if maximum_permission != UserPermission.admin:
+            raise PermissionError("Only admin can generate token.")
+        
+        permission = config.get("permission", "read_write")
+        assert permission in ["read", "read_write", "admin"], f"Invalid permission: {permission} (must be one of: read, read_write, admin)"
+        permission = UserPermission[permission]
+        
+        # make it a child
+        user_info.id = random_id(readable=True)
+        user_info.scope = create_scope({allowed_workspace: permission}, extra_scopes=extra_scopes)
+        token = generate_presigned_token(user_info)
         return token
-
-    async def client_exists(
-        self, client_id: str, workspace: str = None, context: Optional[dict] = None
-    ):
-        """Check if a client exists."""
-        assert workspace is not None, "Workspace must be provided."
-        assert client_id and "/" not in client_id, "Invalid client id: " + client_id
-        pattern = f"services:*:{workspace}/{client_id}:built-in@*"
-        keys = await self._redis.keys(pattern)
-        return bool(keys)
 
     async def list_clients(self, workspace: str = None, context: Optional[dict] = None):
         """Return a list of clients based on the services."""
@@ -318,10 +316,7 @@ class WorkspaceManager:
         ws = context["ws"]
         if "/" not in client_id:
             client_id = ws + "/" + client_id
-        user_info = UserInfo.model_validate(context["user"])
         try:
-            if not await self.check_permission(user_info, context=context):
-                raise Exception(f"Permission denied for workspace {ws}.")
             svc = await self._rpc.get_remote_service(client_id + ":built-in")
             return await svc.ping("ping")  # should return "pong"
         except Exception as e:
@@ -334,24 +329,14 @@ class WorkspaceManager:
         assert context is not None
         cws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
-
         if query is None:
-            if await self.check_permission(user_info, cws, context=context):
-                # list all services in the current workspace
-                query = {
-                    "visibility": "*",
-                    "workspace": cws,
-                    "client_id": "*",
-                    "service_id": "*",
-                }
-            else:
-                # list all public services in the current workspace
-                query = {
-                    "visibility": "public",
-                    "workspace": cws,
-                    "client_id": "*",
-                    "service_id": "*",
-                }
+            # list all services in the current workspace
+            query = {
+                "visibility": "*",
+                "workspace": cws,
+                "client_id": "*",
+                "service_id": "*",
+            }
         # Convert string query into a dictionary
         if isinstance(query, str):
             visibility = "*"
@@ -433,7 +418,7 @@ class WorkspaceManager:
             query["visibility"] = "public"
         elif workspace not in ["public", cws]:
             # Check user permission for the specified workspace only once
-            if not await self.check_permission(user_info, workspace, context=context):
+            if user_info.check_permission(workspace, UserPermission.read):
                 raise PermissionError(f"Permission denied for workspace {workspace}")
 
         visibility = query.get("visibility", "*")
@@ -446,6 +431,10 @@ class WorkspaceManager:
             if query.get("app_id") and query.get("app_id") != app_id:
                 raise ValueError(f"App id mismatch: {query.get('app_id')} != {app_id}")
         app_id = query.get("app_id", app_id)
+        
+        # If the user does not have permission to read the workspace, only list public services
+        if not user_info.check_permission(workspace, UserPermission.read):
+            visibility = "public"
 
         # Make sure query doesn't contain other keys
         # except for any of: visibility, workspace, client_id, service_id, and type
@@ -621,52 +610,39 @@ class WorkspaceManager:
         )
         return rpc
 
+    def validate_context(self, context: dict, permission: UserPermission):
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(context["ws"], permission):
+            raise PermissionError(f"Permission denied for workspace {context['ws']}")
+
     async def echo(self, data, context=None):
         """Log a app message."""
-        ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        if not await self.check_permission(user_info, context=context):
-            raise Exception(f"Permission denied for workspace {ws}.")
+        self.validate_context(context, permission=UserPermission.read)
         return data
 
     async def log(self, msg, context=None):
         """Log a app message."""
-        ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        if not await self.check_permission(user_info, context=context):
-            raise Exception(f"Permission denied for workspace {ws}.")
+        self.validate_context(context, permission=UserPermission.read)
         logger.info("%s: %s", context["from"], msg)
 
     async def info(self, msg, context=None):
         """Log a app message."""
-        ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        if not await self.check_permission(user_info, context=context):
-            raise Exception(f"Permission denied for workspace {ws}.")
+        self.validate_context(context, permission=UserPermission.read)
         logger.info("%s: %s", context["from"], msg)
 
     async def warning(self, msg, context=None):
         """Log a app message (warning)."""
-        ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        if not await self.check_permission(user_info, context=context):
-            raise Exception(f"Permission denied for workspace {ws}.")
+        self.validate_context(context, permission=UserPermission.read)
         logger.warning("WARNING: %s: %s", context["from"], msg)
 
     async def error(self, msg, context=None):
         """Log a app error message (error)."""
-        ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        if not await self.check_permission(user_info, context=context):
-            raise Exception(f"Permission denied for workspace {ws}.")
+        self.validate_context(context, permission=UserPermission.read)
         logger.error("%s: %s", context["from"], msg)
 
     async def critical(self, msg, context=None):
         """Log a app error message (critical)."""
-        ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        if not await self.check_permission(user_info, context=context):
-            raise Exception(f"Permission denied for workspace {ws}.")
+        self.validate_context(context, permission=UserPermission.read)
         logger.critical("%s: %s", context["from"], msg)
 
     async def load_workspace_info(self, workspace: str, load=True) -> WorkspaceInfo:
@@ -704,12 +680,7 @@ class WorkspaceManager:
 
     async def get_workspace_info(self, workspace: str = None, context=None) -> dict:
         """Get the workspace info."""
-        assert context is not None
-        ws = context["ws"]
-        workspace = workspace or ws
-        user_info = UserInfo.model_validate(context["user"])
-        if not await self.check_permission(user_info, workspace, context=context):
-            raise Exception(f"Permission denied for workspace {workspace}.")
+        self.validate_context(context, permission=UserPermission.read)
         workspace_info = await self.load_workspace_info(workspace)
         return workspace_info.model_dump()
 
@@ -720,6 +691,7 @@ class WorkspaceManager:
         context: dict = None,
     ):
         """Launch an installed application by service name."""
+        self.validate_context(context, permission=UserPermission.read)
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         workspace, service_id = (
@@ -732,7 +704,7 @@ class WorkspaceManager:
         if workspace == "*":
             workspace = ws
 
-        if not await self.check_permission(context["user"], workspace, context=context):
+        if not user_info.check_permission(workspace, UserPermission.read):
             raise PermissionError(f"Permission denied for workspace {workspace}")
 
         if ":" in service_id:
@@ -786,6 +758,7 @@ class WorkspaceManager:
     @asynccontextmanager
     async def _get_service_api(self, service_id: str, context=None):
         """Get the service api for the service."""
+        self.validate_context(context, permission=UserPermission.read)
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         # Now launch the app and get the service
@@ -803,10 +776,13 @@ class WorkspaceManager:
         await rpc.disconnect()
 
     async def get_service(
-        self, query: Union[dict, str], mode: str = "default", context=None
+        self, query: Union[dict, str], mode: str = "default", skip_timeout=False, timeout=5.0, context=None
     ):
         """Get a service based on the query, supporting wildcard patterns and matching modes."""
+        # no need to validate the context
+        # self.validate_context(context, permission=UserPermission.read)
         ws = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
         # Convert string query into a dictionary
         if isinstance(query, str):
             service_id = query
@@ -849,7 +825,7 @@ class WorkspaceManager:
             query["client_id"] = service_id.split("/")[1].split(":")[0]
             query["workspace"] = workspace
             if "*" not in service_id:
-                service_api = await self._rpc.get_remote_service(service_id)
+                service_api = await self._rpc.get_remote_service(service_id, timeout=timeout)
                 if service_api:
                     return self.patch_service_config(workspace, service_api)
                 else:
@@ -867,7 +843,15 @@ class WorkspaceManager:
 
         original_visibility = query.get("visibility", "*")
         # Construct the pattern for querying Redis
-        visibility = "public" if query.get("workspace", "*") == "*" else "*"
+        if query.get("workspace", "*") == "*":
+            visibility = "public"
+        else:
+            # If the user does not have permission to read the workspace, only list public services
+            if not user_info.check_permission(query["workspace"], UserPermission.read):
+                visibility = "public"
+            else:
+                visibility = "*"
+
         pattern = f"services:{visibility}:{query['workspace']}/{query['client_id']}:{query['service_id']}@{query['app_id']}"
 
         assert pattern.startswith(
@@ -877,6 +861,7 @@ class WorkspaceManager:
             char in pattern for char in "{}"
         ), "Query pattern contains invalid characters."
 
+        logger.debug("Query services using pattern: %s", pattern)
         keys = await self._redis.keys(pattern)
 
         if query["workspace"] == "*":
@@ -884,6 +869,7 @@ class WorkspaceManager:
             ws_pattern = f"services:{original_visibility}:{ws}/{query['client_id']}:{query['service_id']}@{query['app_id']}"
             keys = keys + await self._redis.keys(ws_pattern)
 
+        logger.debug("Found service keys: %s", keys)
         within_workspace_keys = []
         outside_workspace_keys = []
 
@@ -911,14 +897,17 @@ class WorkspaceManager:
                 service_id, app_id = service_id.split("@")
                 workspace = service_id.split("/")[0]
                 # Attempt to get the remote service with a timeout
-                service_api = await self._rpc.get_remote_service(service_id)
+                service_api = await self._rpc.get_remote_service(service_id, timeout=timeout)
                 if service_api:
                     return self.patch_service_config(workspace, service_api)
             except asyncio.TimeoutError:
-                logger.warning(
-                    f"Timeout while getting service {service_id}, skipping to the next one."
-                )
-                continue
+                if skip_timeout:
+                    logger.warning(
+                        f"Timeout while getting service {service_id}, skipping to the next one."
+                    )
+                    continue
+                else:
+                    raise TimeoutError(f"Timeout while getting service {service_id}")
 
         if "app_id" in query and query["app_id"] != "*":
             service_api = await self._launch_application_for_service(
@@ -935,6 +924,7 @@ class WorkspaceManager:
 
     async def list_workspaces(self, type=None, context=None):
         """Get all workspaces."""
+        self.validate_context(context, permission=UserPermission.read)
         user_info = UserInfo.model_validate(context["user"])
         workspace_info = await self._redis.hget("workspaces", context["ws"])
         if workspace_info is None:
@@ -960,56 +950,6 @@ class WorkspaceManager:
         ]
         return workspaces
 
-    async def check_permission(
-        self,
-        user_info: UserInfo,
-        workspace: Union[WorkspaceInfo, str] = None,
-        context=None,
-    ):
-        """Check user permission for the workspace."""
-        if isinstance(user_info, dict):
-            user_info = UserInfo.model_validate(user_info)
-        # Make exceptions for root user, the children of root and test workspace
-        if user_info.id == "root":
-            return True
-
-        if workspace is None:
-            assert "ws" in context, "Workspace not provided in the context."
-            workspace = context["ws"]
-
-        if user_info.scopes:
-            if workspace in user_info.scopes:
-                return True
-
-        if (
-            workspace == "*"
-            and user_info.id != "root"
-            and "admin" not in user_info.roles
-        ):
-            return False
-
-        if "admin" in user_info.roles:
-            logger.info(
-                "Allowing access to %s for admin user %s", workspace.name, user_info.id
-            )
-            return True
-
-        if isinstance(workspace, str):
-            try:
-                workspace = await self.load_workspace_info(workspace)
-            except KeyError:
-                return False
-
-        if workspace.name == user_info.id:
-            return True
-
-        _id = user_info.email or user_info.id
-
-        if _id in workspace.owners:
-            return True
-
-        return False
-
     async def get_workspace(self, workspace: str = None):
         """Get the service api of the workspace manager."""
         assert workspace is not None
@@ -1027,7 +967,7 @@ class WorkspaceManager:
     ):
         """Update the workspace config."""
         assert isinstance(workspace, WorkspaceInfo) and isinstance(user_info, UserInfo)
-        if not await self.check_permission(user_info, workspace, context=None):
+        if not user_info.check_permission(workspace.name, UserPermission.read_write):
             raise PermissionError(f"Permission denied for workspace {workspace}")
 
         workspace_info = await self._redis.hget("workspaces", workspace.name)
@@ -1049,14 +989,11 @@ class WorkspaceManager:
         )
         self._event_bus.emit("workspace_changed", workspace.model_dump())
 
-    async def delete_client(self, client_id: str, context: Optional[dict] = None):
+    async def delete_client(self, client_id: str, workspace:str, user_info:UserInfo, context: Optional[dict] = None):
         """Delete all services associated with the given client_id in the specified workspace."""
         assert context is not None
-        cws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        if not await self.check_permission(user_info, context=context):
-            raise PermissionError(f"Permission denied for workspace {cws}")
-
+        self.validate_context(context, permission=UserPermission.admin)
+        cws = workspace
         validate_key_part(client_id)
 
         # Define a pattern to match all services for the given client_id in the current workspace
@@ -1068,30 +1005,36 @@ class WorkspaceManager:
         ), "Query pattern contains invalid characters."
 
         keys = await self._redis.keys(pattern)
+        logger.info(f"Removing {len(keys)} services for client {client_id} in {cws}")
         for key in keys:
             await self._redis.delete(key)
 
         if await self._redis.hexists("workspaces", cws):
             if user_info.is_anonymous and cws == user_info.id:
+                logger.info(f"Unloading workspace {cws} for anonymous user.")
                 # unload temporary workspace if the user exits
                 await self.unload(context=context)
             else:
                 # otherwise delete the workspace if it is empty
                 await self.unload_if_empty(context=context)
+        else:
+            logger.warning(f"Workspace {cws} not found.")
 
     async def unload_if_empty(self, context=None):
         """Delete the workspace if it is empty."""
+        self.validate_context(context, permission=UserPermission.admin)
         client_keys = await self.list_clients(context=context)
         if not client_keys:
             await self.unload(context=context)
+        else:
+            logger.warning(
+                f"Workspace {context['ws']} is not empty, remaining clients: {client_keys[:10]}..." # only list the first 10 maximum
+            )
 
     async def unload(self, context=None):
         """Unload the workspace."""
-        assert context is not None
+        self.validate_context(context, permission=UserPermission.admin)
         ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        if not await self.check_permission(user_info, context=context):
-            raise PermissionError(f"Permission denied for workspace {ws}")
         winfo = await self.load_workspace_info(ws)
 
         # list all the clients in the workspace and send a meesage to delete them
@@ -1141,12 +1084,6 @@ class WorkspaceManager:
             "createWorkspace": self.create_workspace,
             "register_service": self.register_service,
             "registerService": self.register_service,
-            "delete_client": self.delete_client,
-            "deleteClient": self.delete_client,
-            # "get_workspace": self.get_workspace,
-            # "getWorkspace": self.get_workspace,
-            "check_permission": self.check_permission,
-            "checkPermission": self.check_permission,
             "get_workspace_info": self.get_workspace_info,
             "getWorkspaceInfo": self.get_workspace_info,
             "install_application": self.install_application,

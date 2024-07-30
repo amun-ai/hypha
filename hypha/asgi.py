@@ -8,7 +8,7 @@ from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
 from hypha.core import ServiceInfo
-from hypha.core.auth import parse_token
+from hypha.core.auth import parse_token, generate_anonymous_user
 from hypha.utils import PatchedCORSMiddleware
 
 logging.basicConfig(stream=sys.stdout)
@@ -38,10 +38,10 @@ class RemoteASGIApp:
             for a in scope["headers"]
             if a[0].lower() == b"authorization"
         ]
-        if authorizations:
-            user_info = parse_token(authorizations[0], allow_anonymous=True)
+        if authorizations and authorizations[0]:
+            user_info = parse_token(authorizations[0])
         else:
-            user_info = parse_token(None, allow_anonymous=True)
+            user_info = generate_anonymous_user()
         async with self.store.get_workspace_interface(self.workspace, user_info) as api:
             service = await api.get_service(self.service_id)
             if service.type == "ASGI":

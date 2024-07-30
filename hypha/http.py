@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response, RedirectResponse
 
 from hypha_rpc import RPC
+from hypha.core import UserPermission
 from hypha.core.auth import login_optional, AUTH0_DOMAIN
 from hypha.core.store import RedisStore
 from hypha.utils import GzipRoute
@@ -287,8 +288,8 @@ class HTTPProxy:
         ):
             """Route for get detailed info of a workspace."""
             try:
-                if workspace != "public" and not await store.check_permission(
-                    user_info, workspace
+                if not user_info.check_permission(
+                    workspace, UserPermission.read
                 ):
                     return JSONResponse(
                         status_code=403,

@@ -25,14 +25,6 @@ logger = logging.getLogger("core")
 logger.setLevel(logging.INFO)
 
 
-class TokenConfig(BaseModel):
-    """Represent a token configuration."""
-
-    scopes: List[str]
-    expires_in: Optional[float] = None
-    email: Optional[EmailStr] = None
-
-
 class VisibilityEnum(str, Enum):
     """Represent the visibility of the workspace."""
 
@@ -99,15 +91,30 @@ class UserTokenInfo(BaseModel):
     user_id: Optional[constr(max_length=64)] = None # type: ignore
     picture: Optional[AnyHttpUrl] = None
 
+class UserPermission(str, Enum):
+    """Represent the permission of the workspace."""
+
+    read = "r"
+    read_write = "rw"
+    admin = "a"
+
+class ScopeInfo(BaseModel):
+    """Represent scope info."""
+    model_config = ConfigDict(extra="allow")
+
+    workspaces: Optional[Dict[str, UserPermission]] = {}
+    client_id: Optional[str] = None
+    extra_scopes: Optional[List[str]] = [] # extra scopes
+
 class UserInfo(BaseModel):
     """Represent user info."""
 
     id: str
     roles: List[str]
     is_anonymous: bool
+    scope: Optional[ScopeInfo] = None
     email: Optional[EmailStr] = None
     parent: Optional[str] = None
-    scopes: Optional[List[str]] = None  # a list of workspace
     expires_at: Optional[float] = None
     _metadata: Dict[str, Any] = PrivateAttr(
         default_factory=lambda: {}
@@ -122,7 +129,38 @@ class UserInfo(BaseModel):
     def set_metadata(self, key, value):
         """Set the metadata."""
         self._metadata[key] = value
-
+        
+    def get_permission(self, workspace: str):
+        """Get the workspace permission."""
+        if not self.scope:
+            return None
+        assert isinstance(workspace, str)
+        if self.scope.workspaces.get("*"):
+            return self.scope.workspaces["*"]
+        return self.scope.workspaces.get(workspace, None)
+    
+    def check_permission(self, workspace: str, minimal_permission: UserPermission):
+        permission = self.get_permission(workspace)
+        if not permission:
+            return False
+        if minimal_permission == UserPermission.read:
+            if permission in [
+                UserPermission.read,
+                UserPermission.read_write,
+                UserPermission.admin
+            ]:
+                return True
+        elif minimal_permission == UserPermission.read_write:
+            if permission in [
+                UserPermission.read_write,
+                UserPermission.admin
+            ]:
+                return True
+        elif minimal_permission == UserPermission.admin:
+            if permission == UserPermission.admin:
+                return True
+        
+        return False
 
 class ClientInfo(BaseModel):
     """Represent service."""

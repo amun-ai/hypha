@@ -477,7 +477,7 @@ class PatchedCORSMiddleware(CORSMiddleware):
 
 async def _http_ready_func(url, p, logger=None):
     """Check if the http service is ready."""
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=20.0) as client:
         try:
             resp = await client.get(url)
             # We only care if we get back *any* response, not just 200
