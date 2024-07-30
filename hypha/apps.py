@@ -383,7 +383,9 @@ class ServerAppController:
         user_info = UserInfo.model_validate(context["user"])
         workspace_info = await self.store.get_workspace(workspace, load=True)
         assert workspace_info, f"Workspace {workspace} not found."
-        if not user_info.check_permission(workspace_info.name, UserPermission.read_write):
+        if not user_info.check_permission(
+            workspace_info.name, UserPermission.read_write
+        ):
             raise Exception(
                 f"User {user_info.id} does not have permission"
                 f" to install apps in workspace {workspace_info.name}"
@@ -445,7 +447,9 @@ class ServerAppController:
 
         app_id = f"{mhash}"
 
-        public_url = f"{self.public_base_url}/{workspace_info.name}/a/{app_id}/index.html"
+        public_url = (
+            f"{self.public_base_url}/{workspace_info.name}/a/{app_id}/index.html"
+        )
         card_obj = convert_config_to_card(config, app_id, public_url)
         card_obj.update(
             {
@@ -454,8 +458,12 @@ class ServerAppController:
             }
         )
         card = Card.model_validate(card_obj)
-        await self.save_application(workspace_info.name, app_id, card, source, attachments)
-        async with self.store.get_workspace_interface(workspace_info.name, user_info) as ws:
+        await self.save_application(
+            workspace_info.name, app_id, card, source, attachments
+        )
+        async with self.store.get_workspace_interface(
+            workspace_info.name, user_info
+        ) as ws:
             await ws.install_application(card.model_dump())
         try:
             info = await self.start(

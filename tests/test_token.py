@@ -11,7 +11,6 @@ from . import (
 pytestmark = pytest.mark.asyncio
 
 
-
 async def test_generate_token(fastapi_server):
     """Test connecting to the server with a token."""
     api1 = await connect_to_server(
@@ -34,16 +33,21 @@ async def test_generate_token(fastapi_server):
         assert "Client already exists and is active:" in str(e)
     await api1.disconnect()
 
+
 async def test_generate_token_with_custom_scope(fastapi_server):
     """Test token with custom scope."""
-    async with connect_to_server({"name": "my app", "server_url": WS_SERVER_URL, "client_id": "my-app"}) as api1:
+    async with connect_to_server(
+        {"name": "my app", "server_url": WS_SERVER_URL, "client_id": "my-app"}
+    ) as api1:
         token = await api1.generate_token({"extra_scopes": ["my-data:read"]})
-    
-        async with connect_to_server({
-            "name": "my app",
-            "server_url": WS_SERVER_URL,
-            "client_id": "my-app-2",
-            "token": token,
-            "workspace": api1.config.workspace,
-        }) as api2:
+
+        async with connect_to_server(
+            {
+                "name": "my app",
+                "server_url": WS_SERVER_URL,
+                "client_id": "my-app-2",
+                "token": token,
+                "workspace": api1.config.workspace,
+            }
+        ) as api2:
             assert "my-data:read" in api2.config["user"]["scope"]["extra_scopes"]

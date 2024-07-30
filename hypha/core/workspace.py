@@ -17,7 +17,7 @@ from hypha.core import (
     UserInfo,
     WorkspaceInfo,
     ServiceInfo,
-    UserPermission
+    UserPermission,
 )
 from hypha.core.auth import generate_presigned_token, create_scope
 from hypha.utils import EventBus, random_id
@@ -254,19 +254,32 @@ class WorkspaceManager:
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         config = config or {}
-        if set(config.keys()) - {"expires_in", "workspace", "permission", "extra_scopes"}:
+        if set(config.keys()) - {
+            "expires_in",
+            "workspace",
+            "permission",
+            "extra_scopes",
+        }:
             raise ValueError(
                 "Invalid keys in token config: "
-                + str(set(config.keys()) - {"expires_in", "workspace", "permission", "extra_scopes"})
+                + str(
+                    set(config.keys())
+                    - {"expires_in", "workspace", "permission", "extra_scopes"}
+                )
             )
-        
+
         extra_scopes = []
         if "extra_scopes" in config:
-            assert isinstance(config["extra_scopes"], list), "Permissions must be a list"
+            assert isinstance(
+                config["extra_scopes"], list
+            ), "Permissions must be a list"
             for scope in config["extra_scopes"]:
                 assert isinstance(scope, str), "Permission must be a string"
                 if ":" in scope and scope.count(":") == 1:
-                    assert scope.split(":")[0] not in ["ws", "cid"], "Invalid scope, cannot start with ws or cid"
+                    assert scope.split(":")[0] not in [
+                        "ws",
+                        "cid",
+                    ], "Invalid scope, cannot start with ws or cid"
                 extra_scopes.append(scope)
 
         if "workspace" in config:
@@ -274,24 +287,32 @@ class WorkspaceManager:
         else:
             # limit to the current workspace
             allowed_workspace = ws
-        
+
         maximum_permission = user_info.get_permission(allowed_workspace)
         if not maximum_permission:
             workspace_info = await self.load_workspace_info(allowed_workspace)
             if workspace_info.owners and user_info.id in workspace_info.owners:
                 maximum_permission = UserPermission.admin
             else:
-                raise PermissionError(f"You do not have any permission for workspace: {config['workspace']}")
+                raise PermissionError(
+                    f"You do not have any permission for workspace: {config['workspace']}"
+                )
         if maximum_permission != UserPermission.admin:
             raise PermissionError("Only admin can generate token.")
-        
+
         permission = config.get("permission", "read_write")
-        assert permission in ["read", "read_write", "admin"], f"Invalid permission: {permission} (must be one of: read, read_write, admin)"
+        assert permission in [
+            "read",
+            "read_write",
+            "admin",
+        ], f"Invalid permission: {permission} (must be one of: read, read_write, admin)"
         permission = UserPermission[permission]
-        
+
         # make it a child
         user_info.id = random_id(readable=True)
-        user_info.scope = create_scope({allowed_workspace: permission}, extra_scopes=extra_scopes)
+        user_info.scope = create_scope(
+            {allowed_workspace: permission}, extra_scopes=extra_scopes
+        )
         token = generate_presigned_token(user_info)
         return token
 
@@ -431,7 +452,7 @@ class WorkspaceManager:
             if query.get("app_id") and query.get("app_id") != app_id:
                 raise ValueError(f"App id mismatch: {query.get('app_id')} != {app_id}")
         app_id = query.get("app_id", app_id)
-        
+
         # If the user does not have permission to read the workspace, only list public services
         if not user_info.check_permission(workspace, UserPermission.read):
             visibility = "public"
@@ -509,7 +530,9 @@ class WorkspaceManager:
             service.id = f"{ws}/{service.id}"
         assert ":" in service.id, "Service id info must contain ':'"
         service.app_id = service.app_id or "*"
-        key = f"services:{service.config.visibility.value}:{service.id}@{service.app_id}"
+        key = (
+            f"services:{service.config.visibility.value}:{service.id}@{service.app_id}"
+        )
 
         # Check if the service already exists
         service_exists = await self._redis.exists(key)
@@ -555,7 +578,9 @@ class WorkspaceManager:
             service.id = f"{ws}/{service.id}"
         assert ":" in service.id, "Service id info must contain ':'"
         service.app_id = service.app_id or "*"
-        key = f"services:{service.config.visibility.value}:{service.id}@{service.app_id}"
+        key = (
+            f"services:{service.config.visibility.value}:{service.id}@{service.app_id}"
+        )
         logger.info("Removing service: %s", key)
 
         # Check if the service exists before removal
@@ -776,7 +801,12 @@ class WorkspaceManager:
         await rpc.disconnect()
 
     async def get_service(
-        self, query: Union[dict, str], mode: str = "default", skip_timeout=False, timeout=5.0, context=None
+        self,
+        query: Union[dict, str],
+        mode: str = "default",
+        skip_timeout=False,
+        timeout=5.0,
+        context=None,
     ):
         """Get a service based on the query, supporting wildcard patterns and matching modes."""
         # no need to validate the context
@@ -825,7 +855,9 @@ class WorkspaceManager:
             query["client_id"] = service_id.split("/")[1].split(":")[0]
             query["workspace"] = workspace
             if "*" not in service_id:
-                service_api = await self._rpc.get_remote_service(service_id, timeout=timeout)
+                service_api = await self._rpc.get_remote_service(
+                    service_id, timeout=timeout
+                )
                 if service_api:
                     return self.patch_service_config(workspace, service_api)
                 else:
@@ -897,7 +929,9 @@ class WorkspaceManager:
                 service_id, app_id = service_id.split("@")
                 workspace = service_id.split("/")[0]
                 # Attempt to get the remote service with a timeout
-                service_api = await self._rpc.get_remote_service(service_id, timeout=timeout)
+                service_api = await self._rpc.get_remote_service(
+                    service_id, timeout=timeout
+                )
                 if service_api:
                     return self.patch_service_config(workspace, service_api)
             except asyncio.TimeoutError:
@@ -989,7 +1023,13 @@ class WorkspaceManager:
         )
         self._event_bus.emit("workspace_changed", workspace.model_dump())
 
-    async def delete_client(self, client_id: str, workspace:str, user_info:UserInfo, context: Optional[dict] = None):
+    async def delete_client(
+        self,
+        client_id: str,
+        workspace: str,
+        user_info: UserInfo,
+        context: Optional[dict] = None,
+    ):
         """Delete all services associated with the given client_id in the specified workspace."""
         assert context is not None
         self.validate_context(context, permission=UserPermission.admin)
@@ -1028,7 +1068,7 @@ class WorkspaceManager:
             await self.unload(context=context)
         else:
             logger.warning(
-                f"Workspace {context['ws']} is not empty, remaining clients: {client_keys[:10]}..." # only list the first 10 maximum
+                f"Workspace {context['ws']} is not empty, remaining clients: {client_keys[:10]}..."  # only list the first 10 maximum
             )
 
     async def unload(self, context=None):

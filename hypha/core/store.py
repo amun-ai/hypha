@@ -65,7 +65,7 @@ class RedisStore:
         public_base_url=None,
         local_base_url=None,
         redis_uri=None,
-        reconnection_token_life_time=2 * 24 * 60 * 60
+        reconnection_token_life_time=2 * 24 * 60 * 60,
     ):
         """Initialize the redis store."""
         self._workspace_loader = None
@@ -227,10 +227,8 @@ class RedisStore:
                 "public", self._root_user
             )
         return self._public_workspace_interface
-    
-    async def client_exists(
-        self, client_id: str, workspace: str = None
-    ):
+
+    async def client_exists(self, client_id: str, workspace: str = None):
         """Check if a client exists."""
         assert workspace is not None, "Workspace must be provided."
         assert client_id and "/" not in client_id, "Invalid client id: " + client_id
@@ -241,8 +239,10 @@ class RedisStore:
     async def remove_client(self, client_id, workspace, user_info):
         """Remove a client."""
         context = {"user": self._root_user.model_dump(), "ws": workspace}
-        return await self._workspace_manager.delete_client(client_id, workspace, user_info, context=context)
-        
+        return await self._workspace_manager.delete_client(
+            client_id, workspace, user_info, context=context
+        )
+
     async def get_user_workspace(self, user_id: str):
         """Get a user."""
         workspace_info = await self._redis.hget("workspaces", user_id)

@@ -60,8 +60,8 @@ class ServiceInfo(BaseModel):
     id: str
     name: str
     type: str
-    description: Optional[constr(max_length=256)] = "" # type: ignore
-    docs: Optional[Dict[str, constr(max_length=1024)]] = None # type: ignore
+    description: Optional[constr(max_length=256)] = ""  # type: ignore
+    docs: Optional[Dict[str, constr(max_length=1024)]] = None  # type: ignore
     app_id: Optional[str] = None
 
     def is_singleton(self):
@@ -81,15 +81,18 @@ class ServiceInfo(BaseModel):
         data["config"] = ServiceConfig.model_validate(data["config"])
         return super().model_validate(data)
 
+
 class UserTokenInfo(BaseModel):
     """Represent user profile."""
-    token: constr(max_length=1024) # type: ignore
+
+    token: constr(max_length=1024)  # type: ignore
     email: Optional[EmailStr] = None
     email_verified: Optional[bool] = None
-    name: Optional[constr(max_length=64)] = None # type: ignore
-    nickname: Optional[constr(max_length=64)] = None # type: ignore
-    user_id: Optional[constr(max_length=64)] = None # type: ignore
+    name: Optional[constr(max_length=64)] = None  # type: ignore
+    nickname: Optional[constr(max_length=64)] = None  # type: ignore
+    user_id: Optional[constr(max_length=64)] = None  # type: ignore
     picture: Optional[AnyHttpUrl] = None
+
 
 class UserPermission(str, Enum):
     """Represent the permission of the workspace."""
@@ -98,13 +101,16 @@ class UserPermission(str, Enum):
     read_write = "rw"
     admin = "a"
 
+
 class ScopeInfo(BaseModel):
     """Represent scope info."""
+
     model_config = ConfigDict(extra="allow")
 
     workspaces: Optional[Dict[str, UserPermission]] = {}
     client_id: Optional[str] = None
-    extra_scopes: Optional[List[str]] = [] # extra scopes
+    extra_scopes: Optional[List[str]] = []  # extra scopes
+
 
 class UserInfo(BaseModel):
     """Represent user info."""
@@ -129,7 +135,7 @@ class UserInfo(BaseModel):
     def set_metadata(self, key, value):
         """Set the metadata."""
         self._metadata[key] = value
-        
+
     def get_permission(self, workspace: str):
         """Get the workspace permission."""
         if not self.scope:
@@ -138,7 +144,7 @@ class UserInfo(BaseModel):
         if self.scope.workspaces.get("*"):
             return self.scope.workspaces["*"]
         return self.scope.workspaces.get(workspace, None)
-    
+
     def check_permission(self, workspace: str, minimal_permission: UserPermission):
         permission = self.get_permission(workspace)
         if not permission:
@@ -147,20 +153,18 @@ class UserInfo(BaseModel):
             if permission in [
                 UserPermission.read,
                 UserPermission.read_write,
-                UserPermission.admin
+                UserPermission.admin,
             ]:
                 return True
         elif minimal_permission == UserPermission.read_write:
-            if permission in [
-                UserPermission.read_write,
-                UserPermission.admin
-            ]:
+            if permission in [UserPermission.read_write, UserPermission.admin]:
                 return True
         elif minimal_permission == UserPermission.admin:
             if permission == UserPermission.admin:
                 return True
-        
+
         return False
+
 
 class ClientInfo(BaseModel):
     """Represent service."""

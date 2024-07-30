@@ -125,7 +125,7 @@ def valid_token(authorization: str):
     try:
         unverified_header = jwt.get_unverified_header(authorization)
         alg = unverified_header.get("alg")
-        
+
         if alg == "HS256":
             payload = jwt.decode(
                 authorization,
@@ -162,6 +162,7 @@ def valid_token(authorization: str):
     except Exception as err:
         raise HTTPException(status_code=401, detail=traceback.format_exc()) from err
 
+
 def generate_anonymous_user(scope=None) -> UserInfo:
     """Generate user info for an anonymous user."""
     iat = time.time()
@@ -175,6 +176,7 @@ def generate_anonymous_user(scope=None) -> UserInfo:
         scope=scope,
         expires_at=expires_at,
     )
+
 
 def parse_token(authorization: str):
     """Parse the token."""
@@ -201,7 +203,8 @@ def parse_token(authorization: str):
 
 
 def generate_presigned_token(
-    user_info: UserInfo, expires_in: int = None,
+    user_info: UserInfo,
+    expires_in: int = None,
 ):
     """Generate presigned tokens.
 
@@ -233,9 +236,7 @@ def generate_presigned_token(
     return token
 
 
-def generate_reconnection_token(
-    user_info: UserInfo, expires_in: int = 60
-):
+def generate_reconnection_token(user_info: UserInfo, expires_in: int = 60):
     """Generate a token for reconnection."""
     current_time = time.time()
     expires_at = current_time + expires_in
@@ -256,6 +257,7 @@ def generate_reconnection_token(
     )
     return ret
 
+
 def parse_scope(scope: str) -> ScopeInfo:
     """Parse the scope."""
     parsed = ScopeInfo(extra_scopes=[])
@@ -270,6 +272,7 @@ def parse_scope(scope: str) -> ScopeInfo:
             parsed.extra_scopes.append(scope.strip())
     return parsed
 
+
 def create_scope(
     workspaces: Union[str, Dict[str, UserPermission]] = None,
     client_id: str = None,
@@ -280,9 +283,13 @@ def create_scope(
     if isinstance(workspaces, str):
         workspaces = workspaces.split(",")
         # parse mode by #
-        workspaces = {w.split("#")[0]: UserPermission(w.split("#")[1]) for w in workspaces}
+        workspaces = {
+            w.split("#")[0]: UserPermission(w.split("#")[1]) for w in workspaces
+        }
     else:
-        assert isinstance(workspaces, dict), "Invalid workspaces, it should be a string or a dict"
+        assert isinstance(
+            workspaces, dict
+        ), "Invalid workspaces, it should be a string or a dict"
         for w in list(workspaces.keys()):
             m = workspaces[w]
             # it should be either a string or a UserPermission
@@ -290,38 +297,50 @@ def create_scope(
                 assert m in UserPermission.__members__.values(), f"Invalid mode {m}"
                 m = UserPermission(m)
             workspaces[w] = m
-    
+
     return ScopeInfo(
         workspaces=workspaces,
         client_id=client_id,
         extra_scopes=extra_scopes,
     )
 
-def update_user_scope(user_info: UserInfo, workspace_info: WorkspaceInfo, client_id: str):
-        """Update the user scope for a workspace."""
-        user_info.scope = user_info.scope or ScopeInfo()
-        permission = user_info.get_permission(workspace_info.name)
-        if not permission:
-            # infer permission from workspace
-            if user_info.id == workspace_info.name:
-                permission = UserPermission.admin
-            elif "admin" in user_info.roles:
-                permission = UserPermission.admin
-            elif user_info.email in workspace_info.owners or user_info.id in workspace_info.owners:
-                permission = UserPermission.admin
 
-        return create_scope(workspaces={workspace_info.name: permission} if permission else {}, client_id=client_id, extra_scopes=user_info.scope.extra_scopes)
+def update_user_scope(
+    user_info: UserInfo, workspace_info: WorkspaceInfo, client_id: str
+):
+    """Update the user scope for a workspace."""
+    user_info.scope = user_info.scope or ScopeInfo()
+    permission = user_info.get_permission(workspace_info.name)
+    if not permission:
+        # infer permission from workspace
+        if user_info.id == workspace_info.name:
+            permission = UserPermission.admin
+        elif "admin" in user_info.roles:
+            permission = UserPermission.admin
+        elif (
+            user_info.email in workspace_info.owners
+            or user_info.id in workspace_info.owners
+        ):
+            permission = UserPermission.admin
+
+    return create_scope(
+        workspaces={workspace_info.name: permission} if permission else {},
+        client_id=client_id,
+        extra_scopes=user_info.scope.extra_scopes,
+    )
+
 
 def generate_jwt_scope(scope: ScopeInfo) -> str:
     """Generate scope."""
     ps = " ".join([f"ws:{w}#{m.value}" for w, m in scope.workspaces.items()])
-    
+
     if scope.client_id:
         ps += f" cid:{scope.client_id}"
-    
+
     if scope.extra_scopes:
         ps += " " + " ".join(scope.extra_scopes)
     return ps
+
 
 def parse_reconnection_token(token) -> UserInfo:
     """Parse a reconnection token."""
@@ -365,7 +384,9 @@ async def register_login_service(server):
     cache = AsyncTTLCache(ttl=int(MAXIMUM_LOGIN_TIME))
     server_url = server.config["public_base_url"]
     login_url = f"{server_url}/{server.config['workspace']}/apps/hypha-login/"
-    login_service_url=f"{server_url}/{server.config['workspace']}/services/hypha-login"
+    login_service_url = (
+        f"{server_url}/{server.config['workspace']}/services/hypha-login"
+    )
     jinja_env = Environment(
         loader=PackageLoader("hypha"), autoescape=select_autoescape()
     )
@@ -405,7 +426,11 @@ async def register_login_service(server):
             user_info = await cache.get(key)
             if user_info:
                 del cache[key]
-            return user_info.model_dump(mode="json") if profile else (user_info and user_info.token)
+            return (
+                user_info.model_dump(mode="json")
+                if profile
+                else (user_info and user_info.token)
+            )
         count = 0
         while True:
             user_info = await cache.get(key)
@@ -421,13 +446,30 @@ async def register_login_service(server):
             if count > timeout:
                 raise Exception("Login timeout")
 
-    async def report_login(key, token, email=None, email_verified=None, name=None, nickname=None, user_id=None, picture=None):
+    async def report_login(
+        key,
+        token,
+        email=None,
+        email_verified=None,
+        name=None,
+        nickname=None,
+        user_id=None,
+        picture=None,
+    ):
         """Report a token associated with a login session."""
         assert key in cache, "Invalid key, key does not exist or expired"
-        kwargs = {"token": token, "email": email, "email_verified": email_verified, "name": name, "nickname": nickname, "user_id": user_id, "picture": picture}
+        kwargs = {
+            "token": token,
+            "email": email,
+            "email_verified": email_verified,
+            "name": name,
+            "nickname": nickname,
+            "user_id": user_id,
+            "picture": picture,
+        }
         user_info = UserTokenInfo.model_validate(kwargs)
         await cache.update(key, user_info)
-    
+
     async def generate_token(token: str, expires_in: int):
         """Generate a new user token."""
         # limit the expiration time to 1 year

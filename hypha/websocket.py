@@ -77,16 +77,25 @@ class WebsocketServer:
                     )
                 else:
                     user_info = generate_anonymous_user()
-                    user_info.scope = create_scope(workspaces={user_info.id: UserPermission.admin}, client_id=client_id)
+                    user_info.scope = create_scope(
+                        workspaces={user_info.id: UserPermission.admin},
+                        client_id=client_id,
+                    )
                 workspace_info, user_info = await self.setup_workspace_and_permissions(
                     user_info, workspace, client_id
                 )
-                user_info.scope = update_user_scope(user_info, workspace_info, client_id)
-                if not user_info.check_permission(workspace_info.name, UserPermission.read):
+                user_info.scope = update_user_scope(
+                    user_info, workspace_info, client_id
+                )
+                if not user_info.check_permission(
+                    workspace_info.name, UserPermission.read
+                ):
                     logger.error(f"Permission denied for workspace: {workspace}")
-                    raise PermissionError(f"Permission denied for workspace: {workspace}")
+                    raise PermissionError(
+                        f"Permission denied for workspace: {workspace}"
+                    )
                 workspace = workspace_info.name
-                
+
                 assert workspace_info and workspace and client_id, (
                     "Failed to authenticate user to workspace: %s" % workspace_info.name
                 )
@@ -100,13 +109,10 @@ class WebsocketServer:
                     code=status.WS_1001_GOING_AWAY,
                 )
                 return
-            
+
             try:
                 await self.establish_websocket_communication(
-                    websocket,
-                    workspace_info.name,
-                    client_id,
-                    user_info
+                    websocket, workspace_info.name, client_id, user_info
                 )
             except RuntimeError as exp:
                 # this happens when the websocket is closed
@@ -235,11 +241,7 @@ class WebsocketServer:
         return workspace_info, user_info
 
     async def establish_websocket_communication(
-        self,
-        websocket,
-        workspace,
-        client_id,
-        user_info
+        self, websocket, workspace, client_id, user_info
     ):
         """Establish and manage websocket communication."""
         conn = None
@@ -310,8 +312,6 @@ class WebsocketServer:
                 and f"{workspace}/{client_id}" in self._websockets
             ):
                 del self._websockets[f"{workspace}/{client_id}"]
-            
-    
 
     async def handle_disconnection(
         self, websocket, workspace: str, client_id: str, user_info: UserInfo, code, exp
@@ -326,14 +326,16 @@ class WebsocketServer:
                     f"Client disconnected unexpectedly: {workspace}/{client_id}, code: {code}, error: {exp}"
                 )
         except Exception as e:
-            logger.error(f"Error handling disconnection, client: {workspace}/{client_id}, error: {str(e)}")
+            logger.error(
+                f"Error handling disconnection, client: {workspace}/{client_id}, error: {str(e)}"
+            )
         finally:
             await self.disconnect(
                 websocket,
                 "Client disconnected",
                 code,
             )
-        
+
     async def disconnect(self, websocket, reason, code=status.WS_1000_NORMAL_CLOSURE):
         """Disconnect the websocket connection."""
         logger.error("Disconnecting, reason: %s, code: %s", reason, code)

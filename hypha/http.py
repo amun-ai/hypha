@@ -288,9 +288,7 @@ class HTTPProxy:
         ):
             """Route for get detailed info of a workspace."""
             try:
-                if not user_info.check_permission(
-                    workspace, UserPermission.read
-                ):
+                if not user_info.check_permission(workspace, UserPermission.read):
                     return JSONResponse(
                         status_code=403,
                         content={
