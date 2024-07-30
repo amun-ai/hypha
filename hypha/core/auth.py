@@ -314,7 +314,7 @@ def update_user_scope(user_info: UserInfo, workspace_info: WorkspaceInfo, client
 
 def generate_jwt_scope(scope: ScopeInfo) -> str:
     """Generate scope."""
-    ps = " ".join([f"ws:{w}#{m}" for w, m in scope.workspaces.items()])
+    ps = " ".join([f"ws:{w}#{m.value}" for w, m in scope.workspaces.items()])
     
     if scope.client_id:
         ps += f" cid:{scope.client_id}"
@@ -437,7 +437,7 @@ async def register_login_service(server):
         user_info = parse_token(token)
         return generate_presigned_token(user_info, expires_in=expires_in)
 
-    await server.register_service(
+    svc = await server.register_service(
         {
             "name": "Hypha Login",
             "id": "hypha-login",
@@ -452,5 +452,5 @@ async def register_login_service(server):
         }
     )
 
-    logger.info("Login service is ready.")
+    logger.info("Login service is available at: %s", svc.id)
     logger.info(f"To preview the login page, visit: {login_url}")

@@ -509,7 +509,7 @@ class WorkspaceManager:
             service.id = f"{ws}/{service.id}"
         assert ":" in service.id, "Service id info must contain ':'"
         service.app_id = service.app_id or "*"
-        key = f"services:{service.config.visibility}:{service.id}@{service.app_id}"
+        key = f"services:{service.config.visibility.value}:{service.id}@{service.app_id}"
 
         # Check if the service already exists
         service_exists = await self._redis.exists(key)
@@ -542,7 +542,7 @@ class WorkspaceManager:
                 logger.info(f"Adding built-in service: {service.id}")
             else:
                 self._event_bus.emit("service_added", service.model_dump(mode="json"))
-                logger.info(f"Adding service: {service.id}")
+                logger.info(f"Adding service {service.id}")
 
     async def _remove_service_handler(self, message: dict):
         """Remove a service from the workspace."""
@@ -555,7 +555,7 @@ class WorkspaceManager:
             service.id = f"{ws}/{service.id}"
         assert ":" in service.id, "Service id info must contain ':'"
         service.app_id = service.app_id or "*"
-        key = f"services:{service.config.visibility}:{service.id}@{service.app_id}"
+        key = f"services:{service.config.visibility.value}:{service.id}@{service.app_id}"
         logger.info("Removing service: %s", key)
 
         # Check if the service exists before removal

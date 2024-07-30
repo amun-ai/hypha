@@ -34,12 +34,6 @@ class HyphaDataStore:
         if obj_type == "file":
             data = value
             assert isinstance(data, (str, bytes)), "Value must be a string or bytes"
-            if isinstance(data, str) and data.startswith("file://"):
-                # File URL examples:
-                # Absolute URL: `file:///home/data/myfile.png`
-                # Relative URL: `file://./myimage.png`, or `file://myimage.png`
-                with open(data.replace("file://", ""), "rb") as fil:
-                    data = fil.read()
             mime_type, _ = mimetypes.guess_type(name)
             self.storage[obj_id] = {
                 "type": obj_type,
@@ -73,21 +67,23 @@ class HyphaDataStore:
         if obj["type"] == "file":
             data = obj["value"]
             if isinstance(data, str):
-                if not os.path.isfile(data):
-                    return {
-                        "status": 404,
-                        "headers": {"Content-Type": "text/plain"},
-                        "body": "File not found: " + data,
-                    }
-                with open(data, "rb") as fil:
-                    data = fil.read()
+                if data.startswith("file://"):
+                    file_path = data.replace("file://", "")
+                    if not os.path.isfile(file_path):
+                        return {
+                            "status": 404,
+                            "headers": {"Content-Type": "text/plain"},
+                            "body": "File not found: " + file_path,
+                        }
+                    with open(file_path, "rb") as fil:
+                        data = fil.read()
             headers = {
                 "Content-Type": obj["mime_type"],
-                "Content-Length": str(len(obj["value"])),
+                "Content-Length": str(len(data)),
                 "Content-Disposition": f'inline; filename="{obj["name"].split("/")[-1]}"',
             }
 
-            return {"status": 200, "headers": headers, "body": obj["value"]}
+            return {"status": 200, "headers": headers, "body": data}
         else:
             return {
                 "status": 200,

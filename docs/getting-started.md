@@ -57,6 +57,8 @@ Hypha provides native support for Python and JavaScript clients. For other langu
 
 Ensure that the server is running, and you can connect to it using the `hypha` module under `hypha-rpc` in a client script. You can either register a service or use an existing service.
 
+**WARNING: If you use hypha older than 0.15.x or lower, you will need to use `imjoy-rpc` instead of `hypha-rpc`.**
+
 ### Registering a Service
 
 To register a service in Python, install the `hypha-rpc` library:
@@ -198,7 +200,7 @@ if __name__ == "__main__":
 Include the following script in your HTML file to load the `hypha-rpc` client:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.1.5/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.1.10/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
 Use the following code in JavaScript to connect to the server and access an existing service:
@@ -295,12 +297,40 @@ async def callback(context):
     print(f"Go to login url: {context['login_url']}")
 ```
 
-### Service Authorization
+### User Authentication and Service Authorization
+
+Hypha provide built-in support for user authentication, and based on the user context, you can also customize the service authorization within each service function.
 
 In the previous example, we registered a public service (`config.visibility = "public"`) that can be accessed by any client. If you want to limit service access to a subset of clients, there are two ways to provide authorization.
 
 1. Connecting to the Same Workspace: Set `config.visibility` to `"private"`. Authorization is achieved by generating a token from the client that registered the service (using `server.config.workspace` and `server.generate_token()`). Another client can connect to the same workspace using the token (`connect_to_server({"workspace": xxxx, "token": xxxx, "server_url": xxxx})`).
+
 2. Using User Context: When registering a service, set `config.require_context` to `True` and `config.visibility` to `"public"` (or `"private"` to limit access for clients from the same workspace). Each service function needs to accept a keyword argument called `context`. The server will provide the context information containing `user` for each service function call. The service function can then check whether `context.user["id"]` is allowed to access the service. On the client side, you need to log in and generate a token by calling the `login({"server_url": xxxx})` function. The token is then used in `connect_to_server({"token": xxxx, "server_url": xxxx})`.
+
+Here is an example for how to enable the user context in the service function:
+```python
+
+async def start_service(server):
+    """Hypha startup function."""
+
+    def test(x, context=None): # Note that the context argument is added
+        current_user = context["user"]
+        if current_user["email"] not in authorized_users:
+            raise Exception(f"User {current_user['email']} is not authorized to access this service.")
+        print(f"Test: {x}")
+
+    # Register a test service
+    await server.register_service(
+        {
+            "id": "test-service",
+            "config": {
+                "visibility": "public",
+                "require_context": True, # enable user context
+            },
+            "test": test,
+        }
+    )
+```
 
 By default, hypha server uses a user authentication system based on [Auth0](https://auth0.com) controlled by us. You can also setup your own auth0 account to use it with your own hypha server. See [Setup Authentication](./setup-authentication) for more details.
 
@@ -362,15 +392,18 @@ Here's an example of `example-startup-function.py`:
 async def hypha_startup(server):
     """Hypha startup function."""
 
+    def test(x):
+        print(f"Test: {x}")
+
     # Register a test service
     await server.register_service(
         {
             "id": "test-service",
             "config": {
                 "visibility": "public",
-                "require_context": True,
+                "require_context": False,
             },
-            "test": lambda x: print(f"Test: {x}"),
+            "test": test,
         }
     )
 ```
