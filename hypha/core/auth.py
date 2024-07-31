@@ -28,7 +28,7 @@ if ENV_FILE:
     load_dotenv(ENV_FILE)
 
 MAXIMUM_LOGIN_TIME = env.get("MAXIMUM_LOGIN_TIME", "180")  # 3 minutes
-AUTH0_CLIENT_ID = env.get("AUTH0_CLIENT_ID", "ofsvx6A7LdMhG0hklr5JCAEawLv4Pyse")
+AUTH0_CLIENT_ID = env.get("AUTH0_CLIENT_ID", "paEagfNXPBVw8Ss80U5RAmAV4pjCPsD2")
 AUTH0_DOMAIN = env.get("AUTH0_DOMAIN", "amun-ai.eu.auth0.com")
 AUTH0_AUDIENCE = env.get("AUTH0_AUDIENCE", "https://amun-ai.eu.auth0.com/api/v2/")
 AUTH0_ISSUER = env.get("AUTH0_ISSUER", "https://amun.ai/")
@@ -36,7 +36,9 @@ AUTH0_NAMESPACE = env.get("AUTH0_NAMESPACE", "https://amun.ai/")
 JWT_SECRET = env.get("JWT_SECRET")
 
 if not JWT_SECRET:
-    logger.warning("JWT_SECRET is not defined")
+    logger.warning(
+        "JWT_SECRET is not defined, you will need a fixed JWT_SECRET for clients to reconnect"
+    )
     JWT_SECRET = shortuuid.ShortUUID().random(length=22)
 
 

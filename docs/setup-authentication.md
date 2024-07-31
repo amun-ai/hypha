@@ -13,7 +13,7 @@ To set up your own account, follow these steps:
  - Give your application a name (e.g. hypha), and choose "Single Page Web Applications" as the application type. Then click "Create".
  - Now go to the "Settings" tab of your application, and copy the "Domain" and "Client ID" values to create environment variables for running Hypha:
  ```
- AUTH0_CLIENT_ID=hMIMGeUvEHkVmi4KlGDSKfRPuGW43ypc # replace with your own value from the "Settings" tab
+ AUTH0_CLIENT_ID=paEagfNXPBVw8Ss80U5RAmAV4pjCPsD2 # replace with your own value from the "Settings" tab
  AUTH0_DOMAIN=amun-ai.eu.auth0.com # replace with your own value from the "Settings" tab
  AUTH0_AUDIENCE=https://amun-ai.eu.auth0.com/api/v2/ # replace 'amun-ai.eu.auth0.com' to your own auth0 domain
  AUTH0_ISSUER=https://amun.ai/ # keep it or replace 'amun.ai' to any website you want to use as the issuer
