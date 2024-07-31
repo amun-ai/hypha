@@ -20,16 +20,16 @@ playwright install
 To start the Hypha server, use the following command:
 
 ```bash
-python3 -m hypha.server --host=0.0.0.0 --port=9000
+python3 -m hypha.server --host=0.0.0.0 --port=9527
 ```
 
 If you want to enable server apps (browsers running on the server side), run the following command:
 
 ```bash
-python -m hypha.server --host=0.0.0.0 --port=9000 --enable-server-apps
+python -m hypha.server --host=0.0.0.0 --port=9527 --enable-server-apps
 ```
 
-You can test if the server is running by visiting [http://localhost:9000](http://localhost:9000) and checking the Hypha server version.
+You can test if the server is running by visiting [http://localhost:9527](http://localhost:9527) and checking the Hypha server version.
 
 Alternatively, you can use our public testing server at [https://ai.imjoy.io](https://ai.imjoy.io).
 
@@ -40,16 +40,16 @@ If you want to serve static files (e.g., HTML, JS, CSS) for your web application
 To serve static files from the `./webtools/` directory at the path `/tools` on your server, use the following command:
 
 ```bash
-python3 -m hypha.server --host=0.0.0.0 --port=9000 --static-mounts /tools:./webtools/
+python3 -m hypha.server --host=0.0.0.0 --port=9527 --static-mounts /tools:./webtools/
 ```
 
 You can mount multiple directories by providing additional `--static-mounts` arguments. For example, to mount the `./images/` directory at `/images`, use the following command:
 
 ```bash
-python3 -m hypha.server --host=0.0.0.0 --port=9000 --static-mounts /tools:./webtools/ /images:./images/
+python3 -m hypha.server --host=0.0.0.0 --port=9527 --static-mounts /tools:./webtools/ /images:./images/
 ```
 
-After running the command, you can access files from these directories via the Hypha server at `http://localhost:9000/tools` and `http://localhost:9000/images`, respectively.
+After running the command, you can access files from these directories via the Hypha server at `http://localhost:9527/tools` and `http://localhost:9527/images`, respectively.
 
 ## Connecting from a Client
 
@@ -98,7 +98,7 @@ async def start_server(server_url):
     print(f"Test it with the HTTP proxy: {server_url}/{server.config.workspace}/services/hello-world/hello?name=John")
 
 if __name__ == "__main__":
-    server_url = "http://localhost:9000"
+    server_url = "http://localhost:9527"
     loop = asyncio.get_event_loop()
     loop.create_task(start_server(server_url))
     loop.run_forever()
@@ -129,7 +129,7 @@ def start_server(server_url):
     print(f"Test it with the HTTP proxy: {server_url}/{server.config.workspace}/services/hello-world/hello?name=John")
 
 if __name__ == "__main__":
-    server_url = "http://localhost:9000"
+    server_url = "http://localhost:9527"
     start_server(server_url)
 ```
 <!-- tabs:end -->
@@ -162,7 +162,7 @@ import asyncio
 from hypha_rpc import connect_to_server
 
 async def main():
-    server = await connect_to_server({"server_url": "http://localhost:9000"})
+    server = await connect_to_server({"server_url": "http://localhost:9527"})
 
     # Get an existing service
     # Since "hello-world" is registered as a public service, we can access it using only the name "hello-world"
@@ -180,7 +180,7 @@ import asyncio
 from hypha_rpc.sync import connect_to_server
 
 def main():
-    server = connect_to_server({"server_url": "http://localhost:9000"})
+    server = connect_to_server({"server_url": "http://localhost:9527"})
 
     # Get an existing service
     # Since "hello-world" is registered as a public service, we can access it using only the name "hello-world"
@@ -207,7 +207,7 @@ Use the following code in JavaScript to connect to the server and access an exis
 
 ```javascript
 async function main(){
-    const server = await hyphaWebsocketClient.connectToServer({"server_url": "http://localhost:9000"})
+    const server = await hyphaWebsocketClient.connectToServer({"server_url": "http://localhost:9527"})
     const svc = await server.getService("hello-world")
     const ret = await svc.hello("John")
     console.log(ret)
@@ -254,8 +254,8 @@ server = connect_to_server({"server_url": "https://ai.imjoy.io", "token": token}
 Login in javascript:
 ```javascript
 async function main(){
-    const token = await hyphaWebsocketClient.login({"server_url": "http://localhost:9000"})
-    const server = await hyphaWebsocketClient.connectToServer({"server_url": "http://localhost:9000", "token": token})
+    const token = await hyphaWebsocketClient.login({"server_url": "http://localhost:9527"})
+    const server = await hyphaWebsocketClient.connectToServer({"server_url": "http://localhost:9527", "token": token})
     // ... use the server...
 }
 ```
@@ -381,7 +381,7 @@ The `--startup-functions` option allows you to provide a URI pointing to a Pytho
 For example, to start the server with a custom startup function, use the following command:
 
 ```bash
-python -m hypha.server --host=0.0.0.0 --port=9000 --startup-functions=./example-startup-function.py:hypha_startup
+python -m hypha.server --host=0.0.0.0 --port=9527 --startup-functions=./example-startup-function.py:hypha_startup
 ```
 
 Here's an example of `example-startup-function.py`:
@@ -413,7 +413,7 @@ Note that the startup function file will be loaded as a Python module. You can a
 Multiple startup functions can be specified by providing additional `--startup-functions` arguments. For example, to specify two startup functions, use the following command:
 
 ```bash
-python -m hypha.server --host=0.0.0.0 --port=9000 --startup-functions=./example-startup-function.py:hypha_startup ./example-startup-function2.py:hypha_startup
+python -m hypha.server --host=0.0.0.0 --port=9527 --startup-functions=./example-startup-function.py:hypha_startup ./example-startup-function2.py:hypha_startup
 ```
 
 #### Launching External Services Using Commands
