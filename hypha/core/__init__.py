@@ -377,8 +377,12 @@ class RedisEventBus:
 
     async def wait_for(self, event_name, match=None, timeout=None):
         """Wait for an event from either local or Redis event bus."""
-        local_future = self._local_event_bus.wait_for(event_name, match, timeout)
-        redis_future = self._redis_event_bus.wait_for(event_name, match, timeout)
+        local_future = asyncio.create_task(
+            self._local_event_bus.wait_for(event_name, match, timeout)
+        )
+        redis_future = asyncio.create_task(
+            self._redis_event_bus.wait_for(event_name, match, timeout)
+        )
         done, pending = await asyncio.wait(
             [local_future, redis_future], return_when=asyncio.FIRST_COMPLETED
         )
