@@ -14,22 +14,41 @@ To set up your own account, follow these steps:
  - Now go to the "Settings" tab of your application, and copy the "Domain" and "Client ID" values to create environment variables for running Hypha:
  ```
  AUTH0_CLIENT_ID=hMIMGeUvEHkVmi4KlGDSKfRPuGW43ypc # replace with your own value from the "Settings" tab
- AUTH0_DOMAIN=hypha.eu.auth0.com # replace with your own value from the "Settings" tab
- AUTH0_AUDIENCE=https://hypha.eu.auth0.com/api/v2/ # replace 'hypha.eu.auth0.com' to your own auth0 domain
- AUTH0_ISSUER=https://hypha.amun.ai/ # keep it or replace 'hypha.amun.ai' to any website you want to use as the issuer
- AUTH0_NAMESPACE=https://hypha.amun.ai/ # keep it or replace 'hypha.amun.ai' to any identifier you want to use as the namespace
+ AUTH0_DOMAIN=amun-ai.eu.auth0.com # replace with your own value from the "Settings" tab
+ AUTH0_AUDIENCE=https://amun-ai.eu.auth0.com/api/v2/ # replace 'amun-ai.eu.auth0.com' to your own auth0 domain
+ AUTH0_ISSUER=https://amun.ai/ # keep it or replace 'amun.ai' to any website you want to use as the issuer
+ AUTH0_NAMESPACE=https://amun.ai/ # keep it or replace 'amun.ai' to any identifier you want to use as the namespace
  ```
+ 
  You can either set the environment variables in your system, or create a `.env` file in the root directory of Hypha, and add the above lines to the file.
  - Importantly, you also need to configure your own hypha server domain so Auth0 will allow it to login from your own domain. 
- For example, if you want to serve hypha server at https://my-company.com, you need to set the following in "Settings" tab:
-    * scroll down to the "Allowed Callback URLs" section, and add the following URLs: https://my-company.com
-    * scroll down to the "Allowed Logout URLs" section, and add the following URLs: https://my-company.com/public/apps/hypha-login/
-    * scroll down to the "Allowed Web Origins" section, and add the following URLs: https://my-company.com
-    * scroll down to the "Allowed Origins (CORS)" section, and add the following URLs: https://my-company.com
- For local development, you can also add `http://127.0.0.1:9000` to the above URLs, separated by comma. For example, "Allowed Callback URLs" can be `https://my-company.com,http://http://127.0.0.1:9000`.
- - Now you can start the hypha server (with the AUTH0 environment variables, via `python3 -m hypha.server --host=0.0.0.0 --port=9000`), and you should be able to test it by going to https://my-company.com/public/apps/hypha-login/ (replace with your own domain) or http://127.0.0.1:9000/public/apps/hypha-login.
+ For example, if you want to serve hypha server at https://my-org.com, you need to set the following in "Settings" tab:
+    * scroll down to the "Allowed Callback URLs" section, and add the following URLs: https://my-org.com
+    * scroll down to the "Allowed Logout URLs" section, and add the following URLs: https://my-org.com/public/apps/hypha-login/
+    * scroll down to the "Allowed Web Origins" section, and add the following URLs: https://my-org.com
+    * scroll down to the "Allowed Origins (CORS)" section, and add the following URLs: https://my-org.com
+ For local development, you can also add `http://127.0.0.1:9000` to the above URLs, separated by comma. For example, "Allowed Callback URLs" can be `https://my-org.com,http://http://127.0.0.1:9000`.
+ - Now you can start the hypha server (with the AUTH0 environment variables, via `python3 -m hypha.server --host=0.0.0.0 --port=9000`), and you should be able to test it by going to https://my-org.com/public/apps/hypha-login/ (replace with your own domain) or http://127.0.0.1:9000/public/apps/hypha-login.
  - By default, auth0 will provide a basic username-password-authentication which will store user information at auth0. You can also add other authentication providers (e.g. Google, Github) in the "Authenticaiton" tab of your application in Auth0 dashboard.
     * In order to add Google, click "Social", click "Create Connection", find Google/Gmail, and click "Continue", you will need to obtain the Client ID by following the instructions in the "How to obtain a Client ID" below the "Client ID" field.
     * Similarily, you can add Github by clicking "Social", click "Create Connection", find Github, and click "Continue", you will need to obtain the Client ID by following the instructions in the "How to obtain a Client ID" below the "Client ID" field. In the permissions section, it is recommended to check "Email address" so that Hypha can get the email address of the user.
-
-Feel free to also customize the login page, and other settings in Auth0 dashboard.
+    * Feel free to also customize the login page, and other settings in Auth0 dashboard.
+ - Hypha also dependent on custom `roles` and `email` added in the JWT token by Auth0. You can add custom claims by installing a custom action in the login flow. 
+    * Go to "Actions" in the Auth0 dashboard, and click "Create Action".
+    * Choose "Create a new action", and choose "Login" as the trigger, then click "Create".
+    * Give it a name, e.g. "Add Roles" and then in the code editor, replace the code with the following code:
+    ```javascript
+    exports.onExecutePostLogin = async (event, api) => {
+      const namespace = 'https://amun.ai'; // replace with your own namespace, i.e. same as the AUTH0_NAMESPACE you set in the environment variables
+      if (event.authorization) {
+         api.idToken.setCustomClaim(`${namespace}/roles`, event.authorization.roles);
+         api.accessToken.setCustomClaim(`${namespace}/roles`, event.authorization.roles);
+         api.accessToken.setCustomClaim(`${namespace}/email`, event.user.email);
+         if(!event.user.email_verified){
+         api.access.deny(`Access to ${event.client.name} is not allowed, please verify your email.`);
+         }
+      }
+   };
+    ```
+    * Click "Deploy".
+    * Now you should be able to see the `roles` and `email` in the JWT token when you login to Hypha.

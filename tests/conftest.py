@@ -13,8 +13,8 @@ import pytest_asyncio
 import requests
 from requests import RequestException
 
-from hypha.core import TokenConfig, UserInfo, auth
-from hypha.core.auth import generate_presigned_token
+from hypha.core import UserInfo, auth, UserPermission
+from hypha.core.auth import generate_presigned_token, create_scope
 from hypha.minio import setup_minio_executables
 
 from . import (
@@ -33,7 +33,6 @@ from . import (
 
 JWT_SECRET = str(uuid.uuid4())
 os.environ["JWT_SECRET"] = JWT_SECRET
-os.environ["DISCONNECT_DELAY"] = "0.1"
 test_env = os.environ.copy()
 
 
@@ -48,42 +47,56 @@ def pytest_sessionfinish(session, exitstatus):
     asyncio.get_event_loop().close()
 
 
-def _generate_token(roles):
+def _generate_token(id, roles):
     # Patch the JWT_SECRET
     auth.JWT_SECRET = JWT_SECRET
 
     root_user_info = UserInfo(
-        id="root",
+        id=id,
         is_anonymous=False,
-        email=None,
+        email=id + "@test.com",
         parent=None,
         roles=roles,
-        scopes=[],
+        scope=create_scope(workspaces={id: UserPermission.admin}),
         expires_at=None,
     )
-    config = {"email": "test@test.com"}
-    config["scopes"] = []
-    token_config = TokenConfig.model_validate(config)
-    token = generate_presigned_token(root_user_info, token_config)
+    token = generate_presigned_token(root_user_info)
+    yield token
+
+
+@pytest_asyncio.fixture(name="root_user_token", scope="session")
+def generate_root_user_token():
+    """Generate a root user token."""
+    auth.JWT_SECRET = JWT_SECRET
+    root_user_info = UserInfo(
+        id="root",
+        is_anonymous=False,
+        email="root@test.com",
+        parent=None,
+        roles=[],
+        scope=create_scope(workspaces={"*": UserPermission.admin}),
+        expires_at=None,
+    )
+    token = generate_presigned_token(root_user_info)
     yield token
 
 
 @pytest_asyncio.fixture(name="test_user_token", scope="session")
 def generate_authenticated_user():
     """Generate a test user token."""
-    yield from _generate_token([])
+    yield from _generate_token("user-1", [])
 
 
 @pytest_asyncio.fixture(name="test_user_token_2", scope="session")
 def generate_authenticated_user_2():
     """Generate a test user token."""
-    yield from _generate_token([])
+    yield from _generate_token("user-2", [])
 
 
 @pytest_asyncio.fixture(name="test_user_token_temporary", scope="session")
 def generate_authenticated_user_temporary():
     """Generate a temporary test user token."""
-    yield from _generate_token(["temporary"])
+    yield from _generate_token("test-user", ["temporary-test-user"])
 
 
 @pytest_asyncio.fixture(name="triton_server", scope="session")
@@ -124,6 +137,7 @@ def fastapi_server_fixture(minio_server):
             f"--access-key-id={MINIO_ROOT_USER}",
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            "--s3-admin-type=minio",
             f"--triton-servers=http://127.0.0.1:{TRITON_PORT}",
             "--static-mounts=/tests:./tests",
             "--startup-functions",
@@ -261,6 +275,7 @@ def minio_server_fixture():
     """Start minio server as test fixture and tear down after test."""
     setup_minio_executables("./bin")
     dirpath = tempfile.mkdtemp()
+    print(f"Minio data directory: {dirpath}")
     my_env = os.environ.copy()
     my_env["MINIO_ROOT_USER"] = MINIO_ROOT_USER
     my_env["MINIO_ROOT_PASSWORD"] = MINIO_ROOT_PASSWORD
@@ -293,4 +308,4 @@ def minio_server_fixture():
         yield
 
         proc.terminate()
-        shutil.rmtree(dirpath, ignore_errors=True)
+        # shutil.rmtree(dirpath, ignore_errors=True)

@@ -1,5 +1,6 @@
 """Provide utilities that should not be aware of hypha."""
 import copy
+import asyncio
 import gzip
 import os
 import posixpath
@@ -8,6 +9,8 @@ import string
 import time
 from datetime import datetime
 from typing import Callable, List, Optional
+import shortuuid
+import friendlywords as fw
 
 import httpx
 from fastapi.routing import APIRoute
@@ -21,6 +24,19 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 _os_alt_seps: List[str] = list(
     sep for sep in [os.path.sep, os.path.altsep] if sep is not None and sep != "/"
 )
+
+
+def random_id(readable=True):
+    """Generate a random ID."""
+    if readable:
+        return (
+            fw.generate("po", separator="-")
+            + "-"
+            + f"{int((time.time() % 1) * 100000000):08d}"
+        )
+    else:
+        return shortuuid.uuid()
+
 
 PLUGIN_CONFIG_FIELDS = [
     "name",
@@ -37,13 +53,12 @@ PLUGIN_CONFIG_FIELDS = [
     "inputs",
     "outputs",
     "dependencies",
-    "readiness_probe",
-    "liveness_probe",
+    "app_id",
 ]
 
 
 class EventBus:
-    """An event bus class."""
+    """An event bus class for handling and listening to events asynchronously."""
 
     def __init__(self, logger=None):
         """Initialize the event bus."""
@@ -56,19 +71,33 @@ class EventBus:
         return func
 
     def once(self, event_name, func):
-        """Register an event callback that only run once."""
-        self._callbacks[event_name] = self._callbacks.get(event_name, []) + [func]
-        # mark once callback
-        self._callbacks[event_name].once = True
-        return func
+        """Register an event callback that only runs once."""
 
-    def emit(self, event_name, *data):
-        """Trigger an event."""
+        def once_wrapper(*args, **kwargs):
+            result = func(*args, **kwargs)
+            self.off(event_name, once_wrapper)
+            return result
+
+        return self.on(event_name, once_wrapper)
+
+    def off(self, event_name, func=None):
+        """Remove an event callback."""
+        if func:
+            if event_name in self._callbacks and func in self._callbacks[event_name]:
+                self._callbacks[event_name].remove(func)
+                if not self._callbacks[event_name]:
+                    del self._callbacks[event_name]
+        else:
+            self._callbacks.pop(event_name, None)
+
+    def emit(self, event_name, data):
+        """Trigger an event and return a task that completes when all handlers are done."""
+        tasks = []
         for func in self._callbacks.get(event_name, []):
             try:
-                func(*data)
-                if hasattr(func, "once"):
-                    self.off(event_name, func)
+                result = func(data)
+                if asyncio.iscoroutine(result):
+                    tasks.append(result)
             except Exception as e:
                 if self._logger:
                     self._logger.error(
@@ -78,12 +107,39 @@ class EventBus:
                         e,
                     )
 
-    def off(self, event_name, func=None):
-        """Remove an event callback."""
-        if not func:
-            del self._callbacks[event_name]
+        if tasks:
+            return asyncio.ensure_future(asyncio.gather(*tasks))
         else:
-            self._callbacks.get(event_name, []).remove(func)
+            fut = asyncio.get_event_loop().create_future()
+            fut.set_result(None)
+            return fut
+
+    async def wait_for(self, event_name, match=None, timeout=None):
+        """Wait for a specific event with an optional timeout and conditions."""
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+
+        def handler(args):
+            if self._matches(match, args):
+                if not future.done():
+                    future.set_result(args)
+
+        self.on(event_name, handler)
+        try:
+            result = await asyncio.wait_for(future, timeout)
+            return result
+        except asyncio.TimeoutError:
+            raise
+        finally:
+            self.off(event_name, handler)
+
+    def _matches(self, match, data):
+        """Check if the event data matches the given criteria."""
+        if not match:
+            return True  # No match criteria provided, always match
+        if not data or len(data) < 1:
+            return False  # No data to match against
+        return all(data.get(key) == value for key, value in match.items())
 
 
 def generate_password(length=20):
@@ -421,7 +477,7 @@ class PatchedCORSMiddleware(CORSMiddleware):
 
 async def _http_ready_func(url, p, logger=None):
     """Check if the http service is ready."""
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=20.0) as client:
         try:
             resp = await client.get(url)
             # We only care if we get back *any* response, not just 200
@@ -470,10 +526,9 @@ async def launch_external_services(
     from simpervisor import SupervisedProcess
 
     token = await server.generate_token()
-    server_info = await server.get_connection_info()
     # format the cmd so we fill in the {server_url} placeholder
     command = command.format(
-        server_url=server_info.local_base_url,
+        server_url=server.config.local_base_url,
         workspace=server.config["workspace"],
         token=token,
     )

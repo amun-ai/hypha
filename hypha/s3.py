@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, Response
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
-from hypha.core import ClientInfo, UserInfo, WorkspaceInfo
+from hypha.core import UserInfo, WorkspaceInfo, UserPermission
 from hypha.core.auth import login_optional
 from hypha.core.store import RedisStore
 from hypha.minio import MinioClient
@@ -142,58 +142,6 @@ class JSONResponse(Response):
         ).encode("utf-8")
 
 
-class FSRotatingFileHandler(logging.handlers.RotatingFileHandler):
-    """A rotating file handler for working with fsspec."""
-
-    def __init__(self, s3_client, s3_bucket, s3_prefix, start_index, *args, **kwargs):
-        """Set up the file handler."""
-        self.s3_client = s3_client
-        self.s3_bucket = s3_bucket
-        self.s3_prefix = s3_prefix
-        self.file_index = start_index
-        super().__init__(*args, **kwargs)
-
-    def doRollover(self):
-        """Rollover the file."""
-        # TODO: we need to write the logs if we logout
-        if self.stream:
-            self.stream.close()
-            self.stream = None
-            name = self.baseFilename + "." + str(self.file_index)
-            with open(self.baseFilename, "rb") as fil:
-                body = fil.read()
-            response = self.s3_client.put_object(
-                Body=body,
-                Bucket=self.s3_bucket,
-                Key=self.s3_prefix + name,
-            )
-            assert (
-                "ResponseMetadata" in response
-                and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-            ), f"Failed to save log ({self.s3_prefix + name}) to S3: {response}"
-            self.file_index += 1
-
-        super().doRollover()
-
-
-def setup_logger(
-    s3_client, bucket, prefix, start_index, name, log_file, level=logging.INFO
-):
-    """Set up a logger."""
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-
-    handler = FSRotatingFileHandler(
-        s3_client, bucket, prefix, start_index, log_file, maxBytes=2000000
-    )
-    handler.setFormatter(formatter)
-
-    named_logger = logging.getLogger(name)
-    named_logger.setLevel(level)
-    named_logger.addHandler(handler)
-
-    return named_logger
-
-
 class S3Controller:
     """Represent an S3 controller."""
 
@@ -206,8 +154,9 @@ class S3Controller:
         access_key_id=None,
         secret_access_key=None,
         endpoint_url_public=None,
+        s3_admin_type="generic",
         workspace_bucket="hypha-workspaces",
-        local_log_dir="./logs",
+        # local_log_dir="./logs",
         workspace_etc_dir="etc",
         executable_path="",
     ):
@@ -215,16 +164,20 @@ class S3Controller:
         self.endpoint_url = endpoint_url
         self.access_key_id = access_key_id
         self.secret_access_key = secret_access_key
-        self.minio_client = MinioClient(
-            endpoint_url,
-            access_key_id,
-            secret_access_key,
-            executable_path=executable_path,
-        )
+        self.s3_admin_type = s3_admin_type
+        if self.s3_admin_type == "minio":
+            self.minio_client = MinioClient(
+                endpoint_url,
+                access_key_id,
+                secret_access_key,
+                executable_path=executable_path,
+            )
+        else:
+            self.minio_client = None
         self.endpoint_url_public = endpoint_url_public or endpoint_url
         self.store = store
         self.workspace_bucket = workspace_bucket
-        self.local_log_dir = Path(local_log_dir)
+        # self.local_log_dir = Path(local_log_dir)
         self.workspace_etc_dir = workspace_etc_dir.rstrip("/")
         event_bus = store.get_event_bus()
 
@@ -238,13 +191,14 @@ class S3Controller:
             pass
 
         self.s3client = s3client
+        if self.minio_client:
+            self.minio_client.admin_user_add_sync("root", generate_password())
 
-        self.minio_client.admin_user_add_sync("root", generate_password())
         store.register_public_service(self.get_s3_service())
         store.set_workspace_loader(self._workspace_loader)
 
         event_bus.on_local(
-            "workspace_registered",
+            "workspace_loaded",
             lambda w: asyncio.ensure_future(self._setup_workspace(w)),
         )
         event_bus.on_local(
@@ -252,11 +206,8 @@ class S3Controller:
             lambda w: asyncio.ensure_future(self._save_workspace_config(w)),
         )
         event_bus.on_local(
-            "workspace_removed",
+            "workspace_unloaded",
             lambda w: asyncio.ensure_future(self._cleanup_workspace(w)),
-        )
-        event_bus.on_local(
-            "client_registered", lambda w: asyncio.ensure_future(self._setup_client(w))
         )
 
         router = APIRouter()
@@ -269,7 +220,15 @@ class S3Controller:
             user_info: login_optional = Depends(login_optional),
         ):
             """Upload file."""
-            ws = await store.get_workspace(workspace)
+            ws = await store.get_workspace(workspace, load=True)
+            if not ws:
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "success": False,
+                        "detail": f"Workspace does not exists: {workspace}",
+                    },
+                )
             if ws.read_only:
                 return JSONResponse(
                     status_code=403,
@@ -286,7 +245,7 @@ class S3Controller:
                         "detail": f"Workspace does not exists: {workspace}",
                     },
                 )
-            if not await store.check_permission(ws, user_info):
+            if not user_info.check_permission(ws.name, UserPermission.read_write):
                 return JSONResponse(
                     status_code=403,
                     content={
@@ -308,7 +267,7 @@ class S3Controller:
             user_info: login_optional = Depends(login_optional),
         ):
             """Get or delete file."""
-            ws = await store.get_workspace(workspace)
+            ws = await store.get_workspace(workspace, load=True)
             if not ws:
                 return JSONResponse(
                     status_code=404,
@@ -317,7 +276,7 @@ class S3Controller:
                         "detail": f"Workspace does not exists: {workspace}",
                     },
                 )
-            if not await store.check_permission(ws, user_info):
+            if not user_info.check_permission(ws.name, UserPermission.read_write):
                 return JSONResponse(
                     status_code=403,
                     content={
@@ -344,34 +303,38 @@ class S3Controller:
 
     async def _workspace_loader(self, workspace_name, user_info):
         """Load workspace from s3 record."""
-        if not await self.store.check_permission(workspace_name, user_info):
+        if not user_info.check_permission(workspace_name, UserPermission.read_write):
             return None
-        config_path = f"{self.workspace_etc_dir}/{workspace_name}/config.json"
-        async with self.create_client_async() as s3_client:
-            response = await s3_client.get_object(
-                Bucket=self.workspace_bucket,
-                Key=config_path,
-            )
-            if (
-                "ResponseMetadata" in response
-                and "HTTPStatusCode" in response["ResponseMetadata"]
-            ):
-                response_code = response["ResponseMetadata"]["HTTPStatusCode"]
-                if response_code != 200:
-                    logger.info(
-                        "Failed to download file: %s, status code: %d",
-                        config_path,
-                        response_code,
-                    )
-                    return None
+        config_path = f"{self.workspace_etc_dir}/{workspace_name}/manifest.json"
+        try:
+            async with self.create_client_async() as s3_client:
+                response = await s3_client.get_object(
+                    Bucket=self.workspace_bucket,
+                    Key=config_path,
+                )
+                if (
+                    "ResponseMetadata" in response
+                    and "HTTPStatusCode" in response["ResponseMetadata"]
+                ):
+                    response_code = response["ResponseMetadata"]["HTTPStatusCode"]
+                    if response_code != 200:
+                        logger.info(
+                            "Failed to download file: %s, status code: %d",
+                            config_path,
+                            response_code,
+                        )
+                        return None
 
-            if "ETag" not in response:
+                if "ETag" not in response:
+                    return None
+                data = await response["Body"].read()
+                config = json.loads(data.decode("utf-8"))
+                workspace = WorkspaceInfo.model_validate(config)
+                logger.info("Loaded workspace from s3: %s", workspace_name)
+                return workspace
+        except ClientError as ex:
+            if ex.response["Error"]["Code"] == "NoSuchKey":
                 return None
-            data = await response["Body"].read()
-            config = json.loads(data.decode("utf-8"))
-            workspace = WorkspaceInfo.model_validate(config)
-            logger.info("Loaded workspace from s3: %s", workspace_name)
-            return workspace
 
     async def _upload_file(self, path: str, request: Request):
         """Upload file."""
@@ -534,21 +497,6 @@ class S3Controller:
             region_name="EU",
         )
 
-    async def _setup_client(self, client: dict):
-        """Set up client."""
-        client = ClientInfo.model_validate(client)
-        user_info = client.user_info
-        if user_info.id == "root" or user_info.is_anonymous:
-            return
-        # Make sure we created an account for the user
-        try:
-            await self.minio_client.admin_user_info(user_info.id)
-        except Exception:  # pylint: disable=broad-except
-            # Note: we don't store the credentials, it can only be regenerated
-            await self.minio_client.admin_user_add(user_info.id, generate_password())
-
-        await self.minio_client.admin_group_add(client.workspace, client.user_info.id)
-
     async def list_users(
         self,
     ):
@@ -563,17 +511,7 @@ class S3Controller:
         workspace = WorkspaceInfo.model_validate(workspace)
         if workspace.read_only:
             return
-        # TODO: if the program shutdown unexpectedly, we need to clean it up
-        # We should empty the group before removing it
-        group_info = await self.minio_client.admin_group_info(workspace.name)
-        # remove all the members
-        await self.minio_client.admin_group_remove(
-            workspace.name, group_info["members"]
-        )
-        # now remove the empty group
-        await self.minio_client.admin_group_remove(workspace.name)
 
-        # TODO: we will remove the files if it's not persistent
         if not workspace.persistent:
             # remove workspace etc files
             remove_objects_sync(
@@ -586,113 +524,107 @@ class S3Controller:
                 self.s3client, self.workspace_bucket, workspace.name + "/"
             )
 
+        if self.minio_client:
+            # TODO: if the program shutdown unexpectedly, we need to clean it up
+            # We should empty the group before removing it
+            group_info = await self.minio_client.admin_group_info(workspace.name)
+            # remove all the members
+            await self.minio_client.admin_group_remove(
+                workspace.name, group_info["members"]
+            )
+            # now remove the empty group
+            await self.minio_client.admin_group_remove(workspace.name)
+
     async def _setup_workspace(self, workspace: dict):
         """Set up workspace."""
         workspace = WorkspaceInfo.model_validate(workspace)
         if workspace.read_only:
             return
-        # make sure we have the root user in every workspace
-        await self.minio_client.admin_group_add(workspace.name, "root")
-        policy_name = "policy-ws-" + workspace.name
-        # policy example:
-        # https://aws.amazon.com/premiumsupport/knowledge-center/iam-s3-user-specific-folder/
-        await self.minio_client.admin_policy_create(
-            policy_name,
-            {
-                "Version": "2012-10-17",
-                "Statement": [
-                    {
-                        "Sid": "AllowUserToSeeTheBucketInTheConsole",
-                        "Action": ["s3:ListAllMyBuckets", "s3:GetBucketLocation"],
-                        "Effect": "Allow",
-                        "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
-                    },
-                    {
-                        "Sid": "AllowRootAndHomeListingOfWorkspaceBucket",
-                        "Action": ["s3:ListBucket"],
-                        "Effect": "Allow",
-                        "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
-                        "Condition": {
-                            "StringEquals": {
-                                "s3:prefix": ["", f"{workspace.name}/"],
-                                "s3:delimiter": ["/"],
-                            }
-                        },
-                    },
-                    {
-                        "Sid": "AllowListingOfWorkspaceFolder",
-                        "Action": ["s3:ListBucket"],
-                        "Effect": "Allow",
-                        "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
-                        "Condition": {
-                            "StringLike": {"s3:prefix": [f"{workspace.name}/*"]}
-                        },
-                    },
-                    {
-                        "Sid": "AllowAllS3ActionsInWorkspaceFolder",
-                        "Action": ["s3:*"],
-                        "Effect": "Allow",
-                        "Resource": [
-                            f"arn:aws:s3:::{self.workspace_bucket}/{workspace.name}/*"
-                        ],
-                    },
-                ],
-            },
-        )
-
-        await self.minio_client.admin_policy_attach(policy_name, group=workspace.name)
-
         # Save the workspace info
-        workspace_dir = self.local_log_dir / workspace.name
-        os.makedirs(workspace_dir, exist_ok=True)
-        self._save_workspace_config(workspace.model_dump())
+        # workspace_dir = self.local_log_dir / workspace.name
+        # os.makedirs(workspace_dir, exist_ok=True)
+        await self._save_workspace_config(workspace.model_dump())
+        if self.minio_client:
+            # make sure we have the root user in every workspace
+            await self.minio_client.admin_group_add(workspace.name, "root")
+            policy_name = "policy-ws-" + workspace.name
+            # policy example:
+            # https://aws.amazon.com/premiumsupport/knowledge-center/iam-s3-user-specific-folder/
+            await self.minio_client.admin_policy_create(
+                policy_name,
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Sid": "AllowUserToSeeTheBucketInTheConsole",
+                            "Action": ["s3:ListAllMyBuckets", "s3:GetBucketLocation"],
+                            "Effect": "Allow",
+                            "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
+                        },
+                        {
+                            "Sid": "AllowRootAndHomeListingOfWorkspaceBucket",
+                            "Action": ["s3:ListBucket"],
+                            "Effect": "Allow",
+                            "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
+                            "Condition": {
+                                "StringEquals": {
+                                    "s3:prefix": ["", f"{workspace.name}/"],
+                                    "s3:delimiter": ["/"],
+                                }
+                            },
+                        },
+                        {
+                            "Sid": "AllowListingOfWorkspaceFolder",
+                            "Action": ["s3:ListBucket"],
+                            "Effect": "Allow",
+                            "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
+                            "Condition": {
+                                "StringLike": {"s3:prefix": [f"{workspace.name}/*"]}
+                            },
+                        },
+                        {
+                            "Sid": "AllowAllS3ActionsInWorkspaceFolder",
+                            "Action": ["s3:*"],
+                            "Effect": "Allow",
+                            "Resource": [
+                                f"arn:aws:s3:::{self.workspace_bucket}/{workspace.name}/*"
+                            ],
+                        },
+                    ],
+                },
+            )
 
-        # find out the latest log file number
-        log_base_name = str(workspace_dir / "log.txt")
+            await self.minio_client.admin_policy_attach(
+                policy_name, group=workspace.name
+            )
 
-        items = list_objects_sync(self.s3client, self.workspace_bucket, log_base_name)
-        # sort the log files based on the last number
-        items = sorted(items, key=lambda file: -int(file["name"].split(".")[-1]))
-        # if len(items) > 0:
-        #     start_index = int(items[0]["name"].split(".")[-1]) + 1
-        # else:
-        #     start_index = 0
-
-        # ready_logger = setup_logger(
-        #     self.s3client,
-        #     self.workspace_bucket,
-        #     workspace.name,
-        #     start_index,
-        #     workspace.name,
-        #     log_base_name,
-        # )
-
-    def _save_workspace_config(self, workspace: dict):
+    async def _save_workspace_config(self, workspace: dict):
         """Save workspace."""
         workspace = WorkspaceInfo.model_validate(workspace)
         if workspace.read_only:
             return
         workspace = WorkspaceInfo.model_validate(workspace)
-        response = self.s3client.put_object(
-            Body=workspace.model_dump_json().encode("utf-8"),
-            Bucket=self.workspace_bucket,
-            Key=f"{self.workspace_etc_dir}/{workspace.name}/config.json",
-        )
-        assert (
-            "ResponseMetadata" in response
-            and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-        ), f"Failed to save workspace ({workspace.name}) config: {response}"
+        async with self.create_client_async() as s3_client:
+            response = await s3_client.put_object(
+                Body=workspace.model_dump_json().encode("utf-8"),
+                Bucket=self.workspace_bucket,
+                Key=f"{self.workspace_etc_dir}/{workspace.name}/manifest.json",
+            )
+            assert (
+                "ResponseMetadata" in response
+                and response["ResponseMetadata"]["HTTPStatusCode"] == 200
+            ), f"Failed to save workspace ({workspace.name}) manifest: {response}"
 
     async def generate_credential(self, context: dict = None):
         """Generate credential."""
-        workspace = context["from"].split("/")[0]
-        ws = await self.store.get_workspace(workspace)
+        assert self.minio_client, "Minio client is not available"
+        workspace = context["ws"]
+        ws = await self.store.get_workspace(workspace, load=True)
+        assert ws, f"Workspace {workspace} not found."
         if ws.read_only:
             raise Exception("Permission denied: workspace is read-only")
         user_info = UserInfo.model_validate(context["user"])
-        if workspace == "public" or not await self.store.check_permission(
-            workspace, user_info
-        ):
+        if not user_info.check_permission(ws.name, UserPermission.read_write):
             raise PermissionError(
                 f"User {user_info.id} does not have write"
                 f" permission to the workspace {workspace}"
@@ -716,7 +648,7 @@ class S3Controller:
         context: dict = None,
     ) -> Dict[str, Any]:
         """List files in the folder."""
-        workspace = context["from"].split("/")[0]
+        workspace = context["ws"]
         path = safe_join(workspace, path)
         async with self.create_client_async() as s3_client:
             # List files in the folder
@@ -740,8 +672,9 @@ class S3Controller:
     ):
         """Generate presigned url."""
         try:
-            workspace = context["from"].split("/")[0]
-            ws = await self.store.get_workspace(workspace)
+            workspace = context["ws"]
+            ws = await self.store.get_workspace(workspace, load=True)
+            assert ws, f"Workspace {workspace} not found."
             if ws.read_only and client_method != "get_object":
                 raise Exception("Permission denied: workspace is read-only")
             if bucket_name != self.workspace_bucket or not object_name.startswith(
@@ -767,12 +700,14 @@ class S3Controller:
 
     def get_s3_service(self):
         """Get s3 controller."""
-        return {
+        svc = {
             "id": "s3-storage",
             "name": "S3 Storage",
             "type": "s3-storage",
             "config": {"visibility": "public", "require_context": True},
             "list_files": self.list_files,
-            "generate_credential": self.generate_credential,
             "generate_presigned_url": self.generate_presigned_url,
         }
+        if self.minio_client:
+            svc["generate_credential"] = self.generate_credential
+        return svc

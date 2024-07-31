@@ -3,8 +3,8 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ImJoy Plugin (web-python)</title>
-    <meta name="description" content="Template for ImJoy plugin">
+    <title>Hypha App (web-python)</title>
+    <meta name="description" content="Template for Hypha app">
     <meta name="author" content="ImJoy-Team">
 </head>
 
@@ -17,17 +17,18 @@ const window = self;
 const src = `
 import sys
 import asyncio
+import json
 from types import ModuleType
 import inspect
 from js import console
 import traceback
-from imjoy_rpc.hypha.utils import dotdict
-from imjoy_rpc.hypha.websocket_client import connect_to_server
+from hypha_rpc.utils import dotdict
+from hypha_rpc.websocket_client import connect_to_server
 
-async def export_service(plugin_api, config, imjoy_rpc):
+async def export_service(plugin_api, config, hypha_rpc):
     try:
         wm = await connect_to_server(config)
-        imjoy_rpc.api.update(wm) # make the api available to the plugin
+        hypha_rpc.api.update(wm) # make the api available to the plugin
         rpc = wm.rpc
         if not isinstance(plugin_api, dict) and inspect.isclass(type(plugin_api)):
             plugin_api = {a: getattr(plugin_api, a) for a in dir(plugin_api)}
@@ -35,38 +36,34 @@ async def export_service(plugin_api, config, imjoy_rpc):
         plugin_api["id"] = "default"
         plugin_api["name"] = config.get("name", "default")
         await rpc.register_service(plugin_api, overwrite=True)
-        # svc = await rpc.get_remote_service(rpc._client_id + ":default")
-        # if svc.setup:
-        #     await svc.setup()
+        console.log("Application initialized successfully:", str(plugin_api))
     except Exception as exp:
-        logger.exception(exp)
         console.error("Failed to export service: ", traceback.format_exc())
+        print(traceback.format_exc())
 
 
-async def patch_imjoy_rpc(default_config):
+async def patch_hypha_rpc(default_config):
+    import hypha_rpc
     def export(api, config=None):
         default_config.update(config or {})
-        imjoy_rpc.ready = asyncio.ensure_future(
-            export_service(api, default_config, imjoy_rpc)
+        hypha_rpc.ready = asyncio.ensure_future(
+            export_service(api, default_config, hypha_rpc)
         )
 
-    # create a fake imjoy_rpc to patch hypha rpc
-    imjoy_rpc = ModuleType("imjoy_rpc")
-    sys.modules["imjoy_rpc"] = imjoy_rpc
-    sys.modules["imjoy"] = imjoy_rpc
-    imjoy_rpc.api = dotdict(export=export)
-    return imjoy_rpc
+    # create a fake hypha_rpc to patch hypha rpc
+    hypha_rpc.api = dotdict(export=export)
+    return hypha_rpc
 
 
 async def run():
     from js import config, script_src
     config = config.to_py()
     try:
-        imjoy_rpc = await patch_imjoy_rpc(config)
+        hypha_rpc = await patch_hypha_rpc(config)
         exec(script_src, globals())
     except Exception as exp:
         console.error("Failed to run script: ", traceback.format_exc())
-        logger.exception(exp)
+        print(traceback.format_exc())
 
 asyncio.ensure_future(run())
 `
@@ -93,9 +90,10 @@ del m
 
 async def run():
     try:
-        await micropip.install(["imjoy-rpc==0.5.48.post2", {% for req in requirements %}"{{req}}", {% endfor %}])
+        await micropip.install(["numpy", "hypha-rpc==0.1.10", {% for req in requirements %}"{{req}}", {% endfor %}])
         js.__resolve()
     except Exception as e:
+        console.error("Failed to install packages: ", traceback.format_exc())
         js.__reject(traceback.format_exc())
 
 asyncio.get_event_loop().run_until_complete(run())
@@ -123,9 +121,9 @@ const toObject = (x) => {
 
 async function setupPyodide() {
     if(self.pyodide) return;
-    importScripts('https://cdn.jsdelivr.net/pyodide/v0.18.1/full/pyodide.js');
+    importScripts('https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js');
     self.pyodide = await loadPyodide({
-        indexURL : 'https://cdn.jsdelivr.net/pyodide/v0.18.1/full/',
+        indexURL : 'https://cdn.jsdelivr.net/pyodide/v0.25.0/full/',
         stdout: (text) => {
             self.postMessage({"type": "stdout", "content": text})
         },
@@ -146,7 +144,6 @@ self.onmessage = async function(e) {
     } catch (err) {
         console.error("Failed to start the script", err);
         self.postMessage({type: "stderr", "content": err})
-        socket.disconnect();
     }
 }
     
@@ -181,10 +178,10 @@ window.onload = function() {
             consoleElem.removeChild(consoleElem.firstChild)
         }
     }
-    const cfg = {{ config | tojson(indent=2) }}
-    const config = Object.assign(cfg, Object.fromEntries(new URLSearchParams(window.location.search)));
-    if(!config.server_url) config.server_url = window.location.origin;
-    worker.postMessage(config); 
+    const config = {{ config | tojson(indent=2) }}
+    const cfg = Object.assign(config, Object.fromEntries(new URLSearchParams(window.location.search)));
+    if(!cfg.server_url) cfg.server_url = window.location.origin;
+    worker.postMessage(cfg); 
 }
 </script>
 </body>

@@ -9,7 +9,8 @@ import msgpack
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response, RedirectResponse
 
-from imjoy_rpc.hypha import RPC
+from hypha_rpc import RPC
+from hypha.core import UserPermission
 from hypha.core.auth import login_optional, AUTH0_DOMAIN
 from hypha.core.store import RedisStore
 from hypha.utils import GzipRoute
@@ -287,9 +288,7 @@ class HTTPProxy:
         ):
             """Route for get detailed info of a workspace."""
             try:
-                if workspace != "public" and not await store.check_permission(
-                    workspace, user_info
-                ):
+                if not user_info.check_permission(workspace, UserPermission.read):
                     return JSONResponse(
                         status_code=403,
                         content={
@@ -297,14 +296,22 @@ class HTTPProxy:
                             "detail": f"Permission denied to workspace: {workspace}",
                         },
                     )
-                workspace_info = await store.get_workspace(workspace)
+                workspace_info = await store.get_workspace(workspace, load=True)
+                if workspace_info is None:
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "success": False,
+                            "detail": f"Workspace not found: {workspace}",
+                        },
+                    )
                 return JSONResponse(
                     status_code=200,
                     content=workspace_info.model_dump(),
                 )
             except Exception as exp:
                 return JSONResponse(
-                    status_code=500,
+                    status_code=400,
                     content={"success": False, "detail": str(exp)},
                 )
 
@@ -387,8 +394,10 @@ class HTTPProxy:
         ):
             """Route for get services under a workspace."""
             try:
-                manager = await store.get_workspace_manager(workspace)
-                services = await manager.list_services(context={"user": user_info})
+                async with self.store.get_workspace_interface(
+                    workspace, user_info
+                ) as manager:
+                    services = await manager.list_services()
                 info = serialize(services)
                 # remove workspace prefix
                 for service in info:
@@ -411,9 +420,10 @@ class HTTPProxy:
         ):
             """Route for checking details of a service."""
             try:
-                service = await store.get_service_as_user(
-                    workspace, service_id, user_info
-                )
+                async with self.store.get_workspace_interface(
+                    workspace, user_info
+                ) as api:
+                    service = await api.get_service(service_id)
                 return JSONResponse(
                     status_code=200,
                     content=serialize(service),
@@ -446,12 +456,18 @@ class HTTPProxy:
             """Run service function by keys."""
             function_kwargs = await extracted_kwargs(request, use_function_kwargs=False)
             response_type = detected_response_type(request)
-            return await service_function(
-                (workspace, service_id, function_key),
-                function_kwargs,
-                response_type,
-                user_info,
-            )
+            try:
+                return await service_function(
+                    (workspace, service_id, function_key),
+                    function_kwargs,
+                    response_type,
+                    user_info,
+                )
+            except Exception:
+                return JSONResponse(
+                    status_code=400,
+                    content={"success": False, "detail": traceback.format_exc()},
+                )
 
         @router.post("/{workspace}/services/{service_id}/{function_key}")
         async def service_function_post(
@@ -464,12 +480,18 @@ class HTTPProxy:
             """Run service function by keys."""
             function_kwargs = await extracted_kwargs(request, use_function_kwargs=False)
             response_type = detected_response_type(request)
-            return await service_function(
-                (workspace, service_id, function_key),
-                function_kwargs,
-                response_type,
-                user_info,
-            )
+            try:
+                return await service_function(
+                    (workspace, service_id, function_key),
+                    function_kwargs,
+                    response_type,
+                    user_info,
+                )
+            except Exception:
+                return JSONResponse(
+                    status_code=400,
+                    content={"success": False, "detail": traceback.format_exc()},
+                )
 
         async def service_function(
             function_info: extracted_call_info = Depends(extracted_call_info),
@@ -483,42 +505,43 @@ class HTTPProxy:
             """
             try:
                 workspace, service_id, function_key = function_info
-                service = await store.get_service_as_user(
-                    workspace, service_id, user_info
-                )
-                func = get_value(function_key, service)
-                if not func:
-                    return JSONResponse(
-                        status_code=200,
-                        content={
-                            "success": False,
-                            "detail": f"{function_key} not found.",
-                        },
-                    )
-                if not callable(func):
-                    return JSONResponse(status_code=200, content=serialize(func))
+                async with self.store.get_workspace_interface(
+                    workspace, user_info
+                ) as api:
+                    service = await api.get_service(service_id)
+                    func = get_value(function_key, service)
+                    if not func:
+                        return JSONResponse(
+                            status_code=404,
+                            content={
+                                "success": False,
+                                "detail": f"{function_key} not found.",
+                            },
+                        )
+                    if not callable(func):
+                        return JSONResponse(status_code=200, content=serialize(func))
 
-                try:
-                    results = await _call_service_function(func, function_kwargs)
-                except Exception:
-                    return JSONResponse(
-                        status_code=500,
-                        content={
-                            "success": False,
-                            "detail": traceback.format_exc(),
-                        },
-                    )
+                    try:
+                        results = await _call_service_function(func, function_kwargs)
+                    except Exception:
+                        return JSONResponse(
+                            status_code=400,
+                            content={
+                                "success": False,
+                                "detail": traceback.format_exc(),
+                            },
+                        )
 
-                if response_type == "application/msgpack":
-                    return MsgpackResponse(
+                    if response_type == "application/msgpack":
+                        return MsgpackResponse(
+                            status_code=200,
+                            content=results,
+                        )
+
+                    return JSONResponse(
                         status_code=200,
                         content=results,
                     )
-
-                return JSONResponse(
-                    status_code=200,
-                    content=results,
-                )
 
             except Exception:
                 return JSONResponse(

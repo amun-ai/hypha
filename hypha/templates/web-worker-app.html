@@ -3,8 +3,8 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ImJoy Plugin (web-worker)</title>
-    <meta name="description" content="Template for ImJoy plugin">
+    <title>Hypha App (web-worker)</title>
+    <meta name="description" content="Template for Hypha app">
     <meta name="author" content="ImJoy-Team">
 </head>
 
@@ -15,8 +15,7 @@ window = self;
 self.onmessage = function(e) {
 const config = e.data
 
-importScripts("https://cdn.jsdelivr.net/npm/imjoy-rpc@0.5.48/dist/hypha-rpc-websocket.min.js")
-
+importScripts("{{ rpc_lib_script }}")
 hyphaWebsocketClient.connectToServer(config).then(async (api)=>{
 await hyphaWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
 {{ script | safe }}
@@ -31,10 +30,10 @@ window.onload = function() {
     const worker = new Worker(window.URL.createObjectURL(blob));
     worker.onerror = console.error
     worker.onmessage = console.log
-    const cfg = {{ config | tojson(indent=2) }}
-    const config = Object.assign(cfg, Object.fromEntries(new URLSearchParams(window.location.search)));
-    if(!config.server_url) config.server_url = window.location.origin;
-    worker.postMessage(config); 
+    const config = {{ config | tojson(indent=2) }}
+    const cfg = Object.assign(config, Object.fromEntries(new URLSearchParams(window.location.search)));
+    if(!cfg.server_url) cfg.server_url = window.location.origin;
+    worker.postMessage(cfg); 
 }
 </script>
 </body>

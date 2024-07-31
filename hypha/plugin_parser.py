@@ -1,4 +1,4 @@
-"""ImJoy plugin parser module."""
+"""imjoy plugin parser module."""
 import json
 import uuid
 
@@ -26,7 +26,7 @@ CONFIGURABLE_FIELDS = [
 
 
 def parse_imjoy_plugin(source, overwrite_config=None):
-    """Parse ImJoy plugin file and return a dict with all the fields."""
+    """Parse imjoy plugin file and return a dict with all the fields."""
     root = etree.HTML("<html>" + source + "</html>")
     plugin_comp = dotdict()
     for tag_type in tag_types:
@@ -100,16 +100,16 @@ def parse_imjoy_plugin(source, overwrite_config=None):
     return config
 
 
-def convert_config_to_rdf(plugin_config, plugin_id, source_url=None):
-    """Convert imjoy plugin config to RDF format."""
-    rdf = dotdict(
+def convert_config_to_card(plugin_config, plugin_id, source_url=None):
+    """Convert imjoy plugin config to Card format."""
+    card = dotdict(
         {
             "type": "application",
             "id": plugin_id,
         }
     )
     if source_url:
-        rdf["source"] = source_url
+        card["source"] = source_url
     fields = [
         "icon",
         "name",
@@ -125,33 +125,33 @@ def convert_config_to_rdf(plugin_config, plugin_id, source_url=None):
     ]
     for field in fields:
         if field in plugin_config:
-            rdf[field] = plugin_config[field]
+            card[field] = plugin_config[field]
     tags = plugin_config.get("labels", []) + plugin_config.get("flags", [])
     if "bioengine" not in tags:
         tags.append("bioengine")
-    rdf["tags"] = tags
+    card["tags"] = tags
 
     docs = plugin_config.get("docs")
     if docs:
-        rdf["documentation"] = docs.get("content")
-    rdf["covers"] = plugin_config.get("cover")
+        card["documentation"] = docs.get("content")
+    card["covers"] = plugin_config.get("cover")
     # make sure we have a list
-    if not rdf["covers"]:
-        rdf["covers"] = []
-    elif not isinstance(rdf["covers"], list):
-        rdf["covers"] = [rdf["covers"]]
+    if not card["covers"]:
+        card["covers"] = []
+    elif not isinstance(card["covers"], list):
+        card["covers"] = [card["covers"]]
 
-    rdf["badges"] = plugin_config.get("badge")
-    if not rdf["badges"]:
-        rdf["badges"] = []
-    elif not isinstance(rdf["badges"], list):
-        rdf["badges"] = [rdf["badges"]]
+    card["badges"] = plugin_config.get("badge")
+    if not card["badges"]:
+        card["badges"] = []
+    elif not isinstance(card["badges"], list):
+        card["badges"] = [card["badges"]]
 
-    rdf["authors"] = plugin_config.get("author")
-    if not rdf["authors"]:
-        rdf["authors"] = []
-    elif not isinstance(rdf["authors"], list):
-        rdf["authors"] = [rdf["authors"]]
+    card["authors"] = plugin_config.get("author")
+    if not card["authors"]:
+        card["authors"] = []
+    elif not isinstance(card["authors"], list):
+        card["authors"] = [card["authors"]]
 
-    rdf["attachments"] = {}
-    return rdf
+    card["attachments"] = {}
+    return card

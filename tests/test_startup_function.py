@@ -7,7 +7,7 @@ import time
 
 import pytest
 import requests
-from imjoy_rpc.hypha.websocket_client import connect_to_server
+from hypha_rpc.websocket_client import connect_to_server
 from requests import RequestException
 
 from . import SIO_PORT, WS_SERVER_URL
@@ -19,12 +19,12 @@ async def test_external_services(fastapi_server):
     """Test the external services."""
     server = await connect_to_server(
         {
-            "name": "my second plugin",
+            "name": "my second app",
             "server_url": WS_SERVER_URL,
         }
     )
     svc = await server.get_service("test-service")
-    assert svc.id == "public/workspace-manager:test-service"
+    assert svc.id.endswith("test-service")
     assert await svc.test(1) == 100
 
     svc = await server.get_service("example-startup-service")
@@ -66,7 +66,7 @@ async def test_launch_external_services(fastapi_server):
     """Test the launch command utility fuction."""
     server = await connect_to_server(
         {
-            "name": "my third plugin",
+            "name": "my third app",
             "server_url": WS_SERVER_URL,
         }
     )

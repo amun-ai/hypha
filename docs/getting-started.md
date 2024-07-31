@@ -55,26 +55,28 @@ After running the command, you can access files from these directories via the H
 
 Hypha provides native support for Python and JavaScript clients. For other languages, you can use the built-in HTTP proxy of Hypha (see details in a later section about "Login and Using Services from the HTTP proxy").
 
-Ensure that the server is running, and you can connect to it using the `hypha` module under `imjoy-rpc` in a client script. You can either register a service or use an existing service.
+Ensure that the server is running, and you can connect to it using the `hypha` module under `hypha-rpc` in a client script. You can either register a service or use an existing service.
+
+**WARNING: If you use hypha older than 0.15.x or lower, you will need to use `imjoy-rpc` instead of `hypha-rpc`.**
 
 ### Registering a Service
 
-To register a service in Python, install the `imjoy-rpc` library:
+To register a service in Python, install the `hypha-rpc` library:
 
 ```bash
-pip install imjoy-rpc
+pip install hypha-rpc
 ```
 
 The following code registers a service called "Hello World" with the ID "hello-world" and a function called `hello()`. The function takes a single argument, `name`, and prints "Hello" followed by the name. The function also returns a string containing "Hello" followed by the name.
 
-We provide two versions of the code: an asynchronous version for native CPython or Pyodide-based Python in the browser (without thread support), and a synchronous version for native Python with thread support (more details about the [synchronous wrapper](/imjoy-rpc?id=synchronous-wrapper)):
+We provide two versions of the code: an asynchronous version for native CPython or Pyodide-based Python in the browser (without thread support), and a synchronous version for native Python with thread support (more details about the [synchronous wrapper](/hypha-rpc?id=synchronous-wrapper)):
 
 <!-- tabs:start -->
 #### ** Asynchronous Worker **
 
 ```python
 import asyncio
-from imjoy_rpc.hypha import connect_to_server
+from hypha_rpc import connect_to_server
 
 async def start_server(server_url):
     server = await connect_to_server({"server_url": server_url})
@@ -105,7 +107,7 @@ if __name__ == "__main__":
 #### ** Synchronous Worker **
 
 ```python
-from imjoy_rpc.hypha.sync import connect_to_server
+from hypha_rpc.sync import connect_to_server
 
 def start_server(server_url):
     server = connect_to_server({"server_url": server_url})
@@ -142,22 +144,22 @@ If you keep the Python service running, you can connect to it from either a Pyth
 
 #### Python Client
 
-Install the `imjoy-rpc` library:
+Install the `hypha-rpc` library:
 
 ```bash
-pip install imjoy-rpc
+pip install hypha-rpc
 ```
 
 Use the following code to connect to the server and access the service. The code first connects to the server and then gets the service by its ID. The service can then be used like a normal Python object.
 
-Similarily, you can also use the `connect_to_server_sync` function to connect to the server synchronously (available since `imjoy-rpc>=0.5.25.post0`).
+Similarily, you can also use the `connect_to_server_sync` function to connect to the server synchronously.
 
 <!-- tabs:start -->
 #### ** Asynchronous Client **
 
 ```python
 import asyncio
-from imjoy_rpc.hypha import connect_to_server
+from hypha_rpc import connect_to_server
 
 async def main():
     server = await connect_to_server({"server_url": "http://localhost:9000"})
@@ -175,7 +177,7 @@ if __name__ == "__main__":
 
 ```python
 import asyncio
-from imjoy_rpc.hypha.sync import connect_to_server
+from hypha_rpc.sync import connect_to_server
 
 def main():
     server = connect_to_server({"server_url": "http://localhost:9000"})
@@ -191,14 +193,14 @@ if __name__ == "__main__":
 ```
 <!-- tabs:end -->
 
-**NOTE: In Python, the recommended way to interact with the server to use asynchronous functions with `asyncio`. However, if you need to use synchronous functions, you can use `from imjoy_rpc.hypha.sync import login, connect_to_server` (available since `imjoy-rpc>=0.5.25.post0`) instead. The have the exact same arguments as the asynchronous versions. For more information, see [Synchronous Wrapper](/imjoy-rpc?id=synchronous-wrapper)**
+**NOTE: In Python, the recommended way to interact with the server to use asynchronous functions with `asyncio`. However, if you need to use synchronous functions, you can use `from hypha_rpc.sync import login, connect_to_server` instead. The have the exact same arguments as the asynchronous versions. For more information, see [Synchronous Wrapper](/hypha-rpc?id=synchronous-wrapper)**
 
 #### JavaScript Client
 
-Include the following script in your HTML file to load the `imjoy-rpc` client:
+Include the following script in your HTML file to load the `hypha-rpc` client:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/imjoy-rpc@0.5.6/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.1.10/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
 Use the following code in JavaScript to connect to the server and access an existing service:
@@ -214,7 +216,7 @@ async function main(){
 
 ### Peer-to-Peer Connection via WebRTC
 
-By default all the clients connected to Hypha server communicate via the websocket connection or the HTTP proxy. This is suitable for most use cases which involves lightweight data exchange. However, if you need to transfer large data or perform real-time communication, you can use the WebRTC connection between clients. With imjoy-rpc, you can easily create a WebRTC connection between two clients easily. See the [WebRTC support in ImJoy RPC V2](/imjoy-rpc?id=peer-to-peer-connection-via-webrtc) for more details.
+By default all the clients connected to Hypha server communicate via the websocket connection or the HTTP proxy. This is suitable for most use cases which involves lightweight data exchange. However, if you need to transfer large data or perform real-time communication, you can use the WebRTC connection between clients. With hypha-rpc, you can easily create a WebRTC connection between two clients easily. See the [WebRTC support](/hypha-rpc?id=peer-to-peer-connection-via-webrtc) for more details.
 
 ### User Login and Token-Based Authentication
 
@@ -226,7 +228,7 @@ Here is an example of how the login process works using the `login()` function:
 #### ** Asynchronous Client **
 
 ```python
-from imjoy_rpc.hypha import login, connect_to_server
+from hypha_rpc import login, connect_to_server
 
 token = await login({"server_url": "https://ai.imjoy.io"})
 # A login URL will be printed to the console
@@ -240,7 +242,7 @@ server = await connect_to_server({"server_url": "https://ai.imjoy.io", "token": 
 #### ** Synchronous Client **
 
 ```python
-from imjoy_rpc.hypha.sync import login, connect_to_server
+from hypha_rpc.sync import login, connect_to_server
 
 token = login({"server_url": "https://ai.imjoy.io"})
 server = connect_to_server({"server_url": "https://ai.imjoy.io", "token": token})
@@ -276,12 +278,9 @@ token = await login(
 
 If no `login_callback` is passed, the login URL will be printed to the console. You can also pass a callback function as `login_callback` to perform custom actions during the login process.
 
-For example, here is a callback function for displaying the login URL, QR code to print the QR code to the console), or launching a browser for the user to log in:
+For example, here is a callback function for displaying the login URL, or launching a browser for the user to login:
 
 ```python
-
-# Require `pip install qrcode[pil]`
-from imjoy_rpc.qr import display_qrcode
 
 async def callback(context):
     """
@@ -295,24 +294,50 @@ async def callback(context):
      - report_url: the report URL
      - key: the key for the login
     """
-    print(f"By passing login: {context['login_url']}")
-    # Show the QR code for login
-    display_qrcode(context["login_url"])
+    print(f"Go to login url: {context['login_url']}")
 ```
 
-### Service Authorization
+### User Authentication and Service Authorization
+
+Hypha provide built-in support for user authentication, and based on the user context, you can also customize the service authorization within each service function.
 
 In the previous example, we registered a public service (`config.visibility = "public"`) that can be accessed by any client. If you want to limit service access to a subset of clients, there are two ways to provide authorization.
 
 1. Connecting to the Same Workspace: Set `config.visibility` to `"private"`. Authorization is achieved by generating a token from the client that registered the service (using `server.config.workspace` and `server.generate_token()`). Another client can connect to the same workspace using the token (`connect_to_server({"workspace": xxxx, "token": xxxx, "server_url": xxxx})`).
+
 2. Using User Context: When registering a service, set `config.require_context` to `True` and `config.visibility` to `"public"` (or `"private"` to limit access for clients from the same workspace). Each service function needs to accept a keyword argument called `context`. The server will provide the context information containing `user` for each service function call. The service function can then check whether `context.user["id"]` is allowed to access the service. On the client side, you need to log in and generate a token by calling the `login({"server_url": xxxx})` function. The token is then used in `connect_to_server({"token": xxxx, "server_url": xxxx})`.
+
+Here is an example for how to enable the user context in the service function:
+```python
+
+async def start_service(server):
+    """Hypha startup function."""
+
+    def test(x, context=None): # Note that the context argument is added
+        current_user = context["user"]
+        if current_user["email"] not in authorized_users:
+            raise Exception(f"User {current_user['email']} is not authorized to access this service.")
+        print(f"Test: {x}")
+
+    # Register a test service
+    await server.register_service(
+        {
+            "id": "test-service",
+            "config": {
+                "visibility": "public",
+                "require_context": True, # enable user context
+            },
+            "test": test,
+        }
+    )
+```
 
 By default, hypha server uses a user authentication system based on [Auth0](https://auth0.com) controlled by us. You can also setup your own auth0 account to use it with your own hypha server. See [Setup Authentication](./setup-authentication) for more details.
 
 ### Login and Using Services from the HTTP proxy
 
 #### Obtain login token via http requests
-For clients other than Python or javascript (without imjoy-rpc) support, you can use Hypha server's built-in HTTP proxy for services to obtain the token. Here is an example of how to obtain the token via HTTP requests:
+For clients other than Python or javascript (without hypha-rpc) support, you can use Hypha server's built-in HTTP proxy for services to obtain the token. Here is an example of how to obtain the token via HTTP requests:
 
 First, let's initiate the login process by calling the `start` function of the `hypha-login` service:
 ```bash
@@ -335,7 +360,7 @@ For the above request:
 
 This should wait and return the token if the user has successfully logged in, otherwise, it will return a timeout error.
 
-For details, see the python implementation of the login function [here](https://github.com/imjoy-team/imjoy-rpc/blob/master/python/imjoy_rpc/hypha/websocket_client.py#L175).
+For details, see the python implementation of the login function [here](https://github.com/imjoy-team/imjoy-rpc/blob/master/python/hypha_rpc/hypha/websocket_client.py#L175).
 
 #### Using the Token in Service Requests
 
@@ -367,15 +392,18 @@ Here's an example of `example-startup-function.py`:
 async def hypha_startup(server):
     """Hypha startup function."""
 
+    def test(x):
+        print(f"Test: {x}")
+
     # Register a test service
     await server.register_service(
         {
             "id": "test-service",
             "config": {
                 "visibility": "public",
-                "require_context": True,
+                "require_context": False,
             },
-            "test": lambda x: print(f"Test: {x}"),
+            "test": test,
         }
     )
 ```

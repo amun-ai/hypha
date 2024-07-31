@@ -3,7 +3,7 @@
 - We use [`black`](https://github.com/ambv/black) for code formatting.
 
 ```
-  git clone git@github.com:imjoy-team/hypha.git
+  git clone git@github.com:amun-ai/hypha.git
   # Enter directory.
   cd hypha
   # Install all development requirements and package in development mode.

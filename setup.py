@@ -12,7 +12,7 @@ DESCRIPTION = (
 REQUIREMENTS = [
     "aiofiles",
     "fastapi>=0.70.0,<=0.106.0",
-    "imjoy-rpc>=0.5.44",
+    "hypha-rpc>=0.1.10",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=2.6.1",
@@ -33,8 +33,8 @@ REQUIREMENTS = [
     "email-validator>=2.0.0;platform_system=='Emscripten'",
     "pyodide-http;platform_system=='Emscripten'",
     "ssl;platform_system=='Emscripten'",
-    "sse-starlette>=1.6.1",
     "openapi-schema-pydantic",
+    "friendlywords>=1.1.3",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()
@@ -65,7 +65,7 @@ setup(
         "server-apps": [
             "redis>=4.5.5",
             "aiobotocore>=2.1.0",
-            "aiortc>=1.5.0",
+            "aiortc>=1.9.0",
             "requests>=2.26.0",
             "playwright>=1.18.1",
             "base58>=2.1.0",
