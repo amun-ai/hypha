@@ -5,13 +5,13 @@
 To install the Hypha package, run the following command:
 
 ```bash
-pip install -U hypha
+pip install -U "hypha>=0.20"
 ```
 
 If you need full support for server-side browser applications, use the following command instead:
 
 ```bash
-pip install -U hypha[server-apps]
+pip install -U "hypha[server-apps]>=0.20"
 playwright install
 ```
 
