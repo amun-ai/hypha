@@ -204,6 +204,12 @@ async def test_workspace(fastapi_server, test_user_token):
     public_svc = await api.list_services("public")
     assert len(public_svc) > 0
 
+    current_svcs = await api.list_services(api.config.workspace)
+    assert len(current_svcs) == 1
+
+    current_svcs = await api.list_services()
+    assert len(current_svcs) == 1
+
     login_svc = find_item(public_svc, "name", "Hypha Login")
     assert len(login_svc["description"]) > 0
 
@@ -260,7 +266,7 @@ async def test_workspace(fastapi_server, test_user_token):
     context = await service.test()
     assert "from" in context and "to" in context and "user" in context
 
-    svcs = await api2.list_services("public")
+    svcs = await api2.list_services(service_info.config.workspace)
     assert find_item(svcs, "name", "test_service_2")
 
     assert api2.config["workspace"] == "my-test-workspace"
@@ -322,10 +328,8 @@ async def test_services(fastapi_server):
     )
     service = await api.get_service(service_info)
     assert service["name"] == "test_service"
-    services = await api.list_services(
-        {"workspace": api.config.workspace, "id": "test_service"}
-    )
-    assert len(services) == 1
+    services = await api.list_services({"workspace": api.config.workspace})
+    assert find_item(services, "name", "test_service")
 
     service_info = await api.register_service(
         {
@@ -380,19 +384,6 @@ async def test_services(fastapi_server):
         )
         == 2
     )
-
-    # service_info = await api.register_service(
-    #     {
-    #         "name": "test_service",
-    #         "type": "#test",
-    #         "idx": 4,
-    #         "config": {"flags": ["single-instance"]},  # mark it as single instance
-    #     },
-    #     overwrite=True,
-    # )
-    # # it should remove other services because it's single instance service
-    # assert len(await api.list_services({"name": "test_service"})) == 1
-    # assert (await api.get_service("test_service"))["idx"] == 4
 
 
 async def test_server_reconnection(fastapi_server):

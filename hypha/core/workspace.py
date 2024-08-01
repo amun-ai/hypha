@@ -365,14 +365,7 @@ class WorkspaceManager:
             client_id = "*"
             service_id = "*"
 
-            if query == "public":
-                query = {
-                    "visibility": visibility,
-                    "workspace": workspace,
-                    "client_id": client_id,
-                    "service_id": service_id,
-                }
-            elif "/" in query and ":" in query:
+            if "/" in query and ":" in query:
                 parts = query.split("/")
                 workspace_part = parts[0]
                 remaining = parts[1]
@@ -414,7 +407,7 @@ class WorkspaceManager:
                     "service_id": service_id,
                 }
             else:
-                service_id = query
+                workspace = query
                 query = {
                     "visibility": visibility,
                     "workspace": workspace,
@@ -786,6 +779,9 @@ class WorkspaceManager:
         self.validate_context(context, permission=UserPermission.read)
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
+        # Check if workspace exists
+        if not self._redis.hexists("workspaces", ws):
+            raise KeyError(f"Workspace {ws} does not exist")
         # Now launch the app and get the service
         svc = await self.get_service(service_id, mode="random", context=context)
         # Create a rpc client for getting the launcher service as user.

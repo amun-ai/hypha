@@ -314,6 +314,9 @@ class RedisStore:
         """Get the interface of a workspace."""
         assert workspace, "Workspace name is required"
         assert user_info and isinstance(user_info, UserInfo), "User info is required"
+        # Check if workspace exists
+        if not self._redis.hexists("workspaces", workspace):
+            raise KeyError(f"Workspace {workspace} does not exist")
         # the client will be hidden if client_id is None
         if silent is None:
             silent = client_id is None
