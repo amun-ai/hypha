@@ -19,7 +19,7 @@ api.export({
     async setup(){
     },
     async register_services(){
-        const service_info1 = await api.register_service(
+        const service_info1 = await api.registerService(
             {
                 "id": "test_service",
                 "name": "test_service",
@@ -34,7 +34,7 @@ api.export({
             }
         )
         console.log(`registered test_service: ${service_info1.id}`)
-        const service_info2 = await api.register_service(
+        const service_info2 = await api.registerService(
             {
                 "id": "test_service_protected",
                 "name": "test_service_protected",

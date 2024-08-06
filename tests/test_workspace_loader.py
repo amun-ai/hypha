@@ -1,13 +1,8 @@
 """Test workspace loader."""
 import pytest
-import asyncio
 from hypha_rpc import connect_to_server
 
 from . import (
-    SERVER_URL,
-    SERVER_URL_REDIS_1,
-    SERVER_URL_REDIS_2,
-    SIO_PORT2,
     WS_SERVER_URL,
     find_item,
 )
@@ -29,6 +24,7 @@ async def test_workspace_loader(fastapi_server, test_user_token):
         ws = await api.create_workspace(
             dict(
                 name="test-2",
+                description="test workspace",
                 owners=[],
                 persistent=True,
                 read_only=False,

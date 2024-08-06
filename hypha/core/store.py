@@ -13,6 +13,7 @@ from hypha.core import (
     RedisEventBus,
     RedisRPCConnection,
     ServiceInfo,
+    ServiceTypeInfo,
     UserInfo,
     WorkspaceInfo,
 )
@@ -29,29 +30,35 @@ logger.setLevel(logging.INFO)
 class WorkspaceInterfaceContextManager:
     """Workspace interface context manager."""
 
-    def __init__(self, rpc, timeout=10):
-        self.rpc = rpc
-        self.timeout = timeout
-        self.wm = None
+    def __init__(self, rpc, redis, workspace, timeout=10):
+        self._rpc = rpc
+        self._timeout = timeout
+        self._wm = None
+        self._redis = redis
+        self._workspace = workspace
 
     async def __aenter__(self):
         return await self._get_workspace_manager()
 
     async def __aexit__(self, exc_type, exc, tb):
-        await self.wm.disconnect()
+        await self._wm.disconnect()
 
     def __await__(self):
         return self._get_workspace_manager().__await__()
 
     async def _get_workspace_manager(self):
-        self.wm = await self.rpc.get_manager_service(self.timeout)
-        self.wm.rpc = self.rpc
-        self.wm.disconnect = self.rpc.disconnect
-        self.wm.register_codec = self.rpc.register_codec
-        return self.wm
+        # Check if workspace exists
+        if not await self._redis.hexists("workspaces", self._workspace):
+            raise KeyError(f"Workspace {self._workspace} does not exist")
+        self._wm = await self._rpc.get_manager_service(self._timeout)
+        self._wm.rpc = self._rpc
+        self._wm.disconnect = self._rpc.disconnect
+        self._wm.register_codec = self._rpc.register_codec
+        self._wm.register_service = self._rpc.register_service
+        return self._wm
 
     async def __aexit__(self, exc_type, exc, tb):
-        await self.rpc.disconnect()
+        await self._rpc.disconnect()
 
 
 class RedisStore:
@@ -77,6 +84,7 @@ class RedisStore:
         self.public_base_url = public_base_url
         self.local_base_url = local_base_url
         self._public_services: List[ServiceInfo] = []
+        self._public_types: List[ServiceTypeInfo] = []
         self._ready = False
         self._workspace_manager = None
         self._websocket_server = None
@@ -162,6 +170,7 @@ class RedisStore:
                 WorkspaceInfo.model_validate(
                     {
                         "name": "root",
+                        "description": "Root workspace",
                         "persistent": True,
                         "owners": ["root"],
                         "read_only": False,
@@ -177,6 +186,7 @@ class RedisStore:
                 WorkspaceInfo.model_validate(
                     {
                         "name": "public",
+                        "description": "Public workspace",
                         "persistent": True,
                         "owners": ["root"],
                         "read_only": True,
@@ -188,6 +198,16 @@ class RedisStore:
             logger.warning("Public workspace already exists.")
         await self._register_root_services()
         api = await self.get_public_api()
+        for service_type in self._public_types:
+            try:
+                await api.register_service_type(
+                    service_type.model_dump(),
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to register public service type: %s", service_type
+                )
+                raise
         for service in self._public_services:
             try:
                 await api.register_service(
@@ -309,20 +329,19 @@ class RedisStore:
         user_info: UserInfo,
         client_id=None,
         timeout=10,
-        silent=None,
+        silent=False,
     ):
         """Get the interface of a workspace."""
         assert workspace, "Workspace name is required"
         assert user_info and isinstance(user_info, UserInfo), "User info is required"
-        # Check if workspace exists
-        if not self._redis.hexists("workspaces", workspace):
-            raise KeyError(f"Workspace {workspace} does not exist")
         # the client will be hidden if client_id is None
         if silent is None:
             silent = client_id is None
         client_id = client_id or "workspace-client-" + random_id(readable=False)
         rpc = self.create_rpc(workspace, user_info, client_id=client_id, silent=silent)
-        return WorkspaceInterfaceContextManager(rpc, timeout=timeout)
+        return WorkspaceInterfaceContextManager(
+            rpc, self._redis, workspace, timeout=timeout
+        )
 
     async def list_all_workspaces(self):
         """List all workspaces."""
@@ -407,8 +426,8 @@ class RedisStore:
         """Register a service."""
         assert not self._ready, "Cannot register public service after ready"
 
-        if "name" not in service or "type" not in service:
-            raise Exception("Service should at least contain `name` and `type`")
+        if "name" not in service or "id" not in service:
+            raise Exception("Service should at least contain `name` and `id`")
 
         # TODO: check if it's already exists
         service["config"] = service.get("config", {})
@@ -430,6 +449,16 @@ class RedisStore:
             "workspace": "public",
             "name": formated_service.name,
         }
+
+    def register_public_type(self, service_type: dict):
+        """Register a service type."""
+        assert not self._ready, "Cannot register public service after ready"
+
+        if "name" not in service_type or "id" not in service_type:
+            raise Exception("Service should at least contain `name` and `id`")
+        assert "definition" in service_type, "Service type should contain `definition`"
+        formatted_service_type = ServiceTypeInfo.model_validate(service_type)
+        self._public_types.append(formatted_service_type)
 
     def is_ready(self):
         """Check if the server is alive."""

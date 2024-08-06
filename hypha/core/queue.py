@@ -51,7 +51,6 @@ def create_queue_service(store: RedisStore):
     return {
         "id": "queue",
         "name": "Queue service",
-        "type": "queue",
         "config": {
             "visibility": "public",
             "require_context": True,

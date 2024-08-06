@@ -82,11 +82,12 @@ def get_user_info(credentials):
     """Return the user info from the token."""
     expires_at = credentials["exp"]
     scope = parse_scope(credentials.get("scope"))
+    roles = credentials.get(AUTH0_NAMESPACE + "roles", [])
     info = UserInfo(
         id=credentials.get("sub"),
-        is_anonymous=not credentials.get(AUTH0_NAMESPACE + "email"),
+        is_anonymous="anonymous" in roles,
         email=credentials.get(AUTH0_NAMESPACE + "email"),
-        roles=credentials.get(AUTH0_NAMESPACE + "roles", []),
+        roles=roles,
         scope=scope,
         expires_at=expires_at,
     )
@@ -174,7 +175,7 @@ def generate_anonymous_user(scope=None) -> UserInfo:
         id=user_id,
         is_anonymous=True,
         email=None,
-        roles=[],
+        roles=["anonymous"],
         scope=scope,
         expires_at=expires_at,
     )

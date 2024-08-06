@@ -15,7 +15,7 @@
         if(!config.server_url) config.server_url = window.location.origin;
         hyphaWebsocketClient.connectToServer(config).then(async (api)=>{
             async function setup(){
-                await api.register_service(
+                await api.registerService(
                     {
                         "id": "echo-service",
                         "config":{

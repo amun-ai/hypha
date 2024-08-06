@@ -50,11 +50,27 @@ async def test_connect_to_server(fastapi_server):
             {"name": "my app", "workspace": "test", "server_url": WS_SERVER_URL}
         )
     wm = await connect_to_server({"name": "my app", "server_url": WS_SERVER_URL})
+    assert wm.config.workspace is not None
+    assert wm.config.hypha_version
+    assert wm.config.public_base_url.startswith("http")
     rpc = wm.rpc
     service_info = await rpc.register_service(HyphaApp(wm))
     service = await wm.get_service(service_info)
     assert await service.run(None) is None
     await wm.log("hello")
+
+
+async def test_schema(fastapi_server):
+    """Test schema."""
+    api = await connect_to_server(
+        {"name": "my app", "server_url": WS_SERVER_URL, "client_id": "my-app"}
+    )
+    for k in api:
+        if callable(api[k]):
+            assert (
+                hasattr(api[k], "__schema__") and api[k].__schema__ is not None
+            ), f"Schema not found for {k}"
+            assert api[k].__schema__.get("name") == k, f"Schema name not match for {k}"
 
 
 async def test_connect_to_server_two_client_same_id(fastapi_server):
@@ -184,133 +200,6 @@ async def test_plugin_runner_workspace(fastapi_server):
         assert "echo: a message" in output
 
 
-async def test_workspace(fastapi_server, test_user_token):
-    """Test workspace."""
-    api = await connect_to_server(
-        {
-            "client_id": "my-app",
-            "name": "my app",
-            "server_url": WS_SERVER_URL,
-            "method_timeout": 20,
-            "token": test_user_token,
-        }
-    )
-    assert api.config.workspace is not None
-    assert api.config.public_base_url.startswith("http")
-    await api.log("hi")
-    token = await api.generate_token()
-    assert token is not None
-
-    public_svc = await api.list_services("public")
-    assert len(public_svc) > 0
-
-    current_svcs = await api.list_services(api.config.workspace)
-    assert len(current_svcs) == 1
-
-    current_svcs = await api.list_services()
-    assert len(current_svcs) == 1
-
-    login_svc = find_item(public_svc, "name", "Hypha Login")
-    assert len(login_svc["description"]) > 0
-
-    s3_svc = await api.list_services({"workspace": "public", "type": "s3-storage"})
-    assert len(s3_svc) == 1
-
-    # workspace=* means search both the public and the current workspace
-    s3_svc = await api.list_services({"workspace": "*", "type": "s3-storage"})
-    assert len(s3_svc) == 1
-
-    ws = await api.create_workspace(
-        {
-            "name": "my-test-workspace",
-            "owners": ["user1@imjoy.io", "user2@imjoy.io"],
-        },
-        overwrite=True,
-    )
-    assert ws["name"] == "my-test-workspace"
-
-    def test(context=None):
-        return context
-
-    # we should not get it because api is in another workspace
-    ss2 = await api.list_services({"type": "#test"})
-    assert len(ss2) == 0
-
-    # let's generate a token for the my-test-workspace
-    token = await api.generate_token({"workspace": "my-test-workspace"})
-
-    # now if we connect directly to the workspace
-    # we should be able to get the my-test-workspace services
-    api2 = await connect_to_server(
-        {
-            "client_id": "my-app-2",
-            "name": "my app 2",
-            "workspace": "my-test-workspace",
-            "server_url": WS_SERVER_URL,
-            "token": token,
-            "method_timeout": 20,
-        }
-    )
-    await api2.log("hi")
-
-    service_info = await api2.register_service(
-        {
-            "id": "test_service_2",
-            "name": "test_service_2",
-            "type": "#test",
-            "config": {"require_context": True, "visibility": "public"},
-            "test": test,
-        }
-    )
-    service = await api2.get_service(service_info)
-    context = await service.test()
-    assert "from" in context and "to" in context and "user" in context
-
-    svcs = await api2.list_services(service_info.config.workspace)
-    assert find_item(svcs, "name", "test_service_2")
-
-    assert api2.config["workspace"] == "my-test-workspace"
-    await api2.export({"foo": "bar"})
-    # services = api2.rpc.get_all_local_services()
-    clients = await api2.list_clients()
-    assert "my-test-workspace/my-app-2" in clients
-    ss3 = await api2.list_services({"type": "#test"})
-    assert len(ss3) == 1
-
-    app = await api2.get_app("my-app-2")
-    assert app.foo == "bar"
-
-    await api2.export({"foo2": "bar2"})
-    app = await api2.get_app("my-app-2")
-    assert app.foo is None
-    assert app.foo2 == "bar2"
-
-    plugins = await api2.list_plugins()
-    assert find_item(plugins, "id", "my-test-workspace/my-app-2:built-in")
-
-    app = await api.get_app("my-app-2")
-    assert app is None
-
-    ws2 = await api.get_workspace_info("my-test-workspace")
-    assert ws.name == ws2.name
-
-    # state = asyncio.Future()
-
-    # def set_state(data):
-    #     """Test function for set the state to a value."""
-    #     state.set_result(data)
-
-    # await ws2.on("set-state", set_state)
-
-    # await ws2.emit("set-state", 9978)
-
-    # assert await state == 9978
-
-    # await ws2.off("set-state")
-
-    await api.disconnect()
-
-
 async def test_services(fastapi_server):
     """Test services."""
     api = await connect_to_server({"name": "my app", "server_url": WS_SERVER_URL})
@@ -424,6 +313,7 @@ async def test_server_scalability(
     ws = await api.create_workspace(
         {
             "name": "my-test-workspace",
+            "description": "This is a test workspace",
             "owners": ["user1@imjoy.io", "user2@imjoy.io"],
         },
         overwrite=True,

@@ -4,12 +4,13 @@ import json
 import logging
 import random
 import sys
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Any
 from contextlib import asynccontextmanager
 
 from fakeredis import aioredis
 from hypha_rpc import RPC
-from pydantic import BaseModel
+from hypha_rpc.utils.schema import schema_method
+from pydantic import BaseModel, Field
 
 from hypha.core import (
     Card,
@@ -17,7 +18,9 @@ from hypha.core import (
     UserInfo,
     WorkspaceInfo,
     ServiceInfo,
+    TokenConfig,
     UserPermission,
+    ServiceTypeInfo,
 )
 from hypha.core.auth import generate_presigned_token, create_scope
 from hypha.utils import EventBus, random_id
@@ -71,13 +74,15 @@ class WorkspaceManager:
         self._client_id = "workspace-manager-" + random_id(readable=False)
         rpc = self._create_rpc(self._client_id)
         self._rpc = rpc
-        rpc.on("service-added", self._add_service_handler)
-        rpc.on("service-removed", self._remove_service_handler)
         management_service = self.create_service(service_id, service_name)
-        await rpc.register_service(management_service, notify=False)
+        await rpc.register_service(
+            management_service,
+            notify=False,
+        )
         self._initialized = True
         return rpc
 
+    @schema_method
     async def get_summary(self, context: Optional[dict] = None) -> dict:
         """Get a summary about the workspace."""
         assert context is not None
@@ -154,6 +159,7 @@ class WorkspaceManager:
         except KeyError:
             return []
 
+    @schema_method
     async def create_workspace(
         self,
         config: Union[dict, WorkspaceInfo],
@@ -204,89 +210,128 @@ class WorkspaceManager:
             await self._bookmark_workspace(workspace, user_info, context=context)
         return workspace.model_dump()
 
-    async def install_application(self, card: dict, context: Optional[dict] = None):
+    @schema_method
+    async def install_application(
+        self,
+        app_info: Card = Field(..., description="Application info"),
+        force: bool = Field(False, description="Force install if already installed"),
+        context: Optional[dict] = None,
+    ):
         """Install an application to the workspace."""
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
-        card = Card.model_validate(card)
         # TODO: check if the application is already installed
         workspace_info = await self.load_workspace_info(ws)
-        workspace_info.applications[card.id] = card
-        logger.info("Installing application %s to %s", card.id, ws)
+        if app_info.id in workspace_info.applications and not force:
+            raise KeyError("Application already installed: " + app_info.id)
+        workspace_info.applications[app_info.id] = app_info
+        logger.info("Installing application %s to %s", app_info.id, ws)
         await self._update_workspace(workspace_info, user_info)
 
-    async def uninstall_application(self, card_id: str, context: Optional[dict] = None):
+    @schema_method
+    async def uninstall_application(
+        self,
+        app_id: str = Field(..., description="application id"),
+        context: Optional[dict] = None,
+    ):
         """Uninstall a application from the workspace."""
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         workspace_info = await self.load_workspace_info(ws)
-        if card_id not in workspace_info.applications:
-            raise KeyError("Application not found: " + card_id)
-        del workspace_info.applications[card_id]
-        logger.info("Uninstalling application %s from %s", card_id, ws)
+        if app_id not in workspace_info.applications:
+            raise KeyError("Application not found: " + app_id)
+        del workspace_info.applications[app_id]
+        logger.info("Uninstalling application %s from %s", app_id, ws)
         await self._update_workspace(workspace_info, user_info)
 
-    async def register_service(self, service, context: Optional[dict] = None, **kwargs):
-        """Register a service"""
-        assert context is not None
-        ws = context["ws"]
-        source_workspace = context["ws"]
-        assert source_workspace == ws, (
-            f"Service must be registered in the same workspace: "
-            f"{source_workspace} != {ws} (current workspace)."
-        )
-        logger.info("Registering service %s to %s", service.id, ws)
-        sv = await self._rpc.get_remote_service(context["from"] + ":built-in")
-        service["config"] = service.get("config", {})
-        service["config"]["workspace"] = ws
-        assert "/" not in service["id"], "Service id must not contain '/'"
-        assert ":" not in service["id"], "Service id must not contain ':'"
-        svc = await sv.register_service(service, **kwargs)
-        assert ":" in svc["id"], "Service id info must contain ':'"
-        svc["id"] = ws + "/" + svc["id"]
-        return svc
-
-    async def generate_token(
-        self, config: Optional[dict] = None, context: Optional[dict] = None
+    @schema_method
+    async def register_service_type(
+        self,
+        type_info: ServiceTypeInfo = Field(..., description="Service type info"),
+        context: Optional[dict] = None,
     ):
-        """Generate a token for the current workspace."""
+        """Register a new service type."""
         assert context is not None
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
-        config = config or {}
-        if set(config.keys()) - {
-            "expires_in",
-            "workspace",
-            "permission",
-            "extra_scopes",
-        }:
-            raise ValueError(
-                "Invalid keys in token config: "
-                + str(
-                    set(config.keys())
-                    - {"expires_in", "workspace", "permission", "extra_scopes"}
-                )
-            )
+        if not user_info.check_permission(ws, UserPermission.read_write):
+            raise PermissionError(f"Permission denied for workspace {ws}")
+        workspace_info = await self.load_workspace_info(ws)
+        service_type_id = type_info.id
+        assert "/" not in service_type_id, "Service type id must not contain '/'"
 
-        extra_scopes = []
-        if "extra_scopes" in config:
-            assert isinstance(
-                config["extra_scopes"], list
-            ), "Permissions must be a list"
-            for scope in config["extra_scopes"]:
-                assert isinstance(scope, str), "Permission must be a string"
-                if ":" in scope and scope.count(":") == 1:
-                    assert scope.split(":")[0] not in [
-                        "ws",
-                        "cid",
-                    ], "Invalid scope, cannot start with ws or cid"
-                extra_scopes.append(scope)
+        if service_type_id in workspace_info.service_types:
+            raise KeyError(f"Service type already exists: {service_type_id}")
 
-        if "workspace" in config:
-            allowed_workspace = config["workspace"]
+        workspace_info.service_types[service_type_id] = type_info
+        await self._update_workspace(workspace_info, user_info)
+        return type_info
+
+    @schema_method
+    async def get_service_type(
+        self,
+        type_id: str = Field(
+            ...,
+            description="Service type ID, it can be the type id or the full  type id with workspace: `workspace/type_iid`",
+        ),
+        context: Optional[dict] = None,
+    ):
+        """Get a service type by ID."""
+        assert context is not None
+        if "/" not in type_id:
+            ws = context["ws"]
         else:
-            # limit to the current workspace
-            allowed_workspace = ws
+            ws, type_id = type_id.split("/")
+
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(ws, UserPermission.read):
+            raise PermissionError(f"Permission denied for workspace {ws}")
+        workspace_info = await self.load_workspace_info(ws)
+
+        if type_id in workspace_info.service_types:
+            return workspace_info.service_types[type_id]
+        full_service_type_id = f"{ws}/{type_id}"
+        if full_service_type_id in workspace_info.service_types:
+            return workspace_info.service_types[full_service_type_id]
+
+        raise KeyError(f"Service type not found: {type_id}")
+
+    @schema_method
+    async def list_service_types(
+        self,
+        workspace: str = Field(
+            None,
+            description="workspace name; if not provided, the current workspace will be used",
+        ),
+        context: Optional[dict] = None,
+    ):
+        """List all service types in the workspace."""
+        assert context is not None
+        ws = workspace or context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(ws, UserPermission.read):
+            raise PermissionError(f"Permission denied for workspace {ws}")
+        workspace_info = await self.load_workspace_info(ws)
+        return list(workspace_info.service_types.values())
+
+    @schema_method
+    async def generate_token(
+        self,
+        config: Optional[TokenConfig] = Field(
+            None, description="config for token generation"
+        ),
+        context: Optional[dict] = None,
+    ):
+        """Generate a token for a specified workspace."""
+        assert context is not None, "Context cannot be None"
+        ws = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        config = config or TokenConfig()
+        assert isinstance(config, TokenConfig)
+
+        extra_scopes = config.extra_scopes or []
+
+        allowed_workspace = config.workspace or ws
 
         maximum_permission = user_info.get_permission(allowed_workspace)
         if not maximum_permission:
@@ -295,17 +340,12 @@ class WorkspaceManager:
                 maximum_permission = UserPermission.admin
             else:
                 raise PermissionError(
-                    f"You do not have any permission for workspace: {config['workspace']}"
+                    f"You do not have any permission for workspace: {allowed_workspace}"
                 )
         if maximum_permission != UserPermission.admin:
             raise PermissionError("Only admin can generate token.")
 
-        permission = config.get("permission", "read_write")
-        assert permission in [
-            "read",
-            "read_write",
-            "admin",
-        ], f"Invalid permission: {permission} (must be one of: read, read_write, admin)"
+        permission = config.permission
         permission = UserPermission[permission]
 
         # make it a child
@@ -316,7 +356,12 @@ class WorkspaceManager:
         token = generate_presigned_token(user_info)
         return token
 
-    async def list_clients(self, workspace: str = None, context: Optional[dict] = None):
+    @schema_method
+    async def list_clients(
+        self,
+        workspace: str = Field(None, description="workspace name"),
+        context: Optional[dict] = None,
+    ):
         """Return a list of clients based on the services."""
         assert context is not None
         cws = context["ws"]
@@ -331,7 +376,12 @@ class WorkspaceManager:
             clients.add(workspace + "/" + client_id)
         return list(clients)
 
-    async def ping_client(self, client_id: str, context: Optional[dict] = None):
+    @schema_method
+    async def ping_client(
+        self,
+        client_id: str = Field(..., description="client id"),
+        context: Optional[dict] = None,
+    ):
         """Ping a client."""
         assert context is not None
         ws = context["ws"]
@@ -343,8 +393,14 @@ class WorkspaceManager:
         except Exception as e:
             return f"Failed to ping client {client_id}: {e}"
 
+    @schema_method
     async def list_services(
-        self, query: Optional[Union[dict, str]] = None, context: Optional[dict] = None
+        self,
+        query: Optional[Union[dict, str]] = Field(
+            None,
+            description="Query for filtering services. This can be either a dictionary specifying detailed parameters like 'visibility', 'workspace', 'client_id', 'service_id', and 'type', or a string that includes these parameters in a formatted pattern. Examples: 'workspace/client_id:service_id' or 'workspace/service_id'.",
+        ),
+        context: Optional[dict] = None,
     ):
         """Return a list of services based on the query."""
         assert context is not None
@@ -491,54 +547,61 @@ class WorkspaceManager:
         services = []
         for key in set(keys):
             service_data = await self._redis.hgetall(key)
-            converted_service_data = {}
-            for k, v in service_data.items():
-                key_str = k.decode("utf-8")
-                value_str = v.decode("utf-8")
-                if (
-                    value_str.startswith("{")
-                    and value_str.endswith("}")
-                    or value_str.startswith("[")
-                    and value_str.endswith("]")
-                ):
-                    converted_service_data[key_str] = json.loads(value_str)
-                else:
-                    converted_service_data[key_str] = value_str
+            service_dict = ServiceInfo.from_redis_dict(service_data).model_dump()
             if isinstance(query, dict) and type_filter:
-                if converted_service_data.get("type") == type_filter:
-                    services.append(converted_service_data)
+                if service_dict.get("type") == type_filter:
+                    services.append(service_dict)
             else:
-                services.append(converted_service_data)
+                services.append(service_dict)
 
         return services
 
-    async def _add_service_handler(self, message: dict):
-        """Add a service to the workspace."""
-        service = message["service"]
-        service = ServiceInfo.model_validate(service)
-        ws = message["ws"]
-        client_id = message["from"]
+    @schema_method
+    async def register_service(
+        self,
+        service: ServiceInfo = Field(..., description="Service info"),
+        context: Optional[dict] = None,
+    ):
+        """Register a new service."""
+        assert context is not None
+        ws = context["ws"]
+        client_id = context["from"]
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(ws, UserPermission.read_write):
+            raise PermissionError(f"Permission denied for workspace {ws}")
+        if "/" not in client_id:
+            client_id = f"{ws}/{client_id}"
         service.config.workspace = ws
         if "/" not in service.id:
             service.id = f"{ws}/{service.id}"
         assert ":" in service.id, "Service id info must contain ':'"
         service.app_id = service.app_id or "*"
+
         key = (
             f"services:{service.config.visibility.value}:{service.id}@{service.app_id}"
         )
-
+        # Check if the clients exists if not a built-in service
+        if ":built-in" not in service.id and ws != "public":
+            builtins = await self._redis.keys(f"services:*:{client_id}:built-in@*")
+            if not builtins:
+                logger.warning(
+                    "Refuse to add service %s, client %s has been removed.",
+                    service.id,
+                    client_id,
+                )
+                return
         # Check if the service already exists
         service_exists = await self._redis.exists(key)
         await self._redis.hset(key, mapping=service.to_redis_dict())
 
         if service_exists:
             if ":built-in@" in key:
-                self._event_bus.emit(
+                await self._event_bus.emit(
                     "client_updated", {"id": client_id, "workspace": ws}
                 )
                 logger.info(f"Updating built-in service: {service.id}")
             else:
-                self._event_bus.emit("service_updated", service.model_dump())
+                await self._event_bus.emit("service_updated", service.model_dump())
                 logger.info(f"Updating service: {service.id}")
         else:
             # Default service created by api.export({}), typically used for hypha apps
@@ -552,20 +615,59 @@ class WorkspaceManager:
                         f"Failed to run setup for default service `{client_id}`: {e}"
                     )
             if ":built-in@" in key:
-                self._event_bus.emit(
+                await self._event_bus.emit(
                     "client_connected", {"id": client_id, "workspace": ws}
                 )
                 logger.info(f"Adding built-in service: {service.id}")
+                builtins = await self._redis.keys(f"services:*:{client_id}:built-in@*")
             else:
-                self._event_bus.emit("service_added", service.model_dump(mode="json"))
+                await self._event_bus.emit(
+                    "service_added", service.model_dump(mode="json")
+                )
                 logger.info(f"Adding service {service.id}")
 
-    async def _remove_service_handler(self, message: dict):
-        """Remove a service from the workspace."""
-        service = message["service"]
-        service = ServiceInfo.model_validate(service)
-        ws = message["ws"]
-        client_id = message["from"]
+    @schema_method
+    async def get_service_info(
+        self,
+        service_id: str = Field(
+            ...,
+            description="Service id, it can be the service id or the full service id with workspace: `workspace/client_id:service_id`",
+        ),
+        context: Optional[dict] = None,
+    ):
+        """Get the service info."""
+        ws = context["ws"]
+        if ":" not in service_id:
+            service_id = f"*:{service_id}"
+        if "/" not in service_id:
+            service_id = f"{ws}/{service_id}"
+        user_info = UserInfo.model_validate(context["user"])
+        workspace = service_id.split("/")[0]
+        if not user_info.check_permission(workspace, UserPermission.read):
+            raise PermissionError(f"Permission denied for workspace {workspace}")
+        key = f"services:*:{service_id}@*"
+        keys = await self._redis.keys(key)
+        if not keys:
+            raise KeyError(f"Service not found: {service_id}")
+        key = keys[0]
+        service_data = await self._redis.hgetall(key)
+        return ServiceInfo.from_redis_dict(service_data)
+
+    @schema_method
+    async def unregister_service(
+        self,
+        service_id: str = Field(..., description="Service id"),
+        context: Optional[dict] = None,
+    ):
+        """Unregister a new service."""
+        assert context is not None
+        ws = context["ws"]
+        client_id = context["from"]
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(ws, UserPermission.read_write):
+            raise PermissionError(f"Permission denied for workspace {ws}")
+
+        service = await self.get_service_info(service_id, context=context)
         service.config.workspace = ws
         if "/" not in service.id:
             service.id = f"{ws}/{service.id}"
@@ -582,11 +684,11 @@ class WorkspaceManager:
         if service_exists:
             await self._redis.delete(key)
             if ":built-in@" in key:
-                self._event_bus.emit(
+                await self._event_bus.emit(
                     "client_disconnected", {"id": client_id, "workspace": ws}
                 )
             else:
-                self._event_bus.emit("service_removed", service.model_dump())
+                await self._event_bus.emit("service_removed", service.model_dump())
         else:
             logger.warning(f"Service {key} does not exist and cannot be removed.")
 
@@ -633,32 +735,50 @@ class WorkspaceManager:
         if not user_info.check_permission(context["ws"], permission):
             raise PermissionError(f"Permission denied for workspace {context['ws']}")
 
-    async def echo(self, data, context=None):
+    @schema_method
+    async def echo(
+        self, data: Any = Field(..., description="echo an object"), context: Any = None
+    ):
         """Log a app message."""
         self.validate_context(context, permission=UserPermission.read)
         return data
 
-    async def log(self, msg, context=None):
+    @schema_method
+    async def log(
+        self, msg: str = Field(..., description="log a message"), context=None
+    ):
         """Log a app message."""
         self.validate_context(context, permission=UserPermission.read)
         logger.info("%s: %s", context["from"], msg)
 
-    async def info(self, msg, context=None):
+    @schema_method
+    async def info(
+        self, msg: str = Field(..., description="log a message as info"), context=None
+    ):
         """Log a app message."""
         self.validate_context(context, permission=UserPermission.read)
         logger.info("%s: %s", context["from"], msg)
 
-    async def warning(self, msg, context=None):
+    @schema_method
+    async def warning(
+        self, msg: str = Field(..., description="log a message as info"), context=None
+    ):
         """Log a app message (warning)."""
         self.validate_context(context, permission=UserPermission.read)
         logger.warning("WARNING: %s: %s", context["from"], msg)
 
-    async def error(self, msg, context=None):
+    @schema_method
+    async def error(
+        self, msg: str = Field(..., description="log an error message"), context=None
+    ):
         """Log a app error message (error)."""
         self.validate_context(context, permission=UserPermission.read)
         logger.error("%s: %s", context["from"], msg)
 
-    async def critical(self, msg, context=None):
+    @schema_method
+    async def critical(
+        self, msg: str = Field(..., description="log an critical message"), context=None
+    ):
         """Log a app error message (critical)."""
         self.validate_context(context, permission=UserPermission.read)
         logger.critical("%s: %s", context["from"], msg)
@@ -684,7 +804,9 @@ class WorkspaceManager:
                 await self._redis.hset(
                     "workspaces", workspace_info.name, workspace_info.model_dump_json()
                 )
-                self._event_bus.emit("workspace_loaded", workspace_info.model_dump())
+                await self._event_bus.emit(
+                    "workspace_loaded", workspace_info.model_dump()
+                )
                 return workspace_info
             elif load and not self._workspace_loader:
                 raise KeyError(
@@ -696,7 +818,10 @@ class WorkspaceManager:
             logger.error(f"Failed to load workspace info: {e}")
             raise e
 
-    async def get_workspace_info(self, workspace: str = None, context=None) -> dict:
+    @schema_method
+    async def get_workspace_info(
+        self, workspace: str = Field(None, description="workspace name"), context=None
+    ) -> dict:
         """Get the workspace info."""
         self.validate_context(context, permission=UserPermission.read)
         workspace_info = await self.load_workspace_info(workspace)
@@ -705,7 +830,10 @@ class WorkspaceManager:
     async def _launch_application_for_service(
         self,
         query: dict,
-        timeout: float = 60,
+        mode: str = "default",
+        timeout: float = 10,
+        skip_timeout: bool = False,
+        case_conversion: str = None,
         context: dict = None,
     ):
         """Launch an installed application by service name."""
@@ -765,11 +893,15 @@ class WorkspaceManager:
                 )
             client_info = await controller.start(
                 app_id,
-                timeout=timeout,
+                timeout=timeout * 5,
                 wait_for_service=service_id,
             )
             return await self.get_service(
                 f"{client_info['id']}:{service_id}@{app_id}",
+                timeout=timeout,
+                mode=mode,
+                skip_timeout=skip_timeout,
+                case_conversion=case_conversion,
                 context=context,
             )
 
@@ -780,7 +912,7 @@ class WorkspaceManager:
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         # Check if workspace exists
-        if not self._redis.hexists("workspaces", ws):
+        if not await self._redis.hexists("workspaces", ws):
             raise KeyError(f"Workspace {ws} does not exist")
         # Now launch the app and get the service
         svc = await self.get_service(service_id, mode="random", context=context)
@@ -796,12 +928,29 @@ class WorkspaceManager:
         yield api
         await rpc.disconnect()
 
+    @schema_method
     async def get_service(
         self,
-        query: Union[dict, str],
-        mode: str = "default",
-        skip_timeout=False,
-        timeout=5.0,
+        query: Union[dict, str] = Field(
+            ...,
+            description="Query for the service. This can be either a dictionary specifying detailed parameters like 'workspace', 'client_id', 'service_id', and 'app_id', or a string that includes the service ID. The string format can also handle wildcards and patterns such as 'workspace/client_id:service_id@app_id'.",
+        ),
+        mode: str = Field(
+            "default",
+            description="The mode for selecting the service. It can be 'default' for a deterministic selection or 'random' to shuffle and select a random service.",
+        ),
+        skip_timeout: bool = Field(
+            False,
+            description="A flag to skip the service in case of a timeout. If set to True, the function will continue to the next service in case of a timeout.",
+        ),
+        timeout: float = Field(
+            10.0,
+            description="The timeout duration in seconds for fetching the service. This determines how long the function will wait for a service to respond before considering it a timeout.",
+        ),
+        case_conversion: str = Field(
+            None,
+            description="The case conversion for service keys, can be 'camel', 'snake' or None, default is None.",
+        ),
         context=None,
     ):
         """Get a service based on the query, supporting wildcard patterns and matching modes."""
@@ -926,7 +1075,7 @@ class WorkspaceManager:
                 workspace = service_id.split("/")[0]
                 # Attempt to get the remote service with a timeout
                 service_api = await self._rpc.get_remote_service(
-                    service_id, timeout=timeout
+                    service_id, timeout=timeout, case_conversion=case_conversion
                 )
                 if service_api:
                     return self.patch_service_config(workspace, service_api)
@@ -941,18 +1090,28 @@ class WorkspaceManager:
 
         if "app_id" in query and query["app_id"] != "*":
             service_api = await self._launch_application_for_service(
-                query, context=context
+                query,
+                timeout=timeout * 10,
+                mode=mode,
+                skip_timeout=skip_timeout,
+                case_conversion=case_conversion,
+                context=context,
             )
             # No need to patch the service config because the service is already patched
             return service_api
 
         return None
 
-    def patch_service_config(self, workspace, service_api):
+    def patch_service_config(self, workspace: str, service_api: dict):
         service_api["config"]["workspace"] = workspace
         return service_api
 
-    async def list_workspaces(self, type=None, context=None):
+    @schema_method
+    async def list_workspaces(
+        self,
+        type: str = Field(None, description="Workspace type (not implemented yet)"),
+        context=None,
+    ):
         """Get all workspaces."""
         self.validate_context(context, permission=UserPermission.read)
         user_info = UserInfo.model_validate(context["user"])
@@ -1017,7 +1176,7 @@ class WorkspaceManager:
         await self._redis.hset(
             "workspaces", workspace.name, workspace.model_dump_json()
         )
-        self._event_bus.emit("workspace_changed", workspace.model_dump())
+        await self._event_bus.emit("workspace_changed", workspace.model_dump())
 
     async def delete_client(
         self,
@@ -1084,10 +1243,10 @@ class WorkspaceManager:
                 f"There are {len(client_keys)} clients in the workspace {ws}: "
                 + client_summary
             )
-            self._event_bus.emit(f"unload:{ws}", "Unloading workspace: " + ws)
+            await self._event_bus.emit(f"unload:{ws}", "Unloading workspace: " + ws)
 
         await self._redis.hdel("workspaces", ws)
-        self._event_bus.emit("workspace_unloaded", winfo.model_dump())
+        await self._event_bus.emit("workspace_unloaded", winfo.model_dump())
         logger.info("Workspace %s unloaded.", ws)
 
     def create_service(self, service_id, service_name=None):
@@ -1106,28 +1265,21 @@ class WorkspaceManager:
             "error": self.error,
             "warning": self.warning,
             "critical": self.critical,
+            "register_service": self.register_service,
+            "unregister_service": self.unregister_service,
             "list_workspaces": self.list_workspaces,
-            "listWorkspaces": self.list_workspaces,
-            "listServices": self.list_services,
             "list_services": self.list_services,
-            "listClients": self.list_clients,
             "list_clients": self.list_clients,
-            "getService": self.get_service,
+            "register_service_type": self.register_service_type,
+            "get_service_type": self.get_service_type,
+            "list_service_types": self.list_service_types,
             "get_service": self.get_service,
             "generate_token": self.generate_token,
-            "generateToken": self.generate_token,
             "create_workspace": self.create_workspace,
-            "createWorkspace": self.create_workspace,
-            "register_service": self.register_service,
-            "registerService": self.register_service,
             "get_workspace_info": self.get_workspace_info,
-            "getWorkspaceInfo": self.get_workspace_info,
             "install_application": self.install_application,
-            "installApplication": self.install_application,
             "uninstall_application": self.uninstall_application,
-            "uninstallApplication": self.uninstall_application,
             "get_summary": self.get_summary,
-            "getSummary": self.get_summary,
             "ping": self.ping_client,
         }
         interface["config"].update(self._server_info)

@@ -182,18 +182,6 @@ def safe_join(directory: str, *pathnames: str) -> Optional[str]:
     return posixpath.join(*parts)
 
 
-class dotdict(dict):  # pylint: disable=invalid-name
-    """Access dictionary attributes with dot.notation."""
-
-    __getattr__ = dict.get
-    __setattr__ = dict.__setitem__
-    __delattr__ = dict.__delitem__
-
-    def __deepcopy__(self, memo=None):
-        """Make a deep copy."""
-        return dotdict(copy.deepcopy(dict(self), memo=memo))
-
-
 def parse_s3_list_response(response, delimeter):
     """Parse the s3 list object response."""
     if response.get("KeyCount") == 0:

@@ -124,10 +124,11 @@ async def test_server_apps(fastapi_server, test_user_token):
 
     config = await controller.launch(
         source=source,
+        wait_for_service=True,
     )
     assert "app_id" in config
     app = await api.get_app(config.id)
-    assert "add2" in app
+    assert "add2" in app, str(app and app.keys())
     result = await app.add2(4)
     assert result == 6
     await controller.stop(config.id)
@@ -153,7 +154,7 @@ async def test_web_python_apps(fastapi_server, test_user_token):
     )
     assert config.name == "WebPythonPlugin"
     app = await api.get_app(config.id)
-    assert "add2" in app
+    assert "add2" in app, str(app and app.keys())
     result = await app.add2(4)
     assert result == 6
     await controller.stop(config.id)
@@ -168,7 +169,7 @@ async def test_web_python_apps(fastapi_server, test_user_token):
         wait_for_service="default",
     )
     app = await api.get_app(config.id)
-    assert "add2" in app
+    assert "add2" in app, str(app and app.keys())
     result = await app.add2(4)
     assert result == 6
     await controller.stop(config.id)
@@ -176,6 +177,7 @@ async def test_web_python_apps(fastapi_server, test_user_token):
     config = await controller.launch(
         source="https://raw.githubusercontent.com/imjoy-team/"
         "ImJoy/master/web/src/plugins/webWorkerTemplate.imjoy.html",
+        wait_for_service=True,
     )
     # assert config.name == "Untitled Plugin"
     apps = await controller.list_running()
@@ -203,6 +205,7 @@ async def test_non_persistent_workspace(fastapi_server):
 
     config = await controller.launch(
         source=source,
+        wait_for_service="default",
     )
 
     app = await api.get_app(config.id)
@@ -252,6 +255,7 @@ async def test_lazy_plugin(fastapi_server, test_user_token):
 
     app_info = await controller.install(
         source=source,
+        force=True,
     )
 
     apps = await controller.list_apps()
@@ -288,6 +292,7 @@ async def test_lazy_service(fastapi_server, test_user_token):
     app_info = await controller.install(
         source=source,
         timeout=30,
+        force=True,
     )
 
     service = await api.get_service({"id": "echo", "app_id": app_info.id})

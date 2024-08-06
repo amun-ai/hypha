@@ -1,0 +1,187 @@
+# Migration Guide
+
+## Migrating from Hypha 0.15.x to 0.20.x
+
+In the new Hypha version, several breaking changes have been introduced to improve the RPC connection, making it more stable and secure. Most importantly, it now supports type annotation for Large Language Models (LLMs), which is ideal for building chatbots, AI agents, and more. Additionally, it features automatic reconnection when the connection is lost, ensuring a more reliable connection. Here is a brief guide to help you migrate your code from the old version to the new version.
+
+### Python
+
+#### 1. Use `hypha-rpc` instead of `imjoy-rpc`
+
+To connect to the server, instead of installing the `imjoy-rpc` module, you will need to install the `hypha-rpc` module. The `hypha-rpc` module is a standalone module that provides the RPC connection to the Hypha server. You can install it using pip:
+
+```bash
+# pip install imjoy-rpc # previous install
+pip install -U hypha-rpc # new install
+```
+
+#### 2. Change the imports to use `hypha-rpc`
+
+Now you need to do the following changes in your code:
+
+```python
+# from imjoy_rpc import connect_to_server # previous import
+from hypha_rpc import connect_to_server # new import
+```
+
+#### 3. Use snake_case for all service function names
+
+Previously, we supported both snake_case and camelCase for the function names in Python, but in the new version, we only support snake_case for all function names.
+
+Here is a suggested list of search and replace operations to update your code:
+ - `.registerService` -> `.register_service`
+ - `.unregisterService` -> `.unregister_service`
+ - `.getService` -> `.get_service`
+ - `.listServices` -> `.list_services`
+ - `.registerCodec` -> `.register_codec`
+
+Example:
+
+```python
+from hypha_rpc import connect_to_server # new import
+async def start_server(server_url):
+    server = await connect_to_server({"server_url": server_url})
+    # register a service using server.register_service 
+    # `server.registerService` is not supported anymore
+    info = await server.register_service({
+        "name": "Hello World",
+        "id": "hello-world",
+        "config": {
+            "visibility": "public"
+        },
+        "hello": hello
+    })
+
+    # get a service using server.get_service
+    # `server.getService` is not supported anymore
+    svc = await server.get_service("hello-world")
+    print(await svc.hello("John"))
+```
+
+#### 4. Optionally, annotate functions with JSON schema using Pydantic
+
+To make your functions more compatible with LLMs, you can optionally use Pydantic to annotate them with JSON schema. This helps in creating well-defined interfaces for your services.
+
+We created a tutorial to introduce this new feature: [service type annotation](./service-type-annotation.md).
+
+Here is a quick example using Pydantic:
+
+```python
+from pydantic import BaseModel, Field
+from hypha_rpc.utils.schema import schema_function
+
+class UserInfo(BaseModel):
+    name: str = Field(..., description="Name of the user")
+    email: str = Field(..., description="Email of the user")
+    age: int = Field(..., description="Age of the user")
+    address: str = Field(..., description="Address of the user")
+
+@schema_function
+def register_user(user_info: UserInfo) -> str:
+    """Register a new user."""
+    return f"User {user_info.name} registered"
+```
+
+### JavaScript
+
+#### 1. Use `hypha-rpc` instead of `imjoy-rpc`
+
+To connect to the server, instead of using the `imjoy-rpc` module, you will need to use the `hypha-rpc` module. The `hypha-rpc` module is a standalone module that provides the RPC connection to the Hypha server. You can include it in your HTML using a script tag:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.1.10/dist/hypha-rpc-websocket.min.js"></script>
+```
+
+#### 2. Change the connection method and use camelCase for service function names
+
+In JavaScript, the connection method and service function names use camelCase. 
+
+Here is a suggested list of search and replace operations to update your code:
+
+- `connect_to_server` -> `connectToServer`
+- `.register_service` -> `.registerService`
+- `.unregister_service` -> `.unregisterService`
+- `.get_service` -> `.getService`
+- `.list_services` -> `.listServices`
+- `.register_codec` -> `.registerCodec`
+
+Here is an example of how the updated code might look:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.1.10/dist/hypha-rpc-websocket.min.js"></script>
+<script>
+async function main(){
+    const server = await hyphaWebsocketClient.connectToServer({"server_url": "https://hypha.aicell.io"});
+    // register a service using server.registerService 
+    const info = await server.registerService({
+        name: "Hello World",
+        id: "hello-world",
+        config: {
+            visibility: "public"
+        },
+        hello: async (name) => `Hello ${name}`
+    });
+
+    // get a service using server.getService
+    const svc = await server.getService("hello-world");
+    const ret = await svc.hello("John");
+    console.log(ret);
+}
+main();
+</script>
+```
+
+#### 3. Optionally, manually annotate functions with JSON schema
+
+To make your functions more compatible with LLMs, you can optionally annotate them with JSON schema. This helps in creating well-defined interfaces for your services.
+
+We created a tutorial to introduce this new feature: [service type annotation](./service-type-annotation.md).
+
+Here is a quick example in JavaScript:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.1.10/dist/hypha-rpc-websocket.min.js"></script>
+<script>
+async function main(){
+    const server = await hyphaWebsocketClient.connectToServer({"server_url": "https://hypha.aicell.io"});
+    
+    function getCurrentWeather(location, unit = "fahrenheit") {
+        if (location.toLowerCase().includes("tokyo")) {
+            return JSON.stringify({ location: "Tokyo", temperature: "10", unit: unit });
+        } else if (location.toLowerCase().includes("san francisco")) {
+            return JSON.stringify({ location: "San Francisco", temperature: "72", unit: unit });
+        } else if (location.toLowerCase().includes("paris")) {
+            return JSON.stringify({ location: "Paris", temperature: "22", unit: unit });
+        } else {
+            return JSON.stringify({ location: location, temperature: "unknown" });
+        }
+    }
+
+    const getCurrentWeatherAnnotated = hyphaWebsocketClient.schemaFunction(getCurrentWeather, {
+        name: "getCurrentWeather",
+        description: "Get the current weather in a given location",
+        parameters: {
+            type: "object",
+            properties: {
+                location: { type: "string", description: "The city and state, e.g. San Francisco, CA" },
+                unit: { type: "string", enum: ["celsius", "fahrenheit"] }
+            },
+            required: ["location"]
+        }
+    });
+
+    await server.registerService({
+        name: "Weather Service",
+        id: "weather-service",
+        getCurrentWeather: getCurrentWeatherAnnotated
+    });
+
+    const svc = await server.getService("weather-service");
+    const ret = await svc.getCurrentWeather("Tokyo");
+    console.log(ret);
+}
+main();
+</script>
+```
+
+By following this guide, you should be able to smoothly transition your code from Hypha 0.15.x to 0.20.x and take advantage of the new features, including the support for Large Language Models through type annotations and JSON schema generation.

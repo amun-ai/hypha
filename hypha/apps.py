@@ -27,7 +27,6 @@ from hypha.plugin_parser import convert_config_to_card, parse_imjoy_plugin
 from hypha.runner.browser import BrowserAppRunner
 from hypha.utils import (
     PLUGIN_CONFIG_FIELDS,
-    dotdict,
     list_objects_async,
     remove_objects_async,
     safe_join,
@@ -82,7 +81,7 @@ class ServerAppController:
         self.user_applications_dir = user_applications_dir
         self.local_base_url = store.local_base_url
         self.public_base_url = store.public_base_url
-        self._rpc_lib_script = "https://cdn.jsdelivr.net/npm/hypha-rpc@0.1.10/dist/hypha-rpc-websocket.min.js"
+        self._rpc_lib_script = "https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.11/dist/hypha-rpc-websocket.min.js"
         # self._rpc_lib_script = "http://localhost:9099/hypha-rpc-websocket.js"
         self.event_bus = store.get_event_bus()
         self.store = store
@@ -369,6 +368,7 @@ class ServerAppController:
         attachments: List[dict] = None,
         workspace: Optional[str] = None,
         timeout: float = 60,
+        force: bool = False,
         context: Optional[dict] = None,
     ) -> str:
         """Save a server app."""
@@ -464,7 +464,7 @@ class ServerAppController:
         async with self.store.get_workspace_interface(
             workspace_info.name, user_info
         ) as ws:
-            await ws.install_application(card.model_dump())
+            await ws.install_application(card.model_dump(), force=force)
         try:
             info = await self.start(
                 app_id,
@@ -520,7 +520,7 @@ class ServerAppController:
         attachments: List[dict] = None,
         wait_for_service: str = None,
         context: Optional[dict] = None,
-    ) -> dotdict:
+    ) -> dict:
         """Start a server app instance."""
         workspace = context["ws"]
         app_info = await self.install(

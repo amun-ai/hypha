@@ -200,7 +200,7 @@ if __name__ == "__main__":
 Include the following script in your HTML file to load the `hypha-rpc` client:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.1.10/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.11/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
 Use the following code in JavaScript to connect to the server and access an existing service:
@@ -208,7 +208,7 @@ Use the following code in JavaScript to connect to the server and access an exis
 ```javascript
 async function main(){
     const server = await hyphaWebsocketClient.connectToServer({"server_url": "http://localhost:9527"})
-    const svc = await server.getService("hello-world")
+    const svc = await server.get_service("hello-world")
     const ret = await svc.hello("John")
     console.log(ret)
 }

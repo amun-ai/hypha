@@ -5,7 +5,7 @@ import uuid
 import yaml
 from lxml import etree
 
-from hypha.utils import dotdict
+from hypha_rpc.utils import DefaultObjectProxy
 
 tag_types = ["config", "script", "link", "window", "style", "docs", "attachment"]
 
@@ -28,14 +28,14 @@ CONFIGURABLE_FIELDS = [
 def parse_imjoy_plugin(source, overwrite_config=None):
     """Parse imjoy plugin file and return a dict with all the fields."""
     root = etree.HTML("<html>" + source + "</html>")
-    plugin_comp = dotdict()
+    plugin_comp = DefaultObjectProxy()
     for tag_type in tag_types:
         elms = root.xpath(f".//{tag_type}")
         values = []
         for elm in elms:
             values.append(
-                dotdict(
-                    attrs=dotdict(elm.attrib),
+                DefaultObjectProxy(
+                    attrs=DefaultObjectProxy.fromDict(elm.attrib),
                     content=elm.text,
                 )
             )
@@ -102,7 +102,7 @@ def parse_imjoy_plugin(source, overwrite_config=None):
 
 def convert_config_to_card(plugin_config, plugin_id, source_url=None):
     """Convert imjoy plugin config to Card format."""
-    card = dotdict(
+    card = DefaultObjectProxy(
         {
             "type": "application",
             "id": plugin_id,

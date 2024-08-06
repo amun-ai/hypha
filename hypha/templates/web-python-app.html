@@ -22,7 +22,7 @@ from types import ModuleType
 import inspect
 from js import console
 import traceback
-from hypha_rpc.utils import dotdict
+from hypha_rpc.utils import ObjectProxy
 from hypha_rpc.websocket_client import connect_to_server
 
 async def export_service(plugin_api, config, hypha_rpc):
@@ -51,7 +51,7 @@ async def patch_hypha_rpc(default_config):
         )
 
     # create a fake hypha_rpc to patch hypha rpc
-    hypha_rpc.api = dotdict(export=export)
+    hypha_rpc.api = ObjectProxy(export=export)
     return hypha_rpc
 
 
@@ -90,7 +90,7 @@ del m
 
 async def run():
     try:
-        await micropip.install(["numpy", "hypha-rpc==0.1.10", {% for req in requirements %}"{{req}}", {% endfor %}])
+        await micropip.install(["numpy", "pydantic", "hypha-rpc==0.20.11", {% for req in requirements %}"{{req}}", {% endfor %}])
         js.__resolve()
     except Exception as e:
         console.error("Failed to install packages: ", traceback.format_exc())
