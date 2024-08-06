@@ -90,7 +90,7 @@ async def test_workspace(fastapi_server, test_user_token):
             "test": test,
         }
     )
-    service = await api2.get_service(service_info)
+    service = await api2.get_service(service_info.id)
     context = await service.test()
     assert "from" in context and "to" in context and "user" in context
 
@@ -116,8 +116,10 @@ async def test_workspace(fastapi_server, test_user_token):
     plugins = await api2.list_apps()
     assert find_item(plugins, "id", "my-new-test-workspace/my-app-2:default")
 
-    app = await api.get_app("my-new-test-workspace/my-app-2")
-    assert app is None
+    try:
+        await api.get_app("my-new-test-workspace/my-app-2")
+    except Exception as e:
+        assert "Permission denied" in str(e)
 
     ws2 = await api.get_workspace_info("my-new-test-workspace")
     assert ws.name == ws2.name

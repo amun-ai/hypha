@@ -44,7 +44,7 @@ async def test_typed_service(fastapi_server):
         )
 
         svc_type = await api.get_service_type("test-service-type")
-        assert svc_type["id"] == "test-service-type"
+        assert svc_type["id"] == f"{api.config.workspace}/test-service-type"
 
         service["type"] = "test-service-type"
         svc_info = await api.register_service(service, check_type=True)
@@ -73,7 +73,7 @@ async def test_login(fastapi_server):
     async with connect_to_server(
         {"name": "test client", "server_url": SERVER_URL}
     ) as api:
-        svc = await api.get_service("public/*:hypha-login")
+        svc = await api.get_service("public/hypha-login")
         assert svc and callable(svc.start)
 
         TOKEN = "sf31df234"
@@ -132,7 +132,10 @@ async def test_get_service_type(fastapi_server):
     await api.register_service_type(service_type_info)
     retrieved_service_type = await api.get_service_type("test-service-type")
 
-    assert retrieved_service_type["id"] == service_type_info["id"]
+    assert (
+        retrieved_service_type["id"]
+        == api.config.workspace + "/" + service_type_info["id"]
+    )
     assert retrieved_service_type["name"] == service_type_info["name"]
     assert retrieved_service_type["definition"] == service_type_info["definition"]
     assert retrieved_service_type["description"] == service_type_info["description"]

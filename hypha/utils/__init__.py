@@ -530,10 +530,11 @@ async def launch_external_services(
     async def ready_function(p):
         if check_services:
             for service_id in check_services:
-                svc = await server.get_service(
-                    {"id": service_id, "workspace": server.config["workspace"]}
-                )
-                if not svc:
+                try:
+                    await server.get_service(
+                        server.config["workspace"] + "/" + service_id
+                    )
+                except Exception:
                     return False
             return True
         if check_url:

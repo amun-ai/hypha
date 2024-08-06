@@ -25,6 +25,7 @@ from hypha.core.auth import parse_user
 from hypha.core.store import RedisStore
 from hypha.plugin_parser import convert_config_to_card, parse_imjoy_plugin
 from hypha.runner.browser import BrowserAppRunner
+from hypha.s3 import FSFileResponse
 from hypha.utils import (
     PLUGIN_CONFIG_FIELDS,
     list_objects_async,
@@ -60,17 +61,14 @@ class ServerAppController:
         store: RedisStore,
         port: int,
         in_docker: bool = False,
-        apps_dir: str = "./apps",
         endpoint_url=None,
         access_key_id=None,
         secret_access_key=None,
         workspace_bucket="hypha-workspaces",
-        user_applications_dir="applications",
+        workspace_etc_dir="etc",
     ):  # pylint: disable=too-many-arguments
         """Initialize the class."""
         self._sessions = {}
-        self.apps_dir = Path(apps_dir)
-        os.makedirs(self.apps_dir, exist_ok=True)
         self.port = int(port)
         self.in_docker = in_docker
         self.endpoint_url = endpoint_url
@@ -78,10 +76,10 @@ class ServerAppController:
         self.secret_access_key = secret_access_key
         self.s3_enabled = endpoint_url is not None
         self.workspace_bucket = workspace_bucket
-        self.user_applications_dir = user_applications_dir
+        self.workspace_etc_dir = workspace_etc_dir
         self.local_base_url = store.local_base_url
         self.public_base_url = store.public_base_url
-        self._rpc_lib_script = "https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.13/dist/hypha-rpc-websocket.min.js"
+        self._rpc_lib_script = "https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.14/dist/hypha-rpc-websocket.min.js"
         # self._rpc_lib_script = "http://localhost:9099/hypha-rpc-websocket.js"
         self.event_bus = store.get_event_bus()
         self.store = store
@@ -92,9 +90,6 @@ class ServerAppController:
         )
         self.templates_dir = Path(__file__).parent / "templates"
         self.builtin_apps_dir = Path(__file__).parent / "built-in"
-        shutil.rmtree(self.apps_dir / "built-in", ignore_errors=True)
-        # copy files inside the builtin apps dir to the apps dir (overwrite if exists)
-        shutil.copytree(self.builtin_apps_dir, self.apps_dir / "built-in")
         router = APIRouter()
         # start the browser runner
         self._runner = [
@@ -102,11 +97,11 @@ class ServerAppController:
             BrowserAppRunner(self.store, in_docker=self.in_docker),
         ]
 
-        @router.get("/{workspace}/a/{path:path}")
+        @router.get("/{workspace}/a/{app_id}/{path:path}")
         async def get_app_file(
-            workspace: str, path: str, token: str = None
+            workspace: str, app_id: str, path: str, token: str = None
         ) -> Response:
-            if workspace == "built-in":
+            if workspace == "public" and app_id == "built-in":
                 # get the jinja template from the built-in apps dir
                 path = safe_join(str(self.builtin_apps_dir), path)
                 if not is_safe_path(str(self.builtin_apps_dir), path):
@@ -157,14 +152,10 @@ class ServerAppController:
                             ),
                         },
                     )
-            path = safe_join(str(self.apps_dir), workspace, path)
-            if os.path.exists(path):
-                return FileResponse(path)
-
-            return JSONResponse(
-                status_code=404,
-                content={"success": False, "detail": f"File not found: {path}"},
-            )
+                key = safe_join(self.workspace_etc_dir, workspace, app_id, path)
+                return FSFileResponse(
+                    self.create_client_async(), self.workspace_bucket, key
+                )
 
         store.register_router(router)
 
@@ -227,7 +218,7 @@ class ServerAppController:
         """Save an application to the workspace."""
         mhash = app_id
         async with self.create_client_async() as s3_client:
-            app_dir = f"{workspace}/{self.user_applications_dir}/{mhash}"
+            app_dir = f"{self.workspace_etc_dir}/{workspace}/{mhash}"
 
             async def save_file(key, content):
                 if isinstance(content, str):
@@ -274,64 +265,6 @@ class ServerAppController:
             content = json.dumps(card.model_dump(), indent=4)
             await save_file(f"{app_dir}/manifest.json", content)
         logger.info("Saved application (%s)to workspace: %s", mhash, workspace)
-
-    async def prepare_application(self, workspace, app_id):
-        """Download files for an application to be run."""
-        assert "/" not in app_id, (
-            "Invalid app id: " + app_id + ", should not contain '/'"
-        )
-        local_app_dir = self.apps_dir / workspace / app_id
-        mhash = app_id
-        # if os.path.exists(local_app_dir):
-        #     logger.info("Application (%s) is already prepared.", app_id)
-        #     return
-
-        logger.info("Preparing application (%s).", app_id)
-
-        # Download the app to the apps dir
-        async with self.create_client_async() as s3_client:
-            app_dir = workspace + "/" + self.user_applications_dir + "/" + mhash
-
-            async def download_file(key, local_path):
-                os.makedirs(os.path.dirname(local_path), exist_ok=True)
-                response = await s3_client.get_object(
-                    Bucket=self.workspace_bucket,
-                    Key=key,
-                )
-                if (
-                    "ResponseMetadata" in response
-                    and "HTTPStatusCode" in response["ResponseMetadata"]
-                ):
-                    response_code = response["ResponseMetadata"]["HTTPStatusCode"]
-                    assert (
-                        response_code == 200
-                    ), f"Failed to download file: {key}, status code: {response_code}"
-                assert "ETag" in response
-                data = await response["Body"].read()
-                async with aiofiles.open(local_path, "wb") as fil:
-                    await fil.write(data)
-
-            # Upload the source code and attachments
-            await download_file(
-                os.path.join(app_dir, "index.html"), local_app_dir / "index.html"
-            )
-            await download_file(
-                os.path.join(app_dir, "manifest.json"), local_app_dir / "manifest.json"
-            )
-
-            async with aiofiles.open(
-                local_app_dir / "manifest.json", "r", encoding="utf-8"
-            ) as fil:
-                card = Card.model_validate(json.loads(await fil.read()))
-
-            if card.attachments:
-                files = card.attachments.get("files")
-                if files:
-                    for file_name in files:
-                        await download_file(
-                            os.path.join(app_dir, file_name), local_app_dir / file_name
-                        )
-            logger.info("Application (%s) is prepared.", app_id)
 
     async def close(self) -> None:
         """Close the app controller."""
@@ -507,10 +440,8 @@ class ServerAppController:
             await ws.uninstall_application(app_id)
 
         async with self.create_client_async() as s3_client:
-            app_dir = f"{workspace.name}/{self.user_applications_dir}/{mhash}/"
+            app_dir = f"{self.workspace_etc_dir}/{workspace.name}/{mhash}/"
             await remove_objects_async(s3_client, self.workspace_bucket, app_dir)
-        if (self.apps_dir / workspace.name / app_id).exists():
-            shutil.rmtree(self.apps_dir / workspace.name / app_id, ignore_errors=True)
 
     async def launch(
         self,
@@ -574,7 +505,6 @@ class ServerAppController:
             app_id in workspace_info.applications
         ), f"App {app_id} not found in workspace {workspace}, please install it first."
 
-        await self.prepare_application(workspace, app_id)
         server_url = self.local_base_url.replace("http://", "ws://")
         server_url = server_url.replace("https://", "wss://")
         local_url = (
@@ -631,7 +561,7 @@ class ServerAppController:
 
         try:
             if wait_for_service:
-                print(f"Waiting for service: {full_client_id}:{wait_for_service}")
+                logger.info(f"Waiting for service: {full_client_id}:{wait_for_service}")
                 await self.event_bus.wait_for_local(
                     "service_added",
                     match={"id": full_client_id + ":" + wait_for_service},
@@ -653,10 +583,14 @@ class ServerAppController:
         except Exception as exp:
             raise Exception(
                 f"Failed to start the app: {workspace}/{app_id}, error: {exp}"
-            )
+            ) from exp
         finally:
             self.event_bus.off_local("service_added", service_added)
 
+        if wait_for_service:
+            app_info["service_id"] = (
+                full_client_id + ":" + wait_for_service + "@" + app_id
+            )
         return app_info
 
     async def stop(

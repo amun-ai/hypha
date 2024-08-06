@@ -120,7 +120,10 @@ def serialize(obj):
     if isinstance(obj, list):
         return [serialize(k) for k in obj]
     if callable(obj):
-        return {"type": "function", "name": obj.__name__}
+        if hasattr(obj, "__schema__"):
+            return {"type": "function", "function": obj.__schema__}
+        else:
+            return {"type": "function", "function": {"name": obj.__name__}}
 
     raise ValueError(f"unsupported data type: {type(obj)}")
 
@@ -263,7 +266,7 @@ class HTTPProxy:
 
                 return JSONResponse(status_code=200, content=auth0_response.json())
 
-        @router.get("/workspaces/list")
+        @router.get("/workspaces")
         async def list_all_workspaces(
             user_info: login_optional = Depends(login_optional),
         ):
@@ -281,7 +284,6 @@ class HTTPProxy:
                 )
 
         @router.get("/{workspace}/info")
-        @router.get("/workspaces/info")
         async def get_workspace_info(
             workspace: str,
             user_info: login_optional = Depends(login_optional),
@@ -315,77 +317,42 @@ class HTTPProxy:
                     content={"success": False, "detail": str(exp)},
                 )
 
-        @router.get("/services/openapi.json")
-        async def get_services_openapi(
-            user_info: login_optional = Depends(login_optional),
-        ):
-            """Get the openapi schema for services."""
-            schema = SERVICES_OPENAPI_SCHEMA.copy()
-            schema["servers"] = [{"url": f"{store.public_base_url}/services"}]
-            return schema
-
-        @router.get("/services/call")
-        async def call_service_function_get(
-            service_id: str,
-            function_key: str,
-            workspace: Optional[str] = None,
-            function_kwargs: extracted_kwargs = Depends(extracted_kwargs),
-            response_type: detected_response_type = Depends(detected_response_type),
-            user_info: login_optional = Depends(login_optional),
-        ):
-            """Call a service function by keys."""
-            if "/" in service_id:
-                _workspace, service_id = service_id.split("/")
-                if workspace:
-                    assert (
-                        _workspace == workspace
-                    ), f"workspace mismatch: {_workspace} != {workspace}"
-                else:
-                    workspace = _workspace
-            assert (
-                workspace
-            ), "workspace should be included in the service_id or provided separately"
-            return await service_function(
-                (workspace, service_id, function_key),
-                function_kwargs,
-                response_type,
-                user_info,
-            )
-
-        @router.post("/services/call")
-        async def call_service_function_post(
-            request: Request = None,
-            user_info: login_optional = Depends(login_optional),
-        ):
-            """Call a service function by keys."""
-            workspace, service_id, function_key = await extracted_call_info(request)
-            function_kwargs = await extracted_kwargs(request)
-            response_type = detected_response_type(request)
-            if "/" in service_id:
-                _workspace, service_id = service_id.split("/")
-                if workspace:
-                    assert (
-                        _workspace == workspace
-                    ), f"workspace mismatch: {_workspace} != {workspace}"
-                else:
-                    workspace = _workspace
-            assert (
-                workspace
-            ), "workspace should be included in the service_id or provided separately"
-            return await service_function(
-                (workspace, service_id, function_key),
-                function_kwargs,
-                response_type,
-                user_info,
-            )
-
-        @router.get("/services/list")
+        @router.get("/services")
         async def list_services(
             workspace: str,
             user_info: login_optional = Depends(login_optional),
         ):
             """List services under a workspace."""
             return await get_workspace_services(workspace, user_info)
+
+        @router.get("/services/{service_id:path}")
+        async def get_service_info(
+            service_id: str,
+            user_info: login_optional = Depends(login_optional),
+        ):
+            """Get service info."""
+            assert "/" in service_id, "service_id should contain workspace name"
+            assert ":" in service_id, "service_id should contain client_id"
+            workspace, service_id = service_id.split("/")
+            return await get_service_info(workspace, service_id, user_info)
+
+        @router.post("/services/{workspace}/{service_id}/{function_key}")
+        async def call_service_function_post(
+            workspace: str,
+            service_id: str,
+            function_key: str,
+            request: Request,
+            user_info: login_optional = Depends(login_optional),
+        ):
+            """Call a service function by keys."""
+            function_kwargs = await extracted_kwargs(request, use_function_kwargs=False)
+            response_type = detected_response_type(request)
+            return await service_function(
+                (workspace, service_id, function_key),
+                function_kwargs,
+                response_type,
+                user_info,
+            )
 
         @router.get("/{workspace}/services")
         async def get_workspace_services(
@@ -423,10 +390,10 @@ class HTTPProxy:
                 async with self.store.get_workspace_interface(
                     workspace, user_info
                 ) as api:
-                    service = await api.get_service(service_id)
+                    service_info = await api.get_service_info(service_id)
                 return JSONResponse(
                     status_code=200,
-                    content=serialize(service),
+                    content=serialize(service_info),
                 )
             except Exception as exp:
                 return JSONResponse(

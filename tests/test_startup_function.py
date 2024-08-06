@@ -23,11 +23,11 @@ async def test_external_services(fastapi_server):
             "server_url": WS_SERVER_URL,
         }
     )
-    svc = await server.get_service("test-service")
+    svc = await server.get_service("public/test-service")
     assert svc.id.endswith("test-service")
     assert await svc.test(1) == 100
 
-    svc = await server.get_service("example-startup-service")
+    svc = await server.get_service("public/example-startup-service")
     assert await svc.test(3) == 22 + 3
 
 
@@ -81,8 +81,10 @@ async def test_launch_external_services(fastapi_server):
     assert await external_service.test(1) == 100
     await proc.kill()
     await asyncio.sleep(0.1)
-    svc = await server.get_service("external-test-service")
-    assert svc is None
+    try:
+        await server.get_service("external-test-service")
+    except Exception as e:
+        assert "not found" in str(e)
     proc = await launch_external_services(
         server,
         "python -m http.server 9391",

@@ -21,7 +21,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
     )
     workspace = api.config["workspace"]
     token = await api.generate_token()
-    s3controller = await api.get_service("s3-storage")
+    s3controller = await api.get_service("public/s3-storage")
     with pytest.raises(
         Exception, match=r".*Permission denied: workspace is read-only.*"
     ):
@@ -47,9 +47,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
     workspace = api.config["workspace"]
     token = await api.generate_token()
 
-    s3controller = await api.get_service("s3-storage")
-    assert s3controller
-    s3controller = await api.get_service("public/*:s3-storage")
+    s3controller = await api.get_service("public/s3-storage")
     info = await s3controller.generate_credential()
     print("Testing s3 client access...")
 

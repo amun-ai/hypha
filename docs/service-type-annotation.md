@@ -53,9 +53,7 @@ Manual JSON schema generation can be tedious, so we provide decorators `schema_f
 Here is an example of using the `schema_function` decorator with Pydantic models:
 
 ```python
-from
-
- pydantic import BaseModel, Field
+from pydantic import BaseModel, Field
 from hypha_rpc.utils.schema import schema_function
 
 class UserInfo(BaseModel):
@@ -80,6 +78,7 @@ Now, let's create a service in a Python client, then connect to it with another 
 ```python
 from pydantic import BaseModel, Field
 from hypha_rpc import connect_to_server
+from hypha_rpc.utils.schema import schema_function
 
 async def main():
     server = await connect_to_server({"server_url": "https://hypha.aicell.io"})
@@ -101,10 +100,11 @@ async def main():
         "register_user": register_user
     })
 
-import asyncio
-loop = asyncio.get_event_loop()
-loop.create_task(main())
-loop.run_forever()
+if __name__ == "__main__":
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.create_task(main())
+    loop.run_forever()
 ```
 
 **Python Client: Service Usage**
@@ -124,16 +124,17 @@ async def main():
     })
     print(result)
 
-import asyncio
-loop = asyncio.get_event_loop()
-loop.create_task(main())
-loop.run_forever()
+if __name__ == "__main__":
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.create_task(main())
+    loop.run_forever()
 ```
 
 **JavaScript Client: Service Usage**
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.13/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.14/dist/hypha-rpc-websocket.min.js"></script>
 <script>
 async function main() {
     const server = await hyphaWebsocketClient.connectToServer({"server_url": "https://hypha.aicell.io"});

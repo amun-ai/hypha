@@ -10,6 +10,12 @@ Hypha server act as a hub for connecting different components through [hypya-rpc
 
 ## Change log
 
+### 0.20.14
+
+ - Make `get_service` more restricted to support only service id string, see [migration guide](./docs/migration-guide.md) for more details.
+ - Clean up http endpoints for the services, now we also support /services/:service_id/:function_name
+ - Remove local cache of the server apps, we now always use s3 as the primary storage.
+
 ### 0.20.12
 
  - New Feature: In order to support large language models' function calling feature, hypha support built-in type annotation. With `hypha-rpc>=0.20.12`, we also support type annotation for the service functions in JSON Schema format. In Python, you can use `Pydantic` or simple python type hint, or directly write the json schema for Javascript service functions. This allows you to specify the inputs spec for functions.

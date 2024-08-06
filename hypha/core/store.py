@@ -329,7 +329,7 @@ class RedisStore:
         user_info: UserInfo,
         client_id=None,
         timeout=10,
-        silent=False,
+        silent=True,
     ):
         """Get the interface of a workspace."""
         assert workspace, "Workspace name is required"

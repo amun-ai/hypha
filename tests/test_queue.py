@@ -24,7 +24,7 @@ async def test_queue(fastapi_server):
         }
     )
 
-    q = await api.get_service("queue")
+    q = await api.get_service("public/queue")
     await q.push("test", {"hello": "world"})
     task = await q.pop("test")
     assert task["hello"] == "world"
@@ -41,7 +41,7 @@ async def test_queue(fastapi_server):
     length = await q.get_length("test")
     assert length == 3
 
-    q2 = await api2.get_service("queue")
+    q2 = await api2.get_service("public/queue")
 
     tasks = await q2.peek("test", 2)
     assert len(tasks) == 2

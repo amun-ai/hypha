@@ -258,8 +258,11 @@ class WorkspaceManager:
             raise PermissionError(f"Permission denied for workspace {ws}")
         workspace_info = await self.load_workspace_info(ws)
         service_type_id = type_info.id
-        assert "/" not in service_type_id, "Service type id must not contain '/'"
-
+        if "/" in service_type_id:
+            _ws, service_type_id = service_type_id.split("/")
+            assert (
+                _ws == ws
+            ), f"Workspace mismatch: {_ws} != {ws}, you can only register service type in your own workspace."
         if service_type_id in workspace_info.service_types:
             raise KeyError(f"Service type already exists: {service_type_id}")
 
@@ -284,12 +287,17 @@ class WorkspaceManager:
             ws, type_id = type_id.split("/")
 
         user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read):
-            raise PermissionError(f"Permission denied for workspace {ws}")
         workspace_info = await self.load_workspace_info(ws)
 
         if type_id in workspace_info.service_types:
-            return workspace_info.service_types[type_id]
+            service_type = workspace_info.service_types[type_id]
+            if service_type.config.get(
+                "visibility"
+            ) != "public" and not user_info.check_permission(ws, UserPermission.read):
+                raise PermissionError(f"Permission denied for workspace {ws}")
+            service_type = service_type.model_dump()
+            service_type["id"] = f"{ws}/{type_id}"
+            return service_type
         full_service_type_id = f"{ws}/{type_id}"
         if full_service_type_id in workspace_info.service_types:
             return workspace_info.service_types[full_service_type_id]
@@ -548,6 +556,15 @@ class WorkspaceManager:
         for key in set(keys):
             service_data = await self._redis.hgetall(key)
             service_dict = ServiceInfo.from_redis_dict(service_data).model_dump()
+            if service_dict.get("config", {}).get(
+                "visibility"
+            ) != "public" and not user_info.check_permission(
+                workspace, UserPermission.read
+            ):
+                logger.warning(
+                    f"Potential issue in list_services: Protected service appear in the search list: {service_id}"
+                )
+                continue
             if isinstance(query, dict) and type_filter:
                 if service_dict.get("type") == type_filter:
                     services.append(service_dict)
@@ -581,7 +598,7 @@ class WorkspaceManager:
             f"services:{service.config.visibility.value}:{service.id}@{service.app_id}"
         )
         # Check if the clients exists if not a built-in service
-        if ":built-in" not in service.id and ws != "public":
+        if ":built-in" not in service.id and ws not in ["root", "public"]:
             builtins = await self._redis.keys(f"services:*:{client_id}:built-in@*")
             if not builtins:
                 logger.warning(
@@ -636,20 +653,42 @@ class WorkspaceManager:
         context: Optional[dict] = None,
     ):
         """Get the service info."""
-        ws = context["ws"]
-        if ":" not in service_id:
-            service_id = f"*:{service_id}"
+        assert isinstance(service_id, str), "Service ID must be a string."
+        assert service_id.count("/") <= 1, "Service id must contain at most one '/'"
+        assert service_id.count(":") <= 1, "Service id must contain at most one ':'"
+        assert service_id.count("@") <= 1, "Service id must contain at most one '@'"
         if "/" not in service_id:
-            service_id = f"{ws}/{service_id}"
-        user_info = UserInfo.model_validate(context["user"])
+            service_id = f"{context['ws']}/{service_id}"
+        if ":" not in service_id:
+            workspace, service_id = service_id.split("/")
+            service_id = f"{workspace}/*:{service_id}"
+
+        if "@" in service_id:
+            service_id, app_id = service_id.split("@")
+        else:
+            app_id = "*"
+        assert (
+            "/" in service_id and ":" in service_id
+        ), f"Invalid service id: {service_id}, it must contain '/' and ':'"
         workspace = service_id.split("/")[0]
-        if not user_info.check_permission(workspace, UserPermission.read):
-            raise PermissionError(f"Permission denied for workspace {workspace}")
-        key = f"services:*:{service_id}@*"
+        assert (
+            workspace != "*"
+        ), "You must specify a workspace for the service query, otherwise please call list_services to find the service."
+        logger.info("Getting service: %s", service_id)
+
+        user_info = UserInfo.model_validate(context["user"])
+        key = f"services:*:{service_id}@{app_id}"
         keys = await self._redis.keys(key)
         if not keys:
-            raise KeyError(f"Service not found: {service_id}")
+            raise KeyError(f"Service not found: {service_id}@{app_id}")
         key = keys[0]
+        # if it's a public service or the user has read permission
+        if not key.startswith(b"services:public:") and not user_info.check_permission(
+            workspace, UserPermission.read
+        ):
+            raise PermissionError(
+                f"Permission denied for non-public service in workspace {workspace}"
+            )
         service_data = await self._redis.hgetall(key)
         return ServiceInfo.from_redis_dict(service_data)
 
@@ -829,23 +868,18 @@ class WorkspaceManager:
 
     async def _launch_application_for_service(
         self,
-        query: dict,
-        mode: str = "default",
+        app_id: str,
+        service_id: str,
+        workspace: str = None,
         timeout: float = 10,
-        skip_timeout: bool = False,
         case_conversion: str = None,
         context: dict = None,
     ):
         """Launch an installed application by service name."""
         self.validate_context(context, permission=UserPermission.read)
         ws = context["ws"]
+        workspace = workspace or ws
         user_info = UserInfo.model_validate(context["user"])
-        workspace, service_id = (
-            query.get("workspace", ws),
-            query.get("service_id"),
-        )
-        assert "app_id" in query, "App id must be provided."
-        app_id = query["app_id"]
         assert app_id not in ["*"], f"Invalid app id: {app_id}"
         if workspace == "*":
             workspace = ws
@@ -855,6 +889,7 @@ class WorkspaceManager:
 
         if ":" in service_id:
             service_id = service_id.split(":")[1]
+
         assert service_id and service_id not in [
             "*",
             "default",
@@ -885,7 +920,7 @@ class WorkspaceManager:
             )
 
         async with self._get_service_api(
-            "public/*:server-apps", context=context
+            "public/server-apps", context=context
         ) as controller:
             if not controller:
                 raise Exception(
@@ -897,10 +932,8 @@ class WorkspaceManager:
                 wait_for_service=service_id,
             )
             return await self.get_service(
-                f"{client_info['id']}:{service_id}@{app_id}",
+                f"{client_info['id']}:{service_id}",  # should not contain @app_id
                 timeout=timeout,
-                mode=mode,
-                skip_timeout=skip_timeout,
                 case_conversion=case_conversion,
                 context=context,
             )
@@ -915,7 +948,7 @@ class WorkspaceManager:
         if not await self._redis.hexists("workspaces", ws):
             raise KeyError(f"Workspace {ws} does not exist")
         # Now launch the app and get the service
-        svc = await self.get_service(service_id, mode="random", context=context)
+        svc = await self.get_service(service_id, context=context)
         # Create a rpc client for getting the launcher service as user.
         rpc = self._create_rpc(
             "get-service-" + random_id(readable=False),
@@ -931,17 +964,9 @@ class WorkspaceManager:
     @schema_method
     async def get_service(
         self,
-        query: Union[dict, str] = Field(
+        service_id: str = Field(
             ...,
-            description="Query for the service. This can be either a dictionary specifying detailed parameters like 'workspace', 'client_id', 'service_id', and 'app_id', or a string that includes the service ID. The string format can also handle wildcards and patterns such as 'workspace/client_id:service_id@app_id'.",
-        ),
-        mode: str = Field(
-            "default",
-            description="The mode for selecting the service. It can be 'default' for a deterministic selection or 'random' to shuffle and select a random service.",
-        ),
-        skip_timeout: bool = Field(
-            False,
-            description="A flag to skip the service in case of a timeout. If set to True, the function will continue to the next service in case of a timeout.",
+            description="Service ID. This should be a service id in the format: 'workspace/service_id', 'workspace/client_id:service_id' or 'workspace/client_id:service_id@app_id'",
         ),
         timeout: float = Field(
             10.0,
@@ -953,158 +978,40 @@ class WorkspaceManager:
         ),
         context=None,
     ):
-        """Get a service based on the query, supporting wildcard patterns and matching modes."""
+        """Get a service based on the service_id"""
+        assert (
+            service_id != "*"
+        ), "Invalid service id: {service_id}, it cannot be a wildcard."
         # no need to validate the context
         # self.validate_context(context, permission=UserPermission.read)
-        ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        # Convert string query into a dictionary
-        if isinstance(query, str):
-            service_id = query
-            query = {"id": service_id}
-        else:
-            if "id" not in query:
-                service_id = query.get("service_id", "*")
-            else:
-                service_id = query["id"]
-
-        assert isinstance(service_id, str)
-
-        assert service_id.count("/") <= 1, "Service id must contain at most one '/'"
-        assert service_id.count(":") <= 1, "Service id must contain at most one ':'"
-        assert service_id.count("@") <= 1, "Service id must contain at most one '@'"
-
-        if "/" in service_id and ":" not in service_id:
-            service_id += ":default"
-            query["workspace"] = service_id.split("/")[0]
-            if "client_id" in query and query["client_id"] != service_id.split("/")[1]:
-                raise ValueError(
-                    f"client_id ({query['client_id']}) does"
-                    f" not match service_id ({service_id})"
-                )
-            query["client_id"] = service_id.split("/")[1]
-        elif "/" not in service_id and ":" not in service_id:
-            # workspace=* means the current workspace or the public workspace
-            workspace = query.get("workspace", "*")
-            service_id = f"{workspace}/*:{service_id}"
-            query["workspace"] = workspace
-            query["client_id"] = query.get("client_id", "*")
-        elif "/" not in service_id and ":" in service_id:
-            workspace = query.get("workspace", ws)
-            query["client_id"] = service_id.split(":")[0]
-            service_id = f"{workspace}/{service_id}"
-            query["workspace"] = workspace
-        else:
-            assert "/" in service_id and ":" in service_id
-            workspace = service_id.split("/")[0]
-            query["client_id"] = service_id.split("/")[1].split(":")[0]
-            query["workspace"] = workspace
-            if "*" not in service_id:
-                service_api = await self._rpc.get_remote_service(
-                    service_id, timeout=timeout
-                )
-                if service_api:
-                    return self.patch_service_config(workspace, service_api)
-                else:
-                    return None
-        app_id = "*"
-        if "@" in service_id:
-            service_id, app_id = service_id.split("@")
-            if query.get("app_id") and query.get("app_id") != app_id:
-                raise ValueError(f"App id mismatch: {query.get('app_id')} != {app_id}")
-        query["app_id"] = query.get("app_id", app_id)
-
-        query["service_id"] = service_id.split("/")[1].split(":")[1]
-
-        logger.info("Getting service: %s", query)
-
-        original_visibility = query.get("visibility", "*")
-        # Construct the pattern for querying Redis
-        if query.get("workspace", "*") == "*":
-            visibility = "public"
-        else:
-            # If the user does not have permission to read the workspace, only list public services
-            if not user_info.check_permission(query["workspace"], UserPermission.read):
-                visibility = "public"
-            else:
-                visibility = "*"
-
-        pattern = f"services:{visibility}:{query['workspace']}/{query['client_id']}:{query['service_id']}@{query['app_id']}"
-
-        assert pattern.startswith(
-            "services:"
-        ), "Query pattern does not start with 'services:'."
-        assert not any(
-            char in pattern for char in "{}"
-        ), "Query pattern contains invalid characters."
-
-        logger.debug("Query services using pattern: %s", pattern)
-        keys = await self._redis.keys(pattern)
-
-        if query["workspace"] == "*":
-            # add services in the current workspace
-            ws_pattern = f"services:{original_visibility}:{ws}/{query['client_id']}:{query['service_id']}@{query['app_id']}"
-            keys = keys + await self._redis.keys(ws_pattern)
-
-        logger.debug("Found service keys: %s", keys)
-        within_workspace_keys = []
-        outside_workspace_keys = []
-
-        for key in set(keys):
-            key_workspace = key.decode("utf-8").split("/")[1]
-            if key_workspace == ws:
-                within_workspace_keys.append(key)
-            else:
-                outside_workspace_keys.append(key)
-
-        if mode == "random":
-            random.shuffle(within_workspace_keys)
-            random.shuffle(outside_workspace_keys)
-        else:
-            within_workspace_keys.sort()
-            outside_workspace_keys.sort()
-
-        sorted_keys = within_workspace_keys + outside_workspace_keys
-
-        for key in sorted_keys:
-            try:
-                # Fetch the minimal required data to determine the correct service
-                parts = key.decode("utf-8").split(":")
-                service_id = parts[2] + ":" + parts[3]
-                service_id, app_id = service_id.split("@")
-                workspace = service_id.split("/")[0]
-                # Attempt to get the remote service with a timeout
-                service_api = await self._rpc.get_remote_service(
-                    service_id, timeout=timeout, case_conversion=case_conversion
-                )
-                if service_api:
-                    return self.patch_service_config(workspace, service_api)
-            except asyncio.TimeoutError:
-                if skip_timeout:
-                    logger.warning(
-                        f"Timeout while getting service {service_id}, skipping to the next one."
-                    )
-                    continue
-                else:
-                    raise TimeoutError(f"Timeout while getting service {service_id}")
-
-        if "app_id" in query and query["app_id"] != "*":
-            service_api = await self._launch_application_for_service(
-                query,
-                timeout=timeout * 10,
-                mode=mode,
-                skip_timeout=skip_timeout,
-                case_conversion=case_conversion,
-                context=context,
+        try:
+            # Permission check will be handled by the get_service_api function
+            svc_info = await self.get_service_info(service_id, context=context)
+            service_api = await self._rpc.get_remote_service(
+                svc_info.id, timeout=timeout, case_conversion=case_conversion
             )
-            # No need to patch the service config because the service is already patched
+            assert service_api, f"Failed to get service: {service_id}"
+            service_api["config"]["workspace"] = svc_info.id.split("/")[0]
             return service_api
-
-        return None
-
-    def patch_service_config(self, workspace: str, service_api: dict):
-        service_api["config"]["workspace"] = workspace
-        return service_api
+        except KeyError as exp:
+            if "@" in service_id:
+                app_id = service_id.split("@")[1]
+                service_id = service_id.split("@")[0]
+                workspace = (
+                    service_id.split("/")[0] if "/" in service_id else context["ws"]
+                )
+                service_api = await self._launch_application_for_service(
+                    app_id,
+                    service_id,
+                    workspace=workspace,
+                    timeout=timeout,
+                    case_conversion=case_conversion,
+                    context=context,
+                )
+                # No need to patch the service config because the service is already patched
+                return service_api
+            else:
+                raise exp
 
     @schema_method
     async def list_workspaces(
@@ -1273,6 +1180,7 @@ class WorkspaceManager:
             "register_service_type": self.register_service_type,
             "get_service_type": self.get_service_type,
             "list_service_types": self.list_service_types,
+            "get_service_info": self.get_service_info,
             "get_service": self.get_service,
             "generate_token": self.generate_token,
             "create_workspace": self.create_workspace,

@@ -127,13 +127,13 @@ def start_builtin_services(
         )
 
     if args.enable_server_apps:
+        assert args.enable_s3, "Server apps require S3 to be enabled"
         # pylint: disable=import-outside-toplevel
         from hypha.apps import ServerAppController
 
         ServerAppController(
             store,
             port=args.port,
-            apps_dir=args.apps_dir,
             in_docker=args.in_docker,
             endpoint_url=args.endpoint_url,
             access_key_id=args.access_key_id,
@@ -386,12 +386,6 @@ def get_argparser(add_help=True):
         type=str,
         default=None,
         help="set SecretAccessKey for S3",
-    )
-    parser.add_argument(
-        "--apps-dir",
-        type=str,
-        default="hypha-apps",
-        help="temporary directory for storing installed apps",
     )
     parser.add_argument(
         "--workspace-bucket",
