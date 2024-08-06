@@ -15,7 +15,7 @@ To connect to the server, instead of installing the `imjoy-rpc` module, you will
 pip install -U hypha-rpc # new install
 ```
 
-We also changed our versioning strategy, we use the same version number for the server and client, so it's easier to match the client and server versions. For example, `hypha-rpc` version `0.20.13` is compatible with Hypha server version `0.20.13`.
+We also changed our versioning strategy, we use the same version number for the server and client, so it's easier to match the client and server versions. For example, `hypha-rpc` version `0.20.14` is compatible with Hypha server version `0.20.14`.
 
 #### 2. Change the imports to use `hypha-rpc`
 
@@ -60,7 +60,21 @@ async def start_server(server_url):
     print(await svc.hello("John"))
 ```
 
-#### 4. Optionally, annotate functions with JSON schema using Pydantic
+#### 4. Changes in getting service
+
+In the new version, we make the argument of `get_service(service_id)` a string (dictionary is not supported anymore).
+
+The full service id format: `{workspace}/{client_id}:{service_id}@{app_id}`. We support the following shorted formats with conversion:
+
+ - short service id format: `{service_id}`=>`{current_workspace}/*/{service_id}`, e.g. `await server.get_service("hello-world")`
+ - service id format with workspace: `{workspace}/{service_id}` => `{workspace}/*/{service_id}`, e.g. `await server.get_service("public/hello-world")`
+ - service id format with app id: `{service_id}@{app_id}` => `{current_workspace}/*/{service_id}@{app_id}`, e.g. `await server.get_service("hello-world@my-app-id")`
+ - service id format with client id: `{client_id}:{service_id}` => `{current_workspace}/{client_id}:{service_id}`, e.g. `await server.get_service("my-client-id:hello-world")`
+ - service id format with client id and app id: `{client_id}:{service_id}@{app_id}` => `{current_workspace}/{client_id}:{service_id}@{app_id}`, e.g. `await server.get_service("my-client-id:hello-world@my-app-id")`
+
+**Note: Instead of return null, the new `get_service()` function will raise error if not found**
+
+#### 5. Optionally, annotate functions with JSON schema using Pydantic
 
 To make your functions more compatible with LLMs, you can optionally use Pydantic to annotate them with JSON schema. This helps in creating well-defined interfaces for your services.
 
@@ -69,6 +83,7 @@ We created a tutorial to introduce this new feature: [service type annotation](.
 Here is a quick example using Pydantic:
 
 ```python
+import asyncio
 from pydantic import BaseModel, Field
 from hypha_rpc.utils.schema import schema_function
 
@@ -79,9 +94,27 @@ class UserInfo(BaseModel):
     address: str = Field(..., description="Address of the user")
 
 @schema_function
-def register_user(user_info: UserInfo) -> str:
+async def register_user(user_info: UserInfo) -> str:
     """Register a new user."""
     return f"User {user_info.name} registered"
+
+
+async def main():
+    server = await connect_to_server({"server_url": "https://hypha.aicell.io"})
+
+    svc = await server.register_service({
+        "name": "User Service",
+        "id": "user-service",
+        "config": {
+            "visibility": "public"
+        },
+        "description": "Service for registering users",
+        "register_user": register_user
+    })
+
+loop = asyncio.get_event_loop()
+loop.create_task(main())
+loop.run_forever()
 ```
 
 ### JavaScript
@@ -91,10 +124,10 @@ def register_user(user_info: UserInfo) -> str:
 To connect to the server, instead of using the `imjoy-rpc` module, you will need to use the `hypha-rpc` module. The `hypha-rpc` module is a standalone module that provides the RPC connection to the Hypha server. You can include it in your HTML using a script tag:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.13/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.14/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
-We also changed our versioning strategy, we use the same version number for the server and client, so it's easier to match the client and server versions. For example, `hypha-rpc` version `0.20.13` is compatible with Hypha server version `0.20.13`.
+We also changed our versioning strategy, we use the same version number for the server and client, so it's easier to match the client and server versions. For example, `hypha-rpc` version `0.20.14` is compatible with Hypha server version `0.20.14`.
 
 #### 2. Change the connection method and use camelCase for service function names
 
@@ -112,7 +145,7 @@ Here is a suggested list of search and replace operations to update your code:
 Here is an example of how the updated code might look:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.13/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.14/dist/hypha-rpc-websocket.min.js"></script>
 <script>
 async function main(){
     const server = await hyphaWebsocketClient.connectToServer({"server_url": "https://hypha.aicell.io"});
@@ -135,7 +168,23 @@ main();
 </script>
 ```
 
-#### 3. Optionally, manually annotate functions with JSON schema
+#### 3. Changes in getting service
+
+**Input Argument Change for `getService`**
+In the new version, we make the argument of `getService(serviceId)` a string (object is not supported anymore).
+
+The full service id format: `{workspace}/{clientId}:{serviceId}@{appId}`. We support the following shorted formats with conversion:
+
+ - short service id format: `{serviceId}`=>`{currentWorkspace}/*/{serviceId}`, e.g. `await server.getService("hello-world")`
+ - service id format with workspace: `{workspace}/{serviceId}` => `{workspace}/*/{serviceId}`, e.g. `await server.getService("public/hello-world")`
+ - service id format with app id: `{serviceId}@{appId}` => `{currentWorkspace}/*/{serviceId}@{appId}`, e.g. `await server.getService("hello-world@my-app-id")`
+ - service id format with client id: `{clientId}:{serviceId}` => `{currentWorkspace}/{clientId}:{serviceId}`, e.g. `await server.getService("my-client-id:hello-world")`
+ - service id format with client id and app id: `{clientId}:{serviceId}@{appId}` => `{currentWorkspace}/{clientId}:{serviceId}@{appId}`, e.g. `await server.getService("my-client-id:hello-world@my-app-id")`
+
+
+**Note: Instead of return null, the new `getService()` function will raise error if not found**
+
+#### 4. Optionally, manually annotate functions with JSON schema
 
 To make your functions more compatible with LLMs, you can optionally annotate them with JSON schema. This helps in creating well-defined interfaces for your services.
 
@@ -144,10 +193,12 @@ We created a tutorial to introduce this new feature: [service type annotation](.
 Here is a quick example in JavaScript:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.13/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.14/dist/hypha-rpc-websocket.min.js"></script>
+
 <script>
 async function main(){
-    const server = await hyphaWebsocketClient.connectToServer({"server_url": "https://hypha.aicell.io"});
+    const { connectToServer, schemaFunction } = hyphaWebsocketClient;
+    const server = await connectToServer({"server_url": "https://hypha.aicell.io"});
     
     function getCurrentWeather(location, unit = "fahrenheit") {
         if (location.toLowerCase().includes("tokyo")) {
@@ -161,7 +212,7 @@ async function main(){
         }
     }
 
-    const getCurrentWeatherAnnotated = hyphaWebsocketClient.schemaFunction(getCurrentWeather, {
+    const getCurrentWeatherAnnotated = schemaFunction(getCurrentWeather, {
         name: "getCurrentWeather",
         description: "Get the current weather in a given location",
         parameters: {

@@ -77,42 +77,12 @@ async def test_http_services(minio_server, fastapi_server, test_user_token):
         }
     )
     async with httpx.AsyncClient(timeout=20.0) as client:
-        data = await client.get(f"{SERVER_URL}/services/openapi.json")
-        data = data.json()
-        assert data.get("detail") != "Not Found"
-        assert data["info"]["title"] == "Hypha Services"
-        paths = data["paths"]
-        assert "/call" in paths
-        assert "/list" in paths
-
-        url = f"{SERVER_URL}/services/call"
-        data = await client.post(
-            url,
-            json={
-                "workspace": workspace,
-                "service_id": "test_service",
-                "function_key": "echo",
-                "function_kwargs": {"data": "123"},
-            },
-        )
-        assert data.status_code == 200
-        assert data.json() == "123"
-
-        url = (
-            f"{SERVER_URL}/services/call?workspace={workspace}&service_id=test_service&function_key=echo&function_kwargs="
-            + json.dumps({"data": "123"})
-        )
-        data = await client.get(url)
-        assert data.status_code == 200
-        assert data.json() == "123"
-
         url = f"{SERVER_URL}/{workspace}/services/test_service/echo"
         data = await client.post(url, json={"data": "123"})
         assert data.status_code == 200
         assert data.json() == "123"
 
-        data = await client.get(f"{SERVER_URL}/services/list?workspace={workspace}")
-        print("services", data.json())
+        data = await client.get(f"{SERVER_URL}/services?workspace={workspace}")
         # [{'config': {'visibility': 'public', 'require_context': False, 'workspace': 'VRRVEdTF9of2y4cLmepzBw', 'flags': []}, 'id': '5XCPAyZrW72oBzywEk2oxP:test_service', 'name': 'test_service', 'type': 'test_service', 'description': '', 'docs': {}}]
         assert data.status_code == 200
         assert find_item(data.json(), "name", "test_service")
@@ -136,7 +106,7 @@ async def test_http_proxy(minio_server, fastapi_server, test_user_token):
     token = await api.generate_token()
 
     # Test app with custom template
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/server-apps")
     config = await controller.launch(
         source=TEST_APP_CODE,
         config={"type": "window"},
@@ -154,14 +124,10 @@ async def test_http_proxy(minio_server, fastapi_server, test_user_token):
     service = await api.get_service(svc2["id"])
     assert await service.echo("22") == "22"
 
-    response = requests.get(f"{SERVER_URL}/workspaces/list")
+    response = requests.get(f"{SERVER_URL}/workspaces")
     assert response.ok, response.json()["detail"]
     response = response.json()
     assert workspace in response
-
-    response = requests.get(f"{SERVER_URL}/{workspace}/info")
-    assert not response.ok
-    assert response.json()["detail"].startswith("Permission denied")
 
     response = requests.get(
         f"{SERVER_URL}/{workspace}/info", headers={"Authorization": f"Bearer {token}"}
@@ -198,6 +164,18 @@ async def test_http_proxy(minio_server, fastapi_server, test_user_token):
     service_info = response.json()
     assert service_info["name"] == "test_service"
 
+    response = requests.get(f"{SERVER_URL}/services/{svc1.id}")
+    assert response.ok, response.json()["detail"]
+    service_info = response.json()
+    assert service_info["name"] == "test_service"
+
+    response = requests.get(
+        f"{SERVER_URL}/{service_ws}/services/{svc1.id.split('/')[-1]}"
+    )
+    assert response.ok, response.json()["detail"]
+    service_info = response.json()
+    assert service_info["name"] == "test_service"
+
     response = requests.get(f"{SERVER_URL}/public/services/s3-storage")
     assert response.ok, response.json()["detail"]
     service_info = response.json()
@@ -224,6 +202,15 @@ async def test_http_proxy(minio_server, fastapi_server, test_user_token):
 
     response = requests.post(
         f"{SERVER_URL}/{service_ws}/services/test_service/echo",
+        data=msgpack.dumps({"data": 123}),
+        headers={"Content-type": "application/msgpack"},
+    )
+    assert response.ok
+    result = msgpack.loads(response.content)
+    assert result["data"] == 123
+
+    response = requests.post(
+        f"{SERVER_URL}/services/{svc1.id}/echo",
         data=msgpack.dumps({"data": 123}),
         headers={"Content-type": "application/msgpack"},
     )

@@ -16,10 +16,10 @@ async def test_asgi(fastapi_server, test_user_token):
     api = await connect_to_server(
         {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
     )
-    workspace = api.config["workspace"]
+    workspace = api.config.workspace
 
     # Test app with custom template
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/server-apps")
 
     source = (
         (Path(__file__).parent / "testASGIWebPythonPlugin.imjoy.html")
@@ -31,9 +31,7 @@ async def test_asgi(fastapi_server, test_user_token):
         wait_for_service="hello-fastapi",
         timeout=30,
     )
-    service = await api.get_service(
-        {"workspace": config.workspace, "id": "hello-fastapi"}
-    )
+    service = await api.get_service(f"{config.workspace}/hello-fastapi")
     assert "serve" in service
 
     response = requests.get(f"{SERVER_URL}/{workspace}/apps/hello-fastapi/")
@@ -53,7 +51,7 @@ async def test_functions(fastapi_server, test_user_token):
     token = await api.generate_token()
 
     # Test app with custom template
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/server-apps")
 
     source = (
         (Path(__file__).parent / "testFunctionsPlugin.imjoy.html")
@@ -66,9 +64,7 @@ async def test_functions(fastapi_server, test_user_token):
         timeout=30,
     )
 
-    service = await api.get_service(
-        {"workspace": config.workspace, "id": "hello-functions"}, skip_timeout=False
-    )
+    service = await api.get_service(f"{config.workspace}/hello-functions")
     assert "hello-world" in service
 
     response = requests.get(

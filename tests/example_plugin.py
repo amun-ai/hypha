@@ -21,7 +21,7 @@ class HyphaApp:
             },
             overwrite=True,
         )
-        service = await api.get_service(service_info)
+        service = await api.get_service(service_info.id)
         await service.echo("a message")
         await api.log("initialized")
 

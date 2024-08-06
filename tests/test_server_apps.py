@@ -42,7 +42,7 @@ async def test_server_apps_unauthorized(fastapi_server):
     api = await connect_to_server(
         {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 30}
     )
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/server-apps")
 
     await controller.launch(
         source=TEST_APP_CODE,
@@ -85,7 +85,7 @@ async def test_server_apps(fastapi_server, test_user_token):
     # assert len(objects) == 1
 
     # Test app with custom template
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/server-apps")
 
     # objects = await api.list_remote_objects()
     # assert len(objects) == 2
@@ -141,7 +141,7 @@ async def test_web_python_apps(fastapi_server, test_user_token):
     )
     workspace = api.config["workspace"]
 
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/server-apps")
     source = (
         (Path(__file__).parent / "testWebPythonPlugin.imjoy.html")
         .open(encoding="utf-8")
@@ -153,6 +153,8 @@ async def test_web_python_apps(fastapi_server, test_user_token):
         timeout=40,
     )
     assert config.name == "WebPythonPlugin"
+    svc = await api.get_service(config.service_id)
+    assert svc is not None
     app = await api.get_app(config.id)
     assert "add2" in app, str(app and app.keys())
     result = await app.add2(4)
@@ -195,7 +197,7 @@ async def test_non_persistent_workspace(fastapi_server):
     workspace = api.config["workspace"]
 
     # Test app with custom template
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/server-apps")
 
     source = (
         (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
@@ -245,7 +247,7 @@ async def test_lazy_plugin(fastapi_server, test_user_token):
     )
 
     # Test app with custom template
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/server-apps")
 
     source = (
         (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
@@ -261,7 +263,7 @@ async def test_lazy_plugin(fastapi_server, test_user_token):
     apps = await controller.list_apps()
     assert find_item(apps, "id", app_info.id)
 
-    app = await api.get_service({"app_id": app_info.id, "service_id": "echo"})
+    app = await api.get_service(f"echo@{app_info.id}")
     assert app is not None
 
     await controller.uninstall(app_info.id)
@@ -281,7 +283,7 @@ async def test_lazy_service(fastapi_server, test_user_token):
     )
 
     # Test app with custom template
-    controller = await api.get_service("server-apps")
+    controller = await api.get_service("public/server-apps")
 
     source = (
         (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
@@ -295,7 +297,6 @@ async def test_lazy_service(fastapi_server, test_user_token):
         force=True,
     )
 
-    service = await api.get_service({"id": "echo", "app_id": app_info.id})
     service = await api.get_service("echo@" + app_info.id)
     assert service.echo is not None
     assert await service.echo("hello") == "hello"

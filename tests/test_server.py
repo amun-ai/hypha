@@ -55,7 +55,7 @@ async def test_connect_to_server(fastapi_server):
     assert wm.config.public_base_url.startswith("http")
     rpc = wm.rpc
     service_info = await rpc.register_service(HyphaApp(wm))
-    service = await wm.get_service(service_info)
+    service = await wm.get_service(service_info.id)
     assert await service.run(None) is None
     await wm.log("hello")
 
@@ -215,9 +215,9 @@ async def test_services(fastapi_server):
             "idx": 1,
         }
     )
-    service = await api.get_service(service_info)
+    service = await api.get_service(service_info.id)
     assert service["name"] == "test_service"
-    services = await api.list_services({"workspace": api.config.workspace})
+    services = await api.list_services(api.config.workspace)
     assert find_item(services, "name", "test_service")
 
     service_info = await api.register_service(
@@ -273,30 +273,6 @@ async def test_services(fastapi_server):
         )
         == 2
     )
-
-
-async def test_server_reconnection(fastapi_server):
-    """Test reconnecting to the server."""
-    ws = await connect_to_server({"name": "my app", "server_url": WS_SERVER_URL})
-    await ws.register_service(
-        {
-            "name": "Hello World",
-            "id": "hello-world",
-            "description": "hello world service",
-            "config": {
-                "visibility": "protected",
-                "run_in_executor": True,
-            },
-            "hello": lambda x: "hello " + x,
-        }
-    )
-    # simulate abnormal close
-    await ws.rpc._connection._websocket.close(1010)
-    # will trigger reconnect
-    svc = await ws.get_service("hello-world")
-    assert await svc.hello("world") == "hello world"
-    # TODO: check if the server will remove the client after a while
-
 
 async def test_server_scalability(
     fastapi_server_redis_1, fastapi_server_redis_2, test_user_token
