@@ -261,7 +261,7 @@ async def test_lazy_plugin(fastapi_server, test_user_token):
     apps = await controller.list_apps()
     assert find_item(apps, "id", app_info.id)
 
-    app = await api.get_service({"client_name": app_info.name, "launch": True})
+    app = await api.get_service({"app_id": app_info.id, "service_id": "echo"})
     assert app is not None
 
     await controller.uninstall(app_info.id)
