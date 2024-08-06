@@ -15,7 +15,7 @@ To connect to the server, instead of installing the `imjoy-rpc` module, you will
 pip install -U hypha-rpc # new install
 ```
 
-We also changed our versioning strategy, we use the same version number for the server and client, so it's easier to match the client and server versions. For example, `hypha-rpc` version `0.20.12` is compatible with Hypha server version `0.20.12`.
+We also changed our versioning strategy, we use the same version number for the server and client, so it's easier to match the client and server versions. For example, `hypha-rpc` version `0.20.13` is compatible with Hypha server version `0.20.13`.
 
 #### 2. Change the imports to use `hypha-rpc`
 
@@ -91,10 +91,10 @@ def register_user(user_info: UserInfo) -> str:
 To connect to the server, instead of using the `imjoy-rpc` module, you will need to use the `hypha-rpc` module. The `hypha-rpc` module is a standalone module that provides the RPC connection to the Hypha server. You can include it in your HTML using a script tag:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.12/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.13/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
-We also changed our versioning strategy, we use the same version number for the server and client, so it's easier to match the client and server versions. For example, `hypha-rpc` version `0.20.12` is compatible with Hypha server version `0.20.12`.
+We also changed our versioning strategy, we use the same version number for the server and client, so it's easier to match the client and server versions. For example, `hypha-rpc` version `0.20.13` is compatible with Hypha server version `0.20.13`.
 
 #### 2. Change the connection method and use camelCase for service function names
 
