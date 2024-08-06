@@ -125,7 +125,6 @@ class CardController:
             "id": "card",
             "config": {"visibility": "public", "require_context": True},
             "name": "Card",
-            "type": "card",
             "save": self.save,
             "remove": self.remove,
             "list": self.list,

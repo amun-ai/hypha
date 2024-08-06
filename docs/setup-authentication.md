@@ -50,5 +50,5 @@ To set up your own account, follow these steps:
       }
    };
     ```
-    * Click "Deploy".
+    * Click "Deploy", and you can then drag and drop the action to the middle of the "Login" flow in the "Actions" tab. Make sure you have "Start" -> "Add Roles" -> "Complete" in the flow.
     * Now you should be able to see the `roles` and `email` in the JWT token when you login to Hypha.

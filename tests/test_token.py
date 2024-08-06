@@ -27,7 +27,7 @@ async def test_generate_token(fastapi_server):
                 "workspace": api1.config.workspace,
             }
         )
-        assert api2.echo("hello") == "hello"
+        assert await api2.echo("hello") == "hello"
         await api2.disconnect()
     except Exception as e:
         assert "Client already exists and is active:" in str(e)

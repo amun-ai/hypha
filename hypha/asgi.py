@@ -157,6 +157,29 @@ class ASGIGateway:
             "service_unregistered",
             self.umount_asgi_app,
         )
+        store.register_public_type(
+            {
+                "id": "ASGI",
+                "name": "ASGI app",
+                "description": "ASGI app",
+                "config": {
+                    "visibility": "public",
+                },
+                "definition": {},  # TODO: add schema
+            }
+        )
+
+        store.register_public_type(
+            {
+                "id": "functions",
+                "name": "Functions",
+                "description": "Functions",
+                "config": {
+                    "visibility": "public",
+                },
+                "definition": {},  # TODO: add schema
+            }
+        )
 
     async def mount_asgi_app(self, service: dict):
         """Mount the ASGI apps from new services."""

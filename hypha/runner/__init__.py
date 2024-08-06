@@ -10,9 +10,9 @@ import urllib.request
 
 import aiofiles
 import yaml
+from hypha_rpc.utils import ObjectProxy
 from hypha_rpc.websocket_client import connect_to_server
 
-from hypha.utils import dotdict
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("browser-runner")
@@ -49,7 +49,7 @@ async def patch_hypha_rpc(default_config):
             export_service(api, default_config, hypha_rpc)
         )
 
-    hypha_rpc.api = dotdict(export=export)
+    hypha_rpc.api = ObjectProxy(export=export)
     return hypha_rpc
 
 

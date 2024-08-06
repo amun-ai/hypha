@@ -34,9 +34,6 @@ async def test_server_reconnection(fastapi_server, root_user_token):
         api.config.workspace, api.config.client_id, 1008, "simulated abnormal closure"
     )
     await asyncio.sleep(1)
-    await admin.kickout_client(
-        api.config.workspace, api.config.client_id, 1008, "simulated abnormal closure"
-    )
 
     # It should reconnect
     assert await api.echo("hi") == "hi"

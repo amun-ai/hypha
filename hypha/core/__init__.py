@@ -7,6 +7,7 @@ import logging
 import sys
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from pydantic import BaseModel, Field, field_validator
 import msgpack
 from pydantic import (  # pylint: disable=no-name-in-module
     BaseModel,
@@ -47,7 +48,7 @@ class ServiceConfig(BaseModel):
 
     visibility: VisibilityEnum = VisibilityEnum.protected
     require_context: Union[Tuple[str], List[str], bool] = False
-    workspace: str = None
+    workspace: Optional[str] = None
     flags: List[str] = []
 
 
@@ -59,10 +60,11 @@ class ServiceInfo(BaseModel):
     config: SerializeAsAny[ServiceConfig]
     id: str
     name: str
-    type: str
+    type: Optional[str] = "generic"
     description: Optional[constr(max_length=256)] = ""  # type: ignore
-    docs: Optional[Dict[str, constr(max_length=1024)]] = None  # type: ignore
+    docs: Optional[str] = None
     app_id: Optional[str] = None
+    service_schema: Optional[Dict[str, Any]] = None
 
     def is_singleton(self):
         """Check if the service is singleton."""
@@ -74,6 +76,26 @@ class ServiceInfo(BaseModel):
         return {
             k: json.dumps(v) if not isinstance(v, str) else v for k, v in data.items()
         }
+
+    @classmethod
+    def from_redis_dict(cls, service_data):
+        converted_service_data = {}
+        for k, v in service_data.items():
+            key_str = k.decode("utf-8")
+            value_str = v.decode("utf-8")
+            if (
+                value_str.startswith("{")
+                and value_str.endswith("}")
+                or value_str.startswith("[")
+                and value_str.endswith("]")
+            ):
+                converted_service_data[key_str] = json.loads(value_str)
+            else:
+                converted_service_data[key_str] = value_str
+        converted_service_data["config"] = ServiceConfig.model_validate(
+            converted_service_data["config"]
+        )
+        return cls.model_validate(converted_service_data)
 
     @classmethod
     def model_validate(cls, data):
@@ -220,19 +242,31 @@ class Card(BaseModel):
         return super().model_validate(data)
 
 
+class ServiceTypeInfo(BaseModel):
+    """Represent service type info."""
+
+    id: str
+    name: str
+    definition: Dict[str, Any]
+    description: Optional[str] = None
+    config: Optional[Dict[str, Any]] = {}
+    docs: Optional[str] = None
+
+
 class WorkspaceInfo(BaseModel):
     """Represent a workspace."""
 
     name: str
-    persistent: bool
-    owners: List[str]
-    read_only: bool = False
-    description: Optional[str] = None
+    description: str
+    persistent: Optional[bool] = False
+    owners: Optional[List[str]] = []
+    read_only: Optional[bool] = False
     icon: Optional[str] = None
     covers: Optional[List[str]] = None
     docs: Optional[str] = None
-    applications: Optional[Dict[str, Card]] = {}  # installed applications
-    config: Optional[Dict[str, Any]] = {}  # workspace custom config
+    applications: Optional[Dict[str, Any]] = {}
+    service_types: Optional[Dict[str, ServiceTypeInfo]] = {}
+    config: Optional[Dict[str, Any]] = {}
 
     @classmethod
     def model_validate(cls, data):
@@ -242,6 +276,25 @@ class WorkspaceInfo(BaseModel):
                 k: Card.model_validate(v) for k, v in data["applications"].items()
             }
         return super().model_validate(data)
+
+
+class TokenConfig(BaseModel):
+    expires_in: Optional[int] = Field(None, description="Expiration time in seconds")
+    workspace: Optional[str] = Field(None, description="Workspace ID")
+    permission: Optional[str] = Field(
+        "read_write",
+        description="Permission level",
+        pattern="^(read|read_write|admin)$",
+    )
+    extra_scopes: Optional[List[str]] = Field(None, description="List of extra scopes")
+
+    @field_validator("extra_scopes")
+    def validate_scopes(cls, v):
+        if ":" in v and v.count(":") == 1:
+            prefix = v.split(":")[0]
+            if prefix in ["ws", "cid"]:
+                raise ValueError("Invalid scope, cannot start with ws or cid")
+        return v
 
 
 class RedisRPCConnection:
@@ -320,7 +373,7 @@ class RedisRPCConnection:
 
         packed_message = msgpack.packb(message) + data[pos:]
         # logger.info(f"Sending message to channel {target_id}:msg")
-        self._event_bus.emit(f"{target_id}:msg", packed_message)
+        await self._event_bus.emit(f"{target_id}:msg", packed_message)
 
     async def disconnect(self, reason=None):
         """Handle disconnection."""
@@ -471,15 +524,15 @@ class RedisEventBus:
                     if channel.startswith("event:b:"):
                         event_type = channel[8:]
                         data = msg["data"]
-                        self._redis_event_bus.emit(event_type, data)
+                        await self._redis_event_bus.emit(event_type, data)
                     elif channel.startswith("event:d:"):
                         event_type = channel[8:]
                         data = json.loads(msg["data"])
-                        self._redis_event_bus.emit(event_type, data)
+                        await self._redis_event_bus.emit(event_type, data)
                     elif channel.startswith("event:s:"):
                         event_type = channel[8:]
                         data = msg["data"].decode("utf-8")
-                        self._redis_event_bus.emit(event_type, data)
+                        await self._redis_event_bus.emit(event_type, data)
                     else:
                         self._logger.info("Unknown channel: %s", channel)
                 await asyncio.sleep(0.01)

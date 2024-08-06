@@ -12,7 +12,7 @@ DESCRIPTION = (
 REQUIREMENTS = [
     "aiofiles",
     "fastapi>=0.70.0,<=0.106.0",
-    "hypha-rpc>=0.1.10",
+    "hypha-rpc>=0.20.12",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=2.6.1",
@@ -33,7 +33,6 @@ REQUIREMENTS = [
     "email-validator>=2.0.0;platform_system=='Emscripten'",
     "pyodide-http;platform_system=='Emscripten'",
     "ssl;platform_system=='Emscripten'",
-    "openapi-schema-pydantic",
     "friendlywords>=1.1.3",
 ]
 

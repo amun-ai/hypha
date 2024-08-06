@@ -525,15 +525,16 @@ class S3Controller:
             )
 
         if self.minio_client:
-            # TODO: if the program shutdown unexpectedly, we need to clean it up
-            # We should empty the group before removing it
-            group_info = await self.minio_client.admin_group_info(workspace.name)
-            # remove all the members
-            await self.minio_client.admin_group_remove(
-                workspace.name, group_info["members"]
-            )
-            # now remove the empty group
-            await self.minio_client.admin_group_remove(workspace.name)
+            try:
+                group_info = await self.minio_client.admin_group_info(workspace.name)
+                # remove all the members
+                await self.minio_client.admin_group_remove(
+                    workspace.name, group_info["members"]
+                )
+                # now remove the empty group
+                await self.minio_client.admin_group_remove(workspace.name)
+            except Exception as ex:
+                logger.error("Failed to remove minio group: %s, %s", workspace.name, ex)
 
     async def _setup_workspace(self, workspace: dict):
         """Set up workspace."""
@@ -593,10 +594,14 @@ class S3Controller:
                     ],
                 },
             )
-
-            await self.minio_client.admin_policy_attach(
-                policy_name, group=workspace.name
-            )
+            try:
+                await self.minio_client.admin_policy_attach(
+                    policy_name, group=workspace.name
+                )
+            except Exception as ex:
+                logger.error(
+                    "Failed to attach policy to the group: %s, %s", workspace.name, ex
+                )
 
     async def _save_workspace_config(self, workspace: dict):
         """Save workspace."""
@@ -703,7 +708,6 @@ class S3Controller:
         svc = {
             "id": "s3-storage",
             "name": "S3 Storage",
-            "type": "s3-storage",
             "config": {"visibility": "public", "require_context": True},
             "list_files": self.list_files,
             "generate_presigned_url": self.generate_presigned_url,

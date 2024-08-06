@@ -1,5 +1,7 @@
  * [Getting Started](/getting-started)
  * [Hypha RPC](/hypha-rpc)
+ * [Migration Guide](/migration-guide)
+ * [Service Type Annotation](/service-type-annotation)
  * [Serverless Functions](/serverless-functions)
  * [Serve ASGI Web Apps](/asgi-apps)
  * [Development](/development)

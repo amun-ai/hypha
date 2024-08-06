@@ -211,7 +211,9 @@ class WebsocketServer:
             logger.error(f"Authentication error: {str(e)}")
             raise RuntimeError(f"Authentication error: {str(e)}")
 
-    async def setup_workspace_and_permissions(self, user_info, workspace, client_id):
+    async def setup_workspace_and_permissions(
+        self, user_info: UserInfo, workspace, client_id
+    ):
         """Setup workspace and check permissions."""
         if workspace is None:
             workspace = user_info.id
@@ -232,6 +234,7 @@ class WebsocketServer:
             workspace_info = await self.store.register_workspace(
                 {
                     "name": workspace,
+                    "description": f"Default user workspace for {user_info.id}",
                     "persistent": persistent,
                     "owners": [user_info.id],
                     "read_only": user_info.is_anonymous,

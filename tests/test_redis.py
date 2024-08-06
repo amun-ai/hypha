@@ -28,6 +28,7 @@ async def test_redis_store(redis_store):
     await redis_store.register_workspace(
         dict(
             name="test",
+            description="test workspace",
             owners=[],
             persistent=True,
             read_only=False,
@@ -46,6 +47,7 @@ async def test_redis_store(redis_store):
     ws = await api.create_workspace(
         dict(
             name="test-2",
+            description="test workspace",
             owners=[],
             persistent=True,
             read_only=False,
