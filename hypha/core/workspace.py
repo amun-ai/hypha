@@ -988,7 +988,7 @@ class WorkspaceManager:
             workspace = query.get("workspace", "*")
             service_id = f"{workspace}/*:{service_id}"
             query["workspace"] = workspace
-            query["client_id"] = "*"
+            query["client_id"] = query.get("client_id", "*")
         elif "/" not in service_id and ":" in service_id:
             workspace = query.get("workspace", ws)
             query["client_id"] = service_id.split(":")[0]
