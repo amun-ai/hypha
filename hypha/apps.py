@@ -81,7 +81,7 @@ class ServerAppController:
         self.user_applications_dir = user_applications_dir
         self.local_base_url = store.local_base_url
         self.public_base_url = store.public_base_url
-        self._rpc_lib_script = "https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.11/dist/hypha-rpc-websocket.min.js"
+        self._rpc_lib_script = "https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.12/dist/hypha-rpc-websocket.min.js"
         # self._rpc_lib_script = "http://localhost:9099/hypha-rpc-websocket.js"
         self.event_bus = store.get_event_bus()
         self.store = store
@@ -648,7 +648,7 @@ class ServerAppController:
             await self.store.set_workspace(workspace_info, user_info)
         except asyncio.TimeoutError:
             raise Exception(
-                f"Failed to start the app: {workspace}/{app_id}, timeout reached."
+                f"Failed to start the app: {workspace}/{app_id}, timeout reached ({timeout}s)."
             )
         except Exception as exp:
             raise Exception(
