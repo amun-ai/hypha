@@ -112,7 +112,7 @@ Here is a suggested list of search and replace operations to update your code:
 Here is an example of how the updated code might look:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.1.10/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.13/dist/hypha-rpc-websocket.min.js"></script>
 <script>
 async function main(){
     const server = await hyphaWebsocketClient.connectToServer({"server_url": "https://hypha.aicell.io"});
@@ -144,7 +144,7 @@ We created a tutorial to introduce this new feature: [service type annotation](.
 Here is a quick example in JavaScript:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.1.10/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.13/dist/hypha-rpc-websocket.min.js"></script>
 <script>
 async function main(){
     const server = await hyphaWebsocketClient.connectToServer({"server_url": "https://hypha.aicell.io"});

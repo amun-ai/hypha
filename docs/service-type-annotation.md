@@ -133,7 +133,7 @@ loop.run_forever()
 **JavaScript Client: Service Usage**
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.1.10/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.13/dist/hypha-rpc-websocket.min.js"></script>
 <script>
 async function main() {
     const server = await hyphaWebsocketClient.connectToServer({"server_url": "https://hypha.aicell.io"});
