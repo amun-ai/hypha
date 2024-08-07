@@ -323,12 +323,6 @@ def get_argparser(add_help=True):
         help="reset and clear all the data in the redis database",
     )
     parser.add_argument(
-        "--redis-port",
-        type=int,
-        default=6383,
-        help="the port for the redis database",
-    )
-    parser.add_argument(
         "--public-base-url",
         type=str,
         default=None,
