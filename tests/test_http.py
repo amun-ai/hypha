@@ -130,7 +130,7 @@ async def test_http_proxy(minio_server, fastapi_server, test_user_token):
     assert workspace in response
 
     response = requests.get(
-        f"{SERVER_URL}/{workspace}/info", headers={"Authorization": f"Bearer {token}"}
+        f"{SERVER_URL}/workspaces/{workspace}", headers={"Authorization": f"Bearer {token}"}
     )
     assert response.ok, response.json()["detail"]
     response = response.json()

@@ -16,78 +16,6 @@ from hypha.core.store import RedisStore
 from hypha.utils import GzipRoute
 from hypha import __version__ as VERSION
 
-SERVICES_OPENAPI_SCHEMA = {
-    "openapi": "3.1.0",
-    "info": {
-        "title": "Hypha Services",
-        "description": "Providing access to services in Hypha",
-        "version": f"v{VERSION}",
-    },
-    "paths": {
-        "/call": {
-            "post": {
-                "description": "Call a service function",
-                "operationId": "CallServiceFunction",
-                "requestBody": {
-                    "required": True,
-                    "description": "The request body type depends on each service function schema",
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "$ref": "#/components/schemas/ServiceFunctionSchema"
-                            }
-                        }
-                    },
-                },
-                "deprecated": False,
-            }
-        },
-        "/list": {
-            "get": {
-                "description": "List services under a workspace",
-                "operationId": "ListServices",
-                "parameters": [
-                    {
-                        "name": "workspace",
-                        "in": "query",
-                        "description": "Workspace name",
-                        "required": True,
-                        "schema": {"type": "string"},
-                    }
-                ],
-                "deprecated": False,
-            }
-        },
-    },
-    "components": {
-        "schemas": {
-            "ServiceFunctionSchema": {
-                "type": "object",
-                "properties": {
-                    "workspace": {
-                        "description": "Workspace name, optional if the service_id contains workspace name",
-                        "type": "string",
-                    },
-                    "service_id": {
-                        "description": "Service ID, format: workspace/client_id:service_id",
-                        "type": "string",
-                    },
-                    "function_key": {
-                        "description": "Function key, can contain dot to refer to deeper object",
-                        "type": "string",
-                    },
-                    "function_kwargs": {
-                        "description": "Function keyword arguments, must be set according to the function schema",
-                        "type": "object",
-                    },
-                },
-                "required": ["service_id", "function_key"],
-            }
-        }
-    },
-}
-
-
 class MsgpackResponse(Response):
     """Response class for msgpack encoding."""
 
@@ -283,7 +211,7 @@ class HTTPProxy:
                     content={"success": False, "detail": str(exp)},
                 )
 
-        @router.get("/{workspace}/info")
+        @router.get("/workspaces/{workspace}")
         async def get_workspace_info(
             workspace: str,
             user_info: login_optional = Depends(login_optional),
@@ -325,35 +253,7 @@ class HTTPProxy:
             """List services under a workspace."""
             return await get_workspace_services(workspace, user_info)
 
-        @router.get("/services/{service_id:path}")
-        async def get_service_info(
-            service_id: str,
-            user_info: login_optional = Depends(login_optional),
-        ):
-            """Get service info."""
-            assert "/" in service_id, "service_id should contain workspace name"
-            assert ":" in service_id, "service_id should contain client_id"
-            workspace, service_id = service_id.split("/")
-            return await get_service_info(workspace, service_id, user_info)
-
-        @router.post("/services/{workspace}/{service_id}/{function_key}")
-        async def call_service_function_post(
-            workspace: str,
-            service_id: str,
-            function_key: str,
-            request: Request,
-            user_info: login_optional = Depends(login_optional),
-        ):
-            """Call a service function by keys."""
-            function_kwargs = await extracted_kwargs(request, use_function_kwargs=False)
-            response_type = detected_response_type(request)
-            return await service_function(
-                (workspace, service_id, function_key),
-                function_kwargs,
-                response_type,
-                user_info,
-            )
-
+        @router.get("/services//{workspace}")
         @router.get("/{workspace}/services")
         async def get_workspace_services(
             workspace: str,
@@ -379,6 +279,7 @@ class HTTPProxy:
                     content={"success": False, "detail": str(exp)},
                 )
 
+        @router.get("/services/{workspace}/{service_id}")
         @router.get("/{workspace}/services/{service_id}")
         async def get_service_info(
             workspace: str,
@@ -412,32 +313,11 @@ class HTTPProxy:
             results = _rpc.encode(results)
             return results
 
+        @router.get("/services/{workspace}/{service_id}/{function_key}")
+        @router.post("/services/{workspace}/{service_id}/{function_key}")
         @router.get("/{workspace}/services/{service_id}/{function_key}")
-        async def service_function_get(
-            workspace: str,
-            service_id: str,
-            function_key: str,
-            request: Request,
-            user_info: login_optional = Depends(login_optional),
-        ):
-            """Run service function by keys."""
-            function_kwargs = await extracted_kwargs(request, use_function_kwargs=False)
-            response_type = detected_response_type(request)
-            try:
-                return await service_function(
-                    (workspace, service_id, function_key),
-                    function_kwargs,
-                    response_type,
-                    user_info,
-                )
-            except Exception:
-                return JSONResponse(
-                    status_code=400,
-                    content={"success": False, "detail": traceback.format_exc()},
-                )
-
         @router.post("/{workspace}/services/{service_id}/{function_key}")
-        async def service_function_post(
+        async def call_service_function(
             workspace: str,
             service_id: str,
             function_key: str,
