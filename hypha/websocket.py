@@ -11,9 +11,7 @@ from hypha import __version__
 from hypha.core import UserInfo, UserPermission
 from hypha.core.store import RedisRPCConnection, RedisStore
 from hypha.core.auth import (
-    parse_reconnection_token,
     generate_reconnection_token,
-    parse_token,
     generate_anonymous_user,
     create_scope,
     update_user_scope,
@@ -184,13 +182,24 @@ class WebsocketServer:
             # remove dead client
             await self.store.remove_client(client_id, workspace, user_info)
 
-    async def authenticate_user(self, token, reconnection_token, client_id, workspace):
+    async def authenticate_user(
+        self, token: str, reconnection_token: str, client_id: str, workspace: str
+    ):
         """Authenticate user and handle reconnection or token authentication."""
-        # Ensure actual implementation calls for parse_reconnection_token and parse_token
         user_info = None
         try:
             if reconnection_token:
-                user_info, ws, cid = parse_reconnection_token(reconnection_token)
+                user_info = await self.store.parse_user_token(reconnection_token)
+                scope = user_info.scope
+                assert (
+                    len(scope.workspaces) == 1
+                ), "Invalid scope, it must have only one workspace"
+                assert scope.client_id, "Invalid scope, client_id is required"
+                assert (
+                    len(scope.workspaces) == 1
+                ), "Invalid scope, it must have only one workspace"
+                ws = list(scope.workspaces.keys())[0]
+                cid = scope.client_id
                 if workspace and workspace != ws:
                     logger.error("Workspace mismatch, disconnecting")
                     raise RuntimeError("Workspace mismatch, disconnecting")
@@ -199,7 +208,7 @@ class WebsocketServer:
                     raise RuntimeError("Client id mismatch, disconnecting")
                 logger.info(f"Client reconnected: {ws}/{cid} using reconnection token")
             elif token:
-                user_info = parse_token(token)
+                user_info = await self.store.parse_user_token(token)
                 # user token doesn't have client id, so we add that
                 user_info.scope.client_id = client_id
             else:

@@ -55,14 +55,17 @@ async def test_server_reconnection(fastapi_server, root_user_token):
 async def test_server_reconnection_by_workspace_unload(fastapi_server):
     """Test the server reconnection."""
     # connect to the server with a user
-    api = await connect_to_server(
-        {"server_url": WS_SERVER_URL, "client_id": "client1"}
-    )
+    api = await connect_to_server({"server_url": WS_SERVER_URL, "client_id": "client1"})
     token = await api.generate_token()
 
     # connect to the server with the same user, to the same workspace
     api2 = await connect_to_server(
-        {"server_url": WS_SERVER_URL, "client_id": "client2", "workspace": api.config["workspace"], "token": token}
+        {
+            "server_url": WS_SERVER_URL,
+            "client_id": "client2",
+            "workspace": api.config["workspace"],
+            "token": token,
+        }
     )
     # force a server side disconnect to the second client
     await api.disconnect()

@@ -5,6 +5,7 @@ import logging
 import sys
 from typing import List, Union
 from pydantic import BaseModel
+from fastapi import Header
 
 from hypha_rpc import RPC
 from starlette.routing import Mount
@@ -17,7 +18,7 @@ from hypha.core import (
     UserInfo,
     WorkspaceInfo,
 )
-from hypha.core.auth import create_scope
+from hypha.core.auth import create_scope, parse_token, generate_anonymous_user
 from hypha.core.workspace import WorkspaceManager
 from hypha.startup import run_startup_function
 from hypha.utils import random_id
@@ -272,6 +273,25 @@ class RedisStore:
             json.loads(workspace_info.decode())
         )
         return workspace_info
+
+    async def parse_user_token(self, token):
+        """Parse a client token."""
+        user_info = parse_token(token)
+        key = "revoked_token:" + token
+        if await self._redis.exists(key):
+            raise Exception("Token has been revoked")
+        return user_info
+
+    async def login_optional(self, authorization: str = Header(None)):
+        """Return user info or create an anonymouse user.
+
+        If authorization code is valid the user info is returned,
+        If the code is invalid an an anonymouse user is created.
+        """
+        if authorization:
+            return await self.parse_user_token(authorization)
+        else:
+            return generate_anonymous_user()
 
     async def get_all_workspace(self):
         """Get all workspaces."""

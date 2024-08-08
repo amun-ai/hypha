@@ -6,8 +6,6 @@ from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from hypha.core import UserInfo
-from hypha.core.auth import login_optional
 from hypha.utils import (
     safe_join,
     list_objects_sync,
@@ -53,7 +51,7 @@ class CardController:
             workspace: str,
             path: str,
             request: Request,
-            user_info: login_optional = Depends(login_optional),
+            user_info: store.login_optional = Depends(store.login_optional),
         ):
             try:
                 path = safe_join(workspace, path)
