@@ -254,7 +254,7 @@ class HTTPProxy:
             """List services under a workspace."""
             return await get_workspace_services(workspace, user_info)
 
-        @router.get("/services//{workspace}")
+        @router.get("/services/{workspace}")
         @router.get("/{workspace}/services")
         async def get_workspace_services(
             workspace: str,
