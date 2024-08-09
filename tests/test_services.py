@@ -85,7 +85,10 @@ async def test_login(fastapi_server):
                 assert resp.status_code == 200, resp.text
                 assert "Hypha Account" in resp.text
                 assert "{{ report_url }}" not in resp.text
-                assert context["report_url"] in resp.text
+                assert (
+                    context["report_url"].replace("hypha-login", "workspace-manager")
+                    in resp.text
+                )
                 resp = await client.get(
                     context["report_url"] + "?key=" + context["key"] + "&token=" + TOKEN
                 )

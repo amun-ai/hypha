@@ -272,14 +272,17 @@ class WorkspaceManager:
 
     @schema_method
     async def revoke_token(
-        self, token: str = Field(..., description="token to be revoked")
+        self,
+        token: str = Field(..., description="token to be revoked"),
+        context: dict = None,
     ):
         """Revoke a token by storing it in Redis with a prefix and expiration time."""
+        self.validate_context(context, UserPermission.admin)
         try:
             payload = valid_token(token)
         except Exception as e:
             raise ValueError(f"Invalid token: {e}")
-        expiration = payload.get("exp") - int(time.time())
+        expiration = int(payload.get("exp") - time.time())
         if expiration > 0:
             await self._redis.setex("revoked_token:" + token, expiration, "revoked")
         else:

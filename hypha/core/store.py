@@ -18,7 +18,12 @@ from hypha.core import (
     UserInfo,
     WorkspaceInfo,
 )
-from hypha.core.auth import create_scope, parse_token, generate_anonymous_user
+from hypha.core.auth import (
+    create_scope,
+    parse_token,
+    generate_anonymous_user,
+    UserPermission,
+)
 from hypha.core.workspace import WorkspaceManager
 from hypha.startup import run_startup_function
 from hypha.utils import random_id
@@ -280,6 +285,9 @@ class RedisStore:
         key = "revoked_token:" + token
         if await self._redis.exists(key):
             raise Exception("Token has been revoked")
+        # automatically add user's own workspace to the scope
+        if not user_info.scope.workspaces:
+            user_info.scope.workspaces = {user_info.id: UserPermission.admin}
         return user_info
 
     async def login_optional(self, authorization: str = Header(None)):
@@ -289,7 +297,8 @@ class RedisStore:
         If the code is invalid an an anonymouse user is created.
         """
         if authorization:
-            return await self.parse_user_token(authorization)
+            user_info = await self.parse_user_token(authorization)
+            return user_info
         else:
             return generate_anonymous_user()
 
