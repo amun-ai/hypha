@@ -11,10 +11,11 @@ from fastapi.responses import JSONResponse, Response, RedirectResponse
 
 from hypha_rpc import RPC
 from hypha.core import UserPermission
-from hypha.core.auth import login_optional, AUTH0_DOMAIN
+from hypha.core.auth import AUTH0_DOMAIN
 from hypha.core.store import RedisStore
 from hypha.utils import GzipRoute
 from hypha import __version__ as VERSION
+
 
 class MsgpackResponse(Response):
     """Response class for msgpack encoding."""
@@ -196,7 +197,7 @@ class HTTPProxy:
 
         @router.get("/workspaces")
         async def list_all_workspaces(
-            user_info: login_optional = Depends(login_optional),
+            user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Route for listing all the workspaces."""
             try:
@@ -214,7 +215,7 @@ class HTTPProxy:
         @router.get("/workspaces/{workspace}")
         async def get_workspace_info(
             workspace: str,
-            user_info: login_optional = Depends(login_optional),
+            user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Route for get detailed info of a workspace."""
             try:
@@ -248,7 +249,7 @@ class HTTPProxy:
         @router.get("/services")
         async def list_services(
             workspace: str,
-            user_info: login_optional = Depends(login_optional),
+            user_info: store.login_optional = Depends(store.login_optional),
         ):
             """List services under a workspace."""
             return await get_workspace_services(workspace, user_info)
@@ -257,7 +258,7 @@ class HTTPProxy:
         @router.get("/{workspace}/services")
         async def get_workspace_services(
             workspace: str,
-            user_info: login_optional = Depends(login_optional),
+            user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Route for get services under a workspace."""
             try:
@@ -284,13 +285,15 @@ class HTTPProxy:
         async def get_service_info(
             workspace: str,
             service_id: str,
-            user_info: login_optional = Depends(login_optional),
+            user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Route for checking details of a service."""
             try:
                 async with self.store.get_workspace_interface(
                     workspace, user_info
                 ) as api:
+                    if service_id == "workspace-manager":
+                        return serialize(api)
                     service_info = await api.get_service_info(service_id)
                 return JSONResponse(
                     status_code=200,
@@ -322,7 +325,7 @@ class HTTPProxy:
             service_id: str,
             function_key: str,
             request: Request,
-            user_info: login_optional = Depends(login_optional),
+            user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Run service function by keys."""
             function_kwargs = await extracted_kwargs(request, use_function_kwargs=False)
@@ -344,7 +347,7 @@ class HTTPProxy:
             function_info: extracted_call_info = Depends(extracted_call_info),
             function_kwargs: extracted_kwargs = Depends(extracted_kwargs),
             response_type: detected_response_type = Depends(detected_response_type),
-            user_info: login_optional = Depends(login_optional),
+            user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Run service function by keys.
 
@@ -355,7 +358,10 @@ class HTTPProxy:
                 async with self.store.get_workspace_interface(
                     workspace, user_info
                 ) as api:
-                    service = await api.get_service(service_id)
+                    if service_id == "workspace-manager":
+                        service = api
+                    else:
+                        service = await api.get_service(service_id)
                     func = get_value(function_key, service)
                     if not func:
                         return JSONResponse(

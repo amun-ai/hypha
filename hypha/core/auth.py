@@ -12,7 +12,7 @@ from urllib.request import urlopen
 
 import shortuuid
 from dotenv import find_dotenv, load_dotenv
-from fastapi import Header, HTTPException
+from fastapi import HTTPException
 from jinja2 import Environment, PackageLoader, select_autoescape
 from jose import jwt
 
@@ -40,32 +40,6 @@ if not JWT_SECRET:
         "JWT_SECRET is not defined, you will need a fixed JWT_SECRET for clients to reconnect"
     )
     JWT_SECRET = shortuuid.ShortUUID().random(length=22)
-
-
-def login_optional(authorization: str = Header(None)):
-    """Return user info or create an anonymouse user.
-
-    If authorization code is valid the user info is returned,
-    If the code is invalid an an anonymouse user is created.
-    """
-    if authorization:
-        return parse_token(authorization)
-    else:
-        return generate_anonymous_user()
-
-
-def login_required(authorization: str = Header(None)):
-    """Return user info if authorization code is valid."""
-    return parse_token(authorization)
-
-
-def admin_required(authorization: str = Header(None)):
-    """Return user info if the authorization code has an admin role."""
-    token = parse_token(authorization)
-    roles = token.credentials.get(AUTH0_NAMESPACE + "roles", [])
-    if "admin" not in roles:
-        raise HTTPException(status_code=401, detail="Admin required")
-    return token
 
 
 def get_user_email(token):
@@ -345,43 +319,6 @@ def generate_jwt_scope(scope: ScopeInfo) -> str:
     return ps
 
 
-def parse_reconnection_token(token) -> UserInfo:
-    """Parse a reconnection token."""
-    payload = jwt.decode(
-        token,
-        JWT_SECRET,
-        algorithms=["HS256"],
-        audience=AUTH0_AUDIENCE,
-        issuer=AUTH0_ISSUER,
-    )
-    user_info = get_user_info(payload)
-    scope = user_info.scope
-    assert len(scope.workspaces) == 1, "Invalid scope, it must have only one workspace"
-    assert scope.client_id, "Invalid scope, client_id is required"
-    assert len(scope.workspaces) == 1, "Invalid scope, it must have only one workspace"
-    workspace = list(scope.workspaces.keys())[0]
-    client_id = scope.client_id
-    return user_info, workspace, client_id
-
-
-def parse_user(token):
-    """Parse user info from a token."""
-    if token:
-        user_info = parse_token(token)
-        uid = user_info.id
-        logger.info("User connected: %s", uid)
-    else:
-        user_info = generate_anonymous_user()
-        uid = user_info.id
-        logger.info("Anonymized User connected: %s", uid)
-
-    if uid == "root":
-        logger.error("Root user is not allowed to connect remotely")
-        raise Exception("Root user is not allowed to connect remotely")
-
-    return user_info
-
-
 async def register_login_service(server):
     """Hypha startup function for registering additional services."""
     cache = AsyncTTLCache(ttl=int(MAXIMUM_LOGIN_TIME))
@@ -390,12 +327,13 @@ async def register_login_service(server):
     login_service_url = (
         f"{server_url}/{server.config['workspace']}/services/hypha-login"
     )
+    generate_token_url = f"{server_url}/{server.config['workspace']}/services/workspace-manager/generate_token"
     jinja_env = Environment(
         loader=PackageLoader("hypha"), autoescape=select_autoescape()
     )
     temp = jinja_env.get_template("login_template.html")
     login_page = temp.render(
-        login_service_url=login_service_url,
+        generate_token_url=generate_token_url,
         auth0_client_id=AUTH0_CLIENT_ID,
         auth0_domain=AUTH0_DOMAIN,
         auth0_audience=AUTH0_AUDIENCE,
@@ -473,15 +411,6 @@ async def register_login_service(server):
         user_info = UserTokenInfo.model_validate(kwargs)
         await cache.update(key, user_info)
 
-    async def generate_token(token: str, expires_in: int):
-        """Generate a new user token."""
-        # limit the expiration time to 1 year
-        expires_in = int(expires_in)
-        if expires_in > 31536000:
-            raise ValueError("The maximum expiration time is 1 year (31536000 seconds)")
-        user_info = parse_token(token)
-        return generate_presigned_token(user_info, expires_in=expires_in)
-
     svc = await server.register_service(
         {
             "name": "Hypha Login",
@@ -493,7 +422,6 @@ async def register_login_service(server):
             "start": start_login,
             "check": check_login,
             "report": report_login,
-            "generate": generate_token,
         }
     )
 

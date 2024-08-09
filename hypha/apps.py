@@ -21,7 +21,6 @@ from jinja2 import Environment, PackageLoader, select_autoescape
 from starlette.responses import Response
 
 from hypha.core import Card, UserInfo, ServiceInfo, UserPermission
-from hypha.core.auth import parse_user
 from hypha.core.store import RedisStore
 from hypha.plugin_parser import convert_config_to_card, parse_imjoy_plugin
 from hypha.runner.browser import BrowserAppRunner
@@ -130,7 +129,7 @@ class ServerAppController:
                         },
                     )
                 try:
-                    user_info = parse_user(token)
+                    user_info = await store.parse_user_token(token)
                 except jose.exceptions.JWTError:
                     return JSONResponse(
                         status_code=403,

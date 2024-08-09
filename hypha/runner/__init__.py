@@ -101,9 +101,7 @@ async def run_app(app_file, default_config, quit_on_ready=False):
             if quit_on_ready:
                 hypha_rpc.ready.add_done_callback(lambda fut: loop.stop())
         else:
-            raise RuntimeError(
-                f"Invalid script type ({found[0]}) in file {app_file}"
-            )
+            raise RuntimeError(f"Invalid script type ({found[0]}) in file {app_file}")
     else:
         raise RuntimeError(f"Invalid script file type ({app_file})")
 

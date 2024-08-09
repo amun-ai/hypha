@@ -18,7 +18,6 @@ from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
 from hypha.core import UserInfo, WorkspaceInfo, UserPermission
-from hypha.core.auth import login_optional
 from hypha.core.store import RedisStore
 from hypha.minio import MinioClient
 from hypha.utils import (
@@ -217,7 +216,7 @@ class S3Controller:
             workspace: str,
             path: str,
             request: Request,
-            user_info: login_optional = Depends(login_optional),
+            user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Upload file."""
             ws = await store.get_workspace(workspace, load=True)
@@ -264,7 +263,7 @@ class S3Controller:
             path: str,
             request: Request,
             max_length: int = 1000,
-            user_info: login_optional = Depends(login_optional),
+            user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Get or delete file."""
             ws = await store.get_workspace(workspace, load=True)

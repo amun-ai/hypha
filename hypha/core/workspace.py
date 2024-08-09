@@ -1,8 +1,8 @@
-import asyncio
 import re
 import json
 import logging
-import random
+from jose import jwt
+import time
 import sys
 from typing import Optional, Union, List, Any
 from contextlib import asynccontextmanager
@@ -22,7 +22,7 @@ from hypha.core import (
     UserPermission,
     ServiceTypeInfo,
 )
-from hypha.core.auth import generate_presigned_token, create_scope
+from hypha.core.auth import generate_presigned_token, create_scope, valid_token
 from hypha.utils import EventBus, random_id
 
 logging.basicConfig(stream=sys.stdout)
@@ -269,6 +269,21 @@ class WorkspaceManager:
         workspace_info.service_types[service_type_id] = type_info
         await self._update_workspace(workspace_info, user_info)
         return type_info
+
+    @schema_method
+    async def revoke_token(
+        self, token: str = Field(..., description="token to be revoked")
+    ):
+        """Revoke a token by storing it in Redis with a prefix and expiration time."""
+        try:
+            payload = valid_token(token)
+        except Exception as e:
+            raise ValueError(f"Invalid token: {e}")
+        expiration = payload.get("exp") - int(time.time())
+        if expiration > 0:
+            await self._redis.setex("revoked_token:" + token, expiration, "revoked")
+        else:
+            raise ValueError("Token has already expired")
 
     @schema_method
     async def get_service_type(
@@ -681,6 +696,10 @@ class WorkspaceManager:
         keys = await self._redis.keys(key)
         if not keys:
             raise KeyError(f"Service not found: {service_id}@{app_id}")
+        if len(keys) > 1:
+            raise KeyError(
+                f"Multiple services found for {service_id}@{app_id}, please specify the client_id, or use list_services to find the exact service id."
+            )
         key = keys[0]
         # if it's a public service or the user has read permission
         if not key.startswith(b"services:public:") and not user_info.check_permission(
@@ -849,7 +868,7 @@ class WorkspaceManager:
                 return workspace_info
             elif load and not self._workspace_loader:
                 raise KeyError(
-                    "Workspace not found and the workspace loader is not configured."
+                    "Workspace not found and the workspace loader is not configured (requires s3 enabled)."
                 )
             else:
                 raise KeyError(f"Workspace not found: {workspace}")
@@ -1183,6 +1202,7 @@ class WorkspaceManager:
             "get_service_info": self.get_service_info,
             "get_service": self.get_service,
             "generate_token": self.generate_token,
+            "revoke_token": self.revoke_token,
             "create_workspace": self.create_workspace,
             "get_workspace_info": self.get_workspace_info,
             "install_application": self.install_application,

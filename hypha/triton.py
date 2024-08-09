@@ -6,7 +6,6 @@ import httpx
 from fastapi import APIRouter, Depends, Request, Response
 from pyotritonclient import execute, get_config
 
-from hypha.core.auth import login_optional
 from hypha.core.store import RedisStore
 
 
@@ -29,7 +28,7 @@ class TritonProxy:
             path: str,
             request: Request,
             response: Response,
-            user_info: login_optional = Depends(login_optional),
+            user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Route for listing all the models."""
             headers = dict(request.headers.items())

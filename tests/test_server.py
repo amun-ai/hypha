@@ -274,6 +274,7 @@ async def test_services(fastapi_server):
         == 2
     )
 
+
 async def test_server_scalability(
     fastapi_server_redis_1, fastapi_server_redis_2, test_user_token
 ):
