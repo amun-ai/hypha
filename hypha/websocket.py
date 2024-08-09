@@ -276,6 +276,9 @@ class WebsocketServer:
             async def send_bytes(data):
                 try:
                     await websocket.send_bytes(data)
+                except RuntimeError:
+                    logger.warning("Failed to send message, closing")
+                    await conn.disconnect("disconnected")
                 except ConnectionClosedOK:
                     logger.warning("Failed to send message, closing redis connection")
                     await conn.disconnect("disconnected")

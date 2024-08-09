@@ -243,6 +243,7 @@ class RedisStore:
                     "require_context": False,
                 },
                 "kickout_client": self.kickout_client,
+                "list_workspaces": self.list_all_workspaces,
             }
         )
 

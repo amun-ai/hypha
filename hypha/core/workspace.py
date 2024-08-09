@@ -1013,7 +1013,11 @@ class WorkspaceManager:
                 svc_info.id, timeout=timeout, case_conversion=case_conversion
             )
             assert service_api, f"Failed to get service: {service_id}"
-            service_api["config"]["workspace"] = svc_info.id.split("/")[0]
+            workspace = service_id.split("/")[0]
+            service_api["config"]["workspace"] = workspace
+            service_api["config"][
+                "url"
+            ] = f"{self._server_info['public_base_url']}/{workspace}/services/{service_id}"
             return service_api
         except KeyError as exp:
             if "@" in service_id:
@@ -1022,7 +1026,7 @@ class WorkspaceManager:
                 workspace = (
                     service_id.split("/")[0] if "/" in service_id else context["ws"]
                 )
-                service_api = await self._launch_application_for_service(
+                return await self._launch_application_for_service(
                     app_id,
                     service_id,
                     workspace=workspace,
@@ -1030,8 +1034,6 @@ class WorkspaceManager:
                     case_conversion=case_conversion,
                     context=context,
                 )
-                # No need to patch the service config because the service is already patched
-                return service_api
             else:
                 raise exp
 

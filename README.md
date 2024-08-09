@@ -13,7 +13,7 @@ Hypha server act as a hub for connecting different components through [hypya-rpc
 ### 0.20.14
 
  - Make `get_service` more restricted to support only service id string, see [migration guide](./docs/migration-guide.md) for more details.
- - Clean up http endpoints for the services, now we also support /services/:service_id/:function_name
+ - Clean up http endpoints for the services.
  - Remove local cache of the server apps, we now always use s3 as the primary storage.
 
 ### 0.20.12

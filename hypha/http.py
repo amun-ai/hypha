@@ -212,7 +212,7 @@ class HTTPProxy:
                     content={"success": False, "detail": str(exp)},
                 )
 
-        @router.get("/workspaces/{workspace}")
+        @router.get("/{workspace}/info")
         async def get_workspace_info(
             workspace: str,
             user_info: store.login_optional = Depends(store.login_optional),
@@ -246,15 +246,6 @@ class HTTPProxy:
                     content={"success": False, "detail": str(exp)},
                 )
 
-        @router.get("/services")
-        async def list_services(
-            workspace: str,
-            user_info: store.login_optional = Depends(store.login_optional),
-        ):
-            """List services under a workspace."""
-            return await get_workspace_services(workspace, user_info)
-
-        @router.get("/services/{workspace}")
         @router.get("/{workspace}/services")
         async def get_workspace_services(
             workspace: str,
@@ -280,7 +271,6 @@ class HTTPProxy:
                     content={"success": False, "detail": str(exp)},
                 )
 
-        @router.get("/services/{workspace}/{service_id}")
         @router.get("/{workspace}/services/{service_id}")
         async def get_service_info(
             workspace: str,
@@ -316,8 +306,6 @@ class HTTPProxy:
             results = _rpc.encode(results)
             return results
 
-        @router.get("/services/{workspace}/{service_id}/{function_key}")
-        @router.post("/services/{workspace}/{service_id}/{function_key}")
         @router.get("/{workspace}/services/{service_id}/{function_key}")
         @router.post("/{workspace}/services/{service_id}/{function_key}")
         async def call_service_function(
