@@ -195,23 +195,6 @@ class HTTPProxy:
 
                 return JSONResponse(status_code=200, content=auth0_response.json())
 
-        @router.get("/workspaces")
-        async def list_all_workspaces(
-            user_info: store.login_optional = Depends(store.login_optional),
-        ):
-            """Route for listing all the workspaces."""
-            try:
-                workspaces = await store.list_all_workspaces()
-                return JSONResponse(
-                    status_code=200,
-                    content=workspaces,
-                )
-            except Exception as exp:
-                return JSONResponse(
-                    status_code=500,
-                    content={"success": False, "detail": str(exp)},
-                )
-
         @router.get("/{workspace}/info")
         async def get_workspace_info(
             workspace: str,
