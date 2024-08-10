@@ -86,9 +86,7 @@ async def test_login(fastapi_server):
                 assert "Hypha Account" in resp.text
                 assert "{{ report_url }}" not in resp.text
                 assert (
-                    context["report_url"].replace(
-                        "hypha-login/report", "workspace-manager"
-                    )
+                    context["report_url"].replace("hypha-login/report", "ws")
                     in resp.text
                 )
                 resp = await client.get(
