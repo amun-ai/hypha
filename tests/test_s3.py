@@ -139,7 +139,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
         endpoint_url=info["endpoint_url"],
         aws_access_key_id=info["access_key_id"],
         aws_secret_access_key=info["secret_access_key"],
-        region_name="EU",
+        region_name=info["region_name"],
     ) as s3_client:
         bucket = await s3_client.Bucket(info["bucket"])
 

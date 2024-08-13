@@ -37,7 +37,7 @@ api.export({
 """
 
 
-async def test_server_apps_unauthorized(fastapi_server):
+async def test_server_apps_unauthorized(fastapi_server, root_user_token):
     """Test the server apps."""
     api = await connect_to_server(
         {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 30}
@@ -51,22 +51,26 @@ async def test_server_apps_unauthorized(fastapi_server):
     )
 
     # the workspace should exist in the stats
-    response = requests.get(f"{SERVER_URL}/api/stats")
-    assert response.status_code == 200
-    stats = response.json()
-    workspace_info = find_item(stats["workspaces"], "name", api.config["workspace"])
-    assert workspace_info
+    async with connect_to_server(
+        {"server_url": WS_SERVER_URL, "client_id": "admin", "token": root_user_token}
+    ) as root:
+        admin = await root.get_service("admin-utils")
+        workspaces = await admin.list_workspaces()
+        workspace_info = find_item(workspaces, "name", api.config["workspace"])
+        assert workspace_info
 
     # Now disconnect it
     await api.disconnect()
     await asyncio.sleep(0.1)
 
     # now it should disappear from the stats
-    response = requests.get(f"{SERVER_URL}/api/stats")
-    assert response.status_code == 200
-    stats = response.json()
-    workspace_info = find_item(stats["workspaces"], "name", api.config["workspace"])
-    assert workspace_info is None
+    async with connect_to_server(
+        {"server_url": WS_SERVER_URL, "client_id": "admin", "token": root_user_token}
+    ) as root:
+        admin = await root.get_service("admin-utils")
+        workspaces = await admin.list_workspaces()
+        workspace_info = find_item(workspaces, "name", api.config["workspace"])
+        assert workspace_info is None
 
 
 async def test_server_apps(fastapi_server, test_user_token):
@@ -186,7 +190,7 @@ async def test_web_python_apps(fastapi_server, test_user_token):
     assert find_item(apps, "id", config.id)
 
 
-async def test_non_persistent_workspace(fastapi_server):
+async def test_non_persistent_workspace(fastapi_server, root_user_token):
     """Test non-persistent workspace."""
     api = await connect_to_server(
         {
@@ -214,11 +218,13 @@ async def test_non_persistent_workspace(fastapi_server):
     assert app is not None
 
     # It should exist in the stats
-    response = requests.get(f"{SERVER_URL}/api/stats")
-    assert response.status_code == 200
-    stats = response.json()
-    workspace_info = find_item(stats["workspaces"], "name", workspace)
-    assert workspace_info is not None
+    async with connect_to_server(
+        {"server_url": WS_SERVER_URL, "client_id": "admin", "token": root_user_token}
+    ) as root:
+        admin = await root.get_service("admin-utils")
+        workspaces = await admin.list_workspaces()
+        workspace_info = find_item(workspaces, "name", workspace)
+        assert workspace_info is not None
 
     # We don't need to stop manually, since it should be removed
     # when the parent client exits
@@ -228,11 +234,13 @@ async def test_non_persistent_workspace(fastapi_server):
     await asyncio.sleep(0.1)
 
     # now it should disappear from the stats
-    response = requests.get(f"{SERVER_URL}/api/stats")
-    assert response.status_code == 200
-    stats = response.json()
-    workspace_info = find_item(stats["workspaces"], "name", workspace)
-    assert workspace_info is None
+    async with connect_to_server(
+        {"server_url": WS_SERVER_URL, "client_id": "admin", "token": root_user_token}
+    ) as root:
+        admin = await root.get_service("admin-utils")
+        workspaces = await admin.list_workspaces()
+        workspace_info = find_item(workspaces, "name", workspace)
+        assert workspace_info is None
 
 
 async def test_lazy_plugin(fastapi_server, test_user_token):

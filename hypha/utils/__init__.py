@@ -35,7 +35,7 @@ def random_id(readable=True):
             + f"{int((time.time() % 1) * 100000000):08d}"
         )
     else:
-        return shortuuid.uuid()
+        return shortuuid.ShortUUID().random(length=22)
 
 
 PLUGIN_CONFIG_FIELDS = [
@@ -146,6 +146,16 @@ def generate_password(length=20):
     """Generate a password."""
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for i in range(length))
+
+
+def is_safe_path(basedir: str, path: str, follow_symlinks: bool = True) -> bool:
+    """Check if the file path is safe."""
+    # resolves symbolic links
+    if follow_symlinks:
+        matchpath = os.path.realpath(path)
+    else:
+        matchpath = os.path.abspath(path)
+    return basedir == os.path.commonpath((basedir, matchpath))
 
 
 def safe_join(directory: str, *pathnames: str) -> Optional[str]:
@@ -581,56 +591,3 @@ async def _example_hypha_startup(server):
             "test": lambda x: x + 22,
         }
     )
-
-
-class AsyncTTLCache:
-    """Asynchronous Time-to-Live (TTL) Cache."""
-
-    def __init__(self, ttl=10):
-        """Initialize the AsyncTTLCache."""
-        self.ttl = ttl
-        self.cache = {}
-
-    async def add(self, key, value):
-        """Add a key-value pair to the cache."""
-        self.cache[key] = (value, time.monotonic())
-        await self.cleanup()
-
-    async def update(self, key, value):
-        """Update the value associated with a key in the cache."""
-        if key not in self.cache:
-            raise Exception("Invalid key")
-
-        self.cache[key] = (value, time.monotonic())
-        await self.cleanup()
-
-    async def get(self, key):
-        """Retrieve the value associated with a key from the cache."""
-        if key not in self.cache:
-            return None
-
-        value, timestamp = self.cache[key]
-        if time.monotonic() - timestamp > self.ttl:
-            del self.cache[key]
-            return None
-
-        return value
-
-    async def cleanup(self):
-        """Clean up expired items from the cache."""
-        keys_to_delete = [
-            key
-            for key, (_, timestamp) in self.cache.items()
-            if time.monotonic() - timestamp > self.ttl
-        ]
-        for key in keys_to_delete:
-            del self.cache[key]
-
-    def __contains__(self, key):
-        """Check if a key exists in the cache."""
-        return key in self.cache
-
-    def __delitem__(self, key):
-        """Delete a key-value pair from the cache."""
-        if key in self.cache:
-            del self.cache[key]

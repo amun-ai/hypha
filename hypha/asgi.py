@@ -1,5 +1,4 @@
 """Support ASGI web server apps."""
-import asyncio
 import logging
 import sys
 import traceback

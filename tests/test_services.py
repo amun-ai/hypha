@@ -14,6 +14,41 @@ from pydantic import Field
 pytestmark = pytest.mark.asyncio
 
 
+async def test_singleton_service(fastapi_server):
+    """Test a singleton service."""
+    async with connect_to_server(
+        {"name": "test client", "server_url": SERVER_URL}
+    ) as api:
+        await api.register_service(
+            {
+                "id": "test-service",
+                "name": "Test Service",
+                "config": {"singleton": True},
+                "description": "A test service",
+                "tools": {
+                    "add": lambda a, b: a + b,
+                    "sub": lambda a, b: a - b,
+                },
+            }
+        )
+
+        # Registering the same service again should raise an error
+        with pytest.raises(Exception, match=".*Failed to notify workspace manager.*"):
+            await api.register_service(
+                {
+                    "id": "test-service",
+                    "name": "Test Service",
+                    "config": {"singleton": True},
+                    "description": "A test service",
+                    "tools": {
+                        "add": lambda a, b: a + b,
+                        "sub": lambda a, b: a - b,
+                    },
+                },
+                overwrite=True,
+            )
+
+
 async def test_typed_service(fastapi_server):
     """Test a typed service."""
     async with connect_to_server(

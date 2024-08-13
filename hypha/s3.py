@@ -152,6 +152,7 @@ class S3Controller:
         endpoint_url=None,
         access_key_id=None,
         secret_access_key=None,
+        region_name=None,
         endpoint_url_public=None,
         s3_admin_type="generic",
         workspace_bucket="hypha-workspaces",
@@ -163,6 +164,7 @@ class S3Controller:
         self.endpoint_url = endpoint_url
         self.access_key_id = access_key_id
         self.secret_access_key = secret_access_key
+        self.region_name = region_name
         self.s3_admin_type = s3_admin_type
         if self.s3_admin_type == "minio":
             self.minio_client = MinioClient(
@@ -219,7 +221,7 @@ class S3Controller:
             user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Upload file."""
-            ws = await store.get_workspace(workspace, load=True)
+            ws = await store.get_workspace_info(workspace, load=True)
             if not ws:
                 return JSONResponse(
                     status_code=404,
@@ -266,7 +268,7 @@ class S3Controller:
             user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Get or delete file."""
-            ws = await store.get_workspace(workspace, load=True)
+            ws = await store.get_workspace_info(workspace, load=True)
             if not ws:
                 return JSONResponse(
                     status_code=404,
@@ -483,7 +485,7 @@ class S3Controller:
             endpoint_url=self.endpoint_url,
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
-            region_name="EU",
+            region_name=self.region_name,
         )
 
     def create_client_async(self, public=False):
@@ -493,7 +495,7 @@ class S3Controller:
             endpoint_url=self.endpoint_url_public if public else self.endpoint_url,
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
-            region_name="EU",
+            region_name=self.region_name,
         )
 
     async def list_users(
@@ -623,7 +625,7 @@ class S3Controller:
         """Generate credential."""
         assert self.minio_client, "Minio client is not available"
         workspace = context["ws"]
-        ws = await self.store.get_workspace(workspace, load=True)
+        ws = await self.store.get_workspace_info(workspace, load=True)
         assert ws, f"Workspace {workspace} not found."
         if ws.read_only:
             raise Exception("Permission denied: workspace is read-only")
@@ -641,6 +643,7 @@ class S3Controller:
             "endpoint_url": self.endpoint_url_public,  # Return the public endpoint
             "access_key_id": user_info.id,
             "secret_access_key": password,
+            "region_name": self.region_name,
             "bucket": self.workspace_bucket,
             "prefix": workspace + "/",  # important to have the trailing slash
         }
@@ -677,7 +680,7 @@ class S3Controller:
         """Generate presigned url."""
         try:
             workspace = context["ws"]
-            ws = await self.store.get_workspace(workspace, load=True)
+            ws = await self.store.get_workspace_info(workspace, load=True)
             assert ws, f"Workspace {workspace} not found."
             if ws.read_only and client_method != "get_object":
                 raise Exception("Permission denied: workspace is read-only")

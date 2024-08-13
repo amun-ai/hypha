@@ -29,15 +29,16 @@ class HyphaApp {
             "type": "functions",
             "config": {
                 "visibility": "public",
+                "require_context": true
             },
-            "hello-world": async function(event) {
+            "hello-world": async function(event, context) {
                 return {
                     status: 200,
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({message: "Hello World", context: event.context})
+                    body: JSON.stringify({message: "Hello World", context})
                 };
             },
-            "index": async function(event) {
+            "index": async function(event, context) {
                 return {
                     status: 200,
                     body: `Home page`

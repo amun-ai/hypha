@@ -17,7 +17,7 @@ from jinja2 import Environment, PackageLoader, select_autoescape
 from jose import jwt
 
 from hypha.core import UserInfo, UserTokenInfo, ScopeInfo, UserPermission, WorkspaceInfo
-from hypha.utils import AsyncTTLCache, random_id
+from hypha.utils import random_id
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("auth")
@@ -34,6 +34,7 @@ AUTH0_AUDIENCE = env.get("AUTH0_AUDIENCE", "https://amun-ai.eu.auth0.com/api/v2/
 AUTH0_ISSUER = env.get("AUTH0_ISSUER", "https://amun.ai/")
 AUTH0_NAMESPACE = env.get("AUTH0_NAMESPACE", "https://amun.ai/")
 JWT_SECRET = env.get("JWT_SECRET")
+LOGIN_SERVICE_URL = "/public/services/hypha-login"
 
 if not JWT_SECRET:
     logger.warning(
@@ -319,20 +320,18 @@ def generate_jwt_scope(scope: ScopeInfo) -> str:
     return ps
 
 
-async def register_login_service(server):
+def create_login_service(store):
     """Hypha startup function for registering additional services."""
-    cache = AsyncTTLCache(ttl=int(MAXIMUM_LOGIN_TIME))
-    server_url = server.config["public_base_url"]
-    login_url = f"{server_url}/{server.config['workspace']}/apps/hypha-login/"
-    login_service_url = (
-        f"{server_url}/{server.config['workspace']}/services/hypha-login"
-    )
-    generate_token_url = f"{server_url}/{server.config['workspace']}/services/workspace-manager/generate_token"
+    redis = store.get_redis()
+    server_url = store.public_base_url
+    login_service_url = f"{server_url}{LOGIN_SERVICE_URL}"
+    generate_token_url = f"{server_url}/public/services/ws/generate_token"
     jinja_env = Environment(
         loader=PackageLoader("hypha"), autoescape=select_autoescape()
     )
-    temp = jinja_env.get_template("login_template.html")
+    temp = jinja_env.get_template("apps/login_template.html")
     login_page = temp.render(
+        login_service_url=login_service_url,
         generate_token_url=generate_token_url,
         auth0_client_id=AUTH0_CLIENT_ID,
         auth0_domain=AUTH0_DOMAIN,
@@ -342,10 +341,11 @@ async def register_login_service(server):
 
     async def start_login():
         """Start the login process."""
-        key = str(random_id(readable=True))
-        await cache.add(key, False)
+        key = "login_key:" + str(random_id(readable=True))
+        # set the key and with expire time
+        await redis.setex(key, MAXIMUM_LOGIN_TIME, "")
         return {
-            "login_url": f"{login_url}?key={key}",
+            "login_url": f"{login_service_url.replace('/services/', '/apps/')}/?key={key}",
             "key": key,
             "report_url": f"{login_service_url}/report",
             "check_url": f"{login_service_url}/check",
@@ -362,11 +362,13 @@ async def register_login_service(server):
 
     async def check_login(key, timeout=MAXIMUM_LOGIN_TIME, profile=False):
         """Check the status of a login session."""
-        assert key in cache, "Invalid key, key does not exist"
+        assert await redis.exists(key), "Invalid key, key does not exist"
         if timeout <= 0:
-            user_info = await cache.get(key)
+            user_info = await redis.get(key)
+            user_info = json.loads(user_info)
+            user_info = UserTokenInfo.model_validate(user_info)
             if user_info:
-                del cache[key]
+                await redis.delete(key)
             return (
                 user_info.model_dump(mode="json")
                 if profile
@@ -374,18 +376,20 @@ async def register_login_service(server):
             )
         count = 0
         while True:
-            user_info = await cache.get(key)
+            user_info = await redis.get(key)
+            user_info = json.loads(user_info)
+            user_info = UserTokenInfo.model_validate(user_info)
             if user_info is None:
                 raise Exception(
                     f"Login session expired, the maximum login time is {MAXIMUM_LOGIN_TIME} seconds"
                 )
             if user_info:
-                del cache[key]
+                await redis.delete(key)
                 return user_info.model_dump(mode="json") if profile else user_info.token
             await asyncio.sleep(1)
             count += 1
             if count > timeout:
-                raise Exception("Login timeout")
+                raise Exception(f"Login timeout, waited for {timeout} seconds")
 
     async def report_login(
         key,
@@ -398,7 +402,7 @@ async def register_login_service(server):
         picture=None,
     ):
         """Report a token associated with a login session."""
-        assert key in cache, "Invalid key, key does not exist or expired"
+        assert await redis.exists(key), "Invalid key, key does not exist or expired"
         kwargs = {
             "token": token,
             "email": email,
@@ -409,21 +413,18 @@ async def register_login_service(server):
             "picture": picture,
         }
         user_info = UserTokenInfo.model_validate(kwargs)
-        await cache.update(key, user_info)
+        user_info = user_info.model_dump(mode="json")
+        await redis.setex(key, MAXIMUM_LOGIN_TIME, json.dumps(user_info))
 
-    svc = await server.register_service(
-        {
-            "name": "Hypha Login",
-            "id": "hypha-login",
-            "type": "functions",
-            "description": "Login service for Hypha",
-            "config": {"visibility": "public"},
-            "index": index,
-            "start": start_login,
-            "check": check_login,
-            "report": report_login,
-        }
-    )
-
-    logger.info("Login service is available at: %s", svc.id)
-    logger.info(f"To preview the login page, visit: {login_url}")
+    logger.info(f"To preview the login page, visit: {login_service_url}")
+    return {
+        "name": "Hypha Login",
+        "id": "hypha-login",
+        "type": "functions",
+        "description": "Login service for Hypha",
+        "config": {"visibility": "public"},
+        "index": index,
+        "start": start_login,
+        "check": check_login,
+        "report": report_login,
+    }

@@ -1,27 +1,51 @@
+# Hypha
+
 ![PyPI](https://img.shields.io/pypi/v/hypha.svg?style=popout)
 
 <img src="./docs/img/hypha-logo-black.svg" width="320" alt="Hypha">
 
-# Hypha
+**Hypha** is a generative AI-powered application framework designed for large-scale data management, AI model serving, and real-time communication. Hypha allows the creation of computational platforms consisting of both computational and user interface components.
 
-Hypha is an application framework for large-scale data management and AI model serving, it allows creating computational platforms consists of computational and user interface components.
+## Key Features
 
-Hypha server act as a hub for connecting different components through [hypya-rpc](https://github.com/oeway/hypha-rpc).
+- **Generative AI-Powered:** Leverage the power of generative AI to build advanced data management and AI model serving solutions.
+- **Hypha-RPC:** Utilize [hypha-rpc](https://github.com/oeway/hypha-rpc), a bidirectional remote procedure call system, enabling seamless communication and integration across distributed components.
+- **Real-Time Communication:** Support for real-time communication within virtual workspaces, similar to platforms like Zoom.
+- **Scalable and Flexible:** Connect and orchestrate various compute services, AI models, tools, and services running on distributed locations.
+- **GenAI-Powered Automation:** Build GenAI-powered automation platforms and agentic workflows, enabling fully autonomous agent systems.
 
-## Change log
+## How It Works
 
-### 0.20.14
+Hypha acts as a hub that connects different components through **Hypha-RPC**. Users and programmatic clients connect to the platform in virtual workspaces, where they can seamlessly make remote procedure calls (RPC) as if they are calling local functions. Developers can integrate all types of compute services, including AI models, tools, and services, across distributed locations.
 
- - Make `get_service` more restricted to support only service id string, see [migration guide](./docs/migration-guide.md) for more details.
- - Clean up http endpoints for the services.
- - Remove local cache of the server apps, we now always use s3 as the primary storage.
+### Virtual Workspaces
 
-### 0.20.12
+- Hypha's virtual workspaces are akin to Zoom rooms, where clients (users and programmatic) can connect and interact.
+- Within these workspaces, all clients can perform seamless RPCs, facilitating easy and efficient collaboration and computation.
 
- - New Feature: In order to support large language models' function calling feature, hypha support built-in type annotation. With `hypha-rpc>=0.20.12`, we also support type annotation for the service functions in JSON Schema format. In Python, you can use `Pydantic` or simple python type hint, or directly write the json schema for Javascript service functions. This allows you to specify the inputs spec for functions.
- - Add type support for the `hypha` module. It allows you to register a type in the workspace using `register_service_type`, `get_service_type`, `list_service_types`. When registering a new service, you can specify the type and enable type check for the service. The type check will be performed when calling the service function. The type check is only available in Python.
- - Fix reconnecton issue in the client.
- - Support case conversion, which allows converting the service functions to snake_case or camelCase in `get_service` (Python) or `getService` (JavaScript).
- - **Breaking Changes**: In Python, all the function names uses snake case, and in JavaScript, all the function names uses camel case. For example, you should call `server.getService` instead of `server.get_service` in JavaScript, and `server.get_service` instead of `server.getService` in Python.
- - **Breaking Changes**: The new version of Hypha (0.20.0+) improves the RPC connection to make it more stable and secure, most importantly it supports automatic reconnection when the connection is lost. This also means breaking changes to the previous version. In the new version you will need a new library called `hypha-rpc` (instead of the hypha submodule in the `imjoy-rpc` module) to connect to the server.
+### Integration with Compute Services
 
+- Hypha supports the integration of various compute services, including AI models and data analytics tools.
+- These services, when connected to the platform, can be understood and orchestrated by large language models (LLMs), paving the way for creating next-generation GenAI-powered automation platforms and agentic workflows.
+
+## Use Cases
+
+- **Research Institutions:** Build integrated platforms for data management and AI-powered services.
+- **AI-Powered Automation:** Create autonomous agent systems and GenAI-powered automation platforms.
+- **Data Services:** Facilitate scalable and efficient data services and analytics through distributed computing.
+
+## Getting Started
+
+To get started with Hypha, follow the installation and setup instructions in the [documentation](https://docs.amun.ai).
+
+## License
+
+Hypha is released under the MIT License. See the [LICENSE](./LICENSE) file for more details.
+
+## Contributing
+
+We welcome contributions from the community. Please see our [Contributing Guidelines](./CONTRIBUTING.md) for more information.
+
+## Acknowledgments
+
+We thank the contributors and community members who have helped make Hypha what it is today.

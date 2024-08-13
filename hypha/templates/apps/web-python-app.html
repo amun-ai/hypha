@@ -90,7 +90,7 @@ del m
 
 async def run():
     try:
-        await micropip.install(["numpy", "pydantic", "hypha-rpc==0.20.14", {% for req in requirements %}"{{req}}", {% endfor %}])
+        await micropip.install(["numpy", "pydantic", "hypha-rpc=={{ hypha_version }}", {% for req in requirements %}"{{req}}", {% endfor %}])
         js.__resolve()
     except Exception as e:
         console.error("Failed to install packages: ", traceback.format_exc())

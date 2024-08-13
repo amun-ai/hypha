@@ -80,8 +80,8 @@ class WebsocketServer:
                         workspaces={user_info.id: UserPermission.admin},
                         client_id=client_id,
                     )
-                workspace_info, user_info = await self.setup_workspace_and_permissions(
-                    user_info, workspace, client_id
+                workspace_info = await self.store.load_or_create_workspace(
+                    user_info, workspace
                 )
                 user_info.scope = update_user_scope(
                     user_info, workspace_info, client_id
@@ -220,38 +220,6 @@ class WebsocketServer:
         except Exception as e:
             logger.error(f"Authentication error: {str(e)}")
             raise RuntimeError(f"Authentication error: {str(e)}")
-
-    async def setup_workspace_and_permissions(
-        self, user_info: UserInfo, workspace, client_id
-    ):
-        """Setup workspace and check permissions."""
-        if workspace is None:
-            workspace = user_info.id
-
-        assert workspace != "*", "Dynamic workspace is not allowed for this endpoint"
-        # Anonymous and Temporary users are not allowed to create persistant workspaces
-        persistent = (
-            not user_info.is_anonymous and "temporary-test-user" not in user_info.roles
-        )
-
-        # Ensure calls to store for workspace existence and permissions check
-        workspace_info = await self.store.get_workspace(workspace, load=True)
-        if not workspace_info:
-            assert (
-                workspace == user_info.id
-            ), "User can only connect to a pre-existing workspace or their own workspace"
-            # Simplified logic for workspace creation, ensure this matches the actual store method signatures
-            workspace_info = await self.store.register_workspace(
-                {
-                    "name": workspace,
-                    "description": f"Default user workspace for {user_info.id}",
-                    "persistent": persistent,
-                    "owners": [user_info.id],
-                    "read_only": user_info.is_anonymous,
-                }
-            )
-            logger.info(f"Created workspace: {workspace}")
-        return workspace_info, user_info
 
     async def establish_websocket_communication(
         self, websocket, workspace, client_id, user_info

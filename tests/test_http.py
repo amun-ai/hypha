@@ -138,7 +138,7 @@ async def test_http_proxy(
         assert workspace in [w.name for w in workspaces]
 
     response = requests.get(
-        f"{SERVER_URL}/{workspace}/info",
+        f"{SERVER_URL}/{workspace}",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.ok, response.json()["detail"]

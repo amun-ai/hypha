@@ -50,6 +50,7 @@ class ServiceConfig(BaseModel):
     require_context: Union[Tuple[str], List[str], bool] = False
     workspace: Optional[str] = None
     flags: List[str] = []
+    singleton: Optional[bool] = False
 
 
 class ServiceInfo(BaseModel):
@@ -352,7 +353,7 @@ class RedisRPCConnection:
         pos = unpacker.tell()
         target_id = message.get("to")
         if "/" not in target_id:
-            if "/workspace-manager-" in target_id:
+            if "/ws-" in target_id:
                 raise ValueError(
                     f"Invalid target ID: {target_id}, it appears that the target is a workspace manager (target_id should starts with */)"
                 )
