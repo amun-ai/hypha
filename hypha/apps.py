@@ -13,7 +13,7 @@ import multihash
 from aiobotocore.session import get_session
 from jinja2 import Environment, PackageLoader, select_autoescape
 
-from hypha import __version__
+from hypha import main_version
 from hypha.core import Card, UserInfo, ServiceInfo, UserPermission
 from hypha.core.store import RedisStore
 from hypha.plugin_parser import convert_config_to_card, parse_imjoy_plugin
@@ -269,7 +269,7 @@ class ServerAppController:
                     safe_join("apps", config["type"] + "-app.html")
                 )
                 source = temp.render(
-                    hypha_version=__version__,
+                    hypha_main_version=main_version,
                     hypha_rpc_websocket_mjs=self.public_base_url
                     + "/hypha-rpc-websocket.mjs",
                     config={k: config[k] for k in config if k in PLUGIN_CONFIG_FIELDS},
@@ -291,7 +291,7 @@ class ServerAppController:
             default_config.update(config or {})
             config = default_config
             source = temp.render(
-                hypha_version=__version__,
+                hypha_main_version=main_version,
                 hypha_rpc_websocket_mjs=self.public_base_url
                 + "/hypha-rpc-websocket.mjs",
                 script=source,
