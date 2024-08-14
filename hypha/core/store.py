@@ -261,7 +261,7 @@ class RedisStore:
             try:
                 await api.register_service(
                     service.model_dump(),
-                    notify=True,
+                    {"notify": True},
                 )
             except Exception:  # pylint: disable=broad-except
                 logger.exception("Failed to register public service: %s", service)
@@ -331,7 +331,9 @@ class RedisStore:
             raise Exception("Token has been revoked")
         # automatically add user's own workspace to the scope
         if not user_info.scope.workspaces:
-            user_info.scope.workspaces = {user_info.get_workspace(): UserPermission.admin}
+            user_info.scope.workspaces = {
+                user_info.get_workspace(): UserPermission.admin
+            }
         if "admin" in user_info.roles:
             user_info.scope.workspaces["*"] = UserPermission.admin
         return user_info

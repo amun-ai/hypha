@@ -658,9 +658,9 @@ class S3Controller:
         workspace = context["ws"]
         if path.startswith("/"):
             user_info = UserInfo.model_validate(context["user"])
-            assert user_info.check_permission("*", UserPermission.admin), (
-                "Permission denied: only admin can access the root folder."
-            )
+            assert user_info.check_permission(
+                "*", UserPermission.admin
+            ), "Permission denied: only admin can access the root folder."
             # remove the leading slash
             path = path[1:]
         else:
@@ -693,9 +693,9 @@ class S3Controller:
                 raise Exception("Permission denied: workspace is read-only")
             if path.startswith("/"):
                 user_info = UserInfo.model_validate(context["user"])
-                assert user_info.check_permission("*", UserPermission.admin), (
-                    "Permission denied: only admin can access the root folder."
-                )
+                assert user_info.check_permission(
+                    "*", UserPermission.admin
+                ), "Permission denied: only admin can access the root folder."
                 # remove the leading slash
                 path = path[1:]
             else:

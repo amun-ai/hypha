@@ -19,7 +19,7 @@ class HyphaApp:
                 "type": "echo",
                 "echo": lambda x: print("echo: " + str(x)),
             },
-            overwrite=True,
+            {"overwrite": True},
         )
         service = await api.get_service(service_info.id)
         await service.echo("a message")

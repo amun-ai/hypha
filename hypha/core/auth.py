@@ -292,15 +292,16 @@ def update_user_scope(
     ws_scopes = {}
     if not permission:
         # infer permission from workspace
-        if (user_info.get_workspace() == workspace_info.name
+        if (
+            user_info.get_workspace() == workspace_info.name
             or user_info.email in workspace_info.owners
             or user_info.id in workspace_info.owners
         ):
             permission = UserPermission.admin
-    
+
     if permission:
         ws_scopes[workspace_info.name] = permission
-    
+
     if "admin" in user_info.roles:
         ws_scopes["*"] = UserPermission.admin
 

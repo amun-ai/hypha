@@ -41,6 +41,7 @@ def validate_key_part(key_part: str):
     if not _allowed_characters.match(key_part):
         raise ValueError(f"Invalid characters in query part: {key_part}")
 
+
 class GetServiceConfig(BaseModel):
     mode: Optional[str] = Field(
         None,
@@ -91,7 +92,7 @@ class WorkspaceManager:
         management_service = self.create_service(service_id, service_name)
         await rpc.register_service(
             management_service,
-            notify=False,
+            {"notify": False},
         )
         self._initialized = True
         return rpc
@@ -606,6 +607,7 @@ class WorkspaceManager:
     async def register_service(
         self,
         service: ServiceInfo = Field(..., description="Service info"),
+        config: Optional[dict] = Field(None, description="Service config"),
         context: Optional[dict] = None,
     ):
         """Register a new service."""
@@ -996,8 +998,7 @@ class WorkspaceManager:
             )
             return await self.get_service(
                 f"{client_info['id']}:{service_id}",  # should not contain @app_id
-                timeout=timeout,
-                case_conversion=case_conversion,
+                dict(timeout=timeout, case_conversion=case_conversion),
                 context=context,
             )
 
@@ -1031,7 +1032,9 @@ class WorkspaceManager:
             ...,
             description="Service ID. This should be a service id in the format: 'workspace/service_id', 'workspace/client_id:service_id' or 'workspace/client_id:service_id@app_id'",
         ),
-        config: Optional[GetServiceConfig] = Field(None, description="Get service config"),
+        config: Optional[GetServiceConfig] = Field(
+            None, description="Get service config"
+        ),
         context=None,
     ):
         """Get a service based on the service_id"""
@@ -1047,7 +1050,8 @@ class WorkspaceManager:
                 service_id, mode=config.mode, context=context
             )
             service_api = await self._rpc.get_remote_service(
-                svc_info.id, {"timeout": config.timeout, "case_conversion": config.case_conversion}
+                svc_info.id,
+                {"timeout": config.timeout, "case_conversion": config.case_conversion},
             )
             assert service_api, f"Failed to get service: {service_id}"
             workspace = service_id.split("/")[0]
@@ -1161,7 +1165,7 @@ class WorkspaceManager:
             await self._redis.delete(key)
 
         if await self._redis.hexists("workspaces", cws):
-            if user_info.is_anonymous and cws == user_info.id:
+            if user_info.is_anonymous and cws == user_info.get_workspace():
                 logger.info(f"Unloading workspace {cws} for anonymous user.")
                 # unload temporary workspace if the user exits
                 await self.unload(context=context)

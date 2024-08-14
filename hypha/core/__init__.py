@@ -104,8 +104,10 @@ class ServiceInfo(BaseModel):
         data["config"] = ServiceConfig.model_validate(data["config"])
         return super().model_validate(data)
 
+
 class RemoteService(ServiceInfo):
     pass
+
 
 class UserTokenInfo(BaseModel):
     """Represent user profile."""

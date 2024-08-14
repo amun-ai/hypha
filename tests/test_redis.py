@@ -156,7 +156,7 @@ async def test_websocket_server(fastapi_server, test_user_token_2):
             "echo": echo,
             "square": lambda x: x**2,
         },
-        overwrite=True,
+        {"overwrite": True},
     )
 
     # It should fail due to permission error

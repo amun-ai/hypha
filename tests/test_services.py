@@ -45,7 +45,7 @@ async def test_singleton_service(fastapi_server):
                         "sub": lambda a, b: a - b,
                     },
                 },
-                overwrite=True,
+                {"overwrite": True},
             )
 
 
@@ -82,7 +82,7 @@ async def test_typed_service(fastapi_server):
         assert svc_type["id"] == f"{api.config.workspace}/test-service-type"
 
         service["type"] = "test-service-type"
-        svc_info = await api.register_service(service, check_type=True)
+        svc_info = await api.register_service(service, {"check_type": True})
         assert svc_info["id"].endswith(":test-service")
         assert svc_info["type"] == "test-service-type"
 
@@ -97,7 +97,7 @@ async def test_typed_service(fastapi_server):
                 "type": api.config.workspace + "/test-service-type",
                 "tools": {"add": add2},
             },
-            check_type=True,
+            {"check_type": True},
         )
         assert svc_info2["id"].endswith(":test-service2")
         assert svc_info2["service_schema"]

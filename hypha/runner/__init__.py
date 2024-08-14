@@ -29,7 +29,7 @@ async def export_service(app_api, config, hypha_rpc):
         # Copy the app name as the default name
         app_api["id"] = "default"
         app_api["name"] = config.get("name", "default")
-        svc = await rpc.register_service(app_api, overwrite=True, notify=True)
+        svc = await rpc.register_service(app_api, {"overwrite": True, "notify": True})
         svc = await rpc.get_remote_service(svc["id"])
         if svc.setup:
             await svc.setup()

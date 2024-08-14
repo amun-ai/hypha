@@ -35,7 +35,7 @@ async def export_service(plugin_api, config, hypha_rpc):
         # Copy the plugin name as the default name
         plugin_api["id"] = "default"
         plugin_api["name"] = config.get("name", "default")
-        await rpc.register_service(plugin_api, overwrite=True)
+        await rpc.register_service(plugin_api, {"overwrite": True})
         console.log("Application initialized successfully.")
     except Exception as exp:
         console.error("Failed to export service: ", traceback.format_exc())
