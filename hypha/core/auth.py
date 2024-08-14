@@ -369,6 +369,8 @@ def create_login_service(store):
         assert await redis.exists(key), "Invalid key, key does not exist"
         if timeout <= 0:
             user_info = await redis.get(key)
+            if user_info == b"":
+                return None
             user_info = json.loads(user_info)
             user_info = UserTokenInfo.model_validate(user_info)
             if user_info:
@@ -381,15 +383,20 @@ def create_login_service(store):
         count = 0
         while True:
             user_info = await redis.get(key)
-            user_info = json.loads(user_info)
-            user_info = UserTokenInfo.model_validate(user_info)
-            if user_info is None:
-                raise Exception(
-                    f"Login session expired, the maximum login time is {MAXIMUM_LOGIN_TIME} seconds"
-                )
-            if user_info:
-                await redis.delete(key)
-                return user_info.model_dump(mode="json") if profile else user_info.token
+            if user_info != b"":
+                user_info = json.loads(user_info)
+                user_info = UserTokenInfo.model_validate(user_info)
+                if user_info is None:
+                    raise Exception(
+                        f"Login session expired, the maximum login time is {MAXIMUM_LOGIN_TIME} seconds"
+                    )
+                if user_info:
+                    await redis.delete(key)
+                    return (
+                        user_info.model_dump(mode="json")
+                        if profile
+                        else user_info.token
+                    )
             await asyncio.sleep(1)
             count += 1
             if count > timeout:

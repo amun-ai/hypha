@@ -8,6 +8,7 @@
 
  - Support invoke token
  - Add basic web ui for the workspace
+ - BREAKING Change: Change the signature, now you need to pass a dictionary as options for `get_service`, `get_service_info`, `register_service` etc.
 
 ### 0.20.15
 

@@ -72,7 +72,7 @@
 
     <!-- Render the App component -->
     <script type="text/babel" data-presets="env,react">
-        const Navbar = ({ isLoggedIn, user, onLogin, onLogout }) => {
+        const Navbar = ({ isLoggedIn, user, onLogin, onLogout, onAboutClick }) => {
             return (
                 <nav className="navbar flex justify-between items-center p-4 bg-gray-900 shadow-lg">
                     <div className="flex items-center space-x-4">
@@ -82,7 +82,7 @@
                         <a href="#" className="hover:text-gray-400 transition duration-300">Dashboard</a>
                         <a href="#" className="hover:text-gray-400 transition duration-300">Marketplace</a>
                         <a href="https://docs.amun.ai/" target="_blank" className="hover:text-gray-400 transition duration-300">Documentation</a>
-                        <a href="#" id="about-link" className="hover:text-gray-400 transition duration-300">About</a>
+                        <a href="#" className="hover:text-gray-400 transition duration-300" onClick={onAboutClick}>About</a>
                         {isLoggedIn ? (
                             <div className="dropdown">
                                 <button className="hover:text-gray-400 transition duration-300">
@@ -230,13 +230,17 @@
                 setUser(null);
             };
 
+            const onAboutClick = () => {
+                setIsModalOpen(true);
+            };
+
             if (!config) {
                 return <div>Loading...</div>; // Show a loading state while fetching config
             }
 
             return (
                 <div>
-                    <Navbar isLoggedIn={isLoggedIn} user={user} onLogin={onLogin} onLogout={onLogout} />
+                    <Navbar isLoggedIn={isLoggedIn} user={user} onLogin={onLogin} onLogout={onLogout} onAboutClick={onAboutClick} />
                     <div className="container mx-auto mt-16 pt-20 text-center">
                         <h1 className="text-4xl font-bold">Welcome to Hypha</h1>
                         <p className="text-xl text-gray-400 mt-4">A collaborative workspace for data analysis</p>
@@ -270,19 +274,6 @@
                 </div>
             );
         };
-
-        document.addEventListener('DOMContentLoaded', function() {
-            const links = document.querySelectorAll('a');
-            links.forEach(link => {
-                link.setAttribute('target', '_blank');
-                link.setAttribute('rel', 'noopener noreferrer');
-            });
-
-            document.getElementById('about-link').addEventListener('click', function(e) {
-                e.preventDefault();
-                setIsModalOpen(true);
-            });
-        });
 
         ReactDOM.render(<App />, document.getElementById('app'));
     </script>

@@ -74,7 +74,11 @@ The full service id format: `{workspace}/{client_id}:{service_id}@{app_id}`. We 
 
 **Note: Instead of return null, the new `get_service()` function will raise error if not found**
 
-#### 5. Optionally, annotate functions with JSON schema using Pydantic
+#### 5. Fix config options for register_service
+
+Previously we allow passing keywords arguements for `get_service` (e.g. `register_service({...}, overwrite=True)`), now you need to pass it as a dictionary, e.g. `register_service({...}, {"overwrite": True})`.
+
+#### 6. Optionally, annotate functions with JSON schema using Pydantic
 
 To make your functions more compatible with LLMs, you can optionally use Pydantic to annotate them with JSON schema. This helps in creating well-defined interfaces for your services.
 

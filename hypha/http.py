@@ -21,15 +21,14 @@ from fastapi.responses import (
 import jose
 import os
 
+from starlette.datastructures import Headers
+
 from hypha_rpc import RPC
-from hypha import __version__
+from hypha import main_version
 from hypha.core import UserPermission
 from hypha.core.auth import AUTH0_DOMAIN
 from hypha.core.store import RedisStore
 from hypha.utils import GzipRoute, safe_join, is_safe_path
-from hypha.s3 import FSFileResponse
-from starlette.datastructures import Headers
-from aiobotocore.session import get_session
 
 
 class MsgpackResponse(Response):
@@ -211,7 +210,7 @@ class HTTPProxy:
         @router.get(norm_url("/hypha-rpc-websocket.mjs"))
         async def hypha_rpc_websocket_mjs(request: Request):
             if not self.rpc_lib_esm_content:
-                _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{__version__}/dist/hypha-rpc-websocket.mjs"
+                _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{main_version}/dist/hypha-rpc-websocket.mjs"
                 response = requests.get(_rpc_lib_script)
                 response.raise_for_status()
                 self.rpc_lib_esm_content = response.content
@@ -222,7 +221,7 @@ class HTTPProxy:
         @router.get(norm_url("/hypha-rpc-websocket.js"))
         async def hypha_rpc_websocket_js(request: Request):
             if not self.rpc_lib_umd_content:
-                _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{__version__}/dist/hypha-rpc-websocket.js"
+                _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{main_version}/dist/hypha-rpc-websocket.js"
                 response = requests.get(_rpc_lib_script)
                 response.raise_for_status()
                 self.rpc_lib_umd_content = response.content
@@ -458,6 +457,9 @@ class HTTPProxy:
                 else:
                     key = safe_join(workspace, path)
                     assert self.s3_enabled, "S3 is not enabled."
+                    from hypha.s3 import FSFileResponse
+                    from aiobotocore.session import get_session
+
                     s3_client = get_session().create_client(
                         "s3",
                         endpoint_url=self.endpoint_url,
@@ -626,6 +628,9 @@ class HTTPProxy:
                 )
             key = safe_join(self.workspace_etc_dir, workspace, app_id, path)
             assert self.s3_enabled, "S3 is not enabled."
+            from hypha.s3 import FSFileResponse
+            from aiobotocore.session import get_session
+
             s3_client = get_session().create_client(
                 "s3",
                 endpoint_url=self.endpoint_url,

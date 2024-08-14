@@ -6,7 +6,6 @@ import os
 import sys
 from datetime import datetime
 from email.utils import formatdate
-from pathlib import Path
 from typing import Any, Dict
 
 import botocore
@@ -23,7 +22,6 @@ from hypha.minio import MinioClient
 from hypha.utils import (
     generate_password,
     list_objects_async,
-    list_objects_sync,
     remove_objects_sync,
     safe_join,
 )
