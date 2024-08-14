@@ -142,8 +142,7 @@ async def test_http_proxy(
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.ok, response.json()["detail"]
-    response = response.json()
-    assert response["name"] == workspace
+    assert "hypha-rpc-websocket.js" in response.text
 
     # Without the token, we can only access to the public service
     response = requests.get(f"{SERVER_URL}/{service_ws}/services")

@@ -336,10 +336,11 @@
                     } else if (activePanel === 'services') {
                         setServices(await ws.listServices(config.workspace));
                     } else if (activePanel === 'apps') {
-                        setApps(await ws.listApps(config.workspace));
+                        const controller = await ws.getService("public/server-apps");
+                        setApps(await controller.listApps());
                     } else if (activePanel === 'files') {
-                        const s3 = await ws.getService("public/s3-storage");
-                        setFiles(await s3.listFiles("/"));
+                        const s3 = await ws.getService("public/s3-storage", {case_conversion: "camel", _rkwargs: true});
+                        setFiles(await s3.listFile(""));
                     }
                 };
                 fetchWorkspaceData();
@@ -359,7 +360,7 @@
             const onInstallApp = async () => {
                 const url = prompt("Enter the URL of the app to install", "https://raw.githubusercontent.com/amun-ai/hypha/main/tests/testWebWorkerPlugin.imjoy.html");
                 const controller = await ws.getService("public/server-apps");
-                const appInfo = await controller.install(url, true);
+                const appInfo = await controller.install(url);
                 console.log("App installed:", appInfo);
                 setApps(await controller.listApps());
             };

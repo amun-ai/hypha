@@ -72,13 +72,6 @@ def start_builtin_services(
     """Set up the builtin services."""
     # pylint: disable=too-many-arguments,too-many-locals
 
-    HTTPProxy(
-        store,
-        endpoint_url=args.endpoint_url,
-        access_key_id=args.access_key_id,
-        secret_access_key=args.secret_access_key,
-        base_path=args.base_path,
-    )
     if args.triton_servers:
         TritonProxy(
             store,
@@ -124,6 +117,14 @@ def start_builtin_services(
             secret_access_key=args.secret_access_key,
             workspace_bucket=args.workspace_bucket,
         )
+
+    HTTPProxy(
+        store,
+        endpoint_url=args.endpoint_url,
+        access_key_id=args.access_key_id,
+        secret_access_key=args.secret_access_key,
+        base_path=args.base_path,
+    )
 
 
 def mount_static_files(app, new_route, directory, name="static"):

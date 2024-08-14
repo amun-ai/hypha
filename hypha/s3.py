@@ -656,7 +656,15 @@ class S3Controller:
     ) -> Dict[str, Any]:
         """List files in the folder."""
         workspace = context["ws"]
-        path = safe_join(workspace, path)
+        if path.startswith("/"):
+            user_info = UserInfo.model_validate(context["user"])
+            assert user_info.check_permission("*", UserPermission.admin), (
+                "Permission denied: only admin can access the root folder."
+            )
+            # remove the leading slash
+            path = path[1:]
+        else:
+            path = safe_join(workspace, path)
         async with self.create_client_async() as s3_client:
             # List files in the folder
             if not path.endswith("/"):
@@ -671,8 +679,7 @@ class S3Controller:
 
     async def generate_presigned_url(
         self,
-        bucket_name,
-        object_name,
+        path: str,
         client_method="get_object",
         expiration=3600,
         context: dict = None,
@@ -684,17 +691,19 @@ class S3Controller:
             assert ws, f"Workspace {workspace} not found."
             if ws.read_only and client_method != "get_object":
                 raise Exception("Permission denied: workspace is read-only")
-            if bucket_name != self.workspace_bucket or not object_name.startswith(
-                workspace + "/"
-            ):
-                raise Exception(
-                    f"Permission denied: bucket name must be {self.workspace_bucket} "
-                    "and the object name should be prefixed with workspace name + '/'."
+            if path.startswith("/"):
+                user_info = UserInfo.model_validate(context["user"])
+                assert user_info.check_permission("*", UserPermission.admin), (
+                    "Permission denied: only admin can access the root folder."
                 )
+                # remove the leading slash
+                path = path[1:]
+            else:
+                path = safe_join(workspace, path)
             async with self.create_client_async(public=True) as s3_client:
                 url = await s3_client.generate_presigned_url(
                     client_method,
-                    Params={"Bucket": bucket_name, "Key": object_name},
+                    Params={"Bucket": self.workspace_bucket, "Key": path},
                     ExpiresIn=expiration,
                 )
                 return url

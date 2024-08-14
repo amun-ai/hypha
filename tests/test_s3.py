@@ -30,7 +30,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
         Exception, match=r".*Permission denied: workspace is read-only.*"
     ):
         info = await s3controller.generate_presigned_url(
-            "", "", client_method="put_object"
+            "", client_method="put_object"
         )
     content = os.urandom(1024)
     response = requests.put(
@@ -164,7 +164,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
         )
 
         url = await s3controller.generate_presigned_url(
-            info["bucket"], info["prefix"] + "hello.txt"
+            "hello.txt"
         )
         assert url.startswith("http") and "X-Amz-Algorithm" in url
 

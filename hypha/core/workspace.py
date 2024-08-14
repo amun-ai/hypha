@@ -18,6 +18,7 @@ from hypha.core import (
     UserInfo,
     WorkspaceInfo,
     ServiceInfo,
+    RemoteService,
     TokenConfig,
     UserPermission,
     ServiceTypeInfo,
@@ -40,6 +41,19 @@ def validate_key_part(key_part: str):
     if not _allowed_characters.match(key_part):
         raise ValueError(f"Invalid characters in query part: {key_part}")
 
+class GetServiceConfig(BaseModel):
+    mode: Optional[str] = Field(
+        None,
+        description="Mode for selecting the service, it can be 'random', 'first', 'last' or 'exact'",
+    )
+    timeout: Optional[float] = Field(
+        10.0,
+        description="The timeout duration in seconds for fetching the service. This determines how long the function will wait for a service to respond before considering it a timeout.",
+    )
+    case_conversion: Optional[str] = Field(
+        None,
+        description="The case conversion for service keys, can be 'camel', 'snake' or None, default is None.",
+    )
 
 class WorkspaceManager:
     def __init__(
@@ -132,7 +146,7 @@ class WorkspaceManager:
     ):
         """Bookmark the workspace for the user."""
         assert isinstance(workspace, WorkspaceInfo) and isinstance(user_info, UserInfo)
-        user_workspace = await self.load_workspace_info(f"ws-user-{user_info.id}")
+        user_workspace = await self.load_workspace_info(user_info.get_workspace())
         user_workspace.config = user_workspace.config or {}
         if "bookmarks" not in user_workspace.config:
             user_workspace.config["bookmarks"] = []
@@ -150,7 +164,7 @@ class WorkspaceManager:
     ) -> List[dict]:
         """Get the bookmarked workspaces for the user."""
         try:
-            user_workspace = await self.load_workspace_info(f"ws-user-{user_info.id}")
+            user_workspace = await self.load_workspace_info(user_info.get_workspace())
             return user_workspace.config.get("bookmarks", [])
         except KeyError:
             return []
@@ -190,7 +204,7 @@ class WorkspaceManager:
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
 
         # user workspace, let's store all the created workspaces
-        if user_info.id == workspace.name:
+        if user_info.get_workspace() == workspace.name:
             workspace.config = workspace.config or {}
             workspace.config["bookmarks"] = [
                 {
@@ -203,7 +217,7 @@ class WorkspaceManager:
             "workspaces", workspace.name, workspace.model_dump_json()
         )
         await self._event_bus.emit("workspace_loaded", workspace.model_dump())
-        if user_info.id != workspace.name:
+        if user_info.get_workspace() != workspace.name:
             await self._bookmark_workspace(workspace, user_info, context=context)
         return workspace.model_dump()
 
@@ -1017,18 +1031,7 @@ class WorkspaceManager:
             ...,
             description="Service ID. This should be a service id in the format: 'workspace/service_id', 'workspace/client_id:service_id' or 'workspace/client_id:service_id@app_id'",
         ),
-        mode: Optional[str] = Field(
-            None,
-            description="Mode for selecting the service, it can be 'random', 'first', 'last' or 'exact'",
-        ),
-        timeout: Optional[float] = Field(
-            10.0,
-            description="The timeout duration in seconds for fetching the service. This determines how long the function will wait for a service to respond before considering it a timeout.",
-        ),
-        case_conversion: Optional[str] = Field(
-            None,
-            description="The case conversion for service keys, can be 'camel', 'snake' or None, default is None.",
-        ),
+        config: Optional[GetServiceConfig] = Field(None, description="Get service config"),
         context=None,
     ):
         """Get a service based on the service_id"""
@@ -1038,12 +1041,13 @@ class WorkspaceManager:
         # no need to validate the context
         # self.validate_context(context, permission=UserPermission.read)
         try:
+            config = config or GetServiceConfig()
             # Permission check will be handled by the get_service_api function
             svc_info = await self.get_service_info(
-                service_id, mode=mode, context=context
+                service_id, mode=config.mode, context=context
             )
             service_api = await self._rpc.get_remote_service(
-                svc_info.id, timeout=timeout, case_conversion=case_conversion
+                svc_info.id, {"timeout": config.timeout, "case_conversion": config.case_conversion}
             )
             assert service_api, f"Failed to get service: {service_id}"
             workspace = service_id.split("/")[0]
@@ -1063,8 +1067,8 @@ class WorkspaceManager:
                     app_id,
                     service_id,
                     workspace=workspace,
-                    timeout=timeout,
-                    case_conversion=case_conversion,
+                    timeout=config.timeout,
+                    case_conversion=config.case_conversion,
                     context=context,
                 )
             else:

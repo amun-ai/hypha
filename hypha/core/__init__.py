@@ -104,6 +104,8 @@ class ServiceInfo(BaseModel):
         data["config"] = ServiceConfig.model_validate(data["config"])
         return super().model_validate(data)
 
+class RemoteService(ServiceInfo):
+    pass
 
 class UserTokenInfo(BaseModel):
     """Represent user profile."""
@@ -148,6 +150,9 @@ class UserInfo(BaseModel):
     _metadata: Dict[str, Any] = PrivateAttr(
         default_factory=lambda: {}
     )  # e.g. s3 credential
+
+    def get_workspace(self):
+        return f"ws-user-{self.id}"
 
     def get_metadata(self, key=None) -> Dict[str, Any]:
         """Return the metadata."""
@@ -258,7 +263,7 @@ class WorkspaceInfo(BaseModel):
     """Represent a workspace."""
 
     name: str
-    description: str
+    description: Optional[str] = None
     persistent: Optional[bool] = False
     owners: Optional[List[str]] = []
     read_only: Optional[bool] = False

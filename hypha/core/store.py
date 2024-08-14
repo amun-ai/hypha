@@ -62,7 +62,7 @@ class WorkspaceInterfaceContextManager:
         # Check if workspace exists
         if not await self._redis.hexists("workspaces", self._workspace):
             raise KeyError(f"Workspace {self._workspace} does not exist")
-        self._wm = await self._rpc.get_manager_service(self._timeout)
+        self._wm = await self._rpc.get_manager_service({"timeout": self._timeout})
         self._wm.rpc = self._rpc
         self._wm.disconnect = self._rpc.disconnect
         self._wm.register_codec = self._rpc.register_codec
@@ -159,7 +159,7 @@ class RedisStore:
     async def load_or_create_workspace(self, user_info: UserInfo, workspace: str):
         """Setup the workspace."""
         if workspace is None:
-            workspace = f"ws-user-{user_info.id}"
+            workspace = user_info.get_workspace()
 
         assert workspace != "*", "Dynamic workspace is not allowed for this endpoint"
         # Anonymous and Temporary users are not allowed to create persistant workspaces
@@ -170,7 +170,7 @@ class RedisStore:
         # Ensure calls to store for workspace existence and permissions check
         workspace_info = await self.get_workspace_info(workspace, load=True)
         if not workspace_info:
-            if workspace != f"ws-user-{user_info.id}":
+            if workspace != user_info.get_workspace():
                 raise KeyError(
                     f"User can only connect to a pre-existing workspace or their own workspace: {workspace}"
                 )
@@ -218,7 +218,7 @@ class RedisStore:
             await self.register_workspace(
                 WorkspaceInfo.model_validate(
                     {
-                        "name": "ws-user-root",
+                        "name": self._root_user.get_workspace(),
                         "description": "Root workspace",
                         "persistent": True,
                         "owners": ["root"],
@@ -275,7 +275,7 @@ class RedisStore:
     async def _register_root_services(self):
         """Register root services."""
         self._root_workspace_interface = await self.get_workspace_interface(
-            "ws-user-root", self._root_user
+            self._root_user.get_workspace(), self._root_user
         )
         await self._root_workspace_interface.register_service(
             {
@@ -331,7 +331,9 @@ class RedisStore:
             raise Exception("Token has been revoked")
         # automatically add user's own workspace to the scope
         if not user_info.scope.workspaces:
-            user_info.scope.workspaces = {user_info.id: UserPermission.admin}
+            user_info.scope.workspaces = {user_info.get_workspace(): UserPermission.admin}
+        if "admin" in user_info.roles:
+            user_info.scope.workspaces["*"] = UserPermission.admin
         return user_info
 
     async def login_optional(

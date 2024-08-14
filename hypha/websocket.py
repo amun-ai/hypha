@@ -77,7 +77,7 @@ class WebsocketServer:
                 else:
                     user_info = generate_anonymous_user()
                     user_info.scope = create_scope(
-                        workspaces={user_info.id: UserPermission.admin},
+                        workspaces={user_info.get_workspace(): UserPermission.admin},
                         client_id=client_id,
                     )
                 workspace_info = await self.store.load_or_create_workspace(
