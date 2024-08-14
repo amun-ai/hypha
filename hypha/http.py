@@ -274,6 +274,36 @@ class HTTPProxy:
 
                 return JSONResponse(status_code=200, content=auth0_response.json())
 
+        @router.get(norm_url("/{workspace}/info"))
+        async def get_workspace_info(
+            workspace: str,
+            user_info: store.login_optional = Depends(store.login_optional),
+        ):
+            """Route for checking details of a workspace."""
+            try:
+                if not user_info.check_permission(workspace, UserPermission.read):
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "success": False,
+                            "detail": (
+                                f"{user_info.id} has no"
+                                f" permission to access {workspace}"
+                            ),
+                        },
+                    )
+
+                info = await self.store.load_or_create_workspace(user_info, workspace)
+                return JSONResponse(
+                    status_code=200,
+                    content=info.model_dump(),
+                )
+            except Exception as exp:
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "detail": str(exp)},
+                )
+
         @router.get(norm_url("/{workspace}/services"))
         async def get_workspace_services(
             workspace: str,
@@ -313,7 +343,9 @@ class HTTPProxy:
                 ) as api:
                     if service_id == "ws":
                         return serialize(api)
-                    service_info = await api.get_service_info(service_id, mode=mode)
+                    service_info = await api.get_service_info(
+                        service_id, {"mode": mode}
+                    )
                 return JSONResponse(
                     status_code=200,
                     content=serialize(service_info),
@@ -453,7 +485,7 @@ class HTTPProxy:
                 async with self.store.get_workspace_interface(
                     workspace, user_info
                 ) as api:
-                    info = await api.get_service_info(service_id, mode=mode)
+                    info = await api.get_service_info(service_id, {"mode": mode})
                     if info.type == "ASGI":
                         service = await api.get_service(info.id)
                         # Call the ASGI app with manually provided receive and send

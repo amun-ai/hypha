@@ -56,6 +56,7 @@ class GetServiceConfig(BaseModel):
         description="The case conversion for service keys, can be 'camel', 'snake' or None, default is None.",
     )
 
+
 class WorkspaceManager:
     def __init__(
         self,
@@ -607,7 +608,9 @@ class WorkspaceManager:
     async def register_service(
         self,
         service: ServiceInfo = Field(..., description="Service info"),
-        config: Optional[dict] = Field(None, description="Service config"),
+        config: Optional[dict] = Field(
+            None, description="Options for registering service"
+        ),
         context: Optional[dict] = None,
     ):
         """Register a new service."""
@@ -693,9 +696,9 @@ class WorkspaceManager:
             ...,
             description="Service id, it can be the service id or the full service id with workspace: `workspace/client_id:service_id`",
         ),
-        mode: Optional[str] = Field(
+        config: Optional[dict] = Field(
             None,
-            description="Mode for selecting the service, it can be 'random', 'first', 'last' or 'exact'",
+            description="Options for getting service, the only available config is `mode`, for selecting the service, it can be 'random', 'first', 'last' or 'exact'",
         ),
         context: Optional[dict] = None,
     ):
@@ -728,6 +731,8 @@ class WorkspaceManager:
         keys = await self._redis.keys(key)
         if not keys:
             raise KeyError(f"Service not found: {service_id}@{app_id}")
+        config = config or {}
+        mode = config.get("mode")
         if mode is None:
             # Set random mode for public services, since there can be many hypha servers
             if workspace == "public":
@@ -771,7 +776,9 @@ class WorkspaceManager:
         if not user_info.check_permission(ws, UserPermission.read_write):
             raise PermissionError(f"Permission denied for workspace {ws}")
 
-        service = await self.get_service_info(service_id, mode="exact", context=context)
+        service = await self.get_service_info(
+            service_id, {"mode": "exact"}, context=context
+        )
         service.config.workspace = ws
         if "/" not in service.id:
             service.id = f"{ws}/{service.id}"
@@ -1047,7 +1054,7 @@ class WorkspaceManager:
             config = config or GetServiceConfig()
             # Permission check will be handled by the get_service_api function
             svc_info = await self.get_service_info(
-                service_id, mode=config.mode, context=context
+                service_id, {"mode": config.mode}, context=context
             )
             service_api = await self._rpc.get_remote_service(
                 svc_info.id,

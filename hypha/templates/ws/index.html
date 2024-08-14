@@ -257,27 +257,35 @@
             );
         };
 
-        const MainContent = ({ panel, clients, services, apps, files, onGenerateUrl, onShowDetails, onInstallApp }) => {
+        const MainContent = ({ workspaceName, panel, clients, services, apps, files, onGenerateUrl, onShowDetails, onInstallApp }) => {
             return (
                 <div className="main-content">
                     <h1 className="text-4xl font-bold capitalize">{panel}</h1>
-                    <p className="text-xl text-gray-400 mt-4">Manage your {panel} efficiently</p>
+                    
                     {panel === 'clients' && (
+                        <>
+                        <p className="text-xl text-gray-400 mt-4">Clients connected to workspace: <code>{workspaceName}</code> </p>
                         <div className="grid grid-cols-1 gap-8 mt-6">
+                            
                             {clients.map(client => (
                                 <ClientCard key={client} client={client} />
                             ))}
                         </div>
+                        </>
                     )}
                     {panel === 'services' && (
+                        <>
+                        <p className="text-xl text-gray-400 mt-4">Services available at workspace: <code>{workspaceName}</code> </p>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mt-6">
                             {services.map(service => (
                                 <ServiceCard key={service.id} service={service} onShowDetails={onShowDetails} />
                             ))}
                         </div>
+                        </>
                     )}
                     {panel === 'apps' && (
-                        
+                        <>
+                        <p className="text-xl text-gray-400 mt-4">Applications installed in workspace: <code>{workspaceName}</code> </p>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mt-6">
                             <button
                             className="mt-4 bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded-full transition duration-300"
@@ -289,13 +297,17 @@
                                 <AppCard key={app.id} app={app} />
                             ))}
                         </div>
+                        </>
                     )}
                     {panel === 'files' && (
+                        <>
+                        <p className="text-xl text-gray-400 mt-4">Files in workspace: <code>{workspaceName}</code> </p>
                         <div className="mt-6">
                             {files.map(file => (
                                 <FileCard key={file.name} file={file} onGenerateUrl={onGenerateUrl} />
                             ))}
                         </div>
+                        </>
                     )}
                 </div>
             );
@@ -336,11 +348,21 @@
                     } else if (activePanel === 'services') {
                         setServices(await ws.listServices(config.workspace));
                     } else if (activePanel === 'apps') {
-                        const controller = await ws.getService("public/server-apps");
-                        setApps(await controller.listApps());
+                        try{
+                            const controller = await ws.getService("public/server-apps");
+                            setApps(await controller.listApps());
+                        }
+                        catch(e){
+                            alert(`Failed to list apps: ${e.message}`);
+                        }
                     } else if (activePanel === 'files') {
-                        const s3 = await ws.getService("public/s3-storage", {case_conversion: "camel", _rkwargs: true});
-                        setFiles(await s3.listFile(""));
+                        try{
+                            const s3 = await ws.getService("public/s3-storage", {case_conversion: "camel"});
+                            setFiles(await s3.listFile(""));
+                        }
+                        catch(e){
+                            alert(`Failed to list files: ${e.message}`);
+                        }
                     }
                 };
                 fetchWorkspaceData();
@@ -359,10 +381,16 @@
 
             const onInstallApp = async () => {
                 const url = prompt("Enter the URL of the app to install", "https://raw.githubusercontent.com/amun-ai/hypha/main/tests/testWebWorkerPlugin.imjoy.html");
-                const controller = await ws.getService("public/server-apps");
-                const appInfo = await controller.install(url);
-                console.log("App installed:", appInfo);
-                setApps(await controller.listApps());
+                try{
+                    if(!url) return;
+                    const controller = await ws.getService("public/server-apps");
+                    const appInfo = await controller.install(url);
+                    console.log("App installed:", appInfo);
+                    setApps(await controller.listApps());
+                }
+                catch(e){
+                    alert(`Failed to install app: ${e.message}`);
+                }
             };
 
             const closeModal = () => {
@@ -378,6 +406,7 @@
                         setActivePanel={setActivePanel}
                     />
                     <MainContent
+                        workspaceName={config.workspace}
                         panel={activePanel}
                         clients={clients}
                         services={services}
