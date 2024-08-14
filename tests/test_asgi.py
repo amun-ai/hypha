@@ -86,7 +86,7 @@ async def test_functions(fastapi_server, test_user_token):
     assert ret["message"] == "Hello World"
     assert "user" in ret["context"]
     user_info = ret["context"]["user"]
-    assert user_info["scope"]["workspaces"]["user-1"] == "rw"
+    assert user_info["scope"]["workspaces"]["ws-user-user-1"] == "rw"
 
     response = requests.get(
         f"{SERVER_URL}/{workspace}/apps/hello-functions/hello-world/"
