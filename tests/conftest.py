@@ -149,7 +149,7 @@ def fastapi_server_fixture(minio_server):
         timeout = 20
         while timeout > 0:
             try:
-                response = requests.get(f"http://127.0.0.1:{SIO_PORT}/health/liveness")
+                response = requests.get(f"http://127.0.0.1:{SIO_PORT}/health/readiness")
                 if response.ok:
                     break
             except RequestException:
@@ -158,6 +158,8 @@ def fastapi_server_fixture(minio_server):
             time.sleep(0.1)
         if timeout <= 0:
             raise TimeoutError("Server (fastapi_server) did not start in time")
+        response = requests.get(f"http://127.0.0.1:{SIO_PORT}/health/liveness")
+        assert response.ok
         yield
         proc.kill()
         proc.terminate()
@@ -187,7 +189,7 @@ def fastapi_server_redis_1(minio_server):
         while timeout > 0:
             try:
                 response = requests.get(
-                    f"http://127.0.0.1:{SIO_PORT_REDIS_1}/health/liveness"
+                    f"http://127.0.0.1:{SIO_PORT_REDIS_1}/health/readiness"
                 )
                 if response.ok:
                     break
@@ -225,7 +227,7 @@ def fastapi_server_redis_2(minio_server, fastapi_server):
         while timeout > 0:
             try:
                 response = requests.get(
-                    f"http://127.0.0.1:{SIO_PORT_REDIS_2}/health/liveness"
+                    f"http://127.0.0.1:{SIO_PORT_REDIS_2}/health/readiness"
                 )
                 if response.ok:
                     break
@@ -257,7 +259,7 @@ def fastapi_subpath_server_fixture(minio_server):
         while timeout > 0:
             try:
                 response = requests.get(
-                    f"http://127.0.0.1:{SIO_PORT2}/my/engine/health/liveness"
+                    f"http://127.0.0.1:{SIO_PORT2}/my/engine/health/readiness"
                 )
                 if response.ok:
                     break
