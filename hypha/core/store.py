@@ -5,10 +5,12 @@ import logging
 import sys
 from typing import List, Union
 from pydantic import BaseModel
+from fastapi import Header, Cookie
 
 from hypha_rpc import RPC
 from starlette.routing import Mount
 
+from hypha import __version__
 from hypha.core import (
     RedisEventBus,
     RedisRPCConnection,
@@ -17,7 +19,17 @@ from hypha.core import (
     UserInfo,
     WorkspaceInfo,
 )
-from hypha.core.auth import create_scope
+from hypha.core.auth import (
+    create_scope,
+    parse_token,
+    generate_anonymous_user,
+    UserPermission,
+    AUTH0_CLIENT_ID,
+    AUTH0_DOMAIN,
+    AUTH0_AUDIENCE,
+    AUTH0_ISSUER,
+    LOGIN_SERVICE_URL,
+)
 from hypha.core.workspace import WorkspaceManager
 from hypha.startup import run_startup_function
 from hypha.utils import random_id
@@ -50,7 +62,7 @@ class WorkspaceInterfaceContextManager:
         # Check if workspace exists
         if not await self._redis.hexists("workspaces", self._workspace):
             raise KeyError(f"Workspace {self._workspace} does not exist")
-        self._wm = await self._rpc.get_manager_service(self._timeout)
+        self._wm = await self._rpc.get_manager_service({"timeout": self._timeout})
         self._wm.rpc = self._rpc
         self._wm.disconnect = self._rpc.disconnect
         self._wm.register_codec = self._rpc.register_codec
@@ -91,8 +103,14 @@ class RedisStore:
         self.manager_id = None
         self.reconnection_token_life_time = reconnection_token_life_time
         self._server_info = {
+            "hypha_version": __version__,
             "public_base_url": self.public_base_url,
             "local_base_url": self.local_base_url,
+            "auth0_client_id": AUTH0_CLIENT_ID,
+            "auth0_domain": AUTH0_DOMAIN,
+            "auth0_audience": AUTH0_AUDIENCE,
+            "auth0_issuer": AUTH0_ISSUER,
+            "login_service_url": f"{self.public_base_url}{LOGIN_SERVICE_URL}",
         }
 
         if redis_uri and redis_uri.startswith("redis://"):
@@ -138,6 +156,37 @@ class RedisStore:
         )
         return self._root_user
 
+    async def load_or_create_workspace(self, user_info: UserInfo, workspace: str):
+        """Setup the workspace."""
+        if workspace is None:
+            workspace = user_info.get_workspace()
+
+        assert workspace != "*", "Dynamic workspace is not allowed for this endpoint"
+        # Anonymous and Temporary users are not allowed to create persistant workspaces
+        persistent = (
+            not user_info.is_anonymous and "temporary-test-user" not in user_info.roles
+        )
+
+        # Ensure calls to store for workspace existence and permissions check
+        workspace_info = await self.get_workspace_info(workspace, load=True)
+        if not workspace_info:
+            if workspace != user_info.get_workspace():
+                raise KeyError(
+                    f"User can only connect to a pre-existing workspace or their own workspace: {workspace}"
+                )
+            # Simplified logic for workspace creation, ensure this matches the actual store method signatures
+            workspace_info = await self.register_workspace(
+                {
+                    "name": workspace,
+                    "description": f"Default user workspace for {user_info.id}",
+                    "persistent": persistent,
+                    "owners": [user_info.id],
+                    "read_only": user_info.is_anonymous,
+                }
+            )
+            logger.info(f"Created workspace: {workspace}")
+        return workspace_info
+
     def get_root_user(self):
         """Get the root user."""
         return self._root_user
@@ -169,7 +218,7 @@ class RedisStore:
             await self.register_workspace(
                 WorkspaceInfo.model_validate(
                     {
-                        "name": "root",
+                        "name": self._root_user.get_workspace(),
                         "description": "Root workspace",
                         "persistent": True,
                         "owners": ["root"],
@@ -212,7 +261,7 @@ class RedisStore:
             try:
                 await api.register_service(
                     service.model_dump(),
-                    notify=True,
+                    {"notify": True},
                 )
             except Exception:  # pylint: disable=broad-except
                 logger.exception("Failed to register public service: %s", service)
@@ -226,7 +275,7 @@ class RedisStore:
     async def _register_root_services(self):
         """Register root services."""
         self._root_workspace_interface = await self.get_workspace_interface(
-            "root", self._root_user
+            self._root_user.get_workspace(), self._root_user
         )
         await self._root_workspace_interface.register_service(
             {
@@ -237,6 +286,7 @@ class RedisStore:
                     "require_context": False,
                 },
                 "kickout_client": self.kickout_client,
+                "list_workspaces": self.list_all_workspaces,
             }
         )
 
@@ -272,6 +322,36 @@ class RedisStore:
             json.loads(workspace_info.decode())
         )
         return workspace_info
+
+    async def parse_user_token(self, token):
+        """Parse a client token."""
+        user_info = parse_token(token)
+        key = "revoked_token:" + token
+        if await self._redis.exists(key):
+            raise Exception("Token has been revoked")
+        # automatically add user's own workspace to the scope
+        if not user_info.scope.workspaces:
+            user_info.scope.workspaces = {
+                user_info.get_workspace(): UserPermission.admin
+            }
+        if "admin" in user_info.roles:
+            user_info.scope.workspaces["*"] = UserPermission.admin
+        return user_info
+
+    async def login_optional(
+        self, authorization: str = Header(None), access_token: str = Cookie(None)
+    ):
+        """Return user info or create an anonymouse user.
+
+        If authorization code is valid the user info is returned,
+        If the code is invalid an an anonymouse user is created.
+        """
+        token = authorization or access_token
+        if token:
+            user_info = await self.parse_user_token(token)
+            return user_info
+        else:
+            return generate_anonymous_user()
 
     async def get_all_workspace(self):
         """Get all workspaces."""
@@ -323,6 +403,10 @@ class RedisStore:
         await manager.setup()
         return manager
 
+    def get_server_info(self):
+        """Get the server information."""
+        return self._server_info
+
     def get_workspace_interface(
         self,
         workspace: str,
@@ -346,7 +430,14 @@ class RedisStore:
     async def list_all_workspaces(self):
         """List all workspaces."""
         workspace_keys = await self._redis.hkeys("workspaces")
-        return [k.decode() for k in workspace_keys]
+        workspaces = []
+        for k in workspace_keys:
+            workspace_info = await self._redis.hget("workspaces", k)
+            workspace_info = WorkspaceInfo.model_validate(
+                json.loads(workspace_info.decode())
+            )
+            workspaces.append(workspace_info)
+        return [workspace for workspace in workspaces]
 
     def create_rpc(
         self,
@@ -380,7 +471,7 @@ class RedisStore:
         )
         return rpc
 
-    async def get_workspace(self, workspace: str, load: bool = False):
+    async def get_workspace_info(self, workspace: str, load: bool = False):
         """Return the workspace information."""
         try:
             return await self._workspace_manager.load_workspace_info(

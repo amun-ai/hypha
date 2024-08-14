@@ -10,16 +10,14 @@
 
 <body>
 <script id="worker" type="javascript/worker">
-window = self;
 
-self.onmessage = function(e) {
+self.onmessage = async function(e) {
+const hyphaWebsocketClient = await import("{{ hypha_rpc_websocket_mjs }}");
 const config = e.data
-
-importScripts("{{ rpc_lib_script }}")
-hyphaWebsocketClient.connectToServer(config).then(async (api)=>{
+const api = await hyphaWebsocketClient.connectToServer(config)
 await hyphaWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
 {{ script | safe }}
-}).catch(console.error)
+
 }
 </script>
 <script>
@@ -27,7 +25,7 @@ window.onload = function() {
     const blob = new Blob([
         document.querySelector('#worker').textContent
     ], { type: "text/javascript" })
-    const worker = new Worker(window.URL.createObjectURL(blob));
+    const worker = new Worker(window.URL.createObjectURL(blob), {type: "module"});
     worker.onerror = console.error
     worker.onmessage = console.log
     const config = {{ config | tojson(indent=2) }}

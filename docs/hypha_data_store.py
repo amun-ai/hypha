@@ -20,7 +20,7 @@ class HyphaDataStore:
                 "config": {"visibility": visibility, "require_context": False},
                 "get": self.http_get,
             },
-            overwrite=True,
+            {"overwrite": True},
         )
 
     def get_url(self, obj_id: str):

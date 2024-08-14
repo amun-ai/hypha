@@ -11,9 +11,7 @@ from hypha import __version__
 from hypha.core import UserInfo, UserPermission
 from hypha.core.store import RedisRPCConnection, RedisStore
 from hypha.core.auth import (
-    parse_reconnection_token,
     generate_reconnection_token,
-    parse_token,
     generate_anonymous_user,
     create_scope,
     update_user_scope,
@@ -79,11 +77,11 @@ class WebsocketServer:
                 else:
                     user_info = generate_anonymous_user()
                     user_info.scope = create_scope(
-                        workspaces={user_info.id: UserPermission.admin},
+                        workspaces={user_info.get_workspace(): UserPermission.admin},
                         client_id=client_id,
                     )
-                workspace_info, user_info = await self.setup_workspace_and_permissions(
-                    user_info, workspace, client_id
+                workspace_info = await self.store.load_or_create_workspace(
+                    user_info, workspace
                 )
                 user_info.scope = update_user_scope(
                     user_info, workspace_info, client_id
@@ -184,13 +182,24 @@ class WebsocketServer:
             # remove dead client
             await self.store.remove_client(client_id, workspace, user_info)
 
-    async def authenticate_user(self, token, reconnection_token, client_id, workspace):
+    async def authenticate_user(
+        self, token: str, reconnection_token: str, client_id: str, workspace: str
+    ):
         """Authenticate user and handle reconnection or token authentication."""
-        # Ensure actual implementation calls for parse_reconnection_token and parse_token
         user_info = None
         try:
             if reconnection_token:
-                user_info, ws, cid = parse_reconnection_token(reconnection_token)
+                user_info = await self.store.parse_user_token(reconnection_token)
+                scope = user_info.scope
+                assert (
+                    len(scope.workspaces) == 1
+                ), "Invalid scope, it must have only one workspace"
+                assert scope.client_id, "Invalid scope, client_id is required"
+                assert (
+                    len(scope.workspaces) == 1
+                ), "Invalid scope, it must have only one workspace"
+                ws = list(scope.workspaces.keys())[0]
+                cid = scope.client_id
                 if workspace and workspace != ws:
                     logger.error("Workspace mismatch, disconnecting")
                     raise RuntimeError("Workspace mismatch, disconnecting")
@@ -199,7 +208,7 @@ class WebsocketServer:
                     raise RuntimeError("Client id mismatch, disconnecting")
                 logger.info(f"Client reconnected: {ws}/{cid} using reconnection token")
             elif token:
-                user_info = parse_token(token)
+                user_info = await self.store.parse_user_token(token)
                 # user token doesn't have client id, so we add that
                 user_info.scope.client_id = client_id
             else:
@@ -211,38 +220,6 @@ class WebsocketServer:
         except Exception as e:
             logger.error(f"Authentication error: {str(e)}")
             raise RuntimeError(f"Authentication error: {str(e)}")
-
-    async def setup_workspace_and_permissions(
-        self, user_info: UserInfo, workspace, client_id
-    ):
-        """Setup workspace and check permissions."""
-        if workspace is None:
-            workspace = user_info.id
-
-        assert workspace != "*", "Dynamic workspace is not allowed for this endpoint"
-        # Anonymous and Temporary users are not allowed to create persistant workspaces
-        persistent = (
-            not user_info.is_anonymous and "temporary-test-user" not in user_info.roles
-        )
-
-        # Ensure calls to store for workspace existence and permissions check
-        workspace_info = await self.store.get_workspace(workspace, load=True)
-        if not workspace_info:
-            assert (
-                workspace == user_info.id
-            ), "User can only connect to a pre-existing workspace or their own workspace"
-            # Simplified logic for workspace creation, ensure this matches the actual store method signatures
-            workspace_info = await self.store.register_workspace(
-                {
-                    "name": workspace,
-                    "description": f"Default user workspace for {user_info.id}",
-                    "persistent": persistent,
-                    "owners": [user_info.id],
-                    "read_only": user_info.is_anonymous,
-                }
-            )
-            logger.info(f"Created workspace: {workspace}")
-        return workspace_info, user_info
 
     async def establish_websocket_communication(
         self, websocket, workspace, client_id, user_info
@@ -267,6 +244,9 @@ class WebsocketServer:
             async def send_bytes(data):
                 try:
                     await websocket.send_bytes(data)
+                except RuntimeError:
+                    logger.warning("Failed to send message, closing")
+                    await conn.disconnect("disconnected")
                 except ConnectionClosedOK:
                     logger.warning("Failed to send message, closing redis connection")
                     await conn.disconnect("disconnected")

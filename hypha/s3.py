@@ -18,7 +18,6 @@ from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
 from hypha.core import UserInfo, WorkspaceInfo, UserPermission
-from hypha.core.auth import login_optional
 from hypha.core.store import RedisStore
 from hypha.minio import MinioClient
 from hypha.utils import (
@@ -153,6 +152,7 @@ class S3Controller:
         endpoint_url=None,
         access_key_id=None,
         secret_access_key=None,
+        region_name=None,
         endpoint_url_public=None,
         s3_admin_type="generic",
         workspace_bucket="hypha-workspaces",
@@ -164,6 +164,7 @@ class S3Controller:
         self.endpoint_url = endpoint_url
         self.access_key_id = access_key_id
         self.secret_access_key = secret_access_key
+        self.region_name = region_name
         self.s3_admin_type = s3_admin_type
         if self.s3_admin_type == "minio":
             self.minio_client = MinioClient(
@@ -217,10 +218,10 @@ class S3Controller:
             workspace: str,
             path: str,
             request: Request,
-            user_info: login_optional = Depends(login_optional),
+            user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Upload file."""
-            ws = await store.get_workspace(workspace, load=True)
+            ws = await store.get_workspace_info(workspace, load=True)
             if not ws:
                 return JSONResponse(
                     status_code=404,
@@ -264,10 +265,10 @@ class S3Controller:
             path: str,
             request: Request,
             max_length: int = 1000,
-            user_info: login_optional = Depends(login_optional),
+            user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Get or delete file."""
-            ws = await store.get_workspace(workspace, load=True)
+            ws = await store.get_workspace_info(workspace, load=True)
             if not ws:
                 return JSONResponse(
                     status_code=404,
@@ -484,7 +485,7 @@ class S3Controller:
             endpoint_url=self.endpoint_url,
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
-            region_name="EU",
+            region_name=self.region_name,
         )
 
     def create_client_async(self, public=False):
@@ -494,7 +495,7 @@ class S3Controller:
             endpoint_url=self.endpoint_url_public if public else self.endpoint_url,
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
-            region_name="EU",
+            region_name=self.region_name,
         )
 
     async def list_users(
@@ -624,7 +625,7 @@ class S3Controller:
         """Generate credential."""
         assert self.minio_client, "Minio client is not available"
         workspace = context["ws"]
-        ws = await self.store.get_workspace(workspace, load=True)
+        ws = await self.store.get_workspace_info(workspace, load=True)
         assert ws, f"Workspace {workspace} not found."
         if ws.read_only:
             raise Exception("Permission denied: workspace is read-only")
@@ -642,6 +643,7 @@ class S3Controller:
             "endpoint_url": self.endpoint_url_public,  # Return the public endpoint
             "access_key_id": user_info.id,
             "secret_access_key": password,
+            "region_name": self.region_name,
             "bucket": self.workspace_bucket,
             "prefix": workspace + "/",  # important to have the trailing slash
         }
@@ -654,7 +656,15 @@ class S3Controller:
     ) -> Dict[str, Any]:
         """List files in the folder."""
         workspace = context["ws"]
-        path = safe_join(workspace, path)
+        if path.startswith("/"):
+            user_info = UserInfo.model_validate(context["user"])
+            assert user_info.check_permission(
+                "*", UserPermission.admin
+            ), "Permission denied: only admin can access the root folder."
+            # remove the leading slash
+            path = path[1:]
+        else:
+            path = safe_join(workspace, path)
         async with self.create_client_async() as s3_client:
             # List files in the folder
             if not path.endswith("/"):
@@ -669,8 +679,7 @@ class S3Controller:
 
     async def generate_presigned_url(
         self,
-        bucket_name,
-        object_name,
+        path: str,
         client_method="get_object",
         expiration=3600,
         context: dict = None,
@@ -678,21 +687,23 @@ class S3Controller:
         """Generate presigned url."""
         try:
             workspace = context["ws"]
-            ws = await self.store.get_workspace(workspace, load=True)
+            ws = await self.store.get_workspace_info(workspace, load=True)
             assert ws, f"Workspace {workspace} not found."
             if ws.read_only and client_method != "get_object":
                 raise Exception("Permission denied: workspace is read-only")
-            if bucket_name != self.workspace_bucket or not object_name.startswith(
-                workspace + "/"
-            ):
-                raise Exception(
-                    f"Permission denied: bucket name must be {self.workspace_bucket} "
-                    "and the object name should be prefixed with workspace name + '/'."
-                )
+            if path.startswith("/"):
+                user_info = UserInfo.model_validate(context["user"])
+                assert user_info.check_permission(
+                    "*", UserPermission.admin
+                ), "Permission denied: only admin can access the root folder."
+                # remove the leading slash
+                path = path[1:]
+            else:
+                path = safe_join(workspace, path)
             async with self.create_client_async(public=True) as s3_client:
                 url = await s3_client.generate_presigned_url(
                     client_method,
-                    Params={"Bucket": bucket_name, "Key": object_name},
+                    Params={"Bucket": self.workspace_bucket, "Key": path},
                     ExpiresIn=expiration,
                 )
                 return url

@@ -2,36 +2,28 @@
 import asyncio
 import json
 import logging
-import os
 import random
-import shutil
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from urllib.request import urlopen
 
-import aiofiles
 import base58
-import jose
 import multihash
 from aiobotocore.session import get_session
-from fastapi import APIRouter
-from fastapi.responses import JSONResponse, FileResponse
 from jinja2 import Environment, PackageLoader, select_autoescape
-from starlette.responses import Response
 
+from hypha import __version__
 from hypha.core import Card, UserInfo, ServiceInfo, UserPermission
-from hypha.core.auth import parse_user
 from hypha.core.store import RedisStore
 from hypha.plugin_parser import convert_config_to_card, parse_imjoy_plugin
 from hypha.runner.browser import BrowserAppRunner
-from hypha.s3 import FSFileResponse
 from hypha.utils import (
     PLUGIN_CONFIG_FIELDS,
     list_objects_async,
     remove_objects_async,
-    safe_join,
     random_id,
+    safe_join,
 )
 
 logging.basicConfig(stream=sys.stdout)
@@ -39,16 +31,6 @@ logger = logging.getLogger("apps")
 logger.setLevel(logging.INFO)
 
 multihash.CodecReg.register("base58", base58.b58encode, base58.b58decode)
-
-
-def is_safe_path(basedir: str, path: str, follow_symlinks: bool = True) -> bool:
-    """Check if the file path is safe."""
-    # resolves symbolic links
-    if follow_symlinks:
-        matchpath = os.path.realpath(path)
-    else:
-        matchpath = os.path.abspath(path)
-    return basedir == os.path.commonpath((basedir, matchpath))
 
 
 class ServerAppController:
@@ -64,6 +46,7 @@ class ServerAppController:
         endpoint_url=None,
         access_key_id=None,
         secret_access_key=None,
+        region_name=None,
         workspace_bucket="hypha-workspaces",
         workspace_etc_dir="etc",
     ):  # pylint: disable=too-many-arguments
@@ -74,13 +57,12 @@ class ServerAppController:
         self.endpoint_url = endpoint_url
         self.access_key_id = access_key_id
         self.secret_access_key = secret_access_key
+        self.region_name = region_name
         self.s3_enabled = endpoint_url is not None
         self.workspace_bucket = workspace_bucket
         self.workspace_etc_dir = workspace_etc_dir
         self.local_base_url = store.local_base_url
         self.public_base_url = store.public_base_url
-        self._rpc_lib_script = "https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.14/dist/hypha-rpc-websocket.min.js"
-        # self._rpc_lib_script = "http://localhost:9099/hypha-rpc-websocket.js"
         self.event_bus = store.get_event_bus()
         self.store = store
         # self.event_bus.on("workspace_unloaded", self._on_workspace_unloaded)
@@ -89,75 +71,11 @@ class ServerAppController:
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
         )
         self.templates_dir = Path(__file__).parent / "templates"
-        self.builtin_apps_dir = Path(__file__).parent / "built-in"
-        router = APIRouter()
         # start the browser runner
         self._runner = [
             BrowserAppRunner(self.store, in_docker=self.in_docker),
             BrowserAppRunner(self.store, in_docker=self.in_docker),
         ]
-
-        @router.get("/{workspace}/a/{app_id}/{path:path}")
-        async def get_app_file(
-            workspace: str, app_id: str, path: str, token: str = None
-        ) -> Response:
-            if workspace == "public" and app_id == "built-in":
-                # get the jinja template from the built-in apps dir
-                path = safe_join(str(self.builtin_apps_dir), path)
-                if not is_safe_path(str(self.builtin_apps_dir), path):
-                    return JSONResponse(
-                        status_code=403,
-                        content={
-                            "success": False,
-                            "detail": f"Unsafe path: {path}",
-                        },
-                    )
-                if not os.path.exists(path):
-                    return JSONResponse(
-                        status_code=404,
-                        content={"success": False, "detail": f"File not found: {path}"},
-                    )
-                # compile the jinja template
-                template = self.jinja_env.get_template(path)
-                return Response(template.render(rpc_lib_script=self._rpc_lib_script))
-            else:
-                if token is None:
-                    return JSONResponse(
-                        status_code=403,
-                        content={
-                            "success": False,
-                            "detail": (f"Token not provided for {workspace}/{path}"),
-                        },
-                    )
-                try:
-                    user_info = parse_user(token)
-                except jose.exceptions.JWTError:
-                    return JSONResponse(
-                        status_code=403,
-                        content={
-                            "success": False,
-                            "detail": (
-                                f"Invalid token not provided for {workspace}/{path}"
-                            ),
-                        },
-                    )
-                if not user_info.check_permission(workspace, UserPermission.read):
-                    return JSONResponse(
-                        status_code=403,
-                        content={
-                            "success": False,
-                            "detail": (
-                                f"{user_info['username']} has no"
-                                f" permission to access {workspace}"
-                            ),
-                        },
-                    )
-                key = safe_join(self.workspace_etc_dir, workspace, app_id, path)
-                return FSFileResponse(
-                    self.create_client_async(), self.workspace_bucket, key
-                )
-
-        store.register_router(router)
 
         def close(_) -> None:
             asyncio.ensure_future(self.close())
@@ -172,7 +90,7 @@ class ServerAppController:
             endpoint_url=self.endpoint_url,
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
-            region_name="EU",
+            region_name=self.region_name,
         )
 
     async def _on_workspace_unloaded(self, workspace: dict):
@@ -203,7 +121,7 @@ class ServerAppController:
         if not workspace:
             workspace = context["ws"]
 
-        workspace = await self.store.get_workspace(workspace, load=True)
+        workspace = await self.store.get_workspace_info(workspace, load=True)
         assert workspace, f"Workspace {workspace} not found."
         return [app_info.model_dump() for app_info in workspace.applications.values()]
 
@@ -314,7 +232,7 @@ class ServerAppController:
             workspace = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
-        workspace_info = await self.store.get_workspace(workspace, load=True)
+        workspace_info = await self.store.get_workspace_info(workspace, load=True)
         assert workspace_info, f"Workspace {workspace} not found."
         if not user_info.check_permission(
             workspace_info.name, UserPermission.read_write
@@ -347,20 +265,24 @@ class ServerAppController:
             try:
                 config = parse_imjoy_plugin(source)
                 config["source_hash"] = mhash
-                temp = self.jinja_env.get_template(config["type"] + "-app.html")
+                temp = self.jinja_env.get_template(
+                    safe_join("apps", config["type"] + "-app.html")
+                )
                 source = temp.render(
+                    hypha_version=__version__,
+                    hypha_rpc_websocket_mjs=self.public_base_url
+                    + "/hypha-rpc-websocket.mjs",
                     config={k: config[k] for k in config if k in PLUGIN_CONFIG_FIELDS},
                     script=config["script"],
                     requirements=config["requirements"],
                     local_base_url=self.local_base_url,
-                    rpc_lib_script=self._rpc_lib_script,
                 )
             except Exception as err:
                 raise Exception(
                     f"Failed to parse or compile the hypha app {mhash}: {source[:100]}...",
                 ) from err
         elif template:
-            temp = self.jinja_env.get_template(template)
+            temp = self.jinja_env.get_template(safe_join("apps", template))
             default_config = {
                 "name": "Untitled Plugin",
                 "version": "0.1.0",
@@ -369,24 +291,24 @@ class ServerAppController:
             default_config.update(config or {})
             config = default_config
             source = temp.render(
+                hypha_version=__version__,
+                hypha_rpc_websocket_mjs=self.public_base_url
+                + "/hypha-rpc-websocket.mjs",
                 script=source,
                 source_hash=mhash,
                 config=config,
                 requirements=config.get("requirements", []),
-                rpc_lib_script=self._rpc_lib_script,
             )
         elif not source:
             raise Exception("Source or template should be provided.")
 
         app_id = f"{mhash}"
 
-        public_url = (
-            f"{self.public_base_url}/{workspace_info.name}/a/{app_id}/index.html"
-        )
+        public_url = f"{self.public_base_url}/{workspace_info.name}/browser-apps/{app_id}/index.html"
         card_obj = convert_config_to_card(config, app_id, public_url)
         card_obj.update(
             {
-                "local_url": f"{self.local_base_url}/{workspace_info.name}/a/{app_id}/index.html",
+                "local_url": f"{self.local_base_url}/{workspace_info.name}/browser-apps/{app_id}/index.html",
                 "public_url": public_url,
             }
         )
@@ -428,7 +350,7 @@ class ServerAppController:
         )
         workspace_name = context["ws"]
         mhash = app_id
-        workspace = await self.store.get_workspace(workspace_name, load=True)
+        workspace = await self.store.get_workspace_info(workspace_name, load=True)
         assert workspace, f"Workspace {workspace} not found."
         user_info = UserInfo.model_validate(context["user"])
         if not user_info.check_permission(workspace.name, UserPermission.read_write):
@@ -499,30 +421,28 @@ class ServerAppController:
         if client_id is None:
             client_id = random_id(readable=True)
 
-        workspace_info = await self.store.get_workspace(workspace, load=True)
+        workspace_info = await self.store.get_workspace_info(workspace, load=True)
         assert workspace, f"Workspace {workspace} not found."
         assert (
             app_id in workspace_info.applications
         ), f"App {app_id} not found in workspace {workspace}, please install it first."
 
-        server_url = self.local_base_url.replace("http://", "ws://")
-        server_url = server_url.replace("https://", "wss://")
+        server_url = self.local_base_url
         local_url = (
-            f"{self.local_base_url}/{workspace}/a/{app_id}/index.html?"
+            f"{self.local_base_url}/{workspace}/browser-apps/{app_id}/index.html?"
             + f"client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
-            + f"&server_url={server_url}/ws"
+            + f"&server_url={server_url}"
             + f"&token={token}"
             if token
             else ""
         )
-        server_url = self.public_base_url.replace("http://", "ws://")
-        server_url = server_url.replace("https://", "wss://")
+        server_url = self.public_base_url
         public_url = (
-            f"{self.public_base_url}/{workspace}/a/{app_id}/index.html?"
+            f"{self.public_base_url}/{workspace}/browser-apps/{app_id}/index.html?"
             + f"client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
-            + f"&server_url={server_url}/ws"
+            + f"&server_url={server_url}"
             + f"&token={token}"
             if token
             else ""

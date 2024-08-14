@@ -1,11 +1,11 @@
-import asyncio
 import re
 import json
 import logging
-import random
+import time
 import sys
 from typing import Optional, Union, List, Any
 from contextlib import asynccontextmanager
+import random
 
 from fakeredis import aioredis
 from hypha_rpc import RPC
@@ -18,11 +18,12 @@ from hypha.core import (
     UserInfo,
     WorkspaceInfo,
     ServiceInfo,
+    RemoteService,
     TokenConfig,
     UserPermission,
     ServiceTypeInfo,
 )
-from hypha.core.auth import generate_presigned_token, create_scope
+from hypha.core.auth import generate_presigned_token, create_scope, valid_token
 from hypha.utils import EventBus, random_id
 
 logging.basicConfig(stream=sys.stdout)
@@ -32,13 +33,28 @@ logger.setLevel(logging.INFO)
 SERVICE_SUMMARY_FIELD = ["id", "name", "type", "description", "config"]
 
 # Ensure the client_id is safe
-_allowed_characters = re.compile(r"^[a-zA-Z0-9-_/*]*$")
+_allowed_characters = re.compile(r"^[a-zA-Z0-9-_/|*]*$")
 
 
 def validate_key_part(key_part: str):
     """Ensure key parts only contain safe characters."""
     if not _allowed_characters.match(key_part):
         raise ValueError(f"Invalid characters in query part: {key_part}")
+
+
+class GetServiceConfig(BaseModel):
+    mode: Optional[str] = Field(
+        None,
+        description="Mode for selecting the service, it can be 'random', 'first', 'last' or 'exact'",
+    )
+    timeout: Optional[float] = Field(
+        10.0,
+        description="The timeout duration in seconds for fetching the service. This determines how long the function will wait for a service to respond before considering it a timeout.",
+    )
+    case_conversion: Optional[str] = Field(
+        None,
+        description="The case conversion for service keys, can be 'camel', 'snake' or None, default is None.",
+    )
 
 
 class WorkspaceManager:
@@ -71,13 +87,13 @@ class WorkspaceManager:
         """Setup the workspace manager."""
         if self._initialized:
             return self._rpc
-        self._client_id = "workspace-manager-" + random_id(readable=False)
+        self._client_id = "ws-" + random_id(readable=False)
         rpc = self._create_rpc(self._client_id)
         self._rpc = rpc
         management_service = self.create_service(service_id, service_name)
         await rpc.register_service(
             management_service,
-            notify=False,
+            {"notify": False},
         )
         self._initialized = True
         return rpc
@@ -110,22 +126,18 @@ class WorkspaceManager:
         """Validate the workspace name."""
         if not name:
             raise ValueError("Workspace name must not be empty.")
-        # only allow numbers, letters in lower case, hyphens, underscores and |
+
+        if "-" not in name:
+            raise ValueError(
+                "Workspace name must contain at least one hyphen (e.g. my-workspace)."
+            )
+        # only allow numbers, letters in lower case and hyphens (no underscore)
         # use a regex to validate the workspace name
-        pattern = re.compile(r"^[a-z0-9-_|]*$")
+        pattern = re.compile(r"^[a-z0-9-]*$")
         if not pattern.match(name):
-            raise ValueError(f"Invalid workspace name: {name}, must match {pattern}")
-        if name in [
-            "protected",
-            "private",
-            "default",
-            "built-in",
-            "all",
-            "admin",
-            "system",
-            "server",
-        ]:
-            raise ValueError("Invalid workspace name: " + name)
+            raise ValueError(
+                f"Invalid workspace name: {name}, only lowercase letters, numbers and hyphens are allowed."
+            )
         return name
 
     async def _bookmark_workspace(
@@ -136,7 +148,7 @@ class WorkspaceManager:
     ):
         """Bookmark the workspace for the user."""
         assert isinstance(workspace, WorkspaceInfo) and isinstance(user_info, UserInfo)
-        user_workspace = await self.load_workspace_info(user_info.id)
+        user_workspace = await self.load_workspace_info(user_info.get_workspace())
         user_workspace.config = user_workspace.config or {}
         if "bookmarks" not in user_workspace.config:
             user_workspace.config["bookmarks"] = []
@@ -154,7 +166,7 @@ class WorkspaceManager:
     ) -> List[dict]:
         """Get the bookmarked workspaces for the user."""
         try:
-            user_workspace = await self.load_workspace_info(user_info.id)
+            user_workspace = await self.load_workspace_info(user_info.get_workspace())
             return user_workspace.config.get("bookmarks", [])
         except KeyError:
             return []
@@ -185,7 +197,8 @@ class WorkspaceManager:
         workspace = WorkspaceInfo.model_validate(config)
         if user_info.id not in workspace.owners:
             workspace.owners.append(user_info.id)
-        self._validate_workspace_name(workspace.name)
+        if user_info.id != "root":
+            self._validate_workspace_name(workspace.name)
         # make sure we add the user's email to owners
         _id = user_info.email or user_info.id
         if _id not in workspace.owners:
@@ -193,7 +206,7 @@ class WorkspaceManager:
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
 
         # user workspace, let's store all the created workspaces
-        if user_info.id == workspace.name:
+        if user_info.get_workspace() == workspace.name:
             workspace.config = workspace.config or {}
             workspace.config["bookmarks"] = [
                 {
@@ -206,7 +219,7 @@ class WorkspaceManager:
             "workspaces", workspace.name, workspace.model_dump_json()
         )
         await self._event_bus.emit("workspace_loaded", workspace.model_dump())
-        if user_info.id != workspace.name:
+        if user_info.get_workspace() != workspace.name:
             await self._bookmark_workspace(workspace, user_info, context=context)
         return workspace.model_dump()
 
@@ -269,6 +282,24 @@ class WorkspaceManager:
         workspace_info.service_types[service_type_id] = type_info
         await self._update_workspace(workspace_info, user_info)
         return type_info
+
+    @schema_method
+    async def revoke_token(
+        self,
+        token: str = Field(..., description="token to be revoked"),
+        context: dict = None,
+    ):
+        """Revoke a token by storing it in Redis with a prefix and expiration time."""
+        self.validate_context(context, UserPermission.admin)
+        try:
+            payload = valid_token(token)
+        except Exception as e:
+            raise ValueError(f"Invalid token: {e}")
+        expiration = int(payload.get("exp") - time.time())
+        if expiration > 0:
+            await self._redis.setex("revoked_token:" + token, expiration, "revoked")
+        else:
+            raise ValueError("Token has already expired")
 
     @schema_method
     async def get_service_type(
@@ -577,6 +608,9 @@ class WorkspaceManager:
     async def register_service(
         self,
         service: ServiceInfo = Field(..., description="Service info"),
+        config: Optional[dict] = Field(
+            None, description="Options for registering service"
+        ),
         context: Optional[dict] = None,
     ):
         """Register a new service."""
@@ -594,11 +628,23 @@ class WorkspaceManager:
         assert ":" in service.id, "Service id info must contain ':'"
         service.app_id = service.app_id or "*"
 
+        service_name = service.id.split(":")[1]
+        workspace = service.id.split("/")[0]
+        key = f"services:*:{workspace}/*:{service_name}@*"
+        peer_keys = await self._redis.keys(key)
+        if len(peer_keys) > 0:
+            for peer_key in peer_keys:
+                peer_service = await self._redis.hgetall(peer_key)
+                peer_service = ServiceInfo.from_redis_dict(peer_service)
+                if peer_service.config.singleton:
+                    raise ValueError(
+                        f"A singleton service with the same name ({service_name}) has already exists in the workspace ({workspace}), please remove it first or use a different name."
+                    )
         key = (
             f"services:{service.config.visibility.value}:{service.id}@{service.app_id}"
         )
         # Check if the clients exists if not a built-in service
-        if ":built-in" not in service.id and ws not in ["root", "public"]:
+        if ":built-in" not in service.id and ws not in ["ws-user-root", "public"]:
             builtins = await self._redis.keys(f"services:*:{client_id}:built-in@*")
             if not builtins:
                 logger.warning(
@@ -650,6 +696,10 @@ class WorkspaceManager:
             ...,
             description="Service id, it can be the service id or the full service id with workspace: `workspace/client_id:service_id`",
         ),
+        config: Optional[dict] = Field(
+            None,
+            description="Options for getting service, the only available config is `mode`, for selecting the service, it can be 'random', 'first', 'last' or 'exact'",
+        ),
         context: Optional[dict] = None,
     ):
         """Get the service info."""
@@ -681,7 +731,27 @@ class WorkspaceManager:
         keys = await self._redis.keys(key)
         if not keys:
             raise KeyError(f"Service not found: {service_id}@{app_id}")
-        key = keys[0]
+        config = config or {}
+        mode = config.get("mode")
+        if mode is None:
+            # Set random mode for public services, since there can be many hypha servers
+            if workspace == "public":
+                mode = "random"
+            else:
+                mode = "exact"
+        if mode == "exact":
+            assert len(keys) == 1, f"Multiple services found for {service_id}"
+            key = keys[0]
+        elif mode == "random":
+            key = random.choice(keys)
+        elif mode == "first":
+            key = keys[0]
+        elif mode == "last":
+            key = keys[-1]
+        else:
+            raise ValueError(
+                f"Invalid mode: {mode}, the mode must be 'random', 'first', 'last' or 'exact'"
+            )
         # if it's a public service or the user has read permission
         if not key.startswith(b"services:public:") and not user_info.check_permission(
             workspace, UserPermission.read
@@ -706,7 +776,9 @@ class WorkspaceManager:
         if not user_info.check_permission(ws, UserPermission.read_write):
             raise PermissionError(f"Permission denied for workspace {ws}")
 
-        service = await self.get_service_info(service_id, context=context)
+        service = await self.get_service_info(
+            service_id, {"mode": "exact"}, context=context
+        )
         service.config.workspace = ws
         if "/" not in service.id:
             service.id = f"{ws}/{service.id}"
@@ -849,7 +921,7 @@ class WorkspaceManager:
                 return workspace_info
             elif load and not self._workspace_loader:
                 raise KeyError(
-                    "Workspace not found and the workspace loader is not configured."
+                    f"Workspace ({workspace}) not found and the workspace loader is not configured (requires s3 enabled)."
                 )
             else:
                 raise KeyError(f"Workspace not found: {workspace}")
@@ -933,8 +1005,7 @@ class WorkspaceManager:
             )
             return await self.get_service(
                 f"{client_info['id']}:{service_id}",  # should not contain @app_id
-                timeout=timeout,
-                case_conversion=case_conversion,
+                dict(timeout=timeout, case_conversion=case_conversion),
                 context=context,
             )
 
@@ -968,13 +1039,8 @@ class WorkspaceManager:
             ...,
             description="Service ID. This should be a service id in the format: 'workspace/service_id', 'workspace/client_id:service_id' or 'workspace/client_id:service_id@app_id'",
         ),
-        timeout: float = Field(
-            10.0,
-            description="The timeout duration in seconds for fetching the service. This determines how long the function will wait for a service to respond before considering it a timeout.",
-        ),
-        case_conversion: str = Field(
-            None,
-            description="The case conversion for service keys, can be 'camel', 'snake' or None, default is None.",
+        config: Optional[GetServiceConfig] = Field(
+            None, description="Get service config"
         ),
         context=None,
     ):
@@ -985,13 +1051,21 @@ class WorkspaceManager:
         # no need to validate the context
         # self.validate_context(context, permission=UserPermission.read)
         try:
+            config = config or GetServiceConfig()
             # Permission check will be handled by the get_service_api function
-            svc_info = await self.get_service_info(service_id, context=context)
+            svc_info = await self.get_service_info(
+                service_id, {"mode": config.mode}, context=context
+            )
             service_api = await self._rpc.get_remote_service(
-                svc_info.id, timeout=timeout, case_conversion=case_conversion
+                svc_info.id,
+                {"timeout": config.timeout, "case_conversion": config.case_conversion},
             )
             assert service_api, f"Failed to get service: {service_id}"
-            service_api["config"]["workspace"] = svc_info.id.split("/")[0]
+            workspace = service_id.split("/")[0]
+            service_api["config"]["workspace"] = workspace
+            service_api["config"][
+                "url"
+            ] = f"{self._server_info['public_base_url']}/{workspace}/services/{service_id}"
             return service_api
         except KeyError as exp:
             if "@" in service_id:
@@ -1000,16 +1074,14 @@ class WorkspaceManager:
                 workspace = (
                     service_id.split("/")[0] if "/" in service_id else context["ws"]
                 )
-                service_api = await self._launch_application_for_service(
+                return await self._launch_application_for_service(
                     app_id,
                     service_id,
                     workspace=workspace,
-                    timeout=timeout,
-                    case_conversion=case_conversion,
+                    timeout=config.timeout,
+                    case_conversion=config.case_conversion,
                     context=context,
                 )
-                # No need to patch the service config because the service is already patched
-                return service_api
             else:
                 raise exp
 
@@ -1045,18 +1117,6 @@ class WorkspaceManager:
             }
         ]
         return workspaces
-
-    async def get_workspace(self, workspace: str = None):
-        """Get the service api of the workspace manager."""
-        assert workspace is not None
-        rpc = self._rpc
-        wm = await rpc.get_remote_service(
-            f"{workspace}/{self._client_id}:default", timeout=10
-        )
-        wm.rpc = rpc
-        wm.disconnect = rpc.disconnect
-        wm.register_codec = rpc.register_codec
-        return wm
 
     async def _update_workspace(
         self, workspace: WorkspaceInfo, user_info: UserInfo, overwrite=False
@@ -1112,7 +1172,7 @@ class WorkspaceManager:
             await self._redis.delete(key)
 
         if await self._redis.hexists("workspaces", cws):
-            if user_info.is_anonymous and cws == user_info.id:
+            if user_info.is_anonymous and cws == user_info.get_workspace():
                 logger.info(f"Unloading workspace {cws} for anonymous user.")
                 # unload temporary workspace if the user exits
                 await self.unload(context=context)
@@ -1183,6 +1243,7 @@ class WorkspaceManager:
             "get_service_info": self.get_service_info,
             "get_service": self.get_service,
             "generate_token": self.generate_token,
+            "revoke_token": self.revoke_token,
             "create_workspace": self.create_workspace,
             "get_workspace_info": self.get_workspace_info,
             "install_application": self.install_application,

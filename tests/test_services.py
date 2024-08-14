@@ -14,6 +14,41 @@ from pydantic import Field
 pytestmark = pytest.mark.asyncio
 
 
+async def test_singleton_service(fastapi_server):
+    """Test a singleton service."""
+    async with connect_to_server(
+        {"name": "test client", "server_url": SERVER_URL}
+    ) as api:
+        await api.register_service(
+            {
+                "id": "test-service",
+                "name": "Test Service",
+                "config": {"singleton": True},
+                "description": "A test service",
+                "tools": {
+                    "add": lambda a, b: a + b,
+                    "sub": lambda a, b: a - b,
+                },
+            }
+        )
+
+        # Registering the same service again should raise an error
+        with pytest.raises(Exception, match=".*Failed to notify workspace manager.*"):
+            await api.register_service(
+                {
+                    "id": "test-service",
+                    "name": "Test Service",
+                    "config": {"singleton": True},
+                    "description": "A test service",
+                    "tools": {
+                        "add": lambda a, b: a + b,
+                        "sub": lambda a, b: a - b,
+                    },
+                },
+                {"overwrite": True},
+            )
+
+
 async def test_typed_service(fastapi_server):
     """Test a typed service."""
     async with connect_to_server(
@@ -47,7 +82,7 @@ async def test_typed_service(fastapi_server):
         assert svc_type["id"] == f"{api.config.workspace}/test-service-type"
 
         service["type"] = "test-service-type"
-        svc_info = await api.register_service(service, check_type=True)
+        svc_info = await api.register_service(service, {"check_type": True})
         assert svc_info["id"].endswith(":test-service")
         assert svc_info["type"] == "test-service-type"
 
@@ -62,7 +97,7 @@ async def test_typed_service(fastapi_server):
                 "type": api.config.workspace + "/test-service-type",
                 "tools": {"add": add2},
             },
-            check_type=True,
+            {"check_type": True},
         )
         assert svc_info2["id"].endswith(":test-service2")
         assert svc_info2["service_schema"]
@@ -85,7 +120,6 @@ async def test_login(fastapi_server):
                 assert resp.status_code == 200, resp.text
                 assert "Hypha Account" in resp.text
                 assert "{{ report_url }}" not in resp.text
-                assert context["report_url"] in resp.text
                 resp = await client.get(
                     context["report_url"] + "?key=" + context["key"] + "&token=" + TOKEN
                 )

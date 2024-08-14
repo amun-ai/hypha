@@ -29,7 +29,7 @@ async def export_service(app_api, config, hypha_rpc):
         # Copy the app name as the default name
         app_api["id"] = "default"
         app_api["name"] = config.get("name", "default")
-        svc = await rpc.register_service(app_api, overwrite=True, notify=True)
+        svc = await rpc.register_service(app_api, {"overwrite": True, "notify": True})
         svc = await rpc.get_remote_service(svc["id"])
         if svc.setup:
             await svc.setup()
@@ -101,9 +101,7 @@ async def run_app(app_file, default_config, quit_on_ready=False):
             if quit_on_ready:
                 hypha_rpc.ready.add_done_callback(lambda fut: loop.stop())
         else:
-            raise RuntimeError(
-                f"Invalid script type ({found[0]}) in file {app_file}"
-            )
+            raise RuntimeError(f"Invalid script type ({found[0]}) in file {app_file}")
     else:
         raise RuntimeError(f"Invalid script file type ({app_file})")
 

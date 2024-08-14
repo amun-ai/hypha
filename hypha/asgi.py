@@ -1,5 +1,4 @@
 """Support ASGI web server apps."""
-import asyncio
 import logging
 import sys
 import traceback
@@ -8,7 +7,7 @@ from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
 from hypha.core import ServiceInfo
-from hypha.core.auth import parse_token, generate_anonymous_user
+from hypha.core.auth import generate_anonymous_user
 from hypha.utils import PatchedCORSMiddleware
 
 logging.basicConfig(stream=sys.stdout)
@@ -39,7 +38,7 @@ class RemoteASGIApp:
             if a[0].lower() == b"authorization"
         ]
         if authorizations and authorizations[0]:
-            user_info = parse_token(authorizations[0])
+            user_info = await self.store.parse_user_token(authorizations[0])
         else:
             user_info = generate_anonymous_user()
         async with self.store.get_workspace_interface(self.workspace, user_info) as api:

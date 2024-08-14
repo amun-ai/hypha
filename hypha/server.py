@@ -9,11 +9,9 @@ from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.requests import Request
-from starlette.responses import JSONResponse
 
 from hypha import __version__ as VERSION
-from hypha.asgi import ASGIGateway
+from hypha.core.auth import create_login_service
 from hypha.core.store import RedisStore
 from hypha.core.queue import create_queue_service
 from hypha.http import HTTPProxy
@@ -74,37 +72,15 @@ def start_builtin_services(
     """Set up the builtin services."""
     # pylint: disable=too-many-arguments,too-many-locals
 
-    HTTPProxy(store)
     if args.triton_servers:
         TritonProxy(
             store,
             triton_servers=args.triton_servers.split(","),
             allow_origins=args.allow_origins,
         )
-    ASGIGateway(
-        store,
-        allow_origins=args.allow_origins,
-        allow_methods=ALLOW_METHODS,
-        allow_headers=ALLOW_HEADERS,
-        expose_headers=EXPOSE_HEADERS,
-    )
-
-    @app.get(args.base_path)
-    async def home():
-        return {
-            "name": "Hypha",
-            "version": VERSION,
-        }
-
-    @app.get(norm_url(args.base_path, "/api/stats"))
-    async def stats():
-        all_workspaces = await store.get_all_workspace()
-        return {
-            "workspace_count": len(all_workspaces),
-            "workspaces": [w.model_dump() for w in all_workspaces],
-        }
 
     store.register_public_service(create_queue_service(store))
+    store.register_public_service(create_login_service(store))
 
     if args.enable_s3:
         # pylint: disable=import-outside-toplevel
@@ -117,6 +93,7 @@ def start_builtin_services(
             access_key_id=args.access_key_id,
             secret_access_key=args.secret_access_key,
             endpoint_url_public=args.endpoint_url_public,
+            region_name=args.region_name,
             s3_admin_type=args.s3_admin_type,
             workspace_bucket=args.workspace_bucket,
             executable_path=args.executable_path,
@@ -141,12 +118,13 @@ def start_builtin_services(
             workspace_bucket=args.workspace_bucket,
         )
 
-    @app.get(norm_url(args.base_path, "/health/liveness"))
-    async def liveness(req: Request) -> JSONResponse:
-        if store.is_ready():
-            return JSONResponse({"status": "OK"})
-
-        return JSONResponse({"status": "DOWN"}, status_code=503)
+    HTTPProxy(
+        store,
+        endpoint_url=args.endpoint_url,
+        access_key_id=args.access_key_id,
+        secret_access_key=args.secret_access_key,
+        base_path=args.base_path,
+    )
 
 
 def mount_static_files(app, new_route, directory, name="static"):
@@ -193,7 +171,6 @@ def create_application(args):
     async def lifespan(app: FastAPI):
         # Here we can register all the startup functions
         args.startup_functions = args.startup_functions or []
-        args.startup_functions.append("hypha.core.auth:register_login_service")
         await store.init(args.reset_redis, startup_functions=args.startup_functions)
         yield
         await websocket_server.stop()
@@ -242,7 +219,6 @@ def create_application(args):
     )
 
     websocket_server = WebsocketServer(store, path=norm_url(args.base_path, "/ws"))
-    start_builtin_services(application, store, args)
 
     static_folder = str(Path(__file__).parent / "static_files")
     mount_static_files(application, "/static", directory=static_folder, name="static")
@@ -253,6 +229,8 @@ def create_application(args):
             mount_static_files(
                 application, mountpath, localdir, name=f"static-mount-{index}"
             )
+
+    start_builtin_services(application, store, args)
 
     if args.host in ("127.0.0.1", "localhost"):
         logger.info(
@@ -368,6 +346,12 @@ def get_argparser(add_help=True):
         default=None,
         help="set public endpoint URL for S3"
         "(if different from the local endpoint one)",
+    )
+    parser.add_argument(
+        "--region-name",
+        type=str,
+        default="EU",
+        help="set region name for S3",
     )
     parser.add_argument(
         "--access-key-id",

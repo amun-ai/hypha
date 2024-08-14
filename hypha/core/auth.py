@@ -12,12 +12,12 @@ from urllib.request import urlopen
 
 import shortuuid
 from dotenv import find_dotenv, load_dotenv
-from fastapi import Header, HTTPException
+from fastapi import HTTPException
 from jinja2 import Environment, PackageLoader, select_autoescape
 from jose import jwt
 
 from hypha.core import UserInfo, UserTokenInfo, ScopeInfo, UserPermission, WorkspaceInfo
-from hypha.utils import AsyncTTLCache, random_id
+from hypha.utils import random_id
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("auth")
@@ -34,38 +34,13 @@ AUTH0_AUDIENCE = env.get("AUTH0_AUDIENCE", "https://amun-ai.eu.auth0.com/api/v2/
 AUTH0_ISSUER = env.get("AUTH0_ISSUER", "https://amun.ai/")
 AUTH0_NAMESPACE = env.get("AUTH0_NAMESPACE", "https://amun.ai/")
 JWT_SECRET = env.get("JWT_SECRET")
+LOGIN_SERVICE_URL = "/public/services/hypha-login"
 
 if not JWT_SECRET:
     logger.warning(
         "JWT_SECRET is not defined, you will need a fixed JWT_SECRET for clients to reconnect"
     )
     JWT_SECRET = shortuuid.ShortUUID().random(length=22)
-
-
-def login_optional(authorization: str = Header(None)):
-    """Return user info or create an anonymouse user.
-
-    If authorization code is valid the user info is returned,
-    If the code is invalid an an anonymouse user is created.
-    """
-    if authorization:
-        return parse_token(authorization)
-    else:
-        return generate_anonymous_user()
-
-
-def login_required(authorization: str = Header(None)):
-    """Return user info if authorization code is valid."""
-    return parse_token(authorization)
-
-
-def admin_required(authorization: str = Header(None)):
-    """Return user info if the authorization code has an admin role."""
-    token = parse_token(authorization)
-    roles = token.credentials.get(AUTH0_NAMESPACE + "roles", [])
-    if "admin" not in roles:
-        raise HTTPException(status_code=401, detail="Admin required")
-    return token
 
 
 def get_user_email(token):
@@ -314,20 +289,24 @@ def update_user_scope(
     """Update the user scope for a workspace."""
     user_info.scope = user_info.scope or ScopeInfo()
     permission = user_info.get_permission(workspace_info.name)
+    ws_scopes = {}
     if not permission:
         # infer permission from workspace
-        if user_info.id == workspace_info.name:
-            permission = UserPermission.admin
-        elif "admin" in user_info.roles:
-            permission = UserPermission.admin
-        elif (
-            user_info.email in workspace_info.owners
+        if (
+            user_info.get_workspace() == workspace_info.name
+            or user_info.email in workspace_info.owners
             or user_info.id in workspace_info.owners
         ):
             permission = UserPermission.admin
 
+    if permission:
+        ws_scopes[workspace_info.name] = permission
+
+    if "admin" in user_info.roles:
+        ws_scopes["*"] = UserPermission.admin
+
     return create_scope(
-        workspaces={workspace_info.name: permission} if permission else {},
+        workspaces=ws_scopes,
         client_id=client_id,
         extra_scopes=user_info.scope.extra_scopes,
     )
@@ -345,57 +324,19 @@ def generate_jwt_scope(scope: ScopeInfo) -> str:
     return ps
 
 
-def parse_reconnection_token(token) -> UserInfo:
-    """Parse a reconnection token."""
-    payload = jwt.decode(
-        token,
-        JWT_SECRET,
-        algorithms=["HS256"],
-        audience=AUTH0_AUDIENCE,
-        issuer=AUTH0_ISSUER,
-    )
-    user_info = get_user_info(payload)
-    scope = user_info.scope
-    assert len(scope.workspaces) == 1, "Invalid scope, it must have only one workspace"
-    assert scope.client_id, "Invalid scope, client_id is required"
-    assert len(scope.workspaces) == 1, "Invalid scope, it must have only one workspace"
-    workspace = list(scope.workspaces.keys())[0]
-    client_id = scope.client_id
-    return user_info, workspace, client_id
-
-
-def parse_user(token):
-    """Parse user info from a token."""
-    if token:
-        user_info = parse_token(token)
-        uid = user_info.id
-        logger.info("User connected: %s", uid)
-    else:
-        user_info = generate_anonymous_user()
-        uid = user_info.id
-        logger.info("Anonymized User connected: %s", uid)
-
-    if uid == "root":
-        logger.error("Root user is not allowed to connect remotely")
-        raise Exception("Root user is not allowed to connect remotely")
-
-    return user_info
-
-
-async def register_login_service(server):
+def create_login_service(store):
     """Hypha startup function for registering additional services."""
-    cache = AsyncTTLCache(ttl=int(MAXIMUM_LOGIN_TIME))
-    server_url = server.config["public_base_url"]
-    login_url = f"{server_url}/{server.config['workspace']}/apps/hypha-login/"
-    login_service_url = (
-        f"{server_url}/{server.config['workspace']}/services/hypha-login"
-    )
+    redis = store.get_redis()
+    server_url = store.public_base_url
+    login_service_url = f"{server_url}{LOGIN_SERVICE_URL}"
+    generate_token_url = f"{server_url}/public/services/ws/generate_token"
     jinja_env = Environment(
         loader=PackageLoader("hypha"), autoescape=select_autoescape()
     )
-    temp = jinja_env.get_template("login_template.html")
+    temp = jinja_env.get_template("apps/login_template.html")
     login_page = temp.render(
         login_service_url=login_service_url,
+        generate_token_url=generate_token_url,
         auth0_client_id=AUTH0_CLIENT_ID,
         auth0_domain=AUTH0_DOMAIN,
         auth0_audience=AUTH0_AUDIENCE,
@@ -404,10 +345,11 @@ async def register_login_service(server):
 
     async def start_login():
         """Start the login process."""
-        key = str(random_id(readable=True))
-        await cache.add(key, False)
+        key = "login_key:" + str(random_id(readable=True))
+        # set the key and with expire time
+        await redis.setex(key, MAXIMUM_LOGIN_TIME, "")
         return {
-            "login_url": f"{login_url}?key={key}",
+            "login_url": f"{login_service_url.replace('/services/', '/apps/')}/?key={key}",
             "key": key,
             "report_url": f"{login_service_url}/report",
             "check_url": f"{login_service_url}/check",
@@ -424,11 +366,13 @@ async def register_login_service(server):
 
     async def check_login(key, timeout=MAXIMUM_LOGIN_TIME, profile=False):
         """Check the status of a login session."""
-        assert key in cache, "Invalid key, key does not exist"
+        assert await redis.exists(key), "Invalid key, key does not exist"
         if timeout <= 0:
-            user_info = await cache.get(key)
+            user_info = await redis.get(key)
+            user_info = json.loads(user_info)
+            user_info = UserTokenInfo.model_validate(user_info)
             if user_info:
-                del cache[key]
+                await redis.delete(key)
             return (
                 user_info.model_dump(mode="json")
                 if profile
@@ -436,18 +380,20 @@ async def register_login_service(server):
             )
         count = 0
         while True:
-            user_info = await cache.get(key)
+            user_info = await redis.get(key)
+            user_info = json.loads(user_info)
+            user_info = UserTokenInfo.model_validate(user_info)
             if user_info is None:
                 raise Exception(
                     f"Login session expired, the maximum login time is {MAXIMUM_LOGIN_TIME} seconds"
                 )
             if user_info:
-                del cache[key]
+                await redis.delete(key)
                 return user_info.model_dump(mode="json") if profile else user_info.token
             await asyncio.sleep(1)
             count += 1
             if count > timeout:
-                raise Exception("Login timeout")
+                raise Exception(f"Login timeout, waited for {timeout} seconds")
 
     async def report_login(
         key,
@@ -460,7 +406,7 @@ async def register_login_service(server):
         picture=None,
     ):
         """Report a token associated with a login session."""
-        assert key in cache, "Invalid key, key does not exist or expired"
+        assert await redis.exists(key), "Invalid key, key does not exist or expired"
         kwargs = {
             "token": token,
             "email": email,
@@ -471,31 +417,18 @@ async def register_login_service(server):
             "picture": picture,
         }
         user_info = UserTokenInfo.model_validate(kwargs)
-        await cache.update(key, user_info)
+        user_info = user_info.model_dump(mode="json")
+        await redis.setex(key, MAXIMUM_LOGIN_TIME, json.dumps(user_info))
 
-    async def generate_token(token: str, expires_in: int):
-        """Generate a new user token."""
-        # limit the expiration time to 1 year
-        expires_in = int(expires_in)
-        if expires_in > 31536000:
-            raise ValueError("The maximum expiration time is 1 year (31536000 seconds)")
-        user_info = parse_token(token)
-        return generate_presigned_token(user_info, expires_in=expires_in)
-
-    svc = await server.register_service(
-        {
-            "name": "Hypha Login",
-            "id": "hypha-login",
-            "type": "functions",
-            "description": "Login service for Hypha",
-            "config": {"visibility": "public"},
-            "index": index,
-            "start": start_login,
-            "check": check_login,
-            "report": report_login,
-            "generate": generate_token,
-        }
-    )
-
-    logger.info("Login service is available at: %s", svc.id)
-    logger.info(f"To preview the login page, visit: {login_url}")
+    logger.info(f"To preview the login page, visit: {login_service_url}")
+    return {
+        "name": "Hypha Login",
+        "id": "hypha-login",
+        "type": "functions",
+        "description": "Login service for Hypha",
+        "config": {"visibility": "public"},
+        "index": index,
+        "start": start_login,
+        "check": check_login,
+        "report": report_login,
+    }

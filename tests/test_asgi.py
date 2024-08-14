@@ -5,7 +5,7 @@ import pytest
 import requests
 from hypha_rpc.websocket_client import connect_to_server
 
-from . import WS_SERVER_URL, SERVER_URL
+from . import WS_SERVER_URL, SERVER_URL, find_item
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
@@ -68,6 +68,16 @@ async def test_functions(fastapi_server, test_user_token):
     assert "hello-world" in service
 
     response = requests.get(
+        f"{SERVER_URL}/{workspace}/apps",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.ok
+    cards = response.json()
+    card = find_item(cards, "name", "FunctionsPlugin")
+    svc = find_item(card["services"], "name", "hello-functions")
+    assert svc
+
+    response = requests.get(
         f"{SERVER_URL}/{workspace}/apps/hello-functions/hello-world",
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -76,7 +86,7 @@ async def test_functions(fastapi_server, test_user_token):
     assert ret["message"] == "Hello World"
     assert "user" in ret["context"]
     user_info = ret["context"]["user"]
-    assert user_info["scope"]["workspaces"]["user-1"] == "rw"
+    assert user_info["scope"]["workspaces"]["ws-user-user-1"] == "rw"
 
     response = requests.get(
         f"{SERVER_URL}/{workspace}/apps/hello-functions/hello-world/"

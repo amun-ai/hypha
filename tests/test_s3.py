@@ -29,9 +29,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
     with pytest.raises(
         Exception, match=r".*Permission denied: workspace is read-only.*"
     ):
-        info = await s3controller.generate_presigned_url(
-            "", "", client_method="put_object"
-        )
+        info = await s3controller.generate_presigned_url("", client_method="put_object")
     content = os.urandom(1024)
     response = requests.put(
         f"{SERVER_URL}/{workspace}/files/my-data-small.txt",
@@ -139,7 +137,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
         endpoint_url=info["endpoint_url"],
         aws_access_key_id=info["access_key_id"],
         aws_secret_access_key=info["secret_access_key"],
-        region_name="EU",
+        region_name=info["region_name"],
     ) as s3_client:
         bucket = await s3_client.Bucket(info["bucket"])
 
@@ -163,9 +161,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
             f"{workspace}/hello.txt",
         )
 
-        url = await s3controller.generate_presigned_url(
-            info["bucket"], info["prefix"] + "hello.txt"
-        )
+        url = await s3controller.generate_presigned_url("hello.txt")
         assert url.startswith("http") and "X-Amz-Algorithm" in url
 
         response = requests.get(url)

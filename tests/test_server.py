@@ -227,7 +227,7 @@ async def test_services(fastapi_server):
             "type": "#test",
             "idx": 2,
         },
-        overwrite=True,
+        {"overwrite": True},
     )
     # It should be overwritten because it's from the same provider
     assert (
@@ -273,6 +273,7 @@ async def test_services(fastapi_server):
         )
         == 2
     )
+
 
 async def test_server_scalability(
     fastapi_server_redis_1, fastapi_server_redis_2, test_user_token
@@ -331,7 +332,7 @@ async def test_server_scalability(
             "id": "test-service",
             "add77": lambda x: x + 77,
         },
-        overwrite=True,
+        {"overwrite": True},
     )
 
     svc = await api88.get_service("my-app-77:test-service")

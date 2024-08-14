@@ -35,7 +35,8 @@ async def test_redis_store(redis_store):
         ),
         overwrite=True,
     )
-    assert "test" in await redis_store.list_all_workspaces()
+    wss = await redis_store.list_all_workspaces()
+    assert find_item(wss, "name", "test")
 
     api = await redis_store.connect_to_workspace("test", client_id="test-app-99")
     clients = set(await api.list_clients())
@@ -155,7 +156,7 @@ async def test_websocket_server(fastapi_server, test_user_token_2):
             "echo": echo,
             "square": lambda x: x**2,
         },
-        overwrite=True,
+        {"overwrite": True},
     )
 
     # It should fail due to permission error

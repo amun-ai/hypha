@@ -48,6 +48,10 @@
                             <button class="bg-gray-500 text-white py-1 px-4 rounded mr-2" onclick="copyToken()">Copy Token</button>
                         </div>
                         <div class="mt-4">
+                            <label for="workspace" class="block text-sm font-medium text-gray-700" value="3600">Workspace Name</label>
+                            <input type="text" id="workspace" name="workspace" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                        </div>
+                        <div class="mt-4">
                             <label for="expiry-time" class="block text-sm font-medium text-gray-700" value="3600">Expiry Time (seconds)</label>
                             <input type="number" id="expiry-time" name="expiry-time" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" placeholder="3600">
                         </div>
@@ -100,10 +104,20 @@
 
         window.generateToken = async () => {
             const expires_in = document.getElementById("expiry-time").value || 3600; // Default to 1 hour if not specified
+            const workspace = document.getElementById("workspace").value || "";
             const accessToken = await auth0.getTokenSilently({ audience: AUTH0_AUDIENCE });
-            const generate_token_url = "{{ login_service_url }}/generate";
+            const generate_token_url = "{{ generate_token_url }}";
             if (generate_token_url.startsWith('http')) {
-                const response = await fetch(`${generate_token_url}?token=${accessToken}&expires_in=${expires_in}`);
+                // make a post request with {config: {expires_in, workspace}}
+                // add auth barier token to the request
+                const response = await fetch(generate_token_url, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${accessToken}`,
+                    },
+                    body: JSON.stringify({ config: { expires_in, workspace } }),
+                });
                 if (response.ok) {
                     const token = await response.json();
                     document.getElementById("access-token").innerHTML = token;
@@ -123,6 +137,16 @@
             }
         };
 
+        function parseJwt(token) {
+            const base64Url = token.split('.')[1];
+            const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+            const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
+                return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+            }).join(''));
+        
+            return JSON.parse(jsonPayload);
+        }
+
         window.showUserProfile = async () => {
             let user = await auth0.getUser();
             if (user) {
@@ -135,7 +159,10 @@
                 throw new Error("User not found");
             }
             const accessToken = await auth0.getTokenSilently({ audience: AUTH0_AUDIENCE });
-
+            const decodedToken = parseJwt(accessToken);
+            const exp = decodedToken.exp;
+            const maxAge = exp - Math.floor(Date.now() / 1000);
+            document.cookie = `access_token=${accessToken}; path=/; max-age=${maxAge}; samesite=lax`;
             document.getElementById("login-btn").style.display = "none";
             document.getElementById("name").innerHTML = user.name;
             document.getElementById("email").innerHTML = user.email;
@@ -147,6 +174,7 @@
             document.getElementById("user-id").innerHTML = user.sub;
             document.getElementById("access-token").innerHTML = accessToken;
             document.getElementById("info-panel").style.display = "block";
+            document.getElementById("workspace").value = user.sub;
 
             const key = window.location.search.split('key=')[1];
             const report_url = "{{ login_service_url }}/report";

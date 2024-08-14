@@ -6,20 +6,19 @@
   <title>Hypha App (window)</title>
   <meta name="description" content="Template for Hypha app">
   <meta name="author" content="ImJoy-Team">
-  <script src="{{ rpc_lib_script }}"></script>
 </head>
 
 <body>
-<script>
-window.onload = function() {
+<script type="module">
   const config = {{ config | tojson(indent=2) }}
   const cfg = Object.assign(config, Object.fromEntries(new URLSearchParams(window.location.search)));
   if(!cfg.server_url) cfg.server_url = window.location.origin;
+  const hyphaWebsocketClient = await import(cfg.server_url + '/hypha-rpc-websocket.mjs');
   hyphaWebsocketClient.connectToServer(cfg).then(async (api)=>{
       await hyphaWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
       {{ script | safe }}
   }).catch(console.error)
-}
+
 </script>
 </body>
 </html>
