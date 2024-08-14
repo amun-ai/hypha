@@ -103,6 +103,32 @@ async def test_typed_service(fastapi_server):
         assert svc_info2["service_schema"]
 
 
+async def test_login_service(fastapi_server):
+    """Test login to the server."""
+    async with connect_to_server(
+        {"name": "test client", "server_url": SERVER_URL}
+    ) as api:
+        svc = await api.get_service("public/hypha-login")
+        assert svc and callable(svc.start)
+        info = await svc.start()
+        key = info["key"]
+        data = await svc.check(key, timeout=-1)
+        assert data is None
+        await svc.report(key, "test")
+        token = await svc.check(key, timeout=1)
+        assert token == "test"
+
+        # with user info
+        info = await svc.start()
+        key = info["key"]
+        data = await svc.check(key, timeout=-1)
+        assert data is None
+        await svc.report(key, "test", email="abc@example.com")
+        user_profile = await svc.check(key, timeout=1, profile=True)
+        assert user_profile["token"] == "test"
+        assert user_profile["email"] == "abc@example.com"
+
+
 async def test_login(fastapi_server):
     """Test login to the server."""
     async with connect_to_server(

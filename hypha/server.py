@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from hypha import __version__ as VERSION
+from hypha import __version__
 from hypha.core.auth import create_login_service
 from hypha.core.store import RedisStore
 from hypha.core.queue import create_queue_service
@@ -186,7 +186,7 @@ def create_application(args):
             "A serverless application framework for \
                 large-scale data management and AI model serving"
         ),
-        version=VERSION,
+        version=__version__,
     )
     application.router.route_class = GzipRoute
 
