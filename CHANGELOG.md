@@ -1,5 +1,14 @@
 # Hypha Change Log
 
+### 0.20.20
+
+ - Fix static files not included in the package
+
+### 0.20.19
+
+ - Support invoke token
+ - Add basic web ui for the workspace
+
 ### 0.20.15
 
  - Add `revoke_token` to the workspace api.

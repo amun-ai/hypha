@@ -1,6 +1,4 @@
 include hypha/VERSION
-include hypha/templates/*
-include hypha/built-in/*
-include hypha/static_files/*
-include hypha/static_files/img/*
+recursive-include hypha/templates *
+recursive-include hypha/static_files *
 include LICENSE
