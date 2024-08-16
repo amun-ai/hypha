@@ -19,7 +19,7 @@ async def redis_store():
     store = RedisStore(None, redis_uri=None)
     await store.init(reset_redis=True)
     yield store
-    store.teardown()
+    await store.teardown()
 
 
 async def test_redis_store(redis_store):
