@@ -41,11 +41,17 @@ jobs:
     - name: Install Hypha Helm chart
       run: helm install hypha-server ./helm-chart/hypha-server --namespace=hypha
 
-    - name: Wait for deployment to be available
+    - name: Wait for pods to be created
       run: |
-        kubectl wait --namespace=hypha \
-          --for=condition=available deployment/hypha-server \
-          --timeout=300s
+        for i in {1..30}; do
+          POD_COUNT=$(kubectl get pods --namespace=hypha --selector=app=hypha-server --no-headers | wc -l)
+          if [ "$POD_COUNT" -gt 0 ]; then
+            echo "Pods have been created."
+            break
+          fi
+          echo "Waiting for pods to be created..."
+          sleep 10
+        done
 
     - name: Wait for pods to be ready
       run: |
