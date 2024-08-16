@@ -581,5 +581,6 @@ class RedisStore:
         self._ready = False
         context = {"user": self._root_user.model_dump(), "ws": "public"}
         logger.info("Tearing down the public workspace...")
-        await self._public_workspace_interface.unload(context=context)
+        client_id = self._public_workspace_interface.rpc.get_client_info()["id"]
+        await self.remove_client(client_id, "public", self._root_user, unload=True)
         logger.info("Teardown complete")

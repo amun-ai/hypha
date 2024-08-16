@@ -427,7 +427,6 @@ class HTTPProxy:
         ) -> Response:
             if service_id == "ws":
                 if not path:
-                    template = self.jinja_env.get_template("ws/index.html")
                     return FileResponse(
                         safe_join(str(self.ws_apps_dir), "ws/index.html")
                     )

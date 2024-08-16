@@ -4,6 +4,7 @@ import logging
 import sys
 from os import environ as env
 from pathlib import Path
+import asyncio
 
 from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI
@@ -173,10 +174,11 @@ def create_application(args):
         args.startup_functions = args.startup_functions or []
         await store.init(args.reset_redis, startup_functions=args.startup_functions)
         yield
-        await websocket_server.stop()
         # Emit the shutdown event
         await store.get_event_bus().emit_local("shutdown")
         await store.teardown()
+        await asyncio.sleep(0.1)
+        await websocket_server.stop()
 
     application = FastAPI(
         title="Hypha",
