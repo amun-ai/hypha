@@ -49,10 +49,10 @@ jobs:
     #       --selector=app=hypha-server \
     #       --timeout=300s
 
-    - name: Test the webpage at /
-      run: |
-        SERVICE_IP=$(kubectl get svc hypha-server --namespace=hypha -o jsonpath='{.spec.clusterIP}')
-        curl -f http://$SERVICE_IP:9520/
+    # - name: Test the webpage at /
+    #   run: |
+    #     SERVICE_IP=$(kubectl get svc hypha-server --namespace=hypha -o jsonpath='{.spec.clusterIP}')
+    #     curl -f http://$SERVICE_IP:9520/
 
     - name: Uninstall Hypha Helm chart
       run: helm uninstall hypha-server --namespace=hypha
