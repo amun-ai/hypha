@@ -576,6 +576,10 @@ class RedisStore:
         for route in routes_remove:
             self._app.routes.remove(route)
 
-    def teardown(self):
+    async def teardown(self):
         """Teardown the server."""
-        pass
+        self._ready = False
+        context = {"user": self._root_user.model_dump(), "ws": "public"}
+        logger.info("Tearing down the public workspace...")
+        await self._public_workspace_interface.unload(context=context)
+        logger.info("Teardown complete")

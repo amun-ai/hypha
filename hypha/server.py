@@ -176,6 +176,7 @@ def create_application(args):
         await websocket_server.stop()
         # Emit the shutdown event
         await store.get_event_bus().emit_local("shutdown")
+        await store.teardown()
 
     application = FastAPI(
         title="Hypha",
