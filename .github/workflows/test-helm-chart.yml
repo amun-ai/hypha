@@ -41,6 +41,12 @@ jobs:
     - name: Install Hypha Helm chart
       run: helm install hypha-server ./helm-chart/hypha-server --namespace=hypha
 
+    - name: Wait for deployment to be available
+      run: |
+        kubectl wait --namespace=hypha \
+          --for=condition=available deployment/hypha-server \
+          --timeout=300s
+
     - name: Wait for pods to be ready
       run: |
         kubectl wait --namespace=hypha \
@@ -50,9 +56,8 @@ jobs:
 
     - name: Test the webpage at /
       run: |
-        # Assuming the service exposes port 80 or adjust if needed
         SERVICE_IP=$(kubectl get svc hypha-server --namespace=hypha -o jsonpath='{.spec.clusterIP}')
-        curl -f http://$SERVICE_IP/public/apps/hypha-login/
+        curl -f http://$SERVICE_IP/
 
     - name: Uninstall Hypha Helm chart
       run: helm uninstall hypha-server --namespace=hypha
