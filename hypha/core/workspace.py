@@ -1208,8 +1208,6 @@ class WorkspaceManager:
         self.validate_context(context, permission=UserPermission.admin)
         ws = context["ws"]
         winfo = await self.load_workspace_info(ws)
-        if ws == "public":
-            print("===============================")
         # list all the clients in the workspace and send a meesage to delete them
         client_keys = await self.list_clients(context=context)
         if len(client_keys) > 0:
