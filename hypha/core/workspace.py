@@ -1246,9 +1246,13 @@ class WorkspaceManager:
         removed = []
         for client in clients:
             try:
-                await self.ping_client(client, timeout=timeout, context=context)
+                assert (
+                    await self.ping_client(client, timeout=timeout, context=context)
+                    == "pong"
+                )
             except Exception as e:
                 logger.error(f"Failed to ping client {client}: {e}")
+                # Remove dead client
                 await self.delete_client(
                     client, ws, context["user"], unload=False, context=context
                 )

@@ -251,7 +251,8 @@ class RedisStore:
         api = await self.get_public_api()
 
         logger.info("Cleaning up the public workspace...")
-        await api.cleanup()
+        summary = await api.cleanup()
+        logger.info(f"Clean up summary: %s", summary)
         logger.info("Registering public services...")
         for service_type in self._public_types:
             try:
