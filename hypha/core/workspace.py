@@ -1166,7 +1166,9 @@ class WorkspaceManager:
         self.validate_context(context, permission=UserPermission.admin)
         cws = workspace
         validate_key_part(client_id)
-
+        if "/" in client_id:
+            _cws, client_id = client_id.split("/")
+            assert _cws == cws, f"Client id workspace mismatch, {_cws} != {cws}"
         # Define a pattern to match all services for the given client_id in the current workspace
         pattern = f"services:*:{cws}/{client_id}:*@*"
 
