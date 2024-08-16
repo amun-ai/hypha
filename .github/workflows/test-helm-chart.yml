@@ -41,15 +41,15 @@ jobs:
     - name: Install Hypha Helm chart
       run: helm install hypha-server ./helm-chart/hypha-server --namespace=hypha
 
-    - name: Wait for pods to be created
+    - name: Wait for pod containers to start creating
       run: |
         for i in {1..30}; do
-          POD_COUNT=$(kubectl get pods --namespace=hypha --selector=app=hypha-server --no-headers | wc -l)
-          if [ "$POD_COUNT" -gt 0 ]; then
-            echo "Pods have been created."
+          POD_PHASE=$(kubectl get pods --namespace=hypha --selector=app=hypha-server -o jsonpath='{.items[*].status.phase}')
+          if [[ "$POD_PHASE" == *"Pending"* || "$POD_PHASE" == *"Running"* ]]; then
+            echo "Pod containers are being created or running."
             break
           fi
-          echo "Waiting for pods to be created..."
+          echo "Waiting for pod containers to start..."
           sleep 10
         done
 
