@@ -232,6 +232,7 @@ class RedisStore:
         except RuntimeError:
             logger.warning("Root workspace already exists.")
 
+        need_cleanup = True
         try:
             await self.register_workspace(
                 WorkspaceInfo.model_validate(
@@ -245,10 +246,15 @@ class RedisStore:
                 ),
                 overwrite=False,
             )
+            need_cleanup = False
         except RuntimeError:
             logger.warning("Public workspace already exists.")
         await self._register_root_services()
         api = await self.get_public_api()
+        if need_cleanup:
+            logger.info("Cleaning up the public workspace...")
+            await api.cleanup()
+        logger.info("Registering public services...")
         for service_type in self._public_types:
             try:
                 await api.register_service_type(
@@ -308,11 +314,11 @@ class RedisStore:
         keys = await self._redis.keys(pattern)
         return bool(keys)
 
-    async def remove_client(self, client_id, workspace, user_info):
+    async def remove_client(self, client_id, workspace, user_info, unload):
         """Remove a client."""
         context = {"user": self._root_user.model_dump(), "ws": workspace}
         return await self._workspace_manager.delete_client(
-            client_id, workspace, user_info, context=context
+            client_id, workspace, user_info, unload=unload, context=context
         )
 
     async def get_user_workspace(self, user_id: str):

@@ -181,7 +181,7 @@ class WebsocketServer:
                         f"Client already exists but is inactive: {workspace}/{client_id}"
                     )
             # remove dead client
-            await self.store.remove_client(client_id, workspace, user_info)
+            await self.store.remove_client(client_id, workspace, user_info, unload=True)
 
     async def authenticate_user(
         self, token: str, reconnection_token: str, client_id: str, workspace: str
@@ -319,7 +319,7 @@ class WebsocketServer:
     ):
         """Handle client disconnection with delayed removal for unexpected disconnections."""
         try:
-            await self.store.remove_client(client_id, workspace, user_info)
+            await self.store.remove_client(client_id, workspace, user_info, unload=True)
             if code in [status.WS_1000_NORMAL_CLOSURE, status.WS_1001_GOING_AWAY]:
                 logger.info(f"Client disconnected normally: {workspace}/{client_id}")
             else:

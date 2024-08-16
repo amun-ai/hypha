@@ -421,6 +421,7 @@ class WorkspaceManager:
     async def ping_client(
         self,
         client_id: str = Field(..., description="client id"),
+        timeout: float = Field(5, description="timeout in seconds"),
         context: Optional[dict] = None,
     ):
         """Ping a client."""
@@ -429,7 +430,9 @@ class WorkspaceManager:
         if "/" not in client_id:
             client_id = ws + "/" + client_id
         try:
-            svc = await self._rpc.get_remote_service(client_id + ":built-in")
+            svc = await self._rpc.get_remote_service(
+                client_id + ":built-in", {"timeout": timeout}
+            )
             return await svc.ping("ping")  # should return "pong"
         except Exception as e:
             return f"Failed to ping client {client_id}: {e}"
@@ -1155,6 +1158,7 @@ class WorkspaceManager:
         client_id: str,
         workspace: str,
         user_info: UserInfo,
+        unload: bool = False,
         context: Optional[dict] = None,
     ):
         """Delete all services associated with the given client_id in the specified workspace."""
@@ -1176,16 +1180,17 @@ class WorkspaceManager:
         for key in keys:
             await self._redis.delete(key)
 
-        if await self._redis.hexists("workspaces", cws):
-            if user_info.is_anonymous and cws == user_info.get_workspace():
-                logger.info(f"Unloading workspace {cws} for anonymous user.")
-                # unload temporary workspace if the user exits
-                await self.unload(context=context)
+        if unload:
+            if await self._redis.hexists("workspaces", cws):
+                if user_info.is_anonymous and cws == user_info.get_workspace():
+                    logger.info(f"Unloading workspace {cws} for anonymous user.")
+                    # unload temporary workspace if the user exits
+                    await self.unload(context=context)
+                else:
+                    # otherwise delete the workspace if it is empty
+                    await self.unload_if_empty(context=context)
             else:
-                # otherwise delete the workspace if it is empty
-                await self.unload_if_empty(context=context)
-        else:
-            logger.warning(f"Workspace {cws} not found.")
+                logger.warning(f"Workspace {cws} not found.")
 
     async def unload_if_empty(self, context=None):
         """Delete the workspace if it is empty."""
@@ -1203,7 +1208,8 @@ class WorkspaceManager:
         self.validate_context(context, permission=UserPermission.admin)
         ws = context["ws"]
         winfo = await self.load_workspace_info(ws)
-
+        if ws == "public":
+            print("===============================")
         # list all the clients in the workspace and send a meesage to delete them
         client_keys = await self.list_clients(context=context)
         if len(client_keys) > 0:
@@ -1220,6 +1226,36 @@ class WorkspaceManager:
         await self._redis.hdel("workspaces", ws)
         await self._event_bus.emit("workspace_unloaded", winfo.model_dump())
         logger.info("Workspace %s unloaded.", ws)
+
+    @schema_method
+    async def cleanup(
+        self,
+        workspace: str = Field(None, description="workspace name"),
+        timeout: float = Field(5, description="timeout in seconds"),
+        context=None,
+    ):
+        """Cleanup the workspace."""
+        self.validate_context(context, permission=UserPermission.admin)
+        ws = context["ws"]
+        if workspace is None:
+            workspace = ws
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(workspace, UserPermission.admin):
+            raise PermissionError(f"Permission denied for workspace {workspace}")
+        # list all the clients and ping them
+        # If they are not responding, delete them
+        clients = await self.list_clients(context=context)
+        removed = []
+        for client in clients:
+            try:
+                await self.ping_client(client, timeout=timeout, context=context)
+            except Exception as e:
+                logger.error(f"Failed to ping client {client}: {e}")
+                await self.delete_client(
+                    client, ws, context["user"], unload=False, context=context
+                )
+                removed.append(client)
+        return {"removed_clients": removed}
 
     def create_service(self, service_id, service_name=None):
         interface = {
@@ -1255,6 +1291,7 @@ class WorkspaceManager:
             "uninstall_application": self.uninstall_application,
             "get_summary": self.get_summary,
             "ping": self.ping_client,
+            "cleanup": self.cleanup,
         }
         interface["config"].update(self._server_info)
         return interface
