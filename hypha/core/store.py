@@ -579,7 +579,6 @@ class RedisStore:
     async def teardown(self):
         """Teardown the server."""
         self._ready = False
-        context = {"user": self._root_user.model_dump(), "ws": "public"}
         logger.info("Tearing down the public workspace...")
         client_id = self._public_workspace_interface.rpc.get_client_info()["id"]
         await self.remove_client(client_id, "public", self._root_user, unload=True)
