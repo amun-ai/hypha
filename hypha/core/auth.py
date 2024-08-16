@@ -218,6 +218,7 @@ def generate_reconnection_token(user_info: UserInfo, expires_in: int = 60):
     """Generate a token for reconnection."""
     current_time = time.time()
     expires_at = current_time + expires_in
+
     ret = jwt.encode(
         {
             "iss": AUTH0_ISSUER,
@@ -246,6 +247,8 @@ def parse_scope(scope: str) -> ScopeInfo:
             parsed.workspaces[name] = UserPermission(mode)
         elif scope.startswith("cid:"):
             parsed.client_id = scope[4:]
+        elif scope.startswith("wid:"):
+            parsed.current_workspace = scope[4:]
         elif scope.strip():
             parsed.extra_scopes.append(scope.strip())
     return parsed
@@ -254,6 +257,7 @@ def parse_scope(scope: str) -> ScopeInfo:
 def create_scope(
     workspaces: Union[str, Dict[str, UserPermission]] = None,
     client_id: str = None,
+    current_workspace: str = None,
     extra_scopes: List[str] = None,
 ) -> ScopeInfo:
     """Create a scope."""
@@ -277,6 +281,7 @@ def create_scope(
             workspaces[w] = m
 
     return ScopeInfo(
+        current_workspace=current_workspace,
         workspaces=workspaces,
         client_id=client_id,
         extra_scopes=extra_scopes,
@@ -308,6 +313,7 @@ def update_user_scope(
     return create_scope(
         workspaces=ws_scopes,
         client_id=client_id,
+        current_workspace=workspace_info.name,
         extra_scopes=user_info.scope.extra_scopes,
     )
 
@@ -318,6 +324,9 @@ def generate_jwt_scope(scope: ScopeInfo) -> str:
 
     if scope.client_id:
         ps += f" cid:{scope.client_id}"
+
+    if scope.current_workspace:
+        ps += f" wid:{scope.current_workspace}"
 
     if scope.extra_scopes:
         ps += " " + " ".join(scope.extra_scopes)

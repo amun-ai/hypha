@@ -121,9 +121,9 @@ const toObject = (x) => {
 
 async function setupPyodide() {
     if(self.pyodide) return;
-    importScripts('https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js');
+    importScripts('https://cdn.jsdelivr.net/pyodide/v0.26.1/full/pyodide.js');
     self.pyodide = await loadPyodide({
-        indexURL : 'https://cdn.jsdelivr.net/pyodide/v0.25.0/full/',
+        indexURL : 'https://cdn.jsdelivr.net/pyodide/v0.26.1/full/',
         stdout: (text) => {
             self.postMessage({"type": "stdout", "content": text})
         },
@@ -131,6 +131,8 @@ async function setupPyodide() {
             self.postMessage({"type": "stderr", "content": text})
         },
     });
+    self.pyodide.setStdout({ batched: (msg) => console.log(msg) });
+    self.pyodide.setStderr({ batched: (msg) => console.error(msg) });
     await self.pyodide.loadPackage(['micropip']);
     await installPackage()
 }

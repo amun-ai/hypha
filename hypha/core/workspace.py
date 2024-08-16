@@ -390,7 +390,9 @@ class WorkspaceManager:
         # make it a child
         user_info.id = random_id(readable=True)
         user_info.scope = create_scope(
-            {allowed_workspace: permission}, extra_scopes=extra_scopes
+            {allowed_workspace: permission},
+            current_workspace=allowed_workspace,
+            extra_scopes=extra_scopes,
         )
         token = generate_presigned_token(user_info)
         return token
@@ -640,9 +642,7 @@ class WorkspaceManager:
                     raise ValueError(
                         f"A singleton service with the same name ({service_name}) has already exists in the workspace ({workspace}), please remove it first or use a different name."
                     )
-        key = (
-            f"services:{service.config.visibility.value}:{service.id}@{service.app_id}"
-        )
+
         # Check if the clients exists if not a built-in service
         if ":built-in" not in service.id and ws not in ["ws-user-root", "public"]:
             builtins = await self._redis.keys(f"services:*:{client_id}:built-in@*")
@@ -654,7 +654,12 @@ class WorkspaceManager:
                 )
                 return
         # Check if the service already exists
-        service_exists = await self._redis.exists(key)
+        service_exists = await self._redis.exists(
+            f"services:*:{service.id}@{service.app_id}"
+        )
+        key = (
+            f"services:{service.config.visibility.value}:{service.id}@{service.app_id}"
+        )
         await self._redis.hset(key, mapping=service.to_redis_dict())
 
         if service_exists:

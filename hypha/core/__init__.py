@@ -134,6 +134,7 @@ class ScopeInfo(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
+    current_workspace: Optional[str] = None
     workspaces: Optional[Dict[str, UserPermission]] = {}
     client_id: Optional[str] = None
     extra_scopes: Optional[List[str]] = []  # extra scopes

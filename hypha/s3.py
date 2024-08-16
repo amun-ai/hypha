@@ -94,7 +94,7 @@ class FSFileResponse(FileResponse):
                         "headers": self.raw_headers,
                     }
                 )
-                if self.send_header_only:
+                if scope["method"].upper() == "HEAD":
                     await send(
                         {"type": "http.response.body", "body": b"", "more_body": False}
                     )

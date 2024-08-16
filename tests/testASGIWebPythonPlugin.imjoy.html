@@ -17,7 +17,7 @@
     "icon": "extension",
     "api_version": "0.1.7",
     "env": "",
-    "requirements": ["fastapi==0.70.0"],
+    "requirements": ["fastapi==0.112.1"],
     "dependencies": []
 }
 </config>
@@ -50,7 +50,7 @@ async def setup():
         "config": {
             "visibility": "public"
         }
-    })
+    }, {"overwrite": True})
 
 api.export({"setup": setup})
 </script>
