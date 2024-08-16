@@ -15,7 +15,7 @@ To connect to the server, instead of installing the `imjoy-rpc` module, you will
 pip install -U hypha-rpc # new install
 ```
 
-We also changed our versioning strategy, we use the same version number for the server and client, so it's easier to match the client and server versions. For example, `hypha-rpc` version `0.20.22` is compatible with Hypha server version `0.20.22`.
+We also changed our versioning strategy, we use the same version number for the server and client, so it's easier to match the client and server versions. For example, `hypha-rpc` version `0.20.23` is compatible with Hypha server version `0.20.23`.
 
 #### 2. Change the imports to use `hypha-rpc`
 
@@ -104,7 +104,7 @@ async def register_user(user_info: UserInfo) -> str:
 
 
 async def main():
-    server = await connect_to_server({"server_url": "https://hypha.aicell.io"})
+    server = await connect_to_server({"server_url": "https://hypha.amun.ai"})
 
     svc = await server.register_service({
         "name": "User Service",
@@ -128,10 +128,10 @@ loop.run_forever()
 To connect to the server, instead of using the `imjoy-rpc` module, you will need to use the `hypha-rpc` module. The `hypha-rpc` module is a standalone module that provides the RPC connection to the Hypha server. You can include it in your HTML using a script tag:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.22/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.23/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
-We also changed our versioning strategy, we use the same version number for the server and client, so it's easier to match the client and server versions. For example, `hypha-rpc` version `0.20.22` is compatible with Hypha server version `0.20.22`.
+We also changed our versioning strategy, we use the same version number for the server and client, so it's easier to match the client and server versions. For example, `hypha-rpc` version `0.20.23` is compatible with Hypha server version `0.20.23`.
 
 #### 2. Change the connection method and use camelCase for service function names
 
@@ -149,10 +149,10 @@ Here is a suggested list of search and replace operations to update your code:
 Here is an example of how the updated code might look:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.22/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.23/dist/hypha-rpc-websocket.min.js"></script>
 <script>
 async function main(){
-    const server = await hyphaWebsocketClient.connectToServer({"server_url": "https://hypha.aicell.io"});
+    const server = await hyphaWebsocketClient.connectToServer({"server_url": "https://hypha.amun.ai"});
     // register a service using server.registerService 
     const info = await server.registerService({
         name: "Hello World",
@@ -197,12 +197,12 @@ We created a tutorial to introduce this new feature: [service type annotation](.
 Here is a quick example in JavaScript:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.22/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.23/dist/hypha-rpc-websocket.min.js"></script>
 
 <script>
 async function main(){
     const { connectToServer, schemaFunction } = hyphaWebsocketClient;
-    const server = await connectToServer({"server_url": "https://hypha.aicell.io"});
+    const server = await connectToServer({"server_url": "https://hypha.amun.ai"});
     
     function getCurrentWeather(location, unit = "fahrenheit") {
         if (location.toLowerCase().includes("tokyo")) {

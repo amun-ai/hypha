@@ -129,6 +129,15 @@ async def test_login_service(fastapi_server):
         assert user_profile["email"] == "abc@example.com"
 
 
+async def test_cleanup_workspace(fastapi_server, root_user_token):
+    async with connect_to_server(
+        {"name": "test client", "server_url": SERVER_URL, "token": root_user_token}
+    ) as api:
+        summary = await api.cleanup("public")
+        assert "removed_clients" in summary
+        assert len(summary["removed_clients"]) == 0
+
+
 async def test_login(fastapi_server):
     """Test login to the server."""
     async with connect_to_server(
@@ -142,7 +151,7 @@ async def test_login(fastapi_server):
         async def callback(context):
             print(f"By passing login: {context['login_url']}")
             async with httpx.AsyncClient(timeout=20.0) as client:
-                resp = await client.get(context["login_url"] + "?key=" + context["key"])
+                resp = await client.get(context["login_url"])
                 assert resp.status_code == 200, resp.text
                 assert "Hypha Account" in resp.text
                 assert "{{ report_url }}" not in resp.text

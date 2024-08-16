@@ -97,11 +97,12 @@ async def start_server(server_url):
     print(f"Hello world service registered at workspace: {server.config.workspace}")
     print(f"Test it with the HTTP proxy: {server_url}/{server.config.workspace}/services/hello-world/hello?name=John")
 
+    # Keep the server running
+    await server.serve()
+
 if __name__ == "__main__":
     server_url = "http://localhost:9527"
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_server(server_url))
-    loop.run_forever()
+    asyncio.run(start_server(server_url))
 ```
 
 #### ** Synchronous Worker **
@@ -200,7 +201,7 @@ if __name__ == "__main__":
 Include the following script in your HTML file to load the `hypha-rpc` client:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.22/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.23/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
 Use the following code in JavaScript to connect to the server and access an existing service:
@@ -369,6 +370,76 @@ With the token, you can now request any protected service by passing the `token`
 curl -X POST "https://ai.imjoy.io/public/services/hello-world/hello" -H "Content-Type: application/json" -H "Authorization : Bearer <token>" -d '{"name": "John"}'
 ```
 For more details, see the service request api endpoint [here](https://ai.imjoy.io/api-docs#/default/service_function__workspace__services__service___keys__post).
+
+### Service Probes
+
+Probes are useful for monitoring the status of services. They can be used to check whether a service is running correctly or to retrieve information about the service. Probes are executed by the server and can be used to monitor the health of services.
+
+We create a convinient shortcut to register probes for monitoring services. Here is an example of how to register a probe for a service:
+
+```python
+from hypha_rpc import connect_to_server
+
+async def start_server(server_url):
+    server = await connect_to_server({"server_url": server_url})
+
+    # Assuming you have some services registered already
+    # And you want to monitor the service status
+
+    def check_readiness():
+        # Check if the service is ready
+        # Replace this with your own readiness check
+        return {"status": "ok"}
+    
+    def check_liveness():
+        # Check if the service is alive
+        # Replace this with your own liveness check
+        return {"status": "ok"}
+
+    # Register a probe for the service
+    await server.register_probe({
+        "readiness": check_readiness,
+        "liveness": check_liveness,
+    })
+
+    # This will register a "probes" service where you can accessed via hypha or the HTTP proxy
+    print(f"Probes registered at workspace: {server.config.workspace}")
+    print(f"Test it with the HTTP proxy: {server_url}/{server.config.workspace}/services/probes/readiness")
+
+    # Keep the server running
+    await server.serve()
+
+if __name__ == "__main__":
+    server_url = "https://my-hypha-server.org"
+    asyncio.run(start_server(server_url))
+```
+
+For running the service as a worker in a kubernetes cluster, you can use the `liveness` probe to check if the service is alive and the `readiness` probe to check if the service is ready to serve requests.
+
+The probes can be configured as follows:
+
+```yaml
+
+livenessProbe:
+    exec:
+        command:
+        - /bin/sh
+        - -c
+        - curl -sf https://my-hypha-server.org/workspace/services/probes/liveness || exit 1
+    initialDelaySeconds: 10
+    periodSeconds: 5
+
+readinessProbe:
+    exec:
+        command:
+        - /bin/sh
+        - -c
+        - curl -sf https://my-hypha-server.org/workspace/services/probes/readiness || exit 1
+    initialDelaySeconds: 10
+    periodSeconds: 5
+```
+
+(Make sure to replace `https://my-hypha-server.org` with your actual hypha server URL)
 
 ### Custom Initialization and Service Integration with Hypha Server
 

@@ -81,7 +81,7 @@ from hypha_rpc import connect_to_server
 from hypha_rpc.utils.schema import schema_function
 
 async def main():
-    server = await connect_to_server({"server_url": "https://hypha.aicell.io"})
+    server = await connect_to_server({"server_url": "https://hypha.amun.ai"})
 
     class UserInfo(BaseModel):
         name: str = Field(..., description="Name of the user")
@@ -113,7 +113,7 @@ if __name__ == "__main__":
 from hypha_rpc import connect_to_server
 
 async def main():
-    server = await connect_to_server({"server_url": "https://hypha.aicell.io"})
+    server = await connect_to_server({"server_url": "https://hypha.amun.ai"})
     svc = await server.get_service("user-service")
 
     result = await svc.register_user({
@@ -134,10 +134,10 @@ if __name__ == "__main__":
 **JavaScript Client: Service Usage**
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.22/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.23/dist/hypha-rpc-websocket.min.js"></script>
 <script>
 async function main() {
-    const server = await hyphaWebsocketClient.connectToServer({"server_url": "https://hypha.aicell.io"});
+    const server = await hyphaWebsocketClient.connectToServer({"server_url": "https://hypha.amun.ai"});
     const svc = await server.getService("user-service");
 
     const result = await svc.register_user({

@@ -294,7 +294,7 @@ def update_user_scope(
     """Update the user scope for a workspace."""
     user_info.scope = user_info.scope or ScopeInfo()
     permission = user_info.get_permission(workspace_info.name)
-    ws_scopes = {}
+    ws_scopes = user_info.scope.workspaces.copy()
     if not permission:
         # infer permission from workspace
         if (
