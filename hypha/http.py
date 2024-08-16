@@ -332,7 +332,7 @@ class HTTPProxy:
         async def get_service_info(
             workspace: str,
             service_id: str,
-            mode: str = "exact",
+            mode: str = None,
             user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Route for checking details of a service."""
@@ -422,7 +422,7 @@ class HTTPProxy:
             service_id: str,
             request: Request,
             path: str = None,
-            mode: str = "exact",
+            mode: str = None,
             user_info: store.login_optional = Depends(store.login_optional),
         ) -> Response:
             if service_id == "ws":
