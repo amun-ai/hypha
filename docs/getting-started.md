@@ -5,13 +5,13 @@
 To install the Hypha package, run the following command:
 
 ```bash
-pip install -U "hypha>=0.20"
+pip install -U hypha
 ```
 
 If you need full support for server-side browser applications, use the following command instead:
 
 ```bash
-pip install -U "hypha[server-apps]>=0.20"
+pip install -U "hypha[server-apps]"
 playwright install
 ```
 
@@ -200,7 +200,7 @@ if __name__ == "__main__":
 Include the following script in your HTML file to load the `hypha-rpc` client:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.20/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.22/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
 Use the following code in JavaScript to connect to the server and access an existing service:

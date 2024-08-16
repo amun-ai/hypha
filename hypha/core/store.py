@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from fastapi import Header, Cookie
 
 from hypha_rpc import RPC
+from hypha_rpc.utils.schema import schema_method
 from starlette.routing import Mount
 
 from hypha import __version__
@@ -130,7 +131,8 @@ class RedisStore:
         assert self._websocket_server is None, "Websocket server already set"
         self._websocket_server = websocket_server
 
-    def kickout_client(self, workspace, client_id, code, reason):
+    @schema_method
+    def kickout_client(self, workspace: str, client_id: str, code: int, reason: str):
         """Force disconnect a client."""
         return self._websocket_server.force_disconnect(
             workspace, client_id, code, reason
@@ -427,6 +429,7 @@ class RedisStore:
             rpc, self._redis, workspace, timeout=timeout
         )
 
+    @schema_method
     async def list_all_workspaces(self):
         """List all workspaces."""
         workspace_keys = await self._redis.hkeys("workspaces")

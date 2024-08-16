@@ -158,13 +158,9 @@
                         <i className="fas fa-bars"></i>
                         <span className="ml-2">Menu</span>
                     </div>
-                    <div className="menu-item">
-                        <i className="fas fa-info-circle"></i>
-                        <span className="ml-2">{workspaceName}</span>
-                    </div>
-                    <div className="menu-item" onClick={() => setActivePanel('clients')}>
+                    <div className="menu-item" onClick={() => setActivePanel('dashboard')}>
                         <i className="fas fa-users"></i>
-                        <span className="ml-2">Clients</span>
+                        <span className="ml-2">Dashboard</span>
                     </div>
                     <div className="menu-item" onClick={() => setActivePanel('services')}>
                         <i className="fas fa-cogs"></i>
@@ -262,11 +258,11 @@
                 <div className="main-content">
                     <h1 className="text-4xl font-bold capitalize">{panel}</h1>
                     
-                    {panel === 'clients' && (
+                    {panel === 'dashboard' && (
                         <>
-                        <p className="text-xl text-gray-400 mt-4">Clients connected to workspace: <code>{workspaceName}</code> </p>
+                        <p className="text-xl text-gray-400 mt-4">Dashboard for workspace: <code>{workspaceName}</code> </p>
                         <div className="grid grid-cols-1 gap-8 mt-6">
-                            
+                            <h2 className="text-2xl font-bold">Clients</h2>
                             {clients.map(client => (
                                 <ClientCard key={client} client={client} />
                             ))}
@@ -321,7 +317,7 @@
 
         const App = () => {
             const [isCollapsed, setIsCollapsed] = React.useState(false);
-            const [activePanel, setActivePanel] = React.useState('clients');
+            const [activePanel, setActivePanel] = React.useState('dashboard');
             const [clients, setClients] = React.useState([]);
             const [services, setServices] = React.useState([]);
             const [apps, setApps] = React.useState([]);
@@ -343,7 +339,7 @@
                     if (!ws) {
                         return;
                     }
-                    if (activePanel === 'clients') {
+                    if (activePanel === 'dashboard') {
                         setClients(await ws.listClients());
                     } else if (activePanel === 'services') {
                         setServices(await ws.listServices(config.workspace));
@@ -401,7 +397,6 @@
                 <div>
                     <Sidebar
                         isCollapsed={isCollapsed}
-                        workspaceName={config.workspace}
                         onToggle={() => setIsCollapsed(!isCollapsed)}
                         setActivePanel={setActivePanel}
                     />

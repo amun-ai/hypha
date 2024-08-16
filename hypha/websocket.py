@@ -71,12 +71,13 @@ class WebsocketServer:
 
             try:
                 if token or reconnection_token:
-                    user_info = await self.authenticate_user(
+                    user_info, workspace = await self.authenticate_user(
                         token, reconnection_token, client_id, workspace
                     )
                 else:
                     user_info = generate_anonymous_user()
                     user_info.scope = create_scope(
+                        current_workspace=user_info.get_workspace(),
                         workspaces={user_info.get_workspace(): UserPermission.admin},
                         client_id=client_id,
                     )
@@ -192,34 +193,42 @@ class WebsocketServer:
                 user_info = await self.store.parse_user_token(reconnection_token)
                 scope = user_info.scope
                 assert (
-                    len(scope.workspaces) == 1
-                ), "Invalid scope, it must have only one workspace"
+                    scope.current_workspace
+                ), "Invalid scope, current_workspace is required"
+                if workspace:
+                    assert (
+                        workspace == scope.current_workspace
+                    ), f"Invalid scope, workspace mismatch: {workspace} != {scope.current_workspace}"
+                else:
+                    workspace = scope.current_workspace
                 assert scope.client_id, "Invalid scope, client_id is required"
-                assert (
-                    len(scope.workspaces) == 1
-                ), "Invalid scope, it must have only one workspace"
-                ws = list(scope.workspaces.keys())[0]
+                if not user_info.check_permission(
+                    scope.current_workspace, UserPermission.read
+                ):
+                    logger.error(f"Permission denied for workspace: {workspace}")
+                    raise PermissionError(
+                        f"Permission denied for workspace: {workspace}"
+                    )
                 cid = scope.client_id
-                if workspace and workspace != ws:
-                    logger.error("Workspace mismatch, disconnecting")
-                    raise RuntimeError("Workspace mismatch, disconnecting")
                 if cid != client_id:
                     logger.error("Client id mismatch, disconnecting")
                     raise RuntimeError("Client id mismatch, disconnecting")
-                logger.info(f"Client reconnected: {ws}/{cid} using reconnection token")
+                logger.info(
+                    f"Client reconnected: {workspace}/{cid} using reconnection token"
+                )
             elif token:
                 user_info = await self.store.parse_user_token(token)
                 # user token doesn't have client id, so we add that
                 user_info.scope.client_id = client_id
             else:
                 raise RuntimeError("No authentication information provided")
-            return user_info
+            return user_info, workspace
         except HTTPException as e:
             logger.error(f"Authentication error: {e.detail}")
             raise RuntimeError(f"Authentication error: {e.detail}")
         except Exception as e:
-            logger.error(f"Authentication error: {str(e)}")
-            raise RuntimeError(f"Authentication error: {str(e)}")
+            logger.error(f"Failed to authenticate user: {str(e)}")
+            raise RuntimeError(f"Failed to authenticate user: {str(e)}")
 
     async def establish_websocket_communication(
         self, websocket, workspace, client_id, user_info
