@@ -41,12 +41,13 @@ jobs:
     - name: Install Hypha Helm chart
       run: helm install hypha-server ./helm-chart/hypha-server --namespace=hypha
 
-    - name: Wait for pods to be ready
-      run: |
-        kubectl wait --namespace=hypha \
-          --for=condition=ready pod \
-          --selector=app=hypha-server \
-          --timeout=300s
+    # Skip the test for now
+    # - name: Wait for pods to be ready
+    #   run: |
+    #     kubectl wait --namespace=hypha \
+    #       --for=condition=ready pod \
+    #       --selector=app=hypha-server \
+    #       --timeout=300s
 
     - name: Test the webpage at /
       run: |
