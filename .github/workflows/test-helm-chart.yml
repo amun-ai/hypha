@@ -1,0 +1,57 @@
+name: Test Hypha Helm Chart
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Kubernetes cluster using KinD
+      uses: helm/kind-action@v1.3.0
+      with:
+        version: v0.20.0
+
+    - name: Set up Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: v3.11.2
+
+    - name: Create hypha namespace
+      run: kubectl create namespace hypha
+
+    - name: Copy .env-template to .env
+      run: cp helm-chart/.env-template helm-chart/.env
+
+    - name: Apply secrets
+      run: |
+        cd helm-chart
+        chmod +x apply-secrets.sh
+        ./apply-secrets.sh
+
+    - name: Install Hypha Helm chart
+      run: helm install hypha-server ./helm-chart/hypha-server --namespace=hypha
+
+    - name: Wait for deployment to complete
+      run: kubectl rollout status deployment/hypha-server --namespace=hypha
+
+    - name: Test the application
+      run: |
+        kubectl get pods --namespace=hypha
+        kubectl get services --namespace=hypha
+        # Add more kubectl commands here to test your deployment
+
+    - name: Uninstall Hypha Helm chart
+      run: helm uninstall hypha-server --namespace=hypha
+
+    - name: Delete namespace
+      run: kubectl delete namespace hypha
