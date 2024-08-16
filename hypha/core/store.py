@@ -232,7 +232,6 @@ class RedisStore:
         except RuntimeError:
             logger.warning("Root workspace already exists.")
 
-        need_cleanup = True
         try:
             await self.register_workspace(
                 WorkspaceInfo.model_validate(
@@ -246,14 +245,13 @@ class RedisStore:
                 ),
                 overwrite=False,
             )
-            need_cleanup = False
         except RuntimeError:
             logger.warning("Public workspace already exists.")
         await self._register_root_services()
         api = await self.get_public_api()
-        if need_cleanup:
-            logger.info("Cleaning up the public workspace...")
-            await api.cleanup()
+
+        logger.info("Cleaning up the public workspace...")
+        await api.cleanup()
         logger.info("Registering public services...")
         for service_type in self._public_types:
             try:
@@ -283,7 +281,7 @@ class RedisStore:
     async def _register_root_services(self):
         """Register root services."""
         self._root_workspace_interface = await self.get_workspace_interface(
-            self._root_user.get_workspace(), self._root_user
+            self._root_user.get_workspace(), self._root_user, silent=False
         )
         await self._root_workspace_interface.register_service(
             {
@@ -293,16 +291,30 @@ class RedisStore:
                     "visibility": "protected",
                     "require_context": False,
                 },
+                "list_servers": self.list_servers,
                 "kickout_client": self.kickout_client,
                 "list_workspaces": self.list_all_workspaces,
             }
         )
 
+    @schema_method
+    async def list_servers(self):
+        """List all servers."""
+        pattern = f"services:*:public/*:built-in@*"
+        keys = await self._redis.keys(pattern)
+        clients = set()
+        for key in keys:
+            # Extract the client ID from the service key
+            key_parts = key.decode("utf-8").split("/")
+            client_id = key_parts[1].split(":")[0]
+            clients.add(client_id)
+        return list(clients)
+
     async def get_public_api(self):
         """Get the public API."""
         if self._public_workspace_interface is None:
             self._public_workspace_interface = await self.get_workspace_interface(
-                "public", self._root_user
+                "public", self._root_user, silent=False
             )
         return self._public_workspace_interface
 
@@ -500,27 +512,6 @@ class RedisStore:
     def set_workspace_loader(self, loader):
         """Set the workspace loader."""
         self._workspace_loader = loader
-
-    async def get_service_as_user(
-        self,
-        workspace_name: str,
-        service_id: str,
-        user_info: UserInfo = None,
-    ):
-        """Get service as a specified user."""
-        user_info = user_info or self._root_user
-        if "/" in service_id:
-            assert (
-                service_id.split("/")[0] == workspace_name
-            ), f"Workspace name mismatch, {workspace_name} != {service_id.split('/')[0]}"
-            service_id = service_id.split("/")[1]
-        if ":" not in service_id:
-            service_id = "*:" + service_id
-        service_id = workspace_name + "/" + service_id
-        wm = await self.get_workspace_interface("public", user_info)
-        service = await wm.get_service(service_id)
-        await wm.disconnect()
-        return service
 
     def register_public_service(self, service: dict):
         """Register a service."""

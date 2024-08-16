@@ -133,6 +133,9 @@ async def test_cleanup_workspace(fastapi_server, root_user_token):
     async with connect_to_server(
         {"name": "test client", "server_url": SERVER_URL, "token": root_user_token}
     ) as api:
+        admin = await api.get_service("admin-utils")
+        servers = await admin.list_servers()
+        assert len(servers) == 1
         summary = await api.cleanup("public")
         assert "removed_clients" in summary
         assert len(summary["removed_clients"]) == 0
