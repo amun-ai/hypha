@@ -104,7 +104,7 @@ async def register_user(user_info: UserInfo) -> str:
 
 
 async def main():
-    server = await connect_to_server({"server_url": "https://hypha.aicell.io"})
+    server = await connect_to_server({"server_url": "https://hypha.amun.ai"})
 
     svc = await server.register_service({
         "name": "User Service",
@@ -152,7 +152,7 @@ Here is an example of how the updated code might look:
 <script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.22/dist/hypha-rpc-websocket.min.js"></script>
 <script>
 async function main(){
-    const server = await hyphaWebsocketClient.connectToServer({"server_url": "https://hypha.aicell.io"});
+    const server = await hyphaWebsocketClient.connectToServer({"server_url": "https://hypha.amun.ai"});
     // register a service using server.registerService 
     const info = await server.registerService({
         name: "Hello World",
@@ -202,7 +202,7 @@ Here is a quick example in JavaScript:
 <script>
 async function main(){
     const { connectToServer, schemaFunction } = hyphaWebsocketClient;
-    const server = await connectToServer({"server_url": "https://hypha.aicell.io"});
+    const server = await connectToServer({"server_url": "https://hypha.amun.ai"});
     
     function getCurrentWeather(location, unit = "fahrenheit") {
         if (location.toLowerCase().includes("tokyo")) {
