@@ -41,29 +41,6 @@ jobs:
     - name: Install Hypha Helm chart
       run: helm install hypha-server ./helm-chart/hypha-server --namespace=hypha
 
-    - name: Wait for pod containers to start creating
-      run: |
-        for i in {1..30}; do
-          echo "Checking pod status... (attempt $i)"
-          kubectl get pods --namespace=hypha --selector=app=hypha-server -o wide
-          
-          POD_PHASE=$(kubectl get pods --namespace=hypha --selector=app=hypha-server -o jsonpath='{.items[*].status.phase}')
-          if [[ "$POD_PHASE" == *"Pending"* || "$POD_PHASE" == *"Running"* ]]; then
-            echo "Pod containers are in phase: $POD_PHASE"
-            
-            CONTAINER_STATUSES=$(kubectl get pods --namespace=hypha --selector=app=hypha-server -o jsonpath='{.items[*].status.containerStatuses[*].state}')
-            echo "Container statuses: $CONTAINER_STATUSES"
-            
-            if [[ "$CONTAINER_STATUSES" == *"waiting"* || "$CONTAINER_STATUSES" == *"running"* ]]; then
-              echo "Containers are either waiting or running. Proceeding..."
-              break
-            fi
-          fi
-          
-          echo "Waiting for pod containers to start..."
-          sleep 10
-        done
-
     - name: Wait for pods to be ready
       run: |
         kubectl wait --namespace=hypha \
@@ -74,7 +51,7 @@ jobs:
     - name: Test the webpage at /
       run: |
         SERVICE_IP=$(kubectl get svc hypha-server --namespace=hypha -o jsonpath='{.spec.clusterIP}')
-        curl -f http://$SERVICE_IP/
+        curl -f http://$SERVICE_IP:9520/
 
     - name: Uninstall Hypha Helm chart
       run: helm uninstall hypha-server --namespace=hypha
