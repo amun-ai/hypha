@@ -164,24 +164,21 @@ class RedisStore:
             workspace = user_info.get_workspace()
 
         assert workspace != "*", "Dynamic workspace is not allowed for this endpoint"
-        # Anonymous and Temporary users are not allowed to create persistant workspaces
-        persistent = (
-            not user_info.is_anonymous and "temporary-test-user" not in user_info.roles
-        )
 
         # Ensure calls to store for workspace existence and permissions check
         workspace_info = await self.get_workspace_info(workspace, load=True)
+
+        # If workspace does not exist, automatically create it
         if not workspace_info:
-            if workspace != user_info.get_workspace():
-                raise KeyError(
-                    f"User can only connect to a pre-existing workspace or their own workspace: {workspace}"
+            if not user_info.check_permission(workspace, UserPermission.read):
+                raise PermissionError(
+                    f"User {user_info.id} does not have permission to access workspace {workspace}"
                 )
-            # Simplified logic for workspace creation, ensure this matches the actual store method signatures
             workspace_info = await self.register_workspace(
                 {
                     "name": workspace,
-                    "description": f"Default user workspace for {user_info.id}",
-                    "persistent": persistent,
+                    "description": f"Auto-created workspace by {user_info.id}",
+                    "persistent": False,
                     "owners": [user_info.id],
                     "read_only": user_info.is_anonymous,
                 }

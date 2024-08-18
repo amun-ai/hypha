@@ -289,7 +289,7 @@ class WorkspaceInfo(BaseModel):
 
 class TokenConfig(BaseModel):
     expires_in: Optional[int] = Field(None, description="Expiration time in seconds")
-    workspace: Optional[str] = Field(None, description="Workspace ID")
+    workspace: Optional[str] = Field(None, description="Workspace name")
     permission: Optional[str] = Field(
         "read_write",
         description="Permission level",
