@@ -187,9 +187,12 @@ class WorkspaceManager:
         user_info = UserInfo.model_validate(context["user"])
         if user_info.is_anonymous:
             raise Exception("Only registered user can create workspace.")
-        if await self._redis.hexists("workspace", config["name"]):
-            if not overwrite:
-                raise KeyError(f"Workspace already exists: {ws}")
+        try:
+            if await self.load_workspace_info(ws):
+                if not overwrite:
+                    raise KeyError(f"Workspace already exists: {ws}")
+        except KeyError:
+            pass
 
         config["persistent"] = config.get("persistent") or False
         if user_info.is_anonymous and config["persistent"]:
