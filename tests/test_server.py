@@ -44,7 +44,7 @@ async def test_connect_to_server(fastapi_server):
     # )
     with pytest.raises(
         Exception,
-        match=r".*User can only connect to a pre-existing workspace or their own workspace.*",
+        match=r".*does not have permission to access workspace .*",
     ):
         rpc = await connect_to_server(
             {"name": "my app", "workspace": "test", "server_url": WS_SERVER_URL}

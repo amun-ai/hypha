@@ -85,7 +85,7 @@ async def start_server(server_url):
         print("Hello " + name)
         return "Hello " + name
 
-    await server.register_service({
+    svc = await server.register_service({
         "name": "Hello World",
         "id": "hello-world",
         "config": {
@@ -94,8 +94,11 @@ async def start_server(server_url):
         "hello": hello
     })
     
-    print(f"Hello world service registered at workspace: {server.config.workspace}")
-    print(f"Test it with the HTTP proxy: {server_url}/{server.config.workspace}/services/hello-world/hello?name=John")
+    print(f"Hello world service registered at workspace: {server.config.workspace}, id: {svc.id}")
+
+    print(f'You can use this service using the service id: {svc.id}')
+
+    print(f"You can also test the service via the HTTP proxy: {server_url}/{server.config.workspace}/services/{svc.id}/hello?name=John")
 
     # Keep the server running
     await server.serve()
@@ -117,7 +120,7 @@ def start_server(server_url):
         print("Hello " + name)
         return "Hello " + name
 
-    server.register_service({
+    svc = server.register_service({
         "name": "Hello World",
         "id": "hello-world",
         "config": {
@@ -126,8 +129,11 @@ def start_server(server_url):
         "hello": hello
     })
     
-    print(f"Hello world service registered at workspace: {server.config.workspace}")
-    print(f"Test it with the HTTP proxy: {server_url}/{server.config.workspace}/services/hello-world/hello?name=John")
+    print(f"Hello world service registered at workspace: {server.config.workspace}, id: {svc.id}")
+
+    print(f'You can use this service using the service id: {svc.id}')
+
+    print(f"You can also test the service via the HTTP proxy: {server_url}/{server.config.workspace}/services/{svc.id}/hello?name=John")
 
 if __name__ == "__main__":
     server_url = "http://localhost:9527"
@@ -166,8 +172,8 @@ async def main():
     server = await connect_to_server({"server_url": "http://localhost:9527"})
 
     # Get an existing service
-    # Since "hello-world" is registered as a public service, we can access it using only the name "hello-world"
-    svc = await server.get_service("hello-world")
+    # NOTE: You need to replace the service id with the actual id you obtained when registering the service
+    svc = await server.get_service("ws-user-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
     ret = await svc.hello("John")
     print(ret)
 if __name__ == "__main__":
@@ -184,8 +190,8 @@ def main():
     server = connect_to_server({"server_url": "http://localhost:9527"})
 
     # Get an existing service
-    # Since "hello-world" is registered as a public service, we can access it using only the name "hello-world"
-    svc = server.get_service("hello-world")
+    # NOTE: You need to replace the service id with the actual id you obtained when registering the service
+    svc = server.get_service("ws-user-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
     ret = svc.hello("John")
     print(ret)
 
@@ -196,12 +202,23 @@ if __name__ == "__main__":
 
 **NOTE: In Python, the recommended way to interact with the server to use asynchronous functions with `asyncio`. However, if you need to use synchronous functions, you can use `from hypha_rpc.sync import login, connect_to_server` instead. The have the exact same arguments as the asynchronous versions. For more information, see [Synchronous Wrapper](/hypha-rpc?id=synchronous-wrapper)**
 
+
+As a shortcut you can also use `get_remote_service`:
+```python
+
+from hypha_rpc import get_remote_service
+
+# NOTE: You need to replace the service id with the actual id you obtained when registering the service
+# The url format should be in the format: http://<server_url>/<workspace>/services/<client_id>:<service_id> (client_id is optional)
+svc = await get_remote_service("http://localhost:9527/ws-user-scintillating-lawyer-94336986/services/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
+```
+
 #### JavaScript Client
 
 Include the following script in your HTML file to load the `hypha-rpc` client:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.24/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.26/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
 Use the following code in JavaScript to connect to the server and access an existing service:
@@ -209,10 +226,20 @@ Use the following code in JavaScript to connect to the server and access an exis
 ```javascript
 async function main(){
     const server = await hyphaWebsocketClient.connectToServer({"server_url": "http://localhost:9527"})
-    const svc = await server.get_service("hello-world")
+    // NOTE: You need to replace the service id with the actual id you obtained when registering the service
+    const svc = await server.get_service("ws-user-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
     const ret = await svc.hello("John")
     console.log(ret)
 }
+```
+
+As a shortcut you can also use `hyphaWebsocketClient.getRemoteService`:
+
+```javascript
+// NOTE: You need to replace the service id with the actual id you obtained when registering the service
+const svc = await hyphaWebsocketClient.getRemoteService("http://localhost:9527/ws-user-scintillating-lawyer-94336986/services/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
+const ret = await svc.hello("John")
+console.log(ret)
 ```
 
 ### Peer-to-Peer Connection via WebRTC
@@ -375,7 +402,7 @@ For more details, see the service request api endpoint [here](https://ai.imjoy.i
 
 Probes are useful for monitoring the status of services. They can be used to check whether a service is running correctly or to retrieve information about the service. Probes are executed by the server and can be used to monitor the health of services.
 
-We create a convinient shortcut to register probes for monitoring services. Here is an example of how to register a probe for a service:
+We create a convenient shortcut to register probes for monitoring services. Here is an example of how to register a probe for a service:
 
 ```python
 from hypha_rpc import connect_to_server
