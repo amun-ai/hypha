@@ -57,7 +57,7 @@ def _generate_token(id, roles):
         email=id + "@test.com",
         parent=None,
         roles=roles,
-        scope=create_scope(workspaces={id: UserPermission.admin}),
+        scope=create_scope(workspaces={f"ws-user-{id}": UserPermission.admin}),
         expires_at=None,
     )
     token = generate_presigned_token(root_user_info)
