@@ -239,6 +239,7 @@ class Card(BaseModel):
     license: Optional[str] = None
     git_repo: Optional[str] = None
     source: Optional[str] = None
+    entry_point: Optional[str] = None
     services: Optional[List[SerializeAsAny[ServiceInfo]]] = None
 
     @classmethod

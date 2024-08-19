@@ -131,6 +131,7 @@ class ServerAppController:
         app_id: str,
         card: Card,
         source: str,
+        entry_point: str,
         attachments: Optional[Dict[str, Any]] = None,
     ):
         """Save an application to the workspace."""
@@ -159,7 +160,7 @@ class ServerAppController:
                 assert "ETag" in response
 
             # Upload the source code
-            await save_file(f"{app_dir}/index.html", source)
+            await save_file(f"{app_dir}/{entry_point}", source)
 
             if attachments:
                 card.attachments = card.attachments or {}
@@ -225,7 +226,8 @@ class ServerAppController:
         """Save a server app."""
         if template is None:
             if config:
-                template = config.get("type") + "-app.html"
+                config["entry_point"] = config.get("entry_point", "index.html")
+                template = config.get("type") + "." + config["entry_point"]
             else:
                 template = "hypha"
         if not workspace:
@@ -265,9 +267,12 @@ class ServerAppController:
             try:
                 config = parse_imjoy_plugin(source)
                 config["source_hash"] = mhash
+                entry_point = config.get("entry_point", "index.html")
+                config["entry_point"] = entry_point
                 temp = self.jinja_env.get_template(
-                    safe_join("apps", config["type"] + "-app.html")
+                    safe_join("apps", config["type"] + "." + entry_point)
                 )
+                
                 source = temp.render(
                     hypha_main_version=main_version,
                     hypha_rpc_websocket_mjs=self.public_base_url
@@ -282,14 +287,18 @@ class ServerAppController:
                     f"Failed to parse or compile the hypha app {mhash}: {source[:100]}...",
                 ) from err
         elif template:
+            assert "." in template, f"Invalid template name: {template}, should be a file name with extension."
+            # extract the last dash separated part as the file name
             temp = self.jinja_env.get_template(safe_join("apps", template))
             default_config = {
-                "name": "Untitled Plugin",
+                "name": "Untitled App",
                 "version": "0.1.0",
                 "local_base_url": self.local_base_url,
             }
             default_config.update(config or {})
             config = default_config
+            entry_point = config.get("entry_point", template)
+            config["entry_point"] = entry_point
             source = temp.render(
                 hypha_main_version=main_version,
                 hypha_rpc_websocket_mjs=self.public_base_url
@@ -304,17 +313,18 @@ class ServerAppController:
 
         app_id = f"{mhash}"
 
-        public_url = f"{self.public_base_url}/{workspace_info.name}/browser-apps/{app_id}/index.html"
+        public_url = f"{self.public_base_url}/{workspace_info.name}/server-apps/{app_id}/{entry_point}"
         card_obj = convert_config_to_card(config, app_id, public_url)
         card_obj.update(
             {
-                "local_url": f"{self.local_base_url}/{workspace_info.name}/browser-apps/{app_id}/index.html",
+                "local_url": f"{self.local_base_url}/{workspace_info.name}/server-apps/{app_id}/{entry_point}",
                 "public_url": public_url,
             }
         )
         card = Card.model_validate(card_obj)
+        assert card.entry_point, "Entry point not found in the card."
         await self.save_application(
-            workspace_info.name, app_id, card, source, attachments
+            workspace_info.name, app_id, card, source, card.entry_point, attachments
         )
         async with self.store.get_workspace_interface(
             workspace_info.name, user_info
@@ -426,10 +436,12 @@ class ServerAppController:
         assert (
             app_id in workspace_info.applications
         ), f"App {app_id} not found in workspace {workspace}, please install it first."
-
+        card = workspace_info.applications[app_id]
+        entry_point = card.entry_point
+        assert entry_point, f"Entry point not found for app {app_id}."
         server_url = self.local_base_url
         local_url = (
-            f"{self.local_base_url}/{workspace}/browser-apps/{app_id}/index.html?"
+            f"{self.local_base_url}/{workspace}/server-apps/{app_id}/{entry_point}?"
             + f"client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}"
@@ -439,7 +451,7 @@ class ServerAppController:
         )
         server_url = self.public_base_url
         public_url = (
-            f"{self.public_base_url}/{workspace}/browser-apps/{app_id}/index.html?"
+            f"{self.public_base_url}/{workspace}/server-apps/{app_id}/{entry_point}?"
             + f"client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}"

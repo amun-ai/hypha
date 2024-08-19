@@ -122,6 +122,7 @@ def convert_config_to_card(plugin_config, plugin_id, source_url=None):
         "env",
         "passive",
         "services",
+        "entry_point",
     ]
     for field in fields:
         if field in plugin_config:

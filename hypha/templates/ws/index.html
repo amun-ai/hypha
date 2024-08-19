@@ -7,13 +7,14 @@
     <title>Hypha Workspace Management</title>
     <!-- External Scripts -->
     <script src="../hypha-rpc-websocket.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/17.0.2/umd/react.production.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/17.0.2/umd/react-dom.production.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/17.0.2/umd/react.development.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/17.0.2/umd/react-dom.development.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/marked@2.1.3/lib/marked.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/js/all.min.js"></script>
     <script src="https://cdn.auth0.com/js/auth0-spa-js/2.0/auth0-spa-js.production.js"></script>
+    <script src="https://rawcdn.githack.com/nextapps-de/winbox/0.2.82/dist/winbox.bundle.min.js"></script>
     <!-- Favicon and Icons -->
     <link rel="apple-touch-icon" sizes="180x180" href="./static/img/apple-touch-icon.png">
     <link rel="icon" type="image/png" sizes="32x32" href="./static/img/favicon-32x32.png">
@@ -71,14 +72,6 @@
 
         .main-content.collapsed {
             margin-left: 60px;
-        }
-
-        .collapsible {
-            display: none;
-        }
-
-        .collapsed + .collapsible {
-            display: block;
         }
 
         @media (max-width: 768px) {
@@ -145,10 +138,41 @@
 
 <body class="bg-black text-white font-poppins">
     <div id="app"></div>
+    <script type="module">
+        import { HyphaServer, connectToServer } from "https://cdn.jsdelivr.net/npm/hypha-core@0.20.26/dist/hypha-core.mjs";
+        const hyphaServer = new HyphaServer({base_url: "/hypha-core-app/"});
+        hyphaServer.on("add_window", (config) => {
+            const root = document.getElementById("hypha-window-container");
+            // get the left and top position of the root element
+            // then set it to the WinBox
+            const rect = root.getBoundingClientRect();
+
+            const wb = new WinBox(config.name || config.src.slice(0, 128), {
+                root: root,
+                y: rect.top + 10,
+                x: rect.left + 10,
+                background: "#448aff",
+            });
+            wb.body.innerHTML = `<iframe src="${config.src}" id="${config.window_id}" style="width: 100%; height: 100%; border: none;"></iframe>`;
+        });
+        await hyphaServer.start();
+        console.log("Hypha server started:", hyphaServer.url);
+
+        const api = await connectToServer({
+            server: hyphaServer,
+            workspace: "default",
+        });
+        async function loadPluginFromUrl(url) {
+            const plugin = await api.loadPlugin({ src: url });
+            await plugin.run({ config: {}, data: {} });
+            console.log("Loaded and ran plugin from URL:", url);
+        }
+        window.loadPlugin = loadPluginFromUrl;
+    </script>
 
     <!-- Render the App component -->
     <script type="text/babel" data-presets="env,react">
-        const Sidebar = ({ isCollapsed, workspaceName, onToggle, setActivePanel }) => {
+        const Sidebar = ({ isCollapsed, onToggle, setActivePanel }) => {
             return (
                 <div className={`sidebar ${isCollapsed ? 'collapsed' : ''}`}>
                     <div className="logo">
@@ -173,6 +197,10 @@
                     <div className="menu-item" onClick={() => setActivePanel('files')}>
                         <i className="fas fa-folder"></i>
                         <span className="ml-2">Files</span>
+                    </div>
+                    <div className="menu-item" onClick={() => setActivePanel('development')}>
+                        <i className="fas fa-code"></i>
+                        <span className="ml-2">Development</span>
                     </div>
                 </div>
             );
@@ -305,6 +333,15 @@
                         </div>
                         </>
                     )}
+                    {panel === 'development' && (
+                        <main className="development-panel">
+                            <p className="text-xl text-gray-400 mt-4">Development panel with Hypha server simulation</p>
+                            <button onClick={() => window.loadPlugin("https://if.imjoy.io")} className="mt-4 bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300">
+                                New App
+                            </button>
+                            <div style={{ display: 'block', width: '100%', height: '100%', position: 'fixed' }} id="hypha-window-container"></div>
+                        </main>
+                    )}
                 </div>
             );
         };
@@ -368,7 +405,6 @@
             const onGenerateUrl = async (fileName) => {
                 const presignedUrl = await ws.generatePresignedUrl(fileName);
                 console.log('Presigned URL:', presignedUrl);
-                // You can also display this URL to the user or copy it to clipboard
             };
 
             const onShowDetails = (service) => {

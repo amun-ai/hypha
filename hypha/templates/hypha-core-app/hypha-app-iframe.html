@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Hypha App</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 10px;
+            overflow: hidden;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.26/dist/hypha-rpc-websocket.min.js"></script>
+    <script>
+        hyphaWebsocketClient.setupLocalClient({enable_execution: true}).then((api)=>{
+            console.log("Hypha client is ready", api)
+        }).catch(console.error);
+    </script>
+</head>
+<body>
+    <pre>Initializing...</pre>
+</body>
+</html>

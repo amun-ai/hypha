@@ -589,7 +589,7 @@ class HTTPProxy:
             except KeyError:
                 return Response(status_code=404)
 
-        @router.get(norm_url("/{workspace}/browser-apps/{app_id}/{path:path}"))
+        @router.get(norm_url("/{workspace}/server-apps/{app_id}/{path:path}"))
         async def get_browser_app_file(
             workspace: str, app_id: str, path: str, token: str = None
         ) -> Response:
