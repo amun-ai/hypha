@@ -16,6 +16,7 @@ from requests import RequestException
 from hypha.core import UserInfo, auth, UserPermission
 from hypha.core.auth import generate_presigned_token, create_scope
 from hypha.minio import setup_minio_executables
+from redis import Redis
 
 from . import (
     MINIO_PORT,
@@ -60,7 +61,7 @@ def _generate_token(id, roles):
         scope=create_scope(workspaces={f"ws-user-{id}": UserPermission.admin}),
         expires_at=None,
     )
-    token = generate_presigned_token(root_user_info)
+    token = generate_presigned_token(root_user_info, 18000)
     yield token
 
 
@@ -77,7 +78,7 @@ def generate_root_user_token():
         scope=create_scope(workspaces={"*": UserPermission.admin}),
         expires_at=None,
     )
-    token = generate_presigned_token(root_user_info)
+    token = generate_presigned_token(root_user_info, 1800)
     yield token
 
 
@@ -119,6 +120,34 @@ def triton_server():
         timeout -= 0.1
         time.sleep(0.1)
     yield
+
+
+@pytest_asyncio.fixture(name="redis_server", scope="session")
+def redis_server():
+    """Start a redis server as test fixture and tear down after test."""
+    try:
+        r = Redis(host="localhost", port=REDIS_PORT)
+        r.ping()
+        yield
+    except Exception:
+        # user docker to start redis
+        subprocess.Popen(
+            ["docker", "run", "-d", "-p", f"{REDIS_PORT}:6379", "redis:6.2.5"]
+        )
+        timeout = 10
+        while timeout > 0:
+            try:
+                r = Redis(host="localhost", port=REDIS_PORT)
+                r.ping()
+                break
+            except Exception:
+                pass
+            timeout -= 0.1
+            time.sleep(0.1)
+        yield
+        subprocess.Popen(["docker", "stop", "redis"])
+        subprocess.Popen(["docker", "rm", "redis"])
+        time.sleep(1)
 
 
 @pytest_asyncio.fixture(name="fastapi_server", scope="session")
@@ -166,7 +195,7 @@ def fastapi_server_fixture(minio_server):
 
 
 @pytest_asyncio.fixture(name="fastapi_server_redis_1", scope="session")
-def fastapi_server_redis_1(minio_server):
+def fastapi_server_redis_1(redis_server, minio_server):
     """Start server as test fixture and tear down after test."""
     with subprocess.Popen(
         [
@@ -176,6 +205,8 @@ def fastapi_server_redis_1(minio_server):
             f"--port={SIO_PORT_REDIS_1}",
             # "--enable-server-apps",
             # "--enable-s3",
+            # need to define it so the two server can communicate
+            f"--public-base-url=http://my-public-url.com",
             f"--redis-uri=redis://127.0.0.1:{REDIS_PORT}/0",
             "--reset-redis",
             # f"--endpoint-url={MINIO_SERVER_URL}",
@@ -205,7 +236,7 @@ def fastapi_server_redis_1(minio_server):
 
 
 @pytest_asyncio.fixture(name="fastapi_server_redis_2", scope="session")
-def fastapi_server_redis_2(minio_server, fastapi_server):
+def fastapi_server_redis_2(redis_server, minio_server, fastapi_server):
     """Start a backup server as test fixture and tear down after test."""
     with subprocess.Popen(
         [
@@ -215,6 +246,8 @@ def fastapi_server_redis_2(minio_server, fastapi_server):
             f"--port={SIO_PORT_REDIS_2}",
             # "--enable-server-apps",
             # "--enable-s3",
+            # need to define it so the two server can communicate
+            f"--public-base-url=http://my-public-url.com",
             f"--redis-uri=redis://127.0.0.1:{REDIS_PORT}/0",
             # f"--endpoint-url={MINIO_SERVER_URL}",
             # f"--access-key-id={MINIO_ROOT_USER}",

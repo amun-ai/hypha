@@ -10,11 +10,23 @@ Make sure you have the following installed:
 
 ## Usage
 
-First, we need to create secrets for hypha by copy the file `.env-template` to `.env`, then change the values inside .env file.
-
-After that, run the bash command to apply these secrets to the cluster:
+First, clone this repository:
 ```bash
-sh apply-secrets.sh
+git clone https://amun-ai.github.com/hypha
+cd hypha/helm-chart
+```
+
+Now you need to create a namespace for Hypha:
+```bash
+kubectl create namespace hypha
+```
+
+Then, run the bash command to create a `JWT_SECRET` apply these secrets to the cluster:
+```bash
+export JWT_SECRET=abcde123 # change this to your own secret
+kubectl create secret generic hypha-secrets \
+  --from-literal=JWT_SECRET=$JWT_SECRET \
+  --dry-run=client -o yaml | kubectl apply --namespace=hypha -f -
 ```
 
 Verify that the secret `hypha-secrets` has been created:
@@ -26,16 +38,16 @@ Next, let's check the values in `values.yaml` and make sure they are correct. Im
 
 
 Finally, we can install the helm chart:
-```
+```bash
 helm install hypha-server ./hypha-server --namespace=hypha
 ```
 
 If you make changes to the chart, you can upgrade the chart:
-```
+```bash
 helm upgrade hypha-server ./hypha-server --namespace=hypha
 ```
 
 To uninstall the chart:
-```
+```bash
 helm uninstall hypha-server --namespace=hypha
 ```
