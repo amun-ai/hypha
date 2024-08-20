@@ -50,15 +50,19 @@ RUN conda update -n base -c defaults conda -y && \
 # Copy all files to the container
 ADD . .
 
-# Install Python dependencies
-RUN pip install .[server-apps] --no-cache-dir
+# Install Python dependencies and Playwright
+RUN pip install .[server-apps] --no-cache-dir && \
+    pip install playwright --no-cache-dir && \
+    playwright install
+
+# Move Playwright .cache folder to the hypha user's home directory
+RUN mkdir -p /home/hypha/.cache && \
+    mv /root/.cache/ms-playwright /home/hypha/.cache/ && \
+    chown -R hypha:hypha /home/hypha/.cache
 
 # Add user and switch to non-root user
 RUN useradd -u 8877 hypha
 USER hypha
-
-# Install Playwright browsers as the hypha user
-RUN playwright install --with-deps
 
 # Expose port
 EXPOSE 9520
