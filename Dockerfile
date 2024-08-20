@@ -65,8 +65,8 @@ RUN pip install .[server-apps] --no-cache-dir && \
 
 # Add user and set permissions before moving .cache folder
 RUN useradd -u 8877 hypha && \
-    mkdir -p /home/hypha/.cache && \
-    mv /root/.cache/ms-playwright /.cache/ && \
+    mkdir -p /.cache && \
+    mv /root/.cache/ms-playwright /.cache && \
     chown -R hypha:hypha /.cache
 
 # Switch to non-root user
