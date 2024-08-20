@@ -51,13 +51,14 @@ RUN conda update -n base -c defaults conda -y && \
 ADD . .
 
 # Install Python dependencies
-RUN pip install .[server-apps] --no-cache-dir && \
-    pip install playwright --no-cache-dir && \
-    playwright install
+RUN pip install .[server-apps] --no-cache-dir
 
 # Add user and switch to non-root user
 RUN useradd -u 8877 hypha
 USER hypha
+
+# Install Playwright browsers as the hypha user
+RUN playwright install --with-deps
 
 # Expose port
 EXPOSE 9520
