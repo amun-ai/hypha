@@ -4,7 +4,8 @@ import json
 import logging
 import ssl
 import sys
-import time
+from calendar import timegm
+import datetime
 import traceback
 from os import environ as env
 from typing import List, Union, Dict
@@ -143,9 +144,10 @@ def valid_token(authorization: str):
 
 def generate_anonymous_user(scope=None) -> UserInfo:
     """Generate user info for an anonymous user."""
-    iat = time.time()
+    current_time = datetime.datetime.now(datetime.timezone.utc)
     user_id = random_id(readable=True)
-    expires_at = iat + 600
+    expires_at = current_time + datetime.timedelta(seconds=600)
+    expires_at = timegm(expires_at.utctimetuple())
     return UserInfo(
         id=user_id,
         is_anonymous=True,
@@ -182,7 +184,7 @@ def parse_token(authorization: str):
 
 def generate_presigned_token(
     user_info: UserInfo,
-    expires_in: int = None,
+    expires_in: int,
 ):
     """Generate presigned tokens.
 
@@ -193,9 +195,10 @@ def generate_presigned_token(
     email = user_info.email
     # Inherit roles from parent
     roles = user_info.roles
-    expires_in = expires_in or 10800
-    current_time = time.time()
-    expires_at = current_time + expires_in
+    assert expires_in > 0, "expires_in should be greater than 0"
+    current_time = datetime.datetime.now(datetime.timezone.utc)
+    expires_at = current_time + datetime.timedelta(seconds=expires_in)
+
     token = jwt.encode(
         {
             "iss": AUTH0_ISSUER,
@@ -216,8 +219,8 @@ def generate_presigned_token(
 
 def generate_reconnection_token(user_info: UserInfo, expires_in: int = 60):
     """Generate a token for reconnection."""
-    current_time = time.time()
-    expires_at = current_time + expires_in
+    current_time = datetime.datetime.now(datetime.timezone.utc)
+    expires_at = current_time + datetime.timedelta(seconds=expires_in)
 
     ret = jwt.encode(
         {

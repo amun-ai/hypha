@@ -139,8 +139,18 @@
 <body class="bg-black text-white font-poppins">
     <div id="app"></div>
     <script type="module">
-        import { HyphaServer, connectToServer } from "https://cdn.jsdelivr.net/npm/hypha-core@0.20.26/dist/hypha-core.mjs";
-        const hyphaServer = new HyphaServer({base_url: "/hypha-core-app/"});
+        import { HyphaServer, connectToServer } from "https://cdn.jsdelivr.net/npm/hypha-core@0.20.27/dist/hypha-core.mjs";
+
+        const defaultServices = {
+            getServerConfig(context){
+                return {
+                    "server_url": window.location.origin,
+                    "workspace": decodeURIComponent(window.location.href.split(window.location.origin)[1].split('/')[1]),
+                    "token": document.cookie.split('; ').find(row => row.startsWith('access_token')).split('=')[1],
+                }
+            }
+        }
+        const hyphaServer = new HyphaServer({base_url: "/hypha-core-app/", default_services: defaultServices});
         hyphaServer.on("add_window", (config) => {
             const root = document.getElementById("hypha-window-container");
             // get the left and top position of the root element
@@ -163,11 +173,21 @@
             workspace: "default",
         });
         async function loadPluginFromUrl(url) {
-            const plugin = await api.loadPlugin({ src: url });
+            const plugin = await api.loadPlugin({ src: url});
             await plugin.run({ config: {}, data: {} });
             console.log("Loaded and ran plugin from URL:", url);
         }
         window.loadPlugin = loadPluginFromUrl;
+
+        window.loadCodeEditor = async function () {
+            const response = await fetch("/ws/code_template.html");
+            const pythonPluginCode = await response.text();
+            const codeEditor = await api.loadPlugin({
+                src: "https://if.imjoy.io",
+            });
+            await codeEditor.run({ config: {fold: [1]},  data: {code: pythonPluginCode} });
+            console.log("Loaded and ran code editor plugin");
+        };
     </script>
 
     <!-- Render the App component -->
@@ -336,7 +356,7 @@
                     {panel === 'development' && (
                         <main className="development-panel">
                             <p className="text-xl text-gray-400 mt-4">Development panel with Hypha server simulation</p>
-                            <button onClick={() => window.loadPlugin("https://if.imjoy.io")} className="mt-4 bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300">
+                            <button onClick={() => window.loadCodeEditor()} className="mt-4 bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300">
                                 New App
                             </button>
                             <div style={{ display: 'block', width: '100%', height: '100%', position: 'fixed' }} id="hypha-window-container"></div>
@@ -365,7 +385,9 @@
             React.useEffect(() => {
                 // Connect to the Hypha server
                 const connectToServer = async () => {
-                    setWs(await hyphaWebsocketClient.connectToServer(config));
+                    const remoteServer = await hyphaWebsocketClient.connectToServer(config);
+                    window.remoteServer = remoteServer;
+                    setWs(remoteServer);
                 };
                 connectToServer();
             }, []);

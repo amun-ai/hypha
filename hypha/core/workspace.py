@@ -397,7 +397,8 @@ class WorkspaceManager:
             current_workspace=allowed_workspace,
             extra_scopes=extra_scopes,
         )
-        token = generate_presigned_token(user_info)
+        config.expires_in = config.expires_in or 3600
+        token = generate_presigned_token(user_info, config.expires_in)
         return token
 
     @schema_method
@@ -841,6 +842,7 @@ class WorkspaceManager:
             workspace=workspace,
             client_id=client_id,
             default_context=default_context,
+            server_base_url=self._server_info["public_base_url"],
             silent=silent,
         )
         rpc.register_codec(

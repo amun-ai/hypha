@@ -272,7 +272,7 @@ class ServerAppController:
                 temp = self.jinja_env.get_template(
                     safe_join("apps", config["type"] + "." + entry_point)
                 )
-                
+
                 source = temp.render(
                     hypha_main_version=main_version,
                     hypha_rpc_websocket_mjs=self.public_base_url
@@ -287,7 +287,9 @@ class ServerAppController:
                     f"Failed to parse or compile the hypha app {mhash}: {source[:100]}...",
                 ) from err
         elif template:
-            assert "." in template, f"Invalid template name: {template}, should be a file name with extension."
+            assert (
+                "." in template
+            ), f"Invalid template name: {template}, should be a file name with extension."
             # extract the last dash separated part as the file name
             temp = self.jinja_env.get_template(safe_join("apps", template))
             default_config = {

@@ -60,7 +60,7 @@ def _generate_token(id, roles):
         scope=create_scope(workspaces={f"ws-user-{id}": UserPermission.admin}),
         expires_at=None,
     )
-    token = generate_presigned_token(root_user_info)
+    token = generate_presigned_token(root_user_info, 18000)
     yield token
 
 
@@ -77,7 +77,7 @@ def generate_root_user_token():
         scope=create_scope(workspaces={"*": UserPermission.admin}),
         expires_at=None,
     )
-    token = generate_presigned_token(root_user_info)
+    token = generate_presigned_token(root_user_info, 1800)
     yield token
 
 

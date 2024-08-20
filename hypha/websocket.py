@@ -153,7 +153,7 @@ class WebsocketServer:
                     workspace,
                     client_id,
                     user_info,
-                    status.status.WS_1001_GOING_AWAY,
+                    status.WS_1001_GOING_AWAY,
                     e,
                 )
 

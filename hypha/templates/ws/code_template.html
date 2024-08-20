@@ -1,0 +1,33 @@
+<config lang="json">
+{
+    "name": "Untitled Plugin",
+    "type": "web-python",
+    "version": "0.1.0",
+    "description": "[TODO: describe this plugin with one sentence.]",
+    "tags": [],
+    "ui": "",
+    "cover": "",
+    "inputs": null,
+    "outputs": null,
+    "flags": [],
+    "icon": "extension",
+    "api_version": "0.1.8",
+    "env": "",
+    "permissions": [],
+    "requirements": [],
+    "dependencies": []
+}
+</config>
+    
+<script lang="python">
+from hypha_rpc import api, connect_to_server
+
+async def setup():
+    server_config = await api.get_server_config()
+    server = await connect_to_server(server_config)
+    # now you can use the server object to interact with the server
+    await api.alert(await server.echo("Hello World!"))
+
+api.export({"setup": setup})
+</script>
+

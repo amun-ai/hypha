@@ -1,4 +1,6 @@
-(()=>{var d=(e,o)=>()=>(o||e((o={exports:{}}).exports,o),o.exports);var a=(e,o,t)=>new Promise((p,c)=>{var y=i=>{try{s(t.next(i))}catch(r){c(r)}},l=i=>{try{s(t.throw(i))}catch(r){c(r)}},s=i=>i.done?p(i.value):Promise.resolve(i.value).then(y,l);s((t=t.apply(e,o)).next())});var m=d(n=>{importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.1/full/pyodide.js");const h=`
+importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.1/full/pyodide.js");
+
+const startupScript = `
 import sys
 import types
 import hypha_rpc
@@ -16,4 +18,25 @@ async def execute(server, config):
         exec(script["content"], {'imjoy': hypha_rpc, 'imjoy_rpc': hypha_rpc, 'hypha_rpc': hypha_rpc, 'api': server})
 
 server = await setup_local_client(enable_execution=False, on_ready=execute)
-`;console.log("Loading Pyodide...");loadPyodide().then(e=>a(n,null,function*(){console.log("Pyodide is ready to use."),e.setStdout({batched:p=>console.log(p)}),e.setStderr({batched:p=>console.error(p)}),yield e.loadPackage("micropip"),yield e.pyimport("micropip").install("hypha-rpc==0.20.26");const t=typeof window!="undefined";setTimeout(()=>{t?window.parent.postMessage({type:"hyphaClientReady"},"*"):globalThis.postMessage({type:"hyphaClientReady"})},10),yield e.runPythonAsync(h),console.log("Hypha Web Python initialized.")}))});m();})();
+`
+console.log("Loading Pyodide...");
+loadPyodide().then(async (pyodide) => {
+    // Pyodide is now ready to use...
+    console.log("Pyodide is ready to use.");
+    pyodide.setStdout({ batched: (msg) => console.log(msg) });
+    pyodide.setStderr({ batched: (msg) => console.error(msg) });
+    await pyodide.loadPackage("micropip");
+    const micropip = pyodide.pyimport("micropip");
+    await micropip.install('hypha-rpc==0.20.27');
+    const isWindow = typeof window !== "undefined";
+    
+    setTimeout(() => {
+        if (isWindow) {
+            window.parent.postMessage({ type: "hyphaClientReady" }, "*");
+        } else {
+            globalThis.postMessage({ type: "hyphaClientReady" });
+        }
+    }, 10);
+    await pyodide.runPythonAsync(startupScript)
+    console.log("Hypha Web Python initialized.");
+});
