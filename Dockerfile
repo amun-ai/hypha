@@ -55,13 +55,13 @@ RUN pip install .[server-apps] --no-cache-dir && \
     pip install playwright --no-cache-dir && \
     playwright install
 
-# Move Playwright .cache folder to the hypha user's home directory
-RUN mkdir -p /home/hypha/.cache && \
+# Add user and set permissions before moving .cache folder
+RUN useradd -u 8877 hypha && \
+    mkdir -p /home/hypha/.cache && \
     mv /root/.cache/ms-playwright /home/hypha/.cache/ && \
     chown -R hypha:hypha /home/hypha/.cache
 
-# Add user and switch to non-root user
-RUN useradd -u 8877 hypha
+# Switch to non-root user
 USER hypha
 
 # Expose port
