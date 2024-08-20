@@ -15,7 +15,7 @@ RUN mkdir -p /home/bin && \
 RUN mkdir -p /.mc && \
     chmod -R 777 /.mc
 
-# Install necessary packages
+# Install necessary packages, including dependencies for Playwright
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     fonts-liberation \
@@ -39,7 +39,15 @@ RUN apt-get update && \
     libxdamage1 \
     libxext6 \
     libxfixes3 \
-    libxrandr2 && \
+    libxrandr2 \
+    libx11-xcb1 \
+    libxrandr2 \
+    libxss1 \
+    libxtst6 \
+    libxshmfence1 \
+    ca-certificates \
+    libcurl4 \
+    libx11-xcb-dev && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
