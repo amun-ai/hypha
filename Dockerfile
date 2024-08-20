@@ -61,7 +61,7 @@ ADD . .
 # Install Python dependencies and Playwright
 RUN pip install .[server-apps] --no-cache-dir && \
     pip install playwright --no-cache-dir && \
-    playwright install
+    playwright install --with-deps
 
 # Add user and set permissions before moving .cache folder
 RUN useradd -u 8877 hypha && \
