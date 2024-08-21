@@ -670,9 +670,6 @@ class S3Controller:
             items = await list_objects_async(
                 s3_client, self.workspace_bucket, full_path, max_length=max_length
             )
-            if len(items) == 0:
-                raise Exception(f"Directory does not exists: {path}")
-
             return items
 
     async def generate_presigned_url(
