@@ -660,15 +660,15 @@ class S3Controller:
                 "*", UserPermission.admin
             ), "Permission denied: only admin can access the root folder."
             # remove the leading slash
-            path = path[1:]
+            full_path = path[1:]
         else:
-            path = safe_join(workspace, path)
+            full_path = safe_join(workspace, path)
         async with self.create_client_async() as s3_client:
             # List files in the folder
-            if not path.endswith("/"):
-                path += "/"
+            if not full_path.endswith("/"):
+                full_path += "/"
             items = await list_objects_async(
-                s3_client, self.workspace_bucket, path, max_length=max_length
+                s3_client, self.workspace_bucket, full_path, max_length=max_length
             )
             if len(items) == 0:
                 raise Exception(f"Directory does not exists: {path}")

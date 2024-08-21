@@ -330,13 +330,14 @@
                     {panel === 'apps' && (
                         <>
                         <p className="text-xl text-gray-400 mt-4">Applications installed in workspace: <code>{workspaceName}</code> </p>
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mt-6">
-                            <button
+                        <button
                             className="mt-4 bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded-full transition duration-300"
                             onClick={() => onInstallApp()}
                         >
                             Install App
                         </button>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mt-6">
+                            
                             {apps.map(app => (
                                 <AppCard key={app.id} app={app} />
                             ))}
@@ -404,8 +405,10 @@
                         setServices(await ws.listServices(config.workspace));
                     } else if (activePanel === 'apps') {
                         try{
-                            const controller = await ws.getService("public/server-apps");
-                            setApps(await controller.listApps());
+                            const controller = await ws.getService("public/server-apps", {case_conversion: "camel"});
+                            const apps = await controller.listApps();
+                            console.log("Apps:", apps);
+                            setApps(apps);
                         }
                         catch(e){
                             alert(`Failed to list apps: ${e.message}`);
@@ -413,7 +416,9 @@
                     } else if (activePanel === 'files') {
                         try{
                             const s3 = await ws.getService("public/s3-storage", {case_conversion: "camel"});
-                            setFiles(await s3.listFile(""));
+                            const files = await s3.listFiles("")
+                            console.log("Files:", files);
+                            setFiles(files);
                         }
                         catch(e){
                             alert(`Failed to list files: ${e.message}`);
@@ -437,7 +442,7 @@
                 const url = prompt("Enter the URL of the app to install", "https://raw.githubusercontent.com/amun-ai/hypha/main/tests/testWebWorkerPlugin.imjoy.html");
                 try{
                     if(!url) return;
-                    const controller = await ws.getService("public/server-apps");
+                    const controller = await ws.getService("public/server-apps", {case_conversion: "camel"});
                     const appInfo = await controller.install(url);
                     console.log("App installed:", appInfo);
                     setApps(await controller.listApps());
