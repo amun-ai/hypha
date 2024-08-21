@@ -749,7 +749,7 @@ class HTTPProxy:
             if not page or page == "/":
                 page = "index.html"
             dir_path = page.split("/")[0]
-            if dir_path not in self.templates_files and dir_path.startswith("ws-"):
+            if dir_path not in self.templates_files and "-" in dir_path:
                 workspace = dir_path
                 try:
                     await self.store.load_or_create_workspace(user_info, workspace)
