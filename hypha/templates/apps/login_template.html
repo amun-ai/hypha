@@ -181,13 +181,13 @@
             if (key && report_url.startsWith('http')) {
                 const url = `${report_url}?key=${key}&token=${accessToken}&email=${user.email}&email_verified=${user.email_verified}&name=${user.name}&nickname=${user.nickname}&user_id=${user.sub}&picture=${user.picture}`;
                 const response = await fetch(url);
-                if (response.ok) {
-                    window.close();
-                } else {
+                if (!response.ok) {
                     console.error("Failed to report token: ", response.status, response.statusText);
                     alert(`Failed to report token. Please try again later. (${response.status}: ${response.statusText})`);
-                    window.close();
                 }
+                setTimeout(() => {
+                    window.close();
+                }, 500);
             }
         };
 
