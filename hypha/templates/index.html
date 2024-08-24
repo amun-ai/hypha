@@ -79,7 +79,7 @@
                         <img src="./static/img/hypha-logo-black.svg" className="h-10 invert" alt="Hypha Logo" />
                     </div>
                     <div className="flex space-x-6">
-                        <a href="#" className="hover:text-gray-400 transition duration-300">Dashboard</a>
+                        <a href="https://desktop.aicell.io" className="hover:text-gray-400 transition duration-300">Desktop</a>
                         <a href="#" className="hover:text-gray-400 transition duration-300">Marketplace</a>
                         <a href="https://docs.amun.ai/" target="_blank" className="hover:text-gray-400 transition duration-300">Documentation</a>
                         <a href="#" className="hover:text-gray-400 transition duration-300" onClick={onAboutClick}>About</a>
@@ -90,7 +90,6 @@
                                 </button>
                                 <div className="dropdown-content">
                                     <a href="#">Signed in as {user.name}</a>
-                                    <a href="https://desktop.aicell.io">Hypha Desktop</a>
                                     <a href={"./ws-user-" + user.sub}>My Workspace</a>
                                     <a href="#" onClick={onLogout}>Logout</a>
                                 </div>

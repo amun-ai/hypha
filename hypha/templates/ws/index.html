@@ -139,9 +139,9 @@
 <body class="bg-black text-white font-poppins">
     <div id="app"></div>
     <script type="module">
-        import { HyphaServer, connectToServer } from "https://cdn.jsdelivr.net/npm/hypha-core@0.20.28/dist/hypha-core.mjs";
+        import { HyphaCore } from "https://cdn.jsdelivr.net/npm/hypha-core@0.20.29/dist/hypha-core.mjs";
 
-        const defaultServices = {
+        const defaultService = {
             getServerConfig(context){
                 return {
                     "server_url": window.location.origin,
@@ -150,8 +150,8 @@
                 }
             }
         }
-        const hyphaServer = new HyphaServer({base_url: "/hypha-core-app/", default_services: defaultServices});
-        hyphaServer.on("add_window", (config) => {
+        const hyphaCore = new HyphaCore({base_url: "/hypha-core-app/", default_service: defaultService});
+        hyphaCore.on("add_window", (config) => {
             const root = document.getElementById("hypha-window-container");
             // get the left and top position of the root element
             // then set it to the WinBox
@@ -165,13 +165,9 @@
             });
             wb.body.innerHTML = `<iframe src="${config.src}" id="${config.window_id}" style="width: 100%; height: 100%; border: none;"></iframe>`;
         });
-        await hyphaServer.start();
-        console.log("Hypha server started:", hyphaServer.url);
+        const api = await hyphaCore.start();
 
-        const api = await connectToServer({
-            server: hyphaServer,
-            workspace: "default",
-        });
+        console.log("Hypha core started:", hyphaCore.url);
         async function loadPluginFromUrl(url) {
             const plugin = await api.loadPlugin({ src: url});
             await plugin.run({ config: {}, data: {} });
