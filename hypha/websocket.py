@@ -6,6 +6,7 @@ from fastapi import Query, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
 from websockets.exceptions import ConnectionClosedOK
 from fastapi import HTTPException
+from uvicorn.protocols.utils import ClientDisconnected
 
 from hypha import __version__
 from hypha.core import UserInfo, UserPermission
@@ -259,6 +260,11 @@ class WebsocketServer:
                 except ConnectionClosedOK:
                     logger.warning("Failed to send message, closing redis connection")
                     await conn.disconnect("disconnected")
+                except ClientDisconnected:
+                    logger.warning("Failed to send message, client disconnected")
+                    await conn.disconnect("disconnected")
+                except Exception as e:
+                    logger.error("Failed to send message: %s", str(e))
 
             conn.on_message(send_bytes)
             reconnection_token = generate_reconnection_token(
