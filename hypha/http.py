@@ -197,17 +197,7 @@ class HTTPProxy:
         self.rpc_lib_esm_content = None
         self.rpc_lib_umd_content = None
 
-        @router.get(norm_url("/authorize"))
-        async def auth_proxy(request: Request):
-            # Construct the full URL for the Auth0 authorize endpoint with the query parameters
-            auth0_authorize_url = (
-                f"https://{AUTH0_DOMAIN}/authorize?{request.query_params}"
-            )
-
-            # Redirect the client to the constructed URL
-            return RedirectResponse(url=auth0_authorize_url)
-
-        @router.get(norm_url("/hypha-rpc-websocket.mjs"))
+        @router.get(norm_url("/assets/hypha-rpc-websocket.mjs"))
         async def hypha_rpc_websocket_mjs(request: Request):
             if not self.rpc_lib_esm_content:
                 _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{main_version}/dist/hypha-rpc-websocket.mjs"
@@ -218,7 +208,7 @@ class HTTPProxy:
                 content=self.rpc_lib_esm_content, media_type="application/javascript"
             )
 
-        @router.get(norm_url("/hypha-rpc-websocket.js"))
+        @router.get(norm_url("/assets/hypha-rpc-websocket.js"))
         async def hypha_rpc_websocket_js(request: Request):
             if not self.rpc_lib_umd_content:
                 _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{main_version}/dist/hypha-rpc-websocket.js"
@@ -229,7 +219,7 @@ class HTTPProxy:
                 content=self.rpc_lib_umd_content, media_type="application/javascript"
             )
 
-        @router.get(norm_url("/config.json"))
+        @router.get(norm_url("/assets/config.json"))
         async def get_config(
             request: Request,
             user_info: store.login_optional = Depends(store.login_optional),
@@ -251,7 +241,7 @@ class HTTPProxy:
 
                 return JSONResponse(status_code=200, content=auth0_response.json())
 
-        @router.get(norm_url("/authorize"))
+        @router.get(norm_url("/oauth/authorize"))
         async def auth_proxy(request: Request):
             # Construct the full URL for the Auth0 authorize endpoint with the query parameters
             auth0_authorize_url = (
@@ -260,18 +250,6 @@ class HTTPProxy:
 
             # Redirect the client to the constructed URL
             return RedirectResponse(url=auth0_authorize_url)
-
-        @router.post(norm_url("/oauth/token"))
-        async def token_proxy(request: Request):
-            form_data = await request.form()
-            async with httpx.AsyncClient() as client:
-                auth0_response = await client.post(
-                    f"https://{AUTH0_DOMAIN}/oauth/token",
-                    data=form_data,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                )
-
-                return JSONResponse(status_code=200, content=auth0_response.json())
 
         @router.get(norm_url("/{workspace}/info"))
         async def get_workspace_info(
@@ -750,17 +728,6 @@ class HTTPProxy:
                 page = "index.html"
             dir_path = page.split("/")[0]
             if dir_path not in self.templates_files and "-" in dir_path:
-                workspace = dir_path
-                try:
-                    await self.store.load_or_create_workspace(user_info, workspace)
-                except KeyError:
-                    return JSONResponse(
-                        status_code=404,
-                        content={
-                            "success": False,
-                            "detail": f"Workspace not found: {workspace}",
-                        },
-                    )
                 inner_path = "/".join(page.split("/")[1:])
                 if not inner_path:
                     inner_path = "index.html"
