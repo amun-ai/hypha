@@ -181,25 +181,46 @@
             if (key && report_url.startsWith('http')) {
                 const url = `${report_url}?key=${key}&token=${accessToken}&email=${user.email}&email_verified=${user.email_verified}&name=${user.name}&nickname=${user.nickname}&user_id=${user.sub}&picture=${user.picture}`;
                 const response = await fetch(url);
-                if (response.ok) {
-                    window.close();
-                } else {
+                if (!response.ok) {
                     console.error("Failed to report token: ", response.status, response.statusText);
                     alert(`Failed to report token. Please try again later. (${response.status}: ${response.statusText})`);
-                    window.close();
                 }
+                setTimeout(() => {
+                    window.close();
+                }, 500);
             }
         };
 
         window.logout = async () => {
-            const href = window.location.href;
+            let href = window.location.href;
+            if(!href.endsWith("/")){
+                href += "/";
+            }
             await auth0.logout({ logoutParams: { returnTo: href } });
         };
 
         window.login = async () => {
             try {
-                await auth0.loginWithPopup({ audience: AUTH0_AUDIENCE });
-                await showUserProfile();
+                // Manually open the popup window
+                const popupWindow = window.open('', '_blank', 'width=500,height=600');
+
+                if (popupWindow) {
+                    try {
+                        // Pass the opened popup window to the Auth0 loginWithPopup method
+                        await auth0.loginWithPopup({ audience: AUTH0_AUDIENCE }, { popup: popupWindow });
+                        popupWindow.close(); // Close the popup window after login
+                        await showUserProfile();
+                    } catch (e) {
+                        console.error('Login with popup failed', e);
+                        if (!popupWindow.closed) {
+                            popupWindow.close(); // Ensure the popup window is closed in case of failure
+                        }
+                    }
+                } else {
+                    console.error('Unable to open popup window for login');
+                    alert('It seesm popup window is blocked by the browser. Please allow popups for the login');
+                }
+                
             } catch (e) {
                 alert("Failed to open login window. Please allow pop-ups for this site.");
                 console.error(e);

@@ -403,14 +403,13 @@ class RedisRPCConnection:
 class RedisEventBus:
     """Represent a redis event bus."""
 
-    def __init__(self, redis, logger=None) -> None:
+    def __init__(self, redis) -> None:
         """Initialize the event bus."""
         self._redis = redis
         self._handle_connected = None
         self._stop = False
         self._local_event_bus = EventBus(logger)
         self._redis_event_bus = EventBus(logger)
-        self._logger = logger
 
     async def init(self):
         """Setup the event bus."""
@@ -529,22 +528,25 @@ class RedisEventBus:
             self._ready.set_result(True)
             while self._stop is False:
                 msg = await pubsub.get_message(ignore_subscribe_messages=True)
-                if msg:
-                    channel = msg["channel"].decode("utf-8")
-                    if channel.startswith("event:b:"):
-                        event_type = channel[8:]
-                        data = msg["data"]
-                        await self._redis_event_bus.emit(event_type, data)
-                    elif channel.startswith("event:d:"):
-                        event_type = channel[8:]
-                        data = json.loads(msg["data"])
-                        await self._redis_event_bus.emit(event_type, data)
-                    elif channel.startswith("event:s:"):
-                        event_type = channel[8:]
-                        data = msg["data"].decode("utf-8")
-                        await self._redis_event_bus.emit(event_type, data)
-                    else:
-                        self._logger.info("Unknown channel: %s", channel)
+                try:
+                    if msg:
+                        channel = msg["channel"].decode("utf-8")
+                        if channel.startswith("event:b:"):
+                            event_type = channel[8:]
+                            data = msg["data"]
+                            await self._redis_event_bus.emit(event_type, data)
+                        elif channel.startswith("event:d:"):
+                            event_type = channel[8:]
+                            data = json.loads(msg["data"])
+                            await self._redis_event_bus.emit(event_type, data)
+                        elif channel.startswith("event:s:"):
+                            event_type = channel[8:]
+                            data = msg["data"].decode("utf-8")
+                            await self._redis_event_bus.emit(event_type, data)
+                        else:
+                            logger.info("Unknown channel: %s", channel)
+                except Exception as exp:
+                    logger.exception(f"Error processing message: {exp}")
                 await asyncio.sleep(0.01)
         except Exception as exp:
             self._ready.set_exception(exp)

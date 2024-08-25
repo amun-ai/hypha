@@ -34,7 +34,7 @@
         ];
         const config = Object.fromEntries(new URLSearchParams(window.location.search))
         if(!config.server_url) config.server_url = window.location.origin;
-        const hyphaWebsocketClient = await import(config.server_url + '/hypha-rpc-websocket.mjs');
+        const hyphaWebsocketClient = await import(config.server_url + '/assets/hypha-rpc-websocket.mjs');
         const api = await hyphaWebsocketClient.connectToServer(config)
         const pluginParser = await import("https://cdn.jsdelivr.net/npm/imjoy-core@0.13.82/src/pluginParser.js")
         function parsePluginCode(code, overwrite_config) {

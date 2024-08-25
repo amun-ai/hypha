@@ -79,7 +79,7 @@
                         <img src="./static/img/hypha-logo-black.svg" className="h-10 invert" alt="Hypha Logo" />
                     </div>
                     <div className="flex space-x-6">
-                        <a href="#" className="hover:text-gray-400 transition duration-300">Dashboard</a>
+                        <a href="https://desktop.aicell.io" className="hover:text-gray-400 transition duration-300">Desktop</a>
                         <a href="#" className="hover:text-gray-400 transition duration-300">Marketplace</a>
                         <a href="https://docs.amun.ai/" target="_blank" className="hover:text-gray-400 transition duration-300">Documentation</a>
                         <a href="#" className="hover:text-gray-400 transition duration-300" onClick={onAboutClick}>About</a>
@@ -90,7 +90,6 @@
                                 </button>
                                 <div className="dropdown-content">
                                     <a href="#">Signed in as {user.name}</a>
-                                    <a href="https://desktop.aicell.io">Hypha Desktop</a>
                                     <a href={"./ws-user-" + user.sub}>My Workspace</a>
                                     <a href="#" onClick={onLogout}>Logout</a>
                                 </div>
@@ -165,7 +164,7 @@
 
             React.useEffect(() => {
                 const fetchConfig = async () => {
-                    const response = await fetch('./config.json');
+                    const response = await fetch('./assets/config.json');
                     const configData = await response.json();
                     setConfig(configData);
 
@@ -213,11 +212,29 @@
 
             const onLogin = async () => {
                 try {
-                    await window.auth0Client.loginWithPopup();
-                    const userProfile = await window.auth0Client.getUser();
-                    setUser(userProfile);
-                    setIsLoggedIn(true);
+
+                    // Manually open the popup window
+                    const popupWindow = window.open('', '_blank', 'width=500,height=600');
+                    if (popupWindow) {
+                        try {
+                            // Pass the opened popup window to the Auth0 loginWithPopup method
+                            await window.auth0Client.loginWithPopup({ audience: config.auth0_audience }, { popup: popupWindow });
+                            popupWindow.close(); // Close the popup window after login
+                            const userProfile = await window.auth0Client.getUser();
+                            setUser(userProfile);
+                            setIsLoggedIn(true);
+                        } catch (e) {
+                            console.error('Login with popup failed', e);
+                            if (!popupWindow.closed) {
+                                popupWindow.close(); // Ensure the popup window is closed in case of failure
+                            }
+                        }
+                    } else {
+                        console.error('Unable to open popup window for login');
+                        alert('It seesm popup window is blocked by the browser. Please allow popups for the login');
+                    }
                 } catch (e) {
+                    alert("Failed to open login window. Please allow pop-ups for this site.");
                     console.error(e);
                 }
             };

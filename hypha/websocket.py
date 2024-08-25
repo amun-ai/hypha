@@ -4,7 +4,6 @@ import json
 
 from fastapi import Query, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
-from websockets.exceptions import ConnectionClosedOK
 from fastapi import HTTPException
 
 from hypha import __version__
@@ -253,12 +252,8 @@ class WebsocketServer:
             async def send_bytes(data):
                 try:
                     await websocket.send_bytes(data)
-                except RuntimeError:
-                    logger.warning("Failed to send message, closing")
-                    await conn.disconnect("disconnected")
-                except ConnectionClosedOK:
-                    logger.warning("Failed to send message, closing redis connection")
-                    await conn.disconnect("disconnected")
+                except Exception as e:
+                    logger.error("Failed to send message via websocket: %s", str(e))
 
             conn.on_message(send_bytes)
             reconnection_token = generate_reconnection_token(
