@@ -22,7 +22,7 @@ We also changed our versioning strategy, we use the same version number for the 
 Now you need to do the following changes in your code:
 
 ```python
-# from imjoy_rpc import connect_to_server # previous import
+# from imjoy_rpc.hypha import connect_to_server # previous import
 from hypha_rpc import connect_to_server # new import
 ```
 
