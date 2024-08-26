@@ -141,9 +141,11 @@ if __name__ == "__main__":
 ```
 <!-- tabs:end -->
 
-Run the server via `python hello-world-worker.py`.
+Run the server via `python hello-world-worker.py` and keep it running. You can now access the service from a client script. You will see the service ID printed in the console, which you can use to access the service.
 
-Note: You don't need to run the client script on the same server. If you want to connect to the server from another computer, make sure to change the `server_url` to an URL with the external IP or domain name of the server.
+Tips: You don't need to run the client script on the same server. If you want to connect to the server from another computer, make sure to change the `server_url` to an URL with the external IP or domain name of the server.
+
+**Note: The following sections assume that the server is running and the service is registered as service ID: `ws-user-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world`, which you can replace with the actual service ID you obtained when registering the service.**
 
 ### Using the Service
 
