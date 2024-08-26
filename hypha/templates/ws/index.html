@@ -138,14 +138,21 @@
 <body class="bg-black text-white font-poppins">
     <div id="app"></div>
     <script type="module">
-        import { HyphaCore } from "https://cdn.jsdelivr.net/npm/hypha-core@0.20.31/dist/hypha-core.mjs";
+        import { HyphaCore } from "https://cdn.jsdelivr.net/npm/hypha-core@0.20.32/dist/hypha-core.mjs";
 
         const defaultService = {
             getServerConfig(context){
+                let token;
+                try{
+                    token = document.cookie.split('; ').find(row => row.startsWith('access_token')).split('=')[1]
+                }
+                catch(e){
+                    token = null;
+                }
                 return {
-                    "server_url": window.location.origin,
-                    "workspace": decodeURIComponent(window.location.href.split(window.location.origin)[1].split('/')[1]),
-                    "token": document.cookie.split('; ').find(row => row.startsWith('access_token')).split('=')[1],
+                    server_url: window.location.origin,
+                    workspace: decodeURIComponent(window.location.href.split(window.location.origin)[1].split('/')[1]),
+                    token,
                 }
             }
         }
@@ -361,9 +368,15 @@
                 </div>
             );
         };
-
+        let token;
+        try{
+            token = document.cookie.split('; ').find(row => row.startsWith('access_token')).split('=')[1]
+        }
+        catch(e){
+            token = null;
+        }
         const config = {
-            token: document.cookie.split('; ').find(row => row.startsWith('access_token')).split('=')[1],
+            token,
             server_url: window.location.origin,
             workspace: decodeURIComponent(window.location.href.split(window.location.origin)[1].split('/')[1])
         };

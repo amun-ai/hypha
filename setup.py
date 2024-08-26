@@ -12,7 +12,7 @@ DESCRIPTION = (
 REQUIREMENTS = [
     "aiofiles",
     "fastapi>=0.70.0,<=0.106.0",
-    "hypha-rpc>=0.20.31",
+    "hypha-rpc>=0.20.32",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=2.6.1",
@@ -25,7 +25,7 @@ REQUIREMENTS = [
     "pyyaml",
     "fakeredis>=2.14.1",
     "shortuuid>=1.0.1",
-    "uvicorn>=0.13.4",
+    "uvicorn>=0.23.2",
     "httpx>=0.21.1",
     "pyotritonclient>=0.2.4",
     # add email-validator for pyodide
