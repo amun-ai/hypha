@@ -1,5 +1,13 @@
 # Hypha Change Log
 
+### 0.20.31
+
+ - Upgrade hypha-rpc to fix ssl issue with the hypha-rpc client.
+
+### 0.20.30
+
+ - Fix server crashing bug when websocket.send is called after the connection is closed.
+
 ### 0.20.20
 
  - Fix static files not included in the package
