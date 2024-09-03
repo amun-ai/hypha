@@ -357,7 +357,7 @@ def create_login_service(store):
 
     async def start_login():
         """Start the login process."""
-        key = "login_key:" + str(random_id(readable=True))
+        key = "login_key:" + str(random_id(readable=False))
         # set the key and with expire time
         await redis.setex(key, MAXIMUM_LOGIN_TIME, "")
         return {
