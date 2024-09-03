@@ -6,10 +6,17 @@ The following example shows how to use FastAPI to create a web application in th
 
 You need to first install fastapi:
 
+In Pyodide, you can install it using micropip:
+
 ```python
-# This assumes you are in a Pyodide environment, if not, you can install fastapi using `pip install fastapi==0.70.0`
 import micropip
 await micropip.install(["fastapi==0.70.0"])
+```
+
+Or in normal Python, you can install it using pip:
+
+```bash
+pip install -U fastapi
 ```
 
 Then you can create a FastAPI app and serve it through Hypha:
@@ -47,9 +54,11 @@ async def main():
     async def test():
         return {"message": "Hello, it works!", "server_url": server_url}
 
-    async def serve_fastapi(args):
+    async def serve_fastapi(args, context=None):
+        # context can be used for do authorization
+        # e.g. check user id against a list of allowed users
         scope = args["scope"]
-        print(f'{scope["client"]} - {scope["method"]} - {scope["path"]}')
+        print(f'{context["user"]["id"]} - {scope["client"]} - {scope["method"]} - {scope["path"]}')
         await app(args["scope"], args["receive"], args["send"])
 
     svc_info = await server.register_service({
@@ -58,7 +67,8 @@ async def main():
         "type": "ASGI",
         "serve": serve_fastapi,
         "config":{
-            "visibility": "public"
+            "visibility": "public",
+            "require_context": True
         }
     })
 
