@@ -7,11 +7,11 @@
     <title>Hypha Workspace Management</title>
     <!-- External Scripts -->
     <script src="../assets/hypha-rpc-websocket.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/17.0.2/umd/react.development.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/17.0.2/umd/react-dom.development.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/17.0.2/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/17.0.2/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/js/all.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
     <script src="https://cdn.auth0.com/js/auth0-spa-js/2.0/auth0-spa-js.production.js"></script>
     <script src="https://rawcdn.githack.com/nextapps-de/winbox/0.2.82/dist/winbox.bundle.min.js"></script>
     <!-- Favicon and Icons -->
@@ -64,7 +64,6 @@
         }
 
         .main-content {
-            margin-left: 250px;
             padding: 20px;
             transition: all 0.3s;
         }
@@ -138,7 +137,7 @@
 <body class="bg-black text-white font-poppins">
     <div id="app"></div>
     <script type="module">
-        import { HyphaCore } from "https://cdn.jsdelivr.net/npm/hypha-core@0.20.32/dist/hypha-core.mjs";
+        import { HyphaCore } from "https://cdn.jsdelivr.net/npm/hypha-core@0.20.33/dist/hypha-core.mjs";
 
         const defaultService = {
             getServerConfig(context){
@@ -193,7 +192,7 @@
     </script>
 
     <!-- Render the App component -->
-    <script type="text/babel" data-presets="env,react">
+    <script type="text/babel" data-presets="env,react" data-env-targets="defaults, safari >= 12">
         const Sidebar = ({ isCollapsed, onToggle, setActivePanel }) => {
             return (
                 <div className={`sidebar ${isCollapsed ? 'collapsed' : ''}`}>
@@ -224,6 +223,11 @@
                         <i className="fas fa-code"></i>
                         <span className="ml-2">Development</span>
                     </div>
+                    <div className="menu-item" onClick={() => setActivePanel('tokens')}>
+                        <i className="fas fa-key"></i>
+                        <span className="ml-2">Connection Tokens</span>
+                    </div>
+
                 </div>
             );
         };
@@ -303,71 +307,179 @@
             );
         };
 
-        const MainContent = ({ workspaceName, panel, clients, services, apps, files, onGenerateUrl, onShowDetails, onInstallApp }) => {
+        const TokenPanel = ({ workspaceName, onGenerateToken }) => {
+            const [workspace, setWorkspace] = React.useState(workspaceName);
+            const [expiryTime, setExpiryTime] = React.useState(3600);
+            const [generatedToken, setGeneratedToken] = React.useState('');
+            const [showSnackBar, setShowSnackBar] = React.useState(false);
+
+            const handleGenerateToken = async () => {
+                try {
+                    const token = await onGenerateToken(workspace, expiryTime);
+                    setGeneratedToken(token);
+                } catch (error) {
+                    console.error("Failed to generate token:", error);
+                    alert("Failed to generate token. Please try again later.");
+                }
+            };
+        
+            const handleCopyToken = () => {
+                navigator.clipboard.writeText(generatedToken);
+                setShowSnackBar(true);
+                setTimeout(() => setShowSnackBar(false), 2000); // Snack bar disappears after 2 seconds
+            };
+        
             return (
                 <div className="main-content">
+                    <div className="mt-4">
+                        <label htmlFor="workspace" className="block text-sm font-medium text-gray-700">
+                            Workspace Name
+                        </label>
+                        <input
+                            type="text"
+                            id="workspace"
+                            name="workspace"
+                            className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                            value={workspace}
+                            onChange={(e) => setWorkspace(e.target.value)}
+                        />
+                    </div>
+                    <div className="mt-4">
+                        <label htmlFor="expiry-time" className="block text-sm font-medium text-gray-700">
+                            Expiry Time (seconds)
+                        </label>
+                        <input
+                            type="number"
+                            id="expiry-time"
+                            name="expiry-time"
+                            className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                            placeholder="3600"
+                            value={expiryTime}
+                            onChange={(e) => setExpiryTime(e.target.value)}
+                        />
+                    </div>
+                    <div className="mt-4">
+                        <button
+                            className="bg-blue-500 text-white py-2 px-4 rounded"
+                            onClick={handleGenerateToken}
+                        >
+                            Generate Token
+                        </button>
+                    </div>
+                    {generatedToken && (
+                        <div className="mt-4">
+                            <h3 className="text-lg font-bold">Generated Token:</h3>
+                            <pre className="text-black bg-gray-200 p-4 rounded break-words whitespace-pre-wrap max-h-48 overflow-y-auto">
+                                {generatedToken}
+                            </pre>
+                            <button 
+                                className="bg-gray-500 text-white py-1 px-4 rounded mt-2" 
+                                onClick={handleCopyToken}
+                            >
+                                Copy Token
+                            </button>
+                        </div>
+                    )}
+                    {showSnackBar && (
+                        <div className="fixed bottom-4 left-1/2 transform -translate-x-1/2 bg-green-500 text-white py-2 px-4 rounded shadow-md">
+                            Token copied to clipboard!
+                        </div>
+                    )}
+                </div>
+            );
+        };
+        
+
+        const MainContent = ({ isCollapsed, ws, workspaceName, panel, clients, services, apps, files, onGenerateUrl, onShowDetails, onInstallApp }) => {
+            const mainContentClass = isCollapsed ? 'ml-16' : 'ml-64'; // Dynamic left margin
+        
+            return (
+                <div className={`main-content transition-all duration-300 ${mainContentClass}`}>
                     <h1 className="text-4xl font-bold capitalize">{panel}</h1>
-                    
+        
                     {panel === 'dashboard' && (
                         <>
-                        <p className="text-xl text-gray-400 mt-4">Dashboard for workspace: <code>{workspaceName}</code> </p>
-                        <div className="grid grid-cols-1 gap-8 mt-6">
-                            <h2 className="text-2xl font-bold">Clients</h2>
-                            {clients.map(client => (
-                                <ClientCard key={client} client={client} />
-                            ))}
-                        </div>
+                            <p className="text-xl text-gray-400 mt-4">
+                                Dashboard for workspace: <code>{workspaceName}</code>
+                            </p>
+                            <div className="grid grid-cols-1 gap-8 mt-6">
+                                <h2 className="text-2xl font-bold">Clients</h2>
+                                {clients.map(client => (
+                                    <ClientCard key={client} client={client} />
+                                ))}
+                            </div>
                         </>
                     )}
                     {panel === 'services' && (
                         <>
-                        <p className="text-xl text-gray-400 mt-4">Services available at workspace: <code>{workspaceName}</code> </p>
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mt-6">
-                            {services.map(service => (
-                                <ServiceCard key={service.id} service={service} onShowDetails={onShowDetails} />
-                            ))}
-                        </div>
+                            <p className="text-xl text-gray-400 mt-4">
+                                Services available at workspace: <code>{workspaceName}</code>
+                            </p>
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mt-6">
+                                {services.map(service => (
+                                    <ServiceCard key={service.id} service={service} onShowDetails={onShowDetails} />
+                                ))}
+                            </div>
                         </>
                     )}
                     {panel === 'apps' && (
                         <>
-                        <p className="text-xl text-gray-400 mt-4">Applications installed in workspace: <code>{workspaceName}</code> </p>
-                        <button
-                            className="mt-4 bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded-full transition duration-300"
-                            onClick={() => onInstallApp()}
-                        >
-                            Install App
-                        </button>
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mt-6">
-                            
-                            {apps.map(app => (
-                                <AppCard key={app.id} app={app} />
-                            ))}
-                        </div>
+                            <p className="text-xl text-gray-400 mt-4">
+                                Applications installed in workspace: <code>{workspaceName}</code>
+                            </p>
+                            <button
+                                className="mt-4 bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded-full transition duration-300"
+                                onClick={() => onInstallApp()}
+                            >
+                                Install App
+                            </button>
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mt-6">
+                                {apps.map(app => (
+                                    <AppCard key={app.id} app={app} />
+                                ))}
+                            </div>
                         </>
                     )}
                     {panel === 'files' && (
                         <>
-                        <p className="text-xl text-gray-400 mt-4">Files in workspace: <code>{workspaceName}</code> </p>
-                        <div className="mt-6">
-                            {files.map(file => (
-                                <FileCard key={file.name} file={file} onGenerateUrl={onGenerateUrl} />
-                            ))}
-                        </div>
+                            <p className="text-xl text-gray-400 mt-4">
+                                Files in workspace: <code>{workspaceName}</code>
+                            </p>
+                            <div className="mt-6">
+                                {files.map(file => (
+                                    <FileCard key={file.name} file={file} onGenerateUrl={onGenerateUrl} />
+                                ))}
+                            </div>
                         </>
                     )}
                     {panel === 'development' && (
                         <main className="development-panel">
                             <p className="text-xl text-gray-400 mt-4">Development panel with Hypha server simulation</p>
-                            <button onClick={() => window.loadCodeEditor()} className="mt-4 bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300">
+                            <button
+                                onClick={() => window.loadCodeEditor()}
+                                className="mt-4 bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300"
+                            >
                                 New App
                             </button>
-                            <div style={{ display: 'block', width: '100%', height: '100%', position: 'fixed' }} id="hypha-window-container"></div>
+                            <div
+                                style={{ display: 'block', width: '100%', height: '100%', position: 'fixed' }}
+                                id="hypha-window-container"
+                            ></div>
                         </main>
+                    )}
+                    {panel === 'tokens' && (
+                        <TokenPanel
+                            workspaceName={workspaceName}
+                            onGenerateToken={async (workspace, expiryTime) => {
+                                const token = await ws.generateToken({ expires_in: expiryTime, workspace });
+                                return token;
+                            }}
+                        />
                     )}
                 </div>
             );
         };
+        
         let token;
         try{
             token = document.cookie.split('; ').find(row => row.startsWith('access_token')).split('=')[1]
@@ -390,7 +502,7 @@
             const [files, setFiles] = React.useState([]);
             const [ws, setWs] = React.useState(null);
             const [selectedService, setSelectedService] = React.useState(null);
-
+        
             React.useEffect(() => {
                 // Connect to the Hypha server
                 const connectToServer = async () => {
@@ -400,7 +512,7 @@
                 };
                 connectToServer();
             }, []);
-
+        
             React.useEffect(() => {
                 // Fetch initial workspace data
                 const fetchWorkspaceData = async () => {
@@ -412,23 +524,21 @@
                     } else if (activePanel === 'services') {
                         setServices(await ws.listServices(config.workspace));
                     } else if (activePanel === 'apps') {
-                        try{
-                            const controller = await ws.getService("public/server-apps", {case_conversion: "camel"});
+                        try {
+                            const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
                             const apps = await controller.listApps();
-                            console.log("Apps:", apps);
+                            console.log('Apps:', apps);
                             setApps(apps);
-                        }
-                        catch(e){
+                        } catch (e) {
                             alert(`Failed to list apps: ${e.message}`);
                         }
                     } else if (activePanel === 'files') {
-                        try{
-                            const s3 = await ws.getService("public/s3-storage", {case_conversion: "camel"});
-                            const files = await s3.listFiles("")
-                            console.log("Files:", files);
+                        try {
+                            const s3 = await ws.getService('public/s3-storage', { case_conversion: 'camel' });
+                            const files = await s3.listFiles('');
+                            console.log('Files:', files);
                             setFiles(files);
-                        }
-                        catch(e){
+                        } catch (e) {
                             alert(`Failed to list files: ${e.message}`);
                         }
                     }
@@ -436,42 +546,42 @@
                 fetchWorkspaceData();
                 document.title = `${activePanel.charAt(0).toUpperCase() + activePanel.slice(1)} - Hypha Workspace Management`;
             }, [activePanel, ws]);
-
+        
             const onGenerateUrl = async (fileName) => {
                 const presignedUrl = await ws.generatePresignedUrl(fileName);
                 console.log('Presigned URL:', presignedUrl);
             };
-
+        
             const onShowDetails = (service) => {
                 setSelectedService(service);
             };
-
+        
             const onInstallApp = async () => {
-                const url = prompt("Enter the URL of the app to install", "https://raw.githubusercontent.com/amun-ai/hypha/main/tests/testWebWorkerPlugin.imjoy.html");
-                try{
-                    if(!url) return;
-                    const controller = await ws.getService("public/server-apps", {case_conversion: "camel"});
+                const url = prompt(
+                    'Enter the URL of the app to install',
+                    'https://raw.githubusercontent.com/amun-ai/hypha/main/tests/testWebWorkerPlugin.imjoy.html'
+                );
+                try {
+                    if (!url) return;
+                    const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
                     const appInfo = await controller.install(url);
-                    console.log("App installed:", appInfo);
+                    console.log('App installed:', appInfo);
                     setApps(await controller.listApps());
-                }
-                catch(e){
+                } catch (e) {
                     alert(`Failed to install app: ${e.message}`);
                 }
             };
-
+        
             const closeModal = () => {
                 setSelectedService(null);
             };
-
+        
             return (
                 <div>
-                    <Sidebar
-                        isCollapsed={isCollapsed}
-                        onToggle={() => setIsCollapsed(!isCollapsed)}
-                        setActivePanel={setActivePanel}
-                    />
+                    <Sidebar isCollapsed={isCollapsed} onToggle={() => setIsCollapsed(!isCollapsed)} setActivePanel={setActivePanel} />
                     <MainContent
+                        isCollapsed={isCollapsed}
+                        ws={ws}
                         workspaceName={config.workspace}
                         panel={activePanel}
                         clients={clients}
@@ -485,7 +595,7 @@
                     {selectedService && <Modal serviceInfo={selectedService} onClose={closeModal} />}
                 </div>
             );
-        };
+        };        
 
         ReactDOM.render(<App />, document.getElementById('app'));
     </script>

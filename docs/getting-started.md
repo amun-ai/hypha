@@ -220,7 +220,7 @@ svc = await get_remote_service("http://localhost:9527/ws-user-scintillating-lawy
 Include the following script in your HTML file to load the `hypha-rpc` client:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.32/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.33/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
 Use the following code in JavaScript to connect to the server and access an existing service:
@@ -516,26 +516,3 @@ Multiple startup functions can be specified by providing additional `--startup-f
 python -m hypha.server --host=0.0.0.0 --port=9527 --startup-functions=./example-startup-function.py:hypha_startup ./example-startup-function2.py:hypha_startup
 ```
 
-#### Launching External Services Using Commands
-
-If you need to start services written in languages other than Python or requiring a different Python environment than your Hypha server, you can use the `launch_external_services` utility function available in the `hypha.utils` module.
-
-Here's an example of using `launch_external_services` within a startup function initiated with the `--startup-functions` option:
-
-```python
-from hypha.utils import launch_external_services
-
-async def hypha_startup(server):
-    # ...
-
-    await launch_external_services(
-        server,
-        "python ./tests/example_service_script.py --server-url={server_url} --service-id=external-test-service --workspace={workspace} --token={token}",
-        name="example_service_script",
-        check_services=["external-test-service"],
-    )
-```
-
-In this example, `launch_external_services` starts an external service defined in `./tests/example_service_script.py`. The command string uses placeholders like `{server_url}`, `{workspace}`, and `{token}`, which are automatically replaced with their actual values during execution.
-
-By using `launch_external_services`, you can seamlessly integrate external services into your Hypha server, regardless of the programming language or Python environment they utilize.

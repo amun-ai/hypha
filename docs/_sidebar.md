@@ -4,4 +4,5 @@
  * [Service Type Annotation](/service-type-annotation)
  * [Serverless Functions](/serverless-functions)
  * [Serve ASGI Web Apps](/asgi-apps)
+ * [Launch Service](/launch-service)
  * [Development](/development)

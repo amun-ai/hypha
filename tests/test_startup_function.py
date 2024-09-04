@@ -11,7 +11,6 @@ from hypha_rpc.websocket_client import connect_to_server
 from requests import RequestException
 
 from . import SIO_PORT, WS_SERVER_URL
-from hypha.utils import launch_external_services
 
 
 @pytest.mark.asyncio
@@ -59,37 +58,3 @@ def test_failed_startup_function():
         proc.kill()
         proc.terminate()
         assert timeout < 0  # The server should fail
-
-
-@pytest.mark.asyncio
-async def test_launch_external_services(fastapi_server):
-    """Test the launch command utility fuction."""
-    server = await connect_to_server(
-        {
-            "name": "my third app",
-            "server_url": WS_SERVER_URL,
-        }
-    )
-    proc = await launch_external_services(
-        server,
-        "python ./tests/example_service_script.py --server-url={server_url} --service-id=external-test-service --workspace={workspace} --token={token}",
-        name="example_service_script",
-        check_services=["external-test-service"],
-    )
-    external_service = await server.get_service("external-test-service")
-    assert external_service.id.endswith(":external-test-service")
-    assert await external_service.test(1) == 100
-    await proc.kill()
-    await asyncio.sleep(0.1)
-    try:
-        await server.get_service("external-test-service")
-    except Exception as e:
-        assert "not found" in str(e)
-    proc = await launch_external_services(
-        server,
-        "python -m http.server 9391",
-        name="example_service_script",
-        check_url="http://127.0.0.1:9391",
-    )
-    assert await proc.ready()
-    await proc.kill()
