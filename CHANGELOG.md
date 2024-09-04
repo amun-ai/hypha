@@ -1,5 +1,10 @@
 # Hypha Change Log
 
+### 0.20.33
+
+ - Add `delete_workspace` to the workspace api.
+ - Add workspaces panel to the web ui.
+
 ### 0.20.31
 
  - Upgrade hypha-rpc to fix ssl issue with the hypha-rpc client.

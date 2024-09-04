@@ -207,6 +207,10 @@
                         <i className="fas fa-users"></i>
                         <span className="ml-2">Dashboard</span>
                     </div>
+                    <div className="menu-item" onClick={() => setActivePanel('workspaces')}>
+                        <i className="fas fa-building"></i>
+                        <span className="ml-2">Workspaces</span>
+                    </div>                    
                     <div className="menu-item" onClick={() => setActivePanel('services')}>
                         <i className="fas fa-cogs"></i>
                         <span className="ml-2">Services</span>
@@ -388,13 +392,191 @@
                 </div>
             );
         };
+        const WorkspaceCard = ({ workspace, onInfoClick }) => {
+            return (
+                <div className="flex flex-col items-center p-6 bg-gray-800 rounded-lg shadow-lg mb-6">
+                    <h3 className="text-xl font-bold">{workspace.name}</h3>
+                    <p className="text-gray-400">{workspace.description}</p>
+                    <button
+                        className="mt-4 bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300"
+                        onClick={() => onInfoClick(workspace.name)}
+                    >
+                        Info
+                    </button>
+                </div>
+            );
+        };
         
-
-        const MainContent = ({ isCollapsed, ws, workspaceName, panel, clients, services, apps, files, onGenerateUrl, onShowDetails, onInstallApp }) => {
-            const mainContentClass = isCollapsed ? 'ml-16' : 'ml-64'; // Dynamic left margin
+        const WorkspaceInfoModal = ({ workspaceInfo, onClose, onDelete }) => {
+            const handleDelete = async () => {
+                if (confirm("Are you sure you want to delete this workspace?")) {
+                    await onDelete(workspaceInfo.name);
+                }
+            };
         
             return (
-                <div className={`main-content transition-all duration-300 ${mainContentClass}`}>
+                <div className="modal">
+                    <div className="modal-content">
+                        <div className="modal-header">
+                            <h2 className="text-2xl font-bold">{workspaceInfo.name}</h2>
+                            <button onClick={onClose} className="text-white text-2xl">&times;</button>
+                        </div>
+                        <div className="modal-body">
+                            <p><strong>Description:</strong> {workspaceInfo.description || "N/A"}</p>
+                            <p><strong>Persistent:</strong> {workspaceInfo.persistent ? "Yes" : "No"}</p>
+                            <p><strong>Read-Only:</strong> {workspaceInfo.read_only ? "Yes" : "No"}</p>
+                            <p><strong>Owners:</strong> {workspaceInfo.owners.length > 0 ? workspaceInfo.owners.join(", ") : "None"}</p>
+                            <p><strong>Applications:</strong> {workspaceInfo.applications ? Object.keys(workspaceInfo.applications).join(", ") : "None"}</p>
+                            <p><strong>Service Types:</strong> {workspaceInfo.service_types ? Object.keys(workspaceInfo.service_types).join(", ") : "None"}</p>
+                            <p><strong>Docs:</strong> {workspaceInfo.docs || "None"}</p>
+                            <p><strong>Config:</strong> <pre>{JSON.stringify(workspaceInfo.config, null, 2)}</pre></p>
+                            <button
+                                className="mt-4 bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded-full transition duration-300"
+                                onClick={handleDelete}
+                            >
+                                Delete Workspace
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+        
+        
+        const CreateWorkspaceModal = ({ onCreateWorkspace, onClose }) => {
+            const [name, setName] = React.useState('');
+            const [description, setDescription] = React.useState('');
+            const [persistent, setPersistent] = React.useState(true);
+            const [readOnly, setReadOnly] = React.useState(false);
+            const [owners, setOwners] = React.useState('');
+        
+            const handleSubmit = async (event) => {
+                event.preventDefault(); // Prevent the page reload
+                if (!name || !description) {
+                    alert('Please enter a name and description for the workspace');
+                    return;
+                }
+                const ownersArray = owners.split(',').map(owner => owner.trim());
+                await onCreateWorkspace({ name, description, owners: ownersArray, persistent, read_only: readOnly });
+                onClose(); // Close the modal after creating the workspace
+            };
+            
+            return (
+                <div className="modal">
+                    <div className="modal-content">
+                        <div className="modal-header">
+                            <h2 className="text-2xl font-bold">Create New Workspace</h2>
+                            <button onClick={onClose} className="text-white text-2xl">&times;</button>
+                        </div>
+                        <div className="modal-body">
+                            <form onSubmit={handleSubmit}>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Name</label>
+                                    <input
+                                        type="text"
+                                        value={name}
+                                        onChange={(e) => setName(e.target.value)}
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        required
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Description</label>
+                                    <input
+                                        type="text"
+                                        value={description}
+                                        onChange={(e) => setDescription(e.target.value)}
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        required
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Owners (comma-separated)</label>
+                                    <input
+                                        type="text"
+                                        value={owners}
+                                        onChange={(e) => setOwners(e.target.value)}
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Persistent</label>
+                                    <input
+                                        type="checkbox"
+                                        checked={persistent}
+                                        onChange={(e) => setPersistent(e.target.checked)}
+                                        className="ml-2"
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Read-Only</label>
+                                    <input
+                                        type="checkbox"
+                                        checked={readOnly}
+                                        onChange={(e) => setReadOnly(e.target.checked)}
+                                        className="ml-2"
+                                    />
+                                </div>
+                                <button
+                                    type="submit"
+                                    className="bg-blue-600 text-white font-bold py-2 px-4 rounded"
+                                >
+                                    Create Workspace
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+        const MainContent = ({ isCollapsed, ws, workspaceName, panel, clients, services, apps, files, onGenerateUrl, onShowDetails, onInstallApp }) => {
+    
+            const [workspaces, setWorkspaces] = React.useState([]);
+            const [showCreateModal, setShowCreateModal] = React.useState(false);
+            const [selectedWorkspaceInfo, setSelectedWorkspaceInfo] = React.useState(null);
+
+
+            React.useEffect(() => {
+                const fetchWorkspaces = async () => {
+                    if (panel === 'workspaces' && ws) {
+                        const workspacesList = await ws.listWorkspaces();
+                        console.log('Workspaces:', workspacesList);
+                        setWorkspaces(workspacesList);
+                    }
+                };
+                fetchWorkspaces();
+            }, [panel, ws]);
+
+            const handleCreateWorkspace = async (workspaceData) => {
+                try {
+                    await ws.createWorkspace({ ...workspaceData });
+                    setWorkspaces(await ws.listWorkspaces());
+                } catch (error) {
+                    alert(`Failed to create workspace: ${error.message}`);
+                }
+            };
+
+            const handleInfoClick = async (workspaceName) => {
+                try {
+                    const workspaceInfo = await ws.getWorkspaceInfo(workspaceName);
+                    setSelectedWorkspaceInfo(workspaceInfo);
+                } catch (error) {
+                    alert(`Failed to get workspace info: ${error.message}`);
+                }
+            };
+
+            const handleDeleteWorkspace = async (workspaceName) => {
+                try {
+                    await ws.deleteWorkspace(workspaceName);
+                    setWorkspaces(await ws.listWorkspaces());
+                    setSelectedWorkspaceInfo(null);
+                } catch (error) {
+                    alert(`Failed to delete workspace: ${error.message}`);
+                }
+            };
+
+            return (
+                <div className={`main-content transition-all duration-300 ${isCollapsed ? 'ml-16' : 'ml-64'}`}>
                     <h1 className="text-4xl font-bold capitalize">{panel}</h1>
         
                     {panel === 'dashboard' && (
@@ -476,10 +658,44 @@
                             }}
                         />
                     )}
+
+                    {panel === 'workspaces' && (
+                        <>
+                            <div className="flex justify-between items-center mt-6">
+                                <h2 className="text-2xl font-bold">Workspaces</h2>
+                                <button
+                                    className="bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded-full transition duration-300"
+                                    onClick={() => setShowCreateModal(true)}
+                                >
+                                    Create Workspace
+                                </button>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mt-6">
+                                {workspaces.map((workspace) => (
+                                    <WorkspaceCard key={workspace.name} workspace={workspace} onInfoClick={handleInfoClick} />
+                                ))}
+                            </div>
+                        </>
+                    )}
+
+                    {showCreateModal && (
+                        <CreateWorkspaceModal
+                            onCreateWorkspace={handleCreateWorkspace}
+                            onClose={() => setShowCreateModal(false)}
+                        />
+                    )}
+
+                    {selectedWorkspaceInfo && (
+                        <WorkspaceInfoModal
+                            workspaceInfo={selectedWorkspaceInfo}
+                            onClose={() => setSelectedWorkspaceInfo(null)}
+                            onDelete={handleDeleteWorkspace}
+                        />
+                    )}
                 </div>
             );
         };
-        
+            
         let token;
         try{
             token = document.cookie.split('; ').find(row => row.startsWith('access_token')).split('=')[1]
@@ -490,7 +706,7 @@
         const config = {
             token,
             server_url: window.location.origin,
-            workspace: decodeURIComponent(window.location.href.split(window.location.origin)[1].split('/')[1])
+            workspace: decodeURIComponent(window.location.href.split(window.location.origin)[1].split('/')[1].split('?')[0]),
         };
 
         const App = () => {
@@ -506,15 +722,20 @@
             React.useEffect(() => {
                 // Connect to the Hypha server
                 const connectToServer = async () => {
-                    const remoteServer = await hyphaWebsocketClient.connectToServer(config);
-                    window.remoteServer = remoteServer;
-                    setWs(remoteServer);
+                    try{
+                        const remoteServer = await hyphaWebsocketClient.connectToServer(config);
+                        window.remoteServer = remoteServer;
+                        setWs(remoteServer);
+                    }
+                    catch(e){
+                        alert(`Failed to connect to the server: ${e.message}`);
+                    }
                 };
                 connectToServer();
             }, []);
         
             React.useEffect(() => {
-                // Fetch initial workspace data
+                // Fetch initial workspace data based on active panel
                 const fetchWorkspaceData = async () => {
                     if (!ws) {
                         return;
@@ -527,7 +748,6 @@
                         try {
                             const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
                             const apps = await controller.listApps();
-                            console.log('Apps:', apps);
                             setApps(apps);
                         } catch (e) {
                             alert(`Failed to list apps: ${e.message}`);
@@ -536,7 +756,6 @@
                         try {
                             const s3 = await ws.getService('public/s3-storage', { case_conversion: 'camel' });
                             const files = await s3.listFiles('');
-                            console.log('Files:', files);
                             setFiles(files);
                         } catch (e) {
                             alert(`Failed to list files: ${e.message}`);
@@ -546,7 +765,7 @@
                 fetchWorkspaceData();
                 document.title = `${activePanel.charAt(0).toUpperCase() + activePanel.slice(1)} - Hypha Workspace Management`;
             }, [activePanel, ws]);
-        
+
             const onGenerateUrl = async (fileName) => {
                 const presignedUrl = await ws.generatePresignedUrl(fileName);
                 console.log('Presigned URL:', presignedUrl);
@@ -592,12 +811,13 @@
                         onShowDetails={onShowDetails}
                         onInstallApp={onInstallApp}
                     />
-                    {selectedService && <Modal serviceInfo={selectedService} onClose={closeModal} />}
+                    {selectedService && <Modal serviceInfo={selectedService} onClose={() => setSelectedService(null)} />}
                 </div>
             );
-        };        
-
+        };
+        
         ReactDOM.render(<App />, document.getElementById('app'));
+        
     </script>
 </body>
 

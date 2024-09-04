@@ -208,6 +208,10 @@ class S3Controller:
             "workspace_unloaded",
             lambda w: asyncio.ensure_future(self._cleanup_workspace(w)),
         )
+        event_bus.on_local(
+            "workspace_deleted",
+            lambda w: asyncio.ensure_future(self._cleanup_workspace(w, force=True)),
+        )
 
         router = APIRouter()
 
@@ -505,13 +509,13 @@ class S3Controller:
             items = await list_objects_async(s3_client, self.workspace_bucket, path)
         return items
 
-    async def _cleanup_workspace(self, workspace: dict):
+    async def _cleanup_workspace(self, workspace: dict, force=False):
         """Clean up workspace."""
         workspace = WorkspaceInfo.model_validate(workspace)
-        if workspace.read_only:
+        if workspace.read_only and not force:
             return
 
-        if not workspace.persistent:
+        if not workspace.persistent or force:
             # remove workspace etc files
             remove_objects_sync(
                 self.s3client,

@@ -122,18 +122,18 @@ class WorkspaceManager:
         )
         return summary
 
-    def _validate_workspace_name(self, name):
+    def _validate_workspace_name(self, name, with_hyphen=True):
         """Validate the workspace name."""
         if not name:
             raise ValueError("Workspace name must not be empty.")
 
-        if "-" not in name:
+        if with_hyphen and "-" not in name:
             raise ValueError(
                 "Workspace name must contain at least one hyphen (e.g. my-workspace)."
             )
         # only allow numbers, letters in lower case and hyphens (no underscore)
         # use a regex to validate the workspace name
-        pattern = re.compile(r"^[a-z0-9-]*$")
+        pattern = re.compile(r"^[a-z0-9-|]*$")
         if not pattern.match(name):
             raise ValueError(
                 f"Invalid workspace name: {name}, only lowercase letters, numbers and hyphens are allowed."
@@ -200,8 +200,9 @@ class WorkspaceManager:
         workspace = WorkspaceInfo.model_validate(config)
         if user_info.id not in workspace.owners:
             workspace.owners.append(user_info.id)
-        if user_info.id != "root":
-            self._validate_workspace_name(workspace.name)
+        self._validate_workspace_name(
+            workspace.name, with_hyphen=user_info.id != "root"
+        )
         # make sure we add the user's email to owners
         _id = user_info.email or user_info.id
         if _id not in workspace.owners:
@@ -225,6 +226,31 @@ class WorkspaceManager:
         if user_info.get_workspace() != workspace.name:
             await self._bookmark_workspace(workspace, user_info, context=context)
         return workspace.model_dump()
+
+    @schema_method
+    async def delete_workspace(
+        self,
+        workspace: str = Field(..., description="workspace name"),
+        context: Optional[dict] = None,
+    ):
+        """Remove a workspace."""
+        assert context is not None
+        ws = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(ws, UserPermission.admin):
+            raise PermissionError(f"Permission denied for workspace {ws}")
+        workspace_info = await self.load_workspace_info(workspace)
+        await self._redis.hdel("workspaces", workspace)
+        await self._event_bus.emit("workspace_deleted", workspace_info.model_dump())
+        # remove the workspace from the user's bookmarks
+        user_workspace = await self.load_workspace_info(user_info.get_workspace())
+        user_workspace.config = user_workspace.config or {}
+        if "bookmarks" in user_workspace.config:
+            user_workspace.config["bookmarks"] = [
+                b for b in user_workspace.config["bookmarks"] if b["name"] != workspace
+            ]
+            await self._update_workspace(user_workspace, user_info)
+        logger.info("Workspace %s removed by %s", workspace, user_info.id)
 
     @schema_method
     async def install_application(
@@ -1295,6 +1321,7 @@ class WorkspaceManager:
             "generate_token": self.generate_token,
             "revoke_token": self.revoke_token,
             "create_workspace": self.create_workspace,
+            "delete_workspace": self.delete_workspace,
             "get_workspace_info": self.get_workspace_info,
             "install_application": self.install_application,
             "uninstall_application": self.uninstall_application,

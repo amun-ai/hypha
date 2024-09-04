@@ -49,3 +49,34 @@ async def test_workspace_loader(fastapi_server, test_user_token):
 
         workspaces = await api.list_workspaces()
         assert find_item(workspaces, "name", ws.name)
+
+
+async def test_delete_workspace(fastapi_server, test_user_token):
+    """Test workspace loader."""
+    async with connect_to_server(
+        {
+            "name": "my app",
+            "server_url": WS_SERVER_URL,
+            "client_id": "my-app",
+            "token": test_user_token,
+        }
+    ) as api:
+        ws = await api.create_workspace(
+            dict(
+                name="test-2",
+                description="test workspace",
+                owners=[],
+                persistent=True,
+                read_only=False,
+            ),
+        )
+
+        # check if workspace exists
+        workspaces = await api.list_workspaces()
+        assert find_item(workspaces, "name", ws.name)
+
+        await api.delete_workspace(ws.name)
+
+        # check if workspace is deleted
+        workspaces = await api.list_workspaces()
+        assert not find_item(workspaces, "name", ws.name)
