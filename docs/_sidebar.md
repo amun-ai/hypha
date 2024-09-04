@@ -5,4 +5,5 @@
  * [Serverless Functions](/serverless-functions)
  * [Serve ASGI Web Apps](/asgi-apps)
  * [Launch Service](/launch-service)
+ * [Operate Files](/operate-files)
  * [Development](/development)
