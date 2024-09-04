@@ -17,13 +17,12 @@ python3 -m hypha.server \
 ```
 
 ### Arguments:
-
 - `--enable-s3`: Enables S3 object storage.
 - `--access-key-id`: Access key for the S3 server.
 - `--secret-access-key`: Secret key for the S3 server.
 - `--endpoint-url`: The internal URL for Hypha to access the S3 server.
 - `--endpoint-url-public`: Public URL for accessing the files (may be the same as `--endpoint-url`).
-- `--s3-admin-type`: Specifies the S3 admin type (e.g., `minio`, `generic`).
+- `--s3-admin-type`: Specifies the S3 admin type (e.g., `minio`, `generic`). If it's a minio server (not gateway mode), use `minio`, otherwise use `generic` would be enough for most cases.
 
 After starting Hypha with these arguments, you can verify that the S3 service is available by visiting the following URL:
 
@@ -144,6 +143,57 @@ def operate_files_with_boto(info):
 # operate_files_with_boto(info)
 ```
 
+#### ** AWS SDK (JavaScript) **
+
+```javascript
+import { S3Client, PutObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
+
+const api = await connectToServer({ "server_url": "https://hypha.aicell.io" });
+const s3Controller = await api.getService("public/s3-storage");
+const info = await s3Controller.generateCredential();
+
+const s3Client = new S3Client({
+  region: info.region_name,
+  endpoint: info.endpoint_url,
+  credentials: {
+    accessKeyId: info.access_key_id,
+    secretAccessKey: info.secret_access_key,
+  },
+});
+
+async function uploadFileToS3(file) {
+  try {
+    const uploadParams = {
+      Bucket: info.bucket,
+      Key: info.prefix + file.name,
+      Body: file,
+    };
+    const data = await s3Client.send(new PutObjectCommand(uploadParams));
+    console.log("File uploaded successfully:", data);
+  } catch (err) {
+    console.error("Error uploading file:", err);
+  }
+}
+
+async function listFilesInS3() {
+  try {
+    const listParams = {
+      Bucket: info.bucket,
+      Prefix: info.prefix,
+    };
+    const data = await s3Client.send(new ListObjectsV2Command(listParams));
+    data.Contents.forEach((obj) => console.log(obj.Key));
+  } catch (err) {
+    console.error("Error listing files:", err);
+  }
+}
+
+// Example usage:
+// const fileInput = document.getElementById("fileInput").files[0];
+// uploadFileToS3(fileInput);
+// listFilesInS3();
+```
+
 <!-- tabs:end -->
 
 ### 2. Using Presigned URLs
@@ -185,7 +235,9 @@ async def upload_file(presigned_url: str, file_path: str):
             response = await client.put(presigned_url, content=file)
             print(response.status_code, response.reason_phrase)
 
-# Example usage:
+#
+
+ Example usage:
 # asyncio.run(upload_file(upload_url, "myfile.txt"))
 ```
 
