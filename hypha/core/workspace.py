@@ -152,6 +152,9 @@ class WorkspaceManager:
         user_workspace.config = user_workspace.config or {}
         if "bookmarks" not in user_workspace.config:
             user_workspace.config["bookmarks"] = []
+        for bookmark in user_workspace.config["bookmarks"]:
+            if bookmark["name"] == workspace.name:
+                return
         user_workspace.config["bookmarks"].append(
             {
                 "type": "workspace",
@@ -1155,6 +1158,8 @@ class WorkspaceManager:
                 "description": workspace.description,
             }
         ]
+        # remove duplicates
+        workspaces = [dict(t) for t in {tuple(d.items()) for d in workspaces}]
         return workspaces
 
     async def _update_workspace(
