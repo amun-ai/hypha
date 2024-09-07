@@ -158,10 +158,11 @@ def detected_response_type(request: Request):
 
 
 class ASGIRoutingMiddleware:
-    def __init__(self, app: ASGIApp, route=None, store=None):
+    def __init__(self, app: ASGIApp, base_path=None, store=None):
         self.app = app
-        assert route is not None, "Route is required"
+        assert base_path is not None, "Base path is required"
         assert store is not None, "Store is required"
+        route = base_path.rstrip("/") + "/{workspace}/apps/{service_id}/{path:path}"
         # Define a route using Starlette's routing system for pattern matching
         self.route = Route(route, endpoint=None)
         self.store = store
@@ -494,25 +495,6 @@ class HTTPProxy:
                     content={"success": False, "detail": str(exp)},
                 )
 
-        @app.get(norm_url("/{workspace}/apps/{service_id}"))
-        async def get_app_info(
-            workspace: str,
-            service_id: str,
-            request: Request,
-            path: str = None,
-            user_info: store.login_optional = Depends(store.login_optional),
-        ):
-            """Route for checking details of an app."""
-            if not path:
-                path = "/"
-            return await run_app(
-                workspace=workspace,
-                service_id=service_id,
-                request=request,
-                path=path,
-                user_info=user_info,
-            )
-
         @app.get(norm_url("/{workspace}/apps/ws/{path:path}"))
         async def get_ws_app_file(
             workspace: str,
@@ -574,9 +556,45 @@ class HTTPProxy:
 
         app.add_middleware(
             ASGIRoutingMiddleware,
-            route=norm_url("/{workspace}/apps/{service_id}/{path:path}"),
+            base_path=base_path,
             store=store,
         )
+
+        @app.get(norm_url("/{workspace}/apps/{service_id}"))
+        async def get_app_info(
+            workspace: str,
+            service_id: str,
+            mode: str = None,
+            user_info = Depends(store.login_optional),
+        ):
+            """Route for checking details of an app."""
+            if user_info.check_permission(workspace, UserPermission.read):
+                raise JSONResponse(
+                    status_code=403,
+                    content={
+                        "success": False,
+                        "detail": (
+                            f"{user_info['username']} has no"
+                            f" permission to access {workspace}"
+                        ),
+                    },
+                )
+            service_type = await self.store.get_service_type_id(
+                workspace, service_id
+            )
+            if service_type:
+                # redirect to the app page
+                return RedirectResponse(
+                    url=f"{base_path.rstrip('/')}/{workspace}/apps/{service_id}/"
+                )
+            else:
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "success": False,
+                        "detail": f"App service not found: {service_id}",
+                    },
+                )
 
         @app.get(norm_url("/{workspace}/apps/{service_id}/{path:path}"))
         async def run_app(
@@ -671,7 +689,7 @@ class HTTPProxy:
                             status_code=404,
                             content={
                                 "success": False,
-                                "detail": f"Service cannot be run as an app: {service_id}",
+                                "detail": f"Service cannot be run as an app: {service_id}, type: {info.type}",
                             },
                         )
 

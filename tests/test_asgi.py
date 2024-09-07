@@ -121,7 +121,7 @@ async def test_asgi_serverapp(fastapi_server, test_user_token):
     service = await api.get_service(f"{config.workspace}/hello-fastapi")
     assert "serve" in service
 
-    response = requests.get(f"{SERVER_URL}/{workspace}/apps/hello-fastapi/")
+    response = requests.get(f"{SERVER_URL}/{workspace}/apps/hello-fastapi")
     assert response.ok
     assert response.json()["message"] == "Hello World"
 
