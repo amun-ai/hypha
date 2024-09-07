@@ -393,6 +393,66 @@ class HTTPProxy:
                 user_info=user_info,
             )
 
+        @router.get(norm_url("/{workspace}/apps/ws/{path:path}"))
+        async def get_ws_app_file(
+            workspace: str, path: str, user_info: store.login_optional = Depends(store.login_optional)
+        ) -> Response:
+            """Route for getting browser app files."""
+            if not user_info.check_permission(workspace, UserPermission.read):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "success": False,
+                        "detail": (
+                            f"{user_info.id} has no"
+                            f" permission to access {workspace}"
+                        ),
+                    },
+                )
+            
+            if not path:
+                return FileResponse(
+                    safe_join(str(self.ws_apps_dir), "ws/index.html")
+                )
+
+            # check if the path is inside the built-in apps dir
+            # get the jinja template from the built-in apps dir
+            dir_path = path.split("/")[0]
+            if dir_path in self.ws_app_files:
+                file_path = safe_join(str(self.ws_apps_dir), path)
+                if not is_safe_path(str(self.ws_apps_dir), file_path):
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "success": False,
+                            "detail": f"Unsafe path: {file_path}",
+                        },
+                    )
+                if not os.path.exists(file_path):
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "success": False,
+                            "detail": f"File not found: {path}",
+                        },
+                    )
+                return FileResponse(safe_join(str(self.ws_apps_dir), "ws", path))
+            else:
+                key = safe_join(workspace, path)
+                assert self.s3_enabled, "S3 is not enabled."
+                from hypha.s3 import FSFileResponse
+                from aiobotocore.session import get_session
+
+                s3_client = get_session().create_client(
+                    "s3",
+                    endpoint_url=self.endpoint_url,
+                    aws_access_key_id=self.access_key_id,
+                    aws_secret_access_key=self.secret_access_key,
+                    region_name=self.region_name,
+                )
+                return FSFileResponse(s3_client, self.workspace_bucket, key)
+
+
         @router.get(norm_url("/{workspace}/apps/{service_id}/{path:path}"))
         async def run_app(
             workspace: str,
@@ -402,49 +462,17 @@ class HTTPProxy:
             mode: str = None,
             user_info: store.login_optional = Depends(store.login_optional),
         ) -> Response:
-            if service_id == "ws":
-                if not path:
-                    return FileResponse(
-                        safe_join(str(self.ws_apps_dir), "ws/index.html")
-                    )
-
-                # check if the path is inside the built-in apps dir
-                # get the jinja template from the built-in apps dir
-                dir_path = path.split("/")[0]
-                if dir_path in self.ws_app_files:
-                    file_path = safe_join(str(self.ws_apps_dir), path)
-                    if not is_safe_path(str(self.ws_apps_dir), file_path):
-                        return JSONResponse(
-                            status_code=403,
-                            content={
-                                "success": False,
-                                "detail": f"Unsafe path: {file_path}",
-                            },
-                        )
-                    if not os.path.exists(file_path):
-                        return JSONResponse(
-                            status_code=404,
-                            content={
-                                "success": False,
-                                "detail": f"File not found: {path}",
-                            },
-                        )
-                    return FileResponse(safe_join(str(self.ws_apps_dir), "ws", path))
-                else:
-                    key = safe_join(workspace, path)
-                    assert self.s3_enabled, "S3 is not enabled."
-                    from hypha.s3 import FSFileResponse
-                    from aiobotocore.session import get_session
-
-                    s3_client = get_session().create_client(
-                        "s3",
-                        endpoint_url=self.endpoint_url,
-                        aws_access_key_id=self.access_key_id,
-                        aws_secret_access_key=self.secret_access_key,
-                        region_name=self.region_name,
-                    )
-                    return FSFileResponse(s3_client, self.workspace_bucket, key)
-
+            if not user_info.check_permission(workspace, UserPermission.read):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "success": False,
+                        "detail": (
+                            f"{user_info.id} has no"
+                            f" permission to access {workspace}"
+                        ),
+                    },
+                )
             # Serve dynamic apps
             try:
                 scope = request.scope
