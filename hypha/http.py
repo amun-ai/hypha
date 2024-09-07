@@ -452,7 +452,7 @@ class HTTPProxy:
                 )
                 return FSFileResponse(s3_client, self.workspace_bucket, key)
 
-        @router.get(norm_url("/{workspace}/apps/{service_id}/{path:path}"))
+        @router.api_route(norm_url("/{workspace}/apps/{service_id}/{path:path}"), methods=["POST", "GET", "PUT", "DELETE", "PATCH"])
         async def run_app(
             workspace: str,
             service_id: str,
@@ -461,18 +461,8 @@ class HTTPProxy:
             mode: str = None,
             user_info: store.login_optional = Depends(store.login_optional),
         ) -> Response:
-            if not user_info.check_permission(workspace, UserPermission.read):
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "success": False,
-                        "detail": (
-                            f"{user_info.id} has no"
-                            f" permission to access {workspace}"
-                        ),
-                    },
-                )
-            # Serve dynamic apps
+            # Note: We don't check the user permission here, because the service itself
+            # should check the permission.
             try:
                 scope = request.scope
                 scope = {

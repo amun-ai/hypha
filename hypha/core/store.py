@@ -158,6 +158,37 @@ class RedisStore:
         )
         return self._root_user
 
+    async def load_or_create_workspace(self, user_info: UserInfo, workspace: str):
+        """Setup the workspace."""
+        if workspace is None:
+            workspace = user_info.get_workspace()
+
+        assert workspace != "*", "Dynamic workspace is not allowed for this endpoint"
+
+        # Ensure calls to store for workspace existence and permissions check
+        workspace_info = await self.get_workspace_info(workspace, load=True)
+
+        # If workspace does not exist, automatically create it
+        if not workspace_info and workspace == user_info.get_workspace():
+            if not user_info.check_permission(workspace, UserPermission.read):
+                raise PermissionError(
+                    f"User {user_info.id} does not have permission to access workspace {workspace}"
+                )
+            workspace_info = await self.register_workspace(
+                {
+                    "name": workspace,
+                    "description": f"Auto-created workspace by {user_info.id}",
+                    "persistent": False,
+                    "owners": [user_info.id],
+                    "read_only": user_info.is_anonymous,
+                }
+            )
+            logger.info(f"Created workspace: {workspace}")
+        else:
+            if not workspace_info:
+                raise KeyError(f"Workspace {workspace} does not exist or is not accessible")
+        return workspace_info
+
     def get_root_user(self):
         """Get the root user."""
         return self._root_user
@@ -174,7 +205,7 @@ class RedisStore:
             logger.exception(f"Error running startup function: {e}")
             # Stop the entire event loop if an error occurs
             asyncio.get_running_loop().stop()
-
+    
     async def upgrade(self):
         """Upgrade the store."""
         # For versions before 0.20.34
@@ -191,11 +222,7 @@ class RedisStore:
                 service_info = ServiceInfo.from_redis_dict(service_data)
                 service_info.type = service_info.type or "*"
                 # remove the first part  the old key
-                new_key = key.replace(
-                    "services:public:", f"services:public|{service_info.type}:"
-                ).replace(
-                    "services:protected:", f"services:protected|{service_info.type}:"
-                )
+                new_key = key.replace("services:public:", f"services:public|{service_info.type}:").replace("services:protected:", f"services:protected|{service_info.type}:")
                 # set the new key
                 await self._redis.hset(new_key, mapping=service_info.to_redis_dict())
                 # remove the old key

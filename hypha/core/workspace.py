@@ -490,6 +490,7 @@ class WorkspaceManager:
         if query is None:
             # list all services in the current workspace
             query = {
+                "type": "*",
                 "visibility": "*",
                 "workspace": cws,
                 "client_id": "*",
@@ -498,6 +499,7 @@ class WorkspaceManager:
         # Convert string query into a dictionary
         if isinstance(query, str):
             visibility = "*"
+            type_filter = "*"
             workspace = "*"
             client_id = "*"
             service_id = "*"
@@ -514,6 +516,7 @@ class WorkspaceManager:
                 else:
                     workspace = workspace_part
                 query = {
+                    "type": type_filter,
                     "visibility": visibility,
                     "workspace": workspace,
                     "client_id": client_id,
@@ -524,6 +527,7 @@ class WorkspaceManager:
                 client_id = client_service[0]
                 service_id = client_service[1] if len(client_service) > 1 else "*"
                 query = {
+                    "type": type_filter,
                     "visibility": visibility,
                     "workspace": workspace,
                     "client_id": client_id,
@@ -538,6 +542,7 @@ class WorkspaceManager:
                 else:
                     workspace = workspace_part
                 query = {
+                    "type": type_filter,
                     "visibility": visibility,
                     "workspace": workspace,
                     "client_id": client_id,
@@ -546,6 +551,7 @@ class WorkspaceManager:
             else:
                 workspace = query
                 query = {
+                    "type": type_filter,
                     "visibility": visibility,
                     "workspace": workspace,
                     "client_id": client_id,
@@ -1272,7 +1278,7 @@ class WorkspaceManager:
             await self._redis.hdel("workspaces", ws)
             await self._s3_controller.cleanup_workspace(winfo)
         else:
-            if not ws.persistent and not ws.read_only:
+            if not winfo.persistent and not winfo.read_only:
                 await self._redis.hdel("workspaces", ws)
 
         await self._event_bus.emit("workspace_unloaded", winfo.model_dump())

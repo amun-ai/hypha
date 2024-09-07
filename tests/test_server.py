@@ -44,7 +44,7 @@ async def test_connect_to_server(fastapi_server):
     # )
     with pytest.raises(
         Exception,
-        match=r".*does not have permission to access workspace .*",
+        match=r".*does not exist or is not accessible.*",
     ):
         rpc = await connect_to_server(
             {"name": "my app", "workspace": "test", "server_url": WS_SERVER_URL}
@@ -211,7 +211,7 @@ async def test_services(fastapi_server):
         {
             "name": "test_service",
             "id": "test_service",
-            "type": "#test",
+            "type": "test-type",
             "idx": 1,
         }
     )
@@ -224,7 +224,7 @@ async def test_services(fastapi_server):
         {
             "name": "test_service",
             "id": "test_service",
-            "type": "#test",
+            "type": "test-type",
             "idx": 2,
         },
         {"overwrite": True},
@@ -252,7 +252,7 @@ async def test_services(fastapi_server):
         {
             "name": "test_service",
             "id": "test_service",
-            "type": "#test",
+            "type": "test-type",
             "idx": 3,
         }
     )
