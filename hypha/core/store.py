@@ -365,6 +365,17 @@ class RedisStore:
             json.loads(workspace_info.decode())
         )
         return workspace_info
+    
+    async def get_service_type_id(self, workspace, service_id):
+        """Get a service type."""
+        assert "/" not in service_id, f"Invalid service id: {service_id}, service id cannot contain `/`"
+        assert "@" not in service_id, f"Invalid service id: {service_id}, service id cannot contain `@`"
+        assert ":" not in service_id, f"Invalid service id: {service_id}, service id cannot contain `:`"
+        keys = await self._redis.keys(f"services:*|*:{workspace}/*:{service_id}@*")
+        if keys:
+            # the service key format: "services:{visibility}|{type}:{workspace}/{client_id}:{service_id}@{app_id}"
+            return keys[0].decode().split(":")[1].split("|")[1]
+        
 
     async def parse_user_token(self, token):
         """Parse a client token."""
