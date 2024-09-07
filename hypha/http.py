@@ -487,7 +487,7 @@ class HTTPProxy:
                         await service.serve(
                             {
                                 "scope": scope,
-                                "receive": request.body,
+                                "receive": request.receive,
                                 "send": send_queue.put,
                             }
                         )
