@@ -699,9 +699,7 @@ class WorkspaceManager:
         service_exists = await self._redis.exists(
             f"services:*|*:{service.id}@{service.app_id}"
         )
-        key = (
-            f"services:{service.config.visibility.value}|{service.type}:{service.id}@{service.app_id}"
-        )
+        key = f"services:{service.config.visibility.value}|{service.type}:{service.id}@{service.app_id}"
         await self._redis.hset(key, mapping=service.to_redis_dict())
 
         if service_exists:
@@ -729,7 +727,9 @@ class WorkspaceManager:
                     "client_connected", {"id": client_id, "workspace": ws}
                 )
                 logger.info(f"Adding built-in service: {service.id}")
-                builtins = await self._redis.keys(f"services:*|*:{client_id}:built-in@*")
+                builtins = await self._redis.keys(
+                    f"services:*|*:{client_id}:built-in@*"
+                )
             else:
                 await self._event_bus.emit(
                     "service_added", service.model_dump(mode="json")
@@ -832,9 +832,7 @@ class WorkspaceManager:
         assert ":" in service.id, "Service id info must contain ':'"
         service.app_id = service.app_id or "*"
         service.type = service.type or "*"
-        key = (
-            f"services:{service.config.visibility.value}|{service.type}:{service.id}@{service.app_id}"
-        )
+        key = f"services:{service.config.visibility.value}|{service.type}:{service.id}@{service.app_id}"
         logger.info("Removing service: %s", key)
 
         # Check if the service exists before removal
@@ -1269,7 +1267,6 @@ class WorkspaceManager:
             )
             await self._event_bus.emit(f"unload:{ws}", "Unloading workspace: " + ws)
 
-        
         if self._s3_controller:
             # since the workspace will be persisted, we can remove the workspace info from the redis store
             await self._redis.hdel("workspaces", ws)
@@ -1277,7 +1274,7 @@ class WorkspaceManager:
         else:
             if not ws.persistent and not ws.read_only:
                 await self._redis.hdel("workspaces", ws)
-                
+
         await self._event_bus.emit("workspace_unloaded", winfo.model_dump())
         logger.info("Workspace %s unloaded.", ws)
 

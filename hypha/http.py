@@ -395,7 +395,9 @@ class HTTPProxy:
 
         @router.get(norm_url("/{workspace}/apps/ws/{path:path}"))
         async def get_ws_app_file(
-            workspace: str, path: str, user_info: store.login_optional = Depends(store.login_optional)
+            workspace: str,
+            path: str,
+            user_info: store.login_optional = Depends(store.login_optional),
         ) -> Response:
             """Route for getting browser app files."""
             if not user_info.check_permission(workspace, UserPermission.read):
@@ -409,11 +411,9 @@ class HTTPProxy:
                         ),
                     },
                 )
-            
+
             if not path:
-                return FileResponse(
-                    safe_join(str(self.ws_apps_dir), "ws/index.html")
-                )
+                return FileResponse(safe_join(str(self.ws_apps_dir), "ws/index.html"))
 
             # check if the path is inside the built-in apps dir
             # get the jinja template from the built-in apps dir
@@ -451,7 +451,6 @@ class HTTPProxy:
                     region_name=self.region_name,
                 )
                 return FSFileResponse(s3_client, self.workspace_bucket, key)
-
 
         @router.get(norm_url("/{workspace}/apps/{service_id}/{path:path}"))
         async def run_app(

@@ -174,7 +174,7 @@ class RedisStore:
             logger.exception(f"Error running startup function: {e}")
             # Stop the entire event loop if an error occurs
             asyncio.get_running_loop().stop()
-    
+
     async def upgrade(self):
         """Upgrade the store."""
         # For versions before 0.20.34
@@ -191,7 +191,11 @@ class RedisStore:
                 service_info = ServiceInfo.from_redis_dict(service_data)
                 service_info.type = service_info.type or "*"
                 # remove the first part  the old key
-                new_key = key.replace("services:public:", f"services:public|{service_info.type}:").replace("services:protected:", f"services:protected|{service_info.type}:")
+                new_key = key.replace(
+                    "services:public:", f"services:public|{service_info.type}:"
+                ).replace(
+                    "services:protected:", f"services:protected|{service_info.type}:"
+                )
                 # set the new key
                 await self._redis.hset(new_key, mapping=service_info.to_redis_dict())
                 # remove the old key

@@ -73,7 +73,9 @@ class WebsocketServer:
                     user_info, workspace = await self.authenticate_user(
                         token, reconnection_token, client_id, workspace
                     )
-                    workspace_info = await self.store.get_workspace_info(workspace, load=True)
+                    workspace_info = await self.store.get_workspace_info(
+                        workspace, load=True
+                    )
                     if not workspace_info and workspace == user_info.get_workspace():
                         workspace_info = await self.store.register_workspace(
                             {
