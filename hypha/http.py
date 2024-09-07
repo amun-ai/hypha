@@ -481,7 +481,7 @@ class HTTPProxy:
                     workspace, user_info
                 ) as api:
                     info = await api.get_service_info(service_id, {"mode": mode})
-                    if info.type == "ASGI":
+                    if info.type == "ASGI" or info.type == "asgi":
                         service = await api.get_service(info.id)
                         # Call the ASGI app with manually provided receive and send
                         await service.serve(

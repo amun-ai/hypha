@@ -45,7 +45,7 @@ async def setup():
 
     await api.register_service({
         "id": "hello-fastapi",
-        "type": "ASGI",
+        "type": "asgi",
         "serve": serve_fastapi,
         "config": {
             "visibility": "public"

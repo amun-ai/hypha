@@ -181,7 +181,7 @@ async def main():
     svc_info = await server.register_service({
         "id": "cat",
         "name": "cat",
-        "type": "ASGI",
+        "type": "asgi",
         "serve": serve_fastapi,
         "config": {"visibility": "public"}
     })
@@ -255,7 +255,7 @@ async def main():
     svc_info = await server.register_service({
         "id": "cat",
         "name": "cat",
-        "type": "ASGI",
+        "type": "asgi",
         "serve": serve_fastapi,
         "config": {"visibility": "public"}
     })

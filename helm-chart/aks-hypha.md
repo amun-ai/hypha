@@ -209,16 +209,16 @@ Replace all instances of `hypha.my-company.com` with your own domain.
 
 #### Step 5: Install Hypha Using Helm
 
-Now that the configuration is set, install Hypha using Helm:
+Now that the configuration is set, install Hypha using Helm (make sure you are in the `helm-chart` directory):
 
 ```bash
-helm install hypha-server ./helm-chart --namespace hypha
+helm install hypha-server ./hypha-server --namespace hypha
 ```
 
 To upgrade the Helm chart with any changes:
 
 ```bash
-helm upgrade hypha-server ./helm-chart --namespace hypha
+helm upgrade hypha-server ./hypha-server --namespace hypha
 ```
 
 To uninstall the Helm chart:
