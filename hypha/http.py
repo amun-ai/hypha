@@ -269,8 +269,7 @@ class HTTPProxy:
                             ),
                         },
                     )
-
-                info = await self.store.load_or_create_workspace(user_info, workspace)
+                info = await self.store.get_workspace_info(workspace, load=True)
                 return JSONResponse(
                     status_code=200,
                     content=info.model_dump(),

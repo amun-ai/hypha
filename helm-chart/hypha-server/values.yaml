@@ -8,7 +8,7 @@ image:
   repository: ghcr.io/amun-ai/hypha
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "0.20.33.post3"
+  tag: "0.20.33.post4"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -41,7 +41,8 @@ securityContext:
   runAsUser: 1000
 
 service:
-  type: LoadBalancer
+  type: ClusterIP
+  # type: LoadBalancer
   port: 9520
 
 ingress:

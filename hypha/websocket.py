@@ -73,6 +73,18 @@ class WebsocketServer:
                     user_info, workspace = await self.authenticate_user(
                         token, reconnection_token, client_id, workspace
                     )
+                    workspace_info = await self.store.get_workspace_info(workspace, load=True)
+                    if not workspace_info and workspace == user_info.get_workspace():
+                        workspace_info = await self.store.register_workspace(
+                            {
+                                "name": user_info.get_workspace(),
+                                "description": f"Auto-created workspace by {user_info.id}",
+                                "persistent": False,
+                                "owners": [user_info.id],
+                                "read_only": user_info.is_anonymous,
+                            }
+                        )
+                    assert workspace_info, f"Failed to get workspace info: {workspace}"
                 else:
                     user_info = generate_anonymous_user()
                     user_info.scope = create_scope(
@@ -80,9 +92,17 @@ class WebsocketServer:
                         workspaces={user_info.get_workspace(): UserPermission.admin},
                         client_id=client_id,
                     )
-                workspace_info = await self.store.load_or_create_workspace(
-                    user_info, workspace
-                )
+                    workspace_info = await self.store.register_workspace(
+                        {
+                            "name": user_info.get_workspace(),
+                            "description": f"Auto-created workspace by {user_info.id}",
+                            "persistent": False,
+                            "owners": [user_info.id],
+                            "read_only": user_info.is_anonymous,
+                        }
+                    )
+                    logger.info(f"Created anonymous user {user_info.id}")
+
                 user_info.scope = update_user_scope(
                     user_info, workspace_info, client_id
                 )

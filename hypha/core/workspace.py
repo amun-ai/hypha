@@ -18,11 +18,11 @@ from hypha.core import (
     UserInfo,
     WorkspaceInfo,
     ServiceInfo,
-    RemoteService,
     TokenConfig,
     UserPermission,
     ServiceTypeInfo,
 )
+from hypha.s3 import S3Controller
 from hypha.core.auth import generate_presigned_token, create_scope, valid_token
 from hypha.utils import EventBus, random_id
 
@@ -64,7 +64,7 @@ class WorkspaceManager:
         root_user: UserInfo,
         event_bus: EventBus,
         server_info: dict,
-        workspace_loader: Optional[callable] = None,
+        s3_controller: Optional[S3Controller] = None,
     ):
         self._redis = redis
         self._initialized = False
@@ -73,7 +73,7 @@ class WorkspaceManager:
         self._event_bus = event_bus
         self._server_info = server_info
         self._client_id = None
-        self._workspace_loader = workspace_loader
+        self._s3_controller = s3_controller
 
     def get_client_id(self):
         assert self._client_id is not None, "Manager client id not set."
@@ -225,6 +225,8 @@ class WorkspaceManager:
         await self._redis.hset(
             "workspaces", workspace.name, workspace.model_dump_json()
         )
+        if self._s3_controller:
+            await self._s3_controller.setup_workspace(workspace)
         await self._event_bus.emit("workspace_loaded", workspace.model_dump())
         if user_info.get_workspace() != workspace.name:
             await self._bookmark_workspace(workspace, user_info, context=context)
@@ -244,6 +246,8 @@ class WorkspaceManager:
             raise PermissionError(f"Permission denied for workspace {ws}")
         workspace_info = await self.load_workspace_info(workspace)
         await self._redis.hdel("workspaces", workspace)
+        if self._s3_controller:
+            await self._s3_controller.cleanup_workspace(workspace_info, force=True)
         await self._event_bus.emit("workspace_deleted", workspace_info.model_dump())
         # remove the workspace from the user's bookmarks
         user_workspace = await self.load_workspace_info(user_info.get_workspace())
@@ -440,7 +444,7 @@ class WorkspaceManager:
         assert context is not None
         cws = context["ws"]
         workspace = workspace or cws
-        pattern = f"services:*:{workspace}/*:built-in@*"
+        pattern = f"services:*|*:{workspace}/*:built-in@*"
         keys = await self._redis.keys(pattern)
         clients = set()
         for key in keys:
@@ -571,7 +575,7 @@ class WorkspaceManager:
         visibility = query.get("visibility", "*")
         client_id = query.get("client_id", "*")
         service_id = query.get("service_id", "*")
-        type_filter = query.get("type", None)
+        type_filter = query.get("type", "*")
         app_id = "*"
         if "@" in service_id:
             service_id, app_id = service_id.split("@")
@@ -605,7 +609,7 @@ class WorkspaceManager:
         validate_key_part(service_id)
         validate_key_part(app_id)
 
-        pattern = f"services:{visibility}:{workspace}/{client_id}:{service_id}@{app_id}"
+        pattern = f"services:{visibility}|{type_filter}:{workspace}/{client_id}:{service_id}@{app_id}"
 
         assert pattern.startswith(
             "services:"
@@ -618,7 +622,7 @@ class WorkspaceManager:
 
         if workspace == "*":
             # add services in the current workspace
-            ws_pattern = f"services:{original_visibility}:{cws}/{client_id}:{service_id}@{app_id}"
+            ws_pattern = f"services:{original_visibility}|{type_filter}:{cws}/{client_id}:{service_id}@{app_id}"
             keys = keys + await self._redis.keys(ws_pattern)
 
         services = []
@@ -634,11 +638,7 @@ class WorkspaceManager:
                     f"Potential issue in list_services: Protected service appear in the search list: {service_id}"
                 )
                 continue
-            if isinstance(query, dict) and type_filter:
-                if service_dict.get("type") == type_filter:
-                    services.append(service_dict)
-            else:
-                services.append(service_dict)
+            services.append(service_dict)
 
         return services
 
@@ -664,11 +664,17 @@ class WorkspaceManager:
         if "/" not in service.id:
             service.id = f"{ws}/{service.id}"
         assert ":" in service.id, "Service id info must contain ':'"
+        # service.type be only * or a string not contain |, :, @ or #
+        assert service.type == "*" or re.match(
+            r"^[^|:@#]*$", service.type
+        ), f"Invalid service type: {service.type}, it must be a letters, optionally with *, hyphens, underscores, and numbers."
+        # assert re.match(r"^[] , service.type), f"Invalid service type: {service.type}, it must be a letters, optionally with *, hyphens, underscores, and numbers."
         service.app_id = service.app_id or "*"
+        service.type = service.type or "*"
 
         service_name = service.id.split(":")[1]
         workspace = service.id.split("/")[0]
-        key = f"services:*:{workspace}/*:{service_name}@*"
+        key = f"services:*|*:{workspace}/*:{service_name}@*"
         peer_keys = await self._redis.keys(key)
         if len(peer_keys) > 0:
             for peer_key in peer_keys:
@@ -681,7 +687,7 @@ class WorkspaceManager:
 
         # Check if the clients exists if not a built-in service
         if ":built-in" not in service.id and ws not in ["ws-user-root", "public"]:
-            builtins = await self._redis.keys(f"services:*:{client_id}:built-in@*")
+            builtins = await self._redis.keys(f"services:*|*:{client_id}:built-in@*")
             if not builtins:
                 logger.warning(
                     "Refuse to add service %s, client %s has been removed.",
@@ -691,10 +697,10 @@ class WorkspaceManager:
                 return
         # Check if the service already exists
         service_exists = await self._redis.exists(
-            f"services:*:{service.id}@{service.app_id}"
+            f"services:*|*:{service.id}@{service.app_id}"
         )
         key = (
-            f"services:{service.config.visibility.value}:{service.id}@{service.app_id}"
+            f"services:{service.config.visibility.value}|{service.type}:{service.id}@{service.app_id}"
         )
         await self._redis.hset(key, mapping=service.to_redis_dict())
 
@@ -723,7 +729,7 @@ class WorkspaceManager:
                     "client_connected", {"id": client_id, "workspace": ws}
                 )
                 logger.info(f"Adding built-in service: {service.id}")
-                builtins = await self._redis.keys(f"services:*:{client_id}:built-in@*")
+                builtins = await self._redis.keys(f"services:*|*:{client_id}:built-in@*")
             else:
                 await self._event_bus.emit(
                     "service_added", service.model_dump(mode="json")
@@ -768,7 +774,7 @@ class WorkspaceManager:
         logger.info("Getting service: %s", service_id)
 
         user_info = UserInfo.model_validate(context["user"])
-        key = f"services:*:{service_id}@{app_id}"
+        key = f"services:*|*:{service_id}@{app_id}"
         keys = await self._redis.keys(key)
         if not keys:
             raise KeyError(f"Service not found: {service_id}@{app_id}")
@@ -794,7 +800,7 @@ class WorkspaceManager:
                 f"Invalid mode: {mode}, the mode must be 'random', 'first', 'last' or 'exact'"
             )
         # if it's a public service or the user has read permission
-        if not key.startswith(b"services:public:") and not user_info.check_permission(
+        if not key.startswith(b"services:public|") and not user_info.check_permission(
             workspace, UserPermission.read
         ):
             raise PermissionError(
@@ -825,8 +831,9 @@ class WorkspaceManager:
             service.id = f"{ws}/{service.id}"
         assert ":" in service.id, "Service id info must contain ':'"
         service.app_id = service.app_id or "*"
+        service.type = service.type or "*"
         key = (
-            f"services:{service.config.visibility.value}:{service.id}@{service.app_id}"
+            f"services:{service.config.visibility.value}|{service.type}:{service.id}@{service.app_id}"
         )
         logger.info("Removing service: %s", key)
 
@@ -948,8 +955,8 @@ class WorkspaceManager:
             )
             return workspace_info
         except KeyError:
-            if load and self._workspace_loader:
-                workspace_info = await self._workspace_loader(
+            if load and self._s3_controller:
+                workspace_info = await self._s3_controller.load_workspace_info(
                     workspace, self._root_user
                 )
                 if not workspace_info:
@@ -957,11 +964,12 @@ class WorkspaceManager:
                 await self._redis.hset(
                     "workspaces", workspace_info.name, workspace_info.model_dump_json()
                 )
+                await self._s3_controller.setup_workspace(workspace_info)
                 await self._event_bus.emit(
                     "workspace_loaded", workspace_info.model_dump()
                 )
                 return workspace_info
-            elif load and not self._workspace_loader:
+            elif load and not self._s3_controller:
                 raise KeyError(
                     f"Workspace ({workspace}) not found and the workspace loader is not configured (requires s3 enabled)."
                 )
@@ -1187,6 +1195,8 @@ class WorkspaceManager:
         await self._redis.hset(
             "workspaces", workspace.name, workspace.model_dump_json()
         )
+        if self._s3_controller:
+            await self._s3_controller.save_workspace_config(workspace)
         await self._event_bus.emit("workspace_changed", workspace.model_dump())
 
     async def delete_client(
@@ -1206,7 +1216,7 @@ class WorkspaceManager:
             _cws, client_id = client_id.split("/")
             assert _cws == cws, f"Client id workspace mismatch, {_cws} != {cws}"
         # Define a pattern to match all services for the given client_id in the current workspace
-        pattern = f"services:*:{cws}/{client_id}:*@*"
+        pattern = f"services:*|*:{cws}/{client_id}:*@*"
 
         # Ensure the pattern is secure
         assert not any(
@@ -1259,7 +1269,15 @@ class WorkspaceManager:
             )
             await self._event_bus.emit(f"unload:{ws}", "Unloading workspace: " + ws)
 
-        await self._redis.hdel("workspaces", ws)
+        
+        if self._s3_controller:
+            # since the workspace will be persisted, we can remove the workspace info from the redis store
+            await self._redis.hdel("workspaces", ws)
+            await self._s3_controller.cleanup_workspace(winfo)
+        else:
+            if not ws.persistent and not ws.read_only:
+                await self._redis.hdel("workspaces", ws)
+                
         await self._event_bus.emit("workspace_unloaded", winfo.model_dump())
         logger.info("Workspace %s unloaded.", ws)
 

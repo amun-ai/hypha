@@ -12,7 +12,7 @@ Make sure you have the following installed:
 
 First, clone this repository:
 ```bash
-git clone https://amun-ai.github.com/hypha
+git clone https://amun-ai.github.com/hypha.git
 cd hypha/helm-chart
 ```
 
@@ -51,3 +51,7 @@ To uninstall the chart:
 ```bash
 helm uninstall hypha-server --namespace=hypha
 ```
+
+## Setting up on Azure Kubernetes Service (AKS)
+
+If you are deploying Hypha on Azure Kubernetes Service (AKS), you will need to configure the ingress to use the Azure Application Gateway. You can follow the instructions in the [aks-hypha.md](aks-hypha.md) file.

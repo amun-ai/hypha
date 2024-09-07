@@ -88,7 +88,7 @@ class RedisStore:
         reconnection_token_life_time=2 * 24 * 60 * 60,
     ):
         """Initialize the redis store."""
-        self._workspace_loader = None
+        self._s3_controller = None
         self._app = app
         self._codecs = {}
         self._disconnected_plugins = []
@@ -158,34 +158,6 @@ class RedisStore:
         )
         return self._root_user
 
-    async def load_or_create_workspace(self, user_info: UserInfo, workspace: str):
-        """Setup the workspace."""
-        if workspace is None:
-            workspace = user_info.get_workspace()
-
-        assert workspace != "*", "Dynamic workspace is not allowed for this endpoint"
-
-        # Ensure calls to store for workspace existence and permissions check
-        workspace_info = await self.get_workspace_info(workspace, load=True)
-
-        # If workspace does not exist, automatically create it
-        if not workspace_info:
-            if not user_info.check_permission(workspace, UserPermission.read):
-                raise PermissionError(
-                    f"User {user_info.id} does not have permission to access workspace {workspace}"
-                )
-            workspace_info = await self.register_workspace(
-                {
-                    "name": workspace,
-                    "description": f"Auto-created workspace by {user_info.id}",
-                    "persistent": False,
-                    "owners": [user_info.id],
-                    "read_only": user_info.is_anonymous,
-                }
-            )
-            logger.info(f"Created workspace: {workspace}")
-        return workspace_info
-
     def get_root_user(self):
         """Get the root user."""
         return self._root_user
@@ -202,6 +174,28 @@ class RedisStore:
             logger.exception(f"Error running startup function: {e}")
             # Stop the entire event loop if an error occurs
             asyncio.get_running_loop().stop()
+    
+    async def upgrade(self):
+        """Upgrade the store."""
+        # For versions before 0.20.34
+        old_keys = await self._redis.keys("services:{public,protected}:*")
+        # for each key
+        if old_keys:
+            logger.info("Upgrading service keys for version < 0.20.34")
+            # upgrade the redis store to convert service keys
+            # convert "services:public:*" to "services:public|{type}:*"
+            # and "services:protected:*" to "services:protected|{type}:*"
+            for key in old_keys:
+                logger.info(f"Upgrading service key: {key}")
+                service_data = await self._redis.hgetall(key)
+                service_info = ServiceInfo.from_redis_dict(service_data)
+                service_info.type = service_info.type or "*"
+                # remove the first part  the old key
+                new_key = key.replace("services:public:", f"services:public|{service_info.type}:").replace("services:protected:", f"services:protected|{service_info.type}:")
+                # set the new key
+                await self._redis.hset(new_key, mapping=service_info.to_redis_dict())
+                # remove the old key
+                await self._redis.delete(key)
 
     async def init(self, reset_redis, startup_functions=None):
         """Setup the store."""
@@ -298,7 +292,7 @@ class RedisStore:
     @schema_method
     async def list_servers(self):
         """List all servers."""
-        pattern = f"services:*:public/*:built-in@*"
+        pattern = f"services:*|*:public/*:built-in@*"
         keys = await self._redis.keys(pattern)
         clients = set()
         for key in keys:
@@ -320,7 +314,7 @@ class RedisStore:
         """Check if a client exists."""
         assert workspace is not None, "Workspace must be provided."
         assert client_id and "/" not in client_id, "Invalid client id: " + client_id
-        pattern = f"services:*:{workspace}/{client_id}:built-in@*"
+        pattern = f"services:*|*:{workspace}/{client_id}:built-in@*"
         keys = await self._redis.keys(pattern)
         return bool(keys)
 
@@ -416,7 +410,7 @@ class RedisStore:
             self._root_user,
             self._event_bus,
             self._server_info,
-            self._workspace_loader,
+            self._s3_controller,
         )
         await manager.setup()
         return manager
@@ -508,9 +502,9 @@ class RedisStore:
             workspace, user_info, overwrite=overwrite
         )
 
-    def set_workspace_loader(self, loader):
-        """Set the workspace loader."""
-        self._workspace_loader = loader
+    def set_s3_controller(self, controller):
+        """Set the s3 controller."""
+        self._s3_controller = controller
 
     def register_public_service(self, service: dict):
         """Register a service."""

@@ -17,7 +17,6 @@ from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
 from hypha.core import UserInfo, WorkspaceInfo, UserPermission
-from hypha.core.store import RedisStore
 from hypha.minio import MinioClient
 from hypha.utils import (
     generate_password,
@@ -146,7 +145,7 @@ class S3Controller:
 
     def __init__(
         self,
-        store: RedisStore,
+        store,
         endpoint_url=None,
         access_key_id=None,
         secret_access_key=None,
@@ -194,24 +193,7 @@ class S3Controller:
             self.minio_client.admin_user_add_sync("root", generate_password())
 
         store.register_public_service(self.get_s3_service())
-        store.set_workspace_loader(self._workspace_loader)
-
-        event_bus.on_local(
-            "workspace_loaded",
-            lambda w: asyncio.ensure_future(self._setup_workspace(w)),
-        )
-        event_bus.on_local(
-            "workspace_changed",
-            lambda w: asyncio.ensure_future(self._save_workspace_config(w)),
-        )
-        event_bus.on_local(
-            "workspace_unloaded",
-            lambda w: asyncio.ensure_future(self._cleanup_workspace(w)),
-        )
-        event_bus.on_local(
-            "workspace_deleted",
-            lambda w: asyncio.ensure_future(self._cleanup_workspace(w, force=True)),
-        )
+        store.set_s3_controller(self)
 
         router = APIRouter()
 
@@ -304,7 +286,7 @@ class S3Controller:
 
         store.register_router(router)
 
-    async def _workspace_loader(self, workspace_name, user_info):
+    async def load_workspace_info(self, workspace_name, user_info):
         """Load workspace from s3 record."""
         if not user_info.check_permission(workspace_name, UserPermission.read_write):
             return None
@@ -509,9 +491,9 @@ class S3Controller:
             items = await list_objects_async(s3_client, self.workspace_bucket, path)
         return items
 
-    async def _cleanup_workspace(self, workspace: dict, force=False):
+    async def cleanup_workspace(self, workspace: WorkspaceInfo, force=False):
         """Clean up workspace."""
-        workspace = WorkspaceInfo.model_validate(workspace)
+        assert isinstance(workspace, WorkspaceInfo)
         if workspace.read_only and not force:
             return
 
@@ -539,15 +521,15 @@ class S3Controller:
             except Exception as ex:
                 logger.error("Failed to remove minio group: %s, %s", workspace.name, ex)
 
-    async def _setup_workspace(self, workspace: dict):
+    async def setup_workspace(self, workspace: WorkspaceInfo):
         """Set up workspace."""
-        workspace = WorkspaceInfo.model_validate(workspace)
+        assert isinstance(workspace, WorkspaceInfo)
         if workspace.read_only:
             return
         # Save the workspace info
         # workspace_dir = self.local_log_dir / workspace.name
         # os.makedirs(workspace_dir, exist_ok=True)
-        await self._save_workspace_config(workspace.model_dump())
+        await self.save_workspace_config(workspace)
         if self.minio_client:
             # make sure we have the root user in every workspace
             await self.minio_client.admin_group_add(workspace.name, "root")
@@ -606,12 +588,11 @@ class S3Controller:
                     "Failed to attach policy to the group: %s, %s", workspace.name, ex
                 )
 
-    async def _save_workspace_config(self, workspace: dict):
+    async def save_workspace_config(self, workspace: WorkspaceInfo):
         """Save workspace."""
-        workspace = WorkspaceInfo.model_validate(workspace)
+        assert isinstance(workspace, WorkspaceInfo)
         if workspace.read_only:
             return
-        workspace = WorkspaceInfo.model_validate(workspace)
         async with self.create_client_async() as s3_client:
             response = await s3_client.put_object(
                 Body=workspace.model_dump_json().encode("utf-8"),

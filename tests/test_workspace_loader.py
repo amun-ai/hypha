@@ -11,7 +11,7 @@ from . import (
 pytestmark = pytest.mark.asyncio
 
 
-async def test_workspace_loader(fastapi_server, test_user_token):
+async def test_loading_workspace(fastapi_server, test_user_token):
     """Test workspace loader."""
     async with connect_to_server(
         {

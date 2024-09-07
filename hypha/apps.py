@@ -65,7 +65,6 @@ class ServerAppController:
         self.public_base_url = store.public_base_url
         self.event_bus = store.get_event_bus()
         self.store = store
-        # self.event_bus.on("workspace_unloaded", self._on_workspace_unloaded)
         store.register_public_service(self.get_service_api())
         self.jinja_env = Environment(
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
@@ -92,17 +91,6 @@ class ServerAppController:
             aws_secret_access_key=self.secret_access_key,
             region_name=self.region_name,
         )
-
-    async def _on_workspace_unloaded(self, workspace: dict):
-        # Shutdown the apps in the workspace
-        for app in list(self._sessions.values()):
-            if app["workspace"] == workspace["name"]:
-                logger.info(
-                    "Shutting down app %s (since workspace %s has been removed)",
-                    app["id"],
-                    workspace["name"],
-                )
-                await self.stop(app["id"])
 
     async def list_saved_workspaces(
         self,
