@@ -82,9 +82,11 @@ class WebsocketServer:
                     )
                     workspace = workspace or user_info.get_workspace()
                     logger.info(f"Created anonymous user {user_info.id}")
-                
-                workspace_info = await self.store.load_or_create_workspace(user_info, workspace)
-                
+
+                workspace_info = await self.store.load_or_create_workspace(
+                    user_info, workspace
+                )
+
                 user_info.scope = update_user_scope(
                     user_info, workspace_info, client_id
                 )

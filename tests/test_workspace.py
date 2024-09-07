@@ -96,7 +96,7 @@ async def test_workspace(fastapi_server, test_user_token):
 
     svcs = await api2.list_services(service_info.config.workspace)
     assert find_item(svcs, "name", "test_service_2")
-    
+
     svcs = await api2.list_services({"type": "test-type"})
     assert find_item(svcs, "name", "test_service_2")
 

@@ -156,6 +156,7 @@ def detected_response_type(request: Request):
     content_type = request.headers.get("content-type", "application/json")
     return content_type
 
+
 class ASGIRoutingMiddleware:
     def __init__(self, app: ASGIApp, route=None, store=None):
         self.app = app
@@ -182,7 +183,10 @@ class ASGIRoutingMiddleware:
         if not cookies:
             return None
         # Split cookies and find the access_token
-        cookie_dict = {k.strip(): v.strip() for k, v in (cookie.split('=') for cookie in cookies.split(';'))}
+        cookie_dict = {
+            k.strip(): v.strip()
+            for k, v in (cookie.split("=") for cookie in cookies.split(";"))
+        }
         return cookie_dict.get("access_token")
 
     async def __call__(self, scope, receive, send):
@@ -192,12 +196,14 @@ class ASGIRoutingMiddleware:
             path_params = params.get("path_params", {})
             if match == Match.FULL:
                 # Extract workspace and service_id from the matched path
-                workspace = path_params['workspace']
-                service_id = path_params['service_id']
-                path = path_params['path']
+                workspace = path_params["workspace"]
+                service_id = path_params["service_id"]
+                path = path_params["path"]
 
                 # Call get_service_type_id to check if it's an ASGI service
-                service_type = await self.store.get_service_type_id(workspace, service_id)
+                service_type = await self.store.get_service_type_id(
+                    workspace, service_id
+                )
 
                 # intercept the request if it's an ASGI service
                 if service_type == "asgi" or service_type == "ASGI":
@@ -206,34 +212,37 @@ class ASGIRoutingMiddleware:
                             k: scope[k]
                             for k in scope
                             if isinstance(
-                                scope[k], (str, int, float, bool, tuple, list, dict, bytes)
+                                scope[k],
+                                (str, int, float, bool, tuple, list, dict, bytes),
                             )
                         }
                         if not path.startswith("/"):
                             path = "/" + path
                         scope["path"] = path
                         scope["raw_path"] = path.encode("latin-1")
-                        
+
                         # get mode from query string
                         query = scope.get("query_string", b"").decode("utf-8")
                         if query:
-                            mode = dict([q.split("=") for q in query.split("&")]).get("mode")
+                            mode = dict([q.split("=") for q in query.split("&")]).get(
+                                "mode"
+                            )
                         else:
                             mode = None
-                            
+
                         access_token = self._get_access_token_from_cookies(scope)
                         # get authorization from headers
                         authorization = self._get_authorization_header(scope)
                         user_info = await self.store.login_optional(
-                            authorization=authorization,
-                            access_token=access_token
+                            authorization=authorization, access_token=access_token
                         )
-                        
-                    
+
                         async with self.store.get_workspace_interface(
                             workspace, user_info
                         ) as api:
-                            info = await api.get_service_info(service_id, {"mode": mode})
+                            info = await api.get_service_info(
+                                service_id, {"mode": mode}
+                            )
                             if info.type == "ASGI" or info.type == "asgi":
                                 service = await api.get_service(info.id)
                                 # Call the ASGI app with manually provided receive and send
@@ -265,6 +274,7 @@ class ASGIRoutingMiddleware:
                         return
 
         await self.app(scope, receive, send)
+
 
 class HTTPProxy:
     """A proxy for accessing services from HTTP."""
@@ -562,8 +572,12 @@ class HTTPProxy:
                 )
                 return FSFileResponse(s3_client, self.workspace_bucket, key)
 
-        app.add_middleware(ASGIRoutingMiddleware, route=norm_url("/{workspace}/apps/{service_id}/{path:path}"), store=store)
-        
+        app.add_middleware(
+            ASGIRoutingMiddleware,
+            route=norm_url("/{workspace}/apps/{service_id}/{path:path}"),
+            store=store,
+        )
+
         @app.get(norm_url("/{workspace}/apps/{service_id}/{path:path}"))
         async def run_app(
             workspace: str,

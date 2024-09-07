@@ -9,7 +9,7 @@ VERSION_INFO = json.loads(
 __version__ = VERSION_INFO["version"]
 parts = __version__.split(".")
 main_version = f"{parts[0]}.{parts[1]}.{parts[2]}"
-if len(parts)>3:
+if len(parts) > 3:
     # if the version is not a release version, we need to use the previous version
     if not parts[3].startswith("post"):
         main_version = f"{parts[0]}.{parts[1]}.{int(parts[2])-1}"
