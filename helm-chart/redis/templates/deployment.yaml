@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    app: redis
+    app.kubernetes.io/managed-by: "Helm"
+  annotations:
+    meta.helm.sh/release-name: "{{ .Release.Name }}"
+    meta.helm.sh/release-namespace: "{{ .Release.Namespace }}"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+      annotations:
+        meta.helm.sh/release-name: "{{ .Release.Name }}"
+        meta.helm.sh/release-namespace: "{{ .Release.Namespace }}"
+    spec:
+      securityContext:
+        fsGroup: 1001
+        runAsNonRoot: true
+        runAsUser: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: redis:5.0.8
+          command:
+            - "sh"
+            - "-c"
+            - |
+              redis-server --dir /data --port 6379 --bind 0.0.0.0 --appendonly yes --protected-mode no --pidfile /data/redis-6379.pid
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          resources:
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+            requests:
+              cpu: "1"
+              memory: "3Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+            runAsUser: 1001
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        - name: redis-data
+          emptyDir: {}

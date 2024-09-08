@@ -203,11 +203,34 @@ startupCommand:
     - "--host=0.0.0.0"
     - "--port=9520"
     - "--public-base-url=$(PUBLIC_BASE_URL)"
+    # - "--redis-uri=redis://redis.hypha.svc.cluster.local:6379/0"
 ```
 
 Replace all instances of `hypha.my-company.com` with your own domain.
 
-#### Step 5: Install Hypha Using Helm
+#### Step 4: Install Redis for Scaling
+
+If you want to scale Hypha horizontally, you can install Redis as a standalone service. This will allow you to run multiple Hypha server instances to serve more users.
+
+First, install the Redis Helm chart:
+
+```bash
+helm install redis ./redis --namespace hypha
+```
+
+This will install Redis in the `hypha` namespace, make sure you update the `values.yaml` file to add the `redis-uri` to the `startupCommand`:
+  
+```yaml
+startupCommand:
+  command: ["python", "-m", "hypha.server"]
+  args:
+    - "--host=0.0.0.0"
+    - "--port=9520"
+    - "--public-base-url=$(PUBLIC_BASE_URL)"
+    - "--redis-uri=redis://redis.hypha.svc.cluster.local:6379/0"
+```
+
+#### Step 6: Install Hypha Using Helm
 
 Now that the configuration is set, install Hypha using Helm (make sure you are in the `helm-chart` directory):
 

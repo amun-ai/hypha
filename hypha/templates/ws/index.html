@@ -203,18 +203,14 @@
                         <i className="fas fa-bars"></i>
                         <span className="ml-2">Menu</span>
                     </div>
-                    <div className="menu-item" onClick={() => setActivePanel('dashboard')}>
-                        <i className="fas fa-users"></i>
-                        <span className="ml-2">Dashboard</span>
-                    </div>
-                    <div className="menu-item" onClick={() => setActivePanel('workspaces')}>
-                        <i className="fas fa-building"></i>
-                        <span className="ml-2">Workspaces</span>
-                    </div>                    
                     <div className="menu-item" onClick={() => setActivePanel('services')}>
                         <i className="fas fa-cogs"></i>
                         <span className="ml-2">Services</span>
                     </div>
+                    <div className="menu-item" onClick={() => setActivePanel('clients')}>
+                        <i className="fas fa-users"></i>
+                        <span className="ml-2">Clients</span>
+                    </div>                   
                     <div className="menu-item" onClick={() => setActivePanel('apps')}>
                         <i className="fas fa-th-large"></i>
                         <span className="ml-2">Apps</span>
@@ -223,6 +219,10 @@
                         <i className="fas fa-folder"></i>
                         <span className="ml-2">Files</span>
                     </div>
+                    <div className="menu-item" onClick={() => setActivePanel('workspaces')}>
+                        <i className="fas fa-building"></i>
+                        <span className="ml-2">Workspaces</span>
+                    </div> 
                     <div className="menu-item" onClick={() => setActivePanel('development')}>
                         <i className="fas fa-code"></i>
                         <span className="ml-2">Development</span>
@@ -239,9 +239,10 @@
         const ClientCard = ({ client }) => {
             return (
                 <div className="flex flex-col items-center p-6 bg-gray-800 rounded-lg shadow-lg mb-6">
-                    <i className="fas fa-user fa-3x text-white mb-4"></i>
+                    <i className="fas fa-users fa-3x text-white mb-4"></i>
                     <div className="text-center">
                         <h3 className="text-xl font-bold">{client.split("/")[1]}</h3>
+                        <p className="text-gray-400 whitespace-pre-wrap break-words">client id: {client}</p>
                     </div>
                 </div>
             );
@@ -251,8 +252,11 @@
             return (
                 <div className="service-card">
                     <i className={`fas fa-cog fa-3x text-white mb-4`}></i>
-                    <div className="text-center">
+                    <div>
                         <h3 className="text-xl font-bold">{service.id.split(":")[1]}</h3>
+                        <p className="text-gray-400">type: {service.type}</p>
+                        <p className="text-gray-400 whitespace-pre-wrap break-words	">id: {service.id}</p>
+                        <p className="text-gray-400 whitespace-pre-wrap break-words	">{service.description}</p>
                         <button
                             className="mt-4 bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300"
                             onClick={() => onShowDetails(service)}
@@ -448,6 +452,7 @@
             const [description, setDescription] = React.useState('');
             const [persistent, setPersistent] = React.useState(true);
             const [readOnly, setReadOnly] = React.useState(false);
+            const [overwrite, setOverwrite] = React.useState(false);
             const [owners, setOwners] = React.useState('');
         
             const handleSubmit = async (event) => {
@@ -457,7 +462,7 @@
                     return;
                 }
                 const ownersArray = owners.split(',').map(owner => owner.trim());
-                await onCreateWorkspace({ name, description, owners: ownersArray, persistent, read_only: readOnly });
+                await onCreateWorkspace({ name, description, owners: ownersArray, persistent, read_only: readOnly }, overwrite);
                 onClose(); // Close the modal after creating the workspace
             };
             
@@ -471,7 +476,9 @@
                         <div className="modal-body">
                             <form onSubmit={handleSubmit}>
                                 <div className="mb-4">
-                                    <label className="block text-sm font-medium text-gray-200">Name</label>
+                                    <label className="block text-sm font-medium text-gray-200">Name
+                                        <p className="text-gray-500">A workspace name must contain at least one hyphen (e.g. my-workspace), in lowercase letters, numbers and hyphens only.</p>
+                                    </label>
                                     <input
                                         type="text"
                                         value={name}
@@ -481,7 +488,9 @@
                                     />
                                 </div>
                                 <div className="mb-4">
-                                    <label className="block text-sm font-medium text-gray-200">Description</label>
+                                    <label className="block text-sm font-medium text-gray-200">Description
+                                        <p className="text-gray-500">A brief description of the workspace, this will be displayed in the workspace list.</p>
+                                    </label>
                                     <input
                                         type="text"
                                         value={description}
@@ -491,7 +500,9 @@
                                     />
                                 </div>
                                 <div className="mb-4">
-                                    <label className="block text-sm font-medium text-gray-200">Owners (comma-separated)</label>
+                                    <label className="block text-sm font-medium text-gray-200">Owners (comma-separated)
+                                        <p className="text-gray-500">A list of owners who can manage the workspace, it must be a comma-separated list of user ids or email addresses.</p>
+                                    </label>
                                     <input
                                         type="text"
                                         value={owners}
@@ -500,7 +511,9 @@
                                     />
                                 </div>
                                 <div className="mb-4">
-                                    <label className="block text-sm font-medium text-gray-200">Persistent</label>
+                                    <label className="block text-sm font-medium text-gray-200">Persistent
+                                        <p className="text-gray-500">If checked, the workspace will be persistent and will not be deleted after a period of inactivity.</p>
+                                    </label>
                                     <input
                                         type="checkbox"
                                         checked={persistent}
@@ -514,6 +527,17 @@
                                         type="checkbox"
                                         checked={readOnly}
                                         onChange={(e) => setReadOnly(e.target.checked)}
+                                        className="ml-2"
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Overwrite
+                                        <p className="text-gray-500">If checked, the workspace will be overwritten if it already exists.</p>
+                                    </label>
+                                    <input
+                                        type="checkbox"
+                                        checked={overwrite}
+                                        onChange={(e) => setOverwrite(e.target.checked)}
                                         className="ml-2"
                                     />
                                 </div>
@@ -547,9 +571,9 @@
                 fetchWorkspaces();
             }, [panel, ws]);
 
-            const handleCreateWorkspace = async (workspaceData) => {
+            const handleCreateWorkspace = async (workspaceData, overwrite) => {
                 try {
-                    await ws.createWorkspace({ ...workspaceData });
+                    await ws.createWorkspace({ ...workspaceData }, overwrite);
                     setWorkspaces(await ws.listWorkspaces());
                 } catch (error) {
                     alert(`Failed to create workspace: ${error.message}`);
@@ -579,10 +603,10 @@
                 <div className={`main-content transition-all duration-300 ${isCollapsed ? 'ml-16' : 'ml-64'}`}>
                     <h1 className="text-4xl font-bold capitalize">{panel}</h1>
         
-                    {panel === 'dashboard' && (
+                    {panel === 'clients' && (
                         <>
                             <p className="text-xl text-gray-400 mt-4">
-                                Dashboard for workspace: <code>{workspaceName}</code>
+                                Clients in workspace: <code>{workspaceName}</code>
                             </p>
                             <div className="grid grid-cols-1 gap-8 mt-6">
                                 <h2 className="text-2xl font-bold">Clients</h2>
@@ -711,7 +735,7 @@
 
         const App = () => {
             const [isCollapsed, setIsCollapsed] = React.useState(false);
-            const [activePanel, setActivePanel] = React.useState('dashboard');
+            const [activePanel, setActivePanel] = React.useState('services');
             const [clients, setClients] = React.useState([]);
             const [services, setServices] = React.useState([]);
             const [apps, setApps] = React.useState([]);
@@ -740,7 +764,7 @@
                     if (!ws) {
                         return;
                     }
-                    if (activePanel === 'dashboard') {
+                    if (activePanel === 'clients') {
                         setClients(await ws.listClients());
                     } else if (activePanel === 'services') {
                         setServices(await ws.listServices(config.workspace));

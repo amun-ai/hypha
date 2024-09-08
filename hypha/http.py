@@ -568,17 +568,6 @@ class HTTPProxy:
             user_info = Depends(store.login_optional),
         ):
             """Route for checking details of an app."""
-            if user_info.check_permission(workspace, UserPermission.read):
-                raise JSONResponse(
-                    status_code=403,
-                    content={
-                        "success": False,
-                        "detail": (
-                            f"{user_info['username']} has no"
-                            f" permission to access {workspace}"
-                        ),
-                    },
-                )
             service_type = await self.store.get_service_type_id(
                 workspace, service_id
             )
