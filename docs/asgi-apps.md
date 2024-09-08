@@ -270,6 +270,159 @@ await main()
 
 Just like in the standard Python environment, the application will be accessible through the URL provided by the Hypha server.
 
+## Launch OpenAI Chat Server with Hypha
+
+Hypha provides a convenient way to emulate an OpenAI Chat server by allowing developers to register custom models or agents with the platform and serve them using the OpenAI-compatible API. This feature allows you to connect any language model or text generator to Hypha and provide a seamless interface for OpenAI API-compatible clients. This includes popular chat clients like [bettergpt.chat](https://bettergpt.chat/) or Python clients using the OpenAI API.
+
+By leveraging the Hypha platform, developers can deploy their custom models and enable clients to interact with them via a familiar API, reducing friction when integrating custom AI models into existing workflows. This flexibility opens up various possibilities, such as creating custom chatbots, domain-specific language models, or even agents capable of handling specific tasks.
+
+### How It Works
+
+Using Hypha, you can register any text-generating function as a model, expose it using the OpenAI Chat API, and serve it through a Hypha endpoint. This allows clients to interact with your custom model just like they would with OpenAI's models.
+
+With the Hypha OpenAI Chat Server, you can:
+- Register any LLM or custom text generation function under a `model_id`.
+- Serve the model with an OpenAI-compatible API.
+- Allow clients (such as `bettergpt.chat` or Python OpenAI clients) to interact with your custom model using standard API calls.
+- Secure access to your models with token-based authentication.
+
+### Example: Setting Up a Custom OpenAI Chat Server
+
+#### Step 1: Define a Text Generation Function
+
+Start by creating a text generator function that will emulate a language model. In this example, we will create a simple random markdown generator:
+
+```python
+import random
+from hypha_rpc.utils.serve import create_openai_chat_server
+
+# Random text generator for Markdown with cat images
+async def random_markdown_generator(request):
+    words = [
+        "hello",
+        "world",
+        "foo",
+        "bar",
+        "chatbot",
+        "test",
+        "api",
+        "response",
+        "markdown",
+    ]
+    length = request.get("max_tokens", 50)
+
+    for _ in range(length // 5):  # Insert random text every 5 tokens
+        markdown_content = ""
+        # Add random text
+        markdown_content += f"{random.choice(words)} "
+
+        # Occasionally add a cat image in Markdown format
+        if random.random() < 0.3:  # 30% chance to insert an image
+            markdown_content += (
+                f"\n![A random cat](https://cataas.com/cat?{random.randint(1, 1000)})\n"
+            )
+        if random.random() < 0.1:  # 10% chance to insert a cat video
+            markdown_content += f'\n<iframe width="560" height="315" src="https://www.youtube.com/embed/7TavVZMewpY" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>\n'
+        yield markdown_content
+
+# Register the model
+app = create_openai_chat_server({"cat-chat-model": random_markdown_generator})
+```
+
+#### Step 2: Serve the OpenAI Chat Server
+
+You can now serve the model through Hypha using the following steps:
+
+1. **Start the server** by registering the ASGI app with Hypha, specifying the model and server details.
+
+```bash
+python -m hypha_rpc.utils.serve myapp:app --id=openai-chat --name=OpenAIChat --server-url=https://hypha.aicell.io --workspace=my-workspace --token=your_token_here
+```
+
+2. This will expose your `random_markdown_generator` function as the `cat-chat-model` through the OpenAI API.
+
+### Example API Usage with OpenAI-Compatible Clients
+
+Once your OpenAI-compatible chat server is running, it can be accessed by any client that supports OpenAI's API, including Python OpenAI SDK or web-based clients like [bettergpt.chat](https://bettergpt.chat).
+
+#### Step 1: Generating a Token
+
+In your application, you can generate a token for authentication:
+
+```python
+server = await connect_to_server({"server_url": "https://hypha.aicell.io"})
+token = await server.generate_token()
+```
+
+#### Step 2: Interacting with the Model via OpenAI Python Client
+
+You can use the generated token and set the custom OpenAI API endpoint URL to interact with your custom model:
+
+```python
+import openai
+
+# Use the custom OpenAI server endpoint
+openai.api_base = f"{WS_SERVER_URL}/{workspace}/apps/openai-chat/v1"
+openai.api_key = token
+
+# Example request
+response = openai.ChatCompletion.create(
+    model="cat-chat-model",
+    messages=[{"role": "user", "content": "Show me a cat image!"}],
+    temperature=0.7,
+    max_tokens=100
+)
+
+print(response.choices[0].message['content'])
+```
+
+In this example, the custom model `cat-chat-model` will generate random markdown text along with cat images.
+
+#### Step 3: Using Web-Based Clients (e.g., bettergpt.chat)
+
+To use a web-based client like [bettergpt.chat](https://bettergpt.chat), simply set the API endpoint to your custom Hypha URL and input the generated token.
+
+- **API Endpoint**: `https://hypha.aicell.io/{workspace}/apps/openai-chat/v1`
+- **Token**: (Use the token generated above)
+
+This allows you to interact with your custom language model through the web client interface, just like you would with OpenAI models.
+
+### Advantages of Using Hypha for OpenAI Chat Server
+
+1. **Flexibility**: You can register any text generator, including fine-tuned LLMs, agents, or simple functions, and serve them through the OpenAI-compatible API.
+   
+2. **Integration**: Once registered, your model can be used by any OpenAI API-compatible client, enabling seamless integration with existing applications, SDKs, or platforms.
+
+3. **Security**: By utilizing Hypha's token-based authentication, you ensure that only authorized clients can access your custom models, enhancing security.
+
+4. **No Infrastructure Overhead**: With Hypha managing the server infrastructure, you can focus on developing models and generating responses without worrying about hosting, scaling, or maintaining servers.
+
+### Example: Using Multiple Models
+
+Hypha also allows you to register and serve multiple models concurrently:
+
+```python
+# Define another generator function
+async def basic_text_generator(request):
+    messages = ["This is a basic response.", "Hello from the chat model!", "Enjoy your conversation!"]
+    yield random.choice(messages)
+
+# Register multiple models
+model_registry = {
+    "cat-chat-model": random_markdown_generator,
+    "basic-chat-model": basic_text_generator
+}
+
+# Serve the models through OpenAI API
+app = create_openai_chat_server(model_registry)
+```
+
+In this case, you can interact with either `cat-chat-model` or `basic-chat-model` by specifying the `model_id` in the API requests.
+
 ## Conclusion
 
-Hypha offers a versatile and powerful way to serve ASGI applications, whether through the convenient `hypha_rpc.utils.serve` utility, by directly registering your ASGI service, or even by running FastAPI directly in the browser with Pyodide. By removing the need for traditional server setups, Hypha enables you to focus on your application without the overhead of managing infrastructure. Whether you’re deploying in a local environment or directly in a browser, Hypha simplifies the process, making it easier than ever to share your ASGI apps with the world. The added flexibility of direct service registration and browser-based FastAPI apps expands the possibilities for deploying and sharing your web applications.
+Hypha provides a flexible, scalable, and powerful platform for serving custom ASGI applications and emulating OpenAI-compatible chat servers. Whether you're using the `hypha_rpc.utils.serve` utility to deploy ASGI apps, directly registering ASGI services, or running FastAPI in the browser via Pyodide, Hypha removes the complexities of traditional server setups, allowing you to focus on developing your applications without worrying about infrastructure management.
+
+Additionally, Hypha's ability to emulate an OpenAI Chat Server opens new opportunities for serving custom language models and chatbots. By providing an OpenAI-compatible API, Hypha enables seamless integration with Python clients or web-based platforms like [bettergpt.chat](https://bettergpt.chat). This makes it easy to deploy, scale, and secure your models for a wide range of use cases, from research to production-ready solutions.
+
+In summary, Hypha simplifies the deployment process, whether you're serving ASGI applications or custom AI models, and expands the possibilities for sharing, scaling, and accessing web applications and intelligent agents globally.
