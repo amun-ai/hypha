@@ -125,7 +125,7 @@ async def test_workspace(fastapi_server, test_user_token):
         assert "Permission denied" in str(e)
 
     ws2 = await api.get_workspace_info("my-new-test-workspace")
-    assert ws.name == ws2.name
+    assert ws.id == ws2.id
 
     await api.disconnect()
 

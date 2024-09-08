@@ -135,7 +135,7 @@ async def test_http_proxy(
         }
     ) as root_api:
         workspaces = await root_api.list_workspaces()
-        assert workspace in [w.name for w in workspaces]
+        assert workspace in [w.id for w in workspaces]
 
     response = requests.get(
         f"{SERVER_URL}/{workspace}",

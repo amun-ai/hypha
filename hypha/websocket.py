@@ -91,19 +91,19 @@ class WebsocketServer:
                     user_info, workspace_info, client_id
                 )
                 if not user_info.check_permission(
-                    workspace_info.name, UserPermission.read
+                    workspace_info.id, UserPermission.read
                 ):
                     logger.error(f"Permission denied for workspace: {workspace}")
                     raise PermissionError(
                         f"Permission denied for workspace: {workspace}"
                     )
-                workspace = workspace_info.name
+                workspace = workspace_info.id
 
                 assert workspace_info and workspace and client_id, (
-                    "Failed to authenticate user to workspace: %s" % workspace_info.name
+                    "Failed to authenticate user to workspace: %s" % workspace_info.id
                 )
                 # We operate as the root user to remove and add clients
-                await self.check_client(client_id, workspace_info.name, user_info)
+                await self.check_client(client_id, workspace_info.id, user_info)
             except Exception as e:
                 reason = f"Failed to establish connection: {str(e)}"
                 await self.disconnect(
@@ -115,7 +115,7 @@ class WebsocketServer:
 
             try:
                 await self.establish_websocket_communication(
-                    websocket, workspace_info.name, client_id, user_info
+                    websocket, workspace_info.id, client_id, user_info
                 )
             except RuntimeError as exp:
                 # this happens when the websocket is closed

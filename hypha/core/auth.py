@@ -296,19 +296,19 @@ def update_user_scope(
 ):
     """Update the user scope for a workspace."""
     user_info.scope = user_info.scope or ScopeInfo()
-    permission = user_info.get_permission(workspace_info.name)
+    permission = user_info.get_permission(workspace_info.id)
     ws_scopes = user_info.scope.workspaces.copy()
     if not permission:
         # infer permission from workspace
         if (
-            user_info.get_workspace() == workspace_info.name
+            user_info.get_workspace() == workspace_info.id
             or user_info.email in workspace_info.owners
             or user_info.id in workspace_info.owners
         ):
             permission = UserPermission.admin
 
     if permission:
-        ws_scopes[workspace_info.name] = permission
+        ws_scopes[workspace_info.id] = permission
 
     if "admin" in user_info.roles:
         ws_scopes["*"] = UserPermission.admin
@@ -316,7 +316,7 @@ def update_user_scope(
     return create_scope(
         workspaces=ws_scopes,
         client_id=client_id,
-        current_workspace=workspace_info.name,
+        current_workspace=workspace_info.id,
         extra_scopes=user_info.scope.extra_scopes,
     )
 

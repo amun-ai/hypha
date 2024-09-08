@@ -225,11 +225,11 @@ class ServerAppController:
         workspace_info = await self.store.get_workspace_info(workspace, load=True)
         assert workspace_info, f"Workspace {workspace} not found."
         if not user_info.check_permission(
-            workspace_info.name, UserPermission.read_write
+            workspace_info.id, UserPermission.read_write
         ):
             raise Exception(
                 f"User {user_info.id} does not have permission"
-                f" to install apps in workspace {workspace_info.name}"
+                f" to install apps in workspace {workspace_info.id}"
             )
 
         if source.startswith("http"):
@@ -303,21 +303,21 @@ class ServerAppController:
 
         app_id = f"{mhash}"
 
-        public_url = f"{self.public_base_url}/{workspace_info.name}/server-apps/{app_id}/{entry_point}"
+        public_url = f"{self.public_base_url}/{workspace_info.id}/server-apps/{app_id}/{entry_point}"
         card_obj = convert_config_to_card(config, app_id, public_url)
         card_obj.update(
             {
-                "local_url": f"{self.local_base_url}/{workspace_info.name}/server-apps/{app_id}/{entry_point}",
+                "local_url": f"{self.local_base_url}/{workspace_info.id}/server-apps/{app_id}/{entry_point}",
                 "public_url": public_url,
             }
         )
         card = Card.model_validate(card_obj)
         assert card.entry_point, "Entry point not found in the card."
         await self.save_application(
-            workspace_info.name, app_id, card, source, card.entry_point, attachments
+            workspace_info.id, app_id, card, source, card.entry_point, attachments
         )
         async with self.store.get_workspace_interface(
-            workspace_info.name, user_info
+            workspace_info.id, user_info
         ) as ws:
             await ws.install_application(card.model_dump(), force=force)
         try:
@@ -348,21 +348,21 @@ class ServerAppController:
         assert "/" not in app_id, (
             "Invalid app id: " + app_id + ", should not contain '/'"
         )
-        workspace_name = context["ws"]
+        workspace_id = context["ws"]
         mhash = app_id
-        workspace = await self.store.get_workspace_info(workspace_name, load=True)
+        workspace = await self.store.get_workspace_info(workspace_id, load=True)
         assert workspace, f"Workspace {workspace} not found."
         user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(workspace.name, UserPermission.read_write):
+        if not user_info.check_permission(workspace.id, UserPermission.read_write):
             raise Exception(
                 f"User {user_info.id} does not have permission"
-                f" to uninstall apps in workspace {workspace.name}"
+                f" to uninstall apps in workspace {workspace.id}"
             )
-        async with self.store.get_workspace_interface(workspace.name, user_info) as ws:
+        async with self.store.get_workspace_interface(workspace.id, user_info) as ws:
             await ws.uninstall_application(app_id)
 
         async with self.create_client_async() as s3_client:
-            app_dir = f"{self.workspace_etc_dir}/{workspace.name}/{mhash}/"
+            app_dir = f"{self.workspace_etc_dir}/{workspace.id}/{mhash}/"
             await remove_objects_async(s3_client, self.workspace_bucket, app_dir)
 
     async def launch(
