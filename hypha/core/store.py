@@ -176,6 +176,7 @@ class RedisStore:
                 )
             workspace_info = await self.register_workspace(
                 {
+                    "id": workspace,
                     "name": workspace,
                     "description": f"Workspace for user {user_info.id}",
                     "persistent": not user_info.is_anonymous,
@@ -248,6 +249,7 @@ class RedisStore:
             await self.register_workspace(
                 WorkspaceInfo.model_validate(
                     {
+                        "id": self._root_user.get_workspace(),
                         "name": self._root_user.get_workspace(),
                         "description": "Root workspace",
                         "persistent": True,
@@ -264,6 +266,7 @@ class RedisStore:
             await self.register_workspace(
                 WorkspaceInfo.model_validate(
                     {
+                        "id": "public",
                         "name": "public",
                         "description": "Public workspace",
                         "persistent": True,

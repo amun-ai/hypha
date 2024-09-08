@@ -266,6 +266,7 @@ class ServiceTypeInfo(BaseModel):
 class WorkspaceInfo(BaseModel):
     """Represent a workspace."""
 
+    id: Optional[str] = None  # we will use name as id if not provided
     name: str
     description: Optional[str] = None
     persistent: Optional[bool] = False
@@ -277,6 +278,11 @@ class WorkspaceInfo(BaseModel):
     applications: Optional[Dict[str, Any]] = {}
     service_types: Optional[Dict[str, ServiceTypeInfo]] = {}
     config: Optional[Dict[str, Any]] = {}
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        if self.id is None:
+            self.id = self.name
 
     @classmethod
     def model_validate(cls, data):

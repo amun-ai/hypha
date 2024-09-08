@@ -230,7 +230,7 @@ class S3Controller:
                         "detail": f"Workspace does not exists: {workspace}",
                     },
                 )
-            if not user_info.check_permission(ws.name, UserPermission.read_write):
+            if not user_info.check_permission(ws.id, UserPermission.read_write):
                 return JSONResponse(
                     status_code=403,
                     content={
@@ -261,7 +261,7 @@ class S3Controller:
                         "detail": f"Workspace does not exists: {workspace}",
                     },
                 )
-            if not user_info.check_permission(ws.name, UserPermission.read_write):
+            if not user_info.check_permission(ws.id, UserPermission.read_write):
                 return JSONResponse(
                     status_code=403,
                     content={
@@ -502,24 +502,24 @@ class S3Controller:
             remove_objects_sync(
                 self.s3client,
                 self.workspace_bucket,
-                f"{self.workspace_etc_dir}/{workspace.name}/",
+                f"{self.workspace_etc_dir}/{workspace.id}/",
             )
             # remove files
             remove_objects_sync(
-                self.s3client, self.workspace_bucket, workspace.name + "/"
+                self.s3client, self.workspace_bucket, workspace.id + "/"
             )
 
         if self.minio_client:
             try:
-                group_info = await self.minio_client.admin_group_info(workspace.name)
+                group_info = await self.minio_client.admin_group_info(workspace.id)
                 # remove all the members
                 await self.minio_client.admin_group_remove(
-                    workspace.name, group_info["members"]
+                    workspace.id, group_info["members"]
                 )
                 # now remove the empty group
-                await self.minio_client.admin_group_remove(workspace.name)
+                await self.minio_client.admin_group_remove(workspace.id)
             except Exception as ex:
-                logger.error("Failed to remove minio group: %s, %s", workspace.name, ex)
+                logger.error("Failed to remove minio group: %s, %s", workspace.id, ex)
 
     async def setup_workspace(self, workspace: WorkspaceInfo):
         """Set up workspace."""
@@ -527,13 +527,13 @@ class S3Controller:
         if workspace.read_only:
             return
         # Save the workspace info
-        # workspace_dir = self.local_log_dir / workspace.name
+        # workspace_dir = self.local_log_dir / workspace.id
         # os.makedirs(workspace_dir, exist_ok=True)
         await self.save_workspace_config(workspace)
         if self.minio_client:
             # make sure we have the root user in every workspace
-            await self.minio_client.admin_group_add(workspace.name, "root")
-            policy_name = "policy-ws-" + workspace.name
+            await self.minio_client.admin_group_add(workspace.id, "root")
+            policy_name = "policy-ws-" + workspace.id
             # policy example:
             # https://aws.amazon.com/premiumsupport/knowledge-center/iam-s3-user-specific-folder/
             await self.minio_client.admin_policy_create(
@@ -554,7 +554,7 @@ class S3Controller:
                             "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
                             "Condition": {
                                 "StringEquals": {
-                                    "s3:prefix": ["", f"{workspace.name}/"],
+                                    "s3:prefix": ["", f"{workspace.id}/"],
                                     "s3:delimiter": ["/"],
                                 }
                             },
@@ -565,7 +565,7 @@ class S3Controller:
                             "Effect": "Allow",
                             "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
                             "Condition": {
-                                "StringLike": {"s3:prefix": [f"{workspace.name}/*"]}
+                                "StringLike": {"s3:prefix": [f"{workspace.id}/*"]}
                             },
                         },
                         {
@@ -573,7 +573,7 @@ class S3Controller:
                             "Action": ["s3:*"],
                             "Effect": "Allow",
                             "Resource": [
-                                f"arn:aws:s3:::{self.workspace_bucket}/{workspace.name}/*"
+                                f"arn:aws:s3:::{self.workspace_bucket}/{workspace.id}/*"
                             ],
                         },
                     ],
@@ -581,11 +581,11 @@ class S3Controller:
             )
             try:
                 await self.minio_client.admin_policy_attach(
-                    policy_name, group=workspace.name
+                    policy_name, group=workspace.id
                 )
             except Exception as ex:
                 logger.error(
-                    "Failed to attach policy to the group: %s, %s", workspace.name, ex
+                    "Failed to attach policy to the group: %s, %s", workspace.id, ex
                 )
 
     async def save_workspace_config(self, workspace: WorkspaceInfo):
@@ -597,12 +597,12 @@ class S3Controller:
             response = await s3_client.put_object(
                 Body=workspace.model_dump_json().encode("utf-8"),
                 Bucket=self.workspace_bucket,
-                Key=f"{self.workspace_etc_dir}/{workspace.name}/manifest.json",
+                Key=f"{self.workspace_etc_dir}/{workspace.id}/manifest.json",
             )
             assert (
                 "ResponseMetadata" in response
                 and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-            ), f"Failed to save workspace ({workspace.name}) manifest: {response}"
+            ), f"Failed to save workspace ({workspace.id}) manifest: {response}"
 
     async def generate_credential(self, context: dict = None):
         """Generate credential."""
@@ -613,7 +613,7 @@ class S3Controller:
         if ws.read_only:
             raise Exception("Permission denied: workspace is read-only")
         user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws.name, UserPermission.read_write):
+        if not user_info.check_permission(ws.id, UserPermission.read_write):
             raise PermissionError(
                 f"User {user_info.id} does not have write"
                 f" permission to the workspace {workspace}"

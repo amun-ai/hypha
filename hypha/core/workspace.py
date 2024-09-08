@@ -3,7 +3,7 @@ import json
 import logging
 import time
 import sys
-from typing import Optional, Union, List, Any
+from typing import Optional, Union, List, Any, Dict
 from contextlib import asynccontextmanager
 import random
 
@@ -122,7 +122,7 @@ class WorkspaceManager:
         )
         return summary
 
-    def _validate_workspace_name(self, name, with_hyphen=True):
+    def _validate_workspace_id(self, name, with_hyphen=True):
         """Validate the workspace name."""
         if not name:
             raise ValueError("Workspace name must not be empty.")
@@ -140,39 +140,81 @@ class WorkspaceManager:
             )
         return name
 
-    async def _bookmark_workspace(
+    @schema_method
+    async def bookmark(
         self,
-        workspace: WorkspaceInfo,
-        user_info: UserInfo,
+        item: dict = Field(..., description="bookmark item"),
         context: Optional[dict] = None,
     ):
-        """Bookmark the workspace for the user."""
-        assert isinstance(workspace, WorkspaceInfo) and isinstance(user_info, UserInfo)
+        """Bookmark workspace or service to the user's workspace."""
+        user_info = UserInfo.model_validate(context["user"])
+        assert "bookmark_type" in item, "Bookmark type must be provided."
         user_workspace = await self.load_workspace_info(user_info.get_workspace())
         user_workspace.config = user_workspace.config or {}
         if "bookmarks" not in user_workspace.config:
             user_workspace.config["bookmarks"] = []
-        for bookmark in user_workspace.config["bookmarks"]:
-            if bookmark["name"] == workspace.name:
-                return
-        user_workspace.config["bookmarks"].append(
-            {
-                "type": "workspace",
-                "name": workspace.name,
-                "description": workspace.description,
-            }
-        )
+        if item["bookmark_type"] == "workspace":
+            workspace = item["id"]
+            workspace = await self.load_workspace_info(workspace)
+            user_workspace.config["bookmarks"] = [
+                b for b in user_workspace.config["bookmarks"] if b["id"] != workspace.id
+            ]
+            user_workspace.config["bookmarks"].append(
+                {
+                    "bookmark_type": "workspace",
+                    "id": workspace.id,
+                    "name": workspace.name,
+                    "description": workspace.description,
+                }
+            )
+        elif item["bookmark_type"] == "service":
+            service_id = item["id"]
+
+            service_info = await self.get_service_info(service_id, context=context)
+            user_workspace.config["bookmarks"] = [
+                b
+                for b in user_workspace.config["bookmarks"]
+                if b["id"] != service_info.id
+            ]
+            user_workspace.config["bookmarks"].append(
+                {
+                    "bookmark_type": "service",
+                    "id": service_info.id,
+                    "name": service_info.name,
+                    "description": service_info.description,
+                    "config": service_info.config,
+                }
+            )
+        else:
+            raise ValueError(f"Invalid bookmark type: {item['bookmark_type']}")
         await self._update_workspace(user_workspace, user_info)
 
-    async def _get_bookmarked_workspaces(
-        self, user_info: UserInfo, context: Optional[dict] = None
-    ) -> List[dict]:
-        """Get the bookmarked workspaces for the user."""
-        try:
-            user_workspace = await self.load_workspace_info(user_info.get_workspace())
-            return user_workspace.config.get("bookmarks", [])
-        except KeyError:
-            return []
+    @schema_method
+    async def unbookmark(
+        self,
+        item: dict = Field(..., description="bookmark item to be removed"),
+        context: Optional[dict] = None,
+    ):
+        """Unbookmark workspace or service from the user's workspace."""
+        user_info = UserInfo.model_validate(context["user"])
+        assert "bookmark_type" in item, "Bookmark type must be provided."
+        user_workspace = await self.load_workspace_info(user_info.get_workspace())
+        user_workspace.config = user_workspace.config or {}
+        if "bookmarks" not in user_workspace.config:
+            user_workspace.config["bookmarks"] = []
+        if item["bookmark_type"] == "workspace":
+            workspace = item["id"]
+            user_workspace.config["bookmarks"] = [
+                b for b in user_workspace.config["bookmarks"] if b["id"] != workspace
+            ]
+        elif item["bookmark_type"] == "service":
+            service_id = item["id"]
+            user_workspace.config["bookmarks"] = [
+                b for b in user_workspace.config["bookmarks"] if b["id"] != service_id
+            ]
+        else:
+            raise ValueError(f"Invalid bookmark type: {item['bookmark_type']}")
+        await self._update_workspace(user_workspace, user_info)
 
     @schema_method
     async def create_workspace(
@@ -185,7 +227,9 @@ class WorkspaceManager:
         assert context is not None
         if isinstance(config, WorkspaceInfo):
             config = config.model_dump()
-        assert "name" in config, "Workspace name must be provided."
+        assert "id" in config, "Workspace id must be provided."
+        if not config.get("name"):
+            config["name"] = config["id"]
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         if user_info.is_anonymous:
@@ -203,9 +247,7 @@ class WorkspaceManager:
         workspace = WorkspaceInfo.model_validate(config)
         if user_info.id not in workspace.owners:
             workspace.owners.append(user_info.id)
-        self._validate_workspace_name(
-            workspace.name, with_hyphen=user_info.id != "root"
-        )
+        self._validate_workspace_id(workspace.id, with_hyphen=user_info.id != "root")
         # make sure we add the user's email to owners
         _id = user_info.email or user_info.id
         if _id not in workspace.owners:
@@ -213,23 +255,24 @@ class WorkspaceManager:
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
 
         # user workspace, let's store all the created workspaces
-        if user_info.get_workspace() == workspace.name:
+        if user_info.get_workspace() == workspace.id:
             workspace.config = workspace.config or {}
             workspace.config["bookmarks"] = [
                 {
-                    "type": "workspace",
-                    "name": workspace.name,
+                    "bookmark_type": "workspace",
+                    "id": workspace.id,
+                    "name": workspace.id,
                     "description": workspace.description,
                 }
             ]
-        await self._redis.hset(
-            "workspaces", workspace.name, workspace.model_dump_json()
-        )
+        await self._redis.hset("workspaces", workspace.id, workspace.model_dump_json())
         if self._s3_controller:
             await self._s3_controller.setup_workspace(workspace)
         await self._event_bus.emit("workspace_loaded", workspace.model_dump())
-        if user_info.get_workspace() != workspace.name:
-            await self._bookmark_workspace(workspace, user_info, context=context)
+        if user_info.get_workspace() != workspace.id:
+            await self.bookmark(
+                {"bookmark_type": "workspace", "id": workspace.id}, context=context
+            )
         return workspace.model_dump()
 
     @schema_method
@@ -966,7 +1009,7 @@ class WorkspaceManager:
                 if not workspace_info:
                     raise KeyError(f"Workspace not found: {workspace}")
                 await self._redis.hset(
-                    "workspaces", workspace_info.name, workspace_info.model_dump_json()
+                    "workspaces", workspace_info.id, workspace_info.model_dump_json()
                 )
                 await self._s3_controller.setup_workspace(workspace_info)
                 await self._event_bus.emit(
@@ -1026,7 +1069,7 @@ class WorkspaceManager:
         workspace = await self.load_workspace_info(workspace)
         if app_id not in workspace.applications:
             raise KeyError(
-                f"Application id `{app_id}` not found in workspace {workspace.name}"
+                f"Application id `{app_id}` not found in workspace {workspace.id}"
             )
 
         # Make sure the service_id is in the application services
@@ -1142,36 +1185,64 @@ class WorkspaceManager:
     @schema_method
     async def list_workspaces(
         self,
-        type: str = Field(None, description="Workspace type (not implemented yet)"),
+        match: dict = Field(None, description="Match pattern for filtering workspaces"),
+        page: int = Field(1, description="Page number for pagination"),
+        page_size: int = Field(10, description="Number of items per page"),
         context=None,
-    ):
-        """Get all workspaces."""
+    ) -> List[Dict[str, Any]]:
+        """Get all workspaces with pagination."""
         self.validate_context(context, permission=UserPermission.read)
         user_info = UserInfo.model_validate(context["user"])
-        workspace_info = await self._redis.hget("workspaces", context["ws"])
-        if workspace_info is None:
-            logger.warning(
-                "Client is operating in a non-existing workspace: %s", context["ws"]
-            )
-            return []
-        else:
-            workspace = WorkspaceInfo.model_validate(
-                json.loads(workspace_info.decode())
-            )
-        workspaces = await self._get_bookmarked_workspaces(user_info, context=context)
-        workspaces = [
-            {"name": w["name"], "description": w["description"]}
-            for w in workspaces
-            if w["name"] != workspace.name
-        ]
-        workspaces = workspaces + [
-            {
-                "name": workspace.name,
-                "description": workspace.description,
-            }
-        ]
-        # remove duplicates
-        workspaces = [dict(t) for t in {tuple(d.items()) for d in workspaces}]
+
+        # Validate page and page_size
+        if page < 1:
+            raise ValueError("Page number must be greater than 0")
+        if page_size < 1 or page_size > 256:
+            raise ValueError("Page size must be greater than 0 and less than 256")
+
+        cursor = 0
+        workspaces = []
+        start_index = (page - 1) * page_size
+        end_index = page * page_size
+        current_index = 0
+
+        while True:
+            cursor, keys = await self._redis.hscan("workspaces", cursor)
+            for ws_id in keys:
+                ws_data = await self._redis.hget("workspaces", ws_id)
+                if ws_data:
+                    ws_data = ws_data.decode()
+                    workspace_info = WorkspaceInfo.model_validate(json.loads(ws_data))
+
+                    if (
+                        user_info.check_permission(
+                            workspace_info.id, UserPermission.read
+                        )
+                        or user_info.id in workspace_info.owners
+                        or user_info.email in workspace_info.owners
+                    ):
+                        match = match or {}
+                        if not all(
+                            getattr(workspace_info, k, None) == v
+                            for k, v in match.items()
+                        ):
+                            continue
+                        if start_index <= current_index < end_index:
+                            workspaces.append(
+                                {
+                                    "id": workspace_info.id,
+                                    "name": workspace_info.id,
+                                    "description": workspace_info.description,
+                                    "read_only": workspace_info.read_only,
+                                    "persistent": workspace_info.persistent,
+                                    "owners": workspace_info.owners,
+                                }
+                            )
+                        current_index += 1
+                        if current_index >= end_index:
+                            return workspaces
+            if cursor == 0:
+                break
         return workspaces
 
     async def _update_workspace(
@@ -1179,26 +1250,24 @@ class WorkspaceManager:
     ):
         """Update the workspace config."""
         assert isinstance(workspace, WorkspaceInfo) and isinstance(user_info, UserInfo)
-        if not user_info.check_permission(workspace.name, UserPermission.read_write):
+        if not user_info.check_permission(workspace.id, UserPermission.read_write):
             raise PermissionError(f"Permission denied for workspace {workspace}")
 
-        workspace_info = await self._redis.hget("workspaces", workspace.name)
+        workspace_info = await self._redis.hget("workspaces", workspace.id)
         if not overwrite and workspace_info is None:
-            raise KeyError(f"Workspace not found: {workspace.name}")
+            raise KeyError(f"Workspace not found: {workspace.id}")
         else:
             existing_workspace = WorkspaceInfo.model_validate(
                 json.loads(workspace_info.decode())
             )
-            assert existing_workspace.name == workspace.name, "Workspace name mismatch."
+            assert existing_workspace.id == workspace.id, "Workspace name mismatch."
         _id = user_info.email or user_info.id
         if _id not in workspace.owners:
             workspace.owners.append(_id)
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
-        logger.info("Updating workspace %s", workspace.name)
+        logger.info("Updating workspace %s", workspace.id)
 
-        await self._redis.hset(
-            "workspaces", workspace.name, workspace.model_dump_json()
-        )
+        await self._redis.hset("workspaces", workspace.id, workspace.model_dump_json())
         if self._s3_controller:
             await self._s3_controller.save_workspace_config(workspace)
         await self._event_bus.emit("workspace_changed", workspace.model_dump())
@@ -1348,6 +1417,8 @@ class WorkspaceManager:
             "revoke_token": self.revoke_token,
             "create_workspace": self.create_workspace,
             "delete_workspace": self.delete_workspace,
+            "bookmark": self.bookmark,
+            "unbookmark": self.unbookmark,
             "get_workspace_info": self.get_workspace_info,
             "install_application": self.install_application,
             "uninstall_application": self.uninstall_application,
