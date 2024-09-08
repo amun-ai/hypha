@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import sys
+import datetime
 from typing import List, Union
 from pydantic import BaseModel
 from fastapi import Header, Cookie
@@ -211,29 +212,85 @@ class RedisStore:
 
     async def upgrade(self):
         """Upgrade the store."""
+        current_version = await self._redis.get("hypha_version")
+        if current_version == __version__:
+            return
+
+        database_change_log = []
+
+        # Record the start of the upgrade process
+        start_time = datetime.datetime.now().isoformat()
+        database_change_log.append(
+            {
+                "time": start_time,
+                "version": __version__,
+                "change": "Start upgrade process",
+            }
+        )
+
         # For versions before 0.20.34
         old_keys = await self._redis.keys("services:{public,protected}:*")
-        # for each key
         if old_keys:
             logger.info("Upgrading service keys for version < 0.20.34")
-            # upgrade the redis store to convert service keys
-            # convert "services:public:*" to "services:public|{type}:*"
-            # and "services:protected:*" to "services:protected|{type}:*"
             for key in old_keys:
                 logger.info(f"Upgrading service key: {key}")
                 service_data = await self._redis.hgetall(key)
                 service_info = ServiceInfo.from_redis_dict(service_data)
                 service_info.type = service_info.type or "*"
-                # remove the first part  the old key
                 new_key = key.replace(
                     "services:public:", f"services:public|{service_info.type}:"
                 ).replace(
                     "services:protected:", f"services:protected|{service_info.type}:"
                 )
-                # set the new key
                 await self._redis.hset(new_key, mapping=service_info.to_redis_dict())
-                # remove the old key
                 await self._redis.delete(key)
+
+                # Log the change
+                change_time = datetime.datetime.now().isoformat()
+                database_change_log.append(
+                    {
+                        "time": change_time,
+                        "version": __version__,
+                        "change": f"Upgraded service key from {key} to {new_key}",
+                    }
+                )
+
+        workspaces = await self.get_all_workspace()
+        logger.info("Upgrading workspace bookmarks for version < 0.20.34")
+        for workspace in workspaces:
+            workspace.config["bookmarks"] = workspace.config.get("bookmarks") or {}
+            for bookmark in workspace.config["bookmarks"]:
+                if "type" in bookmark:
+                    bookmark_type = bookmark["type"]
+                    if not bookmark_type:
+                        continue
+                    logger.info(
+                        f"Convert bookmark type: {bookmark}, workspace: {workspace.id}"
+                    )
+                    bookmark["bookmark_type"] = bookmark_type
+                    del bookmark["type"]
+
+                    # Log the change
+                    change_time = datetime.datetime.now().isoformat()
+                    database_change_log.append(
+                        {
+                            "time": change_time,
+                            "version": __version__,
+                            "change": f"Converted bookmark type in workspace {workspace.id}",
+                        }
+                    )
+            await self.set_workspace(workspace, self._root_user, overwrite=True)
+
+        await self._redis.set("hypha_version", __version__)
+
+        # Record the end of the upgrade process
+        end_time = datetime.datetime.now().isoformat()
+        database_change_log.append(
+            {"time": end_time, "version": __version__, "change": "End upgrade process"}
+        )
+
+        # Save the database change log
+        await self._redis.rpush("change_log", *map(str, database_change_log))
 
     async def init(self, reset_redis, startup_functions=None):
         """Setup the store."""
@@ -278,6 +335,8 @@ class RedisStore:
             )
         except RuntimeError:
             logger.warning("Public workspace already exists.")
+
+        await self.upgrade()
         await self._register_root_services()
         api = await self.get_public_api()
 

@@ -4,6 +4,8 @@ import json
 import traceback
 from typing import Any
 import asyncio
+import logging
+import sys
 from pathlib import Path
 import requests
 
@@ -31,6 +33,10 @@ from hypha.core import UserPermission
 from hypha.core.auth import AUTH0_DOMAIN
 from hypha.core.store import RedisStore
 from hypha.utils import GzipRoute, safe_join, is_safe_path
+
+logging.basicConfig(stream=sys.stdout)
+logger = logging.getLogger("http")
+logger.setLevel(logging.INFO)
 
 
 class MsgpackResponse(Response):
@@ -256,6 +262,7 @@ class ASGIRoutingMiddleware:
                                 )
                                 return
                     except Exception as exp:
+                        logger.error(f"Error in ASGI service: {exp}")
                         await send(
                             {
                                 "type": "http.response.start",
@@ -703,6 +710,11 @@ class HTTPProxy:
                     )
             except KeyError:
                 return Response(status_code=404)
+            except Exception as exp:
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "detail": str(exp)},
+                )
 
         @app.get(norm_url("/{workspace}/server-apps/{app_id}/{path:path}"))
         async def get_browser_app_file(
