@@ -12,7 +12,7 @@ Make sure you have the following installed:
 
 First, clone this repository:
 ```bash
-git clone https://amun-ai.github.com/hypha
+git clone https://amun-ai.github.com/hypha.git
 cd hypha/helm-chart
 ```
 
@@ -51,3 +51,34 @@ To uninstall the chart:
 ```bash
 helm uninstall hypha-server --namespace=hypha
 ```
+
+## Install Redis for scaling
+
+Hypha can use an external Redis to store global state and pub/sub messages shared between the server instances.
+
+If you want to scale Hypha horizontally, you can install Redis as a standalone service, and this will allow you to run multiple Hypha server instances to serve more users.
+
+First, install the Redis helm chart:
+```bash
+helm install redis ./redis --namespace=hypha
+```
+
+Now change the `values.yaml` file to add the `redis-uri` to the `startupCommand`:
+```yaml
+startupCommand:
+  command: ["python", "-m", "hypha.server"]
+  args:
+    - "--host=0.0.0.0"
+    - "--port=9520"
+    - "--public-base-url=$(PUBLIC_BASE_URL)"
+    - "--redis-uri=redis://redis.hypha.svc.cluster.local:6379/0"
+```
+
+Now, upgrade the helm chart:
+```bash
+helm upgrade hypha-server ./hypha-server --namespace=hypha
+```
+
+## Setting up on Azure Kubernetes Service (AKS)
+
+If you are deploying Hypha on Azure Kubernetes Service (AKS), you will need to configure the ingress to use the Azure Application Gateway. You can follow the instructions in the [aks-hypha.md](aks-hypha.md) file.

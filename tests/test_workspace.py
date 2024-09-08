@@ -61,7 +61,7 @@ async def test_workspace(fastapi_server, test_user_token):
         return context
 
     # we should not get it because api is in another workspace
-    ss2 = await api.list_services({"type": "#test"})
+    ss2 = await api.list_services({"type": "test-type"})
     assert len(ss2) == 0
 
     # let's generate a token for the my-new-test-workspace
@@ -85,7 +85,7 @@ async def test_workspace(fastapi_server, test_user_token):
         {
             "id": "test_service_2",
             "name": "test_service_2",
-            "type": "#test",
+            "type": "test-type",
             "config": {"require_context": True, "visibility": "public"},
             "test": test,
         }
@@ -97,12 +97,15 @@ async def test_workspace(fastapi_server, test_user_token):
     svcs = await api2.list_services(service_info.config.workspace)
     assert find_item(svcs, "name", "test_service_2")
 
+    svcs = await api2.list_services({"type": "test-type"})
+    assert find_item(svcs, "name", "test_service_2")
+
     assert api2.config["workspace"] == "my-new-test-workspace"
     await api2.export({"foo": "bar"})
     # services = api2.rpc.get_all_local_services()
     clients = await api2.list_clients()
     assert "my-new-test-workspace/my-app-2" in clients
-    ss3 = await api2.list_services({"type": "#test"})
+    ss3 = await api2.list_services({"type": "test-type"})
     assert len(ss3) == 1
 
     app = await api2.get_app("my-app-2")

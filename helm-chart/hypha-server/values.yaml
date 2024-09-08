@@ -8,7 +8,7 @@ image:
   repository: ghcr.io/amun-ai/hypha
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "0.20.33.post3"
+  tag: "0.20.34"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -41,7 +41,8 @@ securityContext:
   runAsUser: 1000
 
 service:
-  type: LoadBalancer
+  type: ClusterIP
+  # type: LoadBalancer
   port: 9520
 
 ingress:
@@ -109,3 +110,5 @@ startupCommand:
     - "--host=0.0.0.0"
     - "--port=9520"
     - "--public-base-url=$(PUBLIC_BASE_URL)"
+    # - "--redis-uri=redis://redis.hypha.svc.cluster.local:6379/0"
+    

@@ -122,6 +122,7 @@ def start_builtin_services(
 
     HTTPProxy(
         store,
+        app,
         endpoint_url=args.endpoint_url,
         access_key_id=args.access_key_id,
         secret_access_key=args.secret_access_key,

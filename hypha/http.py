@@ -9,7 +9,9 @@ import requests
 
 import httpx
 import msgpack
-from fastapi import APIRouter, Depends, Request
+from fastapi import Depends, Request
+from starlette.routing import Route, Match
+from starlette.types import ASGIApp
 from jinja2 import Environment, PackageLoader, select_autoescape
 from fastapi.responses import (
     JSONResponse,
@@ -155,12 +157,133 @@ def detected_response_type(request: Request):
     return content_type
 
 
+class ASGIRoutingMiddleware:
+    def __init__(self, app: ASGIApp, base_path=None, store=None):
+        self.app = app
+        assert base_path is not None, "Base path is required"
+        assert store is not None, "Store is required"
+        route = base_path.rstrip("/") + "/{workspace}/apps/{service_id}/{path:path}"
+        # Define a route using Starlette's routing system for pattern matching
+        self.route = Route(route, endpoint=None)
+        self.store = store
+
+    def _get_authorization_header(self, scope):
+        """Extract the Authorization header from the scope."""
+        for key, value in scope.get("headers", []):
+            if key.decode("utf-8").lower() == "authorization":
+                return value.decode("utf-8")
+        return None
+
+    def _get_access_token_from_cookies(self, scope):
+        """Extract the access_token cookie from the scope."""
+        cookies = None
+        for key, value in scope.get("headers", []):
+            if key.decode("utf-8").lower() == "cookie":
+                cookies = value.decode("utf-8")
+                break
+        if not cookies:
+            return None
+        # Split cookies and find the access_token
+        cookie_dict = {
+            k.strip(): v.strip()
+            for k, v in (cookie.split("=") for cookie in cookies.split(";"))
+        }
+        return cookie_dict.get("access_token")
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            # Check if the current request path matches the defined route
+            match, params = self.route.matches(scope)
+            path_params = params.get("path_params", {})
+            if match == Match.FULL:
+                # Extract workspace and service_id from the matched path
+                workspace = path_params["workspace"]
+                service_id = path_params["service_id"]
+                path = path_params["path"]
+
+                # Call get_service_type_id to check if it's an ASGI service
+                service_type = await self.store.get_service_type_id(
+                    workspace, service_id
+                )
+
+                # intercept the request if it's an ASGI service
+                if service_type == "asgi" or service_type == "ASGI":
+                    try:
+                        scope = {
+                            k: scope[k]
+                            for k in scope
+                            if isinstance(
+                                scope[k],
+                                (str, int, float, bool, tuple, list, dict, bytes),
+                            )
+                        }
+                        if not path.startswith("/"):
+                            path = "/" + path
+                        scope["path"] = path
+                        scope["raw_path"] = path.encode("latin-1")
+
+                        # get mode from query string
+                        query = scope.get("query_string", b"").decode("utf-8")
+                        if query:
+                            mode = dict([q.split("=") for q in query.split("&")]).get(
+                                "mode"
+                            )
+                        else:
+                            mode = None
+
+                        access_token = self._get_access_token_from_cookies(scope)
+                        # get authorization from headers
+                        authorization = self._get_authorization_header(scope)
+                        user_info = await self.store.login_optional(
+                            authorization=authorization, access_token=access_token
+                        )
+
+                        async with self.store.get_workspace_interface(
+                            workspace, user_info
+                        ) as api:
+                            info = await api.get_service_info(
+                                service_id, {"mode": mode}
+                            )
+                            if info.type == "ASGI" or info.type == "asgi":
+                                service = await api.get_service(info.id)
+                                # Call the ASGI app with manually provided receive and send
+                                await service.serve(
+                                    {
+                                        "scope": scope,
+                                        "receive": receive,
+                                        "send": send,
+                                    }
+                                )
+                                return
+                    except Exception as exp:
+                        await send(
+                            {
+                                "type": "http.response.start",
+                                "status": 500,
+                                "headers": [
+                                    [b"content-type", b"text/plain"],
+                                ],
+                            }
+                        )
+                        await send(
+                            {
+                                "type": "http.response.body",
+                                "body": f"Internal Server Error: {exp}".encode(),
+                                "more_body": False,
+                            }
+                        )
+                        return
+
+        await self.app(scope, receive, send)
+
+
 class HTTPProxy:
     """A proxy for accessing services from HTTP."""
 
     def __init__(
         self,
         store: RedisStore,
+        app: ASGIApp,
         endpoint_url=None,
         access_key_id=None,
         secret_access_key=None,
@@ -171,8 +294,6 @@ class HTTPProxy:
     ) -> None:
         """Initialize the http proxy."""
         # pylint: disable=broad-except
-        router = APIRouter()
-        router.route_class = GzipRoute
         self.store = store
         self.endpoint_url = endpoint_url
         self.access_key_id = access_key_id
@@ -197,7 +318,7 @@ class HTTPProxy:
         self.rpc_lib_esm_content = None
         self.rpc_lib_umd_content = None
 
-        @router.get(norm_url("/assets/hypha-rpc-websocket.mjs"))
+        @app.get(norm_url("/assets/hypha-rpc-websocket.mjs"))
         async def hypha_rpc_websocket_mjs(request: Request):
             if not self.rpc_lib_esm_content:
                 _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{main_version}/dist/hypha-rpc-websocket.mjs"
@@ -208,7 +329,7 @@ class HTTPProxy:
                 content=self.rpc_lib_esm_content, media_type="application/javascript"
             )
 
-        @router.get(norm_url("/assets/hypha-rpc-websocket.js"))
+        @app.get(norm_url("/assets/hypha-rpc-websocket.js"))
         async def hypha_rpc_websocket_js(request: Request):
             if not self.rpc_lib_umd_content:
                 _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{main_version}/dist/hypha-rpc-websocket.js"
@@ -219,7 +340,7 @@ class HTTPProxy:
                 content=self.rpc_lib_umd_content, media_type="application/javascript"
             )
 
-        @router.get(norm_url("/assets/config.json"))
+        @app.get(norm_url("/assets/config.json"))
         async def get_config(
             request: Request,
             user_info: store.login_optional = Depends(store.login_optional),
@@ -229,7 +350,7 @@ class HTTPProxy:
                 content={"user": user_info.model_dump(), **self.server_info},
             )
 
-        @router.post(norm_url("/oauth/token"))
+        @app.post(norm_url("/oauth/token"))
         async def token_proxy(request: Request):
             form_data = await request.form()
             async with httpx.AsyncClient() as client:
@@ -241,7 +362,7 @@ class HTTPProxy:
 
                 return JSONResponse(status_code=200, content=auth0_response.json())
 
-        @router.get(norm_url("/oauth/authorize"))
+        @app.get(norm_url("/oauth/authorize"))
         async def auth_proxy(request: Request):
             # Construct the full URL for the Auth0 authorize endpoint with the query parameters
             auth0_authorize_url = (
@@ -251,7 +372,7 @@ class HTTPProxy:
             # Redirect the client to the constructed URL
             return RedirectResponse(url=auth0_authorize_url)
 
-        @router.get(norm_url("/{workspace}/info"))
+        @app.get(norm_url("/{workspace}/info"))
         async def get_workspace_info(
             workspace: str,
             user_info: store.login_optional = Depends(store.login_optional),
@@ -269,8 +390,7 @@ class HTTPProxy:
                             ),
                         },
                     )
-
-                info = await self.store.load_or_create_workspace(user_info, workspace)
+                info = await self.store.get_workspace_info(workspace, load=True)
                 return JSONResponse(
                     status_code=200,
                     content=info.model_dump(),
@@ -281,7 +401,7 @@ class HTTPProxy:
                     content={"success": False, "detail": str(exp)},
                 )
 
-        @router.get(norm_url("/{workspace}/services"))
+        @app.get(norm_url("/{workspace}/services"))
         async def get_workspace_services(
             workspace: str,
             user_info: store.login_optional = Depends(store.login_optional),
@@ -306,7 +426,7 @@ class HTTPProxy:
                     content={"success": False, "detail": str(exp)},
                 )
 
-        @router.get(norm_url("/{workspace}/services/{service_id}"))
+        @app.get(norm_url("/{workspace}/services/{service_id}"))
         async def get_service_info(
             workspace: str,
             service_id: str,
@@ -344,7 +464,7 @@ class HTTPProxy:
             results = _rpc.encode(results)
             return results
 
-        @router.get(norm_url("/{workspace}/apps"))
+        @app.get(norm_url("/{workspace}/apps"))
         async def get_workspace_apps(
             workspace: str,
             user_info: store.login_optional = Depends(store.login_optional),
@@ -375,26 +495,95 @@ class HTTPProxy:
                     content={"success": False, "detail": str(exp)},
                 )
 
-        @router.get(norm_url("/{workspace}/apps/{service_id}"))
+        @app.get(norm_url("/{workspace}/apps/ws/{path:path}"))
+        async def get_ws_app_file(
+            workspace: str,
+            path: str,
+            user_info: store.login_optional = Depends(store.login_optional),
+        ) -> Response:
+            """Route for getting browser app files."""
+            if not user_info.check_permission(workspace, UserPermission.read):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "success": False,
+                        "detail": (
+                            f"{user_info.id} has no"
+                            f" permission to access {workspace}"
+                        ),
+                    },
+                )
+
+            if not path:
+                return FileResponse(safe_join(str(self.ws_apps_dir), "ws/index.html"))
+
+            # check if the path is inside the built-in apps dir
+            # get the jinja template from the built-in apps dir
+            dir_path = path.split("/")[0]
+            if dir_path in self.ws_app_files:
+                file_path = safe_join(str(self.ws_apps_dir), path)
+                if not is_safe_path(str(self.ws_apps_dir), file_path):
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "success": False,
+                            "detail": f"Unsafe path: {file_path}",
+                        },
+                    )
+                if not os.path.exists(file_path):
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "success": False,
+                            "detail": f"File not found: {path}",
+                        },
+                    )
+                return FileResponse(safe_join(str(self.ws_apps_dir), "ws", path))
+            else:
+                key = safe_join(workspace, path)
+                assert self.s3_enabled, "S3 is not enabled."
+                from hypha.s3 import FSFileResponse
+                from aiobotocore.session import get_session
+
+                s3_client = get_session().create_client(
+                    "s3",
+                    endpoint_url=self.endpoint_url,
+                    aws_access_key_id=self.access_key_id,
+                    aws_secret_access_key=self.secret_access_key,
+                    region_name=self.region_name,
+                )
+                return FSFileResponse(s3_client, self.workspace_bucket, key)
+
+        app.add_middleware(
+            ASGIRoutingMiddleware,
+            base_path=base_path,
+            store=store,
+        )
+
+        @app.get(norm_url("/{workspace}/apps/{service_id}"))
         async def get_app_info(
             workspace: str,
             service_id: str,
-            request: Request,
-            path: str = None,
-            user_info: store.login_optional = Depends(store.login_optional),
+            mode: str = None,
+            user_info=Depends(store.login_optional),
         ):
             """Route for checking details of an app."""
-            if not path:
-                path = "/"
-            return await run_app(
-                workspace=workspace,
-                service_id=service_id,
-                request=request,
-                path=path,
-                user_info=user_info,
-            )
+            service_type = await self.store.get_service_type_id(workspace, service_id)
+            if service_type:
+                # redirect to the app page
+                return RedirectResponse(
+                    url=f"{base_path.rstrip('/')}/{workspace}/apps/{service_id}/"
+                )
+            else:
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "success": False,
+                        "detail": f"App service not found: {service_id}",
+                    },
+                )
 
-        @router.get(norm_url("/{workspace}/apps/{service_id}/{path:path}"))
+        @app.get(norm_url("/{workspace}/apps/{service_id}/{path:path}"))
         async def run_app(
             workspace: str,
             service_id: str,
@@ -403,50 +592,8 @@ class HTTPProxy:
             mode: str = None,
             user_info: store.login_optional = Depends(store.login_optional),
         ) -> Response:
-            if service_id == "ws":
-                if not path:
-                    return FileResponse(
-                        safe_join(str(self.ws_apps_dir), "ws/index.html")
-                    )
-
-                # check if the path is inside the built-in apps dir
-                # get the jinja template from the built-in apps dir
-                dir_path = path.split("/")[0]
-                if dir_path in self.ws_app_files:
-                    file_path = safe_join(str(self.ws_apps_dir), path)
-                    if not is_safe_path(str(self.ws_apps_dir), file_path):
-                        return JSONResponse(
-                            status_code=403,
-                            content={
-                                "success": False,
-                                "detail": f"Unsafe path: {file_path}",
-                            },
-                        )
-                    if not os.path.exists(file_path):
-                        return JSONResponse(
-                            status_code=404,
-                            content={
-                                "success": False,
-                                "detail": f"File not found: {path}",
-                            },
-                        )
-                    return FileResponse(safe_join(str(self.ws_apps_dir), "ws", path))
-                else:
-                    key = safe_join(workspace, path)
-                    assert self.s3_enabled, "S3 is not enabled."
-                    from hypha.s3 import FSFileResponse
-                    from aiobotocore.session import get_session
-
-                    s3_client = get_session().create_client(
-                        "s3",
-                        endpoint_url=self.endpoint_url,
-                        aws_access_key_id=self.access_key_id,
-                        aws_secret_access_key=self.secret_access_key,
-                        region_name=self.region_name,
-                    )
-                    return FSFileResponse(s3_client, self.workspace_bucket, key)
-
-            # Serve dynamic apps
+            # Note: We don't check the user permission here, because the service itself
+            # should check the permission.
             try:
                 scope = request.scope
                 scope = {
@@ -465,17 +612,7 @@ class HTTPProxy:
                     workspace, user_info
                 ) as api:
                     info = await api.get_service_info(service_id, {"mode": mode})
-                    if info.type == "ASGI":
-                        service = await api.get_service(info.id)
-                        # Call the ASGI app with manually provided receive and send
-                        await service.serve(
-                            {
-                                "scope": scope,
-                                "receive": request.body,
-                                "send": send_queue.put,
-                            }
-                        )
-                    elif info.type == "functions":
+                    if info.type == "functions":
                         func_name = path.split("/", 1)[-1] or "index"
                         func_name = func_name.rstrip("/")
                         service = await api.get_service(info.id)
@@ -539,7 +676,7 @@ class HTTPProxy:
                             status_code=404,
                             content={
                                 "success": False,
-                                "detail": f"Service cannot be run as an app: {service_id}",
+                                "detail": f"Service cannot be run as an app: {service_id}, type: {info.type}",
                             },
                         )
 
@@ -567,7 +704,7 @@ class HTTPProxy:
             except KeyError:
                 return Response(status_code=404)
 
-        @router.get(norm_url("/{workspace}/server-apps/{app_id}/{path:path}"))
+        @app.get(norm_url("/{workspace}/server-apps/{app_id}/{path:path}"))
         async def get_browser_app_file(
             workspace: str, app_id: str, path: str, token: str = None
         ) -> Response:
@@ -617,8 +754,8 @@ class HTTPProxy:
             )
             return FSFileResponse(s3_client, self.workspace_bucket, key)
 
-        @router.get(norm_url("/{workspace}/services/{service_id}/{function_key}"))
-        @router.post(norm_url("/{workspace}/services/{service_id}/{function_key}"))
+        @app.get(norm_url("/{workspace}/services/{service_id}/{function_key}"))
+        @app.post(norm_url("/{workspace}/services/{service_id}/{function_key}"))
         async def call_service_function(
             workspace: str,
             service_id: str,
@@ -701,7 +838,7 @@ class HTTPProxy:
                     content={"success": False, "detail": traceback.format_exc()},
                 )
 
-        @router.get(norm_url("/health/readiness"))
+        @app.get(norm_url("/health/readiness"))
         async def readiness(req: Request) -> JSONResponse:
             """Used for readiness probe.
             t determines whether the application inside the container is ready to accept traffic or requests.
@@ -711,14 +848,14 @@ class HTTPProxy:
 
             return JSONResponse({"status": "DOWN"}, status_code=503)
 
-        @router.get(norm_url("/health/liveness"))
+        @app.get(norm_url("/health/liveness"))
         async def liveness(req: Request) -> JSONResponse:
             """Used for liveness probe.
             If the liveness probe fails, it means the app is in a failed state and restarts it.
             """
             return JSONResponse({"status": "OK"})
 
-        @router.get(norm_url("/{page:path}"))
+        @app.get(norm_url("/{page:path}"))
         async def get_pages(
             page: str,
             user_info: store.login_optional = Depends(store.login_optional),
@@ -772,5 +909,3 @@ class HTTPProxy:
                     },
                 )
             return FileResponse(file_path)
-
-        store.register_router(router)

@@ -106,6 +106,7 @@
             const expires_in = document.getElementById("expiry-time").value || 3600; // Default to 1 hour if not specified
             const workspace = document.getElementById("workspace").value || "";
             const accessToken = await auth0.getTokenSilently({ audience: AUTH0_AUDIENCE });
+
             const generate_token_url = "{{ generate_token_url }}";
             if (generate_token_url.startsWith('http')) {
                 // make a post request with {config: {expires_in, workspace}}
@@ -196,6 +197,7 @@
             if(!href.endsWith("/")){
                 href += "/";
             }
+            document.cookie = 'access_token=; path=/; max-age=0; samesite=lax';
             await auth0.logout({ logoutParams: { returnTo: href } });
         };
 

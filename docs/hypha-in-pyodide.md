@@ -52,7 +52,7 @@ await server.register_service({
     "id": "demo-hypha-server",
     "name": "Demo Hypha Server",
     "description": "Serve a demo hypha server in side the browser",
-    "type": "ASGI",
+    "type": "asgi",
     "serve": serve_fastapi,
     "config":{
         "visibility": "public"

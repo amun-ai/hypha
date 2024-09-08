@@ -1,5 +1,10 @@
 # Hypha Change Log
 
+### 0.20.34
+ 
+ - Fix persistent workspace unloaded issue when s3 is not available.
+ - Improve ASGI support for streaming response.
+
 ### 0.20.33
 
  - Add `delete_workspace` to the workspace api.
