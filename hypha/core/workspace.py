@@ -169,10 +169,12 @@ class WorkspaceManager:
             )
         elif item["bookmark_type"] == "service":
             service_id = item["id"]
-            
+
             service_info = await self.get_service_info(service_id, context=context)
             user_workspace.config["bookmarks"] = [
-                b for b in user_workspace.config["bookmarks"] if b["id"] != service_info.id
+                b
+                for b in user_workspace.config["bookmarks"]
+                if b["id"] != service_info.id
             ]
             user_workspace.config["bookmarks"].append(
                 {
@@ -213,7 +215,7 @@ class WorkspaceManager:
         else:
             raise ValueError(f"Invalid bookmark type: {item['bookmark_type']}")
         await self._update_workspace(user_workspace, user_info)
-    
+
     @schema_method
     async def create_workspace(
         self,
@@ -245,9 +247,7 @@ class WorkspaceManager:
         workspace = WorkspaceInfo.model_validate(config)
         if user_info.id not in workspace.owners:
             workspace.owners.append(user_info.id)
-        self._validate_workspace_id(
-            workspace.id, with_hyphen=user_info.id != "root"
-        )
+        self._validate_workspace_id(workspace.id, with_hyphen=user_info.id != "root")
         # make sure we add the user's email to owners
         _id = user_info.email or user_info.id
         if _id not in workspace.owners:
@@ -265,14 +265,14 @@ class WorkspaceManager:
                     "description": workspace.description,
                 }
             ]
-        await self._redis.hset(
-            "workspaces", workspace.id, workspace.model_dump_json()
-        )
+        await self._redis.hset("workspaces", workspace.id, workspace.model_dump_json())
         if self._s3_controller:
             await self._s3_controller.setup_workspace(workspace)
         await self._event_bus.emit("workspace_loaded", workspace.model_dump())
         if user_info.get_workspace() != workspace.id:
-            await self.bookmark({"bookmark_type": "workspace", "id": workspace.id}, context=context)
+            await self.bookmark(
+                {"bookmark_type": "workspace", "id": workspace.id}, context=context
+            )
         return workspace.model_dump()
 
     @schema_method
@@ -1193,19 +1193,19 @@ class WorkspaceManager:
         """Get all workspaces with pagination."""
         self.validate_context(context, permission=UserPermission.read)
         user_info = UserInfo.model_validate(context["user"])
-        
+
         # Validate page and page_size
         if page < 1:
             raise ValueError("Page number must be greater than 0")
         if page_size < 1 or page_size > 256:
             raise ValueError("Page size must be greater than 0 and less than 256")
-    
+
         cursor = 0
         workspaces = []
         start_index = (page - 1) * page_size
         end_index = page * page_size
         current_index = 0
-    
+
         while True:
             cursor, keys = await self._redis.hscan("workspaces", cursor)
             for ws_id in keys:
@@ -1213,20 +1213,31 @@ class WorkspaceManager:
                 if ws_data:
                     ws_data = ws_data.decode()
                     workspace_info = WorkspaceInfo.model_validate(json.loads(ws_data))
-                    
-                    if user_info.check_permission(workspace_info.id, UserPermission.read) or user_info.id in workspace_info.owners or user_info.email in workspace_info.owners:
+
+                    if (
+                        user_info.check_permission(
+                            workspace_info.id, UserPermission.read
+                        )
+                        or user_info.id in workspace_info.owners
+                        or user_info.email in workspace_info.owners
+                    ):
                         match = match or {}
-                        if not all(getattr(workspace_info, k, None) == v for k, v in match.items()):
+                        if not all(
+                            getattr(workspace_info, k, None) == v
+                            for k, v in match.items()
+                        ):
                             continue
                         if start_index <= current_index < end_index:
-                            workspaces.append({
-                                "id": workspace_info.id,
-                                "name": workspace_info.id,
-                                "description": workspace_info.description,
-                                "read_only": workspace_info.read_only,
-                                "persistent": workspace_info.persistent,
-                                "owners": workspace_info.owners,
-                            })
+                            workspaces.append(
+                                {
+                                    "id": workspace_info.id,
+                                    "name": workspace_info.id,
+                                    "description": workspace_info.description,
+                                    "read_only": workspace_info.read_only,
+                                    "persistent": workspace_info.persistent,
+                                    "owners": workspace_info.owners,
+                                }
+                            )
                         current_index += 1
                         if current_index >= end_index:
                             return workspaces
@@ -1256,9 +1267,7 @@ class WorkspaceManager:
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
         logger.info("Updating workspace %s", workspace.id)
 
-        await self._redis.hset(
-            "workspaces", workspace.id, workspace.model_dump_json()
-        )
+        await self._redis.hset("workspaces", workspace.id, workspace.model_dump_json())
         if self._s3_controller:
             await self._s3_controller.save_workspace_config(workspace)
         await self._event_bus.emit("workspace_changed", workspace.model_dump())

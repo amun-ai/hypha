@@ -265,7 +265,8 @@ class ServiceTypeInfo(BaseModel):
 
 class WorkspaceInfo(BaseModel):
     """Represent a workspace."""
-    id: Optional[str] = None # we will use name as id if not provided
+
+    id: Optional[str] = None  # we will use name as id if not provided
     name: str
     description: Optional[str] = None
     persistent: Optional[bool] = False

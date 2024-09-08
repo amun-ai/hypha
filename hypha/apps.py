@@ -224,9 +224,7 @@ class ServerAppController:
         user_info = UserInfo.model_validate(context["user"])
         workspace_info = await self.store.get_workspace_info(workspace, load=True)
         assert workspace_info, f"Workspace {workspace} not found."
-        if not user_info.check_permission(
-            workspace_info.id, UserPermission.read_write
-        ):
+        if not user_info.check_permission(workspace_info.id, UserPermission.read_write):
             raise Exception(
                 f"User {user_info.id} does not have permission"
                 f" to install apps in workspace {workspace_info.id}"
