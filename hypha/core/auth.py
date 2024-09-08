@@ -439,7 +439,9 @@ def create_login_service(store):
         user_info = user_info.model_dump(mode="json")
         await redis.setex(key, MAXIMUM_LOGIN_TIME, json.dumps(user_info))
 
-    logger.info(f"To preview the login page, visit: {login_service_url.replace('/services/', '/apps/')}")
+    logger.info(
+        f"To preview the login page, visit: {login_service_url.replace('/services/', '/apps/')}"
+    )
     return {
         "name": "Hypha Login",
         "id": "hypha-login",

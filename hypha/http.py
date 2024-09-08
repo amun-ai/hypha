@@ -565,12 +565,10 @@ class HTTPProxy:
             workspace: str,
             service_id: str,
             mode: str = None,
-            user_info = Depends(store.login_optional),
+            user_info=Depends(store.login_optional),
         ):
             """Route for checking details of an app."""
-            service_type = await self.store.get_service_type_id(
-                workspace, service_id
-            )
+            service_type = await self.store.get_service_type_id(workspace, service_id)
             if service_type:
                 # redirect to the app page
                 return RedirectResponse(
