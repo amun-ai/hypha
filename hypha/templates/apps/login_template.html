@@ -186,9 +186,11 @@
                     console.error("Failed to report token: ", response.status, response.statusText);
                     alert(`Failed to report token. Please try again later. (${response.status}: ${response.statusText})`);
                 }
-                setTimeout(() => {
-                    window.close();
-                }, 500);
+                else{
+                    setTimeout(() => {
+                        window.close();
+                    }, 500);
+                }
             }
         };
 
