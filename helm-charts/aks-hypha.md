@@ -106,7 +106,7 @@ Download the Hypha Helm chart from the GitHub repository:
 
 ```bash
 git clone https://github.com/amun-ai/hypha.git
-cd hypha/helm-chart
+cd hypha/helm-charts
 ```
 
 #### Step 2: Create a Namespace for Hypha
@@ -232,7 +232,7 @@ startupCommand:
 
 #### Step 6: Install Hypha Using Helm
 
-Now that the configuration is set, install Hypha using Helm (make sure you are in the `helm-chart` directory):
+Now that the configuration is set, install Hypha using Helm (make sure you are in the `helm-charts` directory):
 
 ```bash
 helm install hypha-server ./hypha-server --namespace hypha

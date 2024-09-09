@@ -13,7 +13,7 @@ Make sure you have the following installed:
 First, clone this repository:
 ```bash
 git clone https://amun-ai.github.com/hypha.git
-cd hypha/helm-chart
+cd hypha/helm-charts
 ```
 
 Now you need to create a namespace for Hypha:
