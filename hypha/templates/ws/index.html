@@ -1093,18 +1093,22 @@
                     try{
                         const remoteServer = await hyphaWebsocketClient.connectToServer(config);
                         window.remoteServer = remoteServer;
-                        remoteServer.getService('public/server-apps', { case_conversion: 'camel' }).then(()=>{
-                            // add the apps panel
-                            setEnabledPanels([...enabledPanels, 'apps']);
-                        }).catch(e => {
+                        const newPanels = [];
+                        try{
+                            await remoteServer.getService('public/server-apps', { case_conversion: 'camel' });
+                            newPanels.push('apps');
+                        }
+                        catch(e){
                             console.log("Server apps service not available");
-                        });
-                        remoteServer.getService('public/s3-storage', { case_conversion: 'camel' }).then(()=>{
-                            // add the files panel
-                            setEnabledPanels([...enabledPanels, 'files']);
-                        }).catch(e => {
+                        }
+                        try {
+                            await remoteServer.getService('public/s3-storage', { case_conversion: 'camel' });
+                            newPanels.push('files');
+                        }
+                        catch(e){
                             console.log("S3 storage service not available");
-                        });
+                        }
+                        setEnabledPanels([...enabledPanels, ...newPanels]);
                         setWs(remoteServer);
                     }
                     catch(e){
