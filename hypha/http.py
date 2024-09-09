@@ -25,7 +25,7 @@ from fastapi.responses import (
 import jose
 import os
 
-from starlette.datastructures import Headers
+from starlette.datastructures import Headers, MutableHeaders
 
 from hypha_rpc import RPC
 from hypha import main_version
@@ -105,7 +105,7 @@ async def extracted_kwargs(
             kwargs = json.loads(kwargs.get("function_kwargs", "{}"))
         else:
             for key in kwargs:
-                if key in ["workspace", "service_id", "function_key"]:
+                if key in ["workspace", "service_id", "function_key", "_mode"]:
                     del kwargs[key]
                 else:
                     if isinstance(kwargs[key], str) and kwargs[key].startswith("{"):
@@ -124,7 +124,7 @@ async def extracted_kwargs(
         if use_function_kwargs:
             kwargs = kwargs.get("function_kwargs", {})
         else:
-            for key in ["workspace", "service_id", "function_key"]:
+            for key in ["workspace", "service_id", "function_key", "_mode"]:
                 if key in kwargs:
                     del kwargs[key]
     else:
@@ -207,81 +207,168 @@ class ASGIRoutingMiddleware:
                 service_id = path_params["service_id"]
                 path = path_params["path"]
 
-                # Call get_service_type_id to check if it's an ASGI service
-                service_type = await self.store.get_service_type_id(
-                    workspace, service_id
-                )
+                try:
+                    scope = {
+                        k: scope[k]
+                        for k in scope
+                        if isinstance(
+                            scope[k],
+                            (str, int, float, bool, tuple, list, dict, bytes),
+                        )
+                    }
+                    if not path.startswith("/"):
+                        path = "/" + path
+                    scope["path"] = path
+                    scope["raw_path"] = path.encode("latin-1")
 
-                # intercept the request if it's an ASGI service
-                if service_type == "asgi" or service_type == "ASGI":
-                    try:
-                        scope = {
-                            k: scope[k]
-                            for k in scope
-                            if isinstance(
-                                scope[k],
-                                (str, int, float, bool, tuple, list, dict, bytes),
+                    # get _mode from query string
+                    query = scope.get("query_string", b"").decode("utf-8")
+                    if query:
+                        _mode = dict([q.split("=") for q in query.split("&")]).get(
+                            "_mode"
+                        )
+                        # TODO: remove _mode from query string
+                    else:
+                        _mode = None
+
+                    access_token = self._get_access_token_from_cookies(scope)
+                    # get authorization from headers
+                    authorization = self._get_authorization_header(scope)
+                    user_info = await self.store.login_optional(
+                        authorization=authorization, access_token=access_token
+                    )
+
+                    async with self.store.get_workspace_interface(
+                        workspace, user_info
+                    ) as api:
+                        # Call get_service_type_id to check if it's an ASGI service
+                        service_info = await api.get_service_info(
+                            service_id, {"mode": _mode}
+                        )
+                        service = await api.get_service(service_info.id)
+                        # intercept the request if it's an ASGI service
+                        if service_info.type == "asgi" or service_info.type == "ASGI":
+                            # Call the ASGI app with manually provided receive and send
+                            await service.serve(
+                                {
+                                    "scope": scope,
+                                    "receive": receive,
+                                    "send": send,
+                                }
                             )
-                        }
-                        if not path.startswith("/"):
-                            path = "/" + path
-                        scope["path"] = path
-                        scope["raw_path"] = path.encode("latin-1")
-
-                        # get mode from query string
-                        query = scope.get("query_string", b"").decode("utf-8")
-                        if query:
-                            mode = dict([q.split("=") for q in query.split("&")]).get(
-                                "mode"
+                        elif service_info.type == "functions":
+                            await self.handle_function_service(
+                                service, path, scope, receive, send
                             )
                         else:
-                            mode = None
-
-                        access_token = self._get_access_token_from_cookies(scope)
-                        # get authorization from headers
-                        authorization = self._get_authorization_header(scope)
-                        user_info = await self.store.login_optional(
-                            authorization=authorization, access_token=access_token
-                        )
-
-                        async with self.store.get_workspace_interface(
-                            workspace, user_info
-                        ) as api:
-                            info = await api.get_service_info(
-                                service_id, {"mode": mode}
+                            await send(
+                                {
+                                    "type": "http.response.start",
+                                    "status": 404,
+                                    "headers": [
+                                        [b"content-type", b"text/plain"],
+                                    ],
+                                }
                             )
-                            if info.type == "ASGI" or info.type == "asgi":
-                                service = await api.get_service(info.id)
-                                # Call the ASGI app with manually provided receive and send
-                                await service.serve(
-                                    {
-                                        "scope": scope,
-                                        "receive": receive,
-                                        "send": send,
-                                    }
-                                )
-                                return
-                    except Exception as exp:
-                        logger.error(f"Error in ASGI service: {exp}")
-                        await send(
-                            {
-                                "type": "http.response.start",
-                                "status": 500,
-                                "headers": [
-                                    [b"content-type", b"text/plain"],
-                                ],
-                            }
-                        )
-                        await send(
-                            {
-                                "type": "http.response.body",
-                                "body": f"Internal Server Error: {exp}".encode(),
-                                "more_body": False,
-                            }
-                        )
+                            await send(
+                                {
+                                    "type": "http.response.body",
+                                    "body": b"Not Found",
+                                    "more_body": False,
+                                }
+                            )
                         return
+                except Exception as exp:
+                    logger.error(f"Error in ASGI service: {exp}")
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": 500,
+                            "headers": [
+                                [b"content-type", b"text/plain"],
+                            ],
+                        }
+                    )
+                    await send(
+                        {
+                            "type": "http.response.body",
+                            "body": f"Internal Server Error: {exp}".encode(),
+                            "more_body": False,
+                        }
+                    )
+                    return
 
         await self.app(scope, receive, send)
+
+    async def handle_function_service(self, service, path, scope, receive, send):
+        """Handle function service."""
+        func_name = path.split("/", 1)[-1] or "index"
+        func_name = func_name.rstrip("/")
+        if func_name in service and callable(service[func_name]):
+            scope["query_string"] = scope["query_string"].decode("utf-8")
+            scope["raw_path"] = scope["raw_path"].decode("latin-1")
+            scope["headers"] = dict(Headers(scope=scope).items())
+            event = await receive()
+            body = event["body"]
+            while event.get("more_body"):
+                body += await receive()["body"]
+            scope["body"] = body or None
+            func = service[func_name]
+            try:
+                result = await func(scope)
+                headers = MutableHeaders(headers=result.get("headers"))
+                origin = scope.get("headers", {}).get("origin")
+                cors_headers = {
+                    "Access-Control-Allow-Credentials": "true",
+                    "Access-Control-Allow-Origin": origin or "*",
+                    "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+                    "Access-Control-Allow-Headers": "Authorization,Content-Type",
+                    "Access-Control-Expose-Headers": "Content-Disposition",
+                }
+                for key, value in cors_headers.items():
+                    headers[key] = value
+
+                body = result.get("body")
+                status = result.get("status", 200)
+                assert isinstance(status, int)
+                start = {
+                    "type": "http.response.start",
+                    "status": status,
+                    "headers": headers.raw,
+                }
+                if not body:
+                    start["more_body"] = False
+                await send(start)
+                if body:
+                    if not isinstance(body, bytes):
+                        body = body.encode()
+                    await send(
+                        {
+                            "type": "http.response.body",
+                            "body": body,
+                            "more_body": False,
+                        }
+                    )
+            except Exception:
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 500,
+                        "headers": [
+                            [b"content-type", b"text/plain"],
+                        ],
+                    }
+                )
+        else:
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 404,
+                    "headers": [
+                        [b"content-type", b"text/plain"],
+                    ],
+                }
+            )
 
 
 class HTTPProxy:
@@ -437,7 +524,7 @@ class HTTPProxy:
         async def get_service_info(
             workspace: str,
             service_id: str,
-            mode: str = None,
+            _mode: str = None,
             user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Route for checking details of a service."""
@@ -448,7 +535,7 @@ class HTTPProxy:
                     if service_id == "ws":
                         return serialize(api)
                     service_info = await api.get_service_info(
-                        service_id, {"mode": mode}
+                        service_id, {"mode": _mode}
                     )
                 return JSONResponse(
                     status_code=200,
@@ -571,150 +658,14 @@ class HTTPProxy:
         async def get_app_info(
             workspace: str,
             service_id: str,
-            mode: str = None,
-            user_info=Depends(store.login_optional),
+            request: Request,
+            _mode: str = None,
+            user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Route for checking details of an app."""
-            service_type = await self.store.get_service_type_id(workspace, service_id)
-            if service_type:
-                # redirect to the app page
-                return RedirectResponse(
-                    url=f"{base_path.rstrip('/')}/{workspace}/apps/{service_id}/"
-                )
-            else:
-                return JSONResponse(
-                    status_code=404,
-                    content={
-                        "success": False,
-                        "detail": f"App service not found: {service_id}",
-                    },
-                )
-
-        @app.get(norm_url("/{workspace}/apps/{service_id}/{path:path}"))
-        async def run_app(
-            workspace: str,
-            service_id: str,
-            request: Request,
-            path: str = None,
-            mode: str = None,
-            user_info: store.login_optional = Depends(store.login_optional),
-        ) -> Response:
-            # Note: We don't check the user permission here, because the service itself
-            # should check the permission.
-            try:
-                scope = request.scope
-                scope = {
-                    k: scope[k]
-                    for k in scope
-                    if isinstance(
-                        scope[k], (str, int, float, bool, tuple, list, dict, bytes)
-                    )
-                }
-                if not path.startswith("/"):
-                    path = "/" + path
-                scope["path"] = path
-                scope["raw_path"] = path.encode("latin-1")
-                send_queue = asyncio.Queue()
-                async with self.store.get_workspace_interface(
-                    workspace, user_info
-                ) as api:
-                    info = await api.get_service_info(service_id, {"mode": mode})
-                    if info.type == "functions":
-                        func_name = path.split("/", 1)[-1] or "index"
-                        func_name = func_name.rstrip("/")
-                        service = await api.get_service(info.id)
-                        if func_name in service and callable(service[func_name]):
-                            scope["query_string"] = scope["query_string"].decode(
-                                "utf-8"
-                            )
-                            scope["raw_path"] = scope["raw_path"].decode("latin-1")
-                            scope["headers"] = dict(Headers(scope=scope).items())
-                            event = await request.receive()
-                            body = event["body"]
-                            while event.get("more_body"):
-                                body += await request.receive()["body"]
-                            scope["body"] = body or None
-                            func = service[func_name]
-                            try:
-                                result = await func(scope)
-                                headers = Headers(headers=result.get("headers"))
-                                body = result.get("body")
-                                status = result.get("status", 200)
-                                assert isinstance(status, int)
-                                start = {
-                                    "type": "http.response.start",
-                                    "status": status,
-                                    "headers": headers.raw,
-                                }
-                                if not body:
-                                    start["more_body"] = False
-                                await send_queue.put(start)
-                                if body:
-                                    if not isinstance(body, bytes):
-                                        body = body.encode()
-                                    await send_queue.put(
-                                        {
-                                            "type": "http.response.body",
-                                            "body": body,
-                                            "more_body": False,
-                                        }
-                                    )
-                            except Exception:
-                                await send_queue.put(
-                                    {
-                                        "type": "http.response.start",
-                                        "status": 500,
-                                        "headers": [
-                                            [b"content-type", b"text/plain"],
-                                        ],
-                                    }
-                                )
-
-                        else:
-                            return JSONResponse(
-                                status_code=404,
-                                content={
-                                    "success": False,
-                                    "detail": f"Function not found: {func_name}",
-                                },
-                            )
-                    else:
-                        return JSONResponse(
-                            status_code=404,
-                            content={
-                                "success": False,
-                                "detail": f"Service cannot be run as an app: {service_id}, type: {info.type}",
-                            },
-                        )
-
-                    async def send_response(send_queue):
-                        # This function will be called to send data as it's received from the ASGI app
-                        while True:
-                            message = await send_queue.get()
-                            if message["type"] == "http.response.body":
-                                yield message["body"]
-                                if not message.get("more_body", False):
-                                    break
-
-                    # Extract initial status and headers from the queue
-                    initial_message = await send_queue.get()
-                    assert initial_message["type"] == "http.response.start"
-                    status = initial_message.get("status", 200)
-                    raw_headers = initial_message.get("headers", [])
-                    headers = {
-                        k.decode("latin-1"): v.decode("latin-1") for k, v in raw_headers
-                    }
-
-                    return StreamingResponse(
-                        send_response(send_queue), status_code=status, headers=headers
-                    )
-            except KeyError:
-                return Response(status_code=404)
-            except Exception as exp:
-                return JSONResponse(
-                    status_code=500,
-                    content={"success": False, "detail": str(exp)},
-                )
+            return RedirectResponse(
+                url=f"{base_path.rstrip('/')}/{workspace}/apps/{service_id}/"
+            )
 
         @app.get(norm_url("/{workspace}/server-apps/{app_id}/{path:path}"))
         async def get_browser_app_file(
@@ -773,6 +724,7 @@ class HTTPProxy:
             service_id: str,
             function_key: str,
             request: Request,
+            _mode: str = None,
             user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Run service function by keys."""
@@ -784,6 +736,7 @@ class HTTPProxy:
                     function_kwargs,
                     response_type,
                     user_info,
+                    mode=_mode,
                 )
             except Exception:
                 return JSONResponse(
@@ -796,6 +749,7 @@ class HTTPProxy:
             function_kwargs: extracted_kwargs = Depends(extracted_kwargs),
             response_type: detected_response_type = Depends(detected_response_type),
             user_info: store.login_optional = Depends(store.login_optional),
+            _mode: str = None,
         ):
             """Run service function by keys.
 
@@ -809,7 +763,8 @@ class HTTPProxy:
                     if service_id == "ws":
                         service = api
                     else:
-                        service = await api.get_service(service_id)
+                        info = await api.get_service_info(service_id, {"mode": _mode})
+                        service = await api.get_service(info.id)
                     func = get_value(function_key, service)
                     if not func:
                         return JSONResponse(

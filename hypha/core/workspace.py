@@ -836,7 +836,9 @@ class WorkspaceManager:
             else:
                 mode = "exact"
         if mode == "exact":
-            assert len(keys) == 1, f"Multiple services found for {service_id}"
+            assert (
+                len(keys) == 1
+            ), f"Multiple services found for {service_id}, e.g. {keys[:5]}. You can either specify the mode as 'random', 'first' or 'last', or provide the service id in `client_id:service_id` format."
             key = keys[0]
         elif mode == "random":
             key = random.choice(keys)
