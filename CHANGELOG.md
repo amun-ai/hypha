@@ -1,5 +1,9 @@
 # Hypha Change Log
 
+### 0.20.35
+
+ - Upgrade hypha-rpc to fix reset timer
+
 ### 0.20.34
  
  - Fix persistent workspace unloaded issue when s3 is not available.

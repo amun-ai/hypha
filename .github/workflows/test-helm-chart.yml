@@ -1,4 +1,4 @@
-name: Test Hypha Helm Chart
+name: Test and Publish Hypha Helm Chart
 
 on:
   push:
@@ -13,7 +13,7 @@ on:
       - 'hypha/VERSION'
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
     
     steps:
@@ -33,30 +33,18 @@ jobs:
     - name: Create hypha namespace
       run: kubectl create namespace hypha
 
-    - name: Copy .env-template to .env
-      run: cp helm-chart/.env-template helm-chart/.env
-
-    - name: Apply secrets
+    - name: Package Helm chart
       run: |
-        cd helm-chart
-        chmod +x apply-secrets.sh
-        ./apply-secrets.sh
+        cd helm-charts
+        helm package hypha-server
+        helm repo index . --url https://amun-ai.github.io/hypha/helm-charts
 
-    - name: Install Hypha Helm chart
-      run: helm install hypha-server ./helm-chart/hypha-server --namespace=hypha
-
-    # Skip the test for now
-    # - name: Wait for pods to be ready
-    #   run: |
-    #     kubectl wait --namespace=hypha \
-    #       --for=condition=ready pod \
-    #       --selector=app=hypha-server \
-    #       --timeout=300s
-
-    # - name: Test the webpage at /
-    #   run: |
-    #     SERVICE_IP=$(kubectl get svc hypha-server --namespace=hypha -o jsonpath='{.spec.clusterIP}')
-    #     curl -f http://$SERVICE_IP:9520/
+    - name: Publish to gh-pages
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./helm-charts
+        publish_branch: gh-pages
 
     - name: Uninstall Hypha Helm chart
       run: helm uninstall hypha-server --namespace=hypha

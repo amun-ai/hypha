@@ -26,7 +26,7 @@ class HyphaDataStore:
     def get_url(self, obj_id: str):
         assert self._svc, "Service not initialized, call `setup()`"
         assert obj_id in self.storage, "Object not found " + obj_id
-        return f"{self._server.config.public_base_url}/{self._server.config.workspace}/apps/{self._svc.id.split(':')[1]}/get?id={obj_id}"
+        return f"{self._server.config.public_base_url}/{self._server.config.workspace}/apps/{self._svc.id.split('/')[1]}/get?id={obj_id}"
 
     def put(self, obj_type: str, value: any, name: str, comment: str = ""):
         assert self._svc, "Please call `setup()` before using the store"
