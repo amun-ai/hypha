@@ -736,7 +736,7 @@ class HTTPProxy:
                     function_kwargs,
                     response_type,
                     user_info,
-                    mode=_mode,
+                    _mode=_mode,
                 )
             except Exception:
                 return JSONResponse(
