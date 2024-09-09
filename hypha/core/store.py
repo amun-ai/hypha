@@ -258,7 +258,7 @@ class RedisStore:
         workspaces = await self.get_all_workspace()
         logger.info("Upgrading workspace bookmarks for version < 0.20.34")
         for workspace in workspaces:
-            workspace.config["bookmarks"] = workspace.config.get("bookmarks") or {}
+            workspace.config["bookmarks"] = workspace.config.get("bookmarks") or []
             for bookmark in workspace.config["bookmarks"]:
                 if "type" in bookmark:
                     bookmark_type = bookmark["type"]
