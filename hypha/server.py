@@ -217,7 +217,7 @@ def create_application(args):
 
     store = RedisStore(
         application,
-        server_id=args.server_id,
+        server_id=args.server_id or env.get("HYPHA_SERVER_ID"),
         public_base_url=public_base_url,
         local_base_url=local_base_url,
         redis_uri=args.redis_uri,
