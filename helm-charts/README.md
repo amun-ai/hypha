@@ -74,7 +74,23 @@ startupCommand:
     - "--redis-uri=redis://redis.hypha.svc.cluster.local:6379/0"
 ```
 
-Now, upgrade the helm chart:
+To actually support multiple server instances, you need to set the `replicaCount` to more than 1 in the `values.yaml` file:
+
+```yaml
+replicaCount: 3
+```
+
+You also need to set the `HYPHA_SERVER_ID` environment variable to the pod's UID in the `values.yaml` file:
+```yaml
+env:
+  - name: HYPHA_SERVER_ID
+    valueFrom:
+      # Use the pod's UID as the server ID
+      fieldRef:
+        fieldPath: metadata.uid
+```
+
+Make sure to update the `values.yaml` file with the correct `redis-uri` and `replicaCount`, and add the `HYPHA_SERVER_ID` environment variable, then upgrade the helm chart:
 ```bash
 helm upgrade hypha-server ./hypha-server --namespace=hypha
 ```
