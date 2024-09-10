@@ -430,6 +430,9 @@ class RedisStore:
             await self._run_startup_functions(startup_functions)
         self._ready = True
         await self.get_event_bus().emit_local("startup")
+        servers = await self.list_servers()
+        logger.info("Server initialized with server id: %s", self._server_id)
+        logger.info("Currently connected hypha servers: %s", servers)
 
     async def _register_root_services(self):
         """Register root services."""

@@ -275,9 +275,14 @@ class WorkspaceManager:
             )
 
         # clean up the user's workspace
-        summary = await self.cleanup(workspace.id, context={"ws": workspace.id, "user": self._root_user.model_dump()})
+        summary = await self.cleanup(
+            workspace.id,
+            context={"ws": workspace.id, "user": self._root_user.model_dump()},
+        )
         if summary:
-            logger.info("Created workspace %s, clean up summary: %s", workspace.id, summary)
+            logger.info(
+                "Created workspace %s, clean up summary: %s", workspace.id, summary
+            )
         else:
             logger.info("Created workspace %s", workspace.id)
         return workspace.model_dump()
@@ -1403,7 +1408,9 @@ class WorkspaceManager:
             workspace = ws
         user_info = UserInfo.model_validate(context["user"])
         if not user_info.check_permission(workspace, UserPermission.admin):
-            raise PermissionError(f"Permission denied for workspace {workspace}, user: {user_info.id}")
+            raise PermissionError(
+                f"Permission denied for workspace {workspace}, user: {user_info.id}"
+            )
         # list all the clients and ping them
         # If they are not responding, delete them
         client_keys = await self._list_client_keys(workspace)
