@@ -21,7 +21,7 @@ from hypha.minio import MinioClient
 from hypha.utils import (
     generate_password,
     list_objects_async,
-    remove_objects_sync,
+    remove_objects_async,
     safe_join,
 )
 
@@ -150,6 +150,7 @@ DEFAULT_CORS_POLICY = {
     ]
 }
 
+
 class S3Controller:
     """Represent an S3 controller."""
 
@@ -206,7 +207,6 @@ class S3Controller:
         except s3client.exceptions.BucketAlreadyOwnedByYou:
             pass
 
-        self.s3client = s3client
         if self.minio_client:
             self.minio_client.admin_user_add_sync("root", generate_password())
 
@@ -287,8 +287,9 @@ class S3Controller:
                         "detail": f"Permission denied: {workspace}",
                     },
                 )
-            path = safe_join(workspace, path)
+
             if request.method == "GET":
+                path = safe_join(workspace, path)
                 return await self._get_files(path, max_length)
 
             if request.method == "DELETE":
@@ -300,7 +301,9 @@ class S3Controller:
                             "detail": f"Permission denied: workspace ({workspace}) is read-only",
                         },
                     )
-                return await self._delete_files(path)
+                return await self._delete_dir_or_files(
+                    path, {"ws": workspace, "user": user_info.model_dump()}
+                )
 
         store.register_router(router)
 
@@ -449,20 +452,27 @@ class S3Controller:
                     },
                 )
 
-    async def _delete_files(self, path: str):
+    async def _delete_dir_or_files(self, path: str, context: dict):
         """Delete files."""
-        if path.endswith("/"):
-            remove_objects_sync(self.s3client, self.workspace_bucket, path)
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "success": True,
-                },
-            )
+        workspace = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        assert user_info.check_permission(
+            workspace, UserPermission.read
+        ), f"Permission denied: {workspace}"
+        full_path = safe_join(workspace, path)
+
         async with self.create_client_async() as s3_client:
+            if full_path.endswith("/"):
+                await remove_objects_async(s3_client, self.workspace_bucket, full_path)
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "success": True,
+                    },
+                )
             try:
                 response = await s3_client.delete_object(
-                    Bucket=self.workspace_bucket, Key=path
+                    Bucket=self.workspace_bucket, Key=full_path
                 )
                 response["success"] = True
                 return JSONResponse(
@@ -516,16 +526,17 @@ class S3Controller:
             return
 
         if not workspace.persistent or force:
-            # remove workspace etc files
-            remove_objects_sync(
-                self.s3client,
-                self.workspace_bucket,
-                f"{self.workspace_etc_dir}/{workspace.id}/",
-            )
-            # remove files
-            remove_objects_sync(
-                self.s3client, self.workspace_bucket, workspace.id + "/"
-            )
+            async with self.create_client_async() as s3client:
+                # remove workspace etc files
+                await remove_objects_async(
+                    s3client,
+                    self.workspace_bucket,
+                    f"{self.workspace_etc_dir}/{workspace.id}/",
+                )
+                # remove files
+                await remove_objects_async(
+                    s3client, self.workspace_bucket, workspace.id + "/"
+                )
 
         if self.minio_client:
             try:
@@ -657,14 +668,17 @@ class S3Controller:
     ) -> Dict[str, Any]:
         """List files in the folder."""
         workspace = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
         if path.startswith("/"):
-            user_info = UserInfo.model_validate(context["user"])
             assert user_info.check_permission(
                 "*", UserPermission.admin
             ), "Permission denied: only admin can access the root folder."
             # remove the leading slash
             full_path = path[1:]
         else:
+            assert user_info.check_permission(
+                workspace, UserPermission.read
+            ), f"Permission denied: {workspace}"
             full_path = safe_join(workspace, path)
         async with self.create_client_async() as s3_client:
             # List files in the folder
@@ -712,6 +726,17 @@ class S3Controller:
             )  # FIXME: If we raise the error why do we need to log it first?
             raise
 
+    async def delete_directory(self, path: str, context: dict = None):
+        """Delete directory."""
+        # make sure the path is a directory
+        assert path.endswith("/"), "Path should end with a slash for directory"
+        return await self._delete_dir_or_files(path, context)
+
+    async def delete_file(self, path: str, context: dict = None):
+        """Delete file."""
+        assert not path.endswith("/"), "Path should not end with a slash for file"
+        return await self._delete_dir_or_files(path, context)
+
     def get_s3_service(self):
         """Get s3 controller."""
         svc = {
@@ -719,6 +744,8 @@ class S3Controller:
             "name": "S3 Storage",
             "config": {"visibility": "public", "require_context": True},
             "list_files": self.list_files,
+            "delete_directory": self.delete_directory,
+            "delete_file": self.delete_file,
             "generate_presigned_url": self.generate_presigned_url,
         }
         if self.minio_client:

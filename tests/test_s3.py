@@ -151,6 +151,11 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
             fil.write("hello")
         await obj.upload_file("/tmp/hello.txt")
 
+        with open("/tmp/hello2.txt", "w", encoding="utf-8") as fil:
+            fil.write("hello")
+        await obj.upload_file("/tmp/hello2.txt")
+        await s3controller.delete_file("hello2.txt")
+
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, test_file_requests)
         await asyncio.sleep(0.1)

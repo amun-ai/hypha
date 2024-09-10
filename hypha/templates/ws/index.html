@@ -14,6 +14,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
     <script src="https://cdn.auth0.com/js/auth0-spa-js/2.0/auth0-spa-js.production.js"></script>
     <script src="https://rawcdn.githack.com/nextapps-de/winbox/0.2.82/dist/winbox.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.7.7/axios.min.js"></script>
     <!-- Favicon and Icons -->
     <link rel="apple-touch-icon" sizes="180x180" href="./static/img/apple-touch-icon.png">
     <link rel="icon" type="image/png" sizes="32x32" href="./static/img/favicon-32x32.png">
@@ -317,22 +318,41 @@
             );
         };
 
-        const FileCard = ({ file, onGenerateUrl }) => {
+        const FileCard = ({ file, onDownload, onDelete, uploadProgress }) => {
             return (
-                <div className="flex justify-between items-center p-4 bg-gray-700 rounded-lg shadow-lg mb-4">
-                    <div>
-                        <i className="fas fa-file-alt mr-2"></i>
-                        {file.name}
-                    </div>
-                    <button
-                        className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300"
-                        onClick={() => onGenerateUrl(file.name)}
-                    >
-                        <i className="fas fa-share"></i>
-                    </button>
+              <div className="flex justify-between items-center p-4 bg-gray-700 rounded-lg shadow-lg mb-4">
+                <div>
+                  <i className="fas fa-file-alt mr-2"></i>
+                  {file.name}
                 </div>
+                {uploadProgress[file.name] && (
+                  <div className="w-1/2">
+                    <div className="w-full bg-gray-600 h-2 rounded">
+                      <div
+                        className="bg-blue-500 h-2 rounded"
+                        style={{ width: `${uploadProgress[file.name]}%` }}
+                      ></div>
+                    </div>
+                  </div>
+                )}
+                <div className="flex">
+                  <button
+                    className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300"
+                    onClick={() => onDownload(file)}
+                  >
+                    <i className="fas fa-download"></i>
+                  </button>
+                  <button
+                    className="bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 ml-2"
+                    onClick={() => onDelete(file)}
+                    >
+                    <i className="fas fa-trash"></i>
+                  </button>
+                </div>
+              </div>
             );
         };
+                 
 
         const Modal = ({ serviceInfo, onClose }) => {
             return (
@@ -646,7 +666,7 @@
             );
         };
         
-        const MainContent = ({ isCollapsed, enabledPanels, ws, workspaceId, panel, clients, services, apps, files, onGenerateUrl, onShowDetails, onInstallApp }) => {
+        const MainContent = ({ isCollapsed, enabledPanels, ws, s3, workspaceId, panel, clients, services, apps, files, onShowDetails, onInstallApp }) => {
 
             const [workspaces, setWorkspaces] = React.useState([]);
             const [showCreateModal, setShowCreateModal] = React.useState(false);
@@ -654,6 +674,12 @@
             const [editingWorkspace, setEditingWorkspace] = React.useState(null);
             const [currentWorkspaceInfo, setCurrentWorkspaceInfo] = React.useState(null);
             const [bookmarkedItems, setBookmarkedItems] = React.useState([]);
+            const [uploadProgress, setUploadProgress] = React.useState({});
+            const [fileList, setFileList] = React.useState(files);
+
+            React.useEffect(() => {
+                setFileList(files); // Keep file list updated
+            }, [files]);
 
             React.useEffect(() => {
                 const fetchWorkspaces = async () => {
@@ -773,9 +799,81 @@
                     alert(`Failed to unbookmark workspace: ${error.message}`);
                 }
             };
+
+            const handleFileDrop = async (e) => {
+                e.preventDefault();
+                const droppedFiles = e.dataTransfer.files;
+                for (const file of droppedFiles) {
+                  await handleFileUpload(file);
+                }
+              };
+            
+              const handleFileUpload = async (file) => {
+                try {
+                  const presignedUrl = await s3.generatePresignedUrl(file.name, "put_object");
+                  const token = config.token; // Assuming token is stored in config
+            
+                  const response = await axios.put(presignedUrl, file, {
+                    headers: {
+                      "Content-Type": file.type || "application/octet-stream",
+                    },
+                    onUploadProgress: (progressEvent) => {
+                      if (!progressEvent.total) return;
+                      const progress = (progressEvent.loaded / progressEvent.total) * 100;
+                      setUploadProgress((prev) => ({ ...prev, [file.name]: progress }));
+                    },
+                  });
+            
+                  if (response.status === 200) {
+                    console.log(`File ${file.name} uploaded successfully`);
+                    setFileList(await s3.listFiles()); // Refresh file list after successful upload
+                  } else {
+                    console.error("File upload failed", response.statusText);
+                  }
+                } catch (error) {
+                  console.error("File upload failed", error);
+                }
+              };
+            
+              const handleFileDownload = async (file) => {
+                try {
+                  if(file.type === 'directory'){
+                    alert('Cannot download a directory');
+                    return;
+                  }
+                  const presignedUrl = await s3.generatePresignedUrl(file.name, "get_object");
+                  window.open(presignedUrl, '_blank'); // Trigger file download
+                } catch (error) {
+                  console.error("Failed to generate download link", error);
+                }
+              };
+
+              const handleFileDelete = async (file) => {
+                try {
+                    let anwser;
+                    if(file.type === 'directory'){
+                        anwser = confirm(`Are you sure you want to delete the directory ${file.name} and all its contents?`);
+                    } else {
+                        anwser = confirm(`Are you sure you want to delete the file ${file.name}?`);
+                    }
+                    if(!anwser) return;
+                    if (file.type === 'directory') {
+                        await s3.deleteDirectory(file.name);
+                    } else {
+                        await s3.deleteFile(file.name);
+                    }
+                    setFileList(await s3.listFiles()); // Refresh file list after successful delete
+                } catch (error) {
+                  console.error("Failed to delete file", error);
+                }
+              };
         
             return (
-                <div className={`main-content transition-all duration-300 ${isCollapsed ? 'ml-16' : 'ml-64'}`}>
+                <div
+                    className={`main-content transition-all duration-300 ${isCollapsed ? 'ml-16' : 'ml-64'}`}
+                    onDrop={handleFileDrop}
+                    onDragOver={(e) => e.preventDefault()} // Prevent default to allow drop
+                >
                     {panel === 'dashboard' && (
                         <>
                             <h1 className="text-4xl font-bold capitalize">Dashboard</h1>
@@ -969,19 +1067,30 @@
         
                     {panel === 'files' && (
                         <>
-                            <h1 className="text-4xl font-bold capitalize">Files</h1>
-                            <p className="text-xl text-gray-400 mt-4">
-                                Files in workspace: <code>{workspaceId}</code>
+                        <h1 className="text-4xl font-bold capitalize">Files</h1>
+                        <p className="text-xl text-gray-400 mt-4">
+                            Files in workspace: <code>{workspaceId}</code>
+                        </p>
+                        <div className="p-4 border-dashed border-4 border-gray-600 rounded mt-6">
+                            <p className="text-center text-gray-500">
+                            Drag and drop files here to upload
                             </p>
-                            <div className="mt-6">
-                                {files.length === 0 ? (
-                                    <p>No files available.</p>
-                                ) : (
-                                    files.map(file => (
-                                        <FileCard key={file.name} file={file} onGenerateUrl={onGenerateUrl} />
-                                    ))
-                                )}
-                            </div>
+                        </div>
+                        <div className="mt-6">
+                            {fileList.length === 0 ? (
+                            <p>No files available.</p>
+                            ) : (
+                            fileList.map((file) => (
+                                <FileCard
+                                key={file.name}
+                                file={file}
+                                uploadProgress={uploadProgress}
+                                onDownload={handleFileDownload}
+                                onDelete={handleFileDelete}
+                                />
+                            ))
+                            )}
+                        </div>
                         </>
                     )}
         
@@ -1096,6 +1205,7 @@
             const [apps, setApps] = React.useState([]);
             const [files, setFiles] = React.useState([]);
             const [ws, setWs] = React.useState(null);
+            const [s3, setS3] = React.useState(null);
             const [selectedService, setSelectedService] = React.useState(null);
         
             React.useEffect(() => {
@@ -1113,8 +1223,9 @@
                             console.log("Server apps service not available");
                         }
                         try {
-                            await remoteServer.getService('public/s3-storage', { case_conversion: 'camel' });
+                            const s3 = await remoteServer.getService('public/s3-storage', { case_conversion: 'camel' });
                             newPanels.push('files');
+                            setS3(s3);
                         }
                         catch(e){
                             console.log("S3 storage service not available");
@@ -1149,7 +1260,7 @@
                     } else if (activePanel === 'files') {
                         try {
                             const s3 = await ws.getService('public/s3-storage', { case_conversion: 'camel' });
-                            const files = await s3.listFiles('');
+                            const files = await s3.listFiles();
                             setFiles(files);
                         } catch (e) {
                             alert(`Failed to list files: ${e.message}`);
@@ -1159,11 +1270,6 @@
                 fetchWorkspaceData();
                 document.title = `${activePanel.charAt(0).toUpperCase() + activePanel.slice(1)} - Hypha Workspace Management`;
             }, [activePanel, ws]);
-
-            const onGenerateUrl = async (fileName) => {
-                const presignedUrl = await ws.generatePresignedUrl(fileName);
-                console.log('Presigned URL:', presignedUrl);
-            };
         
             const onShowDetails = (service) => {
                 setSelectedService(service);
@@ -1212,13 +1318,13 @@
                         isCollapsed={isCollapsed}
                         enabledPanels={enabledPanels}
                         ws={ws}
+                        s3={s3}
                         workspaceId={config.workspace}
                         panel={activePanel}
                         clients={clients}
                         services={services}
                         apps={apps}
                         files={files}
-                        onGenerateUrl={onGenerateUrl}
                         onShowDetails={onShowDetails}
                         onInstallApp={onInstallApp}
                     />
