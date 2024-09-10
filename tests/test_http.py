@@ -191,14 +191,16 @@ async def test_http_proxy(
     )
     print(response.text)
     assert not response.ok
+    
+    service_id = svc1.id.split("/")[-1]
 
     response = requests.get(
-        f"{SERVER_URL}/{service_ws}/services/test_service/echo?v=3345&_mode=first"
+        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo?v=3345"
     )
     assert response.ok, response.json()["detail"]
 
     response = requests.get(
-        f"{SERVER_URL}/{service_ws}/services/test_service/echo?v=33",
+        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo?v=33",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.ok, response.json()["detail"]
@@ -206,7 +208,7 @@ async def test_http_proxy(
     assert service_info["v"] == 33
 
     response = requests.post(
-        f"{SERVER_URL}/{service_ws}/services/test_service/echo",
+        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo",
         data=msgpack.dumps({"data": 123}),
         headers={"Content-type": "application/msgpack"},
     )
@@ -215,7 +217,7 @@ async def test_http_proxy(
     assert result["data"] == 123
 
     response = requests.post(
-        f"{SERVER_URL}/{service_ws}/services/test_service/echo",
+        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo",
         data=json.dumps({"data": 123}),
         headers={"Content-type": "application/json"},
     )
@@ -224,7 +226,7 @@ async def test_http_proxy(
     assert result["data"] == 123
 
     response = requests.post(
-        f"{SERVER_URL}/{service_ws}/services/test_service/echo",
+        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo",
         data=msgpack.dumps({"data": 123}),
         headers={
             "Content-type": "application/msgpack",
@@ -250,7 +252,7 @@ async def test_http_proxy(
     data = msgpack.dumps({"data": input_data})
     compressed_data = gzip.compress(data)
     response = requests.post(
-        f"{SERVER_URL}/{service_ws}/services/test_service/echo",
+        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo",
         data=compressed_data,
         headers={
             "Content-Type": "application/msgpack",

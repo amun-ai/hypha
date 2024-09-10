@@ -104,7 +104,7 @@ async def extracted_kwargs(
         if use_function_kwargs:
             kwargs = json.loads(kwargs.get("function_kwargs", "{}"))
         else:
-            for key in kwargs:
+            for key in list(kwargs.keys()):
                 if key in ["workspace", "service_id", "function_key", "_mode"]:
                     del kwargs[key]
                 else:
@@ -125,7 +125,7 @@ async def extracted_kwargs(
             kwargs = kwargs.get("function_kwargs", {})
         else:
             for key in ["workspace", "service_id", "function_key", "_mode"]:
-                if key in kwargs:
+                if key in list(kwargs.keys()):
                     del kwargs[key]
     else:
         raise RuntimeError(f"Invalid request method: {request.method}")
