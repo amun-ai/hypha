@@ -64,6 +64,7 @@ class WorkspaceManager:
         root_user: UserInfo,
         event_bus: EventBus,
         server_info: dict,
+        client_id: str,
         s3_controller: Optional[S3Controller] = None,
     ):
         self._redis = redis
@@ -72,11 +73,11 @@ class WorkspaceManager:
         self._root_user = root_user
         self._event_bus = event_bus
         self._server_info = server_info
-        self._client_id = None
+        self._client_id = client_id
         self._s3_controller = s3_controller
 
     def get_client_id(self):
-        assert self._client_id is not None, "Manager client id not set."
+        assert self._client_id, "client id must not be empty."
         return self._client_id
 
     async def setup(
@@ -87,7 +88,7 @@ class WorkspaceManager:
         """Setup the workspace manager."""
         if self._initialized:
             return self._rpc
-        self._client_id = "ws-" + random_id(readable=False)
+        assert self._client_id, "client id must be provided."
         rpc = self._create_rpc(self._client_id)
         self._rpc = rpc
         management_service = self.create_service(service_id, service_name)

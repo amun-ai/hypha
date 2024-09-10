@@ -359,6 +359,14 @@ class ASGIRoutingMiddleware:
                         ],
                     }
                 )
+                await send(
+                    {
+                        "type": "http.response.body",
+                        "body": b"Internal Server Error: "
+                        + traceback.format_exc().encode(),
+                        "more_body": False,
+                    }
+                )
         else:
             await send(
                 {
@@ -367,6 +375,13 @@ class ASGIRoutingMiddleware:
                     "headers": [
                         [b"content-type", b"text/plain"],
                     ],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b"Function not found: " + func_name.encode(),
+                    "more_body": False,
                 }
             )
 

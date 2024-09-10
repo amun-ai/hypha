@@ -104,7 +104,6 @@ class RedisStore:
         self._workspace_manager = None
         self._websocket_server = None
         self._server_id = server_id or "server-0"
-        self.manager_id = None
         self.reconnection_token_life_time = reconnection_token_life_time
         self._server_info = {
             "hypha_version": __version__,
@@ -366,7 +365,6 @@ class RedisStore:
         await self.check_and_cleanup_servers()
         self._workspace_manager = await self.register_workspace_manager()
 
-        self.manager_id = self._workspace_manager.get_client_id()
         try:
             await self.register_workspace(
                 WorkspaceInfo.model_validate(
@@ -437,7 +435,10 @@ class RedisStore:
     async def _register_root_services(self):
         """Register root services."""
         self._root_workspace_interface = await self.get_workspace_interface(
-            self._root_user.get_workspace(), self._root_user, silent=False
+            self._root_user.get_workspace(),
+            self._root_user,
+            client_id=self._server_id,
+            silent=False,
         )
         await self._root_workspace_interface.register_service(
             {
@@ -470,7 +471,7 @@ class RedisStore:
         """Get the public API."""
         if self._public_workspace_interface is None:
             self._public_workspace_interface = await self.get_workspace_interface(
-                "public", self._root_user, silent=False
+                "public", self._root_user, client_id=self._server_id, silent=False
             )
         return self._public_workspace_interface
 
@@ -585,6 +586,9 @@ class RedisStore:
             workspace, user_info, client_id=client_id, timeout=timeout, silent=silent
         )
 
+    def get_manager_id(self):
+        return self._workspace_manager.get_client_id()
+
     async def register_workspace_manager(self):
         """Register a workspace manager."""
         manager = WorkspaceManager(
@@ -592,6 +596,7 @@ class RedisStore:
             self._root_user,
             self._event_bus,
             self._server_info,
+            self._server_id,
             self._s3_controller,
         )
         await manager.setup()
@@ -615,7 +620,7 @@ class RedisStore:
         # the client will be hidden if client_id is None
         if silent is None:
             silent = client_id is None
-        client_id = client_id or self._server_id
+        client_id = client_id or "client-" + random_id(readable=False)
         rpc = self.create_rpc(workspace, user_info, client_id=client_id, silent=silent)
         return WorkspaceInterfaceContextManager(
             rpc, self._redis, workspace, timeout=timeout
@@ -648,7 +653,7 @@ class RedisStore:
         logger.info("Creating RPC for client %s", client_id)
         assert user_info is not None, "User info is required"
         connection = RedisRPCConnection(
-            self._event_bus, workspace, client_id, user_info, manager_id=self.manager_id
+            self._event_bus, workspace, client_id, user_info, manager_id=self._server_id
         )
         rpc = RPC(
             connection,

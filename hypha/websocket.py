@@ -268,7 +268,7 @@ class WebsocketServer:
                 "hypha_version": __version__,
                 "public_base_url": self.store.public_base_url,
                 "local_base_url": self.store.local_base_url,
-                "manager_id": self.store.manager_id,
+                "manager_id": self.store.get_manager_id(),
                 "workspace": workspace,
                 "client_id": client_id,
                 "user": user_info.model_dump(),
