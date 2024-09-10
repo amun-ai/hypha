@@ -45,6 +45,9 @@ jobs:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         publish_dir: ./helm-charts
         publish_branch: gh-pages
+    
+    - name: Install Hypha Helm chart
+      run: helm install hypha-server hypha-server --namespace=hypha
 
     - name: Uninstall Hypha Helm chart
       run: helm uninstall hypha-server --namespace=hypha
