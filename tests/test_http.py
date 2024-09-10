@@ -65,7 +65,7 @@ async def test_http_services(minio_server, fastapi_server, test_user_token):
         }
     )
     workspace = api.config["workspace"]
-    await api.register_service(
+    svc = await api.register_service(
         {
             "id": "test_service",
             "name": "test_service",
@@ -77,7 +77,7 @@ async def test_http_services(minio_server, fastapi_server, test_user_token):
         }
     )
     async with httpx.AsyncClient(timeout=20.0) as client:
-        url = f"{SERVER_URL}/{workspace}/services/test_service/echo"
+        url = f"{SERVER_URL}/{workspace}/services/{svc.id.split('/')[1]}/echo"
         data = await client.post(url, json={"data": "123"})
         assert data.status_code == 200
         assert data.json() == "123"
@@ -109,12 +109,12 @@ async def test_http_proxy(
 
     # Test app with custom template
     controller = await api.get_service("public/server-apps")
-    config = await controller.launch(
+    app_config = await controller.launch(
         source=TEST_APP_CODE,
         config={"type": "window"},
         wait_for_service=True,
     )
-    app = await api.get_app(config.id)
+    app = await api.get_app(app_config.id)
     assert "setup" in app and "register_services" in app
     svc1, svc2 = await app.register_services()
 
@@ -269,3 +269,7 @@ async def test_http_proxy(
     )
 
     assert output_array.shape == input_array.shape
+    
+    await controller.stop(app_config.id)
+    
+    await api.disconnect()
