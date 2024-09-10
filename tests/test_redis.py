@@ -39,7 +39,7 @@ async def test_redis_store(redis_store):
     assert find_item(wss, "name", "test")
 
     api = await redis_store.connect_to_workspace("test", client_id="test-app-99")
-    clients = set(await api.list_clients())
+    clients = await api.list_clients()
     assert find_item(clients, "id", "test/test-app-99")
     await api.log("hello")
     services = await api.list_services()
