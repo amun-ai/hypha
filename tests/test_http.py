@@ -191,7 +191,7 @@ async def test_http_proxy(
     )
     print(response.text)
     assert not response.ok
-    
+
     service_id = svc1.id.split("/")[-1]
 
     response = requests.get(
@@ -269,7 +269,7 @@ async def test_http_proxy(
     )
 
     assert output_array.shape == input_array.shape
-    
+
     await controller.stop(app_config.id)
-    
+
     await api.disconnect()
