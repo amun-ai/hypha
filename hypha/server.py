@@ -217,6 +217,7 @@ def create_application(args):
 
     store = RedisStore(
         application,
+        server_id=args.server_id,
         public_base_url=public_base_url,
         local_base_url=local_base_url,
         redis_uri=args.redis_uri,
@@ -395,6 +396,12 @@ def get_argparser(add_help=True):
         type=str,
         nargs="*",
         help="Specifies one or more startup functions. Each URI should be in the format '<python module or script>:<entrypoint function name>'. These functions are executed at server startup to perform initialization tasks such as loading services, configuring the server, or launching additional processes.",
+    )
+    parser.add_argument(
+        "--server-id",
+        type=str,
+        default=None,
+        help="The server ID of this instance, used to distinguish between multiple instances of hypha server in a distributed environment",
     )
 
     return parser

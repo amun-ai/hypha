@@ -104,7 +104,8 @@ async def test_workspace(fastapi_server, test_user_token):
     await api2.export({"foo": "bar"})
     # services = api2.rpc.get_all_local_services()
     clients = await api2.list_clients()
-    assert "my-new-test-workspace/my-app-2" in clients
+    assert find_item(clients, "id", "my-new-test-workspace/my-app-2")
+
     ss3 = await api2.list_services({"type": "test-type"})
     assert len(ss3) == 1
 

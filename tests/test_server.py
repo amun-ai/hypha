@@ -322,10 +322,8 @@ async def test_server_scalability(
     await asyncio.sleep(0.2)
 
     clients = await api77.list_clients()
-    assert (
-        "my-test-workspace/my-app-77" in clients
-        and "my-test-workspace/my-app-88" in clients
-    )
+    assert find_item(clients, "id", "my-test-workspace/my-app-77")
+    assert find_item(clients, "id", "my-test-workspace/my-app-88")
 
     await api77.register_service(
         {

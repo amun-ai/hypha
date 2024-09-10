@@ -208,6 +208,7 @@ def fastapi_server_redis_1(redis_server, minio_server):
             # "--enable-s3",
             # need to define it so the two server can communicate
             f"--public-base-url=http://my-public-url.com",
+            "--server-id=server-0",
             f"--redis-uri=redis://127.0.0.1:{REDIS_PORT}/0",
             "--reset-redis",
             # f"--endpoint-url={MINIO_SERVER_URL}",
@@ -249,6 +250,7 @@ def fastapi_server_redis_2(redis_server, minio_server, fastapi_server):
             # "--enable-s3",
             # need to define it so the two server can communicate
             f"--public-base-url=http://my-public-url.com",
+            "--server-id=server-1",
             f"--redis-uri=redis://127.0.0.1:{REDIS_PORT}/0",
             # f"--endpoint-url={MINIO_SERVER_URL}",
             # f"--access-key-id={MINIO_ROOT_USER}",

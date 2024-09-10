@@ -1,33 +1,31 @@
 <config lang="json">
 {
-    "name": "Untitled Plugin",
-    "type": "web-python",
-    "version": "0.1.0",
-    "description": "[TODO: describe this plugin with one sentence.]",
+    "name": "Untitled App",
+    "type": "web-worker",
     "tags": [],
     "ui": "",
+    "version": "0.1.0",
     "cover": "",
-    "inputs": null,
-    "outputs": null,
-    "flags": [],
+    "description": "[TODO: describe this app with one sentence.]",
     "icon": "extension",
     "api_version": "0.1.8",
-    "env": "",
-    "permissions": [],
-    "requirements": [],
+    "requirements": ["https://cdn.jsdelivr.net/npm/hypha-rpc@latest/dist/hypha-rpc-websocket.min.js"],
     "dependencies": []
 }
 </config>
-    
-<script lang="python">
-from hypha_rpc import api, connect_to_server
 
-async def setup():
-    server_config = await api.get_server_config()
-    server = await connect_to_server(server_config)
-    # now you can use the server object to interact with the server
-    await api.alert(await server.echo("Hello World!"))
+<script lang="javascript">
+class HyphaApp {
+    async setup() {
+        const serverConfig = await api.getServerConfig()
+        const server = await hyphaWebsocketClient.connectToServer(serverConfig)
+        // now you can use the server object to interact with the server
+        await api.alert(await server.echo("Hello World!"))
+        
+        await server.disconnect()
+    }
+}
 
-api.export({"setup": setup})
+api.export(new HyphaApp())
 </script>
-
+    

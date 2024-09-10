@@ -106,7 +106,7 @@ class WorkspaceManager:
         workspace_info = await self.load_workspace_info(ws)
         workspace_info = workspace_info.model_dump()
         workspace_summary_fields = ["name", "description"]
-        clients = await self.list_clients(context=context)
+        clients = await self._list_client_keys(ws)
         services = await self.list_services(context=context)
         summary = {k: workspace_info[k] for k in workspace_summary_fields}
         summary.update(
@@ -273,6 +273,13 @@ class WorkspaceManager:
             await self.bookmark(
                 {"bookmark_type": "workspace", "id": workspace.id}, context=context
             )
+
+        # clean up the user's workspace
+        summary = await self.cleanup(workspace.id, context={"ws": workspace.id, "user": self._root_user.model_dump()})
+        if summary:
+            logger.info("Created workspace %s, clean up summary: %s", workspace.id, summary)
+        else:
+            logger.info("Created workspace %s", workspace.id)
         return workspace.model_dump()
 
     @schema_method
@@ -489,13 +496,33 @@ class WorkspaceManager:
         workspace = workspace or cws
         pattern = f"services:*|*:{workspace}/*:built-in@*"
         keys = await self._redis.keys(pattern)
-        clients = set()
+        clients = []
+        for key in set(keys):
+            service_data = await self._redis.hgetall(key)
+            service = ServiceInfo.from_redis_dict(service_data)
+            if "/" in service.id:
+                client_id = service.id.split("/")[1].split(":")[0]
+            else:
+                client_id = service.id.split(":")[0]
+            clients.append(
+                {
+                    "id": workspace + "/" + client_id,
+                    "user": service.config.created_by,
+                }
+            )
+        return clients
+
+    async def _list_client_keys(self, workspace: str):
+        """List all client keys in the workspace."""
+        pattern = f"services:*|*:{workspace}/*:built-in@*"
+        keys = await self._redis.keys(pattern)
+        client_keys = set()
         for key in keys:
             # Extract the client ID from the service key
             key_parts = key.decode("utf-8").split("/")
             client_id = key_parts[1].split(":")[0]
-            clients.add(workspace + "/" + client_id)
-        return list(clients)
+            client_keys.add(workspace + "/" + client_id)
+        return list(client_keys)
 
     @schema_method
     async def ping_client(
@@ -723,6 +750,13 @@ class WorkspaceManager:
 
         service_name = service.id.split(":")[1]
         workspace = service.id.split("/")[0]
+
+        # Store all the info for client's built-in services
+        if service_name == "built-in" and service.type == "built-in":
+            service.config.created_by = user_info.model_dump()
+        else:
+            service.config.created_by = {"id": user_info.id}
+
         key = f"services:*|*:{workspace}/*:{service_name}@*"
         peer_keys = await self._redis.keys(key)
         if len(peer_keys) > 0:
@@ -1318,7 +1352,7 @@ class WorkspaceManager:
     async def unload_if_empty(self, context=None):
         """Delete the workspace if it is empty."""
         self.validate_context(context, permission=UserPermission.admin)
-        client_keys = await self.list_clients(context=context)
+        client_keys = await self._list_client_keys(context["ws"])
         if not client_keys:
             await self.unload(context=context)
         else:
@@ -1332,7 +1366,7 @@ class WorkspaceManager:
         ws = context["ws"]
         winfo = await self.load_workspace_info(ws)
         # list all the clients in the workspace and send a meesage to delete them
-        client_keys = await self.list_clients(context=context)
+        client_keys = await self._list_client_keys(winfo.id)
         if len(client_keys) > 0:
             # if there are too many, log the first 10
             client_summary = ", ".join(client_keys[:10]) + (
@@ -1369,12 +1403,13 @@ class WorkspaceManager:
             workspace = ws
         user_info = UserInfo.model_validate(context["user"])
         if not user_info.check_permission(workspace, UserPermission.admin):
-            raise PermissionError(f"Permission denied for workspace {workspace}")
+            raise PermissionError(f"Permission denied for workspace {workspace}, user: {user_info.id}")
         # list all the clients and ping them
         # If they are not responding, delete them
-        clients = await self.list_clients(context=context)
+        client_keys = await self._list_client_keys(workspace)
         removed = []
-        for client in clients:
+        summary = {}
+        for client in client_keys:
             try:
                 assert (
                     await self.ping_client(client, timeout=timeout, context=context)
@@ -1387,7 +1422,9 @@ class WorkspaceManager:
                     client, ws, context["user"], unload=False, context=context
                 )
                 removed.append(client)
-        return {"removed_clients": removed}
+        if removed:
+            summary["removed_clients"] = removed
+        return summary
 
     def create_service(self, service_id, service_name=None):
         interface = {
