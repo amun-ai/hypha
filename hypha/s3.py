@@ -177,12 +177,29 @@ class S3Controller:
         self.workspace_bucket = workspace_bucket
         # self.local_log_dir = Path(local_log_dir)
         self.workspace_etc_dir = workspace_etc_dir.rstrip("/")
-        event_bus = store.get_event_bus()
-
         s3client = self.create_client_sync()
         try:
             s3client.create_bucket(Bucket=self.workspace_bucket)
             logger.info("Bucket created: %s", self.workspace_bucket)
+            # apply CORS policy
+            s3client.put_bucket_cors(
+                Bucket=self.workspace_bucket,
+                CORSConfiguration={
+                    "CORSRules": [
+                        {
+                            "AllowedHeaders": ["*"],
+                            "ExposeHeaders": [
+                                "Accept-Ranges",
+                                "Content-Length",
+                                "Content-Range",
+                            ],
+                            "AllowedMethods": ["GET", "HEAD"],
+                            "AllowedOrigins": ["*"],
+                            "MaxAgeSeconds": 3000,
+                        }
+                    ]
+                },
+            )
         except s3client.exceptions.BucketAlreadyExists:
             pass
         except s3client.exceptions.BucketAlreadyOwnedByYou:

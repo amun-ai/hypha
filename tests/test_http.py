@@ -193,7 +193,7 @@ async def test_http_proxy(
     assert not response.ok
 
     response = requests.get(
-        f"{SERVER_URL}/{service_ws}/services/test_service/echo?v=3345"
+        f"{SERVER_URL}/{service_ws}/services/test_service/echo?v=3345&_mode=first"
     )
     assert response.ok, response.json()["detail"]
 
