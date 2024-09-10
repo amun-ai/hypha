@@ -3,12 +3,12 @@ entries:
   hypha-server:
   - apiVersion: v2
     appVersion: 0.20.14
-    created: "2024-09-10T23:18:48.716116251Z"
+    created: "2024-09-10T23:48:18.670425839Z"
     description: A Helm chart for deploying Hypha Server to Kubernetes
-    digest: 84b150ce2486059ebb92983fd8f720f1098fabb10b0abad0759e7deea5eb266f
+    digest: c3a27b8b05848a515852be3ab28a08264fe328f207739dfa6af53cc28063d913
     name: hypha-server
     type: application
     urls:
     - https://amun-ai.github.io/hypha/helm-charts/hypha-server-0.1.0.tgz
     version: 0.1.0
-generated: "2024-09-10T23:18:48.715019806Z"
+generated: "2024-09-10T23:48:18.669721112Z"
