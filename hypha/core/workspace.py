@@ -250,7 +250,7 @@ class WorkspaceManager:
             workspace.owners.append(user_info.id)
         self._validate_workspace_id(workspace.id, with_hyphen=user_info.id != "root")
         # make sure we add the user's email to owners
-        _id = user_info.email or user_info.id
+        _id = user_info.id
         if _id not in workspace.owners:
             workspace.owners.append(_id)
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
