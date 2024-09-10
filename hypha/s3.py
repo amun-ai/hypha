@@ -138,6 +138,18 @@ class JSONResponse(Response):
         ).encode("utf-8")
 
 
+DEFAULT_CORS_POLICY = {
+    "CORSRules": [
+        {
+            "AllowedHeaders": ["*"],
+            "ExposeHeaders": ["Accept-Ranges", "Content-Length", "Content-Range"],
+            "AllowedMethods": ["GET", "HEAD"],
+            "AllowedOrigins": ["*"],
+            "MaxAgeSeconds": 3000,
+        }
+    ]
+}
+
 class S3Controller:
     """Represent an S3 controller."""
 
@@ -181,25 +193,14 @@ class S3Controller:
         try:
             s3client.create_bucket(Bucket=self.workspace_bucket)
             logger.info("Bucket created: %s", self.workspace_bucket)
-            # apply CORS policy
-            s3client.put_bucket_cors(
-                Bucket=self.workspace_bucket,
-                CORSConfiguration={
-                    "CORSRules": [
-                        {
-                            "AllowedHeaders": ["*"],
-                            "ExposeHeaders": [
-                                "Accept-Ranges",
-                                "Content-Length",
-                                "Content-Range",
-                            ],
-                            "AllowedMethods": ["GET", "HEAD"],
-                            "AllowedOrigins": ["*"],
-                            "MaxAgeSeconds": 3000,
-                        }
-                    ]
-                },
-            )
+            try:
+                if self.s3_admin_type != "minio":
+                    s3client.put_bucket_cors(
+                        Bucket=self.workspace_bucket,
+                        CORSConfiguration=DEFAULT_CORS_POLICY,
+                    )
+            except Exception as ex:
+                logger.error("Failed to apply CORS policy: %s", ex)
         except s3client.exceptions.BucketAlreadyExists:
             pass
         except s3client.exceptions.BucketAlreadyOwnedByYou:
