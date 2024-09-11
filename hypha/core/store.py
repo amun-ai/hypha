@@ -103,7 +103,7 @@ class RedisStore:
         self._ready = False
         self._workspace_manager = None
         self._websocket_server = None
-        self._server_id = server_id or "server-0"
+        self._server_id = server_id or random_id(readable=True)
         self.reconnection_token_life_time = reconnection_token_life_time
         self._server_info = {
             "server_id": self._server_id,
@@ -365,7 +365,7 @@ class RedisStore:
             await self._redis.flushall()
         await self._event_bus.init()
         await self.setup_root_user()
-        # await self.check_and_cleanup_servers()
+        await self.check_and_cleanup_servers()
         self._workspace_manager = await self.register_workspace_manager()
 
         try:
