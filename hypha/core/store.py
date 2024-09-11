@@ -106,6 +106,7 @@ class RedisStore:
         self._server_id = server_id or "server-0"
         self.reconnection_token_life_time = reconnection_token_life_time
         self._server_info = {
+            "server_id": self._server_id,
             "hypha_version": __version__,
             "public_base_url": self.public_base_url,
             "local_base_url": self.local_base_url,
@@ -115,6 +116,8 @@ class RedisStore:
             "auth0_issuer": AUTH0_ISSUER,
             "login_service_url": f"{self.public_base_url}{LOGIN_SERVICE_URL}",
         }
+        
+        logger.info("Server info: %s", self._server_info)
 
         if redis_uri and redis_uri.startswith("redis://"):
             from redis import asyncio as aioredis
