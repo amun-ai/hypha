@@ -365,7 +365,7 @@ class RedisStore:
             await self._redis.flushall()
         await self._event_bus.init()
         await self.setup_root_user()
-        await self.check_and_cleanup_servers()
+        # await self.check_and_cleanup_servers()
         self._workspace_manager = await self.register_workspace_manager()
 
         try:
