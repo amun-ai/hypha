@@ -67,9 +67,9 @@ async def test_http_services(minio_server, fastapi_server, test_user_token):
     workspace = api.config["workspace"]
     svc = await api.register_service(
         {
-            "id": "test_service",
-            "name": "test_service",
-            "type": "test_service",
+            "id": "my_service",
+            "name": "my_service",
+            "type": "my_service",
             "config": {
                 "visibility": "public",
             },
@@ -85,7 +85,7 @@ async def test_http_services(minio_server, fastapi_server, test_user_token):
         data = await client.get(f"{SERVER_URL}/{workspace}/services")
         # [{'config': {'visibility': 'public', 'require_context': False, 'workspace': 'VRRVEdTF9of2y4cLmepzBw', 'flags': []}, 'id': '5XCPAyZrW72oBzywEk2oxP:test_service', 'name': 'test_service', 'type': 'test_service', 'description': '', 'docs': {}}]
         assert data.status_code == 200
-        assert find_item(data.json(), "name", "test_service")
+        assert find_item(data.json(), "name", "my_service")
 
     await api.disconnect()
 
