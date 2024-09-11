@@ -72,6 +72,7 @@ async def test_http_services(minio_server, fastapi_server, test_user_token):
             "type": "my_service",
             "config": {
                 "visibility": "public",
+                "run_in_executor": True,
             },
             "echo": lambda data: data,
         }
