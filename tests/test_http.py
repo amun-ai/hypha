@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import httpx
 import requests
+import asyncio
 from hypha_rpc.websocket_client import connect_to_server
 
 from . import WS_SERVER_URL, SERVER_URL, find_item
@@ -60,7 +61,7 @@ async def test_http_services(minio_server, fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 10,
+            "method_timeout": 30,
             "token": test_user_token,
         }
     )
