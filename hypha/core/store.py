@@ -104,6 +104,7 @@ class RedisStore:
         self._workspace_manager = None
         self._websocket_server = None
         self._server_id = server_id or random_id(readable=True)
+        self._manager_id = "manager-" + self._server_id
         self.reconnection_token_life_time = reconnection_token_life_time
         self._server_info = {
             "server_id": self._server_id,
@@ -598,7 +599,7 @@ class RedisStore:
             self._root_user,
             self._event_bus,
             self._server_info,
-            "manager-" + self._server_id,
+            self._manager_id,
             self._s3_controller,
         )
         await manager.setup()
@@ -655,7 +656,7 @@ class RedisStore:
         logger.info("Creating RPC for client %s", client_id)
         assert user_info is not None, "User info is required"
         connection = RedisRPCConnection(
-            self._event_bus, workspace, client_id, user_info, manager_id=self.get_manager_id()
+            self._event_bus, workspace, client_id, user_info, manager_id=self._manager_id,
         )
         rpc = RPC(
             connection,
