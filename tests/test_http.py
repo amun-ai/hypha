@@ -77,6 +77,7 @@ async def test_http_services(minio_server, fastapi_server, test_user_token):
             "echo": lambda data: data,
         }
     )
+    await asyncio.sleep(0.5)
     async with httpx.AsyncClient(timeout=20.0) as client:
         url = f"{SERVER_URL}/{workspace}/services/{svc.id.split('/')[1]}/echo"
         data = await client.post(url, json={"data": "123"})
