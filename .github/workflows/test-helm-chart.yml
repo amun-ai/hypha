@@ -48,7 +48,7 @@ jobs:
         helm install hypha-server ./dist/hypha-server-*.tgz --namespace=hypha
 
     - name: Uninstall Hypha Helm chart
-      run: 
+      run: |
         helm uninstall hypha-server --namespace=hypha
         helm uninstall redis --namespace=hypha
 
