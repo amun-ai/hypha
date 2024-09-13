@@ -37,12 +37,29 @@ jobs:
       run: |
         cd helm-charts
         helm package hypha-server
+        mkdir -p ../dist
+        mv hypha-server-*.tgz ../dist
+        helm package redis
+        mv redis-*.tgz ../dist
 
     - name: Install Hypha Helm chart from packaged .tgz
-      run: helm install hypha-server ./helm-charts/hypha-server-*.tgz --namespace=hypha
+      run: |
+        helm install redis ./helm-charts/redis-*.tgz --namespace=hypha
+        helm install hypha-server ./helm-charts/hypha-server-*.tgz --namespace=hypha
 
     - name: Uninstall Hypha Helm chart
-      run: helm uninstall hypha-server --namespace=hypha
+      run: 
+        helm uninstall hypha-server --namespace=hypha
+        helm uninstall redis --namespace=hypha
 
     - name: Delete namespace
       run: kubectl delete namespace hypha
+
+    - name: Upload to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./dist
+        publish_branch: gh-pages
+        keep_files: true
