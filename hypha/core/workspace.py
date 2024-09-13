@@ -576,7 +576,7 @@ class WorkspaceManager:
         if isinstance(query, str):
             visibility = "*"
             type_filter = "*"
-            workspace = "*"
+            workspace = cws
             client_id = "*"
             service_id = "*"
 
@@ -643,7 +643,7 @@ class WorkspaceManager:
 
         # Automatically limit visibility to public if workspace is "*"
         original_visibility = query.get("visibility", "*")
-        workspace = query.get("workspace", "*")
+        workspace = query.get("workspace", cws)
         if workspace == "*":
             assert (
                 original_visibility != "protected"
