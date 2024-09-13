@@ -756,7 +756,6 @@ class WorkspaceManager:
 
         service_name = service.id.split(":")[1]
         workspace = service.id.split("/")[0]
-
         # Store all the info for client's built-in services
         if service_name == "built-in" and service.type == "built-in":
             service.config.created_by = user_info.model_dump()
@@ -785,13 +784,18 @@ class WorkspaceManager:
                 )
                 return
         # Check if the service already exists
-        service_exists = await self._redis.exists(
-            f"services:*|*:{service.id}@{service.app_id}"
+        service_exists = await self._redis.keys(
+            f"services:*|*:{service.id}@*"
         )
         key = f"services:{service.config.visibility.value}|{service.type}:{service.id}@{service.app_id}"
-        await self._redis.hset(key, mapping=service.to_redis_dict())
-
+        
         if service_exists:
+            # remove all the existing services
+            # This is needed because it is maybe registered with a different app_id
+            for k in service_exists:
+                logger.info(f"Replacing existing service: {k}")
+                await self._redis.delete(k)
+            await self._redis.hset(key, mapping=service.to_redis_dict())
             if ":built-in@" in key:
                 await self._event_bus.emit(
                     "client_updated", {"id": client_id, "workspace": ws}
@@ -801,6 +805,7 @@ class WorkspaceManager:
                 await self._event_bus.emit("service_updated", service.model_dump())
                 logger.info(f"Updating service: {service.id}")
         else:
+            await self._redis.hset(key, mapping=service.to_redis_dict())
             # Default service created by api.export({}), typically used for hypha apps
             if ":default@" in key:
                 try:
@@ -924,13 +929,17 @@ class WorkspaceManager:
         service.app_id = service.app_id or "*"
         service.type = service.type or "*"
         key = f"services:{service.config.visibility.value}|{service.type}:{service.id}@{service.app_id}"
-        logger.info("Removing service: %s", key)
 
         # Check if the service exists before removal
-        service_exists = await self._redis.exists(key)
+        service_keys = await self._redis.keys(key)
 
-        if service_exists:
-            await self._redis.delete(key)
+        if len(service_keys) > 1:
+            raise ValueError(
+                f"Multiple services found for {service.id}, e.g. {service_keys[:5]}. Please specify the service id in full format `workspace/client_id:service_id@app_id`."
+            )
+        elif len(service_keys) == 1:
+            logger.info("Removing service: %s", service_keys[0])
+            await self._redis.delete(service_keys[0])
             if ":built-in@" in key:
                 await self._event_bus.emit(
                     "client_disconnected", {"id": client_id, "workspace": ws}
@@ -939,6 +948,7 @@ class WorkspaceManager:
                 await self._event_bus.emit("service_removed", service.model_dump())
         else:
             logger.warning(f"Service {key} does not exist and cannot be removed.")
+            raise KeyError(f"Service not found: {service.id}")
 
     def _create_rpc(
         self,
