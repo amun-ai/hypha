@@ -37,17 +37,9 @@ jobs:
       run: |
         cd helm-charts
         helm package hypha-server
-        helm repo index . --url https://amun-ai.github.io/hypha/helm-charts
 
-    - name: Publish to gh-pages
-      uses: peaceiris/actions-gh-pages@v3
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: ./helm-charts
-        publish_branch: gh-pages
-    
-    - name: Install Hypha Helm chart
-      run: helm install hypha-server hypha-server --namespace=hypha
+    - name: Install Hypha Helm chart from packaged .tgz
+      run: helm install hypha-server ./helm-charts/hypha-server-*.tgz --namespace=hypha
 
     - name: Uninstall Hypha Helm chart
       run: helm uninstall hypha-server --namespace=hypha
