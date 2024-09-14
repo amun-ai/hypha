@@ -54,10 +54,10 @@ helm uninstall hypha-server --namespace=hypha
 
 ### Install Released Helm Charts
 
-You can also install the released helm charts from the [hypha helm repository](https://amun-ai.github.io/hypha/helm-charts):
+You can also install the released helm charts from the [hypha helm repository](https://amun-ai.github.io/hypha):
 
 ```bash
-helm repo add hypha https://amun-ai.github.io/hypha/helm-charts
+helm repo add hypha https://amun-ai.github.io/hypha
 helm repo update
 helm install hypha-server hypha/hypha-server --namespace=hypha
 ```
