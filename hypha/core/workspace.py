@@ -784,11 +784,9 @@ class WorkspaceManager:
                 )
                 return
         # Check if the service already exists
-        service_exists = await self._redis.keys(
-            f"services:*|*:{service.id}@*"
-        )
+        service_exists = await self._redis.keys(f"services:*|*:{service.id}@*")
         key = f"services:{service.config.visibility.value}|{service.type}:{service.id}@{service.app_id}"
-        
+
         if service_exists:
             # remove all the existing services
             # This is needed because it is maybe registered with a different app_id

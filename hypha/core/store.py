@@ -117,7 +117,7 @@ class RedisStore:
             "auth0_issuer": AUTH0_ISSUER,
             "login_service_url": f"{self.public_base_url}{LOGIN_SERVICE_URL}",
         }
-        
+
         logger.info("Server info: %s", self._server_info)
 
         if redis_uri and redis_uri.startswith("redis://"):
@@ -656,7 +656,11 @@ class RedisStore:
         logger.info("Creating RPC for client %s", client_id)
         assert user_info is not None, "User info is required"
         connection = RedisRPCConnection(
-            self._event_bus, workspace, client_id, user_info, manager_id=self._manager_id,
+            self._event_bus,
+            workspace,
+            client_id,
+            user_info,
+            manager_id=self._manager_id,
         )
         rpc = RPC(
             connection,

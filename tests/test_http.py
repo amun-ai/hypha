@@ -78,19 +78,19 @@ async def test_http_services(minio_server, fastapi_server, test_user_token):
             "echo": lambda data: data,
         }
     )
-    await asyncio.sleep(0.5)
-    async with httpx.AsyncClient(timeout=20.0) as client:
+
+    def use_my_service():
         url = f"{SERVER_URL}/{workspace}/services/{svc.id.split('/')[1]}/echo"
-        data = await client.post(url, json={"data": "123"})
-        assert data.status_code == 200
-        assert data.json() == "123"
+        response = requests.post(url, json={"data": "123"})
+        assert response.status_code == 200
+        assert response.json() == "123"
 
-        data = await client.get(f"{SERVER_URL}/{workspace}/services")
-        # [{'config': {'visibility': 'public', 'require_context': False, 'workspace': 'VRRVEdTF9of2y4cLmepzBw', 'flags': []}, 'id': '5XCPAyZrW72oBzywEk2oxP:test_service', 'name': 'test_service', 'type': 'test_service', 'description': '', 'docs': {}}]
-        assert data.status_code == 200
-        assert find_item(data.json(), "name", "my_service")
+        response = requests.get(f"{SERVER_URL}/{workspace}/services")
+        assert response.status_code == 200
+        assert find_item(response.json(), "name", "my_service")
 
-    await api.disconnect()
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, use_my_service)
 
 
 # pylint: disable=too-many-statements
