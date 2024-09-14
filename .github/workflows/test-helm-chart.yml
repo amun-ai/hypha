@@ -55,7 +55,7 @@ jobs:
         helm uninstall redis --namespace=hypha
 
     - name: Upload to GitHub Pages
-      uses: peaceiris/actions-gh-pages@v3
+      uses: peaceiris/actions-gh-pages@v4
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
