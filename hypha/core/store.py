@@ -253,6 +253,7 @@ class RedisStore:
         if old_keys:
             logger.info("Upgrading service keys for version < 0.20.34")
             for key in old_keys:
+                key = key.decode()
                 logger.info(f"Upgrading service key: {key}")
                 service_data = await self._redis.hgetall(key)
                 service_info = ServiceInfo.from_redis_dict(service_data)
@@ -328,7 +329,7 @@ class RedisStore:
                     svc = await rpc.get_remote_service(
                         f"public/{server_id}:built-in", {"timeout": 2}
                     )
-                    assert await svc.ping("ping") == "pong"
+                    assert await svc.ping("ping", timeout=2) == "pong"
                 except Exception as e:
                     logger.warning(
                         f"Server {server_id} is not responding (error: {e}), cleaning up..."
