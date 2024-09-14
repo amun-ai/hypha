@@ -137,9 +137,9 @@ def valid_token(authorization: str):
             status_code=401, detail="The token has expired. Please fetch a new one"
         ) from err
     except jwt.JWTError as err:
-        raise HTTPException(status_code=401, detail=traceback.format_exc()) from err
+        raise HTTPException(status_code=401, detail=str(err)) from err
     except Exception as err:
-        raise HTTPException(status_code=401, detail=traceback.format_exc()) from err
+        raise HTTPException(status_code=401, detail=str(err)) from err
 
 
 def generate_anonymous_user(scope=None) -> UserInfo:

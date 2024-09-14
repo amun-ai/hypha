@@ -35,15 +35,6 @@ class CardController:
         self.workspace_bucket = workspace_bucket
 
         self.s3client = self.s3_controller.create_client_sync()
-
-        try:
-            self.s3client.create_bucket(Bucket=self.workspace_bucket)
-            logger.info("Bucket created: %s", self.workspace_bucket)
-        except self.s3client.exceptions.BucketAlreadyExists:
-            pass
-        except self.s3client.exceptions.BucketAlreadyOwnedByYou:
-            pass
-
         router = APIRouter()
 
         @router.get("/{workspace}/cards/{path:path}")

@@ -1,3 +1,4 @@
+helm-charts/*.tgz
 **/.minio.sys
 *.DS_Store
 *.app

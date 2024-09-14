@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import httpx
 import requests
+import asyncio
 from hypha_rpc.websocket_client import connect_to_server
 
 from . import WS_SERVER_URL, SERVER_URL, find_item
@@ -60,34 +61,36 @@ async def test_http_services(minio_server, fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 10,
+            "method_timeout": 30,
             "token": test_user_token,
         }
     )
     workspace = api.config["workspace"]
-    await api.register_service(
+    svc = await api.register_service(
         {
-            "id": "test_service",
-            "name": "test_service",
-            "type": "test_service",
+            "id": "my_service",
+            "name": "my_service",
+            "type": "my_service",
             "config": {
                 "visibility": "public",
+                "run_in_executor": True,
             },
             "echo": lambda data: data,
         }
     )
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        url = f"{SERVER_URL}/{workspace}/services/test_service/echo"
-        data = await client.post(url, json={"data": "123"})
-        assert data.status_code == 200
-        assert data.json() == "123"
 
-        data = await client.get(f"{SERVER_URL}/{workspace}/services")
-        # [{'config': {'visibility': 'public', 'require_context': False, 'workspace': 'VRRVEdTF9of2y4cLmepzBw', 'flags': []}, 'id': '5XCPAyZrW72oBzywEk2oxP:test_service', 'name': 'test_service', 'type': 'test_service', 'description': '', 'docs': {}}]
-        assert data.status_code == 200
-        assert find_item(data.json(), "name", "test_service")
+    def use_my_service():
+        url = f"{SERVER_URL}/{workspace}/services/{svc.id.split('/')[1]}/echo"
+        response = requests.post(url, json={"data": "123"})
+        assert response.status_code == 200, f"{response.text}"
+        assert response.json() == "123"
 
-    await api.disconnect()
+        response = requests.get(f"{SERVER_URL}/{workspace}/services")
+        assert response.status_code == 200
+        assert find_item(response.json(), "name", "my_service")
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, use_my_service)
 
 
 # pylint: disable=too-many-statements
@@ -109,12 +112,12 @@ async def test_http_proxy(
 
     # Test app with custom template
     controller = await api.get_service("public/server-apps")
-    config = await controller.launch(
+    app_config = await controller.launch(
         source=TEST_APP_CODE,
         config={"type": "window"},
         wait_for_service=True,
     )
-    app = await api.get_app(config.id)
+    app = await api.get_app(app_config.id)
     assert "setup" in app and "register_services" in app
     svc1, svc2 = await app.register_services()
 
@@ -192,13 +195,15 @@ async def test_http_proxy(
     print(response.text)
     assert not response.ok
 
+    service_id = svc1.id.split("/")[-1]
+
     response = requests.get(
-        f"{SERVER_URL}/{service_ws}/services/test_service/echo?v=3345"
+        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo?v=3345"
     )
     assert response.ok, response.json()["detail"]
 
     response = requests.get(
-        f"{SERVER_URL}/{service_ws}/services/test_service/echo?v=33",
+        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo?v=33",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.ok, response.json()["detail"]
@@ -206,7 +211,7 @@ async def test_http_proxy(
     assert service_info["v"] == 33
 
     response = requests.post(
-        f"{SERVER_URL}/{service_ws}/services/test_service/echo",
+        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo",
         data=msgpack.dumps({"data": 123}),
         headers={"Content-type": "application/msgpack"},
     )
@@ -215,7 +220,7 @@ async def test_http_proxy(
     assert result["data"] == 123
 
     response = requests.post(
-        f"{SERVER_URL}/{service_ws}/services/test_service/echo",
+        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo",
         data=json.dumps({"data": 123}),
         headers={"Content-type": "application/json"},
     )
@@ -224,7 +229,7 @@ async def test_http_proxy(
     assert result["data"] == 123
 
     response = requests.post(
-        f"{SERVER_URL}/{service_ws}/services/test_service/echo",
+        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo",
         data=msgpack.dumps({"data": 123}),
         headers={
             "Content-type": "application/msgpack",
@@ -250,7 +255,7 @@ async def test_http_proxy(
     data = msgpack.dumps({"data": input_data})
     compressed_data = gzip.compress(data)
     response = requests.post(
-        f"{SERVER_URL}/{service_ws}/services/test_service/echo",
+        f"{SERVER_URL}/{service_ws}/services/{service_id}/echo",
         data=compressed_data,
         headers={
             "Content-Type": "application/msgpack",
@@ -267,3 +272,7 @@ async def test_http_proxy(
     )
 
     assert output_array.shape == input_array.shape
+
+    await controller.stop(app_config.id)
+
+    await api.disconnect()

@@ -52,6 +52,21 @@ To uninstall the chart:
 helm uninstall hypha-server --namespace=hypha
 ```
 
+### Install Released Helm Charts
+
+You can also install the released helm charts from the [hypha helm repository](https://amun-ai.github.io/hypha/helm-charts):
+
+```bash
+helm repo add hypha https://amun-ai.github.io/hypha/helm-charts
+helm repo update
+helm install hypha-server hypha/hypha-server --namespace=hypha
+```
+
+To override the values, you can prepare a `values.yaml` file with the values you want to override and install the helm chart with the following command:
+```bash
+helm install hypha-server hypha/hypha-server --namespace=hypha -f values.yaml
+```
+
 ## Install Redis for scaling
 
 Hypha can use an external Redis to store global state and pub/sub messages shared between the server instances.
@@ -74,7 +89,23 @@ startupCommand:
     - "--redis-uri=redis://redis.hypha.svc.cluster.local:6379/0"
 ```
 
-Now, upgrade the helm chart:
+To actually support multiple server instances, you need to set the `replicaCount` to more than 1 in the `values.yaml` file:
+
+```yaml
+replicaCount: 3
+```
+
+You also need to set the `HYPHA_SERVER_ID` environment variable to the pod's UID in the `values.yaml` file:
+```yaml
+env:
+  - name: HYPHA_SERVER_ID
+    valueFrom:
+      # Use the pod's UID as the server ID
+      fieldRef:
+        fieldPath: metadata.uid
+```
+
+Make sure to update the `values.yaml` file with the correct `redis-uri` and `replicaCount`, and add the `HYPHA_SERVER_ID` environment variable, then upgrade the helm chart:
 ```bash
 helm upgrade hypha-server ./hypha-server --namespace=hypha
 ```

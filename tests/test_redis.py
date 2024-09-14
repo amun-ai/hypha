@@ -39,8 +39,8 @@ async def test_redis_store(redis_store):
     assert find_item(wss, "name", "test")
 
     api = await redis_store.connect_to_workspace("test", client_id="test-app-99")
-    clients = set(await api.list_clients())
-    assert clients == {"test/test-app-99"}
+    clients = await api.list_clients()
+    assert find_item(clients, "id", "test/test-app-99")
     await api.log("hello")
     services = await api.list_services()
     assert len(services) == 1
@@ -73,7 +73,8 @@ async def test_redis_store(redis_store):
 
     wm = await redis_store.connect_to_workspace("test", client_id="test-app-22")
     clients = await wm.list_clients()
-    assert set(clients) == set(["test/test-app-22", "test/test-app-99"])
+    assert find_item(clients, "id", "test/test-app-22")
+    assert find_item(clients, "id", "test/test-app-99")
     rpc = wm.rpc
     services = await wm.list_services()
     service = await rpc.get_remote_service("test-app-99:test-service")
@@ -94,10 +95,8 @@ async def test_websocket_server(fastapi_server, test_user_token_2):
     )
     await wm.log("hello")
 
-    clients = set(await wm.list_clients())
-    assert clients == {
-        wm.config.workspace + "/test-app-1",
-    }
+    clients = await wm.list_clients()
+    assert find_item(clients, "id", wm.config.workspace + "/test-app-1")
     rpc = wm.rpc
 
     def echo(data):

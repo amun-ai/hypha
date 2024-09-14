@@ -44,12 +44,13 @@ logger.setLevel(logging.INFO)
 class WorkspaceInterfaceContextManager:
     """Workspace interface context manager."""
 
-    def __init__(self, rpc, redis, workspace, timeout=10):
+    def __init__(self, rpc, store, workspace, user_info, timeout=10):
         self._rpc = rpc
         self._timeout = timeout
         self._wm = None
-        self._redis = redis
+        self._store = store
         self._workspace = workspace
+        self._user_info = user_info
 
     async def __aenter__(self):
         return await self._get_workspace_manager()
@@ -62,8 +63,7 @@ class WorkspaceInterfaceContextManager:
 
     async def _get_workspace_manager(self):
         # Check if workspace exists
-        if not await self._redis.hexists("workspaces", self._workspace):
-            raise KeyError(f"Workspace {self._workspace} does not exist")
+        await self._store.load_or_create_workspace(self._user_info, self._workspace)
         self._wm = await self._rpc.get_manager_service({"timeout": self._timeout})
         self._wm.rpc = self._rpc
         self._wm.disconnect = self._rpc.disconnect
@@ -83,6 +83,7 @@ class RedisStore:
     def __init__(
         self,
         app,
+        server_id=None,
         public_base_url=None,
         local_base_url=None,
         redis_uri=None,
@@ -102,9 +103,11 @@ class RedisStore:
         self._ready = False
         self._workspace_manager = None
         self._websocket_server = None
-        self.manager_id = None
+        self._server_id = server_id or random_id(readable=True)
+        self._manager_id = "manager-" + self._server_id
         self.reconnection_token_life_time = reconnection_token_life_time
         self._server_info = {
+            "server_id": self._server_id,
             "hypha_version": __version__,
             "public_base_url": self.public_base_url,
             "local_base_url": self.local_base_url,
@@ -114,6 +117,8 @@ class RedisStore:
             "auth0_issuer": AUTH0_ISSUER,
             "login_service_url": f"{self.public_base_url}{LOGIN_SERVICE_URL}",
         }
+
+        logger.info("Server info: %s", self._server_info)
 
         if redis_uri and redis_uri.startswith("redis://"):
             from redis import asyncio as aioredis
@@ -185,7 +190,6 @@ class RedisStore:
                     "read_only": user_info.is_anonymous,
                 }
             )
-            logger.info(f"Created workspace: {workspace}")
         else:
             if not workspace_info:
                 raise KeyError(
@@ -227,9 +231,25 @@ class RedisStore:
                 "change": "Start upgrade process",
             }
         )
+        # Remove all the keys contains `{self._root_user.get_workspace()}/workspace-client-*`
+        # and `public/workspace-client-*`
+        old_keys = await self._redis.keys(
+            f"services:*|*:{self._root_user.get_workspace()}/workspace-client-*:*@*"
+        )
+        old_keys = old_keys + await self._redis.keys(
+            f"services:*|*:public/workspace-client-*:*@*"
+        )
+        if old_keys:
+            logger.info("Upgrading workspace client keys for version < 0.20.36")
+            for key in old_keys:
+                logger.info(
+                    f"Removing workspace client service: {key}:\n{await self._redis.hgetall(key)}"
+                )
+                await self._redis.delete(key)
 
         # For versions before 0.20.34
-        old_keys = await self._redis.keys("services:{public,protected}:*")
+        old_keys = await self._redis.keys("services:public:*")
+        old_keys = old_keys + await self._redis.keys("services:protected:*")
         if old_keys:
             logger.info("Upgrading service keys for version < 0.20.34")
             for key in old_keys:
@@ -243,6 +263,9 @@ class RedisStore:
                     "services:protected:", f"services:protected|{service_info.type}:"
                 )
                 await self._redis.hset(new_key, mapping=service_info.to_redis_dict())
+                logger.info(
+                    f"Replacing service key from {key} to {new_key}:\n{await self._redis.hgetall(new_key)}"
+                )
                 await self._redis.delete(key)
 
                 # Log the change
@@ -292,6 +315,49 @@ class RedisStore:
         # Save the database change log
         await self._redis.rpush("change_log", *map(str, database_change_log))
 
+    async def check_and_cleanup_servers(self):
+        """Cleanup and check servers."""
+        server_ids = await self.list_servers()
+        logger.info("Connected hypha servers: %s", server_ids)
+        if server_ids:
+            rpc = self.create_rpc(
+                "root", self._root_user, client_id="server-checker", silent=True
+            )
+            for server_id in server_ids:
+                try:
+                    svc = await rpc.get_remote_service(
+                        f"public/{server_id}:built-in", {"timeout": 2}
+                    )
+                    assert await svc.ping("ping") == "pong"
+                except Exception as e:
+                    logger.warning(
+                        f"Server {server_id} is not responding (error: {e}), cleaning up..."
+                    )
+                    # remove root and public services
+                    await self._clear_client_services("public", server_id)
+                    await self._clear_client_services(
+                        self._root_user.get_workspace(), server_id
+                    )
+                else:
+                    if server_id == self._server_id:
+                        raise RuntimeError(
+                            f"Server with the same id ({server_id}) is already running, please use a different server id by passing `--server-id=new-server-id` to the command line."
+                        )
+
+    async def _clear_client_services(self, workspace: str, client_id: str):
+        """Clear a workspace."""
+        pattern = f"services:*|*:{workspace}/{client_id}:*@*"
+        keys = await self._redis.keys(pattern)
+        # Remove all services related to the server
+        logger.info(
+            f"Removing services for client {client_id} in workspace {workspace}"
+        )
+        for key in keys:
+            logger.info(
+                f"Removing service key: {key}:\n{await self._redis.hgetall(key)}"
+            )
+            await self._redis.delete(key)
+
     async def init(self, reset_redis, startup_functions=None):
         """Setup the store."""
         if reset_redis:
@@ -299,9 +365,9 @@ class RedisStore:
             await self._redis.flushall()
         await self._event_bus.init()
         await self.setup_root_user()
+        await self.check_and_cleanup_servers()
         self._workspace_manager = await self.register_workspace_manager()
 
-        self.manager_id = self._workspace_manager.get_client_id()
         try:
             await self.register_workspace(
                 WorkspaceInfo.model_validate(
@@ -340,9 +406,6 @@ class RedisStore:
         await self._register_root_services()
         api = await self.get_public_api()
 
-        logger.info("Cleaning up the public workspace...")
-        summary = await api.cleanup()
-        logger.info(f"Clean up summary: %s", summary)
         logger.info("Registering public services...")
         for service_type in self._public_types:
             try:
@@ -368,11 +431,17 @@ class RedisStore:
             await self._run_startup_functions(startup_functions)
         self._ready = True
         await self.get_event_bus().emit_local("startup")
+        servers = await self.list_servers()
+        logger.info("Server initialized with server id: %s", self._server_id)
+        logger.info("Currently connected hypha servers: %s", servers)
 
     async def _register_root_services(self):
         """Register root services."""
         self._root_workspace_interface = await self.get_workspace_interface(
-            self._root_user.get_workspace(), self._root_user, silent=False
+            self._root_user.get_workspace(),
+            self._root_user,
+            client_id=self._server_id,
+            silent=False,
         )
         await self._root_workspace_interface.register_service(
             {
@@ -405,7 +474,7 @@ class RedisStore:
         """Get the public API."""
         if self._public_workspace_interface is None:
             self._public_workspace_interface = await self.get_workspace_interface(
-                "public", self._root_user, silent=False
+                "public", self._root_user, client_id=self._server_id, silent=False
             )
         return self._public_workspace_interface
 
@@ -513,10 +582,15 @@ class RedisStore:
     ):
         """Connect to a workspace."""
         # user get_workspace_interface
+        if not client_id:
+            client_id = self._server_id + "-" + random_id(readable=False)
         user_info = user_info or self._root_user
         return self.get_workspace_interface(
             workspace, user_info, client_id=client_id, timeout=timeout, silent=silent
         )
+
+    def get_manager_id(self):
+        return self._workspace_manager.get_client_id()
 
     async def register_workspace_manager(self):
         """Register a workspace manager."""
@@ -525,6 +599,7 @@ class RedisStore:
             self._root_user,
             self._event_bus,
             self._server_info,
+            self._manager_id,
             self._s3_controller,
         )
         await manager.setup()
@@ -548,10 +623,10 @@ class RedisStore:
         # the client will be hidden if client_id is None
         if silent is None:
             silent = client_id is None
-        client_id = client_id or "workspace-client-" + random_id(readable=False)
+        client_id = client_id or "client-" + random_id(readable=False)
         rpc = self.create_rpc(workspace, user_info, client_id=client_id, silent=silent)
         return WorkspaceInterfaceContextManager(
-            rpc, self._redis, workspace, timeout=timeout
+            rpc, self, workspace, user_info, timeout=timeout
         )
 
     @schema_method
@@ -581,7 +656,11 @@ class RedisStore:
         logger.info("Creating RPC for client %s", client_id)
         assert user_info is not None, "User info is required"
         connection = RedisRPCConnection(
-            self._event_bus, workspace, client_id, user_info, manager_id=self.manager_id
+            self._event_bus,
+            workspace,
+            client_id,
+            user_info,
+            manager_id=self._manager_id,
         )
         rpc = RPC(
             connection,
@@ -689,4 +768,8 @@ class RedisStore:
         logger.info("Tearing down the public workspace...")
         client_id = self._public_workspace_interface.rpc.get_client_info()["id"]
         await self.remove_client(client_id, "public", self._root_user, unload=True)
+        client_id = self._root_workspace_interface.rpc.get_client_info()["id"]
+        await self.remove_client(
+            client_id, self._root_user.get_workspace(), self._root_user, unload=True
+        )
         logger.info("Teardown complete")

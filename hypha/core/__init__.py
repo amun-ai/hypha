@@ -51,6 +51,7 @@ class ServiceConfig(BaseModel):
     workspace: Optional[str] = None
     flags: List[str] = []
     singleton: Optional[bool] = False
+    created_by: Optional[Dict] = None
 
 
 class ServiceInfo(BaseModel):

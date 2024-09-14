@@ -218,9 +218,18 @@ First, install the Redis Helm chart:
 helm install redis ./redis --namespace hypha
 ```
 
-This will install Redis in the `hypha` namespace, make sure you update the `values.yaml` file to add the `redis-uri` to the `startupCommand`:
+This will install Redis in the `hypha` namespace, make sure you update the `values.yaml` file to add the `redis-uri` to the `startupCommand`, set the `replicaCount` to more than 1, and add the `HYPHA_SERVER_ID` environment variable (using the pod id).
   
 ```yaml
+replicaCount: 2
+
+env:
+  - name: HYPHA_SERVER_ID
+    valueFrom:
+      fieldRef:
+        # Use the pod's UID as the server ID
+        fieldPath: metadata.uid
+
 startupCommand:
   command: ["python", "-m", "hypha.server"]
   args:
