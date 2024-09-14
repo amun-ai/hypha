@@ -52,9 +52,6 @@ jobs:
         helm uninstall hypha-server --namespace=hypha
         helm uninstall redis --namespace=hypha
 
-    - name: Delete namespace
-      run: kubectl delete namespace hypha
-
     - name: Upload to GitHub Pages
       uses: peaceiris/actions-gh-pages@v3
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
