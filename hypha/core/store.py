@@ -44,12 +44,13 @@ logger.setLevel(logging.INFO)
 class WorkspaceInterfaceContextManager:
     """Workspace interface context manager."""
 
-    def __init__(self, rpc, redis, workspace, timeout=10):
+    def __init__(self, rpc, store, workspace, user_info, timeout=10):
         self._rpc = rpc
         self._timeout = timeout
         self._wm = None
-        self._redis = redis
+        self._store = store
         self._workspace = workspace
+        self._user_info = user_info
 
     async def __aenter__(self):
         return await self._get_workspace_manager()
@@ -62,8 +63,7 @@ class WorkspaceInterfaceContextManager:
 
     async def _get_workspace_manager(self):
         # Check if workspace exists
-        if not await self._redis.hexists("workspaces", self._workspace):
-            raise KeyError(f"Workspace {self._workspace} does not exist")
+        await self._store.load_or_create_workspace(self._user_info, self._workspace)
         self._wm = await self._rpc.get_manager_service({"timeout": self._timeout})
         self._wm.rpc = self._rpc
         self._wm.disconnect = self._rpc.disconnect
@@ -626,7 +626,7 @@ class RedisStore:
         client_id = client_id or "client-" + random_id(readable=False)
         rpc = self.create_rpc(workspace, user_info, client_id=client_id, silent=silent)
         return WorkspaceInterfaceContextManager(
-            rpc, self._redis, workspace, timeout=timeout
+            rpc, self, workspace, user_info, timeout=timeout
         )
 
     @schema_method
