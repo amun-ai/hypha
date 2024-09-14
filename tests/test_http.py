@@ -82,7 +82,7 @@ async def test_http_services(minio_server, fastapi_server, test_user_token):
     def use_my_service():
         url = f"{SERVER_URL}/{workspace}/services/{svc.id.split('/')[1]}/echo"
         response = requests.post(url, json={"data": "123"})
-        assert response.status_code == 200
+        assert response.status_code == 200, f"{response.text}"
         assert response.json() == "123"
 
         response = requests.get(f"{SERVER_URL}/{workspace}/services")
