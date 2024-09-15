@@ -43,6 +43,7 @@
         }
 
         .sidebar .logo {
+            padding-left: 10px;
             text-align: center;
             margin-bottom: 1rem;
         }
@@ -202,12 +203,13 @@
             return (
                 <div className={`sidebar ${isCollapsed ? 'collapsed' : ''}`}>
                     <div className="logo">
-                        <img src="./static/img/hypha-logo-black.svg" className={`h-10 invert ${isCollapsed ? 'hidden' : 'block'}`} alt="Hypha Logo" />
+                        <a href="#"><img src="./static/img/hypha-logo-black.svg" className={`h-10 invert ${isCollapsed ? 'hidden' : 'block'}`} alt="Hypha Logo" /></a>
                     </div>
                     <div className="menu-item" onClick={() => onToggle()}>
                         <i className="fas fa-bars"></i>
                         <span className="ml-2">Menu</span>
                     </div>
+                    <hr className="border-gray-700"></hr>
                     {enabledPanels.includes('dashboard') && (
                     <div className="menu-item" onClick={() => setActivePanel('dashboard')}>
                         <i className="fas fa-cogs"></i>
@@ -1185,6 +1187,14 @@
                             onClose={() => setSelectedWorkspaceInfo(null)}
                         />
                     )}
+                    <footer className="bg-gray-900 text-gray-400 py-6 mt-16">
+                        <div className="container mx-auto text-center">
+                            <p>Hypha is an open-source platform released under the MIT license.</p>
+                            <p>
+                                Visit our <a href="https://github.com/amun-ai/hypha" target="_blank" className="text-gray-300 hover:text-white">GitHub repository</a> for more information.
+                            </p>
+                        </div>
+                    </footer>
                 </div>
             );
         };

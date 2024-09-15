@@ -225,7 +225,8 @@ class Card(BaseModel):
 
     name: str
     id: str
-    tags: List[str]
+    description: Optional[str] = None
+    tags: Optional[List[str]] = None
     documentation: Optional[str] = None
     covers: Optional[List[str]] = None
     badges: Optional[List[str]] = None
