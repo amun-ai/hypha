@@ -22,3 +22,4 @@ pyotritonclient==0.2.6
 fakeredis==2.24.1
 redis==4.6.0
 friendlywords==1.1.3
+aiocache==0.12.2

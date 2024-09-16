@@ -34,6 +34,7 @@ REQUIREMENTS = [
     "pyodide-http;platform_system=='Emscripten'",
     "ssl;platform_system=='Emscripten'",
     "friendlywords>=1.1.3",
+    "aiocache>=0.12.2",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()

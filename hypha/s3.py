@@ -7,12 +7,16 @@ import sys
 from datetime import datetime
 from email.utils import formatdate
 from typing import Any, Dict
+import zipfile
+from io import BytesIO
 
+from aiocache import Cache
+from aiocache.decorators import cached
 import botocore
 from aiobotocore.session import get_session
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
@@ -113,6 +117,27 @@ class FSFileResponse(FileResponse):
 
             if self.background is not None:
                 await self.background()
+
+
+@cached(
+    ttl=30,
+    cache=Cache.MEMORY,
+    key_builder=lambda *args, **kwargs: f"{args[1]}/{args[2]}@{args[3]}",
+)
+async def fetch_zip_tail(s3_client, workspace_bucket, s3_key, content_length):
+    """
+    Fetch the tail part of the zip file that contains the central directory.
+    This result is cached to avoid re-fetching the central directory multiple times.
+    """
+    central_directory_offset = max(content_length - 65536, 0)
+    range_header = f"bytes={central_directory_offset}-{content_length}"
+
+    # Fetch the last part of the ZIP file that contains the central directory
+    response = await s3_client.get_object(
+        Bucket=workspace_bucket, Key=s3_key, Range=range_header
+    )
+    zip_tail = await response["Body"].read()
+    return zip_tail
 
 
 class JSONResponse(Response):
@@ -259,6 +284,107 @@ class S3Controller:
             path = safe_join(workspace, path)
 
             return await self._upload_file(path, request)
+
+        @router.get("/{workspace}/files/{zip_file_path:path}.zip/{path:path}")
+        async def get_zip_file_content(
+            workspace: str,
+            zip_file_path: str,
+            path: str,
+            user_info: store.login_optional = Depends(store.login_optional),
+        ) -> Response:
+            """
+            Serve content from a zip file stored in S3 without fully unzipping it.
+            `zip_file_path` is the path to the zip file, `path` is the relative path inside the zip file.
+            """
+            if not user_info.check_permission(workspace, UserPermission.read):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "success": False,
+                        "detail": f"{user_info['username']} has no permission to access {workspace}/{path}",
+                    },
+                )
+
+            # Full key of the ZIP file in the S3 bucket
+            s3_key = f"{workspace}/{zip_file_path}.zip"
+
+            try:
+                # S3 client setup
+                async with self.create_client_async() as s3_client:
+                    # Fetch the ZIP file metadata from S3 (to avoid downloading the whole file)
+                    try:
+                        # Fetch the ZIP file metadata from S3 (to avoid downloading the whole file)
+                        zip_file_metadata = await s3_client.head_object(
+                            Bucket=self.workspace_bucket, Key=s3_key
+                        )
+                        content_length = zip_file_metadata["ContentLength"]
+                    except ClientError as e:
+                        # Check if the error is due to the file not being found (404)
+                        if e.response["Error"]["Code"] == "404":
+                            return JSONResponse(
+                                status_code=404,
+                                content={
+                                    "success": False,
+                                    "detail": f"ZIP file not found: {s3_key}",
+                                },
+                            )
+                        else:
+                            # For other types of errors, raise a 500 error
+                            return JSONResponse(
+                                status_code=500,
+                                content={
+                                    "success": False,
+                                    "detail": f"Failed to fetch file metadata: {str(e)}",
+                                },
+                            )
+
+                    # Fetch the ZIP's central directory from cache or download if not cached
+                    zip_tail = await fetch_zip_tail(
+                        s3_client, self.workspace_bucket, s3_key, content_length
+                    )
+
+                    # Open the in-memory ZIP tail and parse it
+                    with zipfile.ZipFile(BytesIO(zip_tail)) as zip_file:
+                        # Find the file inside the ZIP
+                        try:
+                            zip_info = zip_file.getinfo(path)
+                        except KeyError:
+                            return JSONResponse(
+                                status_code=404,
+                                content={
+                                    "success": False,
+                                    "detail": f"File not found inside ZIP: {path}",
+                                },
+                            )
+
+                        # Get the byte range of the file in the ZIP
+                        file_offset = zip_info.header_offset + len(
+                            zip_info.FileHeader()
+                        )
+                        file_length = zip_info.file_size
+                        range_header = (
+                            f"bytes={file_offset}-{file_offset + file_length - 1}"
+                        )
+
+                        # Fetch the file content from S3 using the calculated byte range
+                        response = await s3_client.get_object(
+                            Bucket=self.workspace_bucket, Key=s3_key, Range=range_header
+                        )
+
+                        # Stream the content back to the user
+                        return StreamingResponse(
+                            response["Body"],
+                            media_type="application/octet-stream",
+                            headers={
+                                "Content-Disposition": f'attachment; filename="{zip_info.filename}"'
+                            },
+                        )
+
+            except Exception as exp:
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "detail": str(exp)},
+                )
 
         @router.get("/{workspace}/files/{path:path}")
         @router.delete("/{workspace}/files/{path:path}")

@@ -7,7 +7,8 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-import requests
+import httpx
+
 
 import httpx
 import msgpack
@@ -431,9 +432,10 @@ class HTTPProxy:
         async def hypha_rpc_websocket_mjs(request: Request):
             if not self.rpc_lib_esm_content:
                 _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{main_version}/dist/hypha-rpc-websocket.mjs"
-                response = requests.get(_rpc_lib_script)
-                response.raise_for_status()
-                self.rpc_lib_esm_content = response.content
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(_rpc_lib_script)
+                    response.raise_for_status()
+                    self.rpc_lib_esm_content = response.content
             return Response(
                 content=self.rpc_lib_esm_content, media_type="application/javascript"
             )
@@ -442,9 +444,10 @@ class HTTPProxy:
         async def hypha_rpc_websocket_js(request: Request):
             if not self.rpc_lib_umd_content:
                 _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{main_version}/dist/hypha-rpc-websocket.js"
-                response = requests.get(_rpc_lib_script)
-                response.raise_for_status()
-                self.rpc_lib_umd_content = response.content
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(_rpc_lib_script)
+                    response.raise_for_status()
+                    self.rpc_lib_umd_content = response.content
             return Response(
                 content=self.rpc_lib_umd_content, media_type="application/javascript"
             )
