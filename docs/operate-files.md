@@ -24,6 +24,8 @@ python3 -m hypha.server \
 - `--endpoint-url-public`: Public URL for accessing the files (may be the same as `--endpoint-url`).
 - `--s3-admin-type`: Specifies the S3 admin type (e.g., `minio`, `generic`). If it's a minio server (not gateway mode), use `minio`, otherwise use `generic` would be enough for most cases.
 
+If your `--endpoint-url-public` is not accessible from outside, you can enable the s3 proxy provided by hypha by adding `--enable-s3-proxy` to the command line. This will allow you to access the s3 files through the hypha server.
+
 After starting Hypha with these arguments, you can verify that the S3 service is available by visiting the following URL:
 
 ```
@@ -316,11 +318,11 @@ api = await connect_to_server({"server_url": "https://hypha.aicell.io"})
 workspace = api.config["workspace"]
 token = await api.generate_token()
 
-async def upload_file_to_hypha(server_url: str, file_path: str, token: str):
+async def upload_file_to_hypha(file_upload_url: str, file_path: str, token: str):
     async with httpx.AsyncClient() as client:
         with open(file_path, "rb") as file:
             response = await client.put(
-                server_url, headers={"Authorization": f"Bearer {token}"}, content=file
+                file_upload_url, headers={"Authorization": f"Bearer {token}"}, content=file
             )
             print(response.status_code, response.reason_phrase)
 
@@ -338,9 +340,9 @@ api = await connect_to_server({"server_url": "https://hypha.aicell.io"})
 workspace = api.config["workspace"]
 token = await api.generate_token()
 
-def upload_file_to_hypha(server_url, file_path, token):
+def upload_file_to_hypha(upload_url, file_path, token):
     with open(file_path, "rb") as file:
-        response = requests.put(server_url, headers={"Authorization": f"Bearer {token}"}, data=file)
+        response = requests.put(upload_url, headers={"Authorization": f"Bearer {token}"}, data=file)
         print(response.status_code, response.reason)
 
 # Example usage:
@@ -354,10 +356,10 @@ const api = await connectToServer({"server_url": "https://hypha.aicell.io"});
 const token = await api.generateToken();
 const workspace = api.config.workspace;
 
-async function uploadFileToHypha(fileInputId, serverUrl, token) {
-  const file = document.getElementById(fileInputId).files[0];
+async function uploadFileToHypha(file, fileUploadUrl, token) {
+  
   try {
-    const response = await axios.put(serverUrl + file.name, file, {
+    const response = await axios.put(fileUploadUrl, file, {
       headers: {
         "Authorization": `Bearer ${token}`,
         "Content-Type": "application/octet-stream"
@@ -370,7 +372,8 @@ async function uploadFileToHypha(fileInputId, serverUrl, token) {
 }
 
 // Example usage:
-// uploadFileToHypha('fileInput', `https://hypha.aicell.io/${workspace}/files/`, token);
+// const file = document.getElementById(fileInputId).files[0];
+// uploadFileToHypha(file, `https://hypha.aicell.io/${workspace}/files/${file.name}`, token);
 ```
 
 <!-- tabs:end -->

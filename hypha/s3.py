@@ -2,7 +2,8 @@
 import asyncio
 import json
 import logging
-import os
+from urllib.parse import urlencode
+import httpx
 import sys
 from datetime import datetime
 from email.utils import formatdate
@@ -15,7 +16,7 @@ from aiocache.decorators import cached
 import botocore
 from aiobotocore.session import get_session
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
@@ -190,6 +191,7 @@ class S3Controller:
         region_name=None,
         endpoint_url_public=None,
         s3_admin_type="generic",
+        enable_s3_proxy=False,
         workspace_bucket="hypha-workspaces",
         # local_log_dir="./logs",
         workspace_etc_dir="etc",
@@ -201,6 +203,7 @@ class S3Controller:
         self.secret_access_key = secret_access_key
         self.region_name = region_name
         self.s3_admin_type = s3_admin_type
+        self.enable_s3_proxy = enable_s3_proxy
         if self.s3_admin_type == "minio":
             self.minio_client = MinioClient(
                 endpoint_url,
@@ -385,6 +388,77 @@ class S3Controller:
                     status_code=500,
                     content={"success": False, "detail": str(exp)},
                 )
+
+        if self.enable_s3_proxy:
+
+            @router.api_route(
+                "/s3/{path:path}",
+                methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"],
+            )
+            async def proxy_s3_request(
+                path: str,
+                request: Request,
+            ):
+                """
+                Pure URL proxy to S3 that handles all HTTP methods.
+                Proxies the request to the internal S3 endpoint using the presigned URL.
+                """
+                # Extract the query parameters from the client request
+                query_params = dict(request.query_params)
+
+                # Construct the S3 presigned URL using the internal endpoint_url
+                if query_params:
+                    # If there are query parameters, append them to the URL
+                    s3_url = f"{self.endpoint_url_public}/{path}?" + urlencode(
+                        query_params
+                    )
+                else:
+                    # No query parameters, just use the path
+                    s3_url = f"{self.endpoint_url_public}/{path}"
+
+                # Define method and headers
+                method = request.method
+                headers = dict(request.headers)
+                if "host" in headers:
+                    del headers["host"]
+
+                # Stream data to/from S3
+                async with httpx.AsyncClient() as client:
+                    try:
+                        # Handle different HTTP methods and pass the request body if necessary
+                        if method in ["POST", "PUT", "PATCH"]:
+                            response = await client.request(
+                                method,
+                                s3_url,
+                                content=request.stream(),  # Stream the request body
+                                headers=headers,
+                            )
+                        else:
+                            response = await client.request(
+                                method,
+                                s3_url,
+                                headers=headers,  # Proxy headers
+                            )
+
+                        # Return a StreamingResponse to the client
+                        return StreamingResponse(
+                            response.iter_bytes(),  # Async iterator of response body chunks
+                            status_code=response.status_code,
+                            headers=dict(
+                                response.headers
+                            ),  # Convert response headers to dict
+                        )
+
+                    except httpx.HTTPStatusError as exc:
+                        raise HTTPException(
+                            status_code=exc.response.status_code,
+                            detail=f"Error while proxying to S3: {exc.response.text}",
+                        )
+                    except Exception as exc:
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Internal server error: {str(exc)}",
+                        )
 
         @router.get("/{workspace}/files/{path:path}")
         @router.delete("/{workspace}/files/{path:path}")
@@ -844,6 +918,8 @@ class S3Controller:
                     Params={"Bucket": self.workspace_bucket, "Key": path},
                     ExpiresIn=expiration,
                 )
+                if self.enable_s3_proxy:
+                    url = f"{self.store.public_base_url}/s3/{self.workspace_bucket}/{path}?{url.split('?')[1]}"
                 return url
 
         except ClientError as err:
