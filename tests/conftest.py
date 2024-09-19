@@ -166,6 +166,7 @@ def fastapi_server_fixture(minio_server):
             f"--access-key-id={MINIO_ROOT_USER}",
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            "--enable-s3-proxy",
             f"--workspace-bucket=my-workspaces",
             "--s3-admin-type=minio",
             f"--triton-servers=http://127.0.0.1:{TRITON_PORT}",

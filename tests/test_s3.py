@@ -15,6 +15,39 @@ from . import WS_SERVER_URL, SERVER_URL, find_item
 pytestmark = pytest.mark.asyncio
 
 
+async def test_s3_proxy(minio_server, fastapi_server, test_user_token):
+    """Test s3 proxy."""
+    api = await connect_to_server(
+        {
+            "name": "anonymous client",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token,
+        }
+    )
+    # Generate credentials and get the s3controller
+    s3controller = await api.get_service("public/s3-storage")
+
+    # Create an in-memory ZIP file
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        zf.writestr("file1.txt", "This is the content of file 1.")
+        zf.writestr("file2.txt", "This is the content of file 2.")
+        zf.writestr(
+            "subdir/file3.txt", "This is the content of file 3 inside a subdirectory."
+        )
+
+    presigned_url = await s3controller.generate_presigned_url(
+        f"apps/test.zip", client_method="put_object"
+    )
+    # Use requests to upload the ZIP file to the presigned URL
+    response = requests.put(
+        presigned_url,
+        data=zip_buffer.read(),
+        headers={"Content-Type": "application/zip"},
+    )
+    assert response.status_code == 200, "Failed to upload the ZIP file to S3."
+
+
 async def test_zip_file_endpoint(minio_server, fastapi_server, test_user_token):
     """Test fetching files from inside the uploaded ZIP."""
     api = await connect_to_server(
