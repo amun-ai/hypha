@@ -291,6 +291,14 @@ class WebsocketServer:
                         data = json.loads(data)
                         if data.get("type") == "ping":
                             await websocket.send_text(json.dumps({"type": "pong"}))
+                        elif data.get("type") == "refresh_token":
+                            reconnection_token = generate_reconnection_token(
+                                user_info,
+                                expires_in=self.store.reconnection_token_life_time,
+                            )
+                            conn_info = {"type": "reconnection_token"}
+                            conn_info["reconnection_token"] = reconnection_token
+                            await websocket.send_text(json.dumps(conn_info))
                         else:
                             logger.info("Unknown message type: %s", data.get("type"))
                     except json.JSONDecodeError:
