@@ -273,6 +273,7 @@ class WebsocketServer:
                 "client_id": client_id,
                 "user": user_info.model_dump(),
                 "reconnection_token": reconnection_token,
+                "reconnection_token_life_time": self.store.reconnection_token_life_time,
             }
             await websocket.send_text(json.dumps(conn_info))
             while not self._stop:
