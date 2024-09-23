@@ -22,7 +22,6 @@ from hypha.core import (
     UserPermission,
     ServiceTypeInfo,
 )
-from hypha.s3 import S3Controller
 from hypha.core.auth import generate_presigned_token, create_scope, valid_token
 from hypha.utils import EventBus, random_id
 
@@ -65,7 +64,7 @@ class WorkspaceManager:
         event_bus: EventBus,
         server_info: dict,
         client_id: str,
-        s3_controller: Optional[S3Controller] = None,
+        s3_controller: Optional[Any] = None,
     ):
         self._redis = redis
         self._initialized = False
