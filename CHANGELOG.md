@@ -1,5 +1,9 @@
 # Hypha Change Log
 
+### 0.20.36
+
+ - Upgrade hypha-rpc to support updating reconnection token (otherwise it generate token expired error after some time)
+
 ### 0.20.35
 
  - Upgrade hypha-rpc to fix reset timer
