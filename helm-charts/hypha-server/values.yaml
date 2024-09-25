@@ -8,7 +8,7 @@ image:
   repository: ghcr.io/amun-ai/hypha
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "0.20.36"
+  tag: "0.20.37"
 
 imagePullSecrets: []
 nameOverride: ""

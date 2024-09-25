@@ -240,7 +240,7 @@ class RedisStore:
             f"services:*|*:public/workspace-client-*:*@*"
         )
         if old_keys:
-            logger.info("Upgrading workspace client keys for version < 0.20.36")
+            logger.info("Upgrading workspace client keys for version < 0.20.34")
             for key in old_keys:
                 logger.info(
                     f"Removing workspace client service: {key}:\n{await self._redis.hgetall(key)}"
