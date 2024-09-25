@@ -180,7 +180,7 @@
             const key = window.location.search.split('key=')[1];
             const report_url = "{{ login_service_url }}/report";
             if (key && report_url.startsWith('http')) {
-                const url = `${report_url}?key=${key}&token=${accessToken}&email=${user.email}&email_verified=${user.email_verified}&name=${user.name}&nickname=${user.nickname}&user_id=${user.sub}&picture=${user.picture}`;
+                const url = `${report_url}?key=${key}&token=${accessToken}&email=${user.email}&email_verified=${user.email_verified}&name=${user.name}&nickname=${user.nickname}&user_id=${user.sub}&picture=${encodeURIComponent(user.picture)}`;
                 const response = await fetch(url);
                 if (!response.ok) {
                     console.error("Failed to report token: ", response.status, response.statusText);
