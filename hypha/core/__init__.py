@@ -218,7 +218,7 @@ class ClientInfo(BaseModel):
         return super().model_validate(data)
 
 
-class Card(BaseModel):
+class Artifact(BaseModel):
     """Represent resource description file object."""
 
     model_config = ConfigDict(extra="allow")
@@ -232,6 +232,8 @@ class Card(BaseModel):
     badges: Optional[List[str]] = None
     authors: Optional[List[Dict[str, str]]] = None
     attachments: Optional[Dict[str, List[Any]]] = None
+    files: Optional[List[Dict[str, Any]]] = None
+    summary_fields: Optional[List[str]] = None
     config: Optional[Dict[str, Any]] = None
     type: str
     format_version: str = "0.2.1"
@@ -243,6 +245,8 @@ class Card(BaseModel):
     source: Optional[str] = None
     entry_point: Optional[str] = None
     services: Optional[List[SerializeAsAny[ServiceInfo]]] = None
+    collection: Optional[List[Dict[str, Any]]] = None
+    config: Optional[Dict[str, Any]] = None
 
     @classmethod
     def model_validate(cls, data):
@@ -291,7 +295,7 @@ class WorkspaceInfo(BaseModel):
         data = data.copy()
         if "applications" in data and data["applications"] is not None:
             data["applications"] = {
-                k: Card.model_validate(v) for k, v in data["applications"].items()
+                k: Artifact.model_validate(v) for k, v in data["applications"].items()
             }
         return super().model_validate(data)
 

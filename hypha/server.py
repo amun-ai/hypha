@@ -85,7 +85,7 @@ def start_builtin_services(
 
     if args.enable_s3:
         # pylint: disable=import-outside-toplevel
-        from hypha.card import CardController
+        from hypha.artifact import ArtifactController
         from hypha.s3 import S3Controller
 
         s3_controller = S3Controller(
@@ -101,7 +101,7 @@ def start_builtin_services(
             executable_path=args.executable_path,
         )
 
-        CardController(
+        ArtifactController(
             store, s3_controller=s3_controller, workspace_bucket=args.workspace_bucket
         )
 

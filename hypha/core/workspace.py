@@ -13,7 +13,7 @@ from hypha_rpc.utils.schema import schema_method
 from pydantic import BaseModel, Field
 
 from hypha.core import (
-    Card,
+    Artifact,
     RedisRPCConnection,
     UserInfo,
     WorkspaceInfo,
@@ -317,7 +317,7 @@ class WorkspaceManager:
     @schema_method
     async def install_application(
         self,
-        app_info: Card = Field(..., description="Application info"),
+        app_info: Artifact = Field(..., description="Application info"),
         force: bool = Field(False, description="Force install if already installed"),
         context: Optional[dict] = None,
     ):

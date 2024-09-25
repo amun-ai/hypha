@@ -14,9 +14,9 @@ from aiobotocore.session import get_session
 from jinja2 import Environment, PackageLoader, select_autoescape
 
 from hypha import main_version
-from hypha.core import Card, UserInfo, ServiceInfo, UserPermission
+from hypha.core import Artifact, UserInfo, ServiceInfo, UserPermission
 from hypha.core.store import RedisStore
-from hypha.plugin_parser import convert_config_to_card, parse_imjoy_plugin
+from hypha.plugin_parser import convert_config_to_artifact, parse_imjoy_plugin
 from hypha.runner.browser import BrowserAppRunner
 from hypha.utils import (
     PLUGIN_CONFIG_FIELDS,
@@ -117,7 +117,7 @@ class ServerAppController:
         self,
         workspace: str,
         app_id: str,
-        card: Card,
+        artifact: Artifact,
         source: str,
         entry_point: str,
         attachments: Optional[Dict[str, Any]] = None,
@@ -151,9 +151,9 @@ class ServerAppController:
             await save_file(f"{app_dir}/{entry_point}", source)
 
             if attachments:
-                card.attachments = card.attachments or {}
-                card.attachments["files"] = card.attachments.get("files", [])
-                files = card.attachments["files"]
+                artifact.attachments = artifact.attachments or {}
+                artifact.attachments["files"] = artifact.attachments.get("files", [])
+                files = artifact.attachments["files"]
                 for att in attachments:
                     assert (
                         "name" in att and "source" in att
@@ -169,7 +169,7 @@ class ServerAppController:
                     await save_file(f"{app_dir}/{att['name']}", att["source"])
                     files.append(att["name"])
 
-            content = json.dumps(card.model_dump(), indent=4)
+            content = json.dumps(artifact.model_dump(), indent=4)
             await save_file(f"{app_dir}/manifest.json", content)
         logger.info("Saved application (%s)to workspace: %s", mhash, workspace)
 
@@ -302,22 +302,27 @@ class ServerAppController:
         app_id = f"{mhash}"
 
         public_url = f"{self.public_base_url}/{workspace_info.id}/server-apps/{app_id}/{entry_point}"
-        card_obj = convert_config_to_card(config, app_id, public_url)
-        card_obj.update(
+        artifact_obj = convert_config_to_artifact(config, app_id, public_url)
+        artifact_obj.update(
             {
                 "local_url": f"{self.local_base_url}/{workspace_info.id}/server-apps/{app_id}/{entry_point}",
                 "public_url": public_url,
             }
         )
-        card = Card.model_validate(card_obj)
-        assert card.entry_point, "Entry point not found in the card."
+        artifact = Artifact.model_validate(artifact_obj)
+        assert artifact.entry_point, "Entry point not found in the artifact."
         await self.save_application(
-            workspace_info.id, app_id, card, source, card.entry_point, attachments
+            workspace_info.id,
+            app_id,
+            artifact,
+            source,
+            artifact.entry_point,
+            attachments,
         )
         async with self.store.get_workspace_interface(
             workspace_info.id, user_info
         ) as ws:
-            await ws.install_application(card.model_dump(), force=force)
+            await ws.install_application(artifact.model_dump(), force=force)
         try:
             info = await self.start(
                 app_id,
@@ -339,7 +344,7 @@ class ServerAppController:
                 f"Failed to start the app: {app_id} during installation, error: {exp}"
             )
 
-        return card_obj
+        return artifact_obj
 
     async def uninstall(self, app_id: str, context: Optional[dict] = None) -> None:
         """Uninstall a server app."""
@@ -424,8 +429,8 @@ class ServerAppController:
         assert (
             app_id in workspace_info.applications
         ), f"App {app_id} not found in workspace {workspace}, please install it first."
-        card = workspace_info.applications[app_id]
-        entry_point = card.entry_point
+        artifact = workspace_info.applications[app_id]
+        entry_point = artifact.entry_point
         assert entry_point, f"Entry point not found for app {app_id}."
         server_url = self.local_base_url
         local_url = (
@@ -494,7 +499,7 @@ class ServerAppController:
 
             # save the services
             workspace_info.applications[app_id].services = collected_services
-            Card.model_validate(workspace_info.applications[app_id])
+            Artifact.model_validate(workspace_info.applications[app_id])
             await self.store.set_workspace(workspace_info, user_info)
         except asyncio.TimeoutError:
             raise Exception(

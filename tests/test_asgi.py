@@ -159,9 +159,9 @@ async def test_functions(fastapi_server, test_user_token):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.ok
-    cards = response.json()
-    card = find_item(cards, "name", "FunctionsPlugin")
-    svc = find_item(card["services"], "name", "hello-functions")
+    artifacts = response.json()
+    artifact = find_item(artifacts, "name", "FunctionsPlugin")
+    svc = find_item(artifact["services"], "name", "hello-functions")
     assert svc
 
     response = requests.get(
