@@ -458,9 +458,11 @@ class S3Controller:
                             )
                         if method == "GET":
                             return StreamingResponse(
-                                response.iter_raw(),  # Async iterator of raw, unprocessed response body chunks
+                                response.iter_bytes(),  # Async iterator of response body chunks
                                 status_code=response.status_code,
-                                headers=response.headers  # Forward all response headers, including Content-Encoding
+                                headers={
+                                    k: v for k, v in response.headers.items() if k.lower() not in ["content-encoding", "transfer-encoding"]
+                                },  # Forward all response headers except Content-Encoding and Transfer-Encoding
                             )
 
                         elif method in ["POST", "PATCH", "PUT", "DELETE"]:
