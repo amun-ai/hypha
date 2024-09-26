@@ -400,53 +400,64 @@ class S3Controller:
                 request: Request,
             ):
                 """
-                Pure URL proxy to S3 that handles all HTTP methods.
-                Proxies the request to the internal S3 endpoint using the presigned URL.
+                Proxy request to S3, forwarding only essential headers such as Range,
+                and handling case-insensitive headers.
                 """
                 # Extract the query parameters from the client request
                 query_params = dict(request.query_params)
 
                 # Construct the S3 presigned URL using the internal endpoint_url
                 if query_params:
-                    # If there are query parameters, append them to the URL
-                    s3_url = f"{self.endpoint_url_public}/{path}?" + urlencode(
-                        query_params
-                    )
+                    s3_url = f"{self.endpoint_url_public}/{path}?" + urlencode(query_params)
                 else:
-                    # No query parameters, just use the path
                     s3_url = f"{self.endpoint_url_public}/{path}"
 
-                # Define method and headers
+                # Define the method
                 method = request.method
-                headers = dict(request.headers)
-                if "host" in headers:
-                    del headers["host"]
+
+                # Create a case-insensitive headers dictionary
+                incoming_headers = dict(request.headers)
+                normalized_headers = {
+                    key.lower(): value for key, value in incoming_headers.items()
+                }
+
+                # Keep only the essential headers
+                essential_headers = {}
+                if "range" in normalized_headers:
+                    essential_headers["Range"] = normalized_headers["range"]
+
+                if "content-type" in normalized_headers:
+                    essential_headers["Content-Type"] = normalized_headers["content-type"]
+
+                if "content-length" in normalized_headers:
+                    essential_headers["Content-Length"] = normalized_headers["content-length"]
+
+                # Optionally, add more essential headers based on your use case
+                # (e.g., caching headers, authorization for specific cases, etc.)
 
                 # Stream data to/from S3
                 async with httpx.AsyncClient() as client:
                     try:
-                        # Handle different HTTP methods and pass the request body if necessary
+                        # For methods like POST/PUT, pass the request body
                         if method in ["POST", "PUT", "PATCH"]:
                             response = await client.request(
                                 method,
                                 s3_url,
                                 content=request.stream(),  # Stream the request body
-                                headers=headers,
+                                headers=essential_headers,  # Forward essential headers
                             )
                         else:
                             response = await client.request(
                                 method,
                                 s3_url,
-                                headers=headers,  # Proxy headers
+                                headers=essential_headers,  # Forward essential headers
                             )
 
                         # Return a StreamingResponse to the client
                         return StreamingResponse(
                             response.iter_bytes(),  # Async iterator of response body chunks
                             status_code=response.status_code,
-                            headers=dict(
-                                response.headers
-                            ),  # Convert response headers to dict
+                            headers=dict(response.headers),  # Convert response headers to dict
                         )
 
                     except httpx.HTTPStatusError as exc:
