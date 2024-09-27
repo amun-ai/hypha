@@ -224,7 +224,7 @@
             return (
                 <div className={`sidebar ${isCollapsed ? 'collapsed' : ''}`}>
                     <div className="logo">
-                        <a href="#"><img src="./static/img/hypha-logo-black.svg" className={`h-10 invert ${isCollapsed ? 'hidden' : 'block'}`} alt="Hypha Logo" /></a>
+                        <a href="../"><img src="./static/img/hypha-logo-black.svg" className={`h-10 invert ${isCollapsed ? 'hidden' : 'block'}`} alt="Hypha Logo" /></a>
                     </div>
                     <div className="menu-item" onClick={() => onToggle()}>
                         <i className="fas fa-bars"></i>
@@ -341,7 +341,15 @@
             );
         };
 
-        const FileCard = ({ file, onDownload, onDelete, onToggle, isExpanded, children, fullPath }) => {
+        const FileCard = ({
+            file,
+            onDownload,
+            onDelete,
+            onToggle,
+            isExpanded,
+            children,
+            fullPath,
+        }) => {
             const isDirectory = file.type === 'directory';
             return (
                 <div className="file-card flex flex-col justify-between items-start p-3 bg-gray-700 shadow-md">
@@ -375,10 +383,18 @@
                     {isExpanded && <div className="w-full mt-4 ml-4">{children}</div>}
                 </div>
             );
-        };
+        };        
         
-        const FileTree = ({ files, onDownload, onDelete, listFiles, setFileList, parentPath = '' }) => {
-            const [expandedDirs, setExpandedDirs] = React.useState({});
+        const FileTree = ({
+            files,
+            onDownload,
+            onDelete,
+            listFiles,
+            // Receive the centralized expandedDirs and setExpandedDirs from props
+            expandedDirs,
+            setExpandedDirs,
+            parentPath = '',
+        }) => {
         
             const handleToggle = async (fullPath) => {
                 const isExpanded = !!expandedDirs[fullPath];
@@ -396,13 +412,14 @@
                         const fullPath = parentPath ? `${parentPath}/${file.name}` : file.name;
                         return (
                             <FileCard
-                                key={fullPath}
+                                key={`${fullPath}-${file.type}`} // Ensure key is unique by combining fullPath and file type
                                 file={file}
                                 onDownload={onDownload}
                                 onDelete={onDelete}
                                 isExpanded={!!expandedDirs[fullPath]}
                                 onToggle={handleToggle}
                                 fullPath={fullPath}
+                                // No need to pass setExpandedDirs to FileCard anymore
                             >
                                 {expandedDirs[fullPath] && (
                                     <FileTree
@@ -410,7 +427,9 @@
                                         onDownload={onDownload}
                                         onDelete={onDelete}
                                         listFiles={listFiles}
-                                        setFileList={setFileList} // Pass setFileList here as well
+                                        // Pass the centralized expandedDirs and setExpandedDirs down the tree
+                                        expandedDirs={expandedDirs}
+                                        setExpandedDirs={setExpandedDirs}
                                         parentPath={fullPath}
                                     />
                                 )}
@@ -419,7 +438,7 @@
                     })}
                 </div>
             );
-        };       
+        };              
 
         const Modal = ({ serviceInfo, onClose }) => {
             return (
@@ -733,8 +752,21 @@
             );
         };
         
-        const MainContent = ({ isCollapsed, enabledPanels, ws, s3, workspaceId, panel, clients, services, apps, files, onShowDetails, onInstallApp }) => {
-
+        const MainContent = ({
+            isCollapsed,
+            enabledPanels,
+            ws,
+            s3,
+            workspaceId,
+            panel,
+            clients,
+            services,
+            apps,
+            files,
+            onShowDetails,
+            onInstallApp,
+        }) => {
+        
             const [workspaces, setWorkspaces] = React.useState([]);
             const [showCreateModal, setShowCreateModal] = React.useState(false);
             const [selectedWorkspaceInfo, setSelectedWorkspaceInfo] = React.useState(null);
@@ -743,11 +775,14 @@
             const [bookmarkedItems, setBookmarkedItems] = React.useState([]);
             const [uploadProgress, setUploadProgress] = React.useState(0);
             const [fileList, setFileList] = React.useState(files);
-
+        
+            // Centralized expandedDirs state
+            const [expandedDirs, setExpandedDirs] = React.useState({});
+        
             React.useEffect(() => {
                 setFileList(files); // Keep file list updated
             }, [files]);
-
+        
             React.useEffect(() => {
                 const fetchWorkspaces = async () => {
                     if (panel === 'development' && ws) {
@@ -767,8 +802,8 @@
                 };
                 fetchWorkspaces();
             }, [panel, ws]);
-
-            // update bookmarks when currentWorkspaceInfo changes
+        
+            // Update bookmarks when currentWorkspaceInfo changes
             React.useEffect(() => {
                 // Check for bookmarks in config
                 if (currentWorkspaceInfo && currentWorkspaceInfo.config && currentWorkspaceInfo.config.bookmarks) {
@@ -777,7 +812,7 @@
                     setBookmarkedItems([]);
                 }
             }, [currentWorkspaceInfo]);
-
+        
             const handleDeleteWorkspace = async (workspaceId) => {
                 try {
                     await ws.deleteWorkspace(workspaceId);
@@ -794,7 +829,7 @@
                     setWorkspaces(await ws.listWorkspaces());
                 } catch (error) {
                     alert(`Failed to create workspace: ${error.message}`);
-                    throw error
+                    throw error;
                 }
             };
         
@@ -806,8 +841,6 @@
                     alert(`Failed to get workspace info: ${error.message}`);
                 }
             };
-        
-            
         
             const handleEditWorkspace = (workspace) => {
                 setEditingWorkspace(workspace); // Open the create modal for editing
@@ -822,14 +855,14 @@
                     alert(`Failed to update workspace: ${error.message}`);
                 }
             };
-
+        
             const handleBookmarkWorkspace = async (newWorkspaceId) => {
                 try {
                     await ws.bookmark({
                         bookmark_type: 'workspace',
                         id: newWorkspaceId
                     });
-                    // refresh the workspace info
+                    // Refresh the workspace info
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setCurrentWorkspaceInfo(workspaceInfo);
                     alert('Workspace bookmarked successfully!');
@@ -837,14 +870,14 @@
                     alert(`Failed to bookmark workspace: ${error.message}`);
                 }
             };
-
+        
             const handleBookmarkService = async (serviceId) => {
                 try {
                     await ws.bookmark({
                         bookmark_type: 'service',
                         id: serviceId
                     });
-                    // refresh the workspace info
+                    // Refresh the workspace info
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setCurrentWorkspaceInfo(workspaceInfo);
                     alert('Service bookmarked successfully!');
@@ -852,33 +885,33 @@
                     alert(`Failed to bookmark service: ${error.message}`);
                 }
             };
-
+        
             const handleUnbookmarkItem = async (bookmark_type, id) => {
                 try {
                     await ws.unbookmark({
                         bookmark_type,
                         id
                     });
-                    // refresh the workspace info
+                    // Refresh the workspace info
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setCurrentWorkspaceInfo(workspaceInfo);
                 } catch (error) {
                     alert(`Failed to unbookmark workspace: ${error.message}`);
                 }
             };
-
+        
             const handleFileDrop = async (e) => {
                 e.preventDefault();
                 const droppedFiles = e.dataTransfer.files;
                 for (const file of droppedFiles) {
-                  await handleFileUpload(file);
+                    await handleFileUpload(file);
                 }
-              };
-            
-              const handleFileUpload = async (file) => {
+            };
+        
+            const handleFileUpload = async (file) => {
                 try {
                     const presignedUrl = await s3.generatePresignedUrl(file.name, "put_object");
-            
+        
                     const response = await axios.put(presignedUrl, file, {
                         headers: {
                             "Content-Type": file.type || "application/octet-stream",
@@ -889,10 +922,10 @@
                             setUploadProgress(progress);
                         },
                     });
-            
+        
                     if (response.status === 200) {
                         console.log(`File ${file.name} uploaded successfully`);
-            
+        
                         // Re-fetch the updated file list and update the state
                         const updatedFiles = await listFiles(); // Fetch the updated files after upload
                         setFileList(updatedFiles); // Update the fileList state to trigger a re-render
@@ -904,16 +937,17 @@
                     console.error("File upload failed", error);
                 }
             };
-              const handleFileDownload = async (filePath) => {
+        
+            const handleFileDownload = async (filePath) => {
                 try {
-                  const presignedUrl = await s3.generatePresignedUrl(filePath, "get_object");
-                  window.open(presignedUrl, '_blank'); // Trigger file download
+                    const presignedUrl = await s3.generatePresignedUrl(filePath, "get_object");
+                    window.open(presignedUrl, '_blank'); // Trigger file download
                 } catch (error) {
-                  console.error("Failed to generate download link", error);
+                    console.error("Failed to generate download link", error);
                 }
-              };
-
-              const handleFileDelete = async (fullPath, type) => {
+            };
+        
+            const handleFileDelete = async (fullPath, type) => {
                 try {
                     let answer;
                     if (type === 'directory') {
@@ -922,25 +956,30 @@
                         answer = confirm(`Are you sure you want to delete the file ${fullPath}?`);
                     }
                     if (!answer) return;
-            
+        
+                    // Delete the file or directory
                     if (type === 'directory') {
-                        await s3.deleteDirectory(fullPath);
+                        await s3.deleteDirectory(fullPath + '/');
                     } else {
                         await s3.deleteFile(fullPath);
                     }
-            
-                    // Derive the parent directory
+        
+                    // Remove the deleted path from the centralized expandedDirs state
+                    setExpandedDirs((prevState) => {
+                        const newExpandedDirs = { ...prevState };
+                        delete newExpandedDirs[fullPath];
+                        return newExpandedDirs;
+                    });
+        
+                    // Re-fetch the parent directory
                     const parentPath = fullPath.substring(0, fullPath.lastIndexOf('/')) || ''; // If no slash, assume root
-            
-                    // Re-fetch the updated file list for the parent directory and update the state
                     const updatedFiles = await listFiles(parentPath);
                     setFileList(updatedFiles); // Update the fileList state to trigger a re-render
                 } catch (error) {
                     console.error("Failed to delete file", error);
                 }
             };
-            
-
+        
             const listFiles = async (path = '') => {
                 try {
                     const files = await s3.listFiles(path); // Ensure this calls the server to get updated data
@@ -1150,33 +1189,41 @@
         
                     {panel === 'files' && (
                         <>
-                        <h1 className="text-4xl font-bold capitalize">Files</h1>
-                        <p className="text-xl text-gray-400 mt-4">
-                            Files in workspace: <code>{workspaceId}</code>
-                        </p>
-                        <div className="p-4 border-dashed border-4 border-gray-600 rounded mt-6">
-                            <p className="text-center text-gray-500">
-                            Drag and drop files here to upload
+                            <h1 className="text-4xl font-bold capitalize">Files</h1>
+                            <p className="text-xl text-gray-400 mt-4">
+                                Files in workspace: <code>{workspaceId}</code>
                             </p>
-                            {!!uploadProgress && (
-                                <div className="w-full bg-gray-600 h-4 rounded relative flex items-center justify-center">
-                                    <div
-                                        className="bg-blue-500 h-4 rounded"
-                                        style={{ width: `${uploadProgress}%` }}
-                                    ></div>
-                                    <span className="absolute text-white text-sm">
-                                        {Math.round(uploadProgress, 1)}%
-                                    </span>
-                                </div>
-                            )}
-                        </div>
-                        <div className="mt-6">
-                            {fileList.length === 0 ? (
-                            <p>No files available.</p>
-                            ) : (
-                                <FileTree files={fileList} onDelete={handleFileDelete} onDownload={handleFileDownload} listFiles={listFiles} />
-                            )}
-                        </div>
+                            <div className="p-4 border-dashed border-4 border-gray-600 rounded mt-6">
+                                <p className="text-center text-gray-500">
+                                    Drag and drop files here to upload
+                                </p>
+                                {!!uploadProgress && (
+                                    <div className="w-full bg-gray-600 h-4 rounded relative flex items-center justify-center">
+                                        <div
+                                            className="bg-blue-500 h-4 rounded"
+                                            style={{ width: `${uploadProgress}%` }}
+                                        ></div>
+                                        <span className="absolute text-white text-sm">
+                                            {Math.round(uploadProgress, 1)}%
+                                        </span>
+                                    </div>
+                                )}
+                            </div>
+                            <div className="mt-6">
+                                {fileList.length === 0 ? (
+                                    <p>No files available.</p>
+                                ) : (
+                                    <FileTree
+                                        files={fileList}
+                                        onDelete={handleFileDelete}
+                                        onDownload={handleFileDownload}
+                                        listFiles={listFiles}
+                                        // Pass the centralized expandedDirs and setExpandedDirs
+                                        expandedDirs={expandedDirs}
+                                        setExpandedDirs={setExpandedDirs}
+                                    />
+                                )}
+                            </div>
                         </>
                     )}
         
@@ -1377,7 +1424,7 @@
                 try {
                     if (!url) return;
                     const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
-                    const appInfo = await controller.install(url);
+                    const appInfo = await controller.install(url, { overwrite: true, _rkwargs: true});
                     console.log('App installed:', appInfo);
                     setApps(await controller.listApps());
                 } catch (e) {
