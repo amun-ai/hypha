@@ -47,6 +47,20 @@ async def test_s3_proxy(minio_server, fastapi_server, test_user_token):
         headers={"Content-Type": "application/zip"},
     )
     assert response.status_code == 200, "Failed to upload the ZIP file to S3."
+    
+    # Test retrieving the first file inside the ZIP
+    presigned_url = await s3controller.generate_presigned_url(
+        f"apps/test.zip", client_method="get_object"
+    )
+    response = requests.get(presigned_url)
+    assert response.status_code == 200
+    assert response.content == zip_buffer.getvalue()
+    
+    # Test get with range
+    response = requests.get(presigned_url, headers={"Range": "bytes=0-10", "Origin": "http://localhost"})
+    assert response.status_code == 206
+    assert response.content == zip_buffer.getvalue()[:11]
+    assert response.headers["access-control-allow-origin"] == "http://localhost"
 
     # Test retrieving the first file inside the ZIP
     presigned_url = await s3controller.generate_presigned_url(

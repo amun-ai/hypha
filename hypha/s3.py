@@ -461,10 +461,7 @@ class S3Controller:
                                 response.iter_bytes(),  # Async iterator of response body chunks
                                 status_code=response.status_code,
                                 headers={
-                                    k: v
-                                    for k, v in response.headers.items()
-                                    if k.lower()
-                                    not in ["content-encoding", "transfer-encoding"]
+                                    k: v for k, v in response.headers.items() if k.lower() not in ["content-encoding", "transfer-encoding"]
                                 },  # Forward all response headers except Content-Encoding and Transfer-Encoding
                             )
 
@@ -477,13 +474,11 @@ class S3Controller:
                         elif method == "HEAD":
                             return Response(
                                 status_code=response.status_code,
-                                headers=response.headers,  # No content for HEAD, but forward headers
+                                headers=response.headers  # No content for HEAD, but forward headers
                             )
 
                         else:
-                            return Response(
-                                status_code=405, content="Method Not Allowed"
-                            )
+                            return Response(status_code=405, content="Method Not Allowed")
 
                     except httpx.HTTPStatusError as exc:
                         raise HTTPException(
