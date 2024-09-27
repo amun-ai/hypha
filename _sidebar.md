@@ -6,4 +6,5 @@
  * [Serve ASGI Web Apps](/asgi-apps)
  * [Launch Service](/launch-service)
  * [Operate Files](/operate-files)
+ * [Artifact Manager](/artifact-manager)
  * [Development](/development)
