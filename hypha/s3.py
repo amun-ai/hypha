@@ -408,9 +408,7 @@ class S3Controller:
 
                 # Construct the S3 presigned URL using the internal endpoint_url
                 if query_params:
-                    s3_url = f"{self.endpoint_url}/{path}?" + urlencode(
-                        query_params
-                    )
+                    s3_url = f"{self.endpoint_url}/{path}?" + urlencode(query_params)
                 else:
                     s3_url = f"{self.endpoint_url}/{path}"
 

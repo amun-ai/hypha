@@ -72,9 +72,7 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
     )
 
     # Ensure that the dataset appears in the collection's index
-    collection = await artifact_manager.read(
-        prefix="collections/edit-test-collection"
-    )
+    collection = await artifact_manager.read(prefix="collections/edit-test-collection")
     assert find_item(collection["collection"], "_id", "edit-test-dataset")
 
     # Edit the artifact's manifest
@@ -417,9 +415,7 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
     )
 
     # Ensure that the collection index is updated
-    collection = await artifact_manager.read(
-        prefix="collections/edge-case-collection"
-    )
+    collection = await artifact_manager.read(prefix="collections/edge-case-collection")
     assert find_item(collection["collection"], "_id", "edge-case-dataset")
 
     # Test validation without uploading a file

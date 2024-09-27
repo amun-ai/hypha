@@ -458,7 +458,7 @@ class ServerAppController:
                 await self.artifact_manager.commit(
                     prefix=f"applications/{app_id}", context=context
                 )
-                
+
         except asyncio.TimeoutError:
             raise Exception(
                 f"Failed to start the app: {workspace}/{app_id}, timeout reached ({timeout}s)."
@@ -519,9 +519,7 @@ class ServerAppController:
 
     async def list_apps(self, context: Optional[dict] = None):
         """List applications in the workspace."""
-        apps = await self.artifact_manager.read(
-            prefix="applications", context=context
-        )
+        apps = await self.artifact_manager.read(prefix="applications", context=context)
         return apps["collection"]
 
     async def close(self) -> None:
