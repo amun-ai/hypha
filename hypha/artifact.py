@@ -77,10 +77,14 @@ class ArtifactController:
             except ClientError:
                 edit_manifest_exists = False
 
-            if (manifest_exists or edit_manifest_exists) and not overwrite:
-                raise FileExistsError(
-                    f"Artifact under prefix '{prefix}' already exists. Use overwrite=True to overwrite."
-                )
+            if manifest_exists or edit_manifest_exists:
+                if not overwrite:
+                    raise FileExistsError(
+                        f"Artifact under prefix '{prefix}' already exists. Use overwrite=True to overwrite."
+                    )
+                else:
+                    logger.info(f"Overwriting artifact under prefix: {prefix}")
+                    await self.delete(prefix, context=context)
 
             # Check if the artifact is a collection and initialize it
             if manifest.get("type") == "collection":
@@ -256,7 +260,7 @@ class ArtifactController:
 
         return collection
 
-    async def read(self, prefix, context: dict = None):
+    async def read(self, prefix, stage=False, context: dict = None):
         """Read the artifact's manifest. Fallback to _manifest.yaml if manifest.yaml doesn't exist."""
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
@@ -264,28 +268,29 @@ class ArtifactController:
             raise PermissionError(
                 "User does not have read permission to the workspace."
             )
+
         manifest_key = f"{ws}/{prefix}/{MANIFEST_FILENAME}"
         edit_manifest_key = f"{ws}/{prefix}/{EDIT_MANIFEST_FILENAME}"
 
         async with self.s3_controller.create_client_async() as s3_client:
             try:
-                # Try to read the finalized manifest.yaml
-                manifest_obj = await s3_client.get_object(
-                    Bucket=self.workspace_bucket, Key=manifest_key
-                )
-            except ClientError:
-                # Fallback to _manifest.yaml if manifest.yaml does not exist
-                try:
+                # Read the manifest depending on the stage
+                if stage:
                     manifest_obj = await s3_client.get_object(
                         Bucket=self.workspace_bucket, Key=edit_manifest_key
                     )
-                except ClientError:
-                    raise KeyError(f"Artifact under prefix '{prefix}' does not exist.")
+                else:
+                    manifest_obj = await s3_client.get_object(
+                        Bucket=self.workspace_bucket, Key=manifest_key
+                    )
+            except ClientError:
+                # If manifest.yaml does not exist and it's not in edit mode, raise an error
+                raise KeyError(f"Artifact under prefix '{prefix}' does not exist.")
 
             manifest = yaml.safe_load((await manifest_obj["Body"].read()).decode())
             return manifest
 
-    async def commit(self, prefix, overwrite: bool = False, context: dict = None):
+    async def commit(self, prefix, context: dict = None):
         """Commit the artifact, ensure all files are uploaded, and rename _manifest.yaml to manifest.yaml."""
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
@@ -302,10 +307,6 @@ class ArtifactController:
                 await s3_client.head_object(
                     Bucket=self.workspace_bucket, Key=final_manifest_key
                 )
-                if not overwrite:
-                    raise FileExistsError(
-                        f"Artifact under prefix '{prefix}' is already finalized. Use overwrite=True to overwrite."
-                    )
             except ClientError:
                 pass
 
@@ -571,6 +572,7 @@ class ArtifactController:
             "name": "Artifact Manager",
             "description": "Manage artifacts in a workspace.",
             "create": self.create,
+            "edit": self.edit,
             "read": self.read,
             "commit": self.commit,
             "delete": self.delete,

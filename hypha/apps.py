@@ -230,7 +230,6 @@ class ServerAppController:
         if not stage:
             await self.commit(
                 app_id,
-                overwrite=overwrite,
                 timeout=timeout,
                 context=context,
             )
@@ -286,15 +285,12 @@ class ServerAppController:
         self,
         app_id: str,
         timeout: int = 30,
-        overwrite: bool = False,
         context: Optional[dict] = None,
     ):
         """Finalize the edits to the application by committing the artifact."""
 
         prefix = f"applications/{app_id}"
-        await self.artifact_controller.commit(
-            prefix=prefix, overwrite=overwrite, context=context
-        )
+        await self.artifact_controller.commit(prefix=prefix, context=context)
         try:
             info = await self.start(
                 app_id,

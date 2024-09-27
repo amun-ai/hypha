@@ -19,6 +19,115 @@ from . import SERVER_URL, find_item
 pytestmark = pytest.mark.asyncio
 
 
+"""Test Artifact services."""
+import pytest
+import requests
+from hypha_rpc.websocket_client import connect_to_server
+
+from . import SERVER_URL, find_item
+
+# All test coroutines will be treated as marked.
+pytestmark = pytest.mark.asyncio
+
+
+async def test_edit_existing_artifact(minio_server, fastapi_server):
+    """Test editing an existing artifact."""
+    api = await connect_to_server(
+        {"name": "test deploy client", "server_url": SERVER_URL}
+    )
+    artifact_controller = await api.get_service("public/artifact-manager")
+
+    # Create a collection first
+    collection_manifest = {
+        "id": "edit-test-collection",
+        "name": "edit-test-collection",
+        "description": "A test collection for editing artifacts",
+        "type": "collection",
+        "collection": [],
+    }
+    await artifact_controller.create(
+        prefix="collections/edit-test-collection",
+        manifest=collection_manifest,
+        stage=False,
+    )
+
+    # Create an artifact (a dataset in this case) within the collection
+    dataset_manifest = {
+        "id": "edit-test-dataset",
+        "name": "edit-test-dataset",
+        "description": "A test dataset to edit",
+        "type": "dataset",
+        "files": [],
+    }
+
+    await artifact_controller.create(
+        prefix="collections/edit-test-collection/edit-test-dataset",
+        manifest=dataset_manifest,
+        stage=True,
+    )
+
+    # Commit the dataset artifact (finalize it)
+    await artifact_controller.commit(
+        prefix="collections/edit-test-collection/edit-test-dataset"
+    )
+
+    # Ensure that the dataset appears in the collection's index
+    collection = await artifact_controller.read(
+        prefix="collections/edit-test-collection"
+    )
+    assert find_item(collection["collection"], "_id", "edit-test-dataset")
+
+    # Edit the artifact's manifest
+    edited_manifest = {
+        "id": "edit-test-dataset",
+        "name": "edit-test-dataset",
+        "description": "Edited description of the test dataset",
+        "type": "dataset",
+        "files": [{"path": "example.txt"}],  # Adding a file in the edit process
+    }
+
+    # Call edit on the artifact
+    await artifact_controller.edit(
+        prefix="collections/edit-test-collection/edit-test-dataset",
+        manifest=edited_manifest,
+    )
+
+    # Ensure that the changes are reflected in the manifest (read the artifact in stage mode)
+    updated_manifest = await artifact_controller.read(
+        prefix="collections/edit-test-collection/edit-test-dataset", stage=True
+    )
+    assert updated_manifest["description"] == "Edited description of the test dataset"
+    assert find_item(updated_manifest["files"], "path", "example.txt")
+
+    # Add a file to the artifact
+    source = "file contents of example.txt"
+    put_url = await artifact_controller.put_file(
+        prefix="collections/edit-test-collection/edit-test-dataset",
+        file_path="example.txt",
+    )
+
+    # Use the pre-signed URL to upload the file
+    response = requests.put(put_url, data=source)
+    assert response.ok
+
+    # Commit the artifact again after editing
+    await artifact_controller.commit(
+        prefix="collections/edit-test-collection/edit-test-dataset"
+    )
+
+    # Ensure that the file is included in the manifest
+    manifest_data = await artifact_controller.read(
+        prefix="collections/edit-test-collection/edit-test-dataset"
+    )
+    assert find_item(manifest_data["files"], "path", "example.txt")
+
+    # Clean up by deleting the dataset and collection
+    await artifact_controller.delete(
+        prefix="collections/edit-test-collection/edit-test-dataset"
+    )
+    await artifact_controller.delete(prefix="collections/edit-test-collection")
+
+
 async def test_artifact_schema_validation(minio_server, fastapi_server):
     """Test schema validation when committing artifacts to a collection."""
     api = await connect_to_server(
@@ -183,7 +292,7 @@ async def test_artifact_controller_with_collection(minio_server, fastapi_server)
 
     # Ensure that the file is included in the manifest
     manifest_data = await artifact_controller.read(
-        prefix="collections/test-collection/test-dataset"
+        prefix="collections/test-collection/test-dataset", stage=True
     )
     assert find_item(manifest_data["files"], "path", "test.txt")
 
@@ -219,7 +328,7 @@ async def test_artifact_controller_with_collection(minio_server, fastapi_server)
         prefix="collections/test-collection/test-dataset",
         manifest=new_dataset_manifest,
         overwrite=True,
-        stage=True,
+        stage=False,
     )
 
     # Ensure that the old manifest has been overwritten
