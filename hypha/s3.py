@@ -946,7 +946,8 @@ class S3Controller:
                 path = path[1:]
             else:
                 path = safe_join(workspace, path)
-            async with self.create_client_async(public=True) as s3_client:
+            public = False if self.enable_s3_proxy else True
+            async with self.create_client_async(public=public) as s3_client:
                 url = await s3_client.generate_presigned_url(
                     client_method,
                     Params={"Bucket": self.workspace_bucket, "Key": path},
