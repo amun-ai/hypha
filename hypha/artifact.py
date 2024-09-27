@@ -35,7 +35,7 @@ class ArtifactController:
         self.s3_controller = s3_controller
         self.workspace_bucket = workspace_bucket
         store.register_public_service(self.get_artifact_service())
-        store.set_artifact_controller(self)
+        store.set_artifact_manager(self)
 
     async def create(
         self, prefix, manifest: dict, overwrite=False, stage=False, context: dict = None

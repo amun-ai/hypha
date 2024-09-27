@@ -65,7 +65,7 @@ class WorkspaceManager:
         server_info: dict,
         client_id: str,
         s3_controller: Optional[Any] = None,
-        artifact_controller: Optional[Any] = None,
+        artifact_manager: Optional[Any] = None,
     ):
         self._redis = redis
         self._initialized = False
@@ -75,7 +75,7 @@ class WorkspaceManager:
         self._server_info = server_info
         self._client_id = client_id
         self._s3_controller = s3_controller
-        self._artifact_controller = artifact_controller
+        self._artifact_manager = artifact_manager
 
     def get_client_id(self):
         assert self._client_id, "client id must not be empty."
@@ -1073,7 +1073,7 @@ class WorkspaceManager:
         if not user_info.check_permission(workspace, UserPermission.read):
             raise PermissionError(f"Permission denied for workspace {workspace}")
 
-        if not self._artifact_controller:
+        if not self._artifact_manager:
             raise Exception(
                 "Failed to launch application: artifact-manager service not found."
             )
@@ -1086,7 +1086,7 @@ class WorkspaceManager:
             "built-in",
         ], f"Invalid service id: {service_id}"
 
-        app_collection = await self._artifact_controller.read(
+        app_collection = await self._artifact_manager.read(
             "applications", context={"ws": workspace, "user": user_info.model_dump()}
         )
         applications = {

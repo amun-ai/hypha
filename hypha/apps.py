@@ -36,14 +36,14 @@ class ServerAppController:
         store,
         in_docker,
         port: int,
-        artifact_controller,
+        artifact_manager,
         workspace_bucket="hypha-workspaces",
     ):
         """Initialize the controller."""
         self.port = int(port)
         self.store = store
         self.in_docker = in_docker
-        self.artifact_controller = artifact_controller
+        self.artifact_manager = artifact_manager
         self.workspace_bucket = workspace_bucket
         self._sessions = {}  # Track running sessions
         self.event_bus = store.get_event_bus()
@@ -85,7 +85,7 @@ class ServerAppController:
             ],
             "collection": [],
         }
-        await self.artifact_controller.create(
+        await self.artifact_manager.create(
             "applications", manifest, overwrite=overwrite, stage=False, context=context
         )
         logger.info(f"Applications collection created for workspace {ws}")
@@ -203,12 +203,12 @@ class ServerAppController:
         ApplicationArtifact.model_validate(artifact_obj)
 
         try:
-            await self.artifact_controller.read("applications", context=context)
+            await self.artifact_manager.read("applications", context=context)
         except KeyError:
             await self.setup_workspace(overwrite=True, context=context)
         # Create artifact using the artifact controller
         prefix = f"applications/{app_id}"
-        await self.artifact_controller.create(
+        await self.artifact_manager.create(
             prefix=prefix,
             manifest=artifact_obj,
             overwrite=overwrite,
@@ -217,7 +217,7 @@ class ServerAppController:
         )
 
         # Upload the main source file
-        put_url = await self.artifact_controller.put_file(
+        put_url = await self.artifact_manager.put_file(
             prefix=prefix, file_path=config["entry_point"], context=context
         )
         async with httpx.AsyncClient() as client:
@@ -244,7 +244,7 @@ class ServerAppController:
     ):
         """Add a file to the installed application."""
         prefix = f"applications/{app_id}"
-        put_url = await self.artifact_controller.put_file(
+        put_url = await self.artifact_manager.put_file(
             prefix=prefix, file_path=file_path, context=context
         )
         response = httpx.put(put_url, data=file_content)
@@ -260,7 +260,7 @@ class ServerAppController:
         workspace = context["ws"]
 
         prefix = f"applications/{app_id}"
-        await self.artifact_controller.remove_file(
+        await self.artifact_manager.remove_file(
             prefix=prefix, file_path=file_path, context=context
         )
 
@@ -271,7 +271,7 @@ class ServerAppController:
         workspace = context["ws"]
 
         prefix = f"applications/{app_id}"
-        manifest = await self.artifact_controller.read(prefix=prefix, context=context)
+        manifest = await self.artifact_manager.read(prefix=prefix, context=context)
         return manifest["files"]
 
     async def edit(self, app_id: str, context: Optional[dict] = None):
@@ -279,7 +279,7 @@ class ServerAppController:
         workspace = context["ws"]
 
         prefix = f"applications/{app_id}"
-        await self.artifact_controller.edit(prefix=prefix, context=context)
+        await self.artifact_manager.edit(prefix=prefix, context=context)
 
     async def commit(
         self,
@@ -311,12 +311,12 @@ class ServerAppController:
             raise Exception(
                 f"Failed to start the app: {app_id} during installation, error: {exp}"
             )
-        await self.artifact_controller.commit(prefix=prefix, context=context)
+        await self.artifact_manager.commit(prefix=prefix, context=context)
 
     async def uninstall(self, app_id: str, context: Optional[dict] = None) -> None:
         """Uninstall an application by removing its artifact."""
         prefix = f"applications/{app_id}"
-        await self.artifact_controller.delete(prefix=prefix, context=context)
+        await self.artifact_manager.delete(prefix=prefix, context=context)
 
     async def launch(
         self,
@@ -372,7 +372,7 @@ class ServerAppController:
         if client_id is None:
             client_id = random_id(readable=True)
 
-        artifact = await self.artifact_controller.read(
+        artifact = await self.artifact_manager.read(
             prefix=f"applications/{app_id}", stage=stage, context=context
         )
         artifact = ApplicationArtifact.model_validate(artifact)
@@ -449,13 +449,13 @@ class ServerAppController:
             artifact = ApplicationArtifact.model_validate(
                 artifact.model_dump(mode="json")
             )
-            await self.artifact_controller.edit(
+            await self.artifact_manager.edit(
                 prefix=f"applications/{app_id}",
                 manifest=artifact.model_dump(mode="json"),
                 context=context,
             )
             if not stage:
-                await self.artifact_controller.commit(
+                await self.artifact_manager.commit(
                     prefix=f"applications/{app_id}", context=context
                 )
                 
@@ -519,7 +519,7 @@ class ServerAppController:
 
     async def list_apps(self, context: Optional[dict] = None):
         """List applications in the workspace."""
-        apps = await self.artifact_controller.read(
+        apps = await self.artifact_manager.read(
             prefix="applications", context=context
         )
         return apps["collection"]

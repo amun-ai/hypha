@@ -35,7 +35,7 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
     api = await connect_to_server(
         {"name": "test deploy client", "server_url": SERVER_URL}
     )
-    artifact_controller = await api.get_service("public/artifact-manager")
+    artifact_manager = await api.get_service("public/artifact-manager")
 
     # Create a collection first
     collection_manifest = {
@@ -45,7 +45,7 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
         "type": "collection",
         "collection": [],
     }
-    await artifact_controller.create(
+    await artifact_manager.create(
         prefix="collections/edit-test-collection",
         manifest=collection_manifest,
         stage=False,
@@ -60,19 +60,19 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
         "files": [],
     }
 
-    await artifact_controller.create(
+    await artifact_manager.create(
         prefix="collections/edit-test-collection/edit-test-dataset",
         manifest=dataset_manifest,
         stage=True,
     )
 
     # Commit the dataset artifact (finalize it)
-    await artifact_controller.commit(
+    await artifact_manager.commit(
         prefix="collections/edit-test-collection/edit-test-dataset"
     )
 
     # Ensure that the dataset appears in the collection's index
-    collection = await artifact_controller.read(
+    collection = await artifact_manager.read(
         prefix="collections/edit-test-collection"
     )
     assert find_item(collection["collection"], "_id", "edit-test-dataset")
@@ -87,13 +87,13 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
     }
 
     # Call edit on the artifact
-    await artifact_controller.edit(
+    await artifact_manager.edit(
         prefix="collections/edit-test-collection/edit-test-dataset",
         manifest=edited_manifest,
     )
 
     # Ensure that the changes are reflected in the manifest (read the artifact in stage mode)
-    updated_manifest = await artifact_controller.read(
+    updated_manifest = await artifact_manager.read(
         prefix="collections/edit-test-collection/edit-test-dataset", stage=True
     )
     assert updated_manifest["description"] == "Edited description of the test dataset"
@@ -101,7 +101,7 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
 
     # Add a file to the artifact
     source = "file contents of example.txt"
-    put_url = await artifact_controller.put_file(
+    put_url = await artifact_manager.put_file(
         prefix="collections/edit-test-collection/edit-test-dataset",
         file_path="example.txt",
     )
@@ -111,21 +111,21 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
     assert response.ok
 
     # Commit the artifact again after editing
-    await artifact_controller.commit(
+    await artifact_manager.commit(
         prefix="collections/edit-test-collection/edit-test-dataset"
     )
 
     # Ensure that the file is included in the manifest
-    manifest_data = await artifact_controller.read(
+    manifest_data = await artifact_manager.read(
         prefix="collections/edit-test-collection/edit-test-dataset"
     )
     assert find_item(manifest_data["files"], "path", "example.txt")
 
     # Clean up by deleting the dataset and collection
-    await artifact_controller.delete(
+    await artifact_manager.delete(
         prefix="collections/edit-test-collection/edit-test-dataset"
     )
-    await artifact_controller.delete(prefix="collections/edit-test-collection")
+    await artifact_manager.delete(prefix="collections/edit-test-collection")
 
 
 async def test_artifact_schema_validation(minio_server, fastapi_server):
@@ -133,7 +133,7 @@ async def test_artifact_schema_validation(minio_server, fastapi_server):
     api = await connect_to_server(
         {"name": "test deploy client", "server_url": SERVER_URL}
     )
-    artifact_controller = await api.get_service("public/artifact-manager")
+    artifact_manager = await api.get_service("public/artifact-manager")
 
     # Define the schema for the collection
     collection_schema = {
@@ -161,14 +161,14 @@ async def test_artifact_schema_validation(minio_server, fastapi_server):
         "collection": [],
     }
 
-    await artifact_controller.create(
+    await artifact_manager.create(
         prefix="collections/schema-test-collection",
         manifest=collection_manifest,
         stage=False,
     )
 
     # Ensure that the collection exists
-    collections = await artifact_controller.list(prefix="collections")
+    collections = await artifact_manager.list(prefix="collections")
     assert "schema-test-collection" in collections
 
     # Create a valid dataset artifact that conforms to the schema
@@ -180,7 +180,7 @@ async def test_artifact_schema_validation(minio_server, fastapi_server):
         "files": [{"path": "valid_file.txt"}],
     }
 
-    await artifact_controller.create(
+    await artifact_manager.create(
         prefix="collections/schema-test-collection/valid-dataset",
         manifest=valid_dataset_manifest,
         stage=True,
@@ -188,7 +188,7 @@ async def test_artifact_schema_validation(minio_server, fastapi_server):
 
     # Add a file to the valid dataset artifact
     source = "file contents of valid_file.txt"
-    put_url = await artifact_controller.put_file(
+    put_url = await artifact_manager.put_file(
         prefix="collections/schema-test-collection/valid-dataset",
         file_path="valid_file.txt",
     )
@@ -198,12 +198,12 @@ async def test_artifact_schema_validation(minio_server, fastapi_server):
     assert response.ok
 
     # Commit the valid dataset artifact (finalize it)
-    await artifact_controller.commit(
+    await artifact_manager.commit(
         prefix="collections/schema-test-collection/valid-dataset"
     )
 
     # Ensure that the dataset appears in the collection's index
-    collection = await artifact_controller.read(
+    collection = await artifact_manager.read(
         prefix="collections/schema-test-collection"
     )
     assert find_item(collection["collection"], "_id", "valid-dataset")
@@ -216,7 +216,7 @@ async def test_artifact_schema_validation(minio_server, fastapi_server):
         "type": "dataset",
     }
 
-    await artifact_controller.create(
+    await artifact_manager.create(
         prefix="collections/schema-test-collection/invalid-dataset",
         manifest=invalid_dataset_manifest,
         stage=True,
@@ -227,26 +227,26 @@ async def test_artifact_schema_validation(minio_server, fastapi_server):
         Exception,
         match=r".*ValidationError: 'description' is a required property.*",
     ):
-        await artifact_controller.commit(
+        await artifact_manager.commit(
             prefix="collections/schema-test-collection/invalid-dataset"
         )
 
     # Clean up by deleting the artifacts and the collection
-    await artifact_controller.delete(
+    await artifact_manager.delete(
         prefix="collections/schema-test-collection/valid-dataset"
     )
-    await artifact_controller.delete(
+    await artifact_manager.delete(
         prefix="collections/schema-test-collection/invalid-dataset"
     )
-    await artifact_controller.delete(prefix="collections/schema-test-collection")
+    await artifact_manager.delete(prefix="collections/schema-test-collection")
 
 
-async def test_artifact_controller_with_collection(minio_server, fastapi_server):
+async def test_artifact_manager_with_collection(minio_server, fastapi_server):
     """Test artifact controller with collections."""
     api = await connect_to_server(
         {"name": "test deploy client", "server_url": SERVER_URL}
     )
-    artifact_controller = await api.get_service("public/artifact-manager")
+    artifact_manager = await api.get_service("public/artifact-manager")
 
     # Create a collection
     collection_manifest = {
@@ -257,12 +257,12 @@ async def test_artifact_controller_with_collection(minio_server, fastapi_server)
         "collection": [],
     }
 
-    await artifact_controller.create(
+    await artifact_manager.create(
         prefix="collections/test-collection", manifest=collection_manifest, stage=False
     )
 
     # Ensure that the collection exists
-    collections = await artifact_controller.list(prefix="collections")
+    collections = await artifact_manager.list(prefix="collections")
     assert "test-collection" in collections
 
     # Create an artifact (a dataset in this case) within the collection
@@ -274,7 +274,7 @@ async def test_artifact_controller_with_collection(minio_server, fastapi_server)
         "files": [],
     }
 
-    await artifact_controller.create(
+    await artifact_manager.create(
         prefix="collections/test-collection/test-dataset",
         manifest=dataset_manifest,
         stage=True,
@@ -282,7 +282,7 @@ async def test_artifact_controller_with_collection(minio_server, fastapi_server)
 
     # Add a file to the artifact (test file)
     source = "file contents of test.txt"
-    put_url = await artifact_controller.put_file(
+    put_url = await artifact_manager.put_file(
         prefix="collections/test-collection/test-dataset", file_path="test.txt"
     )
 
@@ -291,24 +291,24 @@ async def test_artifact_controller_with_collection(minio_server, fastapi_server)
     assert response.ok
 
     # Ensure that the file is included in the manifest
-    manifest_data = await artifact_controller.read(
+    manifest_data = await artifact_manager.read(
         prefix="collections/test-collection/test-dataset", stage=True
     )
     assert find_item(manifest_data["files"], "path", "test.txt")
 
     # Commit the artifact (finalize it)
-    await artifact_controller.commit(prefix="collections/test-collection/test-dataset")
+    await artifact_manager.commit(prefix="collections/test-collection/test-dataset")
 
     # Ensure that the dataset appears in the collection's index
-    collection = await artifact_controller.read(prefix="collections/test-collection")
+    collection = await artifact_manager.read(prefix="collections/test-collection")
     assert find_item(collection["collection"], "_id", "test-dataset")
 
     # Ensure that the manifest.yaml is finalized and the artifact is validated
-    artifacts = await artifact_controller.list(prefix="collections/test-collection")
+    artifacts = await artifact_manager.list(prefix="collections/test-collection")
     assert "test-dataset" in artifacts
 
     # Retrieve the file via the get_file method
-    get_url = await artifact_controller.get_file(
+    get_url = await artifact_manager.get_file(
         prefix="collections/test-collection/test-dataset", path="test.txt"
     )
     response = requests.get(get_url)
@@ -324,7 +324,7 @@ async def test_artifact_controller_with_collection(minio_server, fastapi_server)
         "files": [],
     }
 
-    await artifact_controller.create(
+    await artifact_manager.create(
         prefix="collections/test-collection/test-dataset",
         manifest=new_dataset_manifest,
         overwrite=True,
@@ -332,25 +332,25 @@ async def test_artifact_controller_with_collection(minio_server, fastapi_server)
     )
 
     # Ensure that the old manifest has been overwritten
-    manifest_data = await artifact_controller.read(
+    manifest_data = await artifact_manager.read(
         prefix="collections/test-collection/test-dataset"
     )
     assert manifest_data["description"] == "Overwritten test dataset in collection"
     assert len(manifest_data["files"]) == 0  # files should have been cleared
 
     # Remove the dataset artifact
-    await artifact_controller.delete(prefix="collections/test-collection/test-dataset")
+    await artifact_manager.delete(prefix="collections/test-collection/test-dataset")
 
     # Ensure that the dataset artifact is removed
-    artifacts = await artifact_controller.list(prefix="collections/test-collection")
+    artifacts = await artifact_manager.list(prefix="collections/test-collection")
     assert "test-dataset" not in artifacts
 
     # Ensure the collection is updated after removing the dataset
-    collection = await artifact_controller.read(prefix="collections/test-collection")
+    collection = await artifact_manager.read(prefix="collections/test-collection")
     assert not find_item(collection["collection"], "_id", "test-dataset")
 
     # Clean up by deleting the collection
-    await artifact_controller.delete(prefix="collections/test-collection")
+    await artifact_manager.delete(prefix="collections/test-collection")
 
 
 async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server):
@@ -358,7 +358,7 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
     api = await connect_to_server(
         {"name": "test deploy client", "server_url": SERVER_URL}
     )
-    artifact_controller = await api.get_service("public/artifact-manager")
+    artifact_manager = await api.get_service("public/artifact-manager")
 
     # Create a collection first
     collection_manifest = {
@@ -368,7 +368,7 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
         "type": "collection",
         "collection": [],
     }
-    await artifact_controller.create(
+    await artifact_manager.create(
         prefix="collections/edge-case-collection",
         manifest=collection_manifest,
         stage=False,
@@ -384,7 +384,7 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
     }
 
     # Create the artifact first
-    await artifact_controller.create(
+    await artifact_manager.create(
         prefix="collections/edge-case-collection/edge-case-dataset",
         manifest=manifest,
         stage=True,
@@ -395,7 +395,7 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
         Exception,
         match=r".*FileExistsError: Artifact under prefix .*",
     ):
-        await artifact_controller.create(
+        await artifact_manager.create(
             prefix="collections/edge-case-collection/edge-case-dataset",
             manifest=manifest,
             overwrite=False,
@@ -403,7 +403,7 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
         )
 
     # Add a file to the artifact
-    put_url = await artifact_controller.put_file(
+    put_url = await artifact_manager.put_file(
         prefix="collections/edge-case-collection/edge-case-dataset",
         file_path="example.txt",
     )
@@ -412,12 +412,12 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
     assert response.ok
 
     # Commit the artifact
-    await artifact_controller.commit(
+    await artifact_manager.commit(
         prefix="collections/edge-case-collection/edge-case-dataset"
     )
 
     # Ensure that the collection index is updated
-    collection = await artifact_controller.read(
+    collection = await artifact_manager.read(
         prefix="collections/edge-case-collection"
     )
     assert find_item(collection["collection"], "_id", "edge-case-dataset")
@@ -431,7 +431,7 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
         "files": [{"path": "missing.txt"}],
     }
 
-    await artifact_controller.create(
+    await artifact_manager.create(
         prefix="collections/edge-case-collection/incomplete-dataset",
         manifest=incomplete_manifest,
         stage=True,
@@ -442,15 +442,15 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
         Exception,
         match=r".*FileNotFoundError: .*",
     ):
-        await artifact_controller.commit(
+        await artifact_manager.commit(
             prefix="collections/edge-case-collection/incomplete-dataset"
         )
 
     # Clean up the artifacts
-    await artifact_controller.delete(
+    await artifact_manager.delete(
         prefix="collections/edge-case-collection/edge-case-dataset"
     )
-    await artifact_controller.delete(
+    await artifact_manager.delete(
         prefix="collections/edge-case-collection/incomplete-dataset"
     )
-    await artifact_controller.delete(prefix="collections/edge-case-collection")
+    await artifact_manager.delete(prefix="collections/edge-case-collection")
