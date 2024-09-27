@@ -91,6 +91,7 @@ class RedisStore:
     ):
         """Initialize the redis store."""
         self._s3_controller = None
+        self._artifact_controller = None
         self._app = app
         self._codecs = {}
         self._disconnected_plugins = []
@@ -602,6 +603,7 @@ class RedisStore:
             self._server_info,
             self._manager_id,
             self._s3_controller,
+            self._artifact_controller,
         )
         await manager.setup()
         return manager
@@ -700,6 +702,10 @@ class RedisStore:
     def set_s3_controller(self, controller):
         """Set the s3 controller."""
         self._s3_controller = controller
+
+    def set_artifact_controller(self, controller):
+        """Set the artifact controller."""
+        self._artifact_controller = controller
 
     def register_public_service(self, service: dict):
         """Register a service."""

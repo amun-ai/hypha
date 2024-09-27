@@ -4,12 +4,20 @@ import sys
 import yaml
 from botocore.exceptions import ClientError
 
-from hypha.core import UserInfo, UserPermission, Artifact
+from hypha.core import (
+    UserInfo,
+    UserPermission,
+    Artifact,
+    CollectionArtifact,
+    ApplicationArtifact,
+)
 from hypha.utils import (
     list_objects_async,
     remove_objects_async,
     safe_join,
 )
+from hypha_rpc.utils import ObjectProxy
+from jsonschema import validate
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("artifact")
@@ -27,9 +35,10 @@ class ArtifactController:
         self.s3_controller = s3_controller
         self.workspace_bucket = workspace_bucket
         store.register_public_service(self.get_artifact_service())
+        store.set_artifact_controller(self)
 
     async def create(
-        self, prefix, manifest: dict, overwrite=False, context: dict = None
+        self, prefix, manifest: dict, overwrite=False, stage=False, context: dict = None
     ):
         """Create a new artifact with a manifest file."""
         ws = context["ws"]
@@ -38,8 +47,14 @@ class ArtifactController:
             raise PermissionError(
                 "User does not have write permission to the workspace."
             )
-        
-        Artifact.model_validate(manifest)
+
+        if manifest["type"] == "collection":
+            # Validate the collection manifest
+            CollectionArtifact.model_validate(manifest)
+        elif manifest["type"] == "application":
+            ApplicationArtifact.model_validate(manifest)
+        else:
+            Artifact.model_validate(manifest)
 
         manifest_key = f"{ws}/{prefix}/{MANIFEST_FILENAME}"
         edit_manifest_key = f"{ws}/{prefix}/{EDIT_MANIFEST_FILENAME}"
@@ -69,7 +84,9 @@ class ArtifactController:
 
             # Check if the artifact is a collection and initialize it
             if manifest.get("type") == "collection":
-                collection = await self._build_collection_index(manifest, ws, prefix, s3_client)
+                collection = await self._build_collection_index(
+                    manifest, ws, prefix, s3_client
+                )
                 manifest["collection"] = collection
 
             # If overwrite=True, remove any existing manifest or _manifest.yaml
@@ -83,8 +100,61 @@ class ArtifactController:
                         Bucket=self.workspace_bucket, Key=edit_manifest_key
                     )
 
-            if manifest["type"] == "collection":
-                manifest["collection"] = await self._build_collection_index(manifest, ws, prefix, s3_client)
+            if not stage and manifest["type"] == "collection":
+                manifest["collection"] = await self._build_collection_index(
+                    manifest, ws, prefix, s3_client
+                )
+
+            # Update the parent collection index if the artifact is part of a collection
+            if not stage and "/" in prefix:
+                parent_prefix = "/".join(prefix.split("/")[:-1])
+                # check if the collection manifest file exits
+                try:
+                    collection_key = f"{ws}/{parent_prefix}/{MANIFEST_FILENAME}"
+                    await s3_client.head_object(
+                        Bucket=self.workspace_bucket, Key=collection_key
+                    )
+                    parent_collection = True
+                except ClientError:
+                    parent_collection = False
+            else:
+                parent_collection = False
+            # Upload the _manifest.yaml to indicate it's in edit mode
+            response = await s3_client.put_object(
+                Body=yaml.dump(ObjectProxy.toDict(manifest)),
+                Bucket=self.workspace_bucket,
+                Key=edit_manifest_key if stage else manifest_key,
+            )
+            assert (
+                "ResponseMetadata" in response
+                and response["ResponseMetadata"]["HTTPStatusCode"] == 200
+            ), f"Failed to create artifact under prefix: {prefix}"
+            if parent_collection:
+                await self.index(parent_prefix, context=context)
+
+        return manifest
+
+    async def edit(self, prefix, manifest=None, context: dict = None):
+        """Edit the artifact's manifest."""
+        ws = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(ws, UserPermission.read_write):
+            raise PermissionError(
+                "User does not have write permission to the workspace."
+            )
+        # copy the manifest to _manifest.yaml
+        manifest_key = f"{ws}/{prefix}/{MANIFEST_FILENAME}"
+        edit_manifest_key = f"{ws}/{prefix}/{EDIT_MANIFEST_FILENAME}"
+
+        async with self.s3_controller.create_client_async() as s3_client:
+            if not manifest:
+                # Get the manifest
+                manifest_obj = await s3_client.get_object(
+                    Bucket=self.workspace_bucket, Key=manifest_key
+                )
+                manifest_str = (await manifest_obj["Body"].read()).decode()
+                manifest = yaml.safe_load(manifest_str)
+            Artifact.model_validate(manifest)
             # Upload the _manifest.yaml to indicate it's in edit mode
             response = await s3_client.put_object(
                 Body=yaml.dump(manifest),
@@ -94,11 +164,7 @@ class ArtifactController:
             assert (
                 "ResponseMetadata" in response
                 and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-            ), f"Failed to create artifact under prefix: {prefix}"
-
-            
-
-        return manifest
+            ), f"Failed to edit artifact under prefix: {prefix}"
 
     async def index(self, prefix, context: dict = None):
         """Update the index of the current collection."""
@@ -113,21 +179,19 @@ class ArtifactController:
         async with self.s3_controller.create_client_async() as s3_client:
             # check if the collection manifest file exits
             try:
-                await s3_client.head_object(Bucket=self.workspace_bucket, Key=collection_key)
-                try:
-                    collection_key = f"{ws}/{prefix}/{EDIT_MANIFEST_FILENAME}"
-                    await s3_client.head_object(Bucket=self.workspace_bucket, Key=collection_key)
-                except ClientError:
-                    raise KeyError(f"Collection manifest file does not exist for prefix '{prefix}'")
+                # Check if this is a valid collection
+                manifest_obj = await s3_client.get_object(
+                    Bucket=self.workspace_bucket, Key=collection_key
+                )
             except ClientError:
-                raise KeyError(f"Collection manifest file does not exist for prefix '{prefix}'")
-
-            # Check if this is a valid collection
-            manifest_obj = await s3_client.get_object(
-                Bucket=self.workspace_bucket, Key=collection_key
-            )
+                raise KeyError(
+                    f"Collection manifest file does not exist for prefix '{prefix}'"
+                )
             manifest = yaml.safe_load((await manifest_obj["Body"].read()).decode())
-            collection = await self._build_collection_index(manifest, ws, prefix, s3_client)
+
+            collection = await self._build_collection_index(
+                manifest, ws, prefix, s3_client
+            )
             # Update the collection field
             manifest["collection"] = collection
 
@@ -141,7 +205,6 @@ class ArtifactController:
                 "ResponseMetadata" in response
                 and response["ResponseMetadata"]["HTTPStatusCode"] == 200
             ), f"Failed to update collection index for '{prefix}'"
-
 
     async def _build_collection_index(self, manifest, ws, prefix, s3_client):
         if manifest.get("type") != "collection":
@@ -161,15 +224,14 @@ class ArtifactController:
 
         for obj in sub_artifacts:
             if obj["type"] == "directory":
-                sub_prefix = obj["name"]
+                name = obj["name"]
                 try:
-                    sub_manifest_key = f"{ws}/{sub_prefix}/{MANIFEST_FILENAME}"
+                    sub_manifest_key = f"{sub_prefix}{name}/{MANIFEST_FILENAME}"
                     sub_manifest_obj = await s3_client.get_object(
                         Bucket=self.workspace_bucket, Key=sub_manifest_key
                     )
-                    sub_manifest = yaml.safe_load(
-                        (await sub_manifest_obj["Body"].read()).decode()
-                    )
+                    manifest_str = (await sub_manifest_obj["Body"].read()).decode()
+                    sub_manifest = yaml.safe_load(manifest_str)
 
                     # Extract summary information
                     summary = {}
@@ -184,10 +246,13 @@ class ArtifactController:
                                 break
                         if value is not None:
                             summary[field] = value
-                    summary["_id"] = sub_prefix
+                    summary["_id"] = name
                     collection.append(summary)
                 except ClientError:
                     pass
+                except Exception as e:
+                    logger.error(f"Error while building collection index: {e}")
+                    raise e
 
         return collection
 
@@ -210,15 +275,18 @@ class ArtifactController:
                 )
             except ClientError:
                 # Fallback to _manifest.yaml if manifest.yaml does not exist
-                manifest_obj = await s3_client.get_object(
-                    Bucket=self.workspace_bucket, Key=edit_manifest_key
-                )
+                try:
+                    manifest_obj = await s3_client.get_object(
+                        Bucket=self.workspace_bucket, Key=edit_manifest_key
+                    )
+                except ClientError:
+                    raise KeyError(f"Artifact under prefix '{prefix}' does not exist.")
 
             manifest = yaml.safe_load((await manifest_obj["Body"].read()).decode())
             return manifest
 
-    async def validate(self, prefix, context: dict = None):
-        """Validate the artifact, ensure all files are uploaded, and rename _manifest.yaml to manifest.yaml."""
+    async def commit(self, prefix, overwrite: bool = False, context: dict = None):
+        """Commit the artifact, ensure all files are uploaded, and rename _manifest.yaml to manifest.yaml."""
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         if not user_info.check_permission(ws, UserPermission.read_write):
@@ -230,23 +298,66 @@ class ArtifactController:
 
         # Get the _manifest.yaml
         async with self.s3_controller.create_client_async() as s3_client:
-            manifest_obj = await s3_client.get_object(
-                Bucket=self.workspace_bucket, Key=manifest_key
-            )
+            try:
+                await s3_client.head_object(
+                    Bucket=self.workspace_bucket, Key=final_manifest_key
+                )
+                if not overwrite:
+                    raise FileExistsError(
+                        f"Artifact under prefix '{prefix}' is already finalized. Use overwrite=True to overwrite."
+                    )
+            except ClientError:
+                pass
+
+            if "/" in prefix:
+                # If this artifact is part of a collection, update the collection index
+                parent_prefix = "/".join(prefix.split("/")[:-1])
+                # check if the collection manifest file exits
+                try:
+                    collection_key = f"{ws}/{parent_prefix}/{MANIFEST_FILENAME}"
+                    await s3_client.head_object(
+                        Bucket=self.workspace_bucket, Key=collection_key
+                    )
+                    parent_collection = True
+                except ClientError:
+                    parent_collection = False
+            else:
+                parent_collection = False
+
+            try:
+                manifest_obj = await s3_client.get_object(
+                    Bucket=self.workspace_bucket, Key=manifest_key
+                )
+            except ClientError:
+                raise FileNotFoundError(
+                    f"Artifact under prefix '{prefix}' does not exist."
+                )
             manifest = yaml.safe_load((await manifest_obj["Body"].read()).decode())
 
             # Validate if all files in the manifest exist in S3
-            for file_info in manifest["files"]:
-                file_key = f"{ws}/{prefix}/{file_info['path']}"
-                try:
-                    await s3_client.head_object(
-                        Bucket=self.workspace_bucket, Key=file_key
-                    )
-                except ClientError:
-                    raise FileNotFoundError(
-                        f"File '{file_info['path']}' does not exist in the artifact."
-                    )
-
+            if "files" in manifest:
+                for file_info in manifest["files"]:
+                    file_key = f"{ws}/{prefix}/{file_info['path']}"
+                    try:
+                        await s3_client.head_object(
+                            Bucket=self.workspace_bucket, Key=file_key
+                        )
+                    except ClientError:
+                        raise FileNotFoundError(
+                            f"File '{file_info['path']}' does not exist in the artifact."
+                        )
+            # if parent_collection is True, check if collection_schema exists in the parent schema
+            if parent_collection:
+                parent_manifest_obj = await s3_client.get_object(
+                    Bucket=self.workspace_bucket, Key=collection_key
+                )
+                parent_manifest = yaml.safe_load(
+                    (await parent_manifest_obj["Body"].read()).decode()
+                )
+                if parent_manifest.get("collection_schema"):
+                    collection_schema = parent_manifest.get("collection_schema")
+                    if collection_schema:
+                        validate(instance=manifest, schema=collection_schema)
             # Rename _manifest.yaml to manifest.yaml
             response = await s3_client.copy_object(
                 Bucket=self.workspace_bucket,
@@ -256,21 +367,17 @@ class ArtifactController:
             assert (
                 "ResponseMetadata" in response
                 and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-            ), f"Failed to finalize manifest for artifact under prefix: {prefix}"
+            ), f"Failed to commit manifest for artifact under prefix: {prefix}"
 
             # Delete the _manifest.yaml file
             await s3_client.delete_object(
                 Bucket=self.workspace_bucket, Key=manifest_key
             )
 
-            # If this artifact is part of a collection, update the collection index
-            parent_prefix = "/".join(prefix.split("/")[:-1])
-            try:
+            if parent_collection:
                 await self.index(parent_prefix, context=context)
-            except KeyError:
-                pass
 
-    async def list_artifacts(self, prefix="", pending=False, context: dict = None):
+    async def list_artifacts(self, prefix="", stage=False, context: dict = None):
         """List all artifacts under a certain prefix."""
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
@@ -290,11 +397,13 @@ class ArtifactController:
                 # Check if the prefix is a collection
                 manifest_obj = await s3_client.get_object(
                     Bucket=self.workspace_bucket,
-                    Key=f"{prefix_path}{MANIFEST_FILENAME}",
+                    Key=f"{prefix_path}{MANIFEST_FILENAME}"
+                    if not stage
+                    else f"{prefix_path}{EDIT_MANIFEST_FILENAME}",
                 )
                 manifest = yaml.safe_load((await manifest_obj["Body"].read()).decode())
                 if manifest.get("type") == "collection":
-                    return manifest.get("collection", [])
+                    return [item["_id"] for item in manifest.get("collection", [])]
             except ClientError:
                 pass
 
@@ -304,18 +413,18 @@ class ArtifactController:
                     name = obj["name"]
                     try:
                         # head the manifest file to check if it's finalized
-                        if pending:
+                        if stage:
                             await s3_client.head_object(
                                 Bucket=self.workspace_bucket,
                                 Key=f"{prefix_path}{name}/{EDIT_MANIFEST_FILENAME}",
                             )
-                            artifact_list.append({"name": f"{name}", "pending": True})
+                            artifact_list.append(name)
                         else:
                             await s3_client.head_object(
                                 Bucket=self.workspace_bucket,
                                 Key=f"{prefix_path}{name}/{MANIFEST_FILENAME}",
                             )
-                            artifact_list.append({"name": f"{name}"})
+                            artifact_list.append(name)
                     except ClientError:
                         pass
             return artifact_list
@@ -347,6 +456,7 @@ class ArtifactController:
 
             # Add the file to the manifest
             file_info = {"path": file_path}
+            manifest["files"] = manifest.get("files", [])
             manifest["files"].append(file_info)
 
             # Update the _manifest.yaml in S3
@@ -378,7 +488,7 @@ class ArtifactController:
                 Bucket=self.workspace_bucket, Key=manifest_key
             )
             manifest = yaml.safe_load((await manifest_obj["Body"].read()).decode())
-
+            manifest["files"] = manifest.get("files", [])
             # Remove the file from the manifest
             manifest["files"] = [f for f in manifest["files"] if f["path"] != file_path]
 
@@ -436,19 +546,33 @@ class ArtifactController:
             )
         artifact_path = f"{ws}/{prefix}/"
 
-        # Remove all objects under the artifact's path
         async with self.s3_controller.create_client_async() as s3_client:
+            # Remove all objects under the artifact's path
             await remove_objects_async(s3_client, self.workspace_bucket, artifact_path)
+
+            if "/" in prefix:
+                # If this artifact is part of a collection, re-index the parent collection
+                parent_prefix = "/".join(prefix.split("/")[:-1])
+                collection_key = f"{ws}/{parent_prefix}/{MANIFEST_FILENAME}"
+                # check if the collection manifest file exits
+                try:
+                    await s3_client.head_object(
+                        Bucket=self.workspace_bucket, Key=collection_key
+                    )
+                    await self.index(parent_prefix, context=context)
+                except ClientError:
+                    pass
 
     def get_artifact_service(self):
         """Get artifact controller."""
         return {
-            "id": "artifact",
+            "id": "artifact-manager",
             "config": {"visibility": "public", "require_context": True},
-            "name": "Artifact",
+            "name": "Artifact Manager",
+            "description": "Manage artifacts in a workspace.",
             "create": self.create,
             "read": self.read,
-            "validate": self.validate,
+            "commit": self.commit,
             "delete": self.delete,
             "put_file": self.put_file,
             "remove_file": self.remove_file,

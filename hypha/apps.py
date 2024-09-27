@@ -1,30 +1,25 @@
-"""Provide an apps controller."""
-import asyncio
-import json
+import httpx
 import logging
-import random
+import sys
+import multihash
+import asyncio
+import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
-from urllib.request import urlopen
-
-import base58
-import multihash
-from aiobotocore.session import get_session
-from jinja2 import Environment, PackageLoader, select_autoescape
 
 from hypha import main_version
-from hypha.core import Artifact, UserInfo, ServiceInfo, UserPermission
-from hypha.core.store import RedisStore
-from hypha.plugin_parser import convert_config_to_artifact, parse_imjoy_plugin
+from jinja2 import Environment, PackageLoader, select_autoescape
+from typing import Any, Dict, List, Optional, Union
+from hypha.core import UserInfo, UserPermission, ServiceInfo, ApplicationArtifact
 from hypha.runner.browser import BrowserAppRunner
 from hypha.utils import (
-    PLUGIN_CONFIG_FIELDS,
-    list_objects_async,
-    remove_objects_async,
     random_id,
+    PLUGIN_CONFIG_FIELDS,
     safe_join,
 )
+import base58
+import random
+from hypha.plugin_parser import convert_config_to_artifact, parse_imjoy_plugin
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("apps")
@@ -36,35 +31,24 @@ multihash.CodecReg.register("base58", base58.b58encode, base58.b58decode)
 class ServerAppController:
     """Server App Controller."""
 
-    # pylint: disable=too-many-instance-attributes
-
     def __init__(
         self,
-        store: RedisStore,
+        store,
+        in_docker,
         port: int,
-        in_docker: bool = False,
-        endpoint_url=None,
-        access_key_id=None,
-        secret_access_key=None,
-        region_name=None,
+        artifact_controller,
         workspace_bucket="hypha-workspaces",
-        workspace_etc_dir="etc",
-    ):  # pylint: disable=too-many-arguments
-        """Initialize the class."""
-        self._sessions = {}
+    ):
+        """Initialize the controller."""
         self.port = int(port)
+        self.store = store
         self.in_docker = in_docker
-        self.endpoint_url = endpoint_url
-        self.access_key_id = access_key_id
-        self.secret_access_key = secret_access_key
-        self.region_name = region_name
-        self.s3_enabled = endpoint_url is not None
+        self.artifact_controller = artifact_controller
         self.workspace_bucket = workspace_bucket
-        self.workspace_etc_dir = workspace_etc_dir
+        self._sessions = {}  # Track running sessions
+        self.event_bus = store.get_event_bus()
         self.local_base_url = store.local_base_url
         self.public_base_url = store.public_base_url
-        self.event_bus = store.get_event_bus()
-        self.store = store
         store.register_public_service(self.get_service_api())
         self.jinja_env = Environment(
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
@@ -81,143 +65,48 @@ class ServerAppController:
 
         self.event_bus.on_local("shutdown", close)
 
-    def create_client_async(self):
-        """Create client async."""
-        assert self.s3_enabled, "S3 is not enabled."
-        return get_session().create_client(
-            "s3",
-            endpoint_url=self.endpoint_url,
-            aws_access_key_id=self.access_key_id,
-            aws_secret_access_key=self.secret_access_key,
-            region_name=self.region_name,
-        )
-
-    async def list_saved_workspaces(
-        self,
-    ):
-        """List saved workspaces."""
-        async with self.create_client_async() as s3_client:
-            items = await list_objects_async(s3_client, self.workspace_bucket, "/")
-        return [item["Key"] for item in items]
-
-    async def list_apps(
-        self,
-        workspace: str = None,
-        context: Optional[dict] = None,
-    ):
-        """List applications in the workspace."""
-        if not workspace:
-            workspace = context["ws"]
-
-        workspace = await self.store.get_workspace_info(workspace, load=True)
-        assert workspace, f"Workspace {workspace} not found."
-        return [app_info.model_dump() for app_info in workspace.applications.values()]
-
-    async def save_application(
-        self,
-        workspace: str,
-        app_id: str,
-        artifact: Artifact,
-        source: str,
-        entry_point: str,
-        attachments: Optional[Dict[str, Any]] = None,
-    ):
-        """Save an application to the workspace."""
-        mhash = app_id
-        async with self.create_client_async() as s3_client:
-            app_dir = f"{self.workspace_etc_dir}/{workspace}/{mhash}"
-
-            async def save_file(key, content):
-                if isinstance(content, str):
-                    content = content.encode("utf-8")
-                response = await s3_client.put_object(
-                    Body=content,
-                    Bucket=self.workspace_bucket,
-                    Key=key,
-                    ContentLength=len(content),
-                )
-
-                if (
-                    "ResponseMetadata" in response
-                    and "HTTPStatusCode" in response["ResponseMetadata"]
-                ):
-                    response_code = response["ResponseMetadata"]["HTTPStatusCode"]
-                    assert (
-                        response_code == 200
-                    ), f"Failed to save file: {key}, status code: {response_code}"
-                assert "ETag" in response
-
-            # Upload the source code
-            await save_file(f"{app_dir}/{entry_point}", source)
-
-            if attachments:
-                artifact.attachments = artifact.attachments or {}
-                artifact.attachments["files"] = artifact.attachments.get("files", [])
-                files = artifact.attachments["files"]
-                for att in attachments:
-                    assert (
-                        "name" in att and "source" in att
-                    ), "Attachment should contain `name` and `source`"
-                    if att["source"].startswith("http") and "\n" not in att["source"]:
-                        if not att["source"].startswith("https://"):
-                            raise Exception(
-                                "Only https sources are allowed: " + att["source"]
-                            )
-                        with urlopen(att["source"]) as stream:
-                            output = stream.read()
-                        att["source"] = output
-                    await save_file(f"{app_dir}/{att['name']}", att["source"])
-                    files.append(att["name"])
-
-            content = json.dumps(artifact.model_dump(), indent=4)
-            await save_file(f"{app_dir}/manifest.json", content)
-        logger.info("Saved application (%s)to workspace: %s", mhash, workspace)
-
-    async def close(self) -> None:
-        """Close the app controller."""
-        logger.info("Closing the server app controller...")
-        for app in self._sessions.values():
-            await self.stop(app["id"])
-
-    def get_service_api(self) -> Dict[str, Any]:
-        """Get a list of service api."""
-        # TODO: check permission for each function
-        controller = {
-            "name": "Server Apps",
-            "id": "server-apps",
-            "type": "server-apps",
-            "config": {"visibility": "public", "require_context": True},
-            "install": self.install,
-            "uninstall": self.uninstall,
-            "launch": self.launch,
-            "start": self.start,
-            "stop": self.stop,
-            "list_apps": self.list_apps,
-            "list_running": self.list_running,
-            "get_log": self.get_log,
+    async def setup_workspace(self, overwrite=True, context=None):
+        """Set up the workspace."""
+        ws = context["ws"]
+        # Create an collection in the workspace
+        manifest = {
+            "id": "description",
+            "type": "collection",
+            "name": "Applications",
+            "description": f"A collection of applications for workspace {ws}",
+            "summary_fields": [
+                "id",
+                "name",
+                "description",
+                "app_id",
+                "workspace",
+                "config",
+                "services",
+            ],
+            "collection": [],
         }
-        return controller
+        await self.artifact_controller.create(
+            "applications", manifest, overwrite=overwrite, stage=False, context=context
+        )
+        logger.info(f"Applications collection created for workspace {ws}")
 
-    # pylint: disable=too-many-statements,too-many-locals
     async def install(
         self,
         source: str = None,
         source_hash: str = None,
         config: Optional[Dict[str, Any]] = None,
-        template: Optional[str] = None,
-        attachments: List[dict] = None,
         workspace: Optional[str] = None,
+        stage: bool = False,
+        overwrite: bool = False,
         timeout: float = 60,
-        force: bool = False,
         context: Optional[dict] = None,
     ) -> str:
         """Save a server app."""
-        if template is None:
-            if config:
-                config["entry_point"] = config.get("entry_point", "index.html")
-                template = config.get("type") + "." + config["entry_point"]
-            else:
-                template = "hypha"
+        if config:
+            config["entry_point"] = config.get("entry_point", "index.html")
+            template = config.get("type") + "." + config["entry_point"]
+        else:
+            template = "hypha"
         if not workspace:
             workspace = context["ws"]
 
@@ -233,9 +122,11 @@ class ServerAppController:
         if source.startswith("http"):
             if not source.startswith("https://"):
                 raise Exception("Only https sources are allowed: " + source)
-            with urlopen(source) as stream:
-                output = stream.read()
-            source = output.decode("utf-8")
+            # download source with httpx
+            async with httpx.AsyncClient() as client:
+                response = await client.get(source)
+                assert response.status_code == 200, f"Failed to download {source}"
+                source = response.text
         # Compute multihash of the source code
         mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
         mhash = mhash.encode("base58").decode("ascii")
@@ -301,28 +192,109 @@ class ServerAppController:
 
         app_id = f"{mhash}"
 
-        public_url = f"{self.public_base_url}/{workspace_info.id}/server-apps/{app_id}/{entry_point}"
+        public_url = f"{self.public_base_url}/{workspace_info.id}/applications/{app_id}/{entry_point}"
         artifact_obj = convert_config_to_artifact(config, app_id, public_url)
         artifact_obj.update(
             {
-                "local_url": f"{self.local_base_url}/{workspace_info.id}/server-apps/{app_id}/{entry_point}",
+                "local_url": f"{self.local_base_url}/{workspace_info.id}/applications/{app_id}/{entry_point}",
                 "public_url": public_url,
             }
         )
-        artifact = Artifact.model_validate(artifact_obj)
-        assert artifact.entry_point, "Entry point not found in the artifact."
-        await self.save_application(
-            workspace_info.id,
-            app_id,
-            artifact,
-            source,
-            artifact.entry_point,
-            attachments,
+        ApplicationArtifact.model_validate(artifact_obj)
+
+        try:
+            await self.artifact_controller.read("applications", context=context)
+        except KeyError:
+            await self.setup_workspace(overwrite=True, context=context)
+        # Create artifact using the artifact controller
+        prefix = f"applications/{app_id}"
+        await self.artifact_controller.create(
+            prefix=prefix,
+            manifest=artifact_obj,
+            overwrite=overwrite,
+            stage=True,
+            context=context,
         )
-        async with self.store.get_workspace_interface(
-            workspace_info.id, user_info
-        ) as ws:
-            await ws.install_application(artifact.model_dump(), force=force)
+
+        # Upload the main source file
+        put_url = await self.artifact_controller.put_file(
+            prefix=prefix, file_path=config["entry_point"], context=context
+        )
+        async with httpx.AsyncClient() as client:
+            response = await client.put(put_url, data=source)
+            assert (
+                response.status_code == 200
+            ), f"Failed to upload {config['entry_point']}"
+
+        # Commit the artifact if stage is not enabled
+        if not stage:
+            await self.commit(
+                app_id,
+                overwrite=overwrite,
+                timeout=timeout,
+                context=context,
+            )
+        return artifact_obj
+
+    async def add_file(
+        self,
+        app_id: str,
+        file_path: str,
+        file_content: str,
+        context: Optional[dict] = None,
+    ):
+        """Add a file to the installed application."""
+        prefix = f"applications/{app_id}"
+        put_url = await self.artifact_controller.put_file(
+            prefix=prefix, file_path=file_path, context=context
+        )
+        response = httpx.put(put_url, data=file_content)
+        assert response.status_code == 200, f"Failed to upload {file_path} to {app_id}"
+
+    async def remove_file(
+        self,
+        app_id: str,
+        file_path: str,
+        context: Optional[dict] = None,
+    ):
+        """Remove a file from the installed application."""
+        workspace = context["ws"]
+
+        prefix = f"applications/{app_id}"
+        await self.artifact_controller.remove_file(
+            prefix=prefix, file_path=file_path, context=context
+        )
+
+    async def list_files(
+        self, app_id: str, context: Optional[dict] = None
+    ) -> List[dict]:
+        """List files of an installed application."""
+        workspace = context["ws"]
+
+        prefix = f"applications/{app_id}"
+        manifest = await self.artifact_controller.read(prefix=prefix, context=context)
+        return manifest["files"]
+
+    async def edit(self, app_id: str, context: Optional[dict] = None):
+        """Edit an application by re-opening its artifact."""
+        workspace = context["ws"]
+
+        prefix = f"applications/{app_id}"
+        await self.artifact_controller.edit(prefix=prefix, context=context)
+
+    async def commit(
+        self,
+        app_id: str,
+        timeout: int = 30,
+        overwrite: bool = False,
+        context: Optional[dict] = None,
+    ):
+        """Finalize the edits to the application by committing the artifact."""
+
+        prefix = f"applications/{app_id}"
+        await self.artifact_controller.commit(
+            prefix=prefix, overwrite=overwrite, context=context
+        )
         try:
             info = await self.start(
                 app_id,
@@ -344,46 +316,25 @@ class ServerAppController:
                 f"Failed to start the app: {app_id} during installation, error: {exp}"
             )
 
-        return artifact_obj
-
     async def uninstall(self, app_id: str, context: Optional[dict] = None) -> None:
-        """Uninstall a server app."""
-        assert "/" not in app_id, (
-            "Invalid app id: " + app_id + ", should not contain '/'"
-        )
-        workspace_id = context["ws"]
-        mhash = app_id
-        workspace = await self.store.get_workspace_info(workspace_id, load=True)
-        assert workspace, f"Workspace {workspace} not found."
-        user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(workspace.id, UserPermission.read_write):
-            raise Exception(
-                f"User {user_info.id} does not have permission"
-                f" to uninstall apps in workspace {workspace.id}"
-            )
-        async with self.store.get_workspace_interface(workspace.id, user_info) as ws:
-            await ws.uninstall_application(app_id)
-
-        async with self.create_client_async() as s3_client:
-            app_dir = f"{self.workspace_etc_dir}/{workspace.id}/{mhash}/"
-            await remove_objects_async(s3_client, self.workspace_bucket, app_dir)
+        """Uninstall an application by removing its artifact."""
+        prefix = f"applications/{app_id}"
+        await self.artifact_controller.delete(prefix=prefix, context=context)
 
     async def launch(
         self,
         source: str,
         timeout: float = 60,
         config: Optional[Dict[str, Any]] = None,
-        attachments: List[dict] = None,
+        overwrite: bool = False,
         wait_for_service: str = None,
         context: Optional[dict] = None,
     ) -> dict:
         """Start a server app instance."""
-        workspace = context["ws"]
         app_info = await self.install(
             source,
-            attachments=attachments,
             config=config,
-            workspace=workspace,
+            overwrite=overwrite,
             context=context,
         )
         app_id = app_info["id"]
@@ -394,7 +345,6 @@ class ServerAppController:
             context=context,
         )
 
-    # pylint: disable=too-many-statements,too-many-locals
     async def start(
         self,
         app_id,
@@ -424,17 +374,16 @@ class ServerAppController:
         if client_id is None:
             client_id = random_id(readable=True)
 
-        workspace_info = await self.store.get_workspace_info(workspace, load=True)
-        assert workspace, f"Workspace {workspace} not found."
-        assert (
-            app_id in workspace_info.applications
-        ), f"App {app_id} not found in workspace {workspace}, please install it first."
-        artifact = workspace_info.applications[app_id]
+        artifact = await self.artifact_controller.read(
+            prefix=f"applications/{app_id}", context=context
+        )
+        artifact = ApplicationArtifact.model_validate(artifact)
+
         entry_point = artifact.entry_point
         assert entry_point, f"Entry point not found for app {app_id}."
         server_url = self.local_base_url
         local_url = (
-            f"{self.local_base_url}/{workspace}/server-apps/{app_id}/{entry_point}?"
+            f"{self.local_base_url}/{workspace}/applications/{app_id}/{entry_point}?"
             + f"client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}"
@@ -444,7 +393,7 @@ class ServerAppController:
         )
         server_url = self.public_base_url
         public_url = (
-            f"{self.public_base_url}/{workspace}/server-apps/{app_id}/{entry_point}?"
+            f"{self.public_base_url}/{workspace}/applications/{app_id}/{entry_point}?"
             + f"client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}"
@@ -498,9 +447,17 @@ class ServerAppController:
                 )
 
             # save the services
-            workspace_info.applications[app_id].services = collected_services
-            Artifact.model_validate(workspace_info.applications[app_id])
-            await self.store.set_workspace(workspace_info, user_info)
+            artifact.services = collected_services
+            artifact = ApplicationArtifact.model_validate(
+                artifact.model_dump(mode="json")
+            )
+            await self.artifact_controller.create(
+                prefix=f"applications/{app_id}",
+                manifest=artifact.model_dump(mode="json"),
+                overwrite=True,
+                stage=False,
+                context=context,
+            )
         except asyncio.TimeoutError:
             raise Exception(
                 f"Failed to start the app: {workspace}/{app_id}, timeout reached ({timeout}s)."
@@ -519,25 +476,18 @@ class ServerAppController:
         return app_info
 
     async def stop(
-        self,
-        session_id: str,
-        raise_exception=True,
-        context: Optional[dict] = None,
+        self, session_id: str, raise_exception=True, context: Optional[dict] = None
     ) -> None:
         """Stop a server app instance."""
         if session_id in self._sessions:
-            logger.info("Stopping app: %s...", session_id)
-
-            app_info = self._sessions[session_id]
-            if session_id in self._sessions:
-                del self._sessions[session_id]
+            app_info = self._sessions.pop(session_id, None)
             try:
                 await app_info["_runner"].stop(session_id)
             except Exception as exp:
                 if raise_exception:
                     raise
                 else:
-                    logger.warning("Failed to stop browser tab: %s", exp)
+                    logger.warning(f"Failed to stop browser tab: {exp}")
         elif raise_exception:
             raise Exception(f"Server app instance not found: {session_id}")
 
@@ -560,9 +510,43 @@ class ServerAppController:
     async def list_running(self, context: Optional[dict] = None) -> List[str]:
         """List the running sessions for the current workspace."""
         workspace = context["ws"]
-        sessions = [
+        return [
             {k: v for k, v in session_info.items() if not k.startswith("_")}
             for session_id, session_info in self._sessions.items()
-            if session_id.startswith(workspace + "/")
+            if session_id.startswith(f"{workspace}/")
         ]
-        return sessions
+
+    async def list_apps(self, context: Optional[dict] = None):
+        """List applications in the workspace."""
+        apps = await self.artifact_controller.read(
+            prefix="applications", context=context
+        )
+        return apps["collection"]
+
+    async def close(self) -> None:
+        """Close the app controller."""
+        logger.info("Closing the server app controller...")
+        for app in self._sessions.values():
+            await self.stop(app["id"])
+
+    def get_service_api(self) -> Dict[str, Any]:
+        """Get a list of service API endpoints."""
+        return {
+            "name": "Server Apps",
+            "id": "server-apps",
+            "type": "server-apps",
+            "config": {"visibility": "public", "require_context": True},
+            "install": self.install,
+            "uninstall": self.uninstall,
+            "launch": self.launch,
+            "start": self.start,
+            "stop": self.stop,
+            "list_apps": self.list_apps,
+            "list_running": self.list_running,
+            "get_log": self.get_log,
+            "add_file": self.add_file,
+            "remove_file": self.remove_file,
+            "list_files": self.list_files,
+            "edit": self.edit,
+            "commit": self.commit,
+        }

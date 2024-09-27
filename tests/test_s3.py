@@ -35,6 +35,7 @@ async def test_s3_proxy(minio_server, fastapi_server, test_user_token):
         zf.writestr(
             "subdir/file3.txt", "This is the content of file 3 inside a subdirectory."
         )
+    zip_buffer.seek(0)
 
     presigned_url = await s3controller.generate_presigned_url(
         f"apps/test.zip", client_method="put_object"
@@ -46,6 +47,22 @@ async def test_s3_proxy(minio_server, fastapi_server, test_user_token):
         headers={"Content-Type": "application/zip"},
     )
     assert response.status_code == 200, "Failed to upload the ZIP file to S3."
+
+    # Test retrieving the first file inside the ZIP
+    presigned_url = await s3controller.generate_presigned_url(
+        f"apps/test.zip", client_method="get_object"
+    )
+    response = requests.get(presigned_url)
+    assert response.status_code == 200
+    assert response.content == zip_buffer.getvalue()
+
+    # Test get with range
+    response = requests.get(
+        presigned_url, headers={"Range": "bytes=0-10", "Origin": "http://localhost"}
+    )
+    assert response.status_code == 206
+    assert response.content == zip_buffer.getvalue()[:11]
+    assert response.headers["access-control-allow-origin"] == "http://localhost"
 
 
 async def test_zip_file_endpoint(minio_server, fastapi_server, test_user_token):
@@ -284,7 +301,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
         assert url.startswith("http") and "X-Amz-Algorithm" in url
 
         response = requests.get(url)
-        assert response.ok
+        assert response.ok, response.text
         assert response.content == b"hello"
 
         items = await s3controller.list_files()

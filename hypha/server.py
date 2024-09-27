@@ -101,7 +101,7 @@ def start_builtin_services(
             executable_path=args.executable_path,
         )
 
-        ArtifactController(
+        artifact_controller = ArtifactController(
             store, s3_controller=s3_controller, workspace_bucket=args.workspace_bucket
         )
 
@@ -114,11 +114,8 @@ def start_builtin_services(
             store,
             port=args.port,
             in_docker=args.in_docker,
-            endpoint_url=args.endpoint_url,
-            access_key_id=args.access_key_id,
-            secret_access_key=args.secret_access_key,
-            region_name=args.region_name,
             workspace_bucket=args.workspace_bucket,
+            artifact_controller=artifact_controller,
         )
 
     HTTPProxy(

@@ -35,6 +35,7 @@ REQUIREMENTS = [
     "ssl;platform_system=='Emscripten'",
     "friendlywords>=1.1.3",
     "aiocache>=0.12.2",
+    "jsonschema>=3.2.0",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()

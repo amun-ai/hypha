@@ -20,6 +20,7 @@ from pydantic import (  # pylint: disable=no-name-in-module
 )
 
 from hypha.utils import EventBus
+import jsonschema
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("core")
@@ -233,7 +234,6 @@ class Artifact(BaseModel):
     authors: Optional[List[Dict[str, str]]] = None
     attachments: Optional[Dict[str, List[Any]]] = None
     files: Optional[List[Dict[str, Any]]] = None
-    summary_fields: Optional[List[str]] = None
     config: Optional[Dict[str, Any]] = None
     type: str
     format_version: str = "0.2.1"
@@ -243,9 +243,6 @@ class Artifact(BaseModel):
     license: Optional[str] = None
     git_repo: Optional[str] = None
     source: Optional[str] = None
-    entry_point: Optional[str] = None
-    services: Optional[List[SerializeAsAny[ServiceInfo]]] = None
-    collection: Optional[List[Dict[str, Any]]] = None
     config: Optional[Dict[str, Any]] = None
 
     @classmethod
@@ -256,6 +253,36 @@ class Artifact(BaseModel):
                 ServiceInfo.model_validate(service) for service in data["services"]
             ]
         return super().model_validate(data)
+
+
+class CollectionArtifact(Artifact):
+    """Represent collection artifact."""
+
+    type: str = "collection"
+    collection: List[str] = []
+    summary_fields: Optional[List[str]] = None
+    collection_schema: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def model_validate(cls, data):
+        data = data.copy()
+        if "collection" in data and data["collection"] is not None:
+            data["collection"] = [
+                CollectionArtifact.model_validate(artifact)
+                for artifact in data["collection"]
+            ]
+        if "collection_schema" in data and data["collection_schema"] is not None:
+            # make sure the schema is a valid json schema
+            jsonschema.Draft7Validator.check_schema(data["collection_schema"])
+        return super().model_validate(data)
+
+
+class ApplicationArtifact(Artifact):
+    """Represent application artifact."""
+
+    type: str = "application"
+    entry_point: Optional[str] = None  # entry point for the application
+    services: Optional[List[SerializeAsAny[ServiceInfo]]] = None  # for application
 
 
 class ServiceTypeInfo(BaseModel):
