@@ -330,7 +330,7 @@ class RedisStore:
                     svc = await rpc.get_remote_service(
                         f"public/{server_id}:built-in", {"timeout": 2}
                     )
-                    assert await svc.ping("ping", timeout=2) == "pong"
+                    assert await svc.ping("ping") == "pong"
                 except Exception as e:
                     logger.warning(
                         f"Server {server_id} is not responding (error: {e}), cleaning up..."
