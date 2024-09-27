@@ -290,12 +290,12 @@ class ServerAppController:
         """Finalize the edits to the application by committing the artifact."""
 
         prefix = f"applications/{app_id}"
-        await self.artifact_controller.commit(prefix=prefix, context=context)
         try:
             info = await self.start(
                 app_id,
                 timeout=timeout,
                 wait_for_service="default",
+                stage=True,
                 context=context,
             )
             await self.stop(info["id"], context=context)
@@ -311,6 +311,7 @@ class ServerAppController:
             raise Exception(
                 f"Failed to start the app: {app_id} during installation, error: {exp}"
             )
+        await self.artifact_controller.commit(prefix=prefix, context=context)
 
     async def uninstall(self, app_id: str, context: Optional[dict] = None) -> None:
         """Uninstall an application by removing its artifact."""
@@ -346,6 +347,7 @@ class ServerAppController:
         app_id,
         client_id=None,
         timeout: float = 60,
+        stage: bool = False,
         wait_for_service: Union[str, bool] = None,
         context: Optional[dict] = None,
     ):
@@ -371,7 +373,7 @@ class ServerAppController:
             client_id = random_id(readable=True)
 
         artifact = await self.artifact_controller.read(
-            prefix=f"applications/{app_id}", context=context
+            prefix=f"applications/{app_id}", stage=stage, context=context
         )
         artifact = ApplicationArtifact.model_validate(artifact)
 
@@ -447,13 +449,16 @@ class ServerAppController:
             artifact = ApplicationArtifact.model_validate(
                 artifact.model_dump(mode="json")
             )
-            await self.artifact_controller.create(
+            await self.artifact_controller.edit(
                 prefix=f"applications/{app_id}",
                 manifest=artifact.model_dump(mode="json"),
-                overwrite=True,
-                stage=False,
                 context=context,
             )
+            if not stage:
+                await self.artifact_controller.commit(
+                    prefix=f"applications/{app_id}", context=context
+                )
+                
         except asyncio.TimeoutError:
             raise Exception(
                 f"Failed to start the app: {workspace}/{app_id}, timeout reached ({timeout}s)."
