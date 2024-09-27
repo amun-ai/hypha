@@ -23,6 +23,7 @@ python3 -m hypha.server \
 - `--endpoint-url`: The internal URL for Hypha to access the S3 server.
 - `--endpoint-url-public`: Public URL for accessing the files (may be the same as `--endpoint-url`).
 - `--s3-admin-type`: Specifies the S3 admin type (e.g., `minio`, `generic`). If it's a minio server (not gateway mode), use `minio`, otherwise use `generic` would be enough for most cases.
+- `--enable-s3-proxy`: Enables the S3 proxy provided by Hypha, useful when the S3 server is not directly accessible.
 
 If your `--endpoint-url-public` is not accessible from outside, you can enable the s3 proxy provided by hypha by adding `--enable-s3-proxy` to the command line. This will allow you to access the s3 files through the hypha server.
 

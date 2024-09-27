@@ -401,14 +401,16 @@ class S3Controller:
             ):
                 """
                 Proxy request to S3, forwarding only essential headers such as Range,
-                and handling case-insensitive headers.
+                and handling different methods (GET, POST, PUT).
                 """
                 # Extract the query parameters from the client request
                 query_params = dict(request.query_params)
 
                 # Construct the S3 presigned URL using the internal endpoint_url
                 if query_params:
-                    s3_url = f"{self.endpoint_url_public}/{path}?" + urlencode(query_params)
+                    s3_url = f"{self.endpoint_url_public}/{path}?" + urlencode(
+                        query_params
+                    )
                 else:
                     s3_url = f"{self.endpoint_url_public}/{path}"
 
@@ -421,19 +423,21 @@ class S3Controller:
                     key.lower(): value for key, value in incoming_headers.items()
                 }
 
-                # Keep only the essential headers
+                # Keep only the essential headers for the request
                 essential_headers = {}
                 if "range" in normalized_headers:
                     essential_headers["Range"] = normalized_headers["range"]
 
-                if "content-type" in normalized_headers:
-                    essential_headers["Content-Type"] = normalized_headers["content-type"]
-
-                if "content-length" in normalized_headers:
-                    essential_headers["Content-Length"] = normalized_headers["content-length"]
-
-                # Optionally, add more essential headers based on your use case
-                # (e.g., caching headers, authorization for specific cases, etc.)
+                # Add content-type and content-length only for upload requests (POST/PUT)
+                if method in ["POST", "PUT"]:
+                    if "content-type" in normalized_headers:
+                        essential_headers["Content-Type"] = normalized_headers[
+                            "content-type"
+                        ]
+                    if "content-length" in normalized_headers:
+                        essential_headers["Content-Length"] = normalized_headers[
+                            "content-length"
+                        ]
 
                 # Stream data to/from S3
                 async with httpx.AsyncClient() as client:
@@ -452,13 +456,29 @@ class S3Controller:
                                 s3_url,
                                 headers=essential_headers,  # Forward essential headers
                             )
+                        if method == "GET":
+                            return StreamingResponse(
+                                response.iter_bytes(),  # Async iterator of response body chunks
+                                status_code=response.status_code,
+                                headers={
+                                    k: v for k, v in response.headers.items() if k.lower() not in ["content-encoding", "transfer-encoding"]
+                                },  # Forward all response headers except Content-Encoding and Transfer-Encoding
+                            )
 
-                        # Return a StreamingResponse to the client
-                        return StreamingResponse(
-                            response.iter_bytes(),  # Async iterator of response body chunks
-                            status_code=response.status_code,
-                            headers=dict(response.headers),  # Convert response headers to dict
-                        )
+                        elif method in ["POST", "PATCH", "PUT", "DELETE"]:
+                            return Response(
+                                content=response.content,  # Raw response content
+                                status_code=response.status_code,
+                                headers=response.headers  # Pass raw headers from the response
+                            )
+                        elif method == "HEAD":
+                            return Response(
+                                status_code=response.status_code,
+                                headers=response.headers  # No content for HEAD, but forward headers
+                            )
+
+                        else:
+                            return Response(status_code=405, content="Method Not Allowed")
 
                     except httpx.HTTPStatusError as exc:
                         raise HTTPException(
