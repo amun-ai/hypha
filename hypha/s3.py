@@ -408,11 +408,9 @@ class S3Controller:
 
                 # Construct the S3 presigned URL using the internal endpoint_url
                 if query_params:
-                    s3_url = f"{self.endpoint_url_public}/{path}?" + urlencode(
-                        query_params
-                    )
+                    s3_url = f"{self.endpoint_url}/{path}?" + urlencode(query_params)
                 else:
-                    s3_url = f"{self.endpoint_url_public}/{path}"
+                    s3_url = f"{self.endpoint_url}/{path}"
 
                 # Define the method
                 method = request.method
@@ -461,7 +459,10 @@ class S3Controller:
                                 response.iter_bytes(),  # Async iterator of response body chunks
                                 status_code=response.status_code,
                                 headers={
-                                    k: v for k, v in response.headers.items() if k.lower() not in ["content-encoding", "transfer-encoding"]
+                                    k: v
+                                    for k, v in response.headers.items()
+                                    if k.lower()
+                                    not in ["content-encoding", "transfer-encoding"]
                                 },  # Forward all response headers except Content-Encoding and Transfer-Encoding
                             )
 
@@ -469,16 +470,18 @@ class S3Controller:
                             return Response(
                                 content=response.content,  # Raw response content
                                 status_code=response.status_code,
-                                headers=response.headers  # Pass raw headers from the response
+                                headers=response.headers,  # Pass raw headers from the response
                             )
                         elif method == "HEAD":
                             return Response(
                                 status_code=response.status_code,
-                                headers=response.headers  # No content for HEAD, but forward headers
+                                headers=response.headers,  # No content for HEAD, but forward headers
                             )
 
                         else:
-                            return Response(status_code=405, content="Method Not Allowed")
+                            return Response(
+                                status_code=405, content="Method Not Allowed"
+                            )
 
                     except httpx.HTTPStatusError as exc:
                         raise HTTPException(
@@ -943,7 +946,8 @@ class S3Controller:
                 path = path[1:]
             else:
                 path = safe_join(workspace, path)
-            async with self.create_client_async(public=True) as s3_client:
+            public = False if self.enable_s3_proxy else True
+            async with self.create_client_async(public=public) as s3_client:
                 url = await s3_client.generate_presigned_url(
                     client_method,
                     Params={"Bucket": self.workspace_bucket, "Key": path},

@@ -74,6 +74,23 @@
             margin-left: 60px;
         }
 
+        .file-item {
+            position: relative;
+        }
+        .file-item-buttons {
+            display: none;
+            position: absolute;
+            right: 0;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+        .file-item:hover .file-item-buttons {
+            display: flex;
+        }
+        .file-card:hover {
+            background-color: #2d3748;
+        }
+
         @media (max-width: 768px) {
             .sidebar {
                 width: 60px;
@@ -86,6 +103,10 @@
             .sidebar .menu-item span {
                 display: none;
             }
+        }
+
+        .grid {
+            min-height: 30vh;
         }
 
         .service-card {
@@ -320,41 +341,85 @@
             );
         };
 
-        const FileCard = ({ file, onDownload, onDelete, uploadProgress }) => {
+        const FileCard = ({ file, onDownload, onDelete, onToggle, isExpanded, children, fullPath }) => {
+            const isDirectory = file.type === 'directory';
             return (
-              <div className="flex justify-between items-center p-4 bg-gray-700 rounded-lg shadow-lg mb-4">
-                <div>
-                  <i className="fas fa-file-alt mr-2"></i>
-                  {file.name}
-                </div>
-                {uploadProgress[file.name] && (
-                  <div className="w-1/2">
-                    <div className="w-full bg-gray-600 h-2 rounded">
-                      <div
-                        className="bg-blue-500 h-2 rounded"
-                        style={{ width: `${uploadProgress[file.name]}%` }}
-                      ></div>
+                <div className="file-card flex flex-col justify-between items-start p-3 bg-gray-700 shadow-md">
+                    <div className="file-item flex items-center w-full justify-between">
+                        <div className="flex items-center">
+                            {isDirectory && (
+                                <button className="mr-2" onClick={() => onToggle(fullPath)}>
+                                    {isExpanded ? '-' : '+'}
+                                </button>
+                            )}
+                            <i className={`fas ${isDirectory ? 'fa-folder' : 'fa-file-alt'} mr-2`}></i>
+                            {file.name}
+                        </div>
+                        <div className="file-item-buttons">
+                            {!isDirectory && (
+                                <button
+                                    className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300"
+                                    onClick={() => onDownload(fullPath)}
+                                >
+                                    <i className="fas fa-download"></i>
+                                </button>
+                            )}
+                            <button
+                                className="bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 ml-2"
+                                onClick={() => onDelete(fullPath, file.type)}
+                            >
+                                <i className="fas fa-trash"></i>
+                            </button>
+                        </div>
                     </div>
-                  </div>
-                )}
-                <div className="flex">
-                  <button
-                    className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300"
-                    onClick={() => onDownload(file)}
-                  >
-                    <i className="fas fa-download"></i>
-                  </button>
-                  <button
-                    className="bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 ml-2"
-                    onClick={() => onDelete(file)}
-                    >
-                    <i className="fas fa-trash"></i>
-                  </button>
+                    {isExpanded && <div className="w-full mt-4 ml-4">{children}</div>}
                 </div>
-              </div>
             );
         };
-                 
+        
+        const FileTree = ({ files, onDownload, onDelete, listFiles, setFileList, parentPath = '' }) => {
+            const [expandedDirs, setExpandedDirs] = React.useState({});
+        
+            const handleToggle = async (fullPath) => {
+                const isExpanded = !!expandedDirs[fullPath];
+                if (isExpanded) {
+                    setExpandedDirs({ ...expandedDirs, [fullPath]: null });
+                } else {
+                    const children = await listFiles(fullPath);
+                    setExpandedDirs({ ...expandedDirs, [fullPath]: children });
+                }
+            };
+        
+            return (
+                <div>
+                    {files.map((file) => {
+                        const fullPath = parentPath ? `${parentPath}/${file.name}` : file.name;
+                        return (
+                            <FileCard
+                                key={fullPath}
+                                file={file}
+                                onDownload={onDownload}
+                                onDelete={onDelete}
+                                isExpanded={!!expandedDirs[fullPath]}
+                                onToggle={handleToggle}
+                                fullPath={fullPath}
+                            >
+                                {expandedDirs[fullPath] && (
+                                    <FileTree
+                                        files={expandedDirs[fullPath]}
+                                        onDownload={onDownload}
+                                        onDelete={onDelete}
+                                        listFiles={listFiles}
+                                        setFileList={setFileList} // Pass setFileList here as well
+                                        parentPath={fullPath}
+                                    />
+                                )}
+                            </FileCard>
+                        );
+                    })}
+                </div>
+            );
+        };       
 
         const Modal = ({ serviceInfo, onClose }) => {
             return (
@@ -676,7 +741,7 @@
             const [editingWorkspace, setEditingWorkspace] = React.useState(null);
             const [currentWorkspaceInfo, setCurrentWorkspaceInfo] = React.useState(null);
             const [bookmarkedItems, setBookmarkedItems] = React.useState([]);
-            const [uploadProgress, setUploadProgress] = React.useState({});
+            const [uploadProgress, setUploadProgress] = React.useState(0);
             const [fileList, setFileList] = React.useState(files);
 
             React.useEffect(() => {
@@ -812,63 +877,79 @@
             
               const handleFileUpload = async (file) => {
                 try {
-                  const presignedUrl = await s3.generatePresignedUrl(file.name, "put_object");
-                  const token = config.token; // Assuming token is stored in config
+                    const presignedUrl = await s3.generatePresignedUrl(file.name, "put_object");
             
-                  const response = await axios.put(presignedUrl, file, {
-                    headers: {
-                      "Content-Type": file.type || "application/octet-stream",
-                    },
-                    onUploadProgress: (progressEvent) => {
-                      if (!progressEvent.total) return;
-                      const progress = (progressEvent.loaded / progressEvent.total) * 100;
-                      setUploadProgress((prev) => ({ ...prev, [file.name]: progress }));
-                    },
-                  });
+                    const response = await axios.put(presignedUrl, file, {
+                        headers: {
+                            "Content-Type": file.type || "application/octet-stream",
+                        },
+                        onUploadProgress: (progressEvent) => {
+                            if (!progressEvent.total) return;
+                            const progress = (progressEvent.loaded / progressEvent.total) * 100;
+                            setUploadProgress(progress);
+                        },
+                    });
             
-                  if (response.status === 200) {
-                    console.log(`File ${file.name} uploaded successfully`);
-                    setFileList(await s3.listFiles()); // Refresh file list after successful upload
-                  } else {
-                    console.error("File upload failed", response.statusText);
-                  }
+                    if (response.status === 200) {
+                        console.log(`File ${file.name} uploaded successfully`);
+            
+                        // Re-fetch the updated file list and update the state
+                        const updatedFiles = await listFiles(); // Fetch the updated files after upload
+                        setFileList(updatedFiles); // Update the fileList state to trigger a re-render
+                    } else {
+                        console.error("File upload failed", response.statusText);
+                    }
+                    setUploadProgress(0); // Reset progress after upload
                 } catch (error) {
-                  console.error("File upload failed", error);
+                    console.error("File upload failed", error);
                 }
-              };
-            
-              const handleFileDownload = async (file) => {
+            };
+              const handleFileDownload = async (filePath) => {
                 try {
-                  if(file.type === 'directory'){
-                    alert('Cannot download a directory');
-                    return;
-                  }
-                  const presignedUrl = await s3.generatePresignedUrl(file.name, "get_object");
+                  const presignedUrl = await s3.generatePresignedUrl(filePath, "get_object");
                   window.open(presignedUrl, '_blank'); // Trigger file download
                 } catch (error) {
                   console.error("Failed to generate download link", error);
                 }
               };
 
-              const handleFileDelete = async (file) => {
+              const handleFileDelete = async (fullPath, type) => {
                 try {
-                    let anwser;
-                    if(file.type === 'directory'){
-                        anwser = confirm(`Are you sure you want to delete the directory ${file.name} and all its contents?`);
+                    let answer;
+                    if (type === 'directory') {
+                        answer = confirm(`Are you sure you want to delete the directory ${fullPath} and all its contents?`);
                     } else {
-                        anwser = confirm(`Are you sure you want to delete the file ${file.name}?`);
+                        answer = confirm(`Are you sure you want to delete the file ${fullPath}?`);
                     }
-                    if(!anwser) return;
-                    if (file.type === 'directory') {
-                        await s3.deleteDirectory(file.name);
+                    if (!answer) return;
+            
+                    if (type === 'directory') {
+                        await s3.deleteDirectory(fullPath);
                     } else {
-                        await s3.deleteFile(file.name);
+                        await s3.deleteFile(fullPath);
                     }
-                    setFileList(await s3.listFiles()); // Refresh file list after successful delete
+            
+                    // Derive the parent directory
+                    const parentPath = fullPath.substring(0, fullPath.lastIndexOf('/')) || ''; // If no slash, assume root
+            
+                    // Re-fetch the updated file list for the parent directory and update the state
+                    const updatedFiles = await listFiles(parentPath);
+                    setFileList(updatedFiles); // Update the fileList state to trigger a re-render
                 } catch (error) {
-                  console.error("Failed to delete file", error);
+                    console.error("Failed to delete file", error);
                 }
-              };
+            };
+            
+
+            const listFiles = async (path = '') => {
+                try {
+                    const files = await s3.listFiles(path); // Ensure this calls the server to get updated data
+                    return files;
+                } catch (error) {
+                    console.error("Failed to list files", error);
+                    return [];
+                }
+            };
         
             return (
                 <div
@@ -1077,20 +1158,23 @@
                             <p className="text-center text-gray-500">
                             Drag and drop files here to upload
                             </p>
+                            {!!uploadProgress && (
+                                <div className="w-full bg-gray-600 h-4 rounded relative flex items-center justify-center">
+                                    <div
+                                        className="bg-blue-500 h-4 rounded"
+                                        style={{ width: `${uploadProgress}%` }}
+                                    ></div>
+                                    <span className="absolute text-white text-sm">
+                                        {Math.round(uploadProgress, 1)}%
+                                    </span>
+                                </div>
+                            )}
                         </div>
                         <div className="mt-6">
                             {fileList.length === 0 ? (
                             <p>No files available.</p>
                             ) : (
-                            fileList.map((file) => (
-                                <FileCard
-                                key={file.name}
-                                file={file}
-                                uploadProgress={uploadProgress}
-                                onDownload={handleFileDownload}
-                                onDelete={handleFileDelete}
-                                />
-                            ))
+                                <FileTree files={fileList} onDelete={handleFileDelete} onDownload={handleFileDownload} listFiles={listFiles} />
                             )}
                         </div>
                         </>

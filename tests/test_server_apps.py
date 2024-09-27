@@ -47,6 +47,7 @@ async def test_server_apps_unauthorized(fastapi_server, root_user_token):
     await controller.launch(
         source=TEST_APP_CODE,
         config={"type": "window"},
+        overwrite=True,
         wait_for_service="default",
     )
 
@@ -265,7 +266,7 @@ async def test_lazy_plugin(fastapi_server, test_user_token):
 
     app_info = await controller.install(
         source=source,
-        force=True,
+        overwrite=True,
     )
 
     apps = await controller.list_apps()
@@ -302,7 +303,7 @@ async def test_lazy_service(fastapi_server, test_user_token):
     app_info = await controller.install(
         source=source,
         timeout=30,
-        force=True,
+        overwrite=True,
     )
 
     service = await api.get_service("echo@" + app_info.id)

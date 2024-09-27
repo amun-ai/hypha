@@ -100,16 +100,16 @@ def parse_imjoy_plugin(source, overwrite_config=None):
     return config
 
 
-def convert_config_to_card(plugin_config, plugin_id, source_url=None):
-    """Convert imjoy plugin config to Card format."""
-    card = DefaultObjectProxy(
+def convert_config_to_artifact(plugin_config, plugin_id, source_url=None):
+    """Convert imjoy plugin config to Artifact format."""
+    artifact = DefaultObjectProxy(
         {
             "type": "application",
             "id": plugin_id,
         }
     )
     if source_url:
-        card["source"] = source_url
+        artifact["source"] = source_url
     fields = [
         "icon",
         "name",
@@ -126,33 +126,33 @@ def convert_config_to_card(plugin_config, plugin_id, source_url=None):
     ]
     for field in fields:
         if field in plugin_config:
-            card[field] = plugin_config[field]
+            artifact[field] = plugin_config[field]
     tags = plugin_config.get("labels", []) + plugin_config.get("flags", [])
     if "bioengine" not in tags:
         tags.append("bioengine")
-    card["tags"] = tags
+    artifact["tags"] = tags
 
     docs = plugin_config.get("docs")
     if docs:
-        card["documentation"] = docs.get("content")
-    card["covers"] = plugin_config.get("cover")
+        artifact["documentation"] = docs.get("content")
+    artifact["covers"] = plugin_config.get("cover")
     # make sure we have a list
-    if not card["covers"]:
-        card["covers"] = []
-    elif not isinstance(card["covers"], list):
-        card["covers"] = [card["covers"]]
+    if not artifact["covers"]:
+        artifact["covers"] = []
+    elif not isinstance(artifact["covers"], list):
+        artifact["covers"] = [artifact["covers"]]
 
-    card["badges"] = plugin_config.get("badge")
-    if not card["badges"]:
-        card["badges"] = []
-    elif not isinstance(card["badges"], list):
-        card["badges"] = [card["badges"]]
+    artifact["badges"] = plugin_config.get("badge")
+    if not artifact["badges"]:
+        artifact["badges"] = []
+    elif not isinstance(artifact["badges"], list):
+        artifact["badges"] = [artifact["badges"]]
 
-    card["authors"] = plugin_config.get("author")
-    if not card["authors"]:
-        card["authors"] = []
-    elif not isinstance(card["authors"], list):
-        card["authors"] = [card["authors"]]
+    artifact["authors"] = plugin_config.get("author")
+    if not artifact["authors"]:
+        artifact["authors"] = []
+    elif not isinstance(artifact["authors"], list):
+        artifact["authors"] = [artifact["authors"]]
 
-    card["attachments"] = {}
-    return card
+    artifact["attachments"] = {}
+    return artifact

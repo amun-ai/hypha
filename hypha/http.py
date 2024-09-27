@@ -596,7 +596,7 @@ class HTTPProxy:
                                 "detail": "Server Apps service is not enabled.",
                             },
                         )
-                    apps = await controller.list_apps(workspace)
+                    apps = await controller.list_apps()
                 return JSONResponse(
                     status_code=200,
                     content=serialize(apps),
@@ -685,7 +685,7 @@ class HTTPProxy:
                 url=f"{base_path.rstrip('/')}/{workspace}/apps/{service_id}/"
             )
 
-        @app.get(norm_url("/{workspace}/server-apps/{app_id}/{path:path}"))
+        @app.get(norm_url("/{workspace}/applications/{app_id}/{path:path}"))
         async def get_browser_app_file(
             workspace: str, app_id: str, path: str, token: str = None
         ) -> Response:
@@ -721,7 +721,7 @@ class HTTPProxy:
                         ),
                     },
                 )
-            key = safe_join(self.workspace_etc_dir, workspace, app_id, path)
+            key = safe_join(workspace, "applications", app_id, path)
             assert self.s3_enabled, "S3 is not enabled."
             from hypha.s3 import FSFileResponse
             from aiobotocore.session import get_session

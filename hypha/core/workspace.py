@@ -13,7 +13,7 @@ from hypha_rpc.utils.schema import schema_method
 from pydantic import BaseModel, Field
 
 from hypha.core import (
-    Card,
+    ApplicationArtifact,
     RedisRPCConnection,
     UserInfo,
     WorkspaceInfo,
@@ -65,6 +65,7 @@ class WorkspaceManager:
         server_info: dict,
         client_id: str,
         s3_controller: Optional[Any] = None,
+        artifact_manager: Optional[Any] = None,
     ):
         self._redis = redis
         self._initialized = False
@@ -74,6 +75,7 @@ class WorkspaceManager:
         self._server_info = server_info
         self._client_id = client_id
         self._s3_controller = s3_controller
+        self._artifact_manager = artifact_manager
 
     def get_client_id(self):
         assert self._client_id, "client id must not be empty."
@@ -313,40 +315,6 @@ class WorkspaceManager:
             ]
             await self._update_workspace(user_workspace, user_info)
         logger.info("Workspace %s removed by %s", workspace, user_info.id)
-
-    @schema_method
-    async def install_application(
-        self,
-        app_info: Card = Field(..., description="Application info"),
-        force: bool = Field(False, description="Force install if already installed"),
-        context: Optional[dict] = None,
-    ):
-        """Install an application to the workspace."""
-        ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        # TODO: check if the application is already installed
-        workspace_info = await self.load_workspace_info(ws)
-        if app_info.id in workspace_info.applications and not force:
-            raise KeyError("Application already installed: " + app_info.id)
-        workspace_info.applications[app_info.id] = app_info
-        logger.info("Installing application %s to %s", app_info.id, ws)
-        await self._update_workspace(workspace_info, user_info)
-
-    @schema_method
-    async def uninstall_application(
-        self,
-        app_id: str = Field(..., description="application id"),
-        context: Optional[dict] = None,
-    ):
-        """Uninstall a application from the workspace."""
-        ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        workspace_info = await self.load_workspace_info(ws)
-        if app_id not in workspace_info.applications:
-            raise KeyError("Application not found: " + app_id)
-        del workspace_info.applications[app_id]
-        logger.info("Uninstalling application %s from %s", app_id, ws)
-        await self._update_workspace(workspace_info, user_info)
 
     @schema_method
     async def register_service_type(
@@ -1105,6 +1073,10 @@ class WorkspaceManager:
         if not user_info.check_permission(workspace, UserPermission.read):
             raise PermissionError(f"Permission denied for workspace {workspace}")
 
+        if not self._artifact_manager:
+            raise Exception(
+                "Failed to launch application: artifact-manager service not found."
+            )
         if ":" in service_id:
             service_id = service_id.split(":")[1]
 
@@ -1114,15 +1086,20 @@ class WorkspaceManager:
             "built-in",
         ], f"Invalid service id: {service_id}"
 
-        # Check if the user has permission to this workspace and the one to be launched
-        workspace = await self.load_workspace_info(workspace)
-        if app_id not in workspace.applications:
+        app_collection = await self._artifact_manager.read(
+            "applications", context={"ws": workspace, "user": user_info.model_dump()}
+        )
+        applications = {
+            item["id"]: ApplicationArtifact.model_validate(item)
+            for item in app_collection["collection"]
+        }
+        if app_id not in applications:
             raise KeyError(
-                f"Application id `{app_id}` not found in workspace {workspace.id}"
+                f"Application id `{app_id}` not found in workspace {workspace}"
             )
 
         # Make sure the service_id is in the application services
-        app_info = workspace.applications[app_id]
+        app_info = applications[app_id]
         assert (
             app_info.services
         ), f"No services found in application {app_id}, please make sure it's properly installed."
@@ -1474,8 +1451,6 @@ class WorkspaceManager:
             "bookmark": self.bookmark,
             "unbookmark": self.unbookmark,
             "get_workspace_info": self.get_workspace_info,
-            "install_application": self.install_application,
-            "uninstall_application": self.uninstall_application,
             "get_summary": self.get_summary,
             "ping": self.ping_client,
             "cleanup": self.cleanup,
