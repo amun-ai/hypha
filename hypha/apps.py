@@ -519,8 +519,11 @@ class ServerAppController:
 
     async def list_apps(self, context: Optional[dict] = None):
         """List applications in the workspace."""
-        apps = await self.artifact_manager.read(prefix="applications", context=context)
-        return apps["collection"]
+        try:
+            apps = await self.artifact_manager.read(prefix="applications", context=context)
+            return apps["collection"]
+        except KeyError:
+            return []
 
     async def close(self) -> None:
         """Close the app controller."""
