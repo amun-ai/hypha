@@ -535,16 +535,17 @@ class RedisStore:
         self,
         authorization: str = Header(None),
         access_token: str = Cookie(None),
-        _token: str = Query(None),
     ):
         """Return user info or create an anonymouse user.
 
         If authorization code is valid the user info is returned,
         If the code is invalid an an anonymouse user is created.
         """
-        token = authorization or access_token or _token
+        token = authorization or access_token
         if token:
             user_info = await self.parse_user_token(token)
+            if user_info.scope.current_workspace is None:
+                user_info.scope.current_workspace = user_info.get_workspace()
             return user_info
         else:
             user_info = generate_anonymous_user()

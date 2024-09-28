@@ -244,7 +244,7 @@ class ASGIRoutingMiddleware:
                     ) as api:
                         # Call get_service_type_id to check if it's an ASGI service
                         service_info = await api.get_service_info(
-                            service_id, {"mode": _mode}
+                            workspace + "/" + service_id, {"mode": _mode}
                         )
                         service = await api.get_service(service_info.id)
                         # intercept the request if it's an ASGI service
