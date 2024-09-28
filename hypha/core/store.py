@@ -6,7 +6,7 @@ import sys
 import datetime
 from typing import List, Union
 from pydantic import BaseModel
-from fastapi import Header, Cookie
+from fastapi import Header, Cookie, Query
 
 from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
@@ -537,14 +537,14 @@ class RedisStore:
         return user_info
 
     async def login_optional(
-        self, authorization: str = Header(None), access_token: str = Cookie(None)
+        self, authorization: str = Header(None), access_token: str = Cookie(None), _token: str = Query(None)
     ):
         """Return user info or create an anonymouse user.
 
         If authorization code is valid the user info is returned,
         If the code is invalid an an anonymouse user is created.
         """
-        token = authorization or access_token
+        token = authorization or access_token or _token
         if token:
             user_info = await self.parse_user_token(token)
             return user_info

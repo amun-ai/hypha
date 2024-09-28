@@ -36,6 +36,7 @@ AUTH0_ISSUER = env.get("AUTH0_ISSUER", "https://amun.ai/")
 AUTH0_NAMESPACE = env.get("AUTH0_NAMESPACE", "https://amun.ai/")
 JWT_SECRET = env.get("JWT_SECRET")
 LOGIN_SERVICE_URL = "/public/services/hypha-login"
+LOGIN_KEY_PREFIX = "login_key:"
 
 if not JWT_SECRET:
     logger.warning(
@@ -357,9 +358,9 @@ def create_login_service(store):
 
     async def start_login():
         """Start the login process."""
-        key = "login_key:" + str(random_id(readable=False))
+        key = str(random_id(readable=False))
         # set the key and with expire time
-        await redis.setex(key, MAXIMUM_LOGIN_TIME, "")
+        await redis.setex(LOGIN_KEY_PREFIX + key, MAXIMUM_LOGIN_TIME, "")
         return {
             "login_url": f"{login_service_url.replace('/services/', '/apps/')}/?key={key}",
             "key": key,
@@ -378,15 +379,15 @@ def create_login_service(store):
 
     async def check_login(key, timeout=MAXIMUM_LOGIN_TIME, profile=False):
         """Check the status of a login session."""
-        assert await redis.exists(key), "Invalid key, key does not exist"
+        assert await redis.exists(LOGIN_KEY_PREFIX + key), "Invalid key, key does not exist"
         if timeout <= 0:
-            user_info = await redis.get(key)
+            user_info = await redis.get(LOGIN_KEY_PREFIX + key)
             if user_info == b"":
                 return None
             user_info = json.loads(user_info)
             user_info = UserTokenInfo.model_validate(user_info)
             if user_info:
-                await redis.delete(key)
+                await redis.delete(LOGIN_KEY_PREFIX + key)
             return (
                 user_info.model_dump(mode="json")
                 if profile
@@ -394,7 +395,7 @@ def create_login_service(store):
             )
         count = 0
         while True:
-            user_info = await redis.get(key)
+            user_info = await redis.get(LOGIN_KEY_PREFIX + key)
             if user_info != b"":
                 user_info = json.loads(user_info)
                 user_info = UserTokenInfo.model_validate(user_info)
@@ -403,7 +404,7 @@ def create_login_service(store):
                         f"Login session expired, the maximum login time is {MAXIMUM_LOGIN_TIME} seconds"
                     )
                 if user_info:
-                    await redis.delete(key)
+                    await redis.delete(LOGIN_KEY_PREFIX + key)
                     return (
                         user_info.model_dump(mode="json")
                         if profile
@@ -425,7 +426,7 @@ def create_login_service(store):
         picture=None,
     ):
         """Report a token associated with a login session."""
-        assert await redis.exists(key), "Invalid key, key does not exist or expired"
+        assert await redis.exists(LOGIN_KEY_PREFIX + key), "Invalid key, key does not exist or expired"
         kwargs = {
             "token": token,
             "email": email,
@@ -437,7 +438,7 @@ def create_login_service(store):
         }
         user_info = UserTokenInfo.model_validate(kwargs)
         user_info = user_info.model_dump(mode="json")
-        await redis.setex(key, MAXIMUM_LOGIN_TIME, json.dumps(user_info))
+        await redis.setex(LOGIN_KEY_PREFIX + key, MAXIMUM_LOGIN_TIME, json.dumps(user_info))
 
     logger.info(
         f"To preview the login page, visit: {login_service_url.replace('/services/', '/apps/')}"
