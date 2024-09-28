@@ -250,7 +250,7 @@ By default all the clients connected to Hypha server communicate via the websock
 
 ### User Login and Token-Based Authentication
 
-To access the full features of the Hypha server, users need to log in and obtain a token for authentication. The new `login()` function provides a convenient way to display a login URL, once the user click it and login, it can then return the token for connecting to the server.
+To access the full features of the Hypha server, users need to log in and obtain a token for authentication. The `login()` function provides a convenient way to display a login URL, once the user click it and login, it can then return the token for connecting to the server.
 
 Here is an example of how the login process works using the `login()` function:
 
@@ -294,7 +294,27 @@ The output will provide a URL for the user to open in their browser and
 
  perform the login process. Once the user clicks the link and successfully logs in, the `login()` function will return, providing the token.
 
-The `login()` function also supports additional arguments:
+#### Additional Arguments for Login
+
+You can specify the `workspace` and `expires_in` arguments in the `login()` function so that the token is generated for a specific workspace and expires after a certain period of time.
+
+```python
+token = await login(
+    {
+        "server_url": SERVER_URL,
+        "workspace": "my-workspace",
+        "expires_in": 3600,
+    }
+)
+```
+
+If a token is generated for a specific workspace, when calling `connect_to_server`, you need to specify the same workspace as well:
+
+```python
+server = await connect_to_server({"server_url": "https://ai.imjoy.io", "token": token, "workspace": "my-workspace"})
+```
+
+The `login()` function also supports other additional arguments:
 
 ```python
 token = await login(

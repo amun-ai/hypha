@@ -1,5 +1,13 @@
 # Hypha Change Log
 
+### 0.20.38
+ - Allow passing workspace and expires_in to the `login` function to generate workspace specific token.
+ - When using http endpoint to access the service, you can now pass workspace specific token to the http header `Authorization` to access the service. (Previously, all the services are assumed to be accessed from the same service provider workspace)
+
+### 0.20.37
+ - Add s3-proxy to allow accessing s3 presigned url in case the s3 server is not directly accessible. Use `--enable-s3-proxy` to enable the s3 proxy when starting Hypha.
+ - Add `artifact-manager` service to provide comprehensive artifact management, used for creating gallery-like service portal. The artifact manager service is backed by s3 storage and supports presigned url for direct access to the artifacts. This is a replacement of the previous `card` service.
+
 ### 0.20.36
 
  - Upgrade hypha-rpc to support updating reconnection token (otherwise it generate token expired error after some time)
