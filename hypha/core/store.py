@@ -440,8 +440,8 @@ class RedisStore:
     async def _register_root_services(self):
         """Register root services."""
         self._root_workspace_interface = await self.get_workspace_interface(
-            self._root_user.get_workspace(),
             self._root_user,
+            self._root_user.get_workspace(),
             client_id=self._server_id,
             silent=False,
         )
@@ -476,7 +476,7 @@ class RedisStore:
         """Get the public API."""
         if self._public_workspace_interface is None:
             self._public_workspace_interface = await self.get_workspace_interface(
-                "public", self._root_user, client_id=self._server_id, silent=False
+                self._root_user, "public", client_id=self._server_id, silent=False
             )
         return self._public_workspace_interface
 
@@ -532,7 +532,10 @@ class RedisStore:
         return user_info
 
     async def login_optional(
-        self, authorization: str = Header(None), access_token: str = Cookie(None), _token: str = Query(None)
+        self,
+        authorization: str = Header(None),
+        access_token: str = Cookie(None),
+        _token: str = Query(None),
     ):
         """Return user info or create an anonymouse user.
 
@@ -544,7 +547,12 @@ class RedisStore:
             user_info = await self.parse_user_token(token)
             return user_info
         else:
-            return generate_anonymous_user()
+            user_info = generate_anonymous_user()
+            user_workspace = user_info.get_workspace()
+            user_info.scope = create_scope(
+                f"{user_workspace}#a", current_workspace=user_workspace
+            )
+            return user_info
 
     async def get_all_workspace(self):
         """Get all workspaces."""
@@ -583,7 +591,7 @@ class RedisStore:
             client_id = self._server_id + "-" + random_id(readable=False)
         user_info = user_info or self._root_user
         return self.get_workspace_interface(
-            workspace, user_info, client_id=client_id, timeout=timeout, silent=silent
+            user_info, workspace, client_id=client_id, timeout=timeout, silent=silent
         )
 
     def get_manager_id(self):
@@ -609,8 +617,8 @@ class RedisStore:
 
     def get_workspace_interface(
         self,
-        workspace: str,
         user_info: UserInfo,
+        workspace: str,
         client_id=None,
         timeout=10,
         silent=True,

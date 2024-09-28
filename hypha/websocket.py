@@ -254,7 +254,9 @@ class WebsocketServer:
             )
 
         event_bus = self.store.get_event_bus()
-        assert user_info.scope.current_workspace == workspace, f"Workspace mismatch: {workspace} != {user_info.current_workspace}"
+        assert (
+            user_info.scope.current_workspace == workspace
+        ), f"Workspace mismatch: {workspace} != {user_info.current_workspace}"
         conn = RedisRPCConnection(event_bus, workspace, client_id, user_info, None)
         self._websockets[f"{workspace}/{client_id}"] = websocket
         try:

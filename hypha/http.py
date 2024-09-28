@@ -240,7 +240,7 @@ class ASGIRoutingMiddleware:
                     )
 
                     async with self.store.get_workspace_interface(
-                        workspace, user_info
+                        user_info, user_info.scope.current_workspace
                     ) as api:
                         # Call get_service_type_id to check if it's an ASGI service
                         service_info = await api.get_service_info(
@@ -521,7 +521,7 @@ class HTTPProxy:
             """Route for get services under a workspace."""
             try:
                 async with self.store.get_workspace_interface(
-                    workspace, user_info
+                    user_info, workspace
                 ) as manager:
                     services = await manager.list_services()
                 info = serialize(services)
@@ -548,7 +548,7 @@ class HTTPProxy:
             """Route for checking details of a service."""
             try:
                 async with self.store.get_workspace_interface(
-                    workspace, user_info
+                    user_info, workspace
                 ) as api:
                     if service_id == "ws":
                         return serialize(api)
@@ -584,7 +584,7 @@ class HTTPProxy:
             """Route for get apps under a workspace."""
             try:
                 async with self.store.get_workspace_interface(
-                    workspace, user_info
+                    user_info, user_info.scope.current_workspace
                 ) as manager:
                     try:
                         controller = await manager.get_service("public/server-apps")
@@ -776,12 +776,14 @@ class HTTPProxy:
             try:
                 workspace, service_id, function_key = function_info
                 async with self.store.get_workspace_interface(
-                    workspace, user_info
+                    user_info, user_info.scope.current_workspace
                 ) as api:
                     if service_id == "ws":
                         service = api
                     else:
-                        info = await api.get_service_info(service_id, {"mode": _mode})
+                        info = await api.get_service_info(
+                            workspace + "/" + service_id, {"mode": _mode}
+                        )
                         service = await api.get_service(info.id)
                     func = get_value(function_key, service)
                     if not func:

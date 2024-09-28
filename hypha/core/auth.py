@@ -365,9 +365,13 @@ def create_login_service(store):
         # set the key and with expire time
         await redis.setex(LOGIN_KEY_PREFIX + key, MAXIMUM_LOGIN_TIME, "")
         return {
-            "login_url": f"{login_service_url.replace('/services/', '/apps/')}/?key={key}" + (
-                f"&workspace={workspace}" if workspace else "" +
-                f"&expires_in={expires_in}" if expires_in else ""
+            "login_url": f"{login_service_url.replace('/services/', '/apps/')}/?key={key}"
+            + (
+                f"&workspace={workspace}"
+                if workspace
+                else "" + f"&expires_in={expires_in}"
+                if expires_in
+                else ""
             ),
             "key": key,
             "report_url": f"{login_service_url}/report",
@@ -385,7 +389,9 @@ def create_login_service(store):
 
     async def check_login(key, timeout=MAXIMUM_LOGIN_TIME, profile=False):
         """Check the status of a login session."""
-        assert await redis.exists(LOGIN_KEY_PREFIX + key), "Invalid key, key does not exist"
+        assert await redis.exists(
+            LOGIN_KEY_PREFIX + key
+        ), "Invalid key, key does not exist"
         if timeout <= 0:
             user_info = await redis.get(LOGIN_KEY_PREFIX + key)
             if user_info == b"":
@@ -434,7 +440,9 @@ def create_login_service(store):
         picture=None,
     ):
         """Report a token associated with a login session."""
-        assert await redis.exists(LOGIN_KEY_PREFIX + key), "Invalid key, key does not exist or expired"
+        assert await redis.exists(
+            LOGIN_KEY_PREFIX + key
+        ), "Invalid key, key does not exist or expired"
         # workspace = workspace or ("ws-user-" + user_id)
         kwargs = {
             "token": token,
@@ -447,7 +455,7 @@ def create_login_service(store):
             "user_id": user_id,
             "picture": picture,
         }
-        
+
         user_token_info = UserTokenInfo.model_validate(kwargs)
         if workspace:
             user_info = parse_token(token)
@@ -455,16 +463,18 @@ def create_login_service(store):
             workspace = workspace or user_info.get_workspace()
             # generate scoped token
             workspace_info = await store.load_or_create_workspace(user_info, workspace)
-            user_info.scope = update_user_scope(
-                user_info, workspace_info
-            )
+            user_info.scope = update_user_scope(user_info, workspace_info)
             if not user_info.check_permission(workspace, UserPermission.read):
                 raise Exception(f"Invalid permission for the workspace {workspace}")
-            
+
             token = generate_presigned_token(user_info, int(expires_in or 3600))
             # replace the token
             user_token_info.token = token
-        await redis.setex(LOGIN_KEY_PREFIX + key, MAXIMUM_LOGIN_TIME, user_token_info.model_dump_json())
+        await redis.setex(
+            LOGIN_KEY_PREFIX + key,
+            MAXIMUM_LOGIN_TIME,
+            user_token_info.model_dump_json(),
+        )
 
     logger.info(
         f"To preview the login page, visit: {login_service_url.replace('/services/', '/apps/')}"
