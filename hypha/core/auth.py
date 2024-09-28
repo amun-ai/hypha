@@ -68,6 +68,9 @@ def get_user_info(credentials):
         scope=scope,
         expires_at=expires_at,
     )
+    # make sure the user has admin permission to their own workspace
+    user_workspace = info.get_workspace()
+    info.scope.workspaces[user_workspace] = UserPermission.admin
     return info
 
 
@@ -293,7 +296,7 @@ def create_scope(
 
 
 def update_user_scope(
-    user_info: UserInfo, workspace_info: WorkspaceInfo, client_id: str
+    user_info: UserInfo, workspace_info: WorkspaceInfo, client_id: str = None
 ):
     """Update the user scope for a workspace."""
     user_info.scope = user_info.scope or ScopeInfo()
@@ -356,13 +359,16 @@ def create_login_service(store):
         auth0_issuer=AUTH0_ISSUER,
     )
 
-    async def start_login():
+    async def start_login(workspace: str = None, expires_in: int = None):
         """Start the login process."""
         key = str(random_id(readable=False))
         # set the key and with expire time
         await redis.setex(LOGIN_KEY_PREFIX + key, MAXIMUM_LOGIN_TIME, "")
         return {
-            "login_url": f"{login_service_url.replace('/services/', '/apps/')}/?key={key}",
+            "login_url": f"{login_service_url.replace('/services/', '/apps/')}/?key={key}" + (
+                f"&workspace={workspace}" if workspace else "" +
+                f"&expires_in={expires_in}" if expires_in else ""
+            ),
             "key": key,
             "report_url": f"{login_service_url}/report",
             "check_url": f"{login_service_url}/check",
@@ -418,6 +424,8 @@ def create_login_service(store):
     async def report_login(
         key,
         token,
+        workspace=None,
+        expires_in=None,
         email=None,
         email_verified=None,
         name=None,
@@ -427,8 +435,11 @@ def create_login_service(store):
     ):
         """Report a token associated with a login session."""
         assert await redis.exists(LOGIN_KEY_PREFIX + key), "Invalid key, key does not exist or expired"
+        # workspace = workspace or ("ws-user-" + user_id)
         kwargs = {
             "token": token,
+            "workspace": workspace,
+            "expires_in": expires_in or None,
             "email": email,
             "email_verified": email_verified,
             "name": name,
@@ -436,9 +447,24 @@ def create_login_service(store):
             "user_id": user_id,
             "picture": picture,
         }
-        user_info = UserTokenInfo.model_validate(kwargs)
-        user_info = user_info.model_dump(mode="json")
-        await redis.setex(LOGIN_KEY_PREFIX + key, MAXIMUM_LOGIN_TIME, json.dumps(user_info))
+        
+        user_token_info = UserTokenInfo.model_validate(kwargs)
+        if workspace:
+            user_info = parse_token(token)
+            # based on the user token, create a scoped token
+            workspace = workspace or user_info.get_workspace()
+            # generate scoped token
+            workspace_info = await store.load_or_create_workspace(user_info, workspace)
+            user_info.scope = update_user_scope(
+                user_info, workspace_info
+            )
+            if not user_info.check_permission(workspace, UserPermission.read):
+                raise Exception(f"Invalid permission for the workspace {workspace}")
+            
+            token = generate_presigned_token(user_info, int(expires_in or 3600))
+            # replace the token
+            user_token_info.token = token
+        await redis.setex(LOGIN_KEY_PREFIX + key, MAXIMUM_LOGIN_TIME, user_token_info.model_dump_json())
 
     logger.info(
         f"To preview the login page, visit: {login_service_url.replace('/services/', '/apps/')}"

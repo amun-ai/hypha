@@ -223,6 +223,12 @@ class WebsocketServer:
                 user_info = await self.store.parse_user_token(token)
                 # user token doesn't have client id, so we add that
                 user_info.scope.client_id = client_id
+                if user_info.scope.current_workspace and workspace:
+                    assert (
+                        workspace == user_info.scope.current_workspace
+                    ), f"Current workspace encoded in the token ({scope.current_workspace}) does not the specified workspace ({workspace})"
+                if not workspace and user_info.scope.current_workspace:
+                    workspace = user_info.scope.current_workspace
             else:
                 raise RuntimeError("No authentication information provided")
             return user_info, workspace
@@ -248,6 +254,7 @@ class WebsocketServer:
             )
 
         event_bus = self.store.get_event_bus()
+        assert user_info.scope.current_workspace == workspace, f"Workspace mismatch: {workspace} != {user_info.current_workspace}"
         conn = RedisRPCConnection(event_bus, workspace, client_id, user_info, None)
         self._websockets[f"{workspace}/{client_id}"] = websocket
         try:

@@ -527,11 +527,6 @@ class RedisStore:
         key = "revoked_token:" + token
         if await self._redis.exists(key):
             raise Exception("Token has been revoked")
-        # automatically add user's own workspace to the scope
-        if not user_info.scope.workspaces:
-            user_info.scope.workspaces = {
-                user_info.get_workspace(): UserPermission.admin
-            }
         if "admin" in user_info.roles:
             user_info.scope.workspaces["*"] = UserPermission.admin
         return user_info
