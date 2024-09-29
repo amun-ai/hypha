@@ -6,7 +6,7 @@ import sys
 import datetime
 from typing import List, Union
 from pydantic import BaseModel
-from fastapi import Header, Cookie
+from fastapi import Header, Cookie, Query
 
 from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
@@ -440,8 +440,8 @@ class RedisStore:
     async def _register_root_services(self):
         """Register root services."""
         self._root_workspace_interface = await self.get_workspace_interface(
-            self._root_user.get_workspace(),
             self._root_user,
+            self._root_user.get_workspace(),
             client_id=self._server_id,
             silent=False,
         )
@@ -476,7 +476,7 @@ class RedisStore:
         """Get the public API."""
         if self._public_workspace_interface is None:
             self._public_workspace_interface = await self.get_workspace_interface(
-                "public", self._root_user, client_id=self._server_id, silent=False
+                self._root_user, "public", client_id=self._server_id, silent=False
             )
         return self._public_workspace_interface
 
@@ -527,17 +527,14 @@ class RedisStore:
         key = "revoked_token:" + token
         if await self._redis.exists(key):
             raise Exception("Token has been revoked")
-        # automatically add user's own workspace to the scope
-        if not user_info.scope.workspaces:
-            user_info.scope.workspaces = {
-                user_info.get_workspace(): UserPermission.admin
-            }
         if "admin" in user_info.roles:
             user_info.scope.workspaces["*"] = UserPermission.admin
         return user_info
 
     async def login_optional(
-        self, authorization: str = Header(None), access_token: str = Cookie(None)
+        self,
+        authorization: str = Header(None),
+        access_token: str = Cookie(None),
     ):
         """Return user info or create an anonymouse user.
 
@@ -547,9 +544,16 @@ class RedisStore:
         token = authorization or access_token
         if token:
             user_info = await self.parse_user_token(token)
+            if user_info.scope.current_workspace is None:
+                user_info.scope.current_workspace = user_info.get_workspace()
             return user_info
         else:
-            return generate_anonymous_user()
+            user_info = generate_anonymous_user()
+            user_workspace = user_info.get_workspace()
+            user_info.scope = create_scope(
+                f"{user_workspace}#a", current_workspace=user_workspace
+            )
+            return user_info
 
     async def get_all_workspace(self):
         """Get all workspaces."""
@@ -588,7 +592,7 @@ class RedisStore:
             client_id = self._server_id + "-" + random_id(readable=False)
         user_info = user_info or self._root_user
         return self.get_workspace_interface(
-            workspace, user_info, client_id=client_id, timeout=timeout, silent=silent
+            user_info, workspace, client_id=client_id, timeout=timeout, silent=silent
         )
 
     def get_manager_id(self):
@@ -614,8 +618,8 @@ class RedisStore:
 
     def get_workspace_interface(
         self,
-        workspace: str,
         user_info: UserInfo,
+        workspace: str,
         client_id=None,
         timeout=10,
         silent=True,

@@ -360,7 +360,7 @@ class ServerAppController:
         workspace = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
 
-        async with self.store.get_workspace_interface(workspace, user_info) as ws:
+        async with self.store.get_workspace_interface(user_info, workspace) as ws:
             token = await ws.generate_token()
 
         if not user_info.check_permission(workspace, UserPermission.read):
@@ -520,7 +520,9 @@ class ServerAppController:
     async def list_apps(self, context: Optional[dict] = None):
         """List applications in the workspace."""
         try:
-            apps = await self.artifact_manager.read(prefix="applications", context=context)
+            apps = await self.artifact_manager.read(
+                prefix="applications", context=context
+            )
             return apps["collection"]
         except KeyError:
             return []

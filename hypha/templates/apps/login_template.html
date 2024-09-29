@@ -102,39 +102,47 @@
             }
         });
 
+        const _generateToken = async (workspace, expires_in) =>{
+            const generate_token_url = "{{ generate_token_url }}";
+            if(!generate_token_url.startswith("http")){
+                throw new Error("Invalid generate token URL");
+            }
+            // make a post request with {config: {expires_in, workspace}}
+            // add auth barier token to the request
+            const response = await fetch(generate_token_url, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${accessToken}`,
+                },
+                body: JSON.stringify({ config: { expires_in, workspace } }),
+            });
+            if (response.ok) {
+                const token = await response.json();
+                return token;
+            }
+            else{
+                throw new Error(`Failed to generate token. Please try again later. (${response.status}: ${response.statusText})`);
+            }
+        }
+
         window.generateToken = async () => {
             const expires_in = document.getElementById("expiry-time").value || 3600; // Default to 1 hour if not specified
             const workspace = document.getElementById("workspace").value || "";
             const accessToken = await auth0.getTokenSilently({ audience: AUTH0_AUDIENCE });
-
-            const generate_token_url = "{{ generate_token_url }}";
-            if (generate_token_url.startsWith('http')) {
-                // make a post request with {config: {expires_in, workspace}}
-                // add auth barier token to the request
-                const response = await fetch(generate_token_url, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Authorization": `Bearer ${accessToken}`,
-                    },
-                    body: JSON.stringify({ config: { expires_in, workspace } }),
-                });
-                if (response.ok) {
-                    const token = await response.json();
-                    document.getElementById("access-token").innerHTML = token;
-                    document.getElementById("info-panel").style.display = "block";
-                    document.getElementById("toast").innerHTML = "New access token generated successfully!";
-                    document.getElementById("toast").style.display = "block";
-                    setTimeout(() => {
-                        document.getElementById("toast").style.display = "none";
-                    }, 2000);
-                } else {
-                    console.error("Failed to generate token: ", response.status, response.statusText);
-                    alert(`Failed to generate token. Please try again later. (${response.status}: ${response.statusText})`);
-                }
-            } else {
-                console.error("Invalid generate_token_url: ", generate_token_url);
-                alert("Invalid generate_token_url. Please contact the site administrator.");
+            try {
+                const token = await _generateToken(workspace, expires_in);
+                document.getElementById("access-token").innerHTML = token;
+                document.getElementById("info-panel").style.display = "block";
+                document.getElementById("toast").innerHTML = "New access token generated successfully!";
+                document.getElementById("toast").style.display = "block";
+                setTimeout(() => {
+                    document.getElementById("toast").style.display = "none";
+                }, 2000);
+            }
+            catch(e){
+                console.error("Failed to generate token: ", response.status, response.statusText);
+                alert(`Failed to generate token. Please try again later. (${response.status}: ${response.statusText})`);
             }
         };
 
@@ -175,12 +183,17 @@
             document.getElementById("user-id").innerHTML = user.sub;
             document.getElementById("access-token").innerHTML = accessToken;
             document.getElementById("info-panel").style.display = "block";
-            document.getElementById("workspace").value = user.sub;
+            document.getElementById("workspace").value = "ws-user-" + user.sub;
 
-            const key = window.location.search.split('key=')[1];
+            // extract key from search
+            const urlParams = new URLSearchParams(window.location.search);
+            const key = urlParams.get('key');
+            const workspace = urlParams.get('workspace') || ""
+            const expires_in = urlParams.get('expires_in') || ""
             const report_url = "{{ login_service_url }}/report";
+
             if (key && report_url.startsWith('http')) {
-                const url = `${report_url}?key=${key}&token=${accessToken}&email=${user.email}&email_verified=${user.email_verified}&name=${user.name}&nickname=${user.nickname}&user_id=${user.sub}&picture=${encodeURIComponent(user.picture)}`;
+                const url = `${report_url}?key=${key}&token=${accessToken}&workspace=${workspace}&expires_in=${expires_in}&email=${user.email}&email_verified=${user.email_verified}&name=${user.name}&nickname=${user.nickname}&user_id=${user.sub}&picture=${encodeURIComponent(user.picture)}`;
                 const response = await fetch(url);
                 if (!response.ok) {
                     console.error("Failed to report token: ", response.status, response.statusText);

@@ -115,6 +115,8 @@ class UserTokenInfo(BaseModel):
     """Represent user profile."""
 
     token: constr(max_length=1024)  # type: ignore
+    workspace: Optional[str] = None
+    expires_in: Optional[int] = None
     email: Optional[EmailStr] = None
     email_verified: Optional[bool] = None
     name: Optional[constr(max_length=64)] = None  # type: ignore

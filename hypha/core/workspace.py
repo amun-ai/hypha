@@ -1213,7 +1213,7 @@ class WorkspaceManager:
         self,
         match: dict = Field(None, description="Match pattern for filtering workspaces"),
         page: int = Field(1, description="Page number for pagination"),
-        page_size: int = Field(10, description="Number of items per page"),
+        page_size: int = Field(256, description="Number of items per page"),
         context=None,
     ) -> List[Dict[str, Any]]:
         """Get all workspaces with pagination."""
@@ -1347,7 +1347,7 @@ class WorkspaceManager:
             await self.unload(context=context)
         else:
             logger.warning(
-                f"Workspace {context['ws']} is not empty, remaining clients: {client_keys[:10]}..."  # only list the first 10 maximum
+                f"Skip unloading workspace {context['ws']} because it is not empty, remaining clients: {client_keys[:10]}..."  # only list the first 10 maximum
             )
 
     async def unload(self, context=None):
