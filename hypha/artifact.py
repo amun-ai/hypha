@@ -18,6 +18,8 @@ from hypha.utils import (
 )
 from hypha_rpc.utils import ObjectProxy
 from jsonschema import validate
+from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("artifact")
@@ -30,12 +32,36 @@ EDIT_MANIFEST_FILENAME = "_manifest.yaml"
 class ArtifactController:
     """Represent an artifact controller."""
 
-    def __init__(self, store, s3_controller=None, workspace_bucket="hypha-workspaces"):
+    def __init__(self, store, s3_controller=None, workspace_bucket="hypha-workspaces", database_uri=None):
         """Set up controller."""
         self.s3_controller = s3_controller
         self.workspace_bucket = workspace_bucket
+        self.database_uri = database_uri
         store.register_public_service(self.get_artifact_service())
         store.set_artifact_manager(self)
+        router = APIRouter()
+        
+        @router.get("/{workspace}/artifact/{path:path}")
+        async def get_artifact(
+            workspace: str,
+            path: str,
+            stage: bool = False,
+            user_info: store.login_optional = Depends(store.login_optional),
+        ):
+            """Get artifact."""
+            try:
+                if path.startswith("public/"):
+                    return await self._read_manifest(workspace, path, stage=stage)
+                else:
+                    context = {"ws": workspace, "user": user_info.model_dump(mode="json")}
+                    manifest = await self.read(path, context=context)
+                    return manifest
+            except KeyError as e:
+                return JSONResponse(status_code=404, content={"error": str(e)})
+            except PermissionError as e:
+                return JSONResponse(status_code=403, content={"error": str(e)})
+        
+        store.register_router(router)
 
     async def create(
         self, prefix, manifest: dict, overwrite=False, stage=False, context: dict = None
@@ -268,18 +294,19 @@ class ArtifactController:
             raise PermissionError(
                 "User does not have read permission to the workspace."
             )
-
-        manifest_key = f"{ws}/{prefix}/{MANIFEST_FILENAME}"
-        edit_manifest_key = f"{ws}/{prefix}/{EDIT_MANIFEST_FILENAME}"
-
+        return await self._read_manifest(ws, prefix, stage=stage)
+    
+    async def _read_manifest(self, ws, prefix, stage=False):
         async with self.s3_controller.create_client_async() as s3_client:
             try:
                 # Read the manifest depending on the stage
                 if stage:
+                    edit_manifest_key = f"{ws}/{prefix}/{EDIT_MANIFEST_FILENAME}"
                     manifest_obj = await s3_client.get_object(
                         Bucket=self.workspace_bucket, Key=edit_manifest_key
                     )
                 else:
+                    manifest_key = f"{ws}/{prefix}/{MANIFEST_FILENAME}"
                     manifest_obj = await s3_client.get_object(
                         Bucket=self.workspace_bucket, Key=manifest_key
                     )

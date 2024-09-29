@@ -17,7 +17,7 @@ import botocore
 from aiobotocore.session import get_session
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Request, HTTPException
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 
@@ -141,27 +141,6 @@ async def fetch_zip_tail(s3_client, workspace_bucket, s3_key, content_length):
     return zip_tail
 
 
-class JSONResponse(Response):
-    """Represent a JSON response.
-
-    This implementation is needed because some of the S3 response
-    contains datetime which is not json serializable.
-    It works by setting `default=str` which converts the datetime
-    into a string.
-    """
-
-    media_type = "application/json"
-
-    def render(self, content: Any) -> bytes:
-        """Render the content."""
-        return json.dumps(
-            content,
-            ensure_ascii=False,
-            allow_nan=False,
-            indent=None,
-            separators=(",", ":"),
-            default=str,  # This will convert everything unknown to a string
-        ).encode("utf-8")
 
 
 DEFAULT_CORS_POLICY = {

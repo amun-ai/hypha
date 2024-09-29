@@ -30,6 +30,97 @@ from . import SERVER_URL, find_item
 pytestmark = pytest.mark.asyncio
 
 
+async def test_serve_artifact_endpoint(minio_server, fastapi_server):
+    """Test the artifact serving endpoint."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a public collection (prefix must start with "public/")
+    collection_manifest = {
+        "id": "dataset-gallery",
+        "name": "Public Dataset Gallery",
+        "description": "A public collection for organizing datasets",
+        "type": "collection",
+        "collection": [],
+    }
+    await artifact_manager.create(
+        prefix="public/collections/dataset-gallery", manifest=collection_manifest
+    )
+
+    # Create an artifact inside the public collection
+    dataset_manifest = {
+        "id": "public-example-dataset",
+        "name": "Public Example Dataset",
+        "description": "A public dataset with example data",
+        "type": "dataset",
+        "files": [],
+    }
+    await artifact_manager.create(
+        prefix="public/collections/dataset-gallery/public-example-dataset",
+        manifest=dataset_manifest,
+        stage=True
+    )
+
+    # Commit the artifact
+    await artifact_manager.commit(
+        prefix="public/collections/dataset-gallery/public-example-dataset"
+    )
+
+    # Ensure the public artifact is available via HTTP
+    response = requests.get(f"{SERVER_URL}/{api.config.workspace}/artifact/public/collections/dataset-gallery/public-example-dataset")
+    assert response.status_code == 200
+    assert "Public Example Dataset" in response.json()["name"]
+
+    # Now create a non-public collection (prefix does not start with "public/")
+    private_collection_manifest = {
+        "id": "private-dataset-gallery",
+        "name": "Private Dataset Gallery",
+        "description": "A private collection for organizing datasets",
+        "type": "collection",
+        "collection": [],
+    }
+    await artifact_manager.create(
+        prefix="collections/private-dataset-gallery", manifest=private_collection_manifest
+    )
+
+    # Create an artifact inside the private collection
+    private_dataset_manifest = {
+        "id": "private-example-dataset",
+        "name": "Private Example Dataset",
+        "description": "A private dataset with example data",
+        "type": "dataset",
+        "files": [],
+    }
+    await artifact_manager.create(
+        prefix="collections/private-dataset-gallery/private-example-dataset",
+        manifest=private_dataset_manifest,
+        stage=True
+    )
+
+    # Commit the private artifact
+    await artifact_manager.commit(
+        prefix="collections/private-dataset-gallery/private-example-dataset"
+    )
+
+    token = await api.generate_token()
+    # Ensure the private artifact is available via HTTP (requires authentication or special permissions)
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifact/collections/private-dataset-gallery/private-example-dataset",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    
+    assert response.status_code == 200
+    assert "Private Example Dataset" in response.json()["name"]
+    
+    # If no authentication is provided, the server should return a 401 Unauthorized status code
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifact/collections/private-dataset-gallery/private-example-dataset"
+    )
+    assert response.status_code == 403
+
+
 async def test_edit_existing_artifact(minio_server, fastapi_server):
     """Test editing an existing artifact."""
     api = await connect_to_server(
