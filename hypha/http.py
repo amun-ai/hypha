@@ -841,6 +841,11 @@ class HTTPProxy:
             If the liveness probe fails, it means the app is in a failed state and restarts it.
             """
             return JSONResponse({"status": "OK"})
+        
+        @app.get(norm_url("/login"))
+        async def login(request: Request):
+            """Redirect to the login page."""
+            return RedirectResponse(norm_url("/public/apps/hypha-login/"))
 
         @app.get(norm_url("/{page:path}"))
         async def get_pages(
