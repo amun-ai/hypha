@@ -1,7 +1,6 @@
 import logging
 import sys
 import re
-import os
 from sqlalchemy import (
     event,
     Column,
