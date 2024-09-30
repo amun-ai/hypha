@@ -366,6 +366,8 @@ class RedisStore:
             logger.warning("RESETTING ALL REDIS DATA!!!")
             await self._redis.flushall()
         await self._event_bus.init()
+        if self._artifact_manager:
+            await self._artifact_manager.init_db()
         await self.setup_root_user()
         await self.check_and_cleanup_servers()
         self._workspace_manager = await self.register_workspace_manager()

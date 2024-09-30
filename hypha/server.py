@@ -102,7 +102,7 @@ def start_builtin_services(
         )
 
         artifact_manager = ArtifactController(
-            store, s3_controller=s3_controller, workspace_bucket=args.workspace_bucket
+            store, s3_controller=s3_controller, workspace_bucket=args.workspace_bucket, database_uri=args.database_uri
         )
 
     if args.enable_server_apps:
@@ -370,6 +370,12 @@ def get_argparser(add_help=True):
         type=str,
         default=None,
         help="set SecretAccessKey for S3",
+    )
+    parser.add_argument(
+        "--database-uri",
+        type=str,
+        default=None,
+        help="set database URI for the server",
     )
     parser.add_argument(
         "--workspace-bucket",

@@ -541,3 +541,169 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
         prefix="collections/edge-case-collection/incomplete-dataset"
     )
     await artifact_manager.delete(prefix="collections/edge-case-collection")
+async def test_artifact_search_in_manifest(minio_server, fastapi_server):
+    """Test search functionality within the 'manifest' field of artifacts with multiple keywords and both AND and OR modes."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection for testing search
+    collection_manifest = {
+        "id": "search-test-collection",
+        "name": "Search Test Collection",
+        "description": "A collection to test search functionality",
+        "type": "collection",
+        "collection": [],
+    }
+    await artifact_manager.create(
+        prefix="collections/search-test-collection",
+        manifest=collection_manifest,
+        stage=False,
+    )
+
+    # Create multiple artifacts inside the collection
+    for i in range(5):
+        dataset_manifest = {
+            "id": f"test-dataset-{i}",
+            "name": f"Test Dataset {i}",
+            "description": f"A test dataset {i}",
+            "type": "dataset",
+            "files": [],
+        }
+        await artifact_manager.create(
+            prefix=f"collections/search-test-collection/test-dataset-{i}",
+            manifest=dataset_manifest,
+            stage=True,
+        )
+        await artifact_manager.commit(
+            prefix=f"collections/search-test-collection/test-dataset-{i}"
+        )
+
+    # Use the search function to find datasets with 'Dataset 3' in the 'name' field using AND mode
+    search_results = await artifact_manager.search(
+        prefix="collections/search-test-collection",
+        keywords=["Dataset 3"],
+        mode="AND"
+    )
+
+    # Assert that the search results contain only the relevant dataset
+    assert len(search_results) == 1
+    assert search_results[0]["name"] == "Test Dataset 3"
+
+    # Test search for multiple results by 'description' field using OR mode
+    search_results = await artifact_manager.search(
+        prefix="collections/search-test-collection",
+        keywords=["test", "dataset"],
+        mode="OR"
+    )
+
+    # Assert that all datasets are returned because both keywords appear in the description
+    assert len(search_results) == 5
+
+    # Test search with multiple keywords using AND mode (this should return fewer results)
+    search_results = await artifact_manager.search(
+        prefix="collections/search-test-collection",
+        keywords=["Test Dataset", "3"],
+        mode="AND"
+    )
+
+    # Assert that only the dataset with 'Test Dataset 3' is returned
+    assert len(search_results) == 1
+    assert search_results[0]["name"] == "Test Dataset 3"
+
+    # Clean up by deleting the datasets and the collection
+    for i in range(5):
+        await artifact_manager.delete(
+            prefix=f"collections/search-test-collection/test-dataset-{i}"
+        )
+    await artifact_manager.delete(prefix="collections/search-test-collection")
+
+
+async def test_artifact_search_with_filters(minio_server, fastapi_server):
+    """Test search functionality with specific key-value filters in the manifest with multiple filters and AND/OR modes."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection for testing search
+    collection_manifest = {
+        "id": "search-test-collection",
+        "name": "Search Test Collection",
+        "description": "A collection to test search functionality",
+        "type": "collection",
+        "collection": [],
+    }
+    await artifact_manager.create(
+        prefix="collections/search-test-collection",
+        manifest=collection_manifest,
+        stage=False,
+    )
+
+    # Create multiple artifacts inside the collection
+    for i in range(5):
+        dataset_manifest = {
+            "id": f"test-dataset-{i}",
+            "name": f"Test Dataset {i}",
+            "description": f"A test dataset {i}",
+            "type": "dataset",
+            "files": [],
+        }
+        await artifact_manager.create(
+            prefix=f"collections/search-test-collection/test-dataset-{i}",
+            manifest=dataset_manifest,
+            stage=True,
+        )
+        await artifact_manager.commit(
+            prefix=f"collections/search-test-collection/test-dataset-{i}"
+        )
+
+    # Use the search function to find datasets with an exact name match using AND mode
+    search_results = await artifact_manager.search(
+        prefix="collections/search-test-collection",
+        filters={"name": "Test Dataset 3"},
+        mode="AND"
+    )
+
+    # Assert that the search results contain only the relevant dataset
+    assert len(search_results) == 1
+    assert search_results[0]["name"] == "Test Dataset 3"
+
+    # Test search with fuzzy match on name using OR mode
+    search_results = await artifact_manager.search(
+        prefix="collections/search-test-collection",
+        filters={"name": "Test*"},
+        mode="OR"
+    )
+
+    # Assert that all datasets are returned since the fuzzy match applies to all
+    assert len(search_results) == 5
+
+    # Test search with multiple filters in AND mode (exact match on name and description)
+    search_results = await artifact_manager.search(
+        prefix="collections/search-test-collection",
+        filters={"name": "Test Dataset 3", "description": "A test dataset 3"},
+        mode="AND"
+    )
+
+    # Assert that only one dataset is returned
+    assert len(search_results) == 1
+    assert search_results[0]["name"] == "Test Dataset 3"
+
+    # Test search with multiple filters in OR mode (match any of the fields)
+    search_results = await artifact_manager.search(
+        prefix="collections/search-test-collection",
+        filters={"name": "Test Dataset 3", "description": "A test dataset 1"},
+        mode="OR"
+    )
+
+    # Assert that two datasets are returned (matching either name or description)
+    assert len(search_results) == 2
+
+    # Clean up by deleting the datasets and the collection
+    for i in range(5):
+        await artifact_manager.delete(
+            prefix=f"collections/search-test-collection/test-dataset-{i}"
+        )
+    await artifact_manager.delete(prefix="collections/search-test-collection")

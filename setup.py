@@ -36,6 +36,8 @@ REQUIREMENTS = [
     "friendlywords>=1.1.3",
     "aiocache>=0.12.2",
     "jsonschema>=3.2.0",
+    "sqlalchemy>=2.0.35",
+    "aiosqlite>=0.20.0",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()

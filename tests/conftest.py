@@ -153,6 +153,10 @@ def redis_server():
 @pytest_asyncio.fixture(name="fastapi_server", scope="session")
 def fastapi_server_fixture(minio_server):
     """Start server as test fixture and tear down after test."""
+    # create a temporary directory for the artifacts database
+    dirpath = tempfile.mkdtemp()
+    print(f"Artifacts database directory: {dirpath}")
+    db_path = f"sqlite+aiosqlite:///{dirpath}/artifacts.db"
     with subprocess.Popen(
         [
             sys.executable,
@@ -161,6 +165,7 @@ def fastapi_server_fixture(minio_server):
             f"--port={SIO_PORT}",
             "--enable-server-apps",
             "--enable-s3",
+            f"--database-uri={db_path}",
             "--reset-redis",
             f"--endpoint-url={MINIO_SERVER_URL}",
             f"--access-key-id={MINIO_ROOT_USER}",
