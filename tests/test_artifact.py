@@ -164,7 +164,7 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
 
     # Ensure that the dataset appears in the collection's index
     collection = await artifact_manager.read(prefix="collections/edit-test-collection")
-    assert find_item(collection["collection"], "_id", "edit-test-dataset")
+    assert find_item(collection["collection"], "_prefix", "collections/edit-test-collection/edit-test-dataset")
 
     # Edit the artifact's manifest
     edited_manifest = {
@@ -295,7 +295,7 @@ async def test_artifact_schema_validation(minio_server, fastapi_server):
     collection = await artifact_manager.read(
         prefix="collections/schema-test-collection"
     )
-    assert find_item(collection["collection"], "_id", "valid-dataset")
+    assert find_item(collection["collection"], "_prefix", "collections/schema-test-collection/valid-dataset")
 
     # Now, create an invalid dataset artifact that does not conform to the schema (missing required fields)
     invalid_dataset_manifest = {
@@ -390,7 +390,7 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
 
     # Ensure that the dataset appears in the collection's index
     collection = await artifact_manager.read(prefix="collections/test-collection")
-    assert find_item(collection["collection"], "_id", "test-dataset")
+    assert find_item(collection["collection"], "_prefix", "collections/test-collection/test-dataset")
 
     # Ensure that the manifest.yaml is finalized and the artifact is validated
     artifacts = await artifact_manager.list(prefix="collections/test-collection")
@@ -436,7 +436,7 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
 
     # Ensure the collection is updated after removing the dataset
     collection = await artifact_manager.read(prefix="collections/test-collection")
-    assert not find_item(collection["collection"], "_id", "test-dataset")
+    assert not find_item(collection["collection"], "collections/test-collection", "collections/test-collection/test-dataset")
 
     # Clean up by deleting the collection
     await artifact_manager.delete(prefix="collections/test-collection")
@@ -507,7 +507,7 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
 
     # Ensure that the collection index is updated
     collection = await artifact_manager.read(prefix="collections/edge-case-collection")
-    assert find_item(collection["collection"], "_id", "edge-case-dataset")
+    assert find_item(collection["collection"], "_prefix", "collections/edge-case-collection/edge-case-dataset")
 
     # Test validation without uploading a file
     incomplete_manifest = {

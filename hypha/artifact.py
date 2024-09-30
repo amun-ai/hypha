@@ -268,7 +268,7 @@ class ArtifactController:
                     collection = []
                     for artifact in sub_artifacts:
                         sub_manifest = artifact.manifest
-                        summary = {"_id": artifact.prefix.split("/")[-1]}
+                        summary = {"_prefix": artifact.prefix}
                         for field in summary_fields:
                             value = sub_manifest.get(field)
                             if value is not None:
@@ -500,7 +500,7 @@ class ArtifactController:
                 summary_fields = []
                 for artifact in artifacts:
                     sub_manifest = artifact.manifest
-                    summary_fields.append({"_id": artifact.prefix.split("/")[-1], **sub_manifest})
+                    summary_fields.append({"_prefix": artifact.prefix, **sub_manifest})
 
                 return summary_fields
 
