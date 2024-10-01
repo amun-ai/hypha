@@ -232,8 +232,15 @@ class RedisStore:
                 "change": "Start upgrade process",
             }
         )
-        # Remove all the keys contains `{self._root_user.get_workspace()}/workspace-client-*`
-        # and `public/workspace-client-*`
+        # For <=0.20.38, upgrade workspaces so it contains `type` key but not containing `applications` key
+        workspaces = await self._redis.hgetall("workspaces")
+        for k, v in workspaces.items():
+            workspace_info = json.loads(v.decode())
+            workspace_info["type"] = "workspace"
+            if "applications" in workspace_info:
+                del workspace_info["applications"]
+            await self._redis.hset("workspaces", k, json.dumps(workspace_info))
+
         old_keys = await self._redis.keys(
             f"services:*|*:{self._root_user.get_workspace()}/workspace-client-*:*@*"
         )

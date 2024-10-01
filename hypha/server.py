@@ -102,7 +102,10 @@ def start_builtin_services(
         )
 
         artifact_manager = ArtifactController(
-            store, s3_controller=s3_controller, workspace_bucket=args.workspace_bucket, database_uri=args.database_uri
+            store,
+            s3_controller=s3_controller,
+            workspace_bucket=args.workspace_bucket,
+            database_uri=args.database_uri,
         )
 
     if args.enable_server_apps:

@@ -65,12 +65,12 @@ class ServerAppController:
 
         self.event_bus.on_local("shutdown", close)
 
-    async def setup_workspace(self, overwrite=True, context=None):
+    async def setup_applications_collection(self, overwrite=True, context=None):
         """Set up the workspace."""
         ws = context["ws"]
         # Create an collection in the workspace
         manifest = {
-            "id": "description",
+            "id": "applications",
             "type": "collection",
             "name": "Applications",
             "description": f"A collection of applications for workspace {ws}",
@@ -205,7 +205,7 @@ class ServerAppController:
         try:
             await self.artifact_manager.read("applications", context=context)
         except KeyError:
-            await self.setup_workspace(overwrite=True, context=context)
+            await self.setup_applications_collection(overwrite=True, context=context)
         # Create artifact using the artifact controller
         prefix = f"applications/{app_id}"
         await self.artifact_manager.create(

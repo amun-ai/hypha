@@ -32,9 +32,7 @@ pytestmark = pytest.mark.asyncio
 
 async def test_serve_artifact_endpoint(minio_server, fastapi_server):
     """Test the artifact serving endpoint."""
-    api = await connect_to_server(
-        {"name": "test-client", "server_url": SERVER_URL}
-    )
+    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
     artifact_manager = await api.get_service("public/artifact-manager")
 
     # Create a public collection (prefix must start with "public/")
@@ -60,7 +58,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
     await artifact_manager.create(
         prefix="public/collections/dataset-gallery/public-example-dataset",
         manifest=dataset_manifest,
-        stage=True
+        stage=True,
     )
 
     # Commit the artifact
@@ -69,7 +67,9 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
     )
 
     # Ensure the public artifact is available via HTTP
-    response = requests.get(f"{SERVER_URL}/{api.config.workspace}/artifact/public/collections/dataset-gallery/public-example-dataset")
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifact/public/collections/dataset-gallery/public-example-dataset"
+    )
     assert response.status_code == 200
     assert "Public Example Dataset" in response.json()["name"]
 
@@ -82,7 +82,8 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
         "collection": [],
     }
     await artifact_manager.create(
-        prefix="collections/private-dataset-gallery", manifest=private_collection_manifest
+        prefix="collections/private-dataset-gallery",
+        manifest=private_collection_manifest,
     )
 
     # Create an artifact inside the private collection
@@ -96,7 +97,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
     await artifact_manager.create(
         prefix="collections/private-dataset-gallery/private-example-dataset",
         manifest=private_dataset_manifest,
-        stage=True
+        stage=True,
     )
 
     # Commit the private artifact
@@ -108,12 +109,12 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
     # Ensure the private artifact is available via HTTP (requires authentication or special permissions)
     response = requests.get(
         f"{SERVER_URL}/{api.config.workspace}/artifact/collections/private-dataset-gallery/private-example-dataset",
-        headers={"Authorization": f"Bearer {token}"}
+        headers={"Authorization": f"Bearer {token}"},
     )
-    
+
     assert response.status_code == 200
     assert "Private Example Dataset" in response.json()["name"]
-    
+
     # If no authentication is provided, the server should return a 401 Unauthorized status code
     response = requests.get(
         f"{SERVER_URL}/{api.config.workspace}/artifact/collections/private-dataset-gallery/private-example-dataset"
@@ -164,7 +165,11 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
 
     # Ensure that the dataset appears in the collection's index
     collection = await artifact_manager.read(prefix="collections/edit-test-collection")
-    assert find_item(collection["collection"], "_prefix", "collections/edit-test-collection/edit-test-dataset")
+    assert find_item(
+        collection["collection"],
+        "_prefix",
+        "collections/edit-test-collection/edit-test-dataset",
+    )
 
     # Edit the artifact's manifest
     edited_manifest = {
@@ -295,7 +300,11 @@ async def test_artifact_schema_validation(minio_server, fastapi_server):
     collection = await artifact_manager.read(
         prefix="collections/schema-test-collection"
     )
-    assert find_item(collection["collection"], "_prefix", "collections/schema-test-collection/valid-dataset")
+    assert find_item(
+        collection["collection"],
+        "_prefix",
+        "collections/schema-test-collection/valid-dataset",
+    )
 
     # Now, create an invalid dataset artifact that does not conform to the schema (missing required fields)
     invalid_dataset_manifest = {
@@ -390,7 +399,9 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
 
     # Ensure that the dataset appears in the collection's index
     collection = await artifact_manager.read(prefix="collections/test-collection")
-    assert find_item(collection["collection"], "_prefix", "collections/test-collection/test-dataset")
+    assert find_item(
+        collection["collection"], "_prefix", "collections/test-collection/test-dataset"
+    )
 
     # Ensure that the manifest.yaml is finalized and the artifact is validated
     artifacts = await artifact_manager.list(prefix="collections/test-collection")
@@ -436,7 +447,11 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
 
     # Ensure the collection is updated after removing the dataset
     collection = await artifact_manager.read(prefix="collections/test-collection")
-    assert not find_item(collection["collection"], "collections/test-collection", "collections/test-collection/test-dataset")
+    assert not find_item(
+        collection["collection"],
+        "collections/test-collection",
+        "collections/test-collection/test-dataset",
+    )
 
     # Clean up by deleting the collection
     await artifact_manager.delete(prefix="collections/test-collection")
@@ -507,7 +522,11 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
 
     # Ensure that the collection index is updated
     collection = await artifact_manager.read(prefix="collections/edge-case-collection")
-    assert find_item(collection["collection"], "_prefix", "collections/edge-case-collection/edge-case-dataset")
+    assert find_item(
+        collection["collection"],
+        "_prefix",
+        "collections/edge-case-collection/edge-case-dataset",
+    )
 
     # Test validation without uploading a file
     incomplete_manifest = {
@@ -541,11 +560,11 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
         prefix="collections/edge-case-collection/incomplete-dataset"
     )
     await artifact_manager.delete(prefix="collections/edge-case-collection")
+
+
 async def test_artifact_search_in_manifest(minio_server, fastapi_server):
     """Test search functionality within the 'manifest' field of artifacts with multiple keywords and both AND and OR modes."""
-    api = await connect_to_server(
-        {"name": "test-client", "server_url": SERVER_URL}
-    )
+    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
     artifact_manager = await api.get_service("public/artifact-manager")
 
     # Create a collection for testing search
@@ -582,9 +601,7 @@ async def test_artifact_search_in_manifest(minio_server, fastapi_server):
 
     # Use the search function to find datasets with 'Dataset 3' in the 'name' field using AND mode
     search_results = await artifact_manager.search(
-        prefix="collections/search-test-collection",
-        keywords=["Dataset 3"],
-        mode="AND"
+        prefix="collections/search-test-collection", keywords=["Dataset 3"], mode="AND"
     )
 
     # Assert that the search results contain only the relevant dataset
@@ -595,7 +612,7 @@ async def test_artifact_search_in_manifest(minio_server, fastapi_server):
     search_results = await artifact_manager.search(
         prefix="collections/search-test-collection",
         keywords=["test", "dataset"],
-        mode="OR"
+        mode="OR",
     )
 
     # Assert that all datasets are returned because both keywords appear in the description
@@ -605,7 +622,7 @@ async def test_artifact_search_in_manifest(minio_server, fastapi_server):
     search_results = await artifact_manager.search(
         prefix="collections/search-test-collection",
         keywords=["Test Dataset", "3"],
-        mode="AND"
+        mode="AND",
     )
 
     # Assert that only the dataset with 'Test Dataset 3' is returned
@@ -622,9 +639,7 @@ async def test_artifact_search_in_manifest(minio_server, fastapi_server):
 
 async def test_artifact_search_with_filters(minio_server, fastapi_server):
     """Test search functionality with specific key-value filters in the manifest with multiple filters and AND/OR modes."""
-    api = await connect_to_server(
-        {"name": "test-client", "server_url": SERVER_URL}
-    )
+    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
     artifact_manager = await api.get_service("public/artifact-manager")
 
     # Create a collection for testing search
@@ -663,7 +678,7 @@ async def test_artifact_search_with_filters(minio_server, fastapi_server):
     search_results = await artifact_manager.search(
         prefix="collections/search-test-collection",
         filters={"name": "Test Dataset 3"},
-        mode="AND"
+        mode="AND",
     )
 
     # Assert that the search results contain only the relevant dataset
@@ -674,7 +689,7 @@ async def test_artifact_search_with_filters(minio_server, fastapi_server):
     search_results = await artifact_manager.search(
         prefix="collections/search-test-collection",
         filters={"name": "Test*"},
-        mode="OR"
+        mode="OR",
     )
 
     # Assert that all datasets are returned since the fuzzy match applies to all
@@ -684,7 +699,7 @@ async def test_artifact_search_with_filters(minio_server, fastapi_server):
     search_results = await artifact_manager.search(
         prefix="collections/search-test-collection",
         filters={"name": "Test Dataset 3", "description": "A test dataset 3"},
-        mode="AND"
+        mode="AND",
     )
 
     # Assert that only one dataset is returned
@@ -695,7 +710,7 @@ async def test_artifact_search_with_filters(minio_server, fastapi_server):
     search_results = await artifact_manager.search(
         prefix="collections/search-test-collection",
         filters={"name": "Test Dataset 3", "description": "A test dataset 1"},
-        mode="OR"
+        mode="OR",
     )
 
     # Assert that two datasets are returned (matching either name or description)
