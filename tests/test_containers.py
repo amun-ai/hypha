@@ -14,7 +14,7 @@ def test_server_response():
         time.sleep(5)
 
         # Docker Compose typically uses the service name as the hostname
-        host, port = compose.get_service_host_and_port("hypha", 9000)
+        host, port = compose.get_service_host_and_port("hypha", 9520)
 
         # Construct the URL to test
         url = f"http://{host}:{port}"

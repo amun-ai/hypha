@@ -5,6 +5,6 @@ services:
     build: .
     image: amun-ai/hypha
     container_name: hypha
-    command: --port 9000 --host=0.0.0.0
+    command: --port 9520 --host=0.0.0.0
     ports:
-      - 9000:9000
+      - 9520:9520
