@@ -1,16 +1,22 @@
-FROM mambaorg/micromamba:latest
+FROM continuumio/miniconda3
 
-# WORKDIR /home
-# Copy your environment.yml into the image
-COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yml env.yaml
-COPY --chown=$MAMBA_USER:$MAMBA_USER . .
-RUN micromamba install -y -n base --file env.yaml
-RUN micromamba clean --all --yes 
+# Set working directory
+WORKDIR /home
 
-ARG MAMBA_DOCKERFILE_ACTIVATE=1  # (otherwise python will not be found)
+# Install MinIO server and client
+RUN mkdir -p /home/bin && \
+    cd /home/bin && \
+    wget https://dl.min.io/server/minio/release/linux-amd64/minio && \
+    wget https://dl.min.io/client/mc/release/linux-amd64/mc && \
+    chmod +x /home/bin/minio /home/bin/mc && \
+    chmod -R 777 /home
 
-USER root
-RUN apt-get update --fix-missing && apt-get install -y --no-install-recommends \
+# Create and set permissions for .mc directory
+RUN mkdir -p /.mc && \
+    chmod -R 777 /.mc
+
+# Install necessary packages, including dependencies for Playwright
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     fonts-liberation \
     libasound2 \
