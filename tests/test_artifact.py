@@ -53,7 +53,6 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
         "name": "Public Example Dataset",
         "description": "A public dataset with example data",
         "type": "dataset",
-        "files": [],
     }
     await artifact_manager.create(
         prefix="public/collections/dataset-gallery/public-example-dataset",
@@ -149,7 +148,6 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
         "name": "edit-test-dataset",
         "description": "A test dataset to edit",
         "type": "dataset",
-        "files": [],
     }
 
     await artifact_manager.create(
@@ -392,7 +390,11 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
     manifest_data = await artifact_manager.read(
         prefix="collections/test-collection/test-dataset", stage=True
     )
-    assert find_item(manifest_data["files"], "path", "test.txt")
+
+    files = await artifact_manager.list_files(
+        prefix="collections/test-collection/test-dataset"
+    )
+    assert find_item(files, "name", "test.txt")
 
     # Commit the artifact (finalize it)
     await artifact_manager.commit(prefix="collections/test-collection/test-dataset")
@@ -484,7 +486,6 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
         "name": "edge-case-dataset",
         "description": "Edge case test dataset",
         "type": "dataset",
-        "files": [],
     }
 
     # Create the artifact first
@@ -534,13 +535,17 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
         "name": "incomplete-dataset",
         "description": "This dataset is incomplete",
         "type": "dataset",
-        "files": [{"path": "missing.txt"}],
     }
 
     await artifact_manager.create(
         prefix="collections/edge-case-collection/incomplete-dataset",
         manifest=incomplete_manifest,
         stage=True,
+    )
+
+    await artifact_manager.put_file(
+        prefix="collections/edge-case-collection/incomplete-dataset",
+        file_path="missing_file.txt",
     )
 
     # Commit should raise an error due to the missing file
@@ -588,7 +593,6 @@ async def test_artifact_search_in_manifest(minio_server, fastapi_server):
             "name": f"Test Dataset {i}",
             "description": f"A test dataset {i}",
             "type": "dataset",
-            "files": [],
         }
         await artifact_manager.create(
             prefix=f"collections/search-test-collection/test-dataset-{i}",
@@ -663,7 +667,6 @@ async def test_artifact_search_with_filters(minio_server, fastapi_server):
             "name": f"Test Dataset {i}",
             "description": f"A test dataset {i}",
             "type": "dataset",
-            "files": [],
         }
         await artifact_manager.create(
             prefix=f"collections/search-test-collection/test-dataset-{i}",

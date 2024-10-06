@@ -12,7 +12,7 @@ from sqlalchemy import (
     and_,
     or_,
 )
-from hypha.utils import remove_objects_async
+from hypha.utils import remove_objects_async, list_objects_async, safe_join
 from botocore.exceptions import ClientError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.asyncio import (
@@ -40,6 +40,7 @@ logger.setLevel(logging.INFO)
 
 Base = declarative_base()
 
+
 # SQLAlchemy model for storing artifacts
 class ArtifactModel(Base):
     __tablename__ = "artifacts"
@@ -50,6 +51,7 @@ class ArtifactModel(Base):
     prefix = Column(String, nullable=False)
     manifest = Column(JSON, nullable=True)  # Store committed manifest
     stage_manifest = Column(JSON, nullable=True)  # Store staged manifest
+    stage_files = Column(JSON, nullable=True)  # Store staged files during staging
     __table_args__ = (
         UniqueConstraint("workspace", "prefix", name="_workspace_prefix_uc"),
     )
@@ -93,12 +95,11 @@ class ArtifactController:
                 if path.startswith("public/"):
                     return await self._read_manifest(workspace, path, stage=stage)
                 else:
-                    context = {
-                        "ws": workspace,
-                        "user": user_info.model_dump(mode="json"),
-                    }
-                    manifest = await self.read(path, context=context)
-                    return manifest
+                    if not user_info.check_permission(workspace, UserPermission.read):
+                        raise PermissionError(
+                            "User does not have read permission to the workspace."
+                        )
+                    return await self._read_manifest(workspace, path, stage=stage)
             except KeyError as e:
                 raise HTTPException(status_code=404, detail=str(e))
             except PermissionError as e:
@@ -146,14 +147,39 @@ class ArtifactController:
                 if not artifact:
                     raise KeyError(f"Artifact under prefix '{prefix}' does not exist.")
 
-                if stage and artifact.stage_manifest:
-                    return artifact.stage_manifest
-                elif artifact.manifest:
-                    return artifact.manifest
-                else:
-                    raise KeyError(
-                        f"No committed manifest found for artifact '{prefix}'."
+                manifest = artifact.stage_manifest if stage else artifact.manifest
+                if not manifest:
+                    raise KeyError(f"No manifest found for artifact '{prefix}'.")
+
+                # If the artifact is a collection, dynamically populate the 'collection' field
+                if manifest.get("type") == "collection":
+                    sub_prefix = f"{prefix}/"
+                    query = select(ArtifactModel).filter(
+                        ArtifactModel.workspace == workspace,
+                        ArtifactModel.prefix.like(f"{sub_prefix}%"),
                     )
+                    result = await session.execute(query)
+                    sub_artifacts = result.scalars().all()
+
+                    # Populate the 'collection' field with summary_fields for each sub-artifact
+                    summary_fields = manifest.get(
+                        "summary_fields", ["id", "name", "description"]
+                    )
+                    collection = []
+                    for artifact in sub_artifacts:
+                        sub_manifest = artifact.manifest
+                        summary = {"_prefix": artifact.prefix}
+                        for field in summary_fields:
+                            value = sub_manifest.get(field)
+                            if value is not None:
+                                summary[field] = value
+                        collection.append(summary)
+
+                    manifest["collection"] = collection
+
+                if stage:
+                    manifest["stage_files"] = artifact.stage_files
+                return manifest
         finally:
             await session.close()
 
@@ -217,6 +243,7 @@ class ArtifactController:
                     prefix=prefix,
                     manifest=None if stage else manifest,
                     stage_manifest=manifest if stage else None,
+                    stage_files=[] if stage else None,
                     type=manifest["type"],
                 )
                 session.add(new_artifact)
@@ -239,47 +266,7 @@ class ArtifactController:
                 "User does not have read permission to the workspace."
             )
 
-        session = await self._get_session()
-        try:
-            async with session.begin():
-                artifact = await self._get_artifact(session, ws, prefix)
-                if not artifact:
-                    raise KeyError(f"Artifact under prefix '{prefix}' does not exist.")
-
-                manifest = artifact.stage_manifest if stage else artifact.manifest
-                if not manifest:
-                    raise KeyError(
-                        f"No manifest found for artifact under prefix '{prefix}'."
-                    )
-
-                # If the artifact is a collection, dynamically populate the 'collection' field
-                if manifest.get("type") == "collection":
-                    sub_prefix = f"{prefix}/"
-                    query = select(ArtifactModel).filter(
-                        ArtifactModel.workspace == ws,
-                        ArtifactModel.prefix.like(f"{sub_prefix}%"),
-                    )
-                    result = await session.execute(query)
-                    sub_artifacts = result.scalars().all()
-
-                    # Populate the 'collection' field with summary_fields for each sub-artifact
-                    summary_fields = manifest.get(
-                        "summary_fields", ["id", "name", "description"]
-                    )
-                    collection = []
-                    for artifact in sub_artifacts:
-                        sub_manifest = artifact.manifest
-                        summary = {"_prefix": artifact.prefix}
-                        for field in summary_fields:
-                            value = sub_manifest.get(field)
-                            if value is not None:
-                                summary[field] = value
-                        collection.append(summary)
-
-                    manifest["collection"] = collection
-        finally:
-            await session.close()
-
+        manifest = await self._read_manifest(ws, prefix, stage=stage)
         return manifest
 
     async def edit(self, prefix, manifest=None, context: dict = None):
@@ -321,7 +308,7 @@ class ArtifactController:
             await session.close()
 
     async def commit(self, prefix, context: dict):
-        """Commit the artifact by finalizing the staged manifest."""
+        """Commit the artifact by finalizing the staged manifest and files."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         ws = context["ws"]
@@ -343,11 +330,11 @@ class ArtifactController:
 
                 manifest = artifact.stage_manifest
 
-                # Validate files exist in S3 if the manifest includes files
-                if "files" in manifest:
+                # Validate files exist in S3 if the staged files list is present
+                if artifact.stage_files:
                     async with self.s3_controller.create_client_async() as s3_client:
-                        for file_info in manifest["files"]:
-                            file_key = f"{ws}/{prefix}/{file_info['path']}"
+                        for file_info in artifact.stage_files:
+                            file_key = safe_join(ws, f"{prefix}/{file_info['path']}")
                             try:
                                 await s3_client.head_object(
                                     Bucket=self.workspace_bucket, Key=file_key
@@ -378,6 +365,7 @@ class ArtifactController:
                 # Finalize the manifest
                 artifact.manifest = manifest
                 artifact.stage_manifest = None
+                artifact.stage_files = None
                 flag_modified(artifact, "manifest")
                 session.add(artifact)
                 await session.commit()
@@ -411,9 +399,26 @@ class ArtifactController:
 
     async def _delete_s3_files(self, ws, prefix):
         """Helper method to delete files associated with an artifact in S3."""
-        artifact_path = f"{ws}/{prefix}/"
+        artifact_path = safe_join(ws, f"{prefix}") + "/"
         async with self.s3_controller.create_client_async() as s3_client:
             await remove_objects_async(s3_client, self.workspace_bucket, artifact_path)
+
+    async def list_files(self, prefix, max_length=1000, context: dict = None):
+        """List files in the specified S3 prefix."""
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        ws = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(ws, UserPermission.read):
+            raise PermissionError(
+                "User does not have read permission to the workspace."
+            )
+        async with self.s3_controller.create_client_async() as s3_client:
+            full_path = safe_join(ws, prefix) + "/"
+            items = await list_objects_async(
+                s3_client, self.workspace_bucket, full_path, max_length=max_length
+            )
+            return items
 
     async def list_artifacts(self, prefix="", stage=False, context: dict = None):
         """List all artifacts under a certain prefix."""
@@ -553,7 +558,7 @@ class ArtifactController:
             )
 
         async with self.s3_controller.create_client_async() as s3_client:
-            file_key = f"{ws}/{prefix}/{file_path}"
+            file_key = safe_join(ws, f"{prefix}/{file_path}")
             presigned_url = await s3_client.generate_presigned_url(
                 "put_object",
                 Params={"Bucket": self.workspace_bucket, "Key": file_key},
@@ -567,14 +572,11 @@ class ArtifactController:
                 if not artifact or not artifact.stage_manifest:
                     raise KeyError(f"No staged manifest found for artifact '{prefix}'.")
 
-                if "files" not in artifact.stage_manifest:
-                    artifact.stage_manifest["files"] = []
+                artifact.stage_files = artifact.stage_files or []
 
-                if not any(
-                    f["path"] == file_path for f in artifact.stage_manifest["files"]
-                ):
-                    artifact.stage_manifest["files"].append({"path": file_path})
-                    flag_modified(artifact, "stage_manifest")
+                if not any(f["path"] == file_path for f in artifact.stage_files):
+                    artifact.stage_files.append({"path": file_path})
+                    flag_modified(artifact, "stage_files")
 
                 session.add(artifact)
                 await session.commit()
@@ -595,7 +597,7 @@ class ArtifactController:
             )
 
         async with self.s3_controller.create_client_async() as s3_client:
-            file_key = f"{ws}/{prefix}/{path}"
+            file_key = safe_join(ws, f"{prefix}/{path}")
             presigned_url = await s3_client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self.workspace_bucket, "Key": file_key},
@@ -621,19 +623,18 @@ class ArtifactController:
                     raise KeyError(
                         f"Artifact under prefix '{prefix}' is not in staging mode."
                     )
-
-                manifest = artifact.stage_manifest
-                manifest["files"] = [
-                    f for f in manifest.get("files", []) if f["path"] != file_path
+                # remove the file from the staged files list
+                artifact.stage_files = [
+                    f for f in artifact.stage_files if f["path"] != file_path
                 ]
-                flag_modified(artifact, "stage_manifest")
+                flag_modified(artifact, "stage_files")
                 session.add(artifact)
                 await session.commit()
         finally:
             await session.close()
 
         async with self.s3_controller.create_client_async() as s3_client:
-            file_key = f"{ws}/{prefix}/{file_path}"
+            file_key = safe_join(ws, f"{prefix}/{file_path}")
             await s3_client.delete_object(Bucket=self.workspace_bucket, Key=file_key)
 
     def get_artifact_service(self):
@@ -653,4 +654,5 @@ class ArtifactController:
             "get_file": self.get_file,
             "list": self.list_artifacts,
             "search": self.search,
+            "list_files": self.list_files,
         }
