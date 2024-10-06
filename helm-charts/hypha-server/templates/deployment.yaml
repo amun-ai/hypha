@@ -44,12 +44,26 @@ spec:
           args: {{- toYaml .Values.startupCommand.args | nindent 12 }}
           env:
             {{- toYaml .Values.env | nindent 12 }}
+          volumeMounts:
+            - name: {{ .Values.persistence.volumeName }}
+              mountPath: {{ .Values.persistence.mountPath }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: {{ .Values.persistence.volumeName }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (include "hypha-server.fullname" .) }}
+            {{- if not .Values.persistence.existingClaim }}
+            accessModes:
+              {{- toYaml .Values.persistence.accessModes | nindent 14 }}
+            resources:
+              requests:
+                storage: {{ .Values.persistence.size }}
+            {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
