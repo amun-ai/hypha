@@ -101,12 +101,12 @@ def start_builtin_services(
             executable_path=args.executable_path,
         )
 
-        artifact_manager = ArtifactController(
-            store,
-            s3_controller=s3_controller,
-            workspace_bucket=args.workspace_bucket,
-            database_uri=args.database_uri,
-        )
+    artifact_manager = ArtifactController(
+        store,
+        s3_controller=s3_controller,
+        workspace_bucket=args.workspace_bucket,
+        database_uri=args.database_uri,
+    )
 
     if args.enable_server_apps:
         assert args.enable_s3, "Server apps require S3 to be enabled"
@@ -378,7 +378,7 @@ def get_argparser(add_help=True):
         "--database-uri",
         type=str,
         default=None,
-        help="set database URI for the server",
+        help="set database URI for the artifact manager",
     )
     parser.add_argument(
         "--workspace-bucket",

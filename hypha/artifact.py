@@ -69,7 +69,11 @@ class ArtifactController:
     ):
         """Set up controller with SQLAlchemy database and S3 for file storage."""
         if database_uri is None:
-            raise ValueError("Database URI is required.")
+            # create an in-memory SQLite database for testing
+            database_uri = "sqlite+aiosqlite:///:memory:"
+            logger.warning(
+                "Using in-memory SQLite database for artifact manager, all data will be lost on restart!!!"
+            )
         self.engine = create_async_engine(database_uri, echo=False)
         self.SessionLocal = async_sessionmaker(
             self.engine, expire_on_commit=False, class_=AsyncSession
