@@ -344,7 +344,7 @@ class WorkspaceManager:
             await self._s3_controller.cleanup_workspace(workspace_info, force=True)
         if self._artifact_manager:
             await self._artifact_manager.delete(
-                "applications/" + workspace,
+                "workspaces/" + workspace,
                 context={"ws": "root", "user": self._root_user.model_dump()},
             )
         await self._event_bus.emit("workspace_deleted", workspace_info.model_dump())
@@ -1064,7 +1064,7 @@ class WorkspaceManager:
             if load and self._artifact_manager:
                 try:
                     workspace_info = await self._artifact_manager.read(
-                        "applications/" + workspace,
+                        "workspaces/" + workspace,
                         context={"ws": "root", "user": self._root_user.model_dump()},
                     )
                     workspace_info = WorkspaceInfo.model_validate(workspace_info)
