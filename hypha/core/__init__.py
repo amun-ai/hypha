@@ -226,8 +226,10 @@ class Artifact(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    name: str
-    id: str
+    type: str
+    format_version: str = "0.2.1"
+    name: Optional[str] = None
+    id: Optional[str] = None
     description: Optional[str] = None
     tags: Optional[List[str]] = None
     documentation: Optional[str] = None
@@ -237,9 +239,7 @@ class Artifact(BaseModel):
     attachments: Optional[Dict[str, List[Any]]] = None
     files: Optional[List[Dict[str, Any]]] = None
     config: Optional[Dict[str, Any]] = None
-    type: str
-    format_version: str = "0.2.1"
-    version: str = "0.1.0"
+    version: Optional[str] = "0.1.0"
     links: Optional[List[str]] = None
     maintainers: Optional[List[Dict[str, str]]] = None
     license: Optional[str] = None
@@ -261,7 +261,7 @@ class CollectionArtifact(Artifact):
     """Represent collection artifact."""
 
     type: str = "collection"
-    collection: List[str] = []
+    collection: Optional[List[str]] = []
     summary_fields: Optional[List[str]] = None
     collection_schema: Optional[Dict[str, Any]] = None
 
@@ -301,6 +301,7 @@ class ServiceTypeInfo(BaseModel):
 class WorkspaceInfo(BaseModel):
     """Represent a workspace."""
 
+    type: str = "workspace"
     id: Optional[str] = None  # we will use name as id if not provided
     name: str
     description: Optional[str] = None
@@ -310,7 +311,6 @@ class WorkspaceInfo(BaseModel):
     icon: Optional[str] = None
     covers: Optional[List[str]] = None
     docs: Optional[str] = None
-    applications: Optional[Dict[str, Any]] = {}
     service_types: Optional[Dict[str, ServiceTypeInfo]] = {}
     config: Optional[Dict[str, Any]] = {}
 
@@ -322,10 +322,6 @@ class WorkspaceInfo(BaseModel):
     @classmethod
     def model_validate(cls, data):
         data = data.copy()
-        if "applications" in data and data["applications"] is not None:
-            data["applications"] = {
-                k: Artifact.model_validate(v) for k, v in data["applications"].items()
-            }
         return super().model_validate(data)
 
 

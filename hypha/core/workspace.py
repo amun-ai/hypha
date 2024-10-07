@@ -152,6 +152,7 @@ class WorkspaceManager:
         user_info = UserInfo.model_validate(context["user"])
         assert "bookmark_type" in item, "Bookmark type must be provided."
         user_workspace = await self.load_workspace_info(user_info.get_workspace())
+        assert user_workspace, f"User workspace not found: {user_info.get_workspace()}"
         user_workspace.config = user_workspace.config or {}
         if "bookmarks" not in user_workspace.config:
             user_workspace.config["bookmarks"] = []
@@ -236,12 +237,12 @@ class WorkspaceManager:
         user_info = UserInfo.model_validate(context["user"])
         if user_info.is_anonymous:
             raise Exception("Only registered user can create workspace.")
-        try:
-            if await self.load_workspace_info(ws):
-                if not overwrite:
-                    raise KeyError(f"Workspace already exists: {ws}")
-        except KeyError:
-            pass
+        if not overwrite:
+            try:
+                if await self.load_workspace_info(config["id"]):
+                    raise RuntimeError(f"Workspace already exists: {config['id']}")
+            except KeyError:
+                pass
 
         config["persistent"] = config.get("persistent") or False
         if user_info.is_anonymous and config["persistent"]:

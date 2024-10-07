@@ -63,7 +63,7 @@ async def test_delete_workspace(fastapi_server, test_user_token):
     ) as api:
         ws = await api.create_workspace(
             dict(
-                name="test-2",
+                name="test-3",
                 description="test workspace",
                 owners=[],
                 persistent=True,

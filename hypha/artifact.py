@@ -1,20 +1,34 @@
-"""Provide an s3 interface."""
 import logging
 import sys
-import yaml
+from sqlalchemy import (
+    event,
+    Column,
+    String,
+    Integer,
+    JSON,
+    UniqueConstraint,
+    select,
+    text,
+    and_,
+    or_,
+)
+from hypha.utils import remove_objects_async, list_objects_async, safe_join
 from botocore.exceptions import ClientError
-
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.ext.asyncio import (
+    create_async_engine,
+    async_sessionmaker,
+    AsyncSession,
+)
+from sqlalchemy.orm.attributes import flag_modified
+from fastapi import APIRouter, Depends, HTTPException
 from hypha.core import (
     UserInfo,
     UserPermission,
     Artifact,
     CollectionArtifact,
     ApplicationArtifact,
-)
-from hypha.utils import (
-    list_objects_async,
-    remove_objects_async,
-    safe_join,
+    WorkspaceInfo,
 )
 from hypha_rpc.utils import ObjectProxy
 from jsonschema import validate
@@ -23,549 +37,617 @@ logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("artifact")
 logger.setLevel(logging.INFO)
 
-MANIFEST_FILENAME = "manifest.yaml"
-EDIT_MANIFEST_FILENAME = "_manifest.yaml"
+Base = declarative_base()
+
+
+# SQLAlchemy model for storing artifacts
+class ArtifactModel(Base):
+    __tablename__ = "artifacts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    type = Column(String, nullable=False)
+    workspace = Column(String, nullable=False, index=True)
+    prefix = Column(String, nullable=False)
+    manifest = Column(JSON, nullable=True)  # Store committed manifest
+    stage_manifest = Column(JSON, nullable=True)  # Store staged manifest
+    stage_files = Column(JSON, nullable=True)  # Store staged files during staging
+    __table_args__ = (
+        UniqueConstraint("workspace", "prefix", name="_workspace_prefix_uc"),
+    )
 
 
 class ArtifactController:
-    """Represent an artifact controller."""
+    """Artifact Controller using SQLAlchemy for database backend and S3 for file storage."""
 
-    def __init__(self, store, s3_controller=None, workspace_bucket="hypha-workspaces"):
-        """Set up controller."""
+    def __init__(
+        self,
+        store,
+        s3_controller,
+        workspace_bucket="hypha-workspaces",
+        database_uri=None,
+    ):
+        """Set up controller with SQLAlchemy database and S3 for file storage."""
+        if database_uri is None:
+            # create an in-memory SQLite database for testing
+            database_uri = "sqlite+aiosqlite:///:memory:"
+            logger.warning(
+                "Using in-memory SQLite database for artifact manager, all data will be lost on restart!!!"
+            )
+        self.engine = create_async_engine(database_uri, echo=False)
+        self.SessionLocal = async_sessionmaker(
+            self.engine, expire_on_commit=False, class_=AsyncSession
+        )
         self.s3_controller = s3_controller
         self.workspace_bucket = workspace_bucket
+
         store.register_public_service(self.get_artifact_service())
         store.set_artifact_manager(self)
 
+        router = APIRouter()
+
+        @router.get("/{workspace}/artifact/{path:path}")
+        async def get_artifact(
+            workspace: str,
+            path: str,
+            stage: bool = False,
+            user_info: store.login_optional = Depends(store.login_optional),
+        ):
+            """Get artifact from the database."""
+            try:
+                if path.startswith("public/"):
+                    return await self._read_manifest(workspace, path, stage=stage)
+                else:
+                    if not user_info.check_permission(workspace, UserPermission.read):
+                        raise PermissionError(
+                            "User does not have read permission to the workspace."
+                        )
+                    return await self._read_manifest(workspace, path, stage=stage)
+            except KeyError as e:
+                raise HTTPException(status_code=404, detail=str(e))
+            except PermissionError as e:
+                raise HTTPException(status_code=403, detail=str(e))
+
+        store.register_router(router)
+
+    async def init_db(self):
+        """Initialize the database and create tables."""
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            logger.info("Database tables created successfully.")
+
+    async def _get_session(self, read_only=False):
+        """Return an SQLAlchemy async session. If read_only=True, ensure no modifications are allowed."""
+        session = self.SessionLocal()
+
+        if read_only:
+            sync_session = session.sync_session  # Access the synchronous session object
+
+            @event.listens_for(sync_session, "before_flush")
+            def prevent_flush(session, flush_context, instances):
+                """Prevent any flush operations to keep the session read-only."""
+                raise RuntimeError("This session is read-only.")
+
+            @event.listens_for(sync_session, "after_transaction_end")
+            def end_transaction(session, transaction):
+                """Ensure rollback after a transaction in a read-only session."""
+                if not transaction._parent:
+                    session.rollback()
+
+        return session
+
+    async def _read_manifest(self, workspace, prefix, stage=False):
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                query = select(ArtifactModel).filter(
+                    ArtifactModel.workspace == workspace,
+                    ArtifactModel.prefix == prefix,
+                )
+                result = await session.execute(query)
+                artifact = result.scalar_one_or_none()
+
+                if not artifact:
+                    raise KeyError(f"Artifact under prefix '{prefix}' does not exist.")
+
+                manifest = artifact.stage_manifest if stage else artifact.manifest
+                if not manifest:
+                    raise KeyError(f"No manifest found for artifact '{prefix}'.")
+
+                # If the artifact is a collection, dynamically populate the 'collection' field
+                if manifest.get("type") == "collection":
+                    sub_prefix = f"{prefix}/"
+                    query = select(ArtifactModel).filter(
+                        ArtifactModel.workspace == workspace,
+                        ArtifactModel.prefix.like(f"{sub_prefix}%"),
+                    )
+                    result = await session.execute(query)
+                    sub_artifacts = result.scalars().all()
+
+                    # Populate the 'collection' field with summary_fields for each sub-artifact
+                    summary_fields = manifest.get(
+                        "summary_fields", ["id", "name", "description"]
+                    )
+                    collection = []
+                    for artifact in sub_artifacts:
+                        sub_manifest = artifact.manifest
+                        summary = {"_prefix": artifact.prefix}
+                        for field in summary_fields:
+                            value = sub_manifest.get(field)
+                            if value is not None:
+                                summary[field] = value
+                        collection.append(summary)
+
+                    manifest["collection"] = collection
+
+                if stage:
+                    manifest["stage_files"] = artifact.stage_files
+                return manifest
+        finally:
+            await session.close()
+
+    async def _get_artifact(self, session, workspace, prefix):
+        query = select(ArtifactModel).filter(
+            ArtifactModel.workspace == workspace,
+            ArtifactModel.prefix == prefix,
+        )
+        result = await session.execute(query)
+        return result.scalar_one_or_none()
+
     async def create(
-        self, prefix, manifest: dict, overwrite=False, stage=False, context: dict = None
+        self,
+        prefix,
+        manifest: dict,
+        overwrite=False,
+        stage=False,
+        context: dict = None,
     ):
-        """Create a new artifact with a manifest file."""
+        """Create a new artifact and store its manifest in the database."""
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
         ws = context["ws"]
+
         user_info = UserInfo.model_validate(context["user"])
         if not user_info.check_permission(ws, UserPermission.read_write):
             raise PermissionError(
                 "User does not have write permission to the workspace."
             )
 
+        # Validate based on the type of manifest
         if manifest["type"] == "collection":
-            # Validate the collection manifest
             CollectionArtifact.model_validate(manifest)
         elif manifest["type"] == "application":
             ApplicationArtifact.model_validate(manifest)
         else:
             Artifact.model_validate(manifest)
 
-        manifest_key = f"{ws}/{prefix}/{MANIFEST_FILENAME}"
-        edit_manifest_key = f"{ws}/{prefix}/{EDIT_MANIFEST_FILENAME}"
+        # Convert ObjectProxy to dict if necessary
+        if isinstance(manifest, ObjectProxy):
+            manifest = ObjectProxy.toDict(manifest)
 
-        async with self.s3_controller.create_client_async() as s3_client:
-            # Check if manifest or _manifest.yaml already exists
-            try:
-                await s3_client.head_object(
-                    Bucket=self.workspace_bucket, Key=manifest_key
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                existing_artifact = await self._get_artifact(session, ws, prefix)
+
+                if existing_artifact:
+                    if not overwrite:
+                        raise FileExistsError(
+                            f"Artifact under prefix '{prefix}' already exists. Use overwrite=True to overwrite."
+                        )
+                    else:
+                        logger.info(f"Overwriting artifact under prefix: {prefix}")
+                        await session.delete(existing_artifact)
+                        await session.commit()
+
+            async with session.begin():
+                new_artifact = ArtifactModel(
+                    workspace=ws,
+                    prefix=prefix,
+                    manifest=None if stage else manifest,
+                    stage_manifest=manifest if stage else None,
+                    stage_files=[] if stage else None,
+                    type=manifest["type"],
                 )
-                manifest_exists = True
-            except ClientError:
-                manifest_exists = False
+                session.add(new_artifact)
+                await session.commit()
+            logger.info(f"Created artifact under prefix: {prefix}")
 
-            try:
-                await s3_client.head_object(
-                    Bucket=self.workspace_bucket, Key=edit_manifest_key
-                )
-                edit_manifest_exists = True
-            except ClientError:
-                edit_manifest_exists = False
-
-            if manifest_exists or edit_manifest_exists:
-                if not overwrite:
-                    raise FileExistsError(
-                        f"Artifact under prefix '{prefix}' already exists. Use overwrite=True to overwrite."
-                    )
-                else:
-                    logger.info(f"Overwriting artifact under prefix: {prefix}")
-                    await self.delete(prefix, context=context)
-
-            # Check if the artifact is a collection and initialize it
-            if manifest.get("type") == "collection":
-                collection = await self._build_collection_index(
-                    manifest, ws, prefix, s3_client
-                )
-                manifest["collection"] = collection
-
-            # If overwrite=True, remove any existing manifest or _manifest.yaml
-            if overwrite:
-                if manifest_exists:
-                    await s3_client.delete_object(
-                        Bucket=self.workspace_bucket, Key=manifest_key
-                    )
-                if edit_manifest_exists:
-                    await s3_client.delete_object(
-                        Bucket=self.workspace_bucket, Key=edit_manifest_key
-                    )
-
-            if not stage and manifest["type"] == "collection":
-                manifest["collection"] = await self._build_collection_index(
-                    manifest, ws, prefix, s3_client
-                )
-
-            # Update the parent collection index if the artifact is part of a collection
-            if not stage and "/" in prefix:
-                parent_prefix = "/".join(prefix.split("/")[:-1])
-                # check if the collection manifest file exits
-                try:
-                    collection_key = f"{ws}/{parent_prefix}/{MANIFEST_FILENAME}"
-                    await s3_client.head_object(
-                        Bucket=self.workspace_bucket, Key=collection_key
-                    )
-                    parent_collection = True
-                except ClientError:
-                    parent_collection = False
-            else:
-                parent_collection = False
-            # Upload the _manifest.yaml to indicate it's in edit mode
-            response = await s3_client.put_object(
-                Body=yaml.dump(ObjectProxy.toDict(manifest)),
-                Bucket=self.workspace_bucket,
-                Key=edit_manifest_key if stage else manifest_key,
-            )
-            assert (
-                "ResponseMetadata" in response
-                and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-            ), f"Failed to create artifact under prefix: {prefix}"
-            if parent_collection:
-                await self.index(parent_prefix, context=context)
+        finally:
+            await session.close()
 
         return manifest
 
-    async def edit(self, prefix, manifest=None, context: dict = None):
-        """Edit the artifact's manifest."""
-        ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read_write):
-            raise PermissionError(
-                "User does not have write permission to the workspace."
-            )
-        # copy the manifest to _manifest.yaml
-        manifest_key = f"{ws}/{prefix}/{MANIFEST_FILENAME}"
-        edit_manifest_key = f"{ws}/{prefix}/{EDIT_MANIFEST_FILENAME}"
-
-        async with self.s3_controller.create_client_async() as s3_client:
-            if not manifest:
-                # Get the manifest
-                manifest_obj = await s3_client.get_object(
-                    Bucket=self.workspace_bucket, Key=manifest_key
-                )
-                manifest_str = (await manifest_obj["Body"].read()).decode()
-                manifest = yaml.safe_load(manifest_str)
-            Artifact.model_validate(manifest)
-            # Upload the _manifest.yaml to indicate it's in edit mode
-            response = await s3_client.put_object(
-                Body=yaml.dump(manifest),
-                Bucket=self.workspace_bucket,
-                Key=edit_manifest_key,
-            )
-            assert (
-                "ResponseMetadata" in response
-                and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-            ), f"Failed to edit artifact under prefix: {prefix}"
-
-    async def index(self, prefix, context: dict = None):
-        """Update the index of the current collection."""
-        ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read_write):
-            raise PermissionError(
-                "User does not have write permission to the workspace."
-            )
-
-        collection_key = f"{ws}/{prefix}/{MANIFEST_FILENAME}"
-        async with self.s3_controller.create_client_async() as s3_client:
-            # check if the collection manifest file exits
-            try:
-                # Check if this is a valid collection
-                manifest_obj = await s3_client.get_object(
-                    Bucket=self.workspace_bucket, Key=collection_key
-                )
-            except ClientError:
-                raise KeyError(
-                    f"Collection manifest file does not exist for prefix '{prefix}'"
-                )
-            manifest = yaml.safe_load((await manifest_obj["Body"].read()).decode())
-
-            collection = await self._build_collection_index(
-                manifest, ws, prefix, s3_client
-            )
-            # Update the collection field
-            manifest["collection"] = collection
-
-            # Save the updated manifest
-            response = await s3_client.put_object(
-                Body=yaml.dump(manifest),
-                Bucket=self.workspace_bucket,
-                Key=collection_key,
-            )
-            assert (
-                "ResponseMetadata" in response
-                and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-            ), f"Failed to update collection index for '{prefix}'"
-
-    async def _build_collection_index(self, manifest, ws, prefix, s3_client):
-        if manifest.get("type") != "collection":
-            raise ValueError(
-                f"The prefix '{prefix}' does not point to a valid collection."
-            )
-
-        # List all sub-artifacts under the collection prefix
-        sub_prefix = f"{ws}/{prefix}/"
-        sub_artifacts = await list_objects_async(
-            s3_client, self.workspace_bucket, prefix=sub_prefix
-        )
-        collection = []
-
-        # Extract summary fields or default to 'name' and 'description'
-        summary_fields = manifest.get("summary_fields", ["name", "description"])
-
-        for obj in sub_artifacts:
-            if obj["type"] == "directory":
-                name = obj["name"]
-                try:
-                    sub_manifest_key = f"{sub_prefix}{name}/{MANIFEST_FILENAME}"
-                    sub_manifest_obj = await s3_client.get_object(
-                        Bucket=self.workspace_bucket, Key=sub_manifest_key
-                    )
-                    manifest_str = (await sub_manifest_obj["Body"].read()).decode()
-                    sub_manifest = yaml.safe_load(manifest_str)
-
-                    # Extract summary information
-                    summary = {}
-                    for field in summary_fields:
-                        keys = field.split(".")
-                        value = sub_manifest
-                        for key in keys:
-                            if key in value:
-                                value = value[key]
-                            else:
-                                value = None
-                                break
-                        if value is not None:
-                            summary[field] = value
-                    summary["_id"] = name
-                    collection.append(summary)
-                except ClientError:
-                    pass
-                except Exception as e:
-                    logger.error(f"Error while building collection index: {e}")
-                    raise e
-
-        return collection
-
     async def read(self, prefix, stage=False, context: dict = None):
-        """Read the artifact's manifest. Fallback to _manifest.yaml if manifest.yaml doesn't exist."""
+        """Read the artifact's manifest from the database and populate collections dynamically."""
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
         ws = context["ws"]
+
         user_info = UserInfo.model_validate(context["user"])
         if not user_info.check_permission(ws, UserPermission.read):
             raise PermissionError(
                 "User does not have read permission to the workspace."
             )
 
-        manifest_key = f"{ws}/{prefix}/{MANIFEST_FILENAME}"
-        edit_manifest_key = f"{ws}/{prefix}/{EDIT_MANIFEST_FILENAME}"
+        manifest = await self._read_manifest(ws, prefix, stage=stage)
+        return manifest
 
-        async with self.s3_controller.create_client_async() as s3_client:
-            try:
-                # Read the manifest depending on the stage
-                if stage:
-                    manifest_obj = await s3_client.get_object(
-                        Bucket=self.workspace_bucket, Key=edit_manifest_key
-                    )
-                else:
-                    manifest_obj = await s3_client.get_object(
-                        Bucket=self.workspace_bucket, Key=manifest_key
-                    )
-            except ClientError:
-                # If manifest.yaml does not exist and it's not in edit mode, raise an error
-                raise KeyError(f"Artifact under prefix '{prefix}' does not exist.")
-
-            manifest = yaml.safe_load((await manifest_obj["Body"].read()).decode())
-            return manifest
-
-    async def commit(self, prefix, context: dict = None):
-        """Commit the artifact, ensure all files are uploaded, and rename _manifest.yaml to manifest.yaml."""
+    async def edit(self, prefix, manifest=None, context: dict = None):
+        """Edit the artifact's manifest and save it in the database."""
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
         ws = context["ws"]
+
         user_info = UserInfo.model_validate(context["user"])
         if not user_info.check_permission(ws, UserPermission.read_write):
             raise PermissionError(
                 "User does not have write permission to the workspace."
             )
-        manifest_key = f"{ws}/{prefix}/{EDIT_MANIFEST_FILENAME}"
-        final_manifest_key = f"{ws}/{prefix}/{MANIFEST_FILENAME}"
 
-        # Get the _manifest.yaml
-        async with self.s3_controller.create_client_async() as s3_client:
-            try:
-                await s3_client.head_object(
-                    Bucket=self.workspace_bucket, Key=final_manifest_key
-                )
-            except ClientError:
-                pass
+        # Validate the manifest
+        if manifest["type"] == "collection":
+            CollectionArtifact.model_validate(manifest)
+        elif manifest["type"] == "application":
+            ApplicationArtifact.model_validate(manifest)
+        elif manifest["type"] == "workspace":
+            WorkspaceInfo.model_validate(manifest)
 
-            if "/" in prefix:
-                # If this artifact is part of a collection, update the collection index
-                parent_prefix = "/".join(prefix.split("/")[:-1])
-                # check if the collection manifest file exits
-                try:
-                    collection_key = f"{ws}/{parent_prefix}/{MANIFEST_FILENAME}"
-                    await s3_client.head_object(
-                        Bucket=self.workspace_bucket, Key=collection_key
+        # Convert ObjectProxy to dict if necessary
+        if isinstance(manifest, ObjectProxy):
+            manifest = ObjectProxy.toDict(manifest)
+
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact = await self._get_artifact(session, ws, prefix)
+                if not artifact:
+                    raise KeyError(f"Artifact under prefix '{prefix}' does not exist.")
+
+                artifact.stage_manifest = manifest
+                flag_modified(artifact, "stage_manifest")  # Mark JSON field as modified
+                session.add(artifact)
+                await session.commit()
+            logger.info(f"Edited artifact under prefix: {prefix}")
+        finally:
+            await session.close()
+
+    async def commit(self, prefix, context: dict):
+        """Commit the artifact by finalizing the staged manifest and files."""
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        ws = context["ws"]
+
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(ws, UserPermission.read_write):
+            raise PermissionError(
+                "User does not have write permission to the workspace."
+            )
+
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact = await self._get_artifact(session, ws, prefix)
+                if not artifact or not artifact.stage_manifest:
+                    raise KeyError(
+                        f"No staged manifest to commit for artifact '{prefix}'."
                     )
-                    parent_collection = True
-                except ClientError:
-                    parent_collection = False
-            else:
-                parent_collection = False
 
-            try:
-                manifest_obj = await s3_client.get_object(
-                    Bucket=self.workspace_bucket, Key=manifest_key
-                )
-            except ClientError:
-                raise FileNotFoundError(
-                    f"Artifact under prefix '{prefix}' does not exist."
-                )
-            manifest = yaml.safe_load((await manifest_obj["Body"].read()).decode())
+                manifest = artifact.stage_manifest
 
-            # Validate if all files in the manifest exist in S3
-            if "files" in manifest:
-                for file_info in manifest["files"]:
-                    file_key = f"{ws}/{prefix}/{file_info['path']}"
-                    try:
-                        await s3_client.head_object(
-                            Bucket=self.workspace_bucket, Key=file_key
-                        )
-                    except ClientError:
-                        raise FileNotFoundError(
-                            f"File '{file_info['path']}' does not exist in the artifact."
-                        )
-            # if parent_collection is True, check if collection_schema exists in the parent schema
-            if parent_collection:
-                parent_manifest_obj = await s3_client.get_object(
-                    Bucket=self.workspace_bucket, Key=collection_key
-                )
-                parent_manifest = yaml.safe_load(
-                    (await parent_manifest_obj["Body"].read()).decode()
-                )
-                if parent_manifest.get("collection_schema"):
-                    collection_schema = parent_manifest.get("collection_schema")
-                    if collection_schema:
-                        validate(instance=manifest, schema=collection_schema)
-            # Rename _manifest.yaml to manifest.yaml
-            response = await s3_client.copy_object(
-                Bucket=self.workspace_bucket,
-                CopySource={"Bucket": self.workspace_bucket, "Key": manifest_key},
-                Key=final_manifest_key,
+                # Validate files exist in S3 if the staged files list is present
+                if artifact.stage_files:
+                    async with self.s3_controller.create_client_async() as s3_client:
+                        for file_info in artifact.stage_files:
+                            file_key = safe_join(ws, f"{prefix}/{file_info['path']}")
+                            try:
+                                await s3_client.head_object(
+                                    Bucket=self.workspace_bucket, Key=file_key
+                                )
+                            except ClientError:
+                                raise FileNotFoundError(
+                                    f"File '{file_info['path']}' does not exist in the artifact."
+                                )
+
+                # Validate the schema if the artifact belongs to a collection
+                parent_prefix = "/".join(prefix.split("/")[:-1])
+                if parent_prefix:
+                    parent_artifact = await self._get_artifact(
+                        session, ws, parent_prefix
+                    )
+                    if (
+                        parent_artifact
+                        and "collection_schema" in parent_artifact.manifest
+                    ):
+                        collection_schema = parent_artifact.manifest[
+                            "collection_schema"
+                        ]
+                        try:
+                            validate(instance=manifest, schema=collection_schema)
+                        except Exception as e:
+                            raise ValueError(f"ValidationError: {str(e)}")
+
+                # Finalize the manifest
+                artifact.manifest = manifest
+                artifact.stage_manifest = None
+                artifact.stage_files = None
+                flag_modified(artifact, "manifest")
+                session.add(artifact)
+                await session.commit()
+            logger.info(f"Committed artifact under prefix: {prefix}")
+        finally:
+            await session.close()
+
+    async def delete(self, prefix, context: dict):
+        """Delete an artifact from the database and S3."""
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        ws = context["ws"]
+
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(ws, UserPermission.read_write):
+            raise PermissionError(
+                "User does not have write permission to the workspace."
             )
-            assert (
-                "ResponseMetadata" in response
-                and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-            ), f"Failed to commit manifest for artifact under prefix: {prefix}"
 
-            # Delete the _manifest.yaml file
-            await s3_client.delete_object(
-                Bucket=self.workspace_bucket, Key=manifest_key
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact = await self._get_artifact(session, ws, prefix)
+                if artifact:
+                    await session.delete(artifact)
+                    await session.commit()
+            logger.info(f"Deleted artifact under prefix: {prefix}")
+        finally:
+            await session.close()
+
+        # Remove files from S3
+        await self._delete_s3_files(ws, prefix)
+
+    async def _delete_s3_files(self, ws, prefix):
+        """Helper method to delete files associated with an artifact in S3."""
+        artifact_path = safe_join(ws, f"{prefix}") + "/"
+        async with self.s3_controller.create_client_async() as s3_client:
+            await remove_objects_async(s3_client, self.workspace_bucket, artifact_path)
+
+    async def list_files(self, prefix, max_length=1000, context: dict = None):
+        """List files in the specified S3 prefix."""
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        ws = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(ws, UserPermission.read):
+            raise PermissionError(
+                "User does not have read permission to the workspace."
             )
-
-            if parent_collection:
-                await self.index(parent_prefix, context=context)
+        async with self.s3_controller.create_client_async() as s3_client:
+            full_path = safe_join(ws, prefix) + "/"
+            items = await list_objects_async(
+                s3_client, self.workspace_bucket, full_path, max_length=max_length
+            )
+            return items
 
     async def list_artifacts(self, prefix="", stage=False, context: dict = None):
         """List all artifacts under a certain prefix."""
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
         ws = context["ws"]
+
         user_info = UserInfo.model_validate(context["user"])
         if not user_info.check_permission(ws, UserPermission.read):
             raise PermissionError(
                 "User does not have read permission to the workspace."
             )
-        prefix_path = safe_join(ws, prefix) + "/"
 
-        async with self.s3_controller.create_client_async() as s3_client:
-            artifacts = await list_objects_async(
-                s3_client, self.workspace_bucket, prefix=prefix_path
-            )
-            artifact_list = []
-
-            try:
-                # Check if the prefix is a collection
-                manifest_obj = await s3_client.get_object(
-                    Bucket=self.workspace_bucket,
-                    Key=f"{prefix_path}{MANIFEST_FILENAME}"
-                    if not stage
-                    else f"{prefix_path}{EDIT_MANIFEST_FILENAME}",
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                query = select(ArtifactModel).filter(
+                    ArtifactModel.workspace == ws,
+                    ArtifactModel.prefix.like(f"{prefix}/%"),
                 )
-                manifest = yaml.safe_load((await manifest_obj["Body"].read()).decode())
-                if manifest.get("type") == "collection":
-                    return [item["_id"] for item in manifest.get("collection", [])]
-            except ClientError:
-                pass
+                result = await session.execute(query)
+                sub_artifacts = result.scalars().all()
 
-            # Otherwise, return a dynamic list of artifacts
-            for obj in artifacts:
-                if obj["type"] == "directory":
-                    name = obj["name"]
-                    try:
-                        # head the manifest file to check if it's finalized
-                        if stage:
-                            await s3_client.head_object(
-                                Bucket=self.workspace_bucket,
-                                Key=f"{prefix_path}{name}/{EDIT_MANIFEST_FILENAME}",
-                            )
-                            artifact_list.append(name)
+                collection = []
+                for artifact in sub_artifacts:
+                    if artifact.prefix == prefix:
+                        continue
+                    sub_manifest = artifact.manifest
+                    name = artifact.prefix[len(prefix) + 1 :]
+                    name = name.split("/")[0]
+                    collection.append(name)
+                return collection
+        finally:
+            await session.close()
+
+    async def search(
+        self, prefix, keywords=None, filters=None, mode="AND", context: dict = None
+    ):
+        """
+        Search artifacts within a collection under a specific prefix.
+        Supports:
+        - `keywords`: list of fuzzy search terms across all manifest fields.
+        - `filters`: dictionary of exact or fuzzy match for specific fields.
+        - `mode`: either 'AND' or 'OR' to combine conditions.
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        ws = context["ws"]
+
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(ws, UserPermission.read):
+            raise PermissionError(
+                "User does not have read permission to the workspace."
+            )
+
+        session = await self._get_session(read_only=True)
+        try:
+            async with session.begin():
+                # Get the database backend from the SQLAlchemy engine
+                backend = (
+                    self.engine.dialect.name
+                )  # This will return 'postgresql', 'sqlite', etc.
+
+                base_query = select(ArtifactModel).filter(
+                    ArtifactModel.workspace == ws,
+                    ArtifactModel.prefix.like(f"{prefix}/%"),
+                )
+
+                # Handle keyword-based search (fuzzy search across all manifest fields)
+                conditions = []
+                if keywords:
+                    for keyword in keywords:
+                        if backend == "postgresql":
+                            condition = text(f"manifest::text ILIKE '%{keyword}%'")
                         else:
-                            await s3_client.head_object(
-                                Bucket=self.workspace_bucket,
-                                Key=f"{prefix_path}{name}/{MANIFEST_FILENAME}",
+                            condition = text(
+                                f"json_extract(manifest, '$') LIKE '%{keyword}%'"
                             )
-                            artifact_list.append(name)
-                    except ClientError:
-                        pass
-            return artifact_list
+                        conditions.append(condition)
+
+                # Handle filter-based search (specific key-value matching)
+                if filters:
+                    for key, value in filters.items():
+                        if "*" in value:  # Fuzzy matching
+                            if backend == "postgresql":
+                                condition = text(
+                                    f"manifest->>'{key}' ILIKE '{value.replace('*', '%')}'"
+                                )
+                            else:
+                                condition = text(
+                                    f"json_extract(manifest, '$.{key}') LIKE '{value.replace('*', '%')}'"
+                                )
+                        else:  # Exact matching
+                            if backend == "postgresql":
+                                condition = text(f"manifest->>'{key}' = '{value}'")
+                            else:
+                                condition = text(
+                                    f"json_extract(manifest, '$.{key}') = '{value}'"
+                                )
+                        conditions.append(condition)
+
+                # Combine conditions using AND/OR mode
+                if conditions:
+                    if mode == "OR":
+                        query = base_query.where(or_(*conditions))
+                    else:  # Default is AND
+                        query = base_query.where(and_(*conditions))
+                else:
+                    query = base_query
+
+                # Execute the query
+                result = await session.execute(query)
+                artifacts = result.scalars().all()
+
+                # Generate the results with summary_fields
+                summary_fields = []
+                for artifact in artifacts:
+                    sub_manifest = artifact.manifest
+                    summary_fields.append({"_prefix": artifact.prefix, **sub_manifest})
+
+                return summary_fields
+
+        except Exception as e:
+            raise ValueError(
+                f"An error occurred while executing the search query: {str(e)}"
+            )
+        finally:
+            await session.close()
 
     async def put_file(self, prefix, file_path, context: dict = None):
-        """Put a file to an artifact and return the pre-signed URL."""
+        """Generate a pre-signed URL to upload a file to an artifact in S3 and update the manifest."""
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         if not user_info.check_permission(ws, UserPermission.read_write):
             raise PermissionError(
                 "User does not have write permission to the workspace."
             )
-        manifest_key = f"{ws}/{prefix}/{EDIT_MANIFEST_FILENAME}"
 
-        # Get the _manifest.yaml
         async with self.s3_controller.create_client_async() as s3_client:
-            manifest_obj = await s3_client.get_object(
-                Bucket=self.workspace_bucket, Key=manifest_key
-            )
-            manifest = yaml.safe_load((await manifest_obj["Body"].read()).decode())
-
-            # Generate a pre-signed URL for the file
-            file_key = f"{ws}/{prefix}/{file_path}"
+            file_key = safe_join(ws, f"{prefix}/{file_path}")
             presigned_url = await s3_client.generate_presigned_url(
                 "put_object",
                 Params={"Bucket": self.workspace_bucket, "Key": file_key},
                 ExpiresIn=3600,
             )
 
-            # Add the file to the manifest
-            file_info = {"path": file_path}
-            manifest["files"] = manifest.get("files", [])
-            manifest["files"].append(file_info)
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact = await self._get_artifact(session, ws, prefix)
+                if not artifact or not artifact.stage_manifest:
+                    raise KeyError(f"No staged manifest found for artifact '{prefix}'.")
 
-            # Update the _manifest.yaml in S3
-            response = await s3_client.put_object(
-                Body=yaml.dump(manifest),
-                Bucket=self.workspace_bucket,
-                Key=manifest_key,
-            )
-            assert (
-                "ResponseMetadata" in response
-                and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-            ), f"Failed to update manifest for artifact under prefix: {prefix}"
+                artifact.stage_files = artifact.stage_files or []
+
+                if not any(f["path"] == file_path for f in artifact.stage_files):
+                    artifact.stage_files.append({"path": file_path})
+                    flag_modified(artifact, "stage_files")
+
+                session.add(artifact)
+                await session.commit()
+            logger.info(f"Generated pre-signed URL for file upload: {file_path}")
+        finally:
+            await session.close()
 
         return presigned_url
 
-    async def remove_file(self, prefix, file_path, context: dict = None):
-        """Remove a file from the artifact and update the _manifest.yaml."""
+    async def get_file(self, prefix, path, context: dict):
+        """Generate a pre-signed URL to download a file from an artifact in S3."""
         ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read_write):
-            raise PermissionError(
-                "User does not have write permission to the workspace."
-            )
-        manifest_key = f"{ws}/{prefix}/{EDIT_MANIFEST_FILENAME}"
 
-        # Get the _manifest.yaml
-        async with self.s3_controller.create_client_async() as s3_client:
-            manifest_obj = await s3_client.get_object(
-                Bucket=self.workspace_bucket, Key=manifest_key
-            )
-            manifest = yaml.safe_load((await manifest_obj["Body"].read()).decode())
-            manifest["files"] = manifest.get("files", [])
-            # Remove the file from the manifest
-            manifest["files"] = [f for f in manifest["files"] if f["path"] != file_path]
-
-            # Remove the file from S3
-            file_key = f"{ws}/{prefix}/{file_path}"
-            response = await s3_client.delete_object(
-                Bucket=self.workspace_bucket, Key=file_key
-            )
-            assert (
-                "ResponseMetadata" in response
-                and response["ResponseMetadata"]["HTTPStatusCode"] == 204
-            ), f"Failed to delete file: {file_path}"
-
-            # Update the _manifest.yaml in S3
-            response = await s3_client.put_object(
-                Body=yaml.dump(manifest),
-                Bucket=self.workspace_bucket,
-                Key=manifest_key,
-            )
-            assert (
-                "ResponseMetadata" in response
-                and response["ResponseMetadata"]["HTTPStatusCode"] == 200
-            ), f"Failed to update manifest after removing file: {file_path}"
-
-    async def get_file(self, prefix, path, context: dict = None):
-        """Return a pre-signed URL for a file."""
-        ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         if not user_info.check_permission(ws, UserPermission.read):
             raise PermissionError(
                 "User does not have read permission to the workspace."
             )
-        file_key = f"{ws}/{prefix}/{path}"
 
-        # Perform a head_object check before generating the URL
         async with self.s3_controller.create_client_async() as s3_client:
-            await s3_client.head_object(Bucket=self.workspace_bucket, Key=file_key)
-
-            # Generate a pre-signed URL for the file
+            file_key = safe_join(ws, f"{prefix}/{path}")
             presigned_url = await s3_client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self.workspace_bucket, "Key": file_key},
                 ExpiresIn=3600,
             )
-
+        logger.info(f"Generated pre-signed URL for file download: {path}")
         return presigned_url
 
-    async def delete(self, prefix, context: dict = None):
-        """Delete an entire artifact including all its files and the manifest."""
+    async def remove_file(self, prefix, file_path, context: dict):
+        """Remove a file from the artifact and update the staged manifest."""
         ws = context["ws"]
+
         user_info = UserInfo.model_validate(context["user"])
         if not user_info.check_permission(ws, UserPermission.read_write):
             raise PermissionError(
                 "User does not have write permission to the workspace."
             )
-        artifact_path = f"{ws}/{prefix}/"
+
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact = await self._get_artifact(session, ws, prefix)
+                if not artifact or not artifact.stage_manifest:
+                    raise KeyError(
+                        f"Artifact under prefix '{prefix}' is not in staging mode."
+                    )
+                # remove the file from the staged files list
+                artifact.stage_files = [
+                    f for f in artifact.stage_files if f["path"] != file_path
+                ]
+                flag_modified(artifact, "stage_files")
+                session.add(artifact)
+                await session.commit()
+        finally:
+            await session.close()
 
         async with self.s3_controller.create_client_async() as s3_client:
-            # Remove all objects under the artifact's path
-            await remove_objects_async(s3_client, self.workspace_bucket, artifact_path)
+            file_key = safe_join(ws, f"{prefix}/{file_path}")
+            await s3_client.delete_object(Bucket=self.workspace_bucket, Key=file_key)
 
-            if "/" in prefix:
-                # If this artifact is part of a collection, re-index the parent collection
-                parent_prefix = "/".join(prefix.split("/")[:-1])
-                collection_key = f"{ws}/{parent_prefix}/{MANIFEST_FILENAME}"
-                # check if the collection manifest file exits
-                try:
-                    await s3_client.head_object(
-                        Bucket=self.workspace_bucket, Key=collection_key
-                    )
-                    await self.index(parent_prefix, context=context)
-                except ClientError:
-                    pass
+        logger.info(f"Removed file from artifact: {file_key}")
 
     def get_artifact_service(self):
-        """Get artifact controller."""
+        """Return the artifact service definition."""
         return {
             "id": "artifact-manager",
             "config": {"visibility": "public", "require_context": True},
@@ -580,5 +662,6 @@ class ArtifactController:
             "remove_file": self.remove_file,
             "get_file": self.get_file,
             "list": self.list_artifacts,
-            "index": self.index,  # New index function
+            "search": self.search,
+            "list_files": self.list_files,
         }

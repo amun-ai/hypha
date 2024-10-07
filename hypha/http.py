@@ -399,7 +399,6 @@ class HTTPProxy:
         secret_access_key=None,
         region_name=None,
         workspace_bucket="hypha-workspaces",
-        workspace_etc_dir="etc",
         base_path="/",
     ) -> None:
         """Initialize the http proxy."""
@@ -411,7 +410,6 @@ class HTTPProxy:
         self.region_name = region_name
         self.s3_enabled = endpoint_url is not None
         self.workspace_bucket = workspace_bucket
-        self.workspace_etc_dir = workspace_etc_dir
         self.ws_apps_dir = Path(__file__).parent / "templates/ws"
         self.ws_app_files = os.listdir(self.ws_apps_dir)
         self.templates_dir = Path(__file__).parent / "templates"
@@ -841,6 +839,11 @@ class HTTPProxy:
             If the liveness probe fails, it means the app is in a failed state and restarts it.
             """
             return JSONResponse({"status": "OK"})
+
+        @app.get(norm_url("/login"))
+        async def login(request: Request):
+            """Redirect to the login page."""
+            return RedirectResponse(norm_url("/public/apps/hypha-login/"))
 
         @app.get(norm_url("/{page:path}"))
         async def get_pages(
