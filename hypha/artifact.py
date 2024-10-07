@@ -193,6 +193,116 @@ class ArtifactController:
         result = await session.execute(query)
         return result.scalar_one_or_none()
 
+        router = APIRouter()
+
+        @router.get("/{workspace}/artifact/{path:path}")
+        async def get_artifact(
+            workspace: str,
+            path: str,
+            stage: bool = False,
+            user_info: store.login_optional = Depends(store.login_optional),
+        ):
+            """Get artifact from the database."""
+            try:
+                if path.startswith("public/"):
+                    return await self._read_manifest(workspace, path, stage=stage)
+                else:
+                    if not user_info.check_permission(workspace, UserPermission.read):
+                        raise PermissionError(
+                            "User does not have read permission to the workspace."
+                        )
+                    return await self._read_manifest(workspace, path, stage=stage)
+            except KeyError as e:
+                raise HTTPException(status_code=404, detail=str(e))
+            except PermissionError as e:
+                raise HTTPException(status_code=403, detail=str(e))
+
+        store.register_router(router)
+
+    async def init_db(self):
+        """Initialize the database and create tables."""
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            logger.info("Database tables created successfully.")
+
+    async def _get_session(self, read_only=False):
+        """Return an SQLAlchemy async session. If read_only=True, ensure no modifications are allowed."""
+        session = self.SessionLocal()
+
+        if read_only:
+            sync_session = session.sync_session  # Access the synchronous session object
+
+            @event.listens_for(sync_session, "before_flush")
+            def prevent_flush(session, flush_context, instances):
+                """Prevent any flush operations to keep the session read-only."""
+                raise RuntimeError("This session is read-only.")
+
+            @event.listens_for(sync_session, "after_transaction_end")
+            def end_transaction(session, transaction):
+                """Ensure rollback after a transaction in a read-only session."""
+                if not transaction._parent:
+                    session.rollback()
+
+        return session
+
+    async def _read_manifest(self, workspace, prefix, stage=False):
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                query = select(ArtifactModel).filter(
+                    ArtifactModel.workspace == workspace,
+                    ArtifactModel.prefix == prefix,
+                )
+                result = await session.execute(query)
+                artifact = result.scalar_one_or_none()
+
+                if not artifact:
+                    raise KeyError(f"Artifact under prefix '{prefix}' does not exist.")
+
+                manifest = artifact.stage_manifest if stage else artifact.manifest
+                if not manifest:
+                    raise KeyError(f"No manifest found for artifact '{prefix}'.")
+
+                # If the artifact is a collection, dynamically populate the 'collection' field
+                if manifest.get("type") == "collection":
+                    sub_prefix = f"{prefix}/"
+                    query = select(ArtifactModel).filter(
+                        ArtifactModel.workspace == workspace,
+                        ArtifactModel.prefix.like(f"{sub_prefix}%"),
+                    )
+                    result = await session.execute(query)
+                    sub_artifacts = result.scalars().all()
+
+                    # Populate the 'collection' field with summary_fields for each sub-artifact
+                    summary_fields = manifest.get(
+                        "summary_fields", ["id", "name", "description"]
+                    )
+                    collection = []
+                    for artifact in sub_artifacts:
+                        sub_manifest = artifact.manifest
+                        summary = {"_prefix": artifact.prefix}
+                        for field in summary_fields:
+                            value = sub_manifest.get(field)
+                            if value is not None:
+                                summary[field] = value
+                        collection.append(summary)
+
+                    manifest["collection"] = collection
+
+                if stage:
+                    manifest["stage_files"] = artifact.stage_files
+                return manifest
+        finally:
+            await session.close()
+
+    async def _get_artifact(self, session, workspace, prefix):
+        query = select(ArtifactModel).filter(
+            ArtifactModel.workspace == workspace,
+            ArtifactModel.prefix == prefix,
+        )
+        result = await session.execute(query)
+        return result.scalar_one_or_none()
+
     async def create(
         self,
         prefix,
