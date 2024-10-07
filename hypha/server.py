@@ -16,6 +16,7 @@ from hypha.core.auth import create_login_service
 from hypha.core.store import RedisStore
 from hypha.core.queue import create_queue_service
 from hypha.http import HTTPProxy
+from hypha.log import EventLoggingService
 from hypha.triton import TritonProxy
 from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
 from hypha.websocket import WebsocketServer
@@ -82,6 +83,9 @@ def start_builtin_services(
 
     store.register_public_service(create_queue_service(store))
     store.register_public_service(create_login_service(store))
+
+    if args.database_uri:
+        EventLoggingService(store, database_uri=args.database_uri)
 
     if args.enable_s3:
         # pylint: disable=import-outside-toplevel

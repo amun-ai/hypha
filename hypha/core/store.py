@@ -92,6 +92,7 @@ class RedisStore:
         """Initialize the redis store."""
         self._s3_controller = None
         self._artifact_manager = None
+        self._logging_service = None
         self._app = app
         self._codecs = {}
         self._disconnected_plugins = []
@@ -373,6 +374,8 @@ class RedisStore:
             logger.warning("RESETTING ALL REDIS DATA!!!")
             await self._redis.flushall()
         await self._event_bus.init()
+        if self._logging_service:
+            await self._logging_service.init_db()
         if self._artifact_manager:
             await self._artifact_manager.init_db()
         await self.setup_root_user()
@@ -719,6 +722,10 @@ class RedisStore:
     def set_artifact_manager(self, controller):
         """Set the artifact controller."""
         self._artifact_manager = controller
+
+    def set_logging_service(self, service):
+        """Set the logging service."""
+        self._logging_service = service
 
     def register_public_service(self, service: dict):
         """Register a service."""

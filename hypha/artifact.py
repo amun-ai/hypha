@@ -79,9 +79,13 @@ class ArtifactController:
         )
         self.s3_controller = s3_controller
         self.workspace_bucket = workspace_bucket
+        self.store = store
 
-        store.register_public_service(self.get_artifact_service())
-        store.set_artifact_manager(self)
+    async def init_db(self):
+        """Initialize the database and create tables."""
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            logger.info("Database tables created successfully.")
 
         router = APIRouter()
 
@@ -90,7 +94,7 @@ class ArtifactController:
             workspace: str,
             path: str,
             stage: bool = False,
-            user_info: store.login_optional = Depends(store.login_optional),
+            user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """Get artifact from the database."""
             try:
@@ -107,13 +111,9 @@ class ArtifactController:
             except PermissionError as e:
                 raise HTTPException(status_code=403, detail=str(e))
 
-        store.register_router(router)
-
-    async def init_db(self):
-        """Initialize the database and create tables."""
-        async with self.engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-            logger.info("Database tables created successfully.")
+        self.store.register_public_service(self.get_artifact_service())
+        self.store.set_artifact_manager(self)
+        self.store.register_router(router)
 
     async def _get_session(self, read_only=False):
         """Return an SQLAlchemy async session. If read_only=True, ensure no modifications are allowed."""
