@@ -181,6 +181,7 @@ class WorkspaceManager:
         user_info = UserInfo.model_validate(context["user"])
         assert "bookmark_type" in item, "Bookmark type must be provided."
         user_workspace = await self.load_workspace_info(user_info.get_workspace())
+        assert user_workspace, f"User workspace not found: {user_info.get_workspace()}"
         user_workspace.config = user_workspace.config or {}
         if "bookmarks" not in user_workspace.config:
             user_workspace.config["bookmarks"] = []
@@ -265,12 +266,12 @@ class WorkspaceManager:
         user_info = UserInfo.model_validate(context["user"])
         if user_info.is_anonymous:
             raise Exception("Only registered user can create workspace.")
-        try:
-            if await self.load_workspace_info(ws):
-                if not overwrite:
-                    raise KeyError(f"Workspace already exists: {ws}")
-        except KeyError:
-            pass
+        if not overwrite:
+            try:
+                if await self.load_workspace_info(config["id"]):
+                    raise RuntimeError(f"Workspace already exists: {config['id']}")
+            except KeyError:
+                pass
 
         config["persistent"] = config.get("persistent") or False
         if user_info.is_anonymous and config["persistent"]:
@@ -1062,26 +1063,21 @@ class WorkspaceManager:
             return workspace_info
         except KeyError:
             if load and self._artifact_manager:
-                try:
-                    workspace_info = await self._artifact_manager.read(
-                        "workspaces/" + workspace,
-                        context={"ws": "root", "user": self._root_user.model_dump()},
-                    )
-                    workspace_info = WorkspaceInfo.model_validate(workspace_info)
-                    await self._redis.hset(
-                        "workspaces", workspace, workspace_info.model_dump_json()
-                    )
-                    await self._event_bus.emit(
-                        "workspace_loaded", workspace_info.model_dump()
-                    )
-                    logger.info(
-                        "Loaded workspace info: %s via the artifact manager", workspace
-                    )
-                    return workspace_info
-                except KeyError:
-                    logger.error(
-                        f"Failed to load workspace info: {workspace} from artifact manager."
-                    )
+                workspace_info = await self._artifact_manager.read(
+                    "workspaces/" + workspace,
+                    context={"ws": "root", "user": self._root_user.model_dump()},
+                )
+                workspace_info = WorkspaceInfo.model_validate(workspace_info)
+                await self._redis.hset(
+                    "workspaces", workspace, workspace_info.model_dump_json()
+                )
+                await self._event_bus.emit(
+                    "workspace_loaded", workspace_info.model_dump()
+                )
+                logger.info(
+                    "Loaded workspace info: %s via the artifact manager", workspace
+                )
+                return workspace_info
             elif load and not self._artifact_manager:
                 raise KeyError(
                     f"Workspace ({workspace}) not found and the workspace loader is not configured (requires artifact manager)."

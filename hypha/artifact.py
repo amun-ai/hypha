@@ -32,7 +32,6 @@ from hypha.core import (
 )
 from hypha_rpc.utils import ObjectProxy
 from jsonschema import validate
-from sqlalchemy.exc import SQLAlchemyError
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("artifact")
@@ -251,6 +250,7 @@ class ArtifactController:
                 )
                 session.add(new_artifact)
                 await session.commit()
+            logger.info(f"Created artifact under prefix: {prefix}")
 
         finally:
             await session.close()
@@ -307,6 +307,7 @@ class ArtifactController:
                 flag_modified(artifact, "stage_manifest")  # Mark JSON field as modified
                 session.add(artifact)
                 await session.commit()
+            logger.info(f"Edited artifact under prefix: {prefix}")
         finally:
             await session.close()
 
@@ -372,6 +373,7 @@ class ArtifactController:
                 flag_modified(artifact, "manifest")
                 session.add(artifact)
                 await session.commit()
+            logger.info(f"Committed artifact under prefix: {prefix}")
         finally:
             await session.close()
 
@@ -394,6 +396,7 @@ class ArtifactController:
                 if artifact:
                     await session.delete(artifact)
                     await session.commit()
+            logger.info(f"Deleted artifact under prefix: {prefix}")
         finally:
             await session.close()
 
@@ -583,7 +586,7 @@ class ArtifactController:
 
                 session.add(artifact)
                 await session.commit()
-
+            logger.info(f"Generated pre-signed URL for file upload: {file_path}")
         finally:
             await session.close()
 
@@ -606,6 +609,7 @@ class ArtifactController:
                 Params={"Bucket": self.workspace_bucket, "Key": file_key},
                 ExpiresIn=3600,
             )
+        logger.info(f"Generated pre-signed URL for file download: {path}")
         return presigned_url
 
     async def remove_file(self, prefix, file_path, context: dict):
@@ -639,6 +643,8 @@ class ArtifactController:
         async with self.s3_controller.create_client_async() as s3_client:
             file_key = safe_join(ws, f"{prefix}/{file_path}")
             await s3_client.delete_object(Bucket=self.workspace_bucket, Key=file_key)
+
+        logger.info(f"Removed file from artifact: {file_key}")
 
     def get_artifact_service(self):
         """Return the artifact service definition."""

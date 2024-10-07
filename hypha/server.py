@@ -85,8 +85,8 @@ def start_builtin_services(
 
     if args.enable_s3:
         # pylint: disable=import-outside-toplevel
-        from hypha.artifact import ArtifactController
         from hypha.s3 import S3Controller
+        from hypha.artifact import ArtifactController
 
         s3_controller = S3Controller(
             store,
@@ -100,13 +100,12 @@ def start_builtin_services(
             workspace_bucket=args.workspace_bucket,
             executable_path=args.executable_path,
         )
-
-    artifact_manager = ArtifactController(
-        store,
-        s3_controller=s3_controller,
-        workspace_bucket=args.workspace_bucket,
-        database_uri=args.database_uri,
-    )
+        artifact_manager = ArtifactController(
+            store,
+            s3_controller=s3_controller,
+            workspace_bucket=args.workspace_bucket,
+            database_uri=args.database_uri,
+        )
 
     if args.enable_server_apps:
         assert args.enable_s3, "Server apps require S3 to be enabled"
