@@ -1,16 +1,17 @@
 # Artifact Manager
 
-The `Artifact Manager` is a builtin hypha service for indexing, managing, and storing resources such as datasets, AI models, and applications. It is designed to provide a structured way to manage datasets and similar resources, enabling efficient listing, uploading, updating, and deleting of files. 
+The `Artifact Manager` is a built-in Hypha service for indexing, managing, and storing resources such as datasets, AI models, and applications. It provides a structured way to manage datasets and similar resources, enabling efficient listing, uploading, updating, and deleting of files.
 
-A typical use case for the `Artifact Manager` is as a backend for a single-page web application displaying a gallery of datasets, AI models, applications or other type of resources. The default metadata of an artifact is designed to render a grid of cards on a webpage.
+A typical use case for the `Artifact Manager` is as a backend for a single-page web application that displays a gallery of datasets, AI models, applications, or other types of resources. The default metadata of an artifact is designed to render a grid of cards on a webpage.
 
-**Note:** The `Artifact Manager` is only available when your hypha server enabled s3 storage.
+**Note:** The `Artifact Manager` is only available when your Hypha server has S3 storage enabled.
+
 
 ## Getting Started
 
 ### Step 1: Connecting to the Artifact Manager Service
 
-To use the `Artifact Manager`, you first need to connect to the Hypha server. This API allows you to create, read, edit, and delete datasets in the artifact registry (stored in s3 bucket for each workspace).
+To use the `Artifact Manager`, you first need to connect to the Hypha server. This API allows you to create, read, edit, and delete datasets in the artifact registry (stored in a S3 bucket for each workspace).
 
 ```python
 from hypha_rpc.websocket_client import connect_to_server
@@ -214,6 +215,18 @@ print("Valid dataset created.")
 # Commit the valid dataset (this should pass schema validation)
 await artifact_manager.commit(prefix="collections/schema-dataset-gallery/valid-dataset")
 print("Valid dataset committed.")
+```
+
+### Step 3: Accessing the collection via HTTP API
+
+You can access the collection via the HTTP API to retrieve the schema and datasets.
+This can be used for rendering a gallery of datasets on a webpage.
+
+```javascript
+// Fetch the schema for the collection
+fetch("https://hypha.aicell.io/my-workspace/artifact/public/collections/schema-dataset-gallery")
+    .then(response => response.json())
+    .then(data => console.log("Schema:", data.collection_schema));
 ```
 
 ## API Reference
@@ -440,4 +453,57 @@ await artifact_manager.commit(prefix="collections/dataset-gallery/example-datase
 # Step 6: List all datasets in the gallery
 datasets = await artifact_manager.list(prefix="collections/dataset-gallery")
 print("Datasets in the gallery:", datasets)
+```
+
+
+## HTTP API for Accessing Artifacts
+
+The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifests and data. This is useful for public-facing web applications that need to access datasets, models, or applications.
+
+### Endpoint: `/{workspace}/artifact/{path:path}`
+
+- **Workspace**: The workspace in which the artifact is stored.
+- **Path**: The relative path to the artifact.
+  - For public artifacts, the path must begin with `public/`.
+  - For private artifacts, the path does not include the `public/` prefix and requires proper authentication.
+
+### Request Format:
+
+- **Method**: `GET`
+- **Parameters**:
+  - `workspace`: The workspace in which the artifact is stored.
+  - `path`: The path to the artifact (e.g., `public/collections/dataset-gallery/example-dataset`).
+  - `stage` (optional): A boolean flag to indicate whether to fetch the staged version of the manifest (`_manifest.yaml`). Default is `False`.
+
+### Response:
+
+- **For public artifacts**: Returns the artifact manifest if it exists under the `public/` prefix.
+- **For private artifacts**: Returns the artifact manifest if the user has the necessary permissions.
+
+### Example:
+
+#### Fetching a public artifact:
+
+```python
+import requests
+
+SERVER_URL = "https://hypha.aicell.io"
+workspace = "my-workspace"
+response = requests.get(f"{SERVER_URL}/{workspace}/artifact/public/collections/dataset-gallery/example-dataset")
+if response.ok:
+    artifact = response.json()
+    print(artifact["name"])  # Output: Example Dataset
+else:
+    print(f"Error: {response.status_code}")
+```
+
+#### Fetching a private artifact:
+
+```python
+response = requests.get(f"{SERVER_URL}/{workspace}/artifact/collections/private-dataset-gallery/private-example-dataset")
+if response.ok:
+    artifact = response.json()
+    print(artifact["name"])  # Output: Private Example Dataset
+else:
+    print(f"Error: {response.status_code}")
 ```
