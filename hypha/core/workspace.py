@@ -97,35 +97,6 @@ class WorkspaceManager:
             management_service,
             {"notify": False},
         )
-
-        if self._artifact_manager:
-            manifest = {
-                "type": "collection",
-                "name": "Workspaces",
-                "description": f"A collection for storing workspaces",
-                "summary_fields": [
-                    "id",
-                    "name",
-                    "description",
-                    "icon",
-                    "covers",
-                ],
-            }
-            try:
-                await self._artifact_manager.create(
-                    "workspaces",
-                    manifest,
-                    overwrite=False,
-                    stage=False,
-                    context={
-                        "ws": "root",
-                        "user": self._root_user.model_dump(),
-                    },
-                )
-                logger.info("Created workspace collection")
-            except FileExistsError:
-                logger.info("Workspace collection already exists")
-
         self._initialized = True
         return rpc
 
@@ -300,14 +271,6 @@ class WorkspaceManager:
         await self._redis.hset("workspaces", workspace.id, workspace.model_dump_json())
         if self._s3_controller:
             await self._s3_controller.setup_workspace(workspace)
-        if self._artifact_manager:
-            await self._artifact_manager.create(
-                "workspaces/" + workspace.id,
-                workspace.model_dump(),
-                overwrite=True,
-                stage=False,
-                context={"ws": "root", "user": self._root_user.model_dump()},
-            )
         await self._event_bus.emit("workspace_loaded", workspace.model_dump())
         if user_info.get_workspace() != workspace.id:
             await self.bookmark(
@@ -343,11 +306,6 @@ class WorkspaceManager:
         await self._redis.hdel("workspaces", workspace)
         if self._s3_controller:
             await self._s3_controller.cleanup_workspace(workspace_info, force=True)
-        if self._artifact_manager:
-            await self._artifact_manager.delete(
-                "workspaces/" + workspace,
-                context={"ws": "root", "user": self._root_user.model_dump()},
-            )
         await self._event_bus.emit("workspace_deleted", workspace_info.model_dump())
         # remove the workspace from the user's bookmarks
         user_workspace = await self.load_workspace_info(user_info.get_workspace())
@@ -1062,25 +1020,23 @@ class WorkspaceManager:
             )
             return workspace_info
         except KeyError:
-            if load and self._artifact_manager:
-                workspace_info = await self._artifact_manager.read(
-                    "workspaces/" + workspace,
-                    context={"ws": "root", "user": self._root_user.model_dump()},
+            if load and self._s3_controller:
+                workspace_info = await self._s3_controller.load_workspace_info(
+                    workspace, self._root_user
                 )
-                workspace_info = WorkspaceInfo.model_validate(workspace_info)
+                if not workspace_info:
+                    raise KeyError(f"Workspace not found: {workspace}")
                 await self._redis.hset(
-                    "workspaces", workspace, workspace_info.model_dump_json()
+                    "workspaces", workspace_info.id, workspace_info.model_dump_json()
                 )
+                await self._s3_controller.setup_workspace(workspace_info)
                 await self._event_bus.emit(
                     "workspace_loaded", workspace_info.model_dump()
                 )
-                logger.info(
-                    "Loaded workspace info: %s via the artifact manager", workspace
-                )
                 return workspace_info
-            elif load and not self._artifact_manager:
+            elif load and not self._s3_controller:
                 raise KeyError(
-                    f"Workspace ({workspace}) not found and the workspace loader is not configured (requires artifact manager)."
+                    f"Workspace ({workspace}) not found and the workspace loader is not configured (requires s3 enabled)."
                 )
             else:
                 raise KeyError(f"Workspace not found: {workspace}")
@@ -1339,12 +1295,8 @@ class WorkspaceManager:
         logger.info("Updating workspace %s", workspace.id)
 
         await self._redis.hset("workspaces", workspace.id, workspace.model_dump_json())
-        if self._artifact_manager:
-            await self._artifact_manager.edit(
-                "workspaces/" + workspace.id,
-                workspace.model_dump(),
-                context={"ws": "root", "user": self._root_user.model_dump()},
-            )
+        if self._s3_controller:
+            await self._s3_controller.save_workspace_config(workspace)
         await self._event_bus.emit("workspace_changed", workspace.model_dump())
 
     async def delete_client(
@@ -1418,13 +1370,9 @@ class WorkspaceManager:
             await self._event_bus.emit(f"unload:{ws}", "Unloading workspace: " + ws)
 
         if self._s3_controller:
-            await self._s3_controller.cleanup_workspace(winfo)
-        if self._artifact_manager:
+            # since the workspace will be persisted, we can remove the workspace info from the redis store
             await self._redis.hdel("workspaces", ws)
-            await self._artifact_manager.delete(
-                "workspaces/" + ws,
-                context={"ws": "root", "user": self._root_user.model_dump()},
-            )
+            await self._s3_controller.cleanup_workspace(winfo)
         else:
             if not winfo.persistent and not winfo.read_only:
                 await self._redis.hdel("workspaces", ws)

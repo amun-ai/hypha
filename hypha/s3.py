@@ -170,6 +170,8 @@ class S3Controller:
         s3_admin_type="generic",
         enable_s3_proxy=False,
         workspace_bucket="hypha-workspaces",
+        # local_log_dir="./logs",
+        workspace_etc_dir="etc",
         executable_path="",
     ):
         """Set up controller."""
@@ -191,6 +193,8 @@ class S3Controller:
         self.endpoint_url_public = endpoint_url_public or endpoint_url
         self.store = store
         self.workspace_bucket = workspace_bucket
+        # self.local_log_dir = Path(local_log_dir)
+        self.workspace_etc_dir = workspace_etc_dir.rstrip("/")
         s3client = self.create_client_sync()
         try:
             s3client.create_bucket(Bucket=self.workspace_bucket)
@@ -376,6 +380,7 @@ class S3Controller:
                 Proxy request to S3, forwarding only essential headers such as Range,
                 and handling different methods (GET, POST, PUT).
                 """
+                # Extract the query parameters from the client request
                 query_params = dict(request.query_params)
 
                 # Construct the S3 presigned URL using the internal endpoint_url
@@ -384,13 +389,16 @@ class S3Controller:
                 else:
                     s3_url = f"{self.endpoint_url}/{path}"
 
+                # Define the method
                 method = request.method
+
+                # Create a case-insensitive headers dictionary
                 incoming_headers = dict(request.headers)
                 normalized_headers = {
                     key.lower(): value for key, value in incoming_headers.items()
                 }
 
-                # Forward essential headers (like range)
+                # Keep only the essential headers for the request
                 essential_headers = {}
                 if "range" in normalized_headers:
                     essential_headers["Range"] = normalized_headers["range"]
@@ -409,7 +417,7 @@ class S3Controller:
                 # Stream data to/from S3
                 async with httpx.AsyncClient() as client:
                     try:
-                        # Handle streaming for large file uploads (PUT/POST)
+                        # For methods like POST/PUT, pass the request body
                         if method in ["POST", "PUT", "PATCH"]:
                             # Read and stream the request body in chunks
                             async def request_body_stream():
@@ -434,7 +442,7 @@ class S3Controller:
                         # Return the response, stream data for GET requests
                         if method == "GET":
                             return StreamingResponse(
-                                response.aiter_bytes(),  # Async iterator for response body chunks
+                                response.iter_bytes(),  # Async iterator of response body chunks
                                 status_code=response.status_code,
                                 headers={
                                     k: v
@@ -519,6 +527,41 @@ class S3Controller:
                 )
 
         store.register_router(router)
+
+    async def load_workspace_info(self, workspace_name, user_info):
+        """Load workspace from s3 record."""
+        if not user_info.check_permission(workspace_name, UserPermission.read_write):
+            return None
+        config_path = f"{self.workspace_etc_dir}/{workspace_name}/manifest.json"
+        try:
+            async with self.create_client_async() as s3_client:
+                response = await s3_client.get_object(
+                    Bucket=self.workspace_bucket,
+                    Key=config_path,
+                )
+                if (
+                    "ResponseMetadata" in response
+                    and "HTTPStatusCode" in response["ResponseMetadata"]
+                ):
+                    response_code = response["ResponseMetadata"]["HTTPStatusCode"]
+                    if response_code != 200:
+                        logger.info(
+                            "Failed to download file: %s, status code: %d",
+                            config_path,
+                            response_code,
+                        )
+                        return None
+
+                if "ETag" not in response:
+                    return None
+                data = await response["Body"].read()
+                config = json.loads(data.decode("utf-8"))
+                workspace = WorkspaceInfo.model_validate(config)
+                logger.info("Loaded workspace from s3: %s", workspace_name)
+                return workspace
+        except ClientError as ex:
+            if ex.response["Error"]["Code"] == "NoSuchKey":
+                return None
 
     async def _upload_file(self, path: str, request: Request):
         """Upload file."""
@@ -694,6 +737,19 @@ class S3Controller:
         if workspace.read_only and not force:
             return
 
+        if not workspace.persistent or force:
+            async with self.create_client_async() as s3client:
+                # remove workspace etc files
+                await remove_objects_async(
+                    s3client,
+                    self.workspace_bucket,
+                    f"{self.workspace_etc_dir}/{workspace.id}/",
+                )
+                # remove files
+                await remove_objects_async(
+                    s3client, self.workspace_bucket, workspace.id + "/"
+                )
+
         if self.minio_client:
             try:
                 group_info = await self.minio_client.admin_group_info(workspace.id)
@@ -711,7 +767,10 @@ class S3Controller:
         assert isinstance(workspace, WorkspaceInfo)
         if workspace.read_only:
             return
-
+        # Save the workspace info
+        # workspace_dir = self.local_log_dir / workspace.id
+        # os.makedirs(workspace_dir, exist_ok=True)
+        await self.save_workspace_config(workspace)
         if self.minio_client:
             # make sure we have the root user in every workspace
             await self.minio_client.admin_group_add(workspace.id, "root")
@@ -769,6 +828,22 @@ class S3Controller:
                 logger.error(
                     "Failed to attach policy to the group: %s, %s", workspace.id, ex
                 )
+
+    async def save_workspace_config(self, workspace: WorkspaceInfo):
+        """Save workspace."""
+        assert isinstance(workspace, WorkspaceInfo)
+        if workspace.read_only:
+            return
+        async with self.create_client_async() as s3_client:
+            response = await s3_client.put_object(
+                Body=workspace.model_dump_json().encode("utf-8"),
+                Bucket=self.workspace_bucket,
+                Key=f"{self.workspace_etc_dir}/{workspace.id}/manifest.json",
+            )
+            assert (
+                "ResponseMetadata" in response
+                and response["ResponseMetadata"]["HTTPStatusCode"] == 200
+            ), f"Failed to save workspace ({workspace.id}) manifest: {response}"
 
     async def generate_credential(self, context: dict = None):
         """Generate credential."""
