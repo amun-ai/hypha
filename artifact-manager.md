@@ -38,7 +38,7 @@ gallery_manifest = {
     "collection": [],
 }
 
-await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest)
+await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, public=True)
 print("Dataset Gallery created.")
 ```
 
@@ -56,7 +56,7 @@ dataset_manifest = {
     "files": [],
 }
 
-await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True)
+await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True) # no need to set public since it is already set in the collection, but you can make it private by setting public=False
 print("Dataset added to the gallery.")
 ```
 
@@ -124,7 +124,7 @@ async def main():
         "type": "collection",
         "collection": [],
     }
-    await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest)
+    await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, public=True)
     print("Dataset Gallery created.")
 
     # Create a new dataset inside the Dataset Gallery
@@ -195,7 +195,7 @@ gallery_manifest = {
     "collection": [],
 }
 
-await artifact_manager.create(prefix="collections/schema-dataset-gallery", manifest=gallery_manifest)
+await artifact_manager.create(prefix="collections/schema-dataset-gallery", manifest=gallery_manifest, public=True)
 print("Schema-based Dataset Gallery created.")
 ```
 
@@ -223,6 +223,25 @@ print("Valid dataset committed.")
 ---
 
 ## API References
+
+### `create(prefix: str, manifest: dict, public: bool = True, stage: bool = False) -> None`
+
+Creates a new artifact or collection with the specified manifest. The artifact is staged until committed. For collections, the `collection` field should be an empty list.
+
+**Parameters:**
+
+- `prefix`: The path of the new artifact or collection (e.g., `"collections/dataset-gallery/example-dataset"`).
+- `manifest`: The manifest of the new artifact. Ensure the manifest follows the required schema if applicable (e.g., for collections).
+- `public`: Optional. A boolean flag to make the artifact public. Default is `True`.
+- `stage`: Optional. A boolean flag to stage the artifact. Default is `False`.
+
+**Example:**
+
+```python
+await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, public=True, stage=True)
+```
+
+---
 
 ### `edit(prefix: str, manifest: dict) -> None`
 
@@ -332,13 +351,14 @@ get_url = await artifact_manager.get_file(prefix="collections/dataset-gallery/ex
 
 ---
 
-### `list(prefix: str, stage: bool = False) -> list`
+### `list(prefix: str, max_length: int = 1000, stage: bool = False) -> list`
 
 Lists all artifacts or collections under the specified prefix. Returns either a list of artifact names or collection items, depending on whether the prefix points to a collection.
 
 **Parameters:**
 
 - `prefix`: The path under which the artifacts or collections are listed (e.g., `"collections/dataset-gallery"`).
+- `max_length`: Optional. The maximum number of items to list. Default is `1000`.
 - `stage`: Optional. If `True`, it lists the artifacts in staging mode. Default is `False`.
 
 **Returns:** A list of artifact or collection item names.
@@ -424,7 +444,7 @@ gallery_manifest = {
     "type": "collection",
     "collection": [],
 }
-await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest)
+await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, public=True)
 
 # Step 3: Add a dataset to the gallery
 dataset_manifest = {
@@ -434,7 +454,7 @@ dataset_manifest = {
     "type": "dataset",
     "files": [],
 }
-await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True)
+await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True, public=True)
 
 # Step 4: Upload a file to the dataset
 put_url = await artifact_manager.put_file(prefix="collections/dataset-gallery/example-dataset", file_path="data.csv")
@@ -467,26 +487,21 @@ The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifes
 ### Endpoint: `/{workspace}/artifact/{path:path}`
 
 - **Workspace**: The workspace in which the artifact is stored.
-- **Path**: The relative path to the artifact.
-  - For public artifacts, the path must begin with `public/`.
-  - For private artifacts, the path does not include the `public/` prefix and requires proper authentication.
+- **Path**: The relative path to the artifact. For private artifacts, it requires proper authentication by passing the user's token in the request headers.
 
 ### Request Format:
 
 - **Method**: `GET`
 - **Headers**:
-  - `Authorization`: Optional. The user's token for accessing private artifacts (obtained via the login logic or created by `api.generate_token()`). Not required for public artifacts under the `public/` prefix.
+  - `Authorization`: Optional. The user's token for accessing private artifacts (obtained via the login logic or created by `api.generate_token()`). Not required for public artifacts.
 - **Parameters**:
   - `workspace`: The workspace in which the artifact is stored.
-  - `path`:
-
- The path to the artifact (e.g., `public/collections/dataset-gallery/example-dataset`).
+  - `path`: The path to the artifact (e.g., `collections/dataset-gallery/example-dataset`).
   - `stage` (optional): A boolean flag to indicate whether to fetch the staged version of the manifest (`_manifest.yaml`). Default is `False`.
 
 ### Response:
 
-- **For public artifacts**: Returns the artifact manifest if it exists under the `public/` prefix, including any download statistics in the `_stats` field.
-- **For private artifacts**: Returns the artifact manifest if the user has the necessary permissions.
+Returns the artifact manifest if it exists, including any download statistics in the `_stats` field. For private artifacts, make sure if the user has the necessary permissions.
 
 
 ### Example: Fetching a public artifact with download statistics
@@ -496,7 +511,7 @@ import requests
 
 SERVER_URL = "https://hypha.aicell.io"
 workspace = "my-workspace"
-response = requests.get(f"{SERVER_URL}/{workspace}/artifact/public/collections/dataset-gallery/example-dataset")
+response = requests.get(f"{SERVER_URL}/{workspace}/artifact/collections/dataset-gallery/example-dataset")
 if response.ok:
     artifact = response.json()
     print(artifact["name"])  # Output: Example Dataset
