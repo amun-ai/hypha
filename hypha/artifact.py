@@ -87,7 +87,7 @@ class ArtifactController:
 
         router = APIRouter()
 
-        @router.get("/{workspace}/artifact/{path:path}")
+        @router.get("/{workspace}/artifacts/{path:path}")
         async def get_artifact(
             workspace: str,
             path: str,

@@ -70,7 +70,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
 
     # Ensure the public artifact is available via HTTP
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifact/public/collections/dataset-gallery/public-example-dataset"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/public/collections/dataset-gallery/public-example-dataset"
     )
     assert response.status_code == 200
     assert "Public Example Dataset" in response.json()["name"]
@@ -111,7 +111,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
     token = await api.generate_token()
     # Ensure the private artifact is available via HTTP (requires authentication or special permissions)
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifact/collections/private-dataset-gallery/private-example-dataset",
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/collections/private-dataset-gallery/private-example-dataset",
         headers={"Authorization": f"Bearer {token}"},
     )
 
@@ -120,7 +120,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
 
     # If no authentication is provided, the server should return a 401 Unauthorized status code
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifact/collections/private-dataset-gallery/private-example-dataset"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/collections/private-dataset-gallery/private-example-dataset"
     )
     assert response.status_code == 403
 

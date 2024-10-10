@@ -8,6 +8,7 @@
  - Breaking Change: Remove `info`, `warning`, `error`, `critical`, `debug` from the `hypha` module, use `log` or `log_event` instead.
  - Support basic observability for the workspace, including workspace status, event bus and websocket connection status.
  - Support download statistics for the artifacts in the artifact manager.
+ - Change http endpoint from `/{workspace}/artifact/{artifact_id}` to `/{workspace}/artifacts/{artifact_id}` to make it consistent with the other endpoints.
 
 ### 0.20.37
  - Add s3-proxy to allow accessing s3 presigned url in case the s3 server is not directly accessible. Use `--enable-s3-proxy` to enable the s3 proxy when starting Hypha.
