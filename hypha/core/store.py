@@ -740,10 +740,6 @@ class RedisStore:
         """Set the artifact controller."""
         self._artifact_manager = controller
 
-    def set_logging_service(self, service):
-        """Set the logging service."""
-        self._logging_service = service
-
     def register_public_service(self, service: dict):
         """Register a service."""
         assert not self._ready, "Cannot register public service after ready"
