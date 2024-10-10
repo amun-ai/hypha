@@ -35,6 +35,54 @@ def get_metric_value(metric_name, labels):
     return None
 
 
-async def test_metrics(fastapi_server):
-    """Test metrics."""
-    assert get_metric_value("active_services", {"workspace": "ws-user-root"}) >= 1
+async def test_metrics(fastapi_server, test_user_token):
+    """Test Prometheus metrics for workspace and service creation."""
+    # Connect to the server and create a new workspace
+    api = await connect_to_server(
+        {
+            "client_id": "my-app-99",
+            "server_url": SERVER_URL,
+            "token": test_user_token,
+        }
+    )
+    await api.log("hello")
+
+    # Check the initial number of active workspaces
+    initial_active_workspaces = get_metric_value("active_workspaces", {})
+    assert initial_active_workspaces is not None
+
+    # Create a new workspace
+    await api.create_workspace(
+        {
+            "name": "my-test-workspace-metrics",
+            "description": "This is a test workspace",
+            "owners": ["user1@imjoy.io", "user2@imjoy.io"],
+        },
+        overwrite=True,
+    )
+
+    # Check if the number of active workspaces has increased
+    active_workspaces = get_metric_value("active_workspaces", {})
+    assert (
+        active_workspaces == initial_active_workspaces + 1
+    ), "Active workspace count did not increase."
+
+    # Check if a service was added to the workspace
+    active_services = get_metric_value(
+        "active_services", {"workspace": "my-test-workspace-metrics"}
+    )
+    assert active_services is None, "Expected no active services in the new workspace."
+
+    # Verify that other services and workspaces haven't changed unexpectedly
+    public_active_services = get_metric_value(
+        "active_services", {"workspace": "public"}
+    )
+    assert (
+        public_active_services is not None
+    ), "Public active services metric is missing."
+
+    # Optionally check that the RPC call metric is functioning
+    rpc_call_count = get_metric_value("rpc_call", {"workspace": api.config.workspace})
+    assert (
+        rpc_call_count is not None
+    ), "Expected an RPC call metric for the new workspace."
