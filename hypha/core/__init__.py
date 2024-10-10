@@ -444,6 +444,7 @@ class RedisRPCConnection:
 
 class RedisEventBus:
     """Represent a redis event bus."""
+    _counter = Counter("event_bus", "Counts the events on the redis event bus", ["event"])
 
     def __init__(self, redis) -> None:
         """Initialize the event bus."""
@@ -452,9 +453,6 @@ class RedisEventBus:
         self._stop = False
         self._local_event_bus = EventBus(logger)
         self._redis_event_bus = EventBus(logger)
-        self._counter = Counter(
-            "event_bus", "Counts the events on the redis event bus", ["event"]
-        )
 
     async def init(self):
         """Setup the event bus."""
@@ -576,25 +574,25 @@ class RedisEventBus:
                 try:
                     if msg:
                         channel = msg["channel"].decode("utf-8")
-                        self._counter.labels(event="*").inc()
+                        RedisEventBus._counter.labels(event="*").inc()
                         if channel.startswith("event:b:"):
                             event_type = channel[8:]
                             data = msg["data"]
                             await self._redis_event_bus.emit(event_type, data)
                             if ":" not in event_type:
-                                self._counter.labels(event=event_type).inc()
+                                RedisEventBus._counter.labels(event=event_type).inc()
                         elif channel.startswith("event:d:"):
                             event_type = channel[8:]
                             data = json.loads(msg["data"])
                             await self._redis_event_bus.emit(event_type, data)
                             if ":" not in event_type:
-                                self._counter.labels(event=event_type).inc()
+                                RedisEventBus._counter.labels(event=event_type).inc()
                         elif channel.startswith("event:s:"):
                             event_type = channel[8:]
                             data = msg["data"].decode("utf-8")
                             await self._redis_event_bus.emit(event_type, data)
                             if ":" not in event_type:
-                                self._counter.labels(event=event_type).inc()
+                                RedisEventBus._counter.labels(event=event_type).inc()
                         else:
                             logger.info("Unknown channel: %s", channel)
                 except Exception as exp:
