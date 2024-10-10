@@ -1,17 +1,18 @@
 # Artifact Manager
 
-The `Artifact Manager` is a built-in Hypha service for indexing, managing, and storing resources such as datasets, AI models, and applications. It provides a structured way to manage datasets and similar resources, enabling efficient listing, uploading, updating, and deleting of files.
+The `Artifact Manager` is a built-in Hypha service for indexing, managing, and storing resources such as datasets, AI models, and applications. It provides a structured way to manage datasets and similar resources, enabling efficient listing, uploading, updating, and deleting of files. It also now supports tracking download statistics for each artifact.
 
-A typical use case for the `Artifact Manager` is as a backend for a single-page web application that displays a gallery of datasets, AI models, applications, or other types of resources. The default metadata of an artifact is designed to render a grid of cards on a webpage.
+A typical use case for the `Artifact Manager` is as a backend for a single-page web application that displays a gallery of datasets, AI models, applications, or other types of resources. The default metadata of an artifact is designed to render a grid of cards on a webpage. It also supports tracking download statistics.
 
 **Note:** The `Artifact Manager` is only available when your Hypha server has S3 storage enabled.
 
+---
 
 ## Getting Started
 
 ### Step 1: Connecting to the Artifact Manager Service
 
-To use the `Artifact Manager`, you first need to connect to the Hypha server. This API allows you to create, read, edit, and delete datasets in the artifact registry (stored in a S3 bucket for each workspace).
+To use the `Artifact Manager`, you first need to connect to the Hypha server. This API allows you to create, read, edit, and delete datasets in the artifact registry (stored in an S3 bucket for each workspace).
 
 ```python
 from hypha_rpc.websocket_client import connect_to_server
@@ -25,7 +26,7 @@ artifact_manager = await server.get_service("public/artifact-manager")
 
 ### Step 2: Creating a Dataset Gallery Collection
 
-Once connected, you can create a collection to organize datasets in the gallery. 
+Once connected, you can create a collection to organize datasets in the gallery.
 
 ```python
 # Create a collection for the Dataset Gallery
@@ -59,13 +60,15 @@ await artifact_manager.create(prefix="collections/dataset-gallery/example-datase
 print("Dataset added to the gallery.")
 ```
 
-### Step 4: Uploading Files to the Dataset
+### Step 4: Uploading Files to the Dataset with Download Statistics
 
-Once you have created a dataset, you can upload files to it by generating a pre-signed URL.
+Once you have created a dataset, you can upload files to it by generating a pre-signed URL. This URL allows you to upload the actual files to the artifact's S3 bucket.
+
+Additionally, when uploading files to an artifact, you can specify a `download_weight` for each file. This weight determines how the file impacts the artifact's download count when it is accessed. For example, primary files might have a higher `download_weight`, while secondary files might have no impact. The download count is automatically updated whenever users download files from the artifact.
 
 ```python
-# Get a pre-signed URL to upload a file
-put_url = await artifact_manager.put_file(prefix="collections/dataset-gallery/example-dataset", file_path="data.csv")
+# Get a pre-signed URL to upload a file, with a download_weight assigned
+put_url = await artifact_manager.put_file(prefix="collections/dataset-gallery/example-dataset", file_path="data.csv", options={"download_weight": 0.5})
 
 # Upload the file using an HTTP PUT request
 with open("path/to/local/data.csv", "rb") as f:
@@ -99,7 +102,7 @@ print("Datasets in the gallery:", datasets)
 
 ## Full Example: Creating and Managing a Dataset Gallery
 
-Here’s a full example that shows how to connect to the service, create a dataset gallery, add a dataset, upload files, and commit the dataset.
+Here’s a full example that shows how to connect to the service, create a dataset gallery, add a dataset, upload files with download statistics, and commit the dataset.
 
 ```python
 import asyncio
@@ -135,8 +138,8 @@ async def main():
     await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True)
     print("Dataset added to the gallery.")
 
-    # Get a pre-signed URL to upload a file
-    put_url = await artifact_manager.put_file(prefix="collections/dataset-gallery/example-dataset", file_path="data.csv")
+    # Get a pre-signed URL to upload a file, with a download_weight assigned
+    put_url = await artifact_manager.put_file(prefix="collections/dataset-gallery/example-dataset", file_path="data.csv", options={"download_weight": 0.5})
 
     # Upload the file using an HTTP PUT request
     with open("path/to/local/data.csv", "rb") as f:
@@ -217,42 +220,9 @@ await artifact_manager.commit(prefix="collections/schema-dataset-gallery/valid-d
 print("Valid dataset committed.")
 ```
 
-### Step 3: Accessing the collection via HTTP API
-
-You can access the collection via the HTTP API to retrieve the schema and datasets.
-This can be used for rendering a gallery of datasets on a webpage.
-
-```javascript
-// Fetch the schema for the collection
-fetch("https://hypha.aicell.io/my-workspace/artifact/public/collections/schema-dataset-gallery")
-    .then(response => response.json())
-    .then(data => console.log("Schema:", data.collection_schema));
-```
-
-## API Reference
-
-This section details the core functions provided by the `Artifact Manager` for creating, managing, and validating artifacts such as datasets and collections.
-
-### `create(prefix: str, manifest: dict, overwrite: bool = False, stage: bool = False) -> dict`
-
-Creates a new artifact or collection with the provided manifest. If the artifact already exists, you must set `overwrite=True` to overwrite it.
-
-**Parameters:**
-
-- `prefix`: The path where the artifact or collection will be created (e.g., `"collections/dataset-gallery"`).
-- `manifest`: The manifest describing the artifact (must include fields like `id`, `name`, and `type`).
-- `overwrite`: Optional. If `True`, it will overwrite an existing artifact. Default is `False`.
-- `stage`: Optional. If `True`, it will put the artifact into staging mode. Default is `False`.
-
-**Returns:** The created manifest as a dictionary.
-
-**Example:**
-
-```python
-await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest)
-```
-
 ---
+
+## API References
 
 ### `edit(prefix: str, manifest: dict) -> None`
 
@@ -303,7 +273,7 @@ await artifact_manager.delete(prefix="collections/dataset-gallery/example-datase
 
 ---
 
-### `put_file(prefix: str, file_path: str) -> str`
+### `put_file(prefix: str, file_path: str, options: dict = None) -> str`
 
 Generates a pre-signed URL to upload a file to an artifact. You can then use the URL with an HTTP `PUT` request to upload the file.
 
@@ -311,13 +281,16 @@ Generates a pre-signed URL to upload a file to an artifact. You can then use the
 
 - `prefix`: The path of the artifact where the file will be uploaded (e.g., `"collections/dataset-gallery/example-dataset"`).
 - `file_path`: The relative path of the file to upload within the artifact (e.g., `"data.csv"`).
+- `options`: Optional. Additional options for the file upload. Default is `None`.
+The options can include:
+  - `download_weight`: A float value representing the impact of the file on the download count. Default is `0`.
 
 **Returns:** A pre-signed URL for uploading the file.
 
 **Example:**
 
 ```python
-put_url = await artifact_manager.put_file(prefix="collections/dataset-gallery/example-dataset", file_path="data.csv")
+put_url = await artifact_manager.put_file(prefix="collections/dataset-gallery/example-dataset", file_path="data.csv", options={"download_weight": 1.0})
 ```
 
 ---
@@ -339,7 +312,7 @@ await artifact_manager.remove_file(prefix="collections/dataset-gallery/example-d
 
 ---
 
-### `get_file(prefix: str, path: str) -> str`
+### `get_file(prefix: str, path: str, options: dict=None) -> str`
 
 Generates a pre-signed URL to download a file from the artifact.
 
@@ -347,6 +320,9 @@ Generates a pre-signed URL to download a file from the artifact.
 
 - `prefix`: The path of the artifact (e.g., `"collections/dataset-gallery/example-dataset"`).
 - `path`: The relative path of the file to download (e.g., `"data.csv"`).
+- `options`: Optional. Additional options for the file download. Default is `None`.
+The options can include:
+  - `silent`: A boolean flag to suppress download statistics. Default is `False`.
 
 **Returns:** A pre-signed URL for downloading the file.
 
@@ -460,6 +436,20 @@ print("Datasets in the gallery:", datasets)
 
 The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifests and data. This is useful for public-facing web applications that need to access datasets, models, or applications.
 
+
+### Resetting Download Statistics
+
+You can reset the download statistics of a dataset using the `reset_stats` function.
+
+```python
+await artifact_manager.reset_stats(prefix="collections/dataset-gallery/example-dataset")
+print("Download statistics reset.")
+```
+
+## HTTP API for Accessing Artifacts and Download Counts
+
+The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifests, data, and download statistics. This is useful for public-facing web applications that need to access datasets, models, or applications.
+
 ### Endpoint: `/{workspace}/artifact/{path:path}`
 
 - **Workspace**: The workspace in which the artifact is stored.
@@ -472,17 +462,18 @@ The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifes
 - **Method**: `GET`
 - **Parameters**:
   - `workspace`: The workspace in which the artifact is stored.
-  - `path`: The path to the artifact (e.g., `public/collections/dataset-gallery/example-dataset`).
+  - `path`:
+
+ The path to the artifact (e.g., `public/collections/dataset-gallery/example-dataset`).
   - `stage` (optional): A boolean flag to indicate whether to fetch the staged version of the manifest (`_manifest.yaml`). Default is `False`.
 
 ### Response:
 
-- **For public artifacts**: Returns the artifact manifest if it exists under the `public/` prefix.
+- **For public artifacts**: Returns the artifact manifest if it exists under the `public/` prefix, including any download statistics.
 - **For private artifacts**: Returns the artifact manifest if the user has the necessary permissions.
 
-### Example:
 
-#### Fetching a public artifact:
+### Example: Fetching a public artifact with download statistics
 
 ```python
 import requests
@@ -493,17 +484,9 @@ response = requests.get(f"{SERVER_URL}/{workspace}/artifact/public/collections/d
 if response.ok:
     artifact = response.json()
     print(artifact["name"])  # Output: Example Dataset
+    print(artifact["_stats"]["download_count"])  # Output: Download count for the dataset
 else:
     print(f"Error: {response.status_code}")
 ```
 
-#### Fetching a private artifact:
 
-```python
-response = requests.get(f"{SERVER_URL}/{workspace}/artifact/collections/private-dataset-gallery/private-example-dataset")
-if response.ok:
-    artifact = response.json()
-    print(artifact["name"])  # Output: Private Example Dataset
-else:
-    print(f"Error: {response.status_code}")
-```
