@@ -5,6 +5,7 @@ import json
 from fastapi import Query, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
 from fastapi import HTTPException
+from prometheus_client import Gauge
 
 from hypha import __version__
 from hypha.core import UserInfo, UserPermission
@@ -30,6 +31,9 @@ class WebsocketServer:
         self.store.set_websocket_server(self)
         self._stop = False
         self._websockets = {}
+        self._gauge = Gauge(
+            "websocket_connections", "Number of websocket connections", ["workspace"]
+        )
 
         @app.websocket(path)
         async def websocket_endpoint(
@@ -260,6 +264,7 @@ class WebsocketServer:
         conn = RedisRPCConnection(event_bus, workspace, client_id, user_info, None)
         self._websockets[f"{workspace}/{client_id}"] = websocket
         try:
+            self._gauge.labels(workspace=workspace).inc()
             event_bus.on_local(f"unload:{workspace}", force_disconnect)
 
             async def send_bytes(data):
@@ -322,6 +327,7 @@ class WebsocketServer:
         except Exception as e:
             raise e
         finally:
+            self._gauge.labels(workspace=workspace).dec()
             await conn.disconnect("disconnected")
             event_bus.off_local(f"unload:{workspace}", force_disconnect)
             if (

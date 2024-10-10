@@ -38,6 +38,7 @@ REQUIREMENTS = [
     "jsonschema>=3.2.0",
     "sqlalchemy>=2.0.35",
     "aiosqlite>=0.20.0",
+    "prometheus-client>=0.21.0",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()

@@ -6,11 +6,24 @@ import sys
 from typing import Optional, Union, List, Any, Dict
 from contextlib import asynccontextmanager
 import random
+import datetime
 
 from fakeredis import aioredis
+from prometheus_client import Gauge
 from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
 from pydantic import BaseModel, Field
+from sqlalchemy import (
+    Column,
+    String,
+    Integer,
+    JSON,
+    DateTime,
+    select,
+    func,
+)
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from hypha.core import (
     ApplicationArtifact,
@@ -29,10 +42,38 @@ logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("workspace")
 logger.setLevel(logging.INFO)
 
+Base = declarative_base()
+
+
 SERVICE_SUMMARY_FIELD = ["id", "name", "type", "description", "config"]
 
 # Ensure the client_id is safe
 _allowed_characters = re.compile(r"^[a-zA-Z0-9-_/|*]*$")
+
+
+# SQLAlchemy model for storing events
+class EventLog(Base):
+    __tablename__ = "event_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_type = Column(String, nullable=False)
+    workspace = Column(String, nullable=False)
+    user_id = Column(String, nullable=False)
+    timestamp = Column(
+        DateTime, default=datetime.datetime.now(datetime.timezone.utc), index=True
+    )
+    data = Column(JSON, nullable=True)  # Store any additional event metadata
+
+    def to_dict(self):
+        """Convert the SQLAlchemy model instance to a dictionary."""
+        return {
+            "id": self.id,
+            "event_type": self.event_type,
+            "workspace": self.workspace,
+            "user_id": self.user_id,
+            "timestamp": self.timestamp.isoformat(),  # Convert datetime to ISO string
+            "data": self.data,
+        }
 
 
 def validate_key_part(key_part: str):
@@ -64,6 +105,7 @@ class WorkspaceManager:
         event_bus: EventBus,
         server_info: dict,
         client_id: str,
+        sql_engine: Optional[str] = None,
         s3_controller: Optional[Any] = None,
         artifact_manager: Optional[Any] = None,
     ):
@@ -76,6 +118,21 @@ class WorkspaceManager:
         self._client_id = client_id
         self._s3_controller = s3_controller
         self._artifact_manager = artifact_manager
+        self._sql_engine = sql_engine
+        if self._sql_engine:
+            self.SessionLocal = async_sessionmaker(
+                self._sql_engine, expire_on_commit=False, class_=AsyncSession
+            )
+        else:
+            self.SessionLocal = None
+        self._active_ws = Gauge("active_workspaces", "Number of active workspaces")
+        self._active_svc = Gauge(
+            "active_services", "Number of active services", ["workspace"]
+        )
+
+    async def _get_sql_session(self):
+        """Return an async session for the database."""
+        return self.SessionLocal()
 
     def get_client_id(self):
         assert self._client_id, "client id must not be empty."
@@ -97,8 +154,139 @@ class WorkspaceManager:
             management_service,
             {"notify": False},
         )
+        if self._sql_engine:
+            async with self._sql_engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+                logger.info("Database tables created successfully.")
         self._initialized = True
         return rpc
+
+    @schema_method
+    async def log_event(
+        self,
+        event_type: str = Field(..., description="Event type"),
+        data: Optional[dict] = Field(None, description="Additional event data"),
+        context: dict = None,
+    ):
+        """Log a new event, checking permissions."""
+        assert " " not in event_type, "Event type must not contain spaces"
+        workspace = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(workspace, UserPermission.read_write):
+            raise PermissionError(f"Permission denied for workspace {workspace}")
+
+        session = await self._get_sql_session()
+        try:
+            async with session.begin():
+                event_log = EventLog(
+                    event_type=event_type,
+                    workspace=workspace,
+                    user_id=user_info.id,
+                    data=data,
+                )
+                session.add(event_log)
+                await session.commit()
+                logger.info(
+                    f"Logged event: {event_type} by {user_info.id} in {workspace}"
+                )
+            logger.info(f"Event logged: {event_type}")
+        except Exception as e:
+            logger.error(f"Failed to log event: {event_type}, {e}")
+            raise
+        finally:
+            await session.close()
+
+    @schema_method
+    async def get_event_stats(
+        self,
+        event_type: Optional[str] = Field(None, description="Event type"),
+        start_time: Optional[datetime.datetime] = Field(
+            None, description="Start time for filtering events"
+        ),
+        end_time: Optional[datetime.datetime] = Field(
+            None, description="End time for filtering events"
+        ),
+        context: Optional[dict] = None,
+    ):
+        """Get statistics for specific event types, filtered by workspace, user, and time range."""
+        workspace = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(workspace, UserPermission.read):
+            raise PermissionError(f"Permission denied for workspace {workspace}")
+
+        session = await self._get_sql_session()
+        try:
+            async with session.begin():
+                query = select(
+                    EventLog.event_type, func.count(EventLog.id).label("count")
+                ).filter(
+                    EventLog.workspace == workspace, EventLog.user_id == user_info.id
+                )
+
+                # Apply optional filters
+                if event_type:
+                    query = query.filter(EventLog.event_type == event_type)
+                if start_time:
+                    query = query.filter(EventLog.timestamp >= start_time)
+                if end_time:
+                    query = query.filter(EventLog.timestamp <= end_time)
+
+                query = query.group_by(EventLog.event_type)
+                result = await session.execute(query)
+                stats = result.fetchall()
+                # Convert rows to dictionaries
+                stats_dicts = [dict(row._mapping) for row in stats]
+                return stats_dicts
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
+    @schema_method
+    async def get_events(
+        self,
+        event_type: Optional[str] = Field(None, description="Event type"),
+        start_time: Optional[datetime.datetime] = Field(
+            None, description="Start time for filtering events"
+        ),
+        end_time: Optional[datetime.datetime] = Field(
+            None, description="End time for filtering events"
+        ),
+        context: Optional[dict] = None,
+    ):
+        """Search for events with various filters, enforcing workspace and permission checks."""
+        workspace = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(workspace, UserPermission.read):
+            raise PermissionError(f"Permission denied for workspace {workspace}")
+
+        session = await self._get_sql_session()
+        try:
+            async with session.begin():
+                query = select(EventLog).filter(
+                    EventLog.workspace == workspace, EventLog.user_id == user_info.id
+                )
+
+                # Apply optional filters
+                if event_type:
+                    query = query.filter(EventLog.event_type == event_type)
+                if start_time:
+                    query = query.filter(EventLog.timestamp >= start_time)
+                if end_time:
+                    query = query.filter(EventLog.timestamp <= end_time)
+
+                result = await session.execute(query)
+                # Use scalars() to get model instances, not rows
+                events = result.scalars().all()
+
+                # Convert each EventLog instance to a dictionary using to_dict()
+                event_dicts = [event.to_dict() for event in events]
+
+                return event_dicts
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
 
     @schema_method
     async def get_summary(self, context: Optional[dict] = None) -> dict:
@@ -233,16 +421,17 @@ class WorkspaceManager:
         assert "id" in config, "Workspace id must be provided."
         if not config.get("name"):
             config["name"] = config["id"]
-        ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         if user_info.is_anonymous:
             raise Exception("Only registered user can create workspace.")
-        if not overwrite:
-            try:
-                if await self.load_workspace_info(config["id"]):
-                    raise RuntimeError(f"Workspace already exists: {config['id']}")
-            except KeyError:
-                pass
+
+        try:
+            await self.load_workspace_info(config["id"])
+            if not overwrite:
+                raise RuntimeError(f"Workspace already exists: {config['id']}")
+            exists = True
+        except KeyError:
+            exists = False
 
         config["persistent"] = config.get("persistent") or False
         if user_info.is_anonymous and config["persistent"]:
@@ -269,6 +458,8 @@ class WorkspaceManager:
                 }
             ]
         await self._redis.hset("workspaces", workspace.id, workspace.model_dump_json())
+        if not exists:
+            self._active_ws.inc()
         if self._s3_controller:
             await self._s3_controller.setup_workspace(workspace)
         await self._event_bus.emit("workspace_loaded", workspace.model_dump())
@@ -795,6 +986,7 @@ class WorkspaceManager:
                     "service_added", service.model_dump(mode="json")
                 )
                 logger.info(f"Adding service {service.id}")
+                self._active_svc.labels(workspace=ws).inc()
 
     @schema_method
     async def get_service_info(
@@ -912,6 +1104,7 @@ class WorkspaceManager:
                 )
             else:
                 await self._event_bus.emit("service_removed", service.model_dump())
+                self._active_svc.labels(workspace=ws).dec()
         else:
             logger.warning(f"Service {key} does not exist and cannot be removed.")
             raise KeyError(f"Service not found: {service.id}")
@@ -973,40 +1166,7 @@ class WorkspaceManager:
         self, msg: str = Field(..., description="log a message"), context=None
     ):
         """Log a app message."""
-        self.validate_context(context, permission=UserPermission.read)
-        logger.info("%s: %s", context["from"], msg)
-
-    @schema_method
-    async def info(
-        self, msg: str = Field(..., description="log a message as info"), context=None
-    ):
-        """Log a app message."""
-        self.validate_context(context, permission=UserPermission.read)
-        logger.info("%s: %s", context["from"], msg)
-
-    @schema_method
-    async def warning(
-        self, msg: str = Field(..., description="log a message as info"), context=None
-    ):
-        """Log a app message (warning)."""
-        self.validate_context(context, permission=UserPermission.read)
-        logger.warning("WARNING: %s: %s", context["from"], msg)
-
-    @schema_method
-    async def error(
-        self, msg: str = Field(..., description="log an error message"), context=None
-    ):
-        """Log a app error message (error)."""
-        self.validate_context(context, permission=UserPermission.read)
-        logger.error("%s: %s", context["from"], msg)
-
-    @schema_method
-    async def critical(
-        self, msg: str = Field(..., description="log an critical message"), context=None
-    ):
-        """Log a app error message (critical)."""
-        self.validate_context(context, permission=UserPermission.read)
-        logger.critical("%s: %s", context["from"], msg)
+        await self.log_event("log", msg, context=context)
 
     async def load_workspace_info(self, workspace: str, load=True) -> WorkspaceInfo:
         """Load info of the current workspace from the redis store."""
@@ -1377,6 +1537,8 @@ class WorkspaceManager:
             if not winfo.persistent and not winfo.read_only:
                 await self._redis.hdel("workspaces", ws)
 
+        self._active_ws.dec()
+
         await self._event_bus.emit("workspace_unloaded", winfo.model_dump())
         logger.info("Workspace %s unloaded.", ws)
 
@@ -1431,10 +1593,9 @@ class WorkspaceManager:
             },
             "echo": self.echo,
             "log": self.log,
-            "info": self.info,
-            "error": self.error,
-            "warning": self.warning,
-            "critical": self.critical,
+            "log_event": self.log_event,
+            "get_event_stats": self.get_event_stats,
+            "get_events": self.get_events,
             "register_service": self.register_service,
             "unregister_service": self.unregister_service,
             "list_workspaces": self.list_workspaces,

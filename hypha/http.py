@@ -16,11 +16,11 @@ from fastapi import Depends, Request
 from starlette.routing import Route, Match
 from starlette.types import ASGIApp
 from jinja2 import Environment, PackageLoader, select_autoescape
+from prometheus_client import generate_latest
 from fastapi.responses import (
     JSONResponse,
     Response,
     RedirectResponse,
-    StreamingResponse,
     FileResponse,
 )
 import jose
@@ -844,6 +844,11 @@ class HTTPProxy:
         async def login(request: Request):
             """Redirect to the login page."""
             return RedirectResponse(norm_url("/public/apps/hypha-login/"))
+
+        @app.get(norm_url("/metrics"))
+        async def metrics():
+            """Expose Prometheus metrics."""
+            return Response(generate_latest(), media_type="text/plain")
 
         @app.get(norm_url("/{page:path}"))
         async def get_pages(

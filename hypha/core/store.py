@@ -21,6 +21,9 @@ from hypha.core import (
     UserInfo,
     WorkspaceInfo,
 )
+from sqlalchemy.ext.asyncio import (
+    create_async_engine,
+)
 from hypha.core.auth import (
     create_scope,
     parse_token,
@@ -87,6 +90,7 @@ class RedisStore:
         public_base_url=None,
         local_base_url=None,
         redis_uri=None,
+        database_uri=None,
         reconnection_token_life_time=2 * 24 * 60 * 60,
     ):
         """Initialize the redis store."""
@@ -121,6 +125,17 @@ class RedisStore:
 
         logger.info("Server info: %s", self._server_info)
 
+        self._database_uri = database_uri
+        if self._database_uri is None:
+            database_uri = (
+                "sqlite+aiosqlite:///:memory:"  # In-memory SQLite for testing
+            )
+            logger.warning(
+                "Using in-memory SQLite database for event logging, all data will be lost on restart!"
+            )
+
+        self._sql_engine = create_async_engine(database_uri, echo=False)
+
         if redis_uri and redis_uri.startswith("redis://"):
             from redis import asyncio as aioredis
 
@@ -147,6 +162,9 @@ class RedisStore:
 
     def get_redis(self):
         return self._redis
+
+    def get_sql_engine(self):
+        return self._sql_engine
 
     def get_event_bus(self):
         """Get the event bus."""
@@ -430,6 +448,7 @@ class RedisStore:
                 raise
         for service in self._public_services:
             try:
+                logger.info("Registering public service: %s", service.id)
                 await api.register_service(
                     service.model_dump(),
                     {"notify": True},
@@ -615,6 +634,7 @@ class RedisStore:
             self._event_bus,
             self._server_info,
             self._manager_id,
+            self._sql_engine,
             self._s3_controller,
             self._artifact_manager,
         )

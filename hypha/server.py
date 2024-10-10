@@ -104,7 +104,6 @@ def start_builtin_services(
             store,
             s3_controller=s3_controller,
             workspace_bucket=args.workspace_bucket,
-            database_uri=args.database_uri,
         )
 
     if args.enable_server_apps:
@@ -221,6 +220,7 @@ def create_application(args):
         public_base_url=public_base_url,
         local_base_url=local_base_url,
         redis_uri=args.redis_uri,
+        database_uri=args.database_uri,
         reconnection_token_life_time=float(
             env.get("RECONNECTION_TOKEN_LIFE_TIME", str(2 * 24 * 60 * 60))
         ),
