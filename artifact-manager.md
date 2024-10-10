@@ -484,7 +484,7 @@ print("Download statistics reset.")
 
 The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifests, data, and download statistics. This is useful for public-facing web applications that need to access datasets, models, or applications.
 
-### Endpoint: `/{workspace}/artifact/{path:path}`
+### Endpoint: `/{workspace}/artifacts/{path:path}`
 
 - **Workspace**: The workspace in which the artifact is stored.
 - **Path**: The relative path to the artifact. For private artifacts, it requires proper authentication by passing the user's token in the request headers.
@@ -511,7 +511,7 @@ import requests
 
 SERVER_URL = "https://hypha.aicell.io"
 workspace = "my-workspace"
-response = requests.get(f"{SERVER_URL}/{workspace}/artifact/collections/dataset-gallery/example-dataset")
+response = requests.get(f"{SERVER_URL}/{workspace}/artifacts/collections/dataset-gallery/example-dataset")
 if response.ok:
     artifact = response.json()
     print(artifact["name"])  # Output: Example Dataset
