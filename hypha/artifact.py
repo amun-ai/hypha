@@ -16,7 +16,6 @@ from hypha.utils import remove_objects_async, list_objects_async, safe_join
 from botocore.exceptions import ClientError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.asyncio import (
-    create_async_engine,
     async_sessionmaker,
     AsyncSession,
 )
@@ -175,6 +174,8 @@ class ArtifactController:
                 if stage:
                     manifest["stage_files"] = artifact.stage_files
                 return manifest
+        except Exception as e:
+            raise e
         finally:
             await session.close()
 
@@ -253,6 +254,8 @@ class ArtifactController:
                 if stage:
                     manifest["stage_files"] = artifact.stage_files
                 return manifest
+        except Exception as e:
+            raise e
         finally:
             await session.close()
 
@@ -322,7 +325,8 @@ class ArtifactController:
                 session.add(new_artifact)
                 await session.commit()
             logger.info(f"Created artifact under prefix: {prefix}")
-
+        except Exception as e:
+            raise e
         finally:
             await session.close()
 
@@ -379,6 +383,8 @@ class ArtifactController:
                 session.add(artifact)
                 await session.commit()
             logger.info(f"Edited artifact under prefix: {prefix}")
+        except Exception as e:
+            raise e
         finally:
             await session.close()
 
@@ -445,6 +451,8 @@ class ArtifactController:
                 session.add(artifact)
                 await session.commit()
             logger.info(f"Committed artifact under prefix: {prefix}")
+        except Exception as e:
+            raise e
         finally:
             await session.close()
 
@@ -468,6 +476,8 @@ class ArtifactController:
                     await session.delete(artifact)
                     await session.commit()
             logger.info(f"Deleted artifact under prefix: {prefix}")
+        except Exception as e:
+            raise e
         finally:
             await session.close()
 
@@ -528,6 +538,8 @@ class ArtifactController:
                     name = name.split("/")[0]
                     collection.append(name)
                 return collection
+        except Exception as e:
+            raise e
         finally:
             await session.close()
 
@@ -617,7 +629,6 @@ class ArtifactController:
                     summary_fields.append({"_prefix": artifact.prefix, **sub_manifest})
 
                 return summary_fields
-
         except Exception as e:
             raise ValueError(
                 f"An error occurred while executing the search query: {str(e)}"
@@ -658,6 +669,8 @@ class ArtifactController:
                 session.add(artifact)
                 await session.commit()
             logger.info(f"Generated pre-signed URL for file upload: {file_path}")
+        except Exception as e:
+            raise e
         finally:
             await session.close()
 
@@ -708,6 +721,8 @@ class ArtifactController:
                 flag_modified(artifact, "stage_files")
                 session.add(artifact)
                 await session.commit()
+        except Exception as e:
+            raise e
         finally:
             await session.close()
 

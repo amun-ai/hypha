@@ -6,14 +6,12 @@ import sys
 from typing import Optional, Union, List, Any, Dict
 from contextlib import asynccontextmanager
 import random
+import datetime
 
 from fakeredis import aioredis
 from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
 from pydantic import BaseModel, Field
-
-import logging
-import sys
 from sqlalchemy import (
     Column,
     String,
@@ -24,10 +22,7 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-import datetime
-from hypha.core import UserInfo, UserPermission  # Replace with actual imports
-
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from hypha.core import (
     ApplicationArtifact,
@@ -191,6 +186,10 @@ class WorkspaceManager:
                 logger.info(
                     f"Logged event: {event_type} by {user_info.id} in {workspace}"
                 )
+            logger.info(f"Event logged: {event_type}")
+        except Exception as e:
+            logger.error(f"Failed to log event: {event_type}, {e}")
+            raise
         finally:
             await session.close()
 
@@ -235,6 +234,8 @@ class WorkspaceManager:
                 # Convert rows to dictionaries
                 stats_dicts = [dict(row._mapping) for row in stats]
                 return stats_dicts
+        except Exception as e:
+            raise e
         finally:
             await session.close()
 
@@ -279,6 +280,8 @@ class WorkspaceManager:
                 event_dicts = [event.to_dict() for event in events]
 
                 return event_dicts
+        except Exception as e:
+            raise e
         finally:
             await session.close()
 
@@ -1155,8 +1158,7 @@ class WorkspaceManager:
         self, msg: str = Field(..., description="log a message"), context=None
     ):
         """Log a app message."""
-        self.validate_context(context, permission=UserPermission.read)
-        logger.info("%s: %s", context["from"], msg)
+        await self.log_event("log", msg, context=context)
 
     async def load_workspace_info(self, workspace: str, load=True) -> WorkspaceInfo:
         """Load info of the current workspace from the redis store."""
