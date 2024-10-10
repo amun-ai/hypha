@@ -64,16 +64,9 @@ class ArtifactController:
         store,
         s3_controller,
         workspace_bucket="hypha-workspaces",
-        database_uri=None,
     ):
         """Set up controller with SQLAlchemy database and S3 for file storage."""
-        if database_uri is None:
-            # create an in-memory SQLite database for testing
-            database_uri = "sqlite+aiosqlite:///:memory:"
-            logger.warning(
-                "Using in-memory SQLite database for artifact manager, all data will be lost on restart!!!"
-            )
-        self.engine = create_async_engine(database_uri, echo=False)
+        self.engine = store.get_sql_engine()
         self.SessionLocal = async_sessionmaker(
             self.engine, expire_on_commit=False, class_=AsyncSession
         )

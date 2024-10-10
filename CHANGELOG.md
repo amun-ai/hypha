@@ -1,6 +1,8 @@
 # Hypha Change Log
 
 ### 0.20.38
+
+ - Support event logging in the workspace, use `log_event` to log events in the workspace and use `get_events` to get the events in the workspace. The events will be persists in the SQL database.
  - Allow passing workspace and expires_in to the `login` function to generate workspace specific token.
  - When using http endpoint to access the service, you can now pass workspace specific token to the http header `Authorization` to access the service. (Previously, all the services are assumed to be accessed from the same service provider workspace)
 
