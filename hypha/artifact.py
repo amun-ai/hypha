@@ -81,12 +81,6 @@ class ArtifactController:
         self.workspace_bucket = workspace_bucket
         self.store = store
 
-    async def init_db(self):
-        """Initialize the database and create tables."""
-        async with self.engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-            logger.info("Database tables created successfully.")
-
         router = APIRouter()
 
         @router.get("/{workspace}/artifact/{path:path}")
@@ -111,9 +105,15 @@ class ArtifactController:
             except PermissionError as e:
                 raise HTTPException(status_code=403, detail=str(e))
 
-        self.store.register_public_service(self.get_artifact_service())
         self.store.set_artifact_manager(self)
+        self.store.register_public_service(self.get_artifact_service())
         self.store.register_router(router)
+
+    async def init_db(self):
+        """Initialize the database and create tables."""
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            logger.info("Database tables created successfully.")
 
     async def _get_session(self, read_only=False):
         """Return an SQLAlchemy async session. If read_only=True, ensure no modifications are allowed."""
@@ -192,38 +192,6 @@ class ArtifactController:
         )
         result = await session.execute(query)
         return result.scalar_one_or_none()
-
-        router = APIRouter()
-
-        @router.get("/{workspace}/artifact/{path:path}")
-        async def get_artifact(
-            workspace: str,
-            path: str,
-            stage: bool = False,
-            user_info: store.login_optional = Depends(store.login_optional),
-        ):
-            """Get artifact from the database."""
-            try:
-                if path.startswith("public/"):
-                    return await self._read_manifest(workspace, path, stage=stage)
-                else:
-                    if not user_info.check_permission(workspace, UserPermission.read):
-                        raise PermissionError(
-                            "User does not have read permission to the workspace."
-                        )
-                    return await self._read_manifest(workspace, path, stage=stage)
-            except KeyError as e:
-                raise HTTPException(status_code=404, detail=str(e))
-            except PermissionError as e:
-                raise HTTPException(status_code=403, detail=str(e))
-
-        store.register_router(router)
-
-    async def init_db(self):
-        """Initialize the database and create tables."""
-        async with self.engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-            logger.info("Database tables created successfully.")
 
     async def _get_session(self, read_only=False):
         """Return an SQLAlchemy async session. If read_only=True, ensure no modifications are allowed."""

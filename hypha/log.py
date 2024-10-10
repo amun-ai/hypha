@@ -212,7 +212,7 @@ class EventLoggingService:
             "config": {"visibility": "public", "require_context": True},
             "name": "Event Logging Service",
             "description": "Service for logging and querying system events.",
-            "log": self.log_event,
+            "log_event": self.log_event,
             "get_stats": self.get_event_stats,
             "search": self.search_events,
             "histogram": self.get_histogram,

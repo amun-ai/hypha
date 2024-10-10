@@ -275,6 +275,54 @@ async def test_services(fastapi_server):
     )
 
 
+async def test_workspace_owners(
+    fastapi_server, test_user_token, test_user_token_temporary, test_user_token_2
+):
+    """Test workspace owners."""
+    api = await connect_to_server(
+        {
+            "client_id": "my-app-99",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token,
+        }
+    )
+
+    ws = await api.create_workspace(
+        {
+            "name": "my-test-workspace-owners",
+            "description": "This is a test workspace",
+            "owners": ["user-1@test.com", "user-2@test.com"],
+        },
+    )
+
+    assert ws["name"] == "my-test-workspace-owners"
+
+    api2 = await connect_to_server(
+        {
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token_2,
+            "workspace": "my-test-workspace-owners",
+        }
+    )
+
+    assert api2.config["workspace"] == "my-test-workspace-owners"
+
+    try:
+        api3 = await connect_to_server(
+            {
+                "server_url": WS_SERVER_URL,
+                "token": test_user_token_temporary,
+                "workspace": "my-test-workspace-owners",
+            }
+        )
+        assert api3.config["workspace"] == "my-test-workspace-owners"
+    except Exception as e:
+        assert "Permission denied for workspace" in str(e)
+
+    await api2.disconnect()
+    await api.disconnect()
+
+
 async def test_server_scalability(
     fastapi_server_redis_1, fastapi_server_redis_2, test_user_token
 ):

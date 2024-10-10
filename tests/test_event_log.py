@@ -27,7 +27,7 @@ async def test_log_event(fastapi_server):
     event_log_service = await api.get_service("public/event-log")
 
     # Log an event
-    await event_log_service.log(
+    await event_log_service.log_event(
         "rpc_call", "This is a test RPC call", {"service": "test_service"}
     )
 
@@ -40,9 +40,9 @@ async def test_get_event_stats(fastapi_server):
     event_log_service = await api.get_service("public/event-log")
 
     # Log some events
-    await event_log_service.log("rpc_call", "Test RPC call 1")
-    await event_log_service.log("model_download", "Test model download")
-    await event_log_service.log("rpc_call", "Test RPC call 2")
+    await event_log_service.log_event("rpc_call", "Test RPC call 1")
+    await event_log_service.log_event("model_download", "Test model download")
+    await event_log_service.log_event("rpc_call", "Test RPC call 2")
 
     # Fetch event stats
     stats = await event_log_service.get_stats(event_type="rpc_call")
@@ -58,8 +58,10 @@ async def test_search_events(fastapi_server):
     event_log_service = await api.get_service("public/event-log")
 
     # Log some events with specific types
-    await event_log_service.log("rpc_call", "Test RPC call", {"service": "rpc_service"})
-    await event_log_service.log(
+    await event_log_service.log_event(
+        "rpc_call", "Test RPC call", {"service": "rpc_service"}
+    )
+    await event_log_service.log_event(
         "dataset_access", "Test dataset access", {"dataset": "test_dataset"}
     )
 
@@ -77,9 +79,9 @@ async def test_get_histogram(fastapi_server):
     event_log_service = await api.get_service("public/event-log")
 
     # Log some events with a timestamp difference
-    await event_log_service.log("rpc_call", "RPC event 1")
+    await event_log_service.log_event("rpc_call", "RPC event 1")
     await asyncio.sleep(1)  # Simulate time difference
-    await event_log_service.log("rpc_call", "RPC event 2")
+    await event_log_service.log_event("rpc_call", "RPC event 2")
 
     # Generate a histogram for rpc_call events grouped by hour
     histogram = await event_log_service.histogram(
@@ -99,7 +101,9 @@ async def test_invalid_permissions(fastapi_server):
 
     # Try to log an event without sufficient permissions
     try:
-        await event_log_service.log("rpc_call", "Attempting an unauthorized event")
+        await event_log_service.log_event(
+            "rpc_call", "Attempting an unauthorized event"
+        )
     except PermissionError:
         pass  # This is expected
 
@@ -113,9 +117,9 @@ async def test_logging_multiple_events(fastapi_server):
     event_log_service = await api.get_service("public/event-log")
 
     # Log multiple events
-    await event_log_service.log("rpc_call", "Test event 1")
-    await event_log_service.log("rpc_call", "Test event 2")
-    await event_log_service.log("dataset_download", "Dataset download event")
+    await event_log_service.log_event("rpc_call", "Test event 1")
+    await event_log_service.log_event("rpc_call", "Test event 2")
+    await event_log_service.log_event("dataset_download", "Dataset download event")
 
     # Fetch statistics for all events
     stats = await event_log_service.get_stats()

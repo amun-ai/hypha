@@ -433,6 +433,7 @@ class RedisStore:
                 raise
         for service in self._public_services:
             try:
+                logger.info("Registering public service: %s", service.id)
                 await api.register_service(
                     service.model_dump(),
                     {"notify": True},
