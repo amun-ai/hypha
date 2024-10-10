@@ -1,10 +1,12 @@
 import logging
 import sys
+import copy
 from sqlalchemy import (
     event,
     Column,
     String,
     Integer,
+    Float,
     JSON,
     UniqueConstraint,
     select,
@@ -14,6 +16,7 @@ from sqlalchemy import (
 )
 from hypha.utils import remove_objects_async, list_objects_async, safe_join
 from botocore.exceptions import ClientError
+from sqlalchemy import update
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
@@ -50,6 +53,11 @@ class ArtifactModel(Base):
     manifest = Column(JSON, nullable=True)  # Store committed manifest
     stage_manifest = Column(JSON, nullable=True)  # Store staged manifest
     stage_files = Column(JSON, nullable=True)  # Store staged files during staging
+    download_weights = Column(
+        JSON, nullable=True
+    )  # Store the weights for counting downloads; a dictionary of file paths and their weights 0-1
+    download_count = Column(Float, nullable=False, default=0.0)  # New counter field
+    view_count = Column(Float, nullable=False, default=0.0)  # New counter field
     __table_args__ = (
         UniqueConstraint("workspace", "prefix", name="_workspace_prefix_uc"),
     )
@@ -127,58 +135,6 @@ class ArtifactController:
 
         return session
 
-    async def _read_manifest(self, workspace, prefix, stage=False):
-        session = await self._get_session()
-        try:
-            async with session.begin():
-                query = select(ArtifactModel).filter(
-                    ArtifactModel.workspace == workspace,
-                    ArtifactModel.prefix == prefix,
-                )
-                result = await session.execute(query)
-                artifact = result.scalar_one_or_none()
-
-                if not artifact:
-                    raise KeyError(f"Artifact under prefix '{prefix}' does not exist.")
-
-                manifest = artifact.stage_manifest if stage else artifact.manifest
-                if not manifest:
-                    raise KeyError(f"No manifest found for artifact '{prefix}'.")
-
-                # If the artifact is a collection, dynamically populate the 'collection' field
-                if manifest.get("type") == "collection":
-                    sub_prefix = f"{prefix}/"
-                    query = select(ArtifactModel).filter(
-                        ArtifactModel.workspace == workspace,
-                        ArtifactModel.prefix.like(f"{sub_prefix}%"),
-                    )
-                    result = await session.execute(query)
-                    sub_artifacts = result.scalars().all()
-
-                    # Populate the 'collection' field with summary_fields for each sub-artifact
-                    summary_fields = manifest.get(
-                        "summary_fields", ["id", "name", "description"]
-                    )
-                    collection = []
-                    for artifact in sub_artifacts:
-                        sub_manifest = artifact.manifest
-                        summary = {"_prefix": artifact.prefix}
-                        for field in summary_fields:
-                            value = sub_manifest.get(field)
-                            if value is not None:
-                                summary[field] = value
-                        collection.append(summary)
-
-                    manifest["collection"] = collection
-
-                if stage:
-                    manifest["stage_files"] = artifact.stage_files
-                return manifest
-        except Exception as e:
-            raise e
-        finally:
-            await session.close()
-
     async def _get_artifact(self, session, workspace, prefix):
         query = select(ArtifactModel).filter(
             ArtifactModel.workspace == workspace,
@@ -253,6 +209,23 @@ class ArtifactController:
 
                 if stage:
                     manifest["stage_files"] = artifact.stage_files
+                else:
+                    # increase view count
+                    stmt = (
+                        update(ArtifactModel)
+                        .where(ArtifactModel.id == artifact.id)
+                        # atomically increment the view count
+                        .values(view_count=ArtifactModel.view_count + 1)
+                        .execution_options(synchronize_session="fetch")
+                    )
+                    await session.execute(stmt)
+                    await session.commit()
+                manifest["_stats"] = {
+                    "download_count": artifact.download_count,
+                    "view_count": artifact.view_count,
+                }
+                if manifest.get("type") == "collection":
+                    manifest["_stats"]["child_count"] = len(collection)
                 return manifest
         except Exception as e:
             raise e
@@ -320,6 +293,7 @@ class ArtifactController:
                     manifest=None if stage else manifest,
                     stage_manifest=manifest if stage else None,
                     stage_files=[] if stage else None,
+                    download_weights=None,
                     type=manifest["type"],
                 )
                 session.add(new_artifact)
@@ -331,6 +305,38 @@ class ArtifactController:
             await session.close()
 
         return manifest
+
+    async def reset_stats(self, prefix, context: dict):
+        """Reset the artifact's manifest's download count and view count."""
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        ws = context["ws"]
+
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(ws, UserPermission.read_write):
+            raise PermissionError(
+                "User does not have write permission to the workspace."
+            )
+
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact = await self._get_artifact(session, ws, prefix)
+                if not artifact:
+                    raise KeyError(f"Artifact under prefix '{prefix}' does not exist.")
+                stmt = (
+                    update(ArtifactModel)
+                    .where(ArtifactModel.id == artifact.id)
+                    .values(download_count=0, view_count=0)
+                    .execution_options(synchronize_session="fetch")
+                )
+                await session.execute(stmt)
+                await session.commit()
+            logger.info(f"Reset artifact under prefix: {prefix}")
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
 
     async def read(self, prefix, stage=False, context: dict = None):
         """Read the artifact's manifest from the database and populate collections dynamically."""
@@ -359,17 +365,18 @@ class ArtifactController:
                 "User does not have write permission to the workspace."
             )
 
-        # Validate the manifest
-        if manifest["type"] == "collection":
-            CollectionArtifact.model_validate(manifest)
-        elif manifest["type"] == "application":
-            ApplicationArtifact.model_validate(manifest)
-        elif manifest["type"] == "workspace":
-            WorkspaceInfo.model_validate(manifest)
+        if manifest:
+            # Validate the manifest
+            if manifest["type"] == "collection":
+                CollectionArtifact.model_validate(manifest)
+            elif manifest["type"] == "application":
+                ApplicationArtifact.model_validate(manifest)
+            elif manifest["type"] == "workspace":
+                WorkspaceInfo.model_validate(manifest)
 
-        # Convert ObjectProxy to dict if necessary
-        if isinstance(manifest, ObjectProxy):
-            manifest = ObjectProxy.toDict(manifest)
+            # Convert ObjectProxy to dict if necessary
+            if isinstance(manifest, ObjectProxy):
+                manifest = ObjectProxy.toDict(manifest)
 
         session = await self._get_session()
         try:
@@ -377,7 +384,8 @@ class ArtifactController:
                 artifact = await self._get_artifact(session, ws, prefix)
                 if not artifact:
                     raise KeyError(f"Artifact under prefix '{prefix}' does not exist.")
-
+                if manifest is None:
+                    manifest = copy.deepcopy(artifact.manifest)
                 artifact.stage_manifest = manifest
                 flag_modified(artifact, "stage_manifest")  # Mark JSON field as modified
                 session.add(artifact)
@@ -411,6 +419,7 @@ class ArtifactController:
 
                 manifest = artifact.stage_manifest
 
+                download_weights = {}
                 # Validate files exist in S3 if the staged files list is present
                 if artifact.stage_files:
                     async with self.s3_controller.create_client_async() as s3_client:
@@ -424,7 +433,10 @@ class ArtifactController:
                                 raise FileNotFoundError(
                                     f"File '{file_info['path']}' does not exist in the artifact."
                                 )
-
+                            if file_info.get("download_weight") is not None:
+                                download_weights[file_info["path"]] = file_info[
+                                    "download_weight"
+                                ]
                 # Validate the schema if the artifact belongs to a collection
                 parent_prefix = "/".join(prefix.split("/")[:-1])
                 if parent_prefix:
@@ -447,7 +459,10 @@ class ArtifactController:
                 artifact.manifest = manifest
                 artifact.stage_manifest = None
                 artifact.stage_files = None
+                artifact.download_weights = download_weights
                 flag_modified(artifact, "manifest")
+                flag_modified(artifact, "stage_files")
+                flag_modified(artifact, "download_weights")
                 session.add(artifact)
                 await session.commit()
             logger.info(f"Committed artifact under prefix: {prefix}")
@@ -636,7 +651,9 @@ class ArtifactController:
         finally:
             await session.close()
 
-    async def put_file(self, prefix, file_path, context: dict = None):
+    async def put_file(
+        self, prefix, file_path, options: dict = None, context: dict = None
+    ):
         """Generate a pre-signed URL to upload a file to an artifact in S3 and update the manifest."""
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
@@ -644,6 +661,8 @@ class ArtifactController:
             raise PermissionError(
                 "User does not have write permission to the workspace."
             )
+
+        options = options or {}
 
         async with self.s3_controller.create_client_async() as s3_client:
             file_key = safe_join(ws, f"{prefix}/{file_path}")
@@ -663,7 +682,12 @@ class ArtifactController:
                 artifact.stage_files = artifact.stage_files or []
 
                 if not any(f["path"] == file_path for f in artifact.stage_files):
-                    artifact.stage_files.append({"path": file_path})
+                    artifact.stage_files.append(
+                        {
+                            "path": file_path,
+                            "download_weight": options.get("download_weight"),
+                        }
+                    )
                     flag_modified(artifact, "stage_files")
 
                 session.add(artifact)
@@ -676,7 +700,7 @@ class ArtifactController:
 
         return presigned_url
 
-    async def get_file(self, prefix, path, context: dict):
+    async def get_file(self, prefix, path, options: dict = None, context: dict = None):
         """Generate a pre-signed URL to download a file from an artifact in S3."""
         ws = context["ws"]
 
@@ -694,6 +718,30 @@ class ArtifactController:
                 ExpiresIn=3600,
             )
         logger.info(f"Generated pre-signed URL for file download: {path}")
+
+        if options is None or not options.get("silent"):
+            session = await self._get_session()
+            try:
+                async with session.begin():
+                    artifact = await self._get_artifact(session, ws, prefix)
+                    if artifact.download_weights and path in artifact.download_weights:
+                        # if it has download_weights, increment the download count by the weight
+                        stmt = (
+                            update(ArtifactModel)
+                            .where(ArtifactModel.id == artifact.id)
+                            # atomically increment the download count by the weight
+                            .values(
+                                download_count=ArtifactModel.download_count
+                                + artifact.download_weights[path]
+                            )
+                            .execution_options(synchronize_session="fetch")
+                        )
+                        await session.execute(stmt)
+                        await session.commit()
+            except Exception as e:
+                raise e
+            finally:
+                await session.close()
         return presigned_url
 
     async def remove_file(self, prefix, file_path, context: dict):
@@ -714,11 +762,20 @@ class ArtifactController:
                     raise KeyError(
                         f"Artifact under prefix '{prefix}' is not in staging mode."
                     )
-                # remove the file from the staged files list
-                artifact.stage_files = [
-                    f for f in artifact.stage_files if f["path"] != file_path
-                ]
-                flag_modified(artifact, "stage_files")
+                if artifact.stage_files:
+                    # remove the file from the staged files list
+                    artifact.stage_files = [
+                        f for f in artifact.stage_files if f["path"] != file_path
+                    ]
+                    flag_modified(artifact, "stage_files")
+                if artifact.download_weights:
+                    # remove the file from download_weights if it's there
+                    artifact.download_weights = {
+                        k: v
+                        for k, v in artifact.download_weights.items()
+                        if k != file_path
+                    }
+                    flag_modified(artifact, "download_weights")
                 session.add(artifact)
                 await session.commit()
         except Exception as e:
@@ -740,6 +797,7 @@ class ArtifactController:
             "name": "Artifact Manager",
             "description": "Manage artifacts in a workspace.",
             "create": self.create,
+            "reset_stats": self.reset_stats,
             "edit": self.edit,
             "read": self.read,
             "commit": self.commit,

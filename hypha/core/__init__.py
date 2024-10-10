@@ -444,7 +444,10 @@ class RedisRPCConnection:
 
 class RedisEventBus:
     """Represent a redis event bus."""
-    _counter = Counter("event_bus", "Counts the events on the redis event bus", ["event"])
+
+    _counter = Counter(
+        "event_bus", "Counts the events on the redis event bus", ["event"]
+    )
 
     def __init__(self, redis) -> None:
         """Initialize the event bus."""

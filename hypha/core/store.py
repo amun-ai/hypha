@@ -96,7 +96,6 @@ class RedisStore:
         """Initialize the redis store."""
         self._s3_controller = None
         self._artifact_manager = None
-        self._logging_service = None
         self._app = app
         self._codecs = {}
         self._disconnected_plugins = []
@@ -392,8 +391,6 @@ class RedisStore:
             logger.warning("RESETTING ALL REDIS DATA!!!")
             await self._redis.flushall()
         await self._event_bus.init()
-        if self._logging_service:
-            await self._logging_service.init_db()
         if self._artifact_manager:
             await self._artifact_manager.init_db()
         await self.setup_root_user()
@@ -640,7 +637,6 @@ class RedisStore:
             self._sql_engine,
             self._s3_controller,
             self._artifact_manager,
-            self._logging_service,
         )
         await manager.setup()
         return manager

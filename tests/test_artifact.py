@@ -168,6 +168,11 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
         "_prefix",
         "collections/edit-test-collection/edit-test-dataset",
     )
+    initial_view_count = collection["_stats"]["view_count"]
+    assert initial_view_count > 0
+    assert collection["_stats"]["child_count"] > 0
+    collection = await artifact_manager.read(prefix="collections/edit-test-collection")
+    assert collection["_stats"]["view_count"] == initial_view_count + 1
 
     # Edit the artifact's manifest
     edited_manifest = {
@@ -725,3 +730,128 @@ async def test_artifact_search_with_filters(minio_server, fastapi_server):
             prefix=f"collections/search-test-collection/test-dataset-{i}"
         )
     await artifact_manager.delete(prefix="collections/search-test-collection")
+
+
+async def test_download_count(minio_server, fastapi_server):
+    """Test the download count functionality for artifacts."""
+    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection for testing download count
+    collection_manifest = {
+        "id": "download-test-collection",
+        "name": "Download Test Collection",
+        "description": "A collection to test download count functionality",
+        "type": "collection",
+        "collection": [],
+    }
+    await artifact_manager.create(
+        prefix="collections/download-test-collection",
+        manifest=collection_manifest,
+        stage=False,
+    )
+
+    # Create an artifact inside the collection
+    dataset_manifest = {
+        "id": "download-test-dataset",
+        "name": "Download Test Dataset",
+        "description": "A test dataset for download count",
+        "type": "dataset",
+    }
+    await artifact_manager.create(
+        prefix="collections/download-test-collection/download-test-dataset",
+        manifest=dataset_manifest,
+        stage=True,
+    )
+
+    # Put a file in the artifact
+    put_url = await artifact_manager.put_file(
+        prefix="collections/download-test-collection/download-test-dataset",
+        file_path="example.txt",
+        options={
+            "download_weight": 0.5
+        },  # Set the file as primary so downloading it will be count as a download
+    )
+    source = "file contents of example.txt"
+    response = requests.put(put_url, data=source)
+    assert response.ok
+
+    # put another file in the artifact but not setting weights
+    put_url = await artifact_manager.put_file(
+        prefix="collections/download-test-collection/download-test-dataset",
+        file_path="example2.txt",
+    )
+    source = "file contents of example2.txt"
+    response = requests.put(put_url, data=source)
+    assert response.ok
+
+    # Commit the artifact
+    await artifact_manager.commit(
+        prefix="collections/download-test-collection/download-test-dataset"
+    )
+
+    # Ensure that the download count is initially zero
+    artifact = await artifact_manager.read(
+        prefix="collections/download-test-collection/download-test-dataset"
+    )
+    assert artifact["_stats"]["download_count"] == 0
+
+    # Increment the download count of the artifact by download the primary file
+    get_url = await artifact_manager.get_file(
+        prefix="collections/download-test-collection/download-test-dataset",
+        path="example.txt",
+    )
+    response = requests.get(get_url)
+    assert response.ok
+
+    # Ensure that the download count is incremented
+    artifact = await artifact_manager.read(
+        prefix="collections/download-test-collection/download-test-dataset"
+    )
+    assert artifact["_stats"]["download_count"] == 0.5
+
+    # If we get the example file in silent mode, the download count won't increment
+    get_url = await artifact_manager.get_file(
+        prefix="collections/download-test-collection/download-test-dataset",
+        path="example.txt",
+        options={"silent": True},
+    )
+    response = requests.get(get_url)
+    assert response.ok
+
+    # Ensure that the download count is not incremented
+    artifact = await artifact_manager.read(
+        prefix="collections/download-test-collection/download-test-dataset"
+    )
+    assert artifact["_stats"]["download_count"] == 0.5
+
+    # download example 2 won't increment the download count
+    get_url = await artifact_manager.get_file(
+        prefix="collections/download-test-collection/download-test-dataset",
+        path="example2.txt",
+    )
+    response = requests.get(get_url)
+    assert response.ok
+
+    # Ensure that the download count is incremented
+    artifact = await artifact_manager.read(
+        prefix="collections/download-test-collection/download-test-dataset"
+    )
+    assert artifact["_stats"]["download_count"] == 0.5
+
+    # Let's call reset_stats to reset the download count
+    await artifact_manager.reset_stats(
+        prefix="collections/download-test-collection/download-test-dataset"
+    )
+
+    # Ensure that the download count is reset
+    artifact = await artifact_manager.read(
+        prefix="collections/download-test-collection/download-test-dataset"
+    )
+    assert artifact["_stats"]["download_count"] == 0
+
+    # Clean up by deleting the dataset and the collection
+    await artifact_manager.delete(
+        prefix="collections/download-test-collection/download-test-dataset"
+    )
+    await artifact_manager.delete(prefix="collections/download-test-collection")

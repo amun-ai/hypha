@@ -108,7 +108,6 @@ class WorkspaceManager:
         sql_engine: Optional[str] = None,
         s3_controller: Optional[Any] = None,
         artifact_manager: Optional[Any] = None,
-        logging_service: Optional[Any] = None,
     ):
         self._redis = redis
         self._initialized = False
@@ -119,7 +118,6 @@ class WorkspaceManager:
         self._client_id = client_id
         self._s3_controller = s3_controller
         self._artifact_manager = artifact_manager
-        self._logging_service = logging_service
         self._sql_engine = sql_engine
         if self._sql_engine:
             self.SessionLocal = async_sessionmaker(
