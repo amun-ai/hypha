@@ -451,11 +451,6 @@ print("Datasets in the gallery:", datasets)
 ```
 
 
-## HTTP API for Accessing Artifacts
-
-The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifests and data. This is useful for public-facing web applications that need to access datasets, models, or applications.
-
-
 ### Resetting Download Statistics
 
 You can reset the download statistics of a dataset using the `reset_stats` function.
@@ -479,6 +474,8 @@ The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifes
 ### Request Format:
 
 - **Method**: `GET`
+- **Headers**:
+  - `Authorization`: Optional. The user's token for accessing private artifacts (obtained via the login logic or created by `api.generate_token()`). Not required for public artifacts under the `public/` prefix.
 - **Parameters**:
   - `workspace`: The workspace in which the artifact is stored.
   - `path`:
@@ -488,7 +485,7 @@ The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifes
 
 ### Response:
 
-- **For public artifacts**: Returns the artifact manifest if it exists under the `public/` prefix, including any download statistics.
+- **For public artifacts**: Returns the artifact manifest if it exists under the `public/` prefix, including any download statistics in the `_stats` field.
 - **For private artifacts**: Returns the artifact manifest if the user has the necessary permissions.
 
 
