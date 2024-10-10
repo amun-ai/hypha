@@ -24,6 +24,9 @@ from hypha.core import (
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import NoInspectionAvailable, NoSuchTableError
+
 from hypha.core.auth import (
     create_scope,
     parse_token,
@@ -250,6 +253,41 @@ class RedisStore:
                 "change": "Start upgrade process",
             }
         )
+
+        # SQL database upgrade to add 'public' column
+
+        def _upgrade_schema_if_needed(conn):
+            """Run schema upgrade by adding the 'public' column if it doesn't exist."""
+            inspector = inspect(conn)
+            columns = inspector.get_columns("artifacts")
+
+            # Check if 'public' column exists
+            if "public" not in [col["name"] for col in columns]:
+                logger.info("Adding 'public' column to 'artifacts' table.")
+                # Alter the 'artifacts' table to add the 'public' column (no 'await' since this is synchronous)
+                conn.execute(text("ALTER TABLE artifacts ADD COLUMN public BOOLEAN"))
+                logger.info("Successfully added 'public' column to 'artifacts' table.")
+
+                # Log the change in the database_change_log
+                database_change_log.append(
+                    {
+                        "time": datetime.datetime.now().isoformat(),
+                        "version": __version__,
+                        "change": "Added 'public' column to 'artifacts' table",
+                    }
+                )
+            else:
+                logger.info("'public' column already exists in 'artifacts' table.")
+
+        async with self._sql_engine.begin() as conn:
+            try:
+                # Use run_sync to run synchronous code on the connection
+                await conn.run_sync(_upgrade_schema_if_needed)
+            except NoSuchTableError:
+                pass
+            except NoInspectionAvailable as e:
+                logger.error(f"Error inspecting the database: {str(e)}")
+
         # For <=0.20.38, upgrade workspaces so it contains `type` key but not containing `applications` key
         workspaces = await self._redis.hgetall("workspaces")
         for k, v in workspaces.items():
@@ -391,8 +429,6 @@ class RedisStore:
             logger.warning("RESETTING ALL REDIS DATA!!!")
             await self._redis.flushall()
         await self._event_bus.init()
-        if self._artifact_manager:
-            await self._artifact_manager.init_db()
         await self.setup_root_user()
         await self.check_and_cleanup_servers()
         self._workspace_manager = await self.register_workspace_manager()
@@ -432,6 +468,9 @@ class RedisStore:
             logger.warning("Public workspace already exists.")
 
         await self.upgrade()
+
+        if self._artifact_manager:
+            await self._artifact_manager.init_db()
         await self._register_root_services()
         api = await self.get_public_api()
 

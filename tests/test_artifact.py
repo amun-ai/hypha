@@ -35,7 +35,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
     api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
     artifact_manager = await api.get_service("public/artifact-manager")
 
-    # Create a public collection (prefix must start with "public/")
+    # Create a public collection
     collection_manifest = {
         "id": "dataset-gallery",
         "name": "Public Dataset Gallery",
@@ -44,7 +44,9 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
         "collection": [],
     }
     await artifact_manager.create(
-        prefix="public/collections/dataset-gallery", manifest=collection_manifest
+        prefix="public/collections/dataset-gallery",
+        manifest=collection_manifest,
+        public=True,
     )
 
     # Create an artifact inside the public collection
@@ -58,6 +60,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
         prefix="public/collections/dataset-gallery/public-example-dataset",
         manifest=dataset_manifest,
         stage=True,
+        # public=True, # This is not necessary since the collection is already public
     )
 
     # Commit the artifact
@@ -72,7 +75,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
     assert response.status_code == 200
     assert "Public Example Dataset" in response.json()["name"]
 
-    # Now create a non-public collection (prefix does not start with "public/")
+    # Now create a non-public collection
     private_collection_manifest = {
         "id": "private-dataset-gallery",
         "name": "Private Dataset Gallery",
@@ -83,6 +86,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
     await artifact_manager.create(
         prefix="collections/private-dataset-gallery",
         manifest=private_collection_manifest,
+        public=False,
     )
 
     # Create an artifact inside the private collection
@@ -397,7 +401,7 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
     )
 
     files = await artifact_manager.list_files(
-        prefix="collections/test-collection/test-dataset"
+        prefix="collections/test-collection/test-dataset", stage=True
     )
     assert find_item(files, "name", "test.txt")
 

@@ -6,6 +6,7 @@ from sqlalchemy import (
     Column,
     String,
     Integer,
+    Boolean,
     Float,
     JSON,
     UniqueConstraint,
@@ -58,6 +59,9 @@ class ArtifactModel(Base):
     )  # Store the weights for counting downloads; a dictionary of file paths and their weights 0-1
     download_count = Column(Float, nullable=False, default=0.0)  # New counter field
     view_count = Column(Float, nullable=False, default=0.0)  # New counter field
+    public = Column(
+        Boolean, nullable=True
+    )  # New field for public artifacts, None means it follows the parent artifact
     __table_args__ = (
         UniqueConstraint("workspace", "prefix", name="_workspace_prefix_uc"),
     )
@@ -92,14 +96,15 @@ class ArtifactController:
         ):
             """Get artifact from the database."""
             try:
-                if path.startswith("public/"):
-                    return await self._read_manifest(workspace, path, stage=stage)
-                else:
+                artifact, manifest = await self._read_manifest(
+                    workspace, path, stage=stage
+                )
+                if not artifact.public:
                     if not user_info.check_permission(workspace, UserPermission.read):
                         raise PermissionError(
-                            "User does not have read permission to the workspace."
+                            "User does not have read permission to the non-public artifact."
                         )
-                    return await self._read_manifest(workspace, path, stage=stage)
+                return manifest
             except KeyError as e:
                 raise HTTPException(status_code=404, detail=str(e))
             except PermissionError as e:
@@ -226,7 +231,7 @@ class ArtifactController:
                 }
                 if manifest.get("type") == "collection":
                     manifest["_stats"]["child_count"] = len(collection)
-                return manifest
+                return artifact, manifest
         except Exception as e:
             raise e
         finally:
@@ -246,6 +251,7 @@ class ArtifactController:
         manifest: dict,
         overwrite=False,
         stage=False,
+        public=None,
         context: dict = None,
     ):
         """Create a new artifact and store its manifest in the database."""
@@ -274,6 +280,16 @@ class ArtifactController:
         session = await self._get_session()
         try:
             async with session.begin():
+                if public is None:
+                    # if public is not set, try to use the parent artifact's public setting
+                    parent_prefix = "/".join(prefix.split("/")[:-1])
+                    if parent_prefix:
+                        parent_artifact = await self._get_artifact(
+                            session, ws, parent_prefix
+                        )
+                        if parent_artifact:
+                            public = parent_artifact.public
+
                 existing_artifact = await self._get_artifact(session, ws, prefix)
 
                 if existing_artifact:
@@ -294,6 +310,7 @@ class ArtifactController:
                     stage_manifest=manifest if stage else None,
                     stage_files=[] if stage else None,
                     download_weights=None,
+                    public=public,
                     type=manifest["type"],
                 )
                 session.add(new_artifact)
@@ -345,12 +362,15 @@ class ArtifactController:
         ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read):
+        artifact, manifest = await self._read_manifest(ws, prefix, stage=stage)
+
+        if not artifact.public and not user_info.check_permission(
+            ws, UserPermission.read
+        ):
             raise PermissionError(
                 "User does not have read permission to the workspace."
             )
 
-        manifest = await self._read_manifest(ws, prefix, stage=stage)
         return manifest
 
     async def edit(self, prefix, manifest=None, context: dict = None):
@@ -505,13 +525,18 @@ class ArtifactController:
         async with self.s3_controller.create_client_async() as s3_client:
             await remove_objects_async(s3_client, self.workspace_bucket, artifact_path)
 
-    async def list_files(self, prefix, max_length=1000, context: dict = None):
+    async def list_files(
+        self, prefix, max_length=1000, stage=False, context: dict = None
+    ):
         """List files in the specified S3 prefix."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read):
+        artifact, _ = await self._read_manifest(ws, prefix, stage=stage)
+        if not artifact.public and not user_info.check_permission(
+            ws, UserPermission.read
+        ):
             raise PermissionError(
                 "User does not have read permission to the workspace."
             )
@@ -520,19 +545,30 @@ class ArtifactController:
             items = await list_objects_async(
                 s3_client, self.workspace_bucket, full_path, max_length=max_length
             )
+            # TODO: If stage should we return only the staged files?
             return items
 
-    async def list_artifacts(self, prefix="", stage=False, context: dict = None):
+    async def list_artifacts(self, prefix="", context: dict = None):
         """List all artifacts under a certain prefix."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read):
-            raise PermissionError(
-                "User does not have read permission to the workspace."
-            )
+        try:
+            artifact, _ = await self._read_manifest(ws, prefix)
+            if not artifact.public and not user_info.check_permission(
+                ws, UserPermission.read
+            ):
+                raise PermissionError(
+                    "User does not have read permission to the workspace."
+                )
+        except KeyError:
+            # the prefix is not a valid artifact, check if the user has permission to list the artifacts
+            if not user_info.check_permission(ws, UserPermission.read):
+                raise PermissionError(
+                    "User does not have read permission to the workspace."
+                )
 
         session = await self._get_session()
         try:
@@ -548,7 +584,6 @@ class ArtifactController:
                 for artifact in sub_artifacts:
                     if artifact.prefix == prefix:
                         continue
-                    sub_manifest = artifact.manifest
                     name = artifact.prefix[len(prefix) + 1 :]
                     name = name.split("/")[0]
                     collection.append(name)
@@ -573,7 +608,10 @@ class ArtifactController:
         ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read):
+        artifact, _ = await self._read_manifest(ws, prefix)
+        if not artifact.public and not user_info.check_permission(
+            ws, UserPermission.read
+        ):
             raise PermissionError(
                 "User does not have read permission to the workspace."
             )
@@ -705,7 +743,10 @@ class ArtifactController:
         ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read):
+        artifact, _ = await self._read_manifest(ws, prefix)
+        if not artifact.public and not user_info.check_permission(
+            ws, UserPermission.read
+        ):
             raise PermissionError(
                 "User does not have read permission to the workspace."
             )
@@ -799,13 +840,13 @@ class ArtifactController:
             "create": self.create,
             "reset_stats": self.reset_stats,
             "edit": self.edit,
-            "read": self.read,
+            "read": self.read,  # accessible to public if the artifact is public
             "commit": self.commit,
             "delete": self.delete,
             "put_file": self.put_file,
             "remove_file": self.remove_file,
-            "get_file": self.get_file,
-            "list": self.list_artifacts,
-            "search": self.search,
-            "list_files": self.list_files,
+            "get_file": self.get_file,  # accessible to public if the artifact is public
+            "list": self.list_artifacts,  # accessible to public if the artifact is public
+            "search": self.search,  # accessible to public if the artifact is public
+            "list_files": self.list_files,  # accessible to public if the artifact is public
         }
