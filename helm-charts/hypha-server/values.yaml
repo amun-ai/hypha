@@ -116,9 +116,5 @@ startupCommand:
 # Persistence Configuration
 persistence:
   volumeName: hypha-app-storage
+  claimName: hypha-data-pvc
   mountPath: /app/data
-  storageClass: ""
-  accessModes:
-    - ReadWriteOnce
-  size: 5Gi
-  existingClaim: ""  # If you have an existing claim, specify it here. Otherwise, a new PVC will be created.

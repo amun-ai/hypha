@@ -56,14 +56,7 @@ spec:
       volumes:
         - name: {{ .Values.persistence.volumeName }}
           persistentVolumeClaim:
-            claimName: {{ .Values.persistence.existingClaim | default (include "hypha-server.fullname" .) }}
-            {{- if not .Values.persistence.existingClaim }}
-            accessModes:
-              {{- toYaml .Values.persistence.accessModes | nindent 14 }}
-            resources:
-              requests:
-                storage: {{ .Values.persistence.size }}
-            {{- end }}
+            claimName: {{ .Values.persistence.claimName }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
