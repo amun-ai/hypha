@@ -102,6 +102,8 @@ env:
         key: JWT_SECRET
   - name: PUBLIC_BASE_URL
     value: "https://hypha.amun.ai"
+  - name: DATABASE_FILE_PATH
+    value: "/data/hypha-app-database.db"
 
 # Define command-line arguments here
 startupCommand:
@@ -111,10 +113,10 @@ startupCommand:
     - "--port=9520"
     - "--public-base-url=$(PUBLIC_BASE_URL)"
     # - "--redis-uri=redis://redis.hypha.svc.cluster.local:6379/0"
-    - "--database-uri=sqlite+aiosqlite:///app/data/artifacts.db"
+    - "--database-uri=sqlite+aiosqlite:///${DATABASE_FILE_PATH}"
 
 # Persistence Configuration
 persistence:
   volumeName: hypha-app-storage
   claimName: hypha-data-pvc
-  mountPath: /app/data
+  mountPath: /data
