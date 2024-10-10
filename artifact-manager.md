@@ -226,12 +226,12 @@ print("Valid dataset committed.")
 
 ### `edit(prefix: str, manifest: dict) -> None`
 
-Edits an existing artifact. You provide the new manifest to update the artifact. The updated manifest is stored temporarily as `_manifest.yaml`.
+Edits an existing artifact's manifest. The new manifest is staged until committed. The updated manifest is stored temporarily as `_manifest.yaml`.
 
 **Parameters:**
 
 - `prefix`: The path of the artifact to edit (e.g., `"collections/dataset-gallery/example-dataset"`).
-- `manifest`: The updated manifest.
+- `manifest`: The updated manifest. Ensure the manifest follows the required schema if applicable (e.g., for collections).
 
 **Example:**
 
@@ -243,7 +243,7 @@ await artifact_manager.edit(prefix="collections/dataset-gallery/example-dataset"
 
 ### `commit(prefix: str) -> None`
 
-Commits an artifact, finalizing it by validating the uploaded files and renaming `_manifest.yaml` to `manifest.yaml`.
+Finalizes and commits an artifact's staged changes. Validates uploaded files and renames `_manifest.yaml` to `manifest.yaml`. This process also updates view and download statistics.
 
 **Parameters:**
 
@@ -259,7 +259,7 @@ await artifact_manager.commit(prefix="collections/dataset-gallery/example-datase
 
 ### `delete(prefix: str) -> None`
 
-Deletes an artifact and all associated files.
+Deletes an artifact, its manifest, and all associated files from both the database and S3 storage.
 
 **Parameters:**
 
@@ -275,15 +275,14 @@ await artifact_manager.delete(prefix="collections/dataset-gallery/example-datase
 
 ### `put_file(prefix: str, file_path: str, options: dict = None) -> str`
 
-Generates a pre-signed URL to upload a file to an artifact. You can then use the URL with an HTTP `PUT` request to upload the file.
+Generates a pre-signed URL to upload a file to the artifact in S3. The URL can be used with an HTTP `PUT` request to upload the file. The file is staged until the artifact is committed.
 
 **Parameters:**
 
 - `prefix`: The path of the artifact where the file will be uploaded (e.g., `"collections/dataset-gallery/example-dataset"`).
 - `file_path`: The relative path of the file to upload within the artifact (e.g., `"data.csv"`).
-- `options`: Optional. Additional options for the file upload. Default is `None`.
-The options can include:
-  - `download_weight`: A float value representing the impact of the file on the download count. Default is `0`.
+- `options`: Optional. Additional options such as:
+  - `download_weight`: A float value representing the file's impact on download count (0-1). Defaults to `None`.
 
 **Returns:** A pre-signed URL for uploading the file.
 
@@ -297,7 +296,7 @@ put_url = await artifact_manager.put_file(prefix="collections/dataset-gallery/ex
 
 ### `remove_file(prefix: str, file_path: str) -> None`
 
-Removes a file from the artifact and updates the manifest.
+Removes a file from the artifact and updates the staged manifest. The file is also removed from the S3 storage.
 
 **Parameters:**
 
@@ -312,17 +311,16 @@ await artifact_manager.remove_file(prefix="collections/dataset-gallery/example-d
 
 ---
 
-### `get_file(prefix: str, path: str, options: dict=None) -> str`
+### `get_file(prefix: str, path: str, options: dict = None) -> str`
 
-Generates a pre-signed URL to download a file from the artifact.
+Generates a pre-signed URL to download a file from the artifact stored in S3.
 
 **Parameters:**
 
 - `prefix`: The path of the artifact (e.g., `"collections/dataset-gallery/example-dataset"`).
 - `path`: The relative path of the file to download (e.g., `"data.csv"`).
-- `options`: Optional. Additional options for the file download. Default is `None`.
-The options can include:
-  - `silent`: A boolean flag to suppress download statistics. Default is `False`.
+- `options`: Optional. Controls for the download behavior, such as:
+  - `silent`: A boolean to suppress the download count increment. Default is `False`.
 
 **Returns:** A pre-signed URL for downloading the file.
 
@@ -336,14 +334,14 @@ get_url = await artifact_manager.get_file(prefix="collections/dataset-gallery/ex
 
 ### `list(prefix: str, stage: bool = False) -> list`
 
-Lists all artifacts or collections under the specified prefix. If a collection is detected, it returns the list of artifacts within the collection.
+Lists all artifacts or collections under the specified prefix. Returns either a list of artifact names or collection items, depending on whether the prefix points to a collection.
 
 **Parameters:**
 
 - `prefix`: The path under which the artifacts or collections are listed (e.g., `"collections/dataset-gallery"`).
-- `stage`: Optional. If `True`, it will list the artifacts in staging mode. Default is `False`.
+- `stage`: Optional. If `True`, it lists the artifacts in staging mode. Default is `False`.
 
-**Returns:** A list of artifact names or collection items.
+**Returns:** A list of artifact or collection item names.
 
 **Example:**
 
@@ -355,14 +353,14 @@ datasets = await artifact_manager.list(prefix="collections/dataset-gallery")
 
 ### `read(prefix: str, stage: bool = False) -> dict`
 
-Reads the manifest of an artifact or collection. If in staging mode, it reads the `_manifest.yaml`.
+Reads and returns the manifest of an artifact or collection. If in staging mode, reads from `_manifest.yaml`. Collections also dynamically populate the `collection` field with sub-artifacts.
 
 **Parameters:**
 
-- `prefix`: The path of the artifact to read (e.g., `"collections/dataset-gallery/example-dataset"`).
-- `stage`: Optional. If `True`, it reads from `_manifest.yaml`. Default is `False`.
+- `prefix`: The path of the artifact or collection to read (e.g., `"collections/dataset-gallery/example-dataset"`).
+- `stage`: Optional. If `True`, reads the `_manifest.yaml`. Default is `False`.
 
-**Returns:** The manifest as a dictionary.
+**Returns:** The manifest as a dictionary, including view/download statistics and collection details (if applicable).
 
 **Example:**
 
@@ -372,18 +370,39 @@ manifest = await artifact_manager.read(prefix="collections/dataset-gallery/examp
 
 ---
 
-### `index(prefix: str) -> None`
+### `search(prefix: str, keywords: list = None, filters: dict = None, mode: str = "AND") -> list`
 
-Updates the index of a collection. It collects summary information for all artifacts in the collection and updates the manifest’s `collection` field.
+Searches for artifacts within a collection based on keywords or filters, supporting both `AND` and `OR` modes.
 
 **Parameters:**
 
-- `prefix`: The path of the collection to index (e.g., `"collections/dataset-gallery"`).
+- `prefix`: The path of the collection to search in (e.g., `"collections/dataset-gallery"`).
+- `keywords`: Optional. A list of terms to search across all fields in the manifest.
+- `filters`: Optional. A dictionary of key-value pairs for exact or fuzzy matching in specific fields.
+- `mode`: Either `"AND"` or `"OR"` to combine conditions. Default is `"AND"`.
+
+**Returns:** A list of matching artifacts with summary fields.
 
 **Example:**
 
 ```python
-await artifact_manager.index(prefix="collections/dataset-gallery")
+results = await artifact_manager.search(prefix="collections/dataset-gallery", keywords=["example"], mode="AND")
+```
+
+---
+
+### `reset_stats(prefix: str) -> None`
+
+Resets the download and view counts for the artifact.
+
+**Parameters:**
+
+- `prefix`: The path of the artifact for which to reset statistics (e.g., `"collections/dataset-gallery/example-dataset"`).
+
+**Example:**
+
+```python
+await artifact_manager.reset_stats(prefix="collections/dataset-gallery/example-dataset")
 ```
 
 ---
