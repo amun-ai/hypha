@@ -9,6 +9,7 @@ import random
 import datetime
 
 from fakeredis import aioredis
+from prometheus_client import Gauge
 from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
 from pydantic import BaseModel, Field
@@ -126,6 +127,10 @@ class WorkspaceManager:
             )
         else:
             self.SessionLocal = None
+        self._active_ws = Gauge("active_workspaces", "Number of active workspaces")
+        self._active_svc = Gauge(
+            "active_services", "Number of active services", ["workspace"]
+        )
 
     async def _get_sql_session(self):
         """Return an async session for the database."""
@@ -418,16 +423,17 @@ class WorkspaceManager:
         assert "id" in config, "Workspace id must be provided."
         if not config.get("name"):
             config["name"] = config["id"]
-        ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         if user_info.is_anonymous:
             raise Exception("Only registered user can create workspace.")
-        if not overwrite:
-            try:
-                if await self.load_workspace_info(config["id"]):
-                    raise RuntimeError(f"Workspace already exists: {config['id']}")
-            except KeyError:
-                pass
+
+        try:
+            await self.load_workspace_info(config["id"])
+            if not overwrite:
+                raise RuntimeError(f"Workspace already exists: {config['id']}")
+            exists = True
+        except KeyError:
+            exists = False
 
         config["persistent"] = config.get("persistent") or False
         if user_info.is_anonymous and config["persistent"]:
@@ -454,6 +460,8 @@ class WorkspaceManager:
                 }
             ]
         await self._redis.hset("workspaces", workspace.id, workspace.model_dump_json())
+        if not exists:
+            self._active_ws.inc()
         if self._s3_controller:
             await self._s3_controller.setup_workspace(workspace)
         await self._event_bus.emit("workspace_loaded", workspace.model_dump())
@@ -980,6 +988,7 @@ class WorkspaceManager:
                     "service_added", service.model_dump(mode="json")
                 )
                 logger.info(f"Adding service {service.id}")
+                self._active_svc.labels(workspace=ws).inc()
 
     @schema_method
     async def get_service_info(
@@ -1097,6 +1106,7 @@ class WorkspaceManager:
                 )
             else:
                 await self._event_bus.emit("service_removed", service.model_dump())
+                self._active_svc.labels(workspace=ws).dec()
         else:
             logger.warning(f"Service {key} does not exist and cannot be removed.")
             raise KeyError(f"Service not found: {service.id}")
@@ -1528,6 +1538,8 @@ class WorkspaceManager:
         else:
             if not winfo.persistent and not winfo.read_only:
                 await self._redis.hdel("workspaces", ws)
+
+        self._active_ws.dec()
 
         await self._event_bus.emit("workspace_unloaded", winfo.model_dump())
         logger.info("Workspace %s unloaded.", ws)

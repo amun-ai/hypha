@@ -22,6 +22,8 @@ from pydantic import (  # pylint: disable=no-name-in-module
 from hypha.utils import EventBus
 import jsonschema
 
+from prometheus_client import Counter
+
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("core")
 logger.setLevel(logging.INFO)
@@ -347,6 +349,8 @@ class TokenConfig(BaseModel):
 class RedisRPCConnection:
     """Represent a Redis connection for handling RPC-like messaging."""
 
+    _counter = Counter("rpc_call", "Counts the RPC calls", ["workspace"])
+
     def __init__(
         self,
         event_bus: EventBus,
@@ -421,6 +425,7 @@ class RedisRPCConnection:
         packed_message = msgpack.packb(message) + data[pos:]
         # logger.info(f"Sending message to channel {target_id}:msg")
         await self._event_bus.emit(f"{target_id}:msg", packed_message)
+        RedisRPCConnection._counter.labels(workspace=self._workspace).inc()
 
     async def disconnect(self, reason=None):
         """Handle disconnection."""
@@ -447,6 +452,9 @@ class RedisEventBus:
         self._stop = False
         self._local_event_bus = EventBus(logger)
         self._redis_event_bus = EventBus(logger)
+        self._counter = Counter(
+            "event_bus", "Counts the events on the redis event bus", ["event"]
+        )
 
     async def init(self):
         """Setup the event bus."""
@@ -568,18 +576,25 @@ class RedisEventBus:
                 try:
                     if msg:
                         channel = msg["channel"].decode("utf-8")
+                        self._counter.labels(event="*").inc()
                         if channel.startswith("event:b:"):
                             event_type = channel[8:]
                             data = msg["data"]
                             await self._redis_event_bus.emit(event_type, data)
+                            if ":" not in event_type:
+                                self._counter.labels(event=event_type).inc()
                         elif channel.startswith("event:d:"):
                             event_type = channel[8:]
                             data = json.loads(msg["data"])
                             await self._redis_event_bus.emit(event_type, data)
+                            if ":" not in event_type:
+                                self._counter.labels(event=event_type).inc()
                         elif channel.startswith("event:s:"):
                             event_type = channel[8:]
                             data = msg["data"].decode("utf-8")
                             await self._redis_event_bus.emit(event_type, data)
+                            if ":" not in event_type:
+                                self._counter.labels(event=event_type).inc()
                         else:
                             logger.info("Unknown channel: %s", channel)
                 except Exception as exp:
