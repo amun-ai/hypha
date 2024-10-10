@@ -3,6 +3,6 @@ pytest-asyncio==0.21.1
 pytest-cov==4.1.0
 pytest-timeout==2.3.1
 requests==2.31.0
-websocket-client==1.6.1
+websocket-client==1.8.0
 nvidia-pytriton==0.2.1; python_version == '3.8'
 simpervisor==1.0.0
