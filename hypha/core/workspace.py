@@ -1529,18 +1529,23 @@ class WorkspaceManager:
             )
             await self._event_bus.emit(f"unload:{ws}", "Unloading workspace: " + ws)
 
-        if self._s3_controller:
+        if winfo.persistent and self._s3_controller:
             # since the workspace will be persisted, we can remove the workspace info from the redis store
             await self._redis.hdel("workspaces", ws)
-            await self._s3_controller.cleanup_workspace(winfo)
-        else:
-            if not winfo.persistent and not winfo.read_only:
-                await self._redis.hdel("workspaces", ws)
 
         self._active_ws.dec()
 
         await self._event_bus.emit("workspace_unloaded", winfo.model_dump())
         logger.info("Workspace %s unloaded.", ws)
+
+        if not winfo.persistent:
+            # delete all the items in redis starting with `workspaces_name:`
+            keys = await self._redis.keys(f"{ws}:*")
+            for key in keys:
+                await self._redis.delete(key)
+            await self._redis.hdel("workspaces", ws)
+            if self._s3_controller:
+                await self._s3_controller.cleanup_workspace(winfo)
 
     @schema_method
     async def cleanup(

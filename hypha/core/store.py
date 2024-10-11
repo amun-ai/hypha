@@ -295,7 +295,11 @@ class RedisStore:
             workspace_info["type"] = "workspace"
             if "applications" in workspace_info:
                 del workspace_info["applications"]
-            await self._redis.hset("workspaces", k, json.dumps(workspace_info))
+            if workspace_info.get("persistent"):
+                await self._redis.hset("workspaces", k, json.dumps(workspace_info))
+            else:
+                # remove non-persistent workspaces
+                await self._redis.hdel("workspaces", k)
 
         old_keys = await self._redis.keys(
             f"services:*|*:{self._root_user.get_workspace()}/workspace-client-*:*@*"
