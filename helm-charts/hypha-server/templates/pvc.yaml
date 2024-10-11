@@ -4,7 +4,7 @@ metadata:
   name: hypha-data-pvc
 spec:
   accessModes:
-    - ReadWriteOnce
+    - ReadWriteMany
   resources:
     requests:
       storage: 10Gi
