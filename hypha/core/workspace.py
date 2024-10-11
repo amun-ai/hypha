@@ -1189,6 +1189,7 @@ class WorkspaceManager:
                 await self._redis.hset(
                     "workspaces", workspace_info.id, workspace_info.model_dump_json()
                 )
+                self._active_ws.inc()
                 await self._s3_controller.setup_workspace(workspace_info)
                 await self._event_bus.emit(
                     "workspace_loaded", workspace_info.model_dump()
@@ -1533,8 +1534,6 @@ class WorkspaceManager:
             # since the workspace will be persisted, we can remove the workspace info from the redis store
             await self._redis.hdel("workspaces", ws)
 
-        self._active_ws.dec()
-
         await self._event_bus.emit("workspace_unloaded", winfo.model_dump())
         logger.info("Workspace %s unloaded.", ws)
 
@@ -1546,6 +1545,8 @@ class WorkspaceManager:
             await self._redis.hdel("workspaces", ws)
             if self._s3_controller:
                 await self._s3_controller.cleanup_workspace(winfo)
+
+        self._active_ws.dec()
 
     @schema_method
     async def cleanup(
