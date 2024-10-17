@@ -200,7 +200,7 @@ class WebsocketServer:
                 user_info = await self.store.parse_user_token(reconnection_token)
                 scope = user_info.scope
                 assert (
-                    scope.current_workspace
+                    scope and scope.current_workspace
                 ), "Invalid scope, current_workspace is required"
                 if workspace:
                     assert (
@@ -230,7 +230,7 @@ class WebsocketServer:
                 if user_info.scope.current_workspace and workspace:
                     assert (
                         workspace == user_info.scope.current_workspace
-                    ), f"Current workspace encoded in the token ({scope.current_workspace}) does not the specified workspace ({workspace})"
+                    ), f"Current workspace encoded in the token ({user_info.scope.current_workspace}) does not the specified workspace ({workspace})"
                 if not workspace and user_info.scope.current_workspace:
                     workspace = user_info.scope.current_workspace
             else:
