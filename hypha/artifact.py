@@ -709,6 +709,8 @@ class ArtifactController:
                 Params={"Bucket": self.workspace_bucket, "Key": file_key},
                 ExpiresIn=3600,
             )
+            if self.s3_controller.enable_s3_proxy:
+                presigned_url = f"{self.store.public_base_url}/s3/{self.workspace_bucket}/{file_key}?{presigned_url.split('?')[1]}"
 
         session = await self._get_session()
         try:
@@ -758,6 +760,9 @@ class ArtifactController:
                 Params={"Bucket": self.workspace_bucket, "Key": file_key},
                 ExpiresIn=3600,
             )
+            if self.s3_controller.enable_s3_proxy:
+                presigned_url = f"{self.store.public_base_url}/s3/{self.workspace_bucket}/{file_key}?{presigned_url.split('?')[1]}"
+
         logger.info(f"Generated pre-signed URL for file download: {path}")
 
         if options is None or not options.get("silent"):
