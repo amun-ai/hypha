@@ -46,7 +46,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
     await artifact_manager.create(
         prefix="public/collections/dataset-gallery",
         manifest=collection_manifest,
-        public=True,
+        permissions={"*": "r+"},
     )
 
     # Create an artifact inside the public collection
@@ -60,7 +60,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
         prefix="public/collections/dataset-gallery/public-example-dataset",
         manifest=dataset_manifest,
         stage=True,
-        # public=True, # This is not necessary since the collection is already public
+        # permissions={"*": "r+"}, # This is not necessary since the collection is already public
     )
 
     # Commit the artifact
@@ -86,7 +86,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
     await artifact_manager.create(
         prefix="collections/private-dataset-gallery",
         manifest=private_collection_manifest,
-        public=False,
+        permissions={},
     )
 
     # Create an artifact inside the private collection

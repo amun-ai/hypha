@@ -254,30 +254,62 @@ class RedisStore:
             }
         )
 
-        # SQL database upgrade to add 'public' column
-
+        # SQL database upgrade to replace 'public' column with 'permissions' column
         def _upgrade_schema_if_needed(conn):
-            """Run schema upgrade by adding the 'public' column if it doesn't exist."""
+            """Run schema upgrade by replacing the 'public' column with 'permissions' column."""
             inspector = inspect(conn)
             columns = inspector.get_columns("artifacts")
 
-            # Check if 'public' column exists
-            if "public" not in [col["name"] for col in columns]:
-                logger.info("Adding 'public' column to 'artifacts' table.")
-                # Alter the 'artifacts' table to add the 'public' column (no 'await' since this is synchronous)
-                conn.execute(text("ALTER TABLE artifacts ADD COLUMN public BOOLEAN"))
-                logger.info("Successfully added 'public' column to 'artifacts' table.")
+            # Check if 'permissions' column exists
+            if "permissions" not in [col["name"] for col in columns]:
+                logger.info("Adding 'permissions' column to 'artifacts' table.")
 
-                # Log the change in the database_change_log
+                # Step 1: Add 'permissions' column (JSON type)
+                conn.execute(text("ALTER TABLE artifacts ADD COLUMN permissions JSON"))
+                logger.info(
+                    "Successfully added 'permissions' column to 'artifacts' table."
+                )
+            else:
+                logger.info("'permissions' column already exists in 'artifacts' table.")
+
+            # Check if 'public' column exists
+            if "public" in [col["name"] for col in columns]:
+                logger.info(
+                    "Replacing 'public' column with 'permissions' column in 'artifacts' table."
+                )
+
+                # Step 2: Update existing records: if 'public' is True, set the permissions to {'*': "r+"}
+                conn.execute(
+                    text(
+                        """
+                    UPDATE artifacts 
+                    SET permissions = '{"*": "r+"}' 
+                    WHERE public IS TRUE
+                    """
+                    )
+                )
+                logger.info(
+                    "Updated 'permissions' column for records where 'public' is TRUE."
+                )
+
+                # Step 3: Drop the 'public' column
+                conn.execute(text("ALTER TABLE artifacts DROP COLUMN public"))
+                logger.info(
+                    "Successfully removed 'public' column from 'artifacts' table."
+                )
+
+                # Log the schema change
                 database_change_log.append(
                     {
                         "time": datetime.datetime.now().isoformat(),
                         "version": __version__,
-                        "change": "Added 'public' column to 'artifacts' table",
+                        "change": "Replaced 'public' column with 'permissions' column in 'artifacts' table",
                     }
                 )
             else:
-                logger.info("'public' column already exists in 'artifacts' table.")
+                logger.info(
+                    "'public' column does not exist in 'artifacts' table, no need for schema upgrade."
+                )
 
         async with self._sql_engine.begin() as conn:
             try:

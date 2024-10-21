@@ -59,9 +59,9 @@ class ArtifactModel(Base):
     )  # Store the weights for counting downloads; a dictionary of file paths and their weights 0-1
     download_count = Column(Float, nullable=False, default=0.0)  # New counter field
     view_count = Column(Float, nullable=False, default=0.0)  # New counter field
-    public = Column(
-        Boolean, nullable=True
-    )  # New field for public artifacts, None means it follows the parent artifact
+    permissions = Column(
+        JSON, nullable=True
+    )  # New field for storing permissions for the artifact
     __table_args__ = (
         UniqueConstraint("workspace", "prefix", name="_workspace_prefix_uc"),
     )
@@ -96,19 +96,19 @@ class ArtifactController:
         ):
             """Get artifact from the database."""
             try:
-                artifact, manifest = await self._read_manifest(
-                    workspace, path, stage=stage
+                artifact = await self._get_artifact_with_permission(
+                    workspace, user_info, path, "read"
                 )
-                if not artifact.public:
-                    if not user_info.check_permission(workspace, UserPermission.read):
-                        raise PermissionError(
-                            "User does not have read permission to the non-public artifact."
-                        )
+                manifest = await self._read_manifest(
+                    artifact, stage=stage, increment_view_count=True
+                )
                 return manifest
             except KeyError as e:
                 raise HTTPException(status_code=404, detail=str(e))
             except PermissionError as e:
                 raise HTTPException(status_code=403, detail=str(e))
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
 
         self.store.set_artifact_manager(self)
         self.store.register_public_service(self.get_artifact_service())
@@ -168,24 +168,15 @@ class ArtifactController:
 
         return session
 
-    async def _read_manifest(self, workspace, prefix, stage=False):
-        session = await self._get_session()
+    async def _read_manifest(self, artifact, stage=False, increment_view_count=False):
+        manifest = artifact.stage_manifest if stage else artifact.manifest
+        prefix = artifact.prefix
+        workspace = artifact.workspace
+        if not manifest:
+            raise KeyError(f"No manifest found for artifact '{prefix}'.")
         try:
+            session = await self._get_session()
             async with session.begin():
-                query = select(ArtifactModel).filter(
-                    ArtifactModel.workspace == workspace,
-                    ArtifactModel.prefix == prefix,
-                )
-                result = await session.execute(query)
-                artifact = result.scalar_one_or_none()
-
-                if not artifact:
-                    raise KeyError(f"Artifact under prefix '{prefix}' does not exist.")
-
-                manifest = artifact.stage_manifest if stage else artifact.manifest
-                if not manifest:
-                    raise KeyError(f"No manifest found for artifact '{prefix}'.")
-
                 # If the artifact is a collection, dynamically populate the 'collection' field
                 if manifest.get("type") == "collection":
                     sub_prefix = f"{prefix}/"
@@ -213,8 +204,8 @@ class ArtifactController:
                     manifest["collection"] = collection
 
                 if stage:
-                    manifest["stage_files"] = artifact.stage_files
-                else:
+                    manifest["_stage_files"] = artifact.stage_files
+                elif increment_view_count:
                     # increase view count
                     stmt = (
                         update(ArtifactModel)
@@ -231,7 +222,7 @@ class ArtifactController:
                 }
                 if manifest.get("type") == "collection":
                     manifest["_stats"]["child_count"] = len(collection)
-                return artifact, manifest
+                return manifest
         except Exception as e:
             raise e
         finally:
@@ -245,25 +236,177 @@ class ArtifactController:
         result = await session.execute(query)
         return result.scalar_one_or_none()
 
+    def _expand_permission(self, permission):
+        """Get the alias for the operation."""
+        if isinstance(permission, str):
+            if permission == "r":
+                return ["read", "get_file", "list_files", "search"]
+            elif permission == "r+":
+                return [
+                    "read",
+                    "get_file",
+                    "put_file",
+                    "list_files",
+                    "search",
+                    "create",
+                    "commit",
+                ]
+            elif permission == "rw":
+                return [
+                    "read",
+                    "get_file",
+                    "list_files",
+                    "search",
+                    "edit",
+                    "commit",
+                    "put_file",
+                    "remove_file",
+                ]
+            elif permission == "rw+":
+                return [
+                    "read",
+                    "get_file",
+                    "list_files",
+                    "search",
+                    "edit",
+                    "commit",
+                    "put_file",
+                    "remove_file",
+                    "create",
+                ]
+            elif permission == "*":
+                return [
+                    "read",
+                    "get_file",
+                    "list_files",
+                    "search",
+                    "edit",
+                    "commit",
+                    "put_file",
+                    "remove_file",
+                    "create",
+                    "reset_stats",
+                ]
+            else:
+                raise ValueError(f"Permission '{permission}' is not supported.")
+        else:
+            return permission
+
+    async def _get_artifact_with_permission(
+        self, workspace, user_info, prefix, operation
+    ):
+        """
+        Check whether a user has the required permission to perform an operation on an artifact.
+        :param workspace: The workspace where the artifact is located.
+        :param user_info: The user info object, including user permissions.
+        :param prefix: The prefix of the artifact being accessed.
+        :param operation: The operation being checked ('read', 'write', etc.).
+        :return: True if the user has permission, False otherwise.
+        """
+
+        # Map the operation to the corresponding UserPermission enum
+        if operation in ["read", "get_file", "list_files", "search"]:  # list
+            perm = UserPermission.read
+        elif operation in ["create", "edit", "commit", "put_file", "remove_file"]:
+            perm = UserPermission.read_write
+        elif operation in ["delete", "reset_stats"]:
+            perm = UserPermission.admin
+        else:
+            raise ValueError(f"Operation '{operation}' is not supported.")
+
+        session = await self._get_session(read_only=True)
+        try:
+            async with session.begin():
+                artifact = await self._get_artifact(session, workspace, prefix)
+                if not artifact:
+                    if operation != "create":
+                        raise KeyError(
+                            f"Artifact with prefix '{prefix}' does not exist."
+                        )
+                else:
+                    # Step 1: Check artifact-specific permissions
+                    # Check if there are specific permissions for this artifact
+                    if artifact.permissions:
+                        # If all users are allowed for this operation, return True
+                        if "*" in artifact.permissions and (
+                            operation
+                            in self._expand_permission(artifact.permissions["*"])
+                        ):
+                            return artifact
+
+                        # Check if this specific user is in the permissions dictionary
+                        if user_info.id in artifact.permissions and (
+                            operation
+                            in self._expand_permission(
+                                artifact.permissions[user_info.id]
+                            )
+                        ):
+                            return artifact
+
+                # Step 2: Check workspace-level permission
+                if user_info.check_permission(workspace, perm):
+                    return artifact
+
+                # Step 3: Check parent artifact's permissions if no explicit permission defined
+                parent_prefix = "/".join(prefix.split("/")[:-1])
+                depth = 5
+                while parent_prefix:
+                    parent_artifact = await self._get_artifact(
+                        session, workspace, parent_prefix
+                    )
+                    if parent_artifact:
+                        # Check parent artifact permissions if they exist
+                        if parent_artifact.permissions:
+                            # If all users are allowed for this operation, return True
+                            if "*" in parent_artifact.permissions and (
+                                operation
+                                in self._expand_permission(
+                                    parent_artifact.permissions["*"]
+                                )
+                            ):
+                                return artifact
+
+                            # Check if this specific user is in the parent artifact permissions dictionary
+                            if user_info.id in parent_artifact.permissions and (
+                                operation
+                                in self._expand_permission(
+                                    parent_artifact.permissions[user_info.id]
+                                )
+                            ):
+                                return artifact
+                    else:
+                        break
+                    # Move up the hierarchy to check the next parent
+                    parent_prefix = "/".join(parent_prefix.split("/")[:-1])
+                    depth -= 1
+                    if depth <= 0:
+                        break
+
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
+        raise PermissionError(
+            f"User does not have permission to perform the operation '{operation}' on the artifact."
+        )
+
     async def create(
         self,
         prefix,
         manifest: dict,
         overwrite=False,
         stage=False,
-        public=None,
+        permissions: dict = None,
         context: dict = None,
     ):
         """Create a new artifact and store its manifest in the database."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         ws = context["ws"]
-
         user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read_write):
-            raise PermissionError(
-                "User does not have write permission to the workspace."
-            )
+
+        await self._get_artifact_with_permission(ws, user_info, prefix, "create")
 
         # Validate based on the type of manifest
         if manifest["type"] == "collection":
@@ -280,15 +423,16 @@ class ArtifactController:
         session = await self._get_session()
         try:
             async with session.begin():
-                if public is None:
-                    # if public is not set, try to use the parent artifact's public setting
-                    parent_prefix = "/".join(prefix.split("/")[:-1])
-                    if parent_prefix:
-                        parent_artifact = await self._get_artifact(
-                            session, ws, parent_prefix
-                        )
-                        if parent_artifact:
-                            public = parent_artifact.public
+                # if permissions is not set, try to use the parent artifact's permissions setting
+                parent_prefix = "/".join(prefix.split("/")[:-1])
+                if parent_prefix:
+                    parent_artifact = await self._get_artifact(
+                        session, ws, parent_prefix
+                    )
+                    if parent_artifact and permissions is None:
+                        permissions = parent_artifact.permissions
+                else:
+                    parent_artifact = None
 
                 existing_artifact = await self._get_artifact(session, ws, prefix)
 
@@ -303,6 +447,8 @@ class ArtifactController:
                         await session.commit()
 
             async with session.begin():
+                permissions = permissions or {}
+                permissions[user_info.id] = "*"
                 new_artifact = ArtifactModel(
                     workspace=ws,
                     prefix=prefix,
@@ -310,7 +456,7 @@ class ArtifactController:
                     stage_manifest=manifest if stage else None,
                     stage_files=[] if stage else None,
                     download_weights=None,
-                    public=public,
+                    permissions=permissions,
                     type=manifest["type"],
                 )
                 session.add(new_artifact)
@@ -330,17 +476,12 @@ class ArtifactController:
         ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read_write):
-            raise PermissionError(
-                "User does not have write permission to the workspace."
-            )
-
+        artifact = await self._get_artifact_with_permission(
+            ws, user_info, prefix, "reset_stats"
+        )
         session = await self._get_session()
         try:
             async with session.begin():
-                artifact = await self._get_artifact(session, ws, prefix)
-                if not artifact:
-                    raise KeyError(f"Artifact under prefix '{prefix}' does not exist.")
                 stmt = (
                     update(ArtifactModel)
                     .where(ArtifactModel.id == artifact.id)
@@ -362,28 +503,26 @@ class ArtifactController:
         ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
-        artifact, manifest = await self._read_manifest(ws, prefix, stage=stage)
-
-        if not artifact.public and not user_info.check_permission(
-            ws, UserPermission.read
-        ):
-            raise PermissionError(
-                "User does not have read permission to the workspace."
-            )
-
+        artifact = await self._get_artifact_with_permission(
+            ws, user_info, prefix, "read"
+        )
+        manifest = await self._read_manifest(
+            artifact, stage=stage, increment_view_count=True
+        )
         return manifest
 
-    async def edit(self, prefix, manifest=None, context: dict = None):
+    async def edit(
+        self, prefix, manifest=None, permissions: dict = None, context: dict = None
+    ):
         """Edit the artifact's manifest and save it in the database."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read_write):
-            raise PermissionError(
-                "User does not have write permission to the workspace."
-            )
+        artifact = await self._get_artifact_with_permission(
+            ws, user_info, prefix, "edit"
+        )
 
         if manifest:
             # Validate the manifest
@@ -401,13 +540,13 @@ class ArtifactController:
         session = await self._get_session()
         try:
             async with session.begin():
-                artifact = await self._get_artifact(session, ws, prefix)
-                if not artifact:
-                    raise KeyError(f"Artifact under prefix '{prefix}' does not exist.")
                 if manifest is None:
                     manifest = copy.deepcopy(artifact.manifest)
                 artifact.stage_manifest = manifest
                 flag_modified(artifact, "stage_manifest")  # Mark JSON field as modified
+                if permissions is not None:
+                    artifact.permissions = permissions
+                    flag_modified(artifact, "permissions")
                 session.add(artifact)
                 await session.commit()
             logger.info(f"Edited artifact under prefix: {prefix}")
@@ -423,20 +562,13 @@ class ArtifactController:
         ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read_write):
-            raise PermissionError(
-                "User does not have write permission to the workspace."
-            )
+        artifact = await self._get_artifact_with_permission(
+            ws, user_info, prefix, "commit"
+        )
 
         session = await self._get_session()
         try:
             async with session.begin():
-                artifact = await self._get_artifact(session, ws, prefix)
-                if not artifact or not artifact.stage_manifest:
-                    raise KeyError(
-                        f"No staged manifest to commit for artifact '{prefix}'."
-                    )
-
                 manifest = artifact.stage_manifest
 
                 download_weights = {}
@@ -498,18 +630,14 @@ class ArtifactController:
         ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read_write):
-            raise PermissionError(
-                "User does not have write permission to the workspace."
-            )
-
+        artifact = await self._get_artifact_with_permission(
+            ws, user_info, prefix, "delete"
+        )
         session = await self._get_session()
         try:
             async with session.begin():
-                artifact = await self._get_artifact(session, ws, prefix)
-                if artifact:
-                    await session.delete(artifact)
-                    await session.commit()
+                await session.delete(artifact)
+                await session.commit()
             logger.info(f"Deleted artifact under prefix: {prefix}")
         except Exception as e:
             raise e
@@ -533,13 +661,7 @@ class ArtifactController:
             raise ValueError("Context must include 'ws' (workspace).")
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
-        artifact, _ = await self._read_manifest(ws, prefix, stage=stage)
-        if not artifact.public and not user_info.check_permission(
-            ws, UserPermission.read
-        ):
-            raise PermissionError(
-                "User does not have read permission to the workspace."
-            )
+        await self._get_artifact_with_permission(ws, user_info, prefix, "list_files")
         async with self.s3_controller.create_client_async() as s3_client:
             full_path = safe_join(ws, prefix) + "/"
             items = await list_objects_async(
@@ -553,23 +675,11 @@ class ArtifactController:
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         ws = context["ws"]
-
         user_info = UserInfo.model_validate(context["user"])
-        try:
-            artifact, _ = await self._read_manifest(ws, prefix)
-            if not artifact.public and not user_info.check_permission(
-                ws, UserPermission.read
-            ):
-                raise PermissionError(
-                    "User does not have read permission to the workspace."
-                )
-        except KeyError:
-            # the prefix is not a valid artifact, check if the user has permission to list the artifacts
-            if not user_info.check_permission(ws, UserPermission.read):
-                raise PermissionError(
-                    "User does not have read permission to the workspace."
-                )
-
+        if not user_info.check_permission(ws, UserPermission.read):
+            raise PermissionError(
+                "User does not have read permission to the workspace."
+            )
         session = await self._get_session()
         try:
             async with session.begin():
@@ -608,14 +718,9 @@ class ArtifactController:
         ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
-        artifact, _ = await self._read_manifest(ws, prefix)
-        if not artifact.public and not user_info.check_permission(
-            ws, UserPermission.read
-        ):
-            raise PermissionError(
-                "User does not have read permission to the workspace."
-            )
-
+        artifact = await self._get_artifact_with_permission(
+            ws, user_info, prefix, "search"
+        )
         session = await self._get_session(read_only=True)
         try:
             async with session.begin():
@@ -695,10 +800,9 @@ class ArtifactController:
         """Generate a pre-signed URL to upload a file to an artifact in S3 and update the manifest."""
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read_write):
-            raise PermissionError(
-                "User does not have write permission to the workspace."
-            )
+        artifact = await self._get_artifact_with_permission(
+            ws, user_info, prefix, "put_file"
+        )
 
         options = options or {}
 
@@ -715,10 +819,6 @@ class ArtifactController:
         session = await self._get_session()
         try:
             async with session.begin():
-                artifact = await self._get_artifact(session, ws, prefix)
-                if not artifact or not artifact.stage_manifest:
-                    raise KeyError(f"No staged manifest found for artifact '{prefix}'.")
-
                 artifact.stage_files = artifact.stage_files or []
 
                 if not any(f["path"] == file_path for f in artifact.stage_files):
@@ -745,14 +845,9 @@ class ArtifactController:
         ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
-        artifact, _ = await self._read_manifest(ws, prefix)
-        if not artifact.public and not user_info.check_permission(
-            ws, UserPermission.read
-        ):
-            raise PermissionError(
-                "User does not have read permission to the workspace."
-            )
-
+        artifact = await self._get_artifact_with_permission(
+            ws, user_info, prefix, "get_file"
+        )
         async with self.s3_controller.create_client_async() as s3_client:
             file_key = safe_join(ws, f"{prefix}/{path}")
             presigned_url = await s3_client.generate_presigned_url(
@@ -795,10 +890,9 @@ class ArtifactController:
         ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read_write):
-            raise PermissionError(
-                "User does not have write permission to the workspace."
-            )
+        artifact = await self._get_artifact_with_permission(
+            ws, user_info, prefix, "remove_file"
+        )
 
         session = await self._get_session()
         try:
@@ -845,13 +939,13 @@ class ArtifactController:
             "create": self.create,
             "reset_stats": self.reset_stats,
             "edit": self.edit,
-            "read": self.read,  # accessible to public if the artifact is public
+            "read": self.read,
             "commit": self.commit,
             "delete": self.delete,
             "put_file": self.put_file,
             "remove_file": self.remove_file,
-            "get_file": self.get_file,  # accessible to public if the artifact is public
-            "list": self.list_artifacts,  # accessible to public if the artifact is public
-            "search": self.search,  # accessible to public if the artifact is public
-            "list_files": self.list_files,  # accessible to public if the artifact is public
+            "get_file": self.get_file,
+            "list": self.list_artifacts,
+            "search": self.search,
+            "list_files": self.list_files,
         }
