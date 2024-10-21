@@ -15,7 +15,7 @@ A typical use case for the `Artifact Manager` is as a backend for a single-page 
 To use the `Artifact Manager`, you first need to connect to the Hypha server. This API allows you to create, read, edit, and delete datasets in the artifact registry (stored in an S3 bucket for each workspace).
 
 ```python
-from hypha_rpc.websocket_client import connect_to_server
+from hypha_rpc import connect_to_server
 
 SERVER_URL = "https://hypha.aicell.io"  # Replace with your server URL
 
@@ -38,7 +38,7 @@ gallery_manifest = {
     "collection": [],
 }
 
-await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, public=True)
+await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+"})
 print("Dataset Gallery created.")
 ```
 
@@ -56,7 +56,7 @@ dataset_manifest = {
     "files": [],
 }
 
-await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True) # no need to set public since it is already set in the collection, but you can make it private by setting public=False
+await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True) # no need to set public since it is already set in the collection, but you can make it private by setting `permissions={"*": "r+"}`
 print("Dataset added to the gallery.")
 ```
 
@@ -124,7 +124,7 @@ async def main():
         "type": "collection",
         "collection": [],
     }
-    await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, public=True)
+    await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+"})
     print("Dataset Gallery created.")
 
     # Create a new dataset inside the Dataset Gallery
@@ -195,7 +195,7 @@ gallery_manifest = {
     "collection": [],
 }
 
-await artifact_manager.create(prefix="collections/schema-dataset-gallery", manifest=gallery_manifest, public=True)
+await artifact_manager.create(prefix="collections/schema-dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+"})
 print("Schema-based Dataset Gallery created.")
 ```
 
@@ -224,7 +224,7 @@ print("Valid dataset committed.")
 
 ## API References
 
-### `create(prefix: str, manifest: dict, public: bool = True, stage: bool = False) -> None`
+### `create(prefix: str, manifest: dict, permissions: dict=None, stage: bool = False) -> None`
 
 Creates a new artifact or collection with the specified manifest. The artifact is staged until committed. For collections, the `collection` field should be an empty list.
 
@@ -232,18 +232,23 @@ Creates a new artifact or collection with the specified manifest. The artifact i
 
 - `prefix`: The path of the new artifact or collection (e.g., `"collections/dataset-gallery/example-dataset"`).
 - `manifest`: The manifest of the new artifact. Ensure the manifest follows the required schema if applicable (e.g., for collections).
-- `public`: Optional. A boolean flag to make the artifact public. Default is `True`.
+- `permissions`: Optional. A dictionary containing user permissions, {"user_id": [...a list of allowed operations]}, there are shortcuts:
+    - `r+`: Read and create permissions for all users.
+    - `r`: Read-only permissions for all users.
+    - `rw`: Read and write permissions for all users.
+    - `rw+`: Read, write and create permissions for all users.
+   You can use `*` to represent all users, otherwise, use the user's ID. As an example, `{"*": "r+"}` will give read and create permissions to all users. `{"user_id_1": "r+"}` will give read and create permissions to the user with the ID `user_id_1`.
 - `stage`: Optional. A boolean flag to stage the artifact. Default is `False`.
 
 **Example:**
 
 ```python
-await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, public=True, stage=True)
+await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True)
 ```
 
 ---
 
-### `edit(prefix: str, manifest: dict) -> None`
+### `edit(prefix: str, manifest: dict, permissions: dict = None) -> None`
 
 Edits an existing artifact's manifest. The new manifest is staged until committed. The updated manifest is stored temporarily as `_manifest.yaml`.
 
@@ -251,6 +256,12 @@ Edits an existing artifact's manifest. The new manifest is staged until committe
 
 - `prefix`: The path of the artifact to edit (e.g., `"collections/dataset-gallery/example-dataset"`).
 - `manifest`: The updated manifest. Ensure the manifest follows the required schema if applicable (e.g., for collections).
+- `permissions`: Optional. Same as `permissions` for `create(...)`. A dictionary containing user permissions, {"user_id": [...a list of allowed operations]}, there are shortcuts:
+    - `r+`: Read and create permissions for all users.
+    - `r`: Read-only permissions for all users.
+    - `rw`: Read and write permissions for all users.
+    - `rw+`: Read, write and create permissions for all users.
+   You can use `*` to represent all users, otherwise, use the user's ID. As an example, `{"*": "r+"}` will give read and create permissions to all users. `{"user_id_1": "r+"}` will give read and create permissions to the user with the ID `user_id_1`.
 
 **Example:**
 
@@ -444,7 +455,7 @@ gallery_manifest = {
     "type": "collection",
     "collection": [],
 }
-await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, public=True)
+await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+"})
 
 # Step 3: Add a dataset to the gallery
 dataset_manifest = {
@@ -454,7 +465,7 @@ dataset_manifest = {
     "type": "dataset",
     "files": [],
 }
-await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True, public=True)
+await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True)
 
 # Step 4: Upload a file to the dataset
 put_url = await artifact_manager.put_file(prefix="collections/dataset-gallery/example-dataset", file_path="data.csv")
