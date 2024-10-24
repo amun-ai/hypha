@@ -38,7 +38,8 @@ gallery_manifest = {
     "collection": [],
 }
 
-await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+"})
+# Create the collection with read permission for everyone and create permission for all authenticated users
+await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r", "@": "r+"})
 print("Dataset Gallery created.")
 ```
 
@@ -56,7 +57,7 @@ dataset_manifest = {
     "files": [],
 }
 
-await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True) # no need to set public since it is already set in the collection, but you can make it private by setting `permissions={"*": "r+"}`
+await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True)
 print("Dataset added to the gallery.")
 ```
 
@@ -124,7 +125,8 @@ async def main():
         "type": "collection",
         "collection": [],
     }
-    await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+"})
+    # Create the collection with read permission for everyone and create permission for all authenticated users
+    await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+", "@": "r+"})
     print("Dataset Gallery created.")
 
     # Create a new dataset inside the Dataset Gallery
@@ -194,8 +196,8 @@ gallery_manifest = {
     "collection_schema": dataset_schema,
     "collection": [],
 }
-
-await artifact_manager.create(prefix="collections/schema-dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+"})
+# Create the collection with read permission for everyone and create permission for all authenticated users
+await artifact_manager.create(prefix="collections/schema-dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+", "@": "r+"})
 print("Schema-based Dataset Gallery created.")
 ```
 
@@ -230,14 +232,9 @@ Creates a new artifact or collection with the specified manifest. The artifact i
 
 **Parameters:**
 
-- `prefix`: The path of the new artifact or collection (e.g., `"collections/dataset-gallery/example-dataset"`).
+- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
 - `manifest`: The manifest of the new artifact. Ensure the manifest follows the required schema if applicable (e.g., for collections).
-- `permissions`: Optional. A dictionary containing user permissions, {"user_id": [...a list of allowed operations]}, there are shortcuts:
-    - `r+`: Read and create permissions for all users.
-    - `r`: Read-only permissions for all users.
-    - `rw`: Read and write permissions for all users.
-    - `rw+`: Read, write and create permissions for all users.
-   You can use `*` to represent all users, otherwise, use the user's ID. As an example, `{"*": "r+"}` will give read and create permissions to all users. `{"user_id_1": "r+"}` will give read and create permissions to the user with the ID `user_id_1`.
+- `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
 - `stage`: Optional. A boolean flag to stage the artifact. Default is `False`.
 
 **Example:**
@@ -245,6 +242,78 @@ Creates a new artifact or collection with the specified manifest. The artifact i
 ```python
 await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True)
 ```
+
+### Permissions
+
+In the `Artifact Manager`, permissions allow users to control access to artifacts and collections. The system uses a flexible permission model that supports assigning different levels of access to individual users, authenticated users, or all users. Permissions are stored in the `permissions` field of an artifact manifest, and they define which operations a user can perform, such as reading, writing, creating, or committing changes.
+
+Permissions can be set both at the artifact level and the workspace level. In the absence of explicit artifact-level permissions, workspace-level permissions are checked to determine access. Here's how permissions work in detail:
+
+**Permission Levels:**
+
+- **r**: Read-only access (includes `read`, `get_file`, `list_files`, `search`).
+- **r+**: Read and create access (includes `read`, `get_file`, `list_files`, `search`, `put_file`, `create`, `commit`).
+- **rw**: Read and write access (includes `read`, `get_file`, `list_files`, `search`, `edit`, `commit`, `put_file`, `remove_file`).
+- **rw+**: Full access, including creation, editing, committing, and file removal (includes `read`, `get_file`, `list_files`, `search`, `edit`, `commit`, `put_file`, `remove_file`, `create`, `reset_stats`).
+- **\***: Full access for all operations (includes all operations listed above).
+
+**Shortcut Permission Notation:**
+
+- **\***: Refers to all users, both authenticated and anonymous. For example, `{"*": "r+"}` gives read and create access to everyone.
+- **@**: Refers to authenticated (logged-in) users only. For instance, `{"@": "rw"}` allows all logged-in users to read and write, but restricts anonymous users.
+- **user_id**: Specifies permissions for a specific user, identified by their `user_id`. For example, `{"user_id_1": "r+"}` grants read and create permissions to the user with ID `user_id_1`.
+
+When multiple notations are used together, the most specific permission takes precedence. For example, if a user has both `{"*": "r"}` and `{"user_id_1": "n"}` permissions, the user will have no access because the specific permission `{"user_id_1": "n"}` overrides the general permission `{"*": "r"}`.
+
+**Example Permissions:**
+
+1. **Public Read-Only Access:**
+   ```json
+   {
+     "permissions": {
+       "*": "r"
+     }
+   }
+   ```
+   This grants read-only access to everyone, including anonymous users.
+
+2. **Read, Write and Create Access for Logged-In Users:**
+   ```json
+   {
+     "permissions": {
+       "@": "rw+"
+     }
+   }
+   ```
+   This allows all authenticated users to read, write and create, but restricts access for anonymous users.
+
+3. **Full Access for a Specific User:**
+   ```json
+   {
+     "permissions": {
+       "user_id_1": "rw+"
+     }
+   }
+   ```
+   This grants a specific user full access to the artifact, including reading, writing, creating, and managing files.
+
+**Permission Hierarchy:**
+
+1. **Artifact-Level Permissions:** If permissions are explicitly defined for an artifact, those will take precedence over workspace-level permissions.
+2. **Workspace-Level Permissions:** If no artifact-specific permissions are set, the system checks the workspace-level permissions.
+3. **Parent Artifact Permissions:** If an artifact does not define permissions explicitly, the permissions of its parent artifact in the collection hierarchy are checked.
+
+**Permission Expansion:**
+
+Permissions can be expanded to cover multiple operations. For example, a permission of `"r"` will automatically include operations like reading files, listing contents, and performing searches. Similarly, a permission of `"rw+"` covers all operations, including creating, editing, committing, and managing files.
+
+The following list shows how permission expansions work:
+
+- `"n"`: No operations allowed.
+- `"r"`: Includes `read`, `get_file`, `list_files`, and `search`.
+- `"r+"`: Includes all operations in `"r"`, plus `put_file`, `create`, and `commit`.
+- `"rw"`: Includes all operations in `"r+"`, plus `edit`, `commit`, and `remove_file`.
+- `"rw+"`: Includes all operations in `"rw"`, plus `reset_stats`.
 
 ---
 
@@ -254,14 +323,9 @@ Edits an existing artifact's manifest. The new manifest is staged until committe
 
 **Parameters:**
 
-- `prefix`: The path of the artifact to edit (e.g., `"collections/dataset-gallery/example-dataset"`).
+- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
 - `manifest`: The updated manifest. Ensure the manifest follows the required schema if applicable (e.g., for collections).
-- `permissions`: Optional. Same as `permissions` for `create(...)`. A dictionary containing user permissions, {"user_id": [...a list of allowed operations]}, there are shortcuts:
-    - `r+`: Read and create permissions for all users.
-    - `r`: Read-only permissions for all users.
-    - `rw`: Read and write permissions for all users.
-    - `rw+`: Read, write and create permissions for all users.
-   You can use `*` to represent all users, otherwise, use the user's ID. As an example, `{"*": "r+"}` will give read and create permissions to all users. `{"user_id_1": "r+"}` will give read and create permissions to the user with the ID `user_id_1`.
+- `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
 
 **Example:**
 
@@ -277,7 +341,7 @@ Finalizes and commits an artifact's staged changes. Validates uploaded files and
 
 **Parameters:**
 
-- `prefix`: The path of the artifact to commit (e.g., `"collections/dataset-gallery/example-dataset"`).
+- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
 
 **Example:**
 
@@ -293,7 +357,7 @@ Deletes an artifact, its manifest, and all associated files from both the databa
 
 **Parameters:**
 
-- `prefix`: The path of the artifact to delete (e.g., `"collections/dataset-gallery/example-dataset"`).
+- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
 
 **Example:**
 
@@ -309,7 +373,7 @@ Generates a pre-signed URL to upload a file to the artifact in S3. The URL can b
 
 **Parameters:**
 
-- `prefix`: The path of the artifact where the file will be uploaded (e.g., `"collections/dataset-gallery/example-dataset"`).
+- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
 - `file_path`: The relative path of the file to upload within the artifact (e.g., `"data.csv"`).
 - `options`: Optional. Additional options such as:
   - `download_weight`: A float value representing the file's impact on download count (0-1). Defaults to `None`.
@@ -330,7 +394,7 @@ Removes a file from the artifact and updates the staged manifest. The file is al
 
 **Parameters:**
 
-- `prefix`: The path of the artifact from which the file will be removed (e.g., `"collections/dataset-gallery/example-dataset"`).
+- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
 - `file_path`: The relative path of the file to be removed (e.g., `"data.csv"`).
 
 **Example:**
@@ -347,7 +411,7 @@ Generates a pre-signed URL to download a file from the artifact stored in S3.
 
 **Parameters:**
 
-- `prefix`: The path of the artifact (e.g., `"collections/dataset-gallery/example-dataset"`).
+- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
 - `path`: The relative path of the file to download (e.g., `"data.csv"`).
 - `options`: Optional. Controls for the download behavior, such as:
   - `silent`: A boolean to suppress the download count increment. Default is `False`.
@@ -368,7 +432,7 @@ Lists all artifacts or collections under the specified prefix. Returns either a 
 
 **Parameters:**
 
-- `prefix`: The path under which the artifacts or collections are listed (e.g., `"collections/dataset-gallery"`).
+- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
 - `max_length`: Optional. The maximum number of items to list. Default is `1000`.
 - `stage`: Optional. If `True`, it lists the artifacts in staging mode. Default is `False`.
 
@@ -382,14 +446,15 @@ datasets = await artifact_manager.list(prefix="collections/dataset-gallery")
 
 ---
 
-### `read(prefix: str, stage: bool = False) -> dict`
+### `read(prefix: str, stage: bool = False, silent: bool = False) -> dict`
 
 Reads and returns the manifest of an artifact or collection. If in staging mode, reads from `_manifest.yaml`. Collections also dynamically populate the `collection` field with sub-artifacts.
 
 **Parameters:**
 
-- `prefix`: The path of the artifact or collection to read (e.g., `"collections/dataset-gallery/example-dataset"`).
+- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
 - `stage`: Optional. If `True`, reads the `_manifest.yaml`. Default is `False`.
+- `silent`: Optional. If `True`, suppresses the view count increment. Default is `False`.
 
 **Returns:** The manifest as a dictionary, including view/download statistics and collection details (if applicable).
 
@@ -407,7 +472,7 @@ Searches for artifacts within a collection based on keywords or filters, support
 
 **Parameters:**
 
-- `prefix`: The path of the collection to search in (e.g., `"collections/dataset-gallery"`).
+- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
 - `keywords`: Optional. A list of terms to search across all fields in the manifest.
 - `filters`: Optional. A dictionary of key-value pairs for exact or fuzzy matching in specific fields.
 - `mode`: Either `"AND"` or `"OR"` to combine conditions. Default is `"AND"`.
@@ -428,7 +493,7 @@ Resets the download and view counts for the artifact.
 
 **Parameters:**
 
-- `prefix`: The path of the artifact for which to reset statistics (e.g., `"collections/dataset-gallery/example-dataset"`).
+- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
 
 **Example:**
 
@@ -455,7 +520,8 @@ gallery_manifest = {
     "type": "collection",
     "collection": [],
 }
-await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+"})
+# Create the collection with read permission for everyone and create permission for all authenticated users
+await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r", "@": "r+"})
 
 # Step 3: Add a dataset to the gallery
 dataset_manifest = {
@@ -495,10 +561,10 @@ print("Download statistics reset.")
 
 The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifests, data, and download statistics. This is useful for public-facing web applications that need to access datasets, models, or applications.
 
-### Endpoint: `/{workspace}/artifacts/{path:path}`
+### Endpoint: `/{workspace}/artifacts/{prefix:path}`
 
-- **Workspace**: The workspace in which the artifact is stored.
-- **Path**: The relative path to the artifact. For private artifacts, it requires proper authentication by passing the user's token in the request headers.
+- **workspace**: The workspace in which the artifact is stored.
+- **prefix**: The relative prefix to the artifact. For private artifacts, it requires proper authentication by passing the user's token in the request headers.
 
 ### Request Format:
 
@@ -507,8 +573,9 @@ The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifes
   - `Authorization`: Optional. The user's token for accessing private artifacts (obtained via the login logic or created by `api.generate_token()`). Not required for public artifacts.
 - **Parameters**:
   - `workspace`: The workspace in which the artifact is stored.
-  - `path`: The path to the artifact (e.g., `collections/dataset-gallery/example-dataset`).
+  - `prefix`: The relative prefix to the artifact (e.g., `collections/dataset-gallery/example-dataset`). It should not contain the workspace ID.
   - `stage` (optional): A boolean flag to indicate whether to fetch the staged version of the manifest (`_manifest.yaml`). Default is `False`.
+  - `silent` (optional): A boolean flag to suppress the view count increment. Default is `False`.
 
 ### Response:
 
