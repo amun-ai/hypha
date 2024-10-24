@@ -35,6 +35,7 @@ from hypha.core import (
 )
 from hypha_rpc.utils import ObjectProxy
 from jsonschema import validate
+from typing import Union, List
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("artifact")
@@ -67,6 +68,9 @@ class ArtifactModel(Base):
     )
 
 
+DEFAULT_SUMMARY_FIELDS = ["id", "type", "name"]
+
+
 class ArtifactController:
     """Artifact Controller using SQLAlchemy for database backend and S3 for file storage."""
 
@@ -87,20 +91,21 @@ class ArtifactController:
 
         router = APIRouter()
 
-        @router.get("/{workspace}/artifacts/{path:path}")
+        @router.get("/{workspace}/artifacts/{prefix:path}")
         async def get_artifact(
             workspace: str,
-            path: str,
+            prefix: str,
             stage: bool = False,
+            silent: bool = False,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """Get artifact from the database."""
             try:
                 artifact = await self._get_artifact_with_permission(
-                    workspace, user_info, path, "read"
+                    workspace, user_info, prefix, "read"
                 )
                 manifest = await self._read_manifest(
-                    artifact, stage=stage, increment_view_count=True
+                    artifact, stage=stage, increment_view_count=not silent
                 )
                 return manifest
             except KeyError as e:
@@ -168,6 +173,12 @@ class ArtifactController:
 
         return session
 
+    def _generate_stats(self, artifact):
+        return {
+            "download_count": int(artifact.download_count),
+            "view_count": int(artifact.view_count),
+        }
+
     async def _read_manifest(self, artifact, stage=False, increment_view_count=False):
         manifest = artifact.stage_manifest if stage else artifact.manifest
         prefix = artifact.prefix
@@ -189,16 +200,18 @@ class ArtifactController:
 
                     # Populate the 'collection' field with summary_fields for each sub-artifact
                     summary_fields = manifest.get(
-                        "summary_fields", ["id", "name", "description"]
+                        "summary_fields", DEFAULT_SUMMARY_FIELDS
                     )
                     collection = []
-                    for artifact in sub_artifacts:
-                        sub_manifest = artifact.manifest
-                        summary = {"_prefix": artifact.prefix}
+                    for sub_artifact in sub_artifacts:
+                        sub_manifest = sub_artifact.manifest
+                        summary = {"_prefix": f"/{workspace}/{sub_artifact.prefix}"}
                         for field in summary_fields:
                             value = sub_manifest.get(field)
                             if value is not None:
                                 summary[field] = value
+                        if "_stats" in summary_fields:
+                            summary["_stats"] = self._generate_stats(sub_artifact)
                         collection.append(summary)
 
                     manifest["collection"] = collection
@@ -216,10 +229,8 @@ class ArtifactController:
                     )
                     await session.execute(stmt)
                     await session.commit()
-                manifest["_stats"] = {
-                    "download_count": artifact.download_count,
-                    "view_count": artifact.view_count,
-                }
+                    artifact.view_count += 1
+                manifest["_stats"] = self._generate_stats(artifact)
                 if manifest.get("type") == "collection":
                     manifest["_stats"]["child_count"] = len(collection)
                 return manifest
@@ -239,7 +250,9 @@ class ArtifactController:
     def _expand_permission(self, permission):
         """Get the alias for the operation."""
         if isinstance(permission, str):
-            if permission == "r":
+            if permission == "n":
+                return []
+            elif permission == "r":
                 return ["read", "get_file", "list_files", "search"]
             elif permission == "r+":
                 return [
@@ -293,7 +306,11 @@ class ArtifactController:
             return permission
 
     async def _get_artifact_with_permission(
-        self, workspace, user_info, prefix, operation
+        self,
+        workspace: str,
+        user_info: UserInfo,
+        prefix: str,
+        operation: Union[str, List[str]],
     ):
         """
         Check whether a user has the required permission to perform an operation on an artifact.
@@ -327,19 +344,30 @@ class ArtifactController:
                     # Step 1: Check artifact-specific permissions
                     # Check if there are specific permissions for this artifact
                     if artifact.permissions:
-                        # If all users are allowed for this operation, return True
-                        if "*" in artifact.permissions and (
-                            operation
-                            in self._expand_permission(artifact.permissions["*"])
-                        ):
-                            return artifact
-
                         # Check if this specific user is in the permissions dictionary
                         if user_info.id in artifact.permissions and (
                             operation
                             in self._expand_permission(
                                 artifact.permissions[user_info.id]
                             )
+                        ):
+                            return artifact
+
+                        # check if the user is logged in and has permission
+                        if (
+                            not user_info.is_anonymous
+                            and "@" in artifact.permissions
+                            and (
+                                operation
+                                in self._expand_permission(artifact.permissions["@"])
+                            )
+                        ):
+                            return artifact
+
+                        # If all users are allowed for this operation, return True
+                        if "*" in artifact.permissions and (
+                            operation
+                            in self._expand_permission(artifact.permissions["*"])
                         ):
                             return artifact
 
@@ -357,20 +385,33 @@ class ArtifactController:
                     if parent_artifact:
                         # Check parent artifact permissions if they exist
                         if parent_artifact.permissions:
-                            # If all users are allowed for this operation, return True
-                            if "*" in parent_artifact.permissions and (
-                                operation
-                                in self._expand_permission(
-                                    parent_artifact.permissions["*"]
-                                )
-                            ):
-                                return artifact
-
                             # Check if this specific user is in the parent artifact permissions dictionary
                             if user_info.id in parent_artifact.permissions and (
                                 operation
                                 in self._expand_permission(
                                     parent_artifact.permissions[user_info.id]
+                                )
+                            ):
+                                return artifact
+
+                            # check if the user is logged in and has permission
+                            if (
+                                not user_info.is_anonymous
+                                and "@" in parent_artifact.permissions
+                                and (
+                                    operation
+                                    in self._expand_permission(
+                                        parent_artifact.permissions["@"]
+                                    )
+                                )
+                            ):
+                                return artifact
+
+                            # If all users are allowed for this operation, return True
+                            if "*" in parent_artifact.permissions and (
+                                operation
+                                in self._expand_permission(
+                                    parent_artifact.permissions["*"]
                                 )
                             ):
                                 return artifact
@@ -403,7 +444,12 @@ class ArtifactController:
         """Create a new artifact and store its manifest in the database."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
-        ws = context["ws"]
+
+        if prefix.startswith("/"):
+            ws = prefix.split("/")[1]
+            prefix = "/".join(prefix.split("/")[2:])
+        else:
+            ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
 
         await self._get_artifact_with_permission(ws, user_info, prefix, "create")
@@ -473,7 +519,11 @@ class ArtifactController:
         """Reset the artifact's manifest's download count and view count."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
-        ws = context["ws"]
+        if prefix.startswith("/"):
+            ws = prefix.split("/")[1]
+            prefix = "/".join(prefix.split("/")[2:])
+        else:
+            ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
         artifact = await self._get_artifact_with_permission(
@@ -496,18 +546,22 @@ class ArtifactController:
         finally:
             await session.close()
 
-    async def read(self, prefix, stage=False, context: dict = None):
+    async def read(self, prefix, stage=False, silent=False, context: dict = None):
         """Read the artifact's manifest from the database and populate collections dynamically."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
-        ws = context["ws"]
+        if prefix.startswith("/"):
+            ws = prefix.split("/")[1]
+            prefix = "/".join(prefix.split("/")[2:])
+        else:
+            ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
         artifact = await self._get_artifact_with_permission(
             ws, user_info, prefix, "read"
         )
         manifest = await self._read_manifest(
-            artifact, stage=stage, increment_view_count=True
+            artifact, stage=stage, increment_view_count=not silent
         )
         return manifest
 
@@ -517,7 +571,11 @@ class ArtifactController:
         """Edit the artifact's manifest and save it in the database."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
-        ws = context["ws"]
+        if prefix.startswith("/"):
+            ws = prefix.split("/")[1]
+            prefix = "/".join(prefix.split("/")[2:])
+        else:
+            ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
         artifact = await self._get_artifact_with_permission(
@@ -559,7 +617,11 @@ class ArtifactController:
         """Commit the artifact by finalizing the staged manifest and files."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
-        ws = context["ws"]
+        if prefix.startswith("/"):
+            ws = prefix.split("/")[1]
+            prefix = "/".join(prefix.split("/")[2:])
+        else:
+            ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
         artifact = await self._get_artifact_with_permission(
@@ -627,7 +689,11 @@ class ArtifactController:
         """Delete an artifact from the database and S3."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
-        ws = context["ws"]
+        if prefix.startswith("/"):
+            ws = prefix.split("/")[1]
+            prefix = "/".join(prefix.split("/")[2:])
+        else:
+            ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
         artifact = await self._get_artifact_with_permission(
@@ -659,7 +725,11 @@ class ArtifactController:
         """List files in the specified S3 prefix."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
-        ws = context["ws"]
+        if prefix.startswith("/"):
+            ws = prefix.split("/")[1]
+            prefix = "/".join(prefix.split("/")[2:])
+        else:
+            ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         await self._get_artifact_with_permission(ws, user_info, prefix, "list_files")
         async with self.s3_controller.create_client_async() as s3_client:
@@ -674,7 +744,11 @@ class ArtifactController:
         """List all artifacts under a certain prefix."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
-        ws = context["ws"]
+        if prefix.startswith("/"):
+            ws = prefix.split("/")[1]
+            prefix = "/".join(prefix.split("/")[2:])
+        else:
+            ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         if not user_info.check_permission(ws, UserPermission.read):
             raise PermissionError(
@@ -715,10 +789,14 @@ class ArtifactController:
         """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
-        ws = context["ws"]
+        if prefix.startswith("/"):
+            ws = prefix.split("/")[1]
+            prefix = "/".join(prefix.split("/")[2:])
+        else:
+            ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
-        artifact = await self._get_artifact_with_permission(
+        parent_artifact = await self._get_artifact_with_permission(
             ws, user_info, prefix, "search"
         )
         session = await self._get_session(read_only=True)
@@ -780,13 +858,24 @@ class ArtifactController:
                 result = await session.execute(query)
                 artifacts = result.scalars().all()
 
-                # Generate the results with summary_fields
-                summary_fields = []
+                if parent_artifact.manifest.get("type") == "collection":
+                    # Generate the results with summary_fields
+                    summary_fields = parent_artifact.manifest.get(
+                        "summary_fields", DEFAULT_SUMMARY_FIELDS
+                    )
+                else:
+                    summary_fields = DEFAULT_SUMMARY_FIELDS
+                results = []
                 for artifact in artifacts:
-                    sub_manifest = artifact.manifest
-                    summary_fields.append({"_prefix": artifact.prefix, **sub_manifest})
+                    summary = {"_prefix": f"/{ws}/{artifact.prefix}"}
+                    for field in summary_fields:
+                        summary[field] = artifact.manifest.get(field)
 
-                return summary_fields
+                    if "_stats" in summary_fields:
+                        summary["_stats"] = self._generate_stats(artifact)
+                    results.append(summary)
+
+                return results
         except Exception as e:
             raise ValueError(
                 f"An error occurred while executing the search query: {str(e)}"
@@ -798,7 +887,11 @@ class ArtifactController:
         self, prefix, file_path, options: dict = None, context: dict = None
     ):
         """Generate a pre-signed URL to upload a file to an artifact in S3 and update the manifest."""
-        ws = context["ws"]
+        if prefix.startswith("/"):
+            ws = prefix.split("/")[1]
+            prefix = "/".join(prefix.split("/")[2:])
+        else:
+            ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         artifact = await self._get_artifact_with_permission(
             ws, user_info, prefix, "put_file"
@@ -842,7 +935,11 @@ class ArtifactController:
 
     async def get_file(self, prefix, path, options: dict = None, context: dict = None):
         """Generate a pre-signed URL to download a file from an artifact in S3."""
-        ws = context["ws"]
+        if prefix.startswith("/"):
+            ws = prefix.split("/")[1]
+            prefix = "/".join(prefix.split("/")[2:])
+        else:
+            ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
         artifact = await self._get_artifact_with_permission(
@@ -887,7 +984,11 @@ class ArtifactController:
 
     async def remove_file(self, prefix, file_path, context: dict):
         """Remove a file from the artifact and update the staged manifest."""
-        ws = context["ws"]
+        if prefix.startswith("/"):
+            ws = prefix.split("/")[1]
+            prefix = "/".join(prefix.split("/")[2:])
+        else:
+            ws = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
         artifact = await self._get_artifact_with_permission(
