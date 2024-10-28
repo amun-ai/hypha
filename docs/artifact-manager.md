@@ -426,6 +426,25 @@ get_url = await artifact_manager.get_file(prefix="collections/dataset-gallery/ex
 
 ---
 
+### `list_files(prefix: str, dir_path: str=None) -> list`
+
+Lists all files in the artifact.
+
+**Parameters:**
+
+- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
+- `dir_path`: Optional. The directory path within the artifact to list files. Default is `None`.
+
+**Returns:** A list of files in the artifact.
+
+**Example:**
+
+```python
+files = await artifact_manager.list_files(prefix="collections/dataset-gallery/example-dataset")
+```
+
+---
+
 ### `read(prefix: str, stage: bool = False, silent: bool = False) -> dict`
 
 Reads and returns the manifest of an artifact or collection. If in staging mode, reads from `_manifest.yaml`.
@@ -547,6 +566,7 @@ The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifes
 
  - `/{workspace}/artifacts/{prefix:path}` for fetching the artifact manifest.
  - `/{workspace}/artifacts/{prefix:path}/__children__` for listing all artifacts in a collection.
+ - `/{workspace}/artifacts/{prefix:path}/__files__` for listing all files in the artifact.
  - `/{workspace}/artifacts/{prefix:path}/__files__/{file_path:path}` for downloading a file from the artifact (will be redirected to a pre-signed URL).
 
 ### Path Parameters:
@@ -571,6 +591,8 @@ The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifes
 For `/{workspace}/artifacts/{prefix:path}`, the response will be a JSON object representing the artifact manifest. For `/{workspace}/artifacts/{prefix:path}/__files__/{file_path:path}`, the response will be a pre-signed URL to download the file. The artifact manifest will also include any metadata such as download statistics in the `_metadata` field. For private artifacts, make sure if the user has the necessary permissions.
 
 For `/{workspace}/artifacts/{prefix:path}/__children__`, the response will be a list of artifacts in the collection.
+
+For `/{workspace}/artifacts/{prefix:path}/__files__`, the response will be a list of files in the artifact, each file is a dictionary with the `name` and `type` fields.
 
 For `/{workspace}/artifacts/{prefix:path}/__files__/{file_path:path}`, the response will be a pre-signed URL to download the file.
 

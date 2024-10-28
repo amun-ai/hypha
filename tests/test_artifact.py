@@ -572,7 +572,7 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
     assert manifest_data["id"] == "test-dataset"
 
     files = await artifact_manager.list_files(
-        prefix="collections/test-collection/test-dataset", stage=True
+        prefix="collections/test-collection/test-dataset"
     )
     assert find_item(files, "name", "test.txt")
 

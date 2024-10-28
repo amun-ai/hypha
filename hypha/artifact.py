@@ -118,14 +118,21 @@ class ArtifactController:
                     )
 
                 if "/__files__/" in prefix:
-                    prefix, file_path = prefix.split("/__files__/")
-                    url = await self.get_file(
-                        prefix,
-                        file_path,
-                        context={"ws": workspace, "user": user_info.model_dump()},
-                    )
-                    # Redirect to the pre-signed URL
-                    return RedirectResponse(url=url)
+                    prefix, path = prefix.split("/__files__/")
+                    try:
+                        url = await self.get_file(
+                            prefix,
+                            path,
+                            context={"ws": workspace, "user": user_info.model_dump()},
+                        )
+                        # Redirect to the pre-signed URL
+                        return RedirectResponse(url=url)
+                    except FileNotFoundError as e:
+                        return await self.list_files(
+                            prefix,
+                            path,
+                            context={"ws": workspace, "user": user_info.model_dump()},
+                        )
 
                 if prefix.endswith("/__children__"):
                     assert not stage, "Cannot list children of a staged artifact."
@@ -746,7 +753,11 @@ class ArtifactController:
             await remove_objects_async(s3_client, self.workspace_bucket, artifact_path)
 
     async def list_files(
-        self, prefix, max_length=1000, stage=False, context: dict = None
+        self,
+        prefix: str,
+        dir_path: str = None,
+        max_length: int = 1000,
+        context: dict = None,
     ):
         """List files in the specified S3 prefix."""
         if context is None or "ws" not in context:
@@ -759,7 +770,10 @@ class ArtifactController:
         user_info = UserInfo.model_validate(context["user"])
         await self._get_artifact_with_permission(ws, user_info, prefix, "list_files")
         async with self.s3_controller.create_client_async() as s3_client:
-            full_path = safe_join(ws, prefix) + "/"
+            if dir_path:
+                full_path = safe_join(ws, prefix, dir_path) + "/"
+            else:
+                full_path = safe_join(ws, prefix) + "/"
             items = await list_objects_async(
                 s3_client, self.workspace_bucket, full_path, max_length=max_length
             )
@@ -960,6 +974,13 @@ class ArtifactController:
         )
         async with self.s3_controller.create_client_async() as s3_client:
             file_key = safe_join(ws, f"{prefix}/{path}")
+            # check if the file exists
+            try:
+                await s3_client.head_object(Bucket=self.workspace_bucket, Key=file_key)
+            except ClientError:
+                raise FileNotFoundError(
+                    f"File '{path}' does not exist in the artifact."
+                )
             presigned_url = await s3_client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self.workspace_bucket, "Key": file_key},
