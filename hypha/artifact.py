@@ -211,10 +211,10 @@ class ArtifactController:
 
     def _generate_metadata(self, artifact):
         return {
-            "created_at": int(artifact.created_at),
-            "modified_at": int(artifact.last_modified),
-            "download_count": int(artifact.download_count),
-            "view_count": int(artifact.view_count),
+            "created_at": int(artifact.created_at or 0),
+            "modified_at": int(artifact.last_modified or 0),
+            "download_count": int(artifact.download_count or 0),
+            "view_count": int(artifact.view_count or 0),
         }
 
     async def _read_manifest(self, artifact, stage=False, increment_view_count=False):
@@ -861,6 +861,8 @@ class ArtifactController:
                     summary_fields = DEFAULT_SUMMARY_FIELDS
                 results = []
                 for artifact in artifacts:
+                    if not artifact.manifest:
+                        continue
                     summary = {"_prefix": f"/{ws}/{artifact.prefix}"}
                     for field in summary_fields:
                         summary[field] = artifact.manifest.get(field)
