@@ -205,6 +205,8 @@ class ArtifactController:
                     collection = []
                     for sub_artifact in sub_artifacts:
                         sub_manifest = sub_artifact.manifest
+                        if sub_manifest is None:
+                            continue
                         summary = {"_prefix": f"/{workspace}/{sub_artifact.prefix}"}
                         for field in summary_fields:
                             value = sub_manifest.get(field)

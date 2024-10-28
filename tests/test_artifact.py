@@ -446,8 +446,18 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
     }
 
     await artifact_manager.create(
-        prefix="collections/test-collection", manifest=collection_manifest, stage=False
+        prefix="collections/test-collection",
+        manifest=collection_manifest,
+        stage=False,
+        permissions={"*": "r", "@": "r+"},
     )
+
+    # get the collection via http
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/collections/test-collection"
+    )
+    assert response.status_code == 200
+    assert "test-collection" in response.json()["name"]
 
     # Ensure that the collection exists
     collections = await artifact_manager.list(prefix="collections")
