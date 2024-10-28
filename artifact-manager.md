@@ -251,10 +251,10 @@ Permissions can be set both at the artifact level and the workspace level. In th
 
 **Permission Levels:**
 
-- **r**: Read-only access (includes `read`, `get_file`, `list_files`, `search`).
-- **r+**: Read and create access (includes `read`, `get_file`, `list_files`, `search`, `put_file`, `create`, `commit`).
-- **rw**: Read and write access (includes `read`, `get_file`, `list_files`, `search`, `edit`, `commit`, `put_file`, `remove_file`).
-- **rw+**: Full access, including creation, editing, committing, and file removal (includes `read`, `get_file`, `list_files`, `search`, `edit`, `commit`, `put_file`, `remove_file`, `create`, `reset_stats`).
+- **r**: Read-only access (includes `read`, `get_file`, `list_files`, `list`).
+- **r+**: Read and create access (includes `read`, `get_file`, `list_files`, `list`, `put_file`, `create`, `commit`).
+- **rw**: Read and write access (includes `read`, `get_file`, `list_files`, `list`, `edit`, `commit`, `put_file`, `remove_file`).
+- **rw+**: Full access, including creation, editing, committing, and file removal (includes `read`, `get_file`, `list_files`, `list`, `edit`, `commit`, `put_file`, `remove_file`, `create`, `reset_stats`).
 - **\***: Full access for all operations (includes all operations listed above).
 
 **Shortcut Permission Notation:**
@@ -310,7 +310,7 @@ Permissions can be expanded to cover multiple operations. For example, a permiss
 The following list shows how permission expansions work:
 
 - `"n"`: No operations allowed.
-- `"r"`: Includes `read`, `get_file`, `list_files`, and `search`.
+- `"r"`: Includes `read`, `get_file`, `list_files`, and `list`.
 - `"r+"`: Includes all operations in `"r"`, plus `put_file`, `create`, and `commit`.
 - `"rw"`: Includes all operations in `"r+"`, plus `edit`, `commit`, and `remove_file`.
 - `"rw+"`: Includes all operations in `"rw"`, plus `reset_stats`.
@@ -426,29 +426,9 @@ get_url = await artifact_manager.get_file(prefix="collections/dataset-gallery/ex
 
 ---
 
-### `list(prefix: str, max_length: int = 1000, stage: bool = False) -> list`
-
-Lists all artifacts or collections under the specified prefix. Returns either a list of artifact names or collection items, depending on whether the prefix points to a collection.
-
-**Parameters:**
-
-- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
-- `max_length`: Optional. The maximum number of items to list. Default is `1000`.
-- `stage`: Optional. If `True`, it lists the artifacts in staging mode. Default is `False`.
-
-**Returns:** A list of artifact or collection item names.
-
-**Example:**
-
-```python
-datasets = await artifact_manager.list(prefix="collections/dataset-gallery")
-```
-
----
-
 ### `read(prefix: str, stage: bool = False, silent: bool = False) -> dict`
 
-Reads and returns the manifest of an artifact or collection. If in staging mode, reads from `_manifest.yaml`. Collections also dynamically populate the `collection` field with sub-artifacts.
+Reads and returns the manifest of an artifact or collection. If in staging mode, reads from `_manifest.yaml`.
 
 **Parameters:**
 
@@ -466,9 +446,9 @@ manifest = await artifact_manager.read(prefix="collections/dataset-gallery/examp
 
 ---
 
-### `search(prefix: str, keywords: list = None, filters: dict = None, mode: str = "AND") -> list`
+### `list(prefix: str, keywords: list = None, filters: dict = None, mode: str = "AND", page: int = 0, page_size: int = 100) -> list`
 
-Searches for artifacts within a collection based on keywords or filters, supporting both `AND` and `OR` modes.
+List or search for artifacts within a collection based on keywords or filters, supporting both `AND` and `OR` modes.
 
 **Parameters:**
 
@@ -476,13 +456,15 @@ Searches for artifacts within a collection based on keywords or filters, support
 - `keywords`: Optional. A list of terms to search across all fields in the manifest.
 - `filters`: Optional. A dictionary of key-value pairs for exact or fuzzy matching in specific fields.
 - `mode`: Either `"AND"` or `"OR"` to combine conditions. Default is `"AND"`.
+- `page`: Optional. The page number for paginated results. Default is `0`.
+- `page_size`: Optional. The number of items per page. Default is `100`.
 
 **Returns:** A list of matching artifacts with summary fields.
 
 **Example:**
 
 ```python
-results = await artifact_manager.search(prefix="collections/dataset-gallery", keywords=["example"], mode="AND")
+results = await artifact_manager.list(prefix="collections/dataset-gallery", keywords=["example"], mode="AND")
 ```
 
 ---
@@ -561,10 +543,17 @@ print("Download statistics reset.")
 
 The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifests, data, and download statistics. This is useful for public-facing web applications that need to access datasets, models, or applications.
 
-### Endpoint: `/{workspace}/artifacts/{prefix:path}`
+### Endpoints:
+
+ - `/{workspace}/artifacts/{prefix:path}` for fetching the artifact manifest.
+ - `/{workspace}/artifacts/{prefix:path}/__children__` for listing all artifacts in a collection.
+ - `/{workspace}/artifacts/{prefix:path}/__files__/{file_path:path}` for downloading a file from the artifact (will be redirected to a pre-signed URL).
+
+### Path Parameters:
 
 - **workspace**: The workspace in which the artifact is stored.
 - **prefix**: The relative prefix to the artifact. For private artifacts, it requires proper authentication by passing the user's token in the request headers.
+- **file_path**: The relative path to a file within the artifact. This is optional and only required when downloading a file.
 
 ### Request Format:
 
@@ -579,8 +568,11 @@ The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifes
 
 ### Response:
 
-Returns the artifact manifest if it exists, including any download statistics in the `_stats` field. For private artifacts, make sure if the user has the necessary permissions.
+For `/{workspace}/artifacts/{prefix:path}`, the response will be a JSON object representing the artifact manifest. For `/{workspace}/artifacts/{prefix:path}/__files__/{file_path:path}`, the response will be a pre-signed URL to download the file. The artifact manifest will also include any metadata such as download statistics in the `_metadata` field. For private artifacts, make sure if the user has the necessary permissions.
 
+For `/{workspace}/artifacts/{prefix:path}/__children__`, the response will be a list of artifacts in the collection.
+
+For `/{workspace}/artifacts/{prefix:path}/__files__/{file_path:path}`, the response will be a pre-signed URL to download the file.
 
 ### Example: Fetching a public artifact with download statistics
 
@@ -593,7 +585,7 @@ response = requests.get(f"{SERVER_URL}/{workspace}/artifacts/collections/dataset
 if response.ok:
     artifact = response.json()
     print(artifact["name"])  # Output: Example Dataset
-    print(artifact["_stats"]["download_count"])  # Output: Download count for the dataset
+    print(artifact["_metadata"]["download_count"])  # Output: Download count for the dataset
 else:
     print(f"Error: {response.status_code}")
 ```
