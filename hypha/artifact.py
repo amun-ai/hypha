@@ -110,6 +110,13 @@ class ArtifactController:
         ):
             """Get artifact manifest or file."""
             try:
+                if prefix.endswith("/__files__"):
+                    prefix = prefix.replace("/__files__", "")
+                    return await self.list_files(
+                        prefix,
+                        context={"ws": workspace, "user": user_info.model_dump()},
+                    )
+
                 if "/__files__/" in prefix:
                     prefix, file_path = prefix.split("/__files__/")
                     url = await self.get_file(
@@ -455,6 +462,10 @@ class ArtifactController:
         assert "__files__" not in prefix.split(
             "/"
         ), "Artifact prefix cannot contain '__files__'."
+
+        assert "__children__" not in prefix.split(
+            "/"
+        ), "Artifact prefix cannot contain '__children__'."
 
         if prefix.startswith("/"):
             ws = prefix.split("/")[1]

@@ -260,6 +260,13 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server):
     assert response.status_code == 200
     assert "test-dataset" in response.json()["name"]
 
+    # get file list
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/collections/test-collection/test-dataset/__files__"
+    )
+    assert response.status_code == 200
+    assert "example.txt" in response.json()[0]["name"]
+
     # get the file via http
     response = requests.get(
         f"{SERVER_URL}/{api.config.workspace}/artifacts/collections/test-collection/test-dataset/__files__/example.txt"
