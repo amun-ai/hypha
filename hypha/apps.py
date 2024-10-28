@@ -83,7 +83,6 @@ class ServerAppController:
                 "config",
                 "services",
             ],
-            "collection": [],
         }
         await self.artifact_manager.create(
             "applications", manifest, overwrite=overwrite, stage=False, context=context
@@ -520,11 +519,14 @@ class ServerAppController:
     async def list_apps(self, context: Optional[dict] = None):
         """List applications in the workspace."""
         try:
-            apps = await self.artifact_manager.read(
+            apps = await self.artifact_manager.list_children(
                 prefix="applications", context=context
             )
-            return apps["collection"]
+            return apps
         except KeyError:
+            return []
+        except Exception as exp:
+            logger.exception("Failed to list apps: %s", exp)
             return []
 
     async def close(self) -> None:

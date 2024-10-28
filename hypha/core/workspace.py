@@ -1248,12 +1248,12 @@ class WorkspaceManager:
             "built-in",
         ], f"Invalid service id: {service_id}"
 
-        app_collection = await self._artifact_manager.read(
+        applications = await self._artifact_manager.list_children(
             "applications", context={"ws": workspace, "user": user_info.model_dump()}
         )
         applications = {
             item["id"]: ApplicationArtifact.model_validate(item)
-            for item in app_collection["collection"]
+            for item in applications
         }
         if app_id not in applications:
             raise KeyError(
