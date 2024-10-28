@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import time
 import sys
 import datetime
 from typing import List, Union
@@ -260,6 +261,58 @@ class RedisStore:
             inspector = inspect(conn)
             columns = inspector.get_columns("artifacts")
 
+            # Check if 'created_at' column exists
+            # If not, insert 'created_at' column (integer type) and 'last_modified' column (integer type) with the current timestamp = int(time.time())
+            if "created_at" not in [col["name"] for col in columns]:
+                logger.info(
+                    "Adding 'created_at' and 'last_modified' columns to 'artifacts' table."
+                )
+
+                current_time = int(time.time())
+                # Step 1: Add 'created_at' and 'last_modified' columns as nullable
+                conn.execute(
+                    text("ALTER TABLE artifacts ADD COLUMN created_at INTEGER")
+                )
+                conn.execute(
+                    text("ALTER TABLE artifacts ADD COLUMN last_modified INTEGER")
+                )
+                logger.info(
+                    "Successfully added 'created_at' and 'last_modified' columns to 'artifacts' table as nullable."
+                )
+
+                # Step 2: Populate existing rows with the current timestamp
+                conn.execute(
+                    text(
+                        "UPDATE artifacts SET created_at = :time, last_modified = :time WHERE created_at IS NULL OR last_modified IS NULL"
+                    ),
+                    {"time": current_time},
+                )
+                logger.info(
+                    "Successfully set default timestamp values for 'created_at' and 'last_modified'."
+                )
+
+                # Step 3: Alter columns to be non-nullable
+                conn.execute(
+                    text("ALTER TABLE artifacts ALTER COLUMN created_at SET NOT NULL")
+                )
+                conn.execute(
+                    text(
+                        "ALTER TABLE artifacts ALTER COLUMN last_modified SET NOT NULL"
+                    )
+                )
+                logger.info("Set 'created_at' and 'last_modified' columns to NOT NULL.")
+                database_change_log.append(
+                    {
+                        "time": datetime.datetime.now().isoformat(),
+                        "version": __version__,
+                        "change": "Added 'created_at' and 'last_modified' columns to 'artifacts' table",
+                    }
+                )
+            else:
+                logger.info(
+                    "'created_at' and 'last_modified' columns already exist in 'artifacts' table."
+                )
+
             # Check if 'permissions' column exists
             if "permissions" not in [col["name"] for col in columns]:
                 logger.info("Adding 'permissions' column to 'artifacts' table.")
@@ -268,6 +321,14 @@ class RedisStore:
                 conn.execute(text("ALTER TABLE artifacts ADD COLUMN permissions JSON"))
                 logger.info(
                     "Successfully added 'permissions' column to 'artifacts' table."
+                )
+
+                database_change_log.append(
+                    {
+                        "time": datetime.datetime.now().isoformat(),
+                        "version": __version__,
+                        "change": "Added 'permissions' column to 'artifacts' table",
+                    }
                 )
             else:
                 logger.info("'permissions' column already exists in 'artifacts' table.")

@@ -1,5 +1,7 @@
 import logging
+import time
 import sys
+import json
 import copy
 from sqlalchemy import (
     event,
@@ -25,6 +27,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm.attributes import flag_modified
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import RedirectResponse
 from hypha.core import (
     UserInfo,
     UserPermission,
@@ -60,6 +63,8 @@ class ArtifactModel(Base):
     )  # Store the weights for counting downloads; a dictionary of file paths and their weights 0-1
     download_count = Column(Float, nullable=False, default=0.0)  # New counter field
     view_count = Column(Float, nullable=False, default=0.0)  # New counter field
+    created_at = Column(Integer, nullable=False)
+    last_modified = Column(Integer, nullable=False)
     permissions = Column(
         JSON, nullable=True
     )  # New field for storing permissions for the artifact
@@ -97,16 +102,47 @@ class ArtifactController:
             prefix: str,
             stage: bool = False,
             silent: bool = False,
+            keywords: str = None,
+            filters: str = None,
+            page: int = 0,
+            page_size: int = 100,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
-            """Get artifact from the database."""
+            """Get artifact manifest or file."""
             try:
+                if "/__files__/" in prefix:
+                    prefix, file_path = prefix.split("/__files__/")
+                    url = await self.get_file(
+                        prefix,
+                        file_path,
+                        context={"ws": workspace, "user": user_info.model_dump()},
+                    )
+                    # Redirect to the pre-signed URL
+                    return RedirectResponse(url=url)
+
+                if prefix.endswith("/__children__"):
+                    assert not stage, "Cannot list children of a staged artifact."
+                    prefix = prefix.replace("/__children__", "")
+                    if keywords:
+                        keywords = keywords.split(",")
+                    if filters:
+                        filters = json.loads(filters)
+                    return await self.list_children(
+                        prefix,
+                        page=page,
+                        page_size=page_size,
+                        filters=filters,
+                        keywords=keywords,
+                        context={"ws": workspace, "user": user_info.model_dump()},
+                    )
+
                 artifact = await self._get_artifact_with_permission(
                     workspace, user_info, prefix, "read"
                 )
                 manifest = await self._read_manifest(
                     artifact, stage=stage, increment_view_count=not silent
                 )
+
                 return manifest
             except KeyError as e:
                 raise HTTPException(status_code=404, detail=str(e))
@@ -173,8 +209,10 @@ class ArtifactController:
 
         return session
 
-    def _generate_stats(self, artifact):
+    def _generate_metadata(self, artifact):
         return {
+            "created_at": int(artifact.created_at),
+            "modified_at": int(artifact.last_modified),
             "download_count": int(artifact.download_count),
             "view_count": int(artifact.view_count),
         }
@@ -182,42 +220,11 @@ class ArtifactController:
     async def _read_manifest(self, artifact, stage=False, increment_view_count=False):
         manifest = artifact.stage_manifest if stage else artifact.manifest
         prefix = artifact.prefix
-        workspace = artifact.workspace
         if not manifest:
             raise KeyError(f"No manifest found for artifact '{prefix}'.")
         try:
             session = await self._get_session()
             async with session.begin():
-                # If the artifact is a collection, dynamically populate the 'collection' field
-                if manifest.get("type") == "collection":
-                    sub_prefix = f"{prefix}/"
-                    query = select(ArtifactModel).filter(
-                        ArtifactModel.workspace == workspace,
-                        ArtifactModel.prefix.like(f"{sub_prefix}%"),
-                    )
-                    result = await session.execute(query)
-                    sub_artifacts = result.scalars().all()
-
-                    # Populate the 'collection' field with summary_fields for each sub-artifact
-                    summary_fields = manifest.get(
-                        "summary_fields", DEFAULT_SUMMARY_FIELDS
-                    )
-                    collection = []
-                    for sub_artifact in sub_artifacts:
-                        sub_manifest = sub_artifact.manifest
-                        if sub_manifest is None:
-                            continue
-                        summary = {"_prefix": f"/{workspace}/{sub_artifact.prefix}"}
-                        for field in summary_fields:
-                            value = sub_manifest.get(field)
-                            if value is not None:
-                                summary[field] = value
-                        if "_stats" in summary_fields:
-                            summary["_stats"] = self._generate_stats(sub_artifact)
-                        collection.append(summary)
-
-                    manifest["collection"] = collection
-
                 if stage:
                     manifest["_stage_files"] = artifact.stage_files
                 elif increment_view_count:
@@ -232,9 +239,7 @@ class ArtifactController:
                     await session.execute(stmt)
                     await session.commit()
                     artifact.view_count += 1
-                manifest["_stats"] = self._generate_stats(artifact)
-                if manifest.get("type") == "collection":
-                    manifest["_stats"]["child_count"] = len(collection)
+                manifest["_metadata"] = self._generate_metadata(artifact)
                 return manifest
         except Exception as e:
             raise e
@@ -255,14 +260,14 @@ class ArtifactController:
             if permission == "n":
                 return []
             elif permission == "r":
-                return ["read", "get_file", "list_files", "search"]
+                return ["read", "get_file", "list_files", "list"]
             elif permission == "r+":
                 return [
                     "read",
                     "get_file",
                     "put_file",
                     "list_files",
-                    "search",
+                    "list",
                     "create",
                     "commit",
                 ]
@@ -271,7 +276,7 @@ class ArtifactController:
                     "read",
                     "get_file",
                     "list_files",
-                    "search",
+                    "list",
                     "edit",
                     "commit",
                     "put_file",
@@ -282,7 +287,7 @@ class ArtifactController:
                     "read",
                     "get_file",
                     "list_files",
-                    "search",
+                    "list",
                     "edit",
                     "commit",
                     "put_file",
@@ -294,7 +299,7 @@ class ArtifactController:
                     "read",
                     "get_file",
                     "list_files",
-                    "search",
+                    "list",
                     "edit",
                     "commit",
                     "put_file",
@@ -324,7 +329,7 @@ class ArtifactController:
         """
 
         # Map the operation to the corresponding UserPermission enum
-        if operation in ["read", "get_file", "list_files", "search"]:  # list
+        if operation in ["list", "read", "get_file", "list_files"]:  # list
             perm = UserPermission.read
         elif operation in ["create", "edit", "commit", "put_file", "remove_file"]:
             perm = UserPermission.read_write
@@ -447,6 +452,10 @@ class ArtifactController:
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
 
+        assert "__files__" not in prefix.split(
+            "/"
+        ), "Artifact prefix cannot contain '__files__'."
+
         if prefix.startswith("/"):
             ws = prefix.split("/")[1]
             prefix = "/".join(prefix.split("/")[2:])
@@ -504,6 +513,8 @@ class ArtifactController:
                     stage_manifest=manifest if stage else None,
                     stage_files=[] if stage else None,
                     download_weights=None,
+                    created_at=int(time.time()),
+                    last_modified=int(time.time()),
                     permissions=permissions,
                     type=manifest["type"],
                 )
@@ -603,6 +614,7 @@ class ArtifactController:
                 if manifest is None:
                     manifest = copy.deepcopy(artifact.manifest)
                 artifact.stage_manifest = manifest
+                artifact.last_modified = int(time.time())
                 flag_modified(artifact, "stage_manifest")  # Mark JSON field as modified
                 if permissions is not None:
                     artifact.permissions = permissions
@@ -676,6 +688,7 @@ class ArtifactController:
                 artifact.stage_manifest = None
                 artifact.stage_files = None
                 artifact.download_weights = download_weights
+                artifact.last_modified = int(time.time())
                 flag_modified(artifact, "manifest")
                 flag_modified(artifact, "stage_files")
                 flag_modified(artifact, "download_weights")
@@ -742,52 +755,25 @@ class ArtifactController:
             # TODO: If stage should we return only the staged files?
             return items
 
-    async def list_artifacts(self, prefix="", context: dict = None):
-        """List all artifacts under a certain prefix."""
-        if context is None or "ws" not in context:
-            raise ValueError("Context must include 'ws' (workspace).")
-        if prefix.startswith("/"):
-            ws = prefix.split("/")[1]
-            prefix = "/".join(prefix.split("/")[2:])
-        else:
-            ws = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.read):
-            raise PermissionError(
-                "User does not have read permission to the workspace."
-            )
-        session = await self._get_session()
-        try:
-            async with session.begin():
-                query = select(ArtifactModel).filter(
-                    ArtifactModel.workspace == ws,
-                    ArtifactModel.prefix.like(f"{prefix}/%"),
-                )
-                result = await session.execute(query)
-                sub_artifacts = result.scalars().all()
-
-                collection = []
-                for artifact in sub_artifacts:
-                    if artifact.prefix == prefix:
-                        continue
-                    name = artifact.prefix[len(prefix) + 1 :]
-                    name = name.split("/")[0]
-                    collection.append(name)
-                return collection
-        except Exception as e:
-            raise e
-        finally:
-            await session.close()
-
-    async def search(
-        self, prefix, keywords=None, filters=None, mode="AND", context: dict = None
+    async def list_children(
+        self,
+        prefix,
+        keywords=None,
+        filters=None,
+        mode="AND",
+        page: int = 0,
+        page_size: int = 100,
+        silent=False,
+        context: dict = None,
     ):
         """
-        Search artifacts within a collection under a specific prefix.
+        List artifacts within a collection under a specific prefix.
         Supports:
         - `keywords`: list of fuzzy search terms across all manifest fields.
         - `filters`: dictionary of exact or fuzzy match for specific fields.
         - `mode`: either 'AND' or 'OR' to combine conditions.
+        - `page`: the page number (0-indexed) for pagination.
+        - `page_size`: the number of results per page.
         """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
@@ -799,7 +785,7 @@ class ArtifactController:
 
         user_info = UserInfo.model_validate(context["user"])
         parent_artifact = await self._get_artifact_with_permission(
-            ws, user_info, prefix, "search"
+            ws, user_info, prefix, "list"
         )
         session = await self._get_session(read_only=True)
         try:
@@ -813,7 +799,6 @@ class ArtifactController:
                     ArtifactModel.workspace == ws,
                     ArtifactModel.prefix.like(f"{prefix}/%"),
                 )
-
                 # Handle keyword-based search (fuzzy search across all manifest fields)
                 conditions = []
                 if keywords:
@@ -856,6 +841,13 @@ class ArtifactController:
                 else:
                     query = base_query
 
+                offset = page * page_size
+                query = (
+                    query.order_by(ArtifactModel.last_modified.desc())
+                    .limit(page_size)
+                    .offset(offset)
+                )
+
                 # Execute the query
                 result = await session.execute(query)
                 artifacts = result.scalars().all()
@@ -873,9 +865,14 @@ class ArtifactController:
                     for field in summary_fields:
                         summary[field] = artifact.manifest.get(field)
 
-                    if "_stats" in summary_fields:
-                        summary["_stats"] = self._generate_stats(artifact)
+                    if "_metadata" in summary_fields:
+                        summary["_metadata"] = self._generate_metadata(artifact)
                     results.append(summary)
+
+                # Increment the view count for the parent artifact
+                await self._read_manifest(
+                    parent_artifact, stage=False, increment_view_count=not silent
+                )
 
                 return results
         except Exception as e:
@@ -915,6 +912,7 @@ class ArtifactController:
         try:
             async with session.begin():
                 artifact.stage_files = artifact.stage_files or []
+                artifact.last_modified = int(time.time())
 
                 if not any(f["path"] == file_path for f in artifact.stage_files):
                     artifact.stage_files.append(
@@ -1001,6 +999,7 @@ class ArtifactController:
         try:
             async with session.begin():
                 artifact = await self._get_artifact(session, ws, prefix)
+                artifact.last_modified = int(time.time())
                 if not artifact or not artifact.stage_manifest:
                     raise KeyError(
                         f"Artifact under prefix '{prefix}' is not in staging mode."
@@ -1048,7 +1047,6 @@ class ArtifactController:
             "put_file": self.put_file,
             "remove_file": self.remove_file,
             "get_file": self.get_file,
-            "list": self.list_artifacts,
-            "search": self.search,
+            "list": self.list_children,
             "list_files": self.list_files,
         }
