@@ -313,6 +313,26 @@ class RedisStore:
                     "'created_at' and 'last_modified' columns already exist in 'artifacts' table."
                 )
 
+            # Check if 'created_by' column exists
+            if "created_by" not in [col["name"] for col in columns]:
+                logger.info("Adding 'created_by' column to 'artifacts' table.")
+
+                # Step 1: Add 'created_by' column (string type)
+                conn.execute(text("ALTER TABLE artifacts ADD COLUMN created_by TEXT"))
+                logger.info(
+                    "Successfully added 'created_by' column to 'artifacts' table."
+                )
+
+                database_change_log.append(
+                    {
+                        "time": datetime.datetime.now().isoformat(),
+                        "version": __version__,
+                        "change": "Added 'created_by' column to 'artifacts' table",
+                    }
+                )
+            else:
+                logger.info("'created_by' column already exists in 'artifacts' table")
+
             # Check if 'permissions' column exists
             if "permissions" not in [col["name"] for col in columns]:
                 logger.info("Adding 'permissions' column to 'artifacts' table.")
