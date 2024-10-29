@@ -255,6 +255,9 @@ Permissions can be set both at the artifact level and the workspace level. In th
 
 **Permission Levels:**
 
+- **n**: No access to the artifact.
+- **l**: List-only access (includes `list`).
+- **l+**: List and create access (includes `list`, `create`, `commit`).
 - **r**: Read-only access (includes `read`, `get_file`, `list_files`, `list`).
 - **r+**: Read and create access (includes `read`, `get_file`, `list_files`, `list`, `put_file`, `create`, `commit`).
 - **rw**: Read and write access (includes `read`, `get_file`, `list_files`, `list`, `edit`, `commit`, `put_file`, `remove_file`).

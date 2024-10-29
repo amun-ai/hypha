@@ -301,6 +301,10 @@ class ArtifactController:
         if isinstance(permission, str):
             if permission == "n":
                 return []
+            elif permission == "l":
+                return ["list"]
+            elif permission == "l+":
+                return ["list", "create", "commit"]
             elif permission == "r":
                 return ["read", "get_file", "list_files", "list"]
             elif permission == "r+":
