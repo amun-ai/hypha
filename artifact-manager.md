@@ -610,22 +610,37 @@ The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifes
  - `/{workspace}/artifacts/{prefix:path}/__files__` for listing all files in the artifact.
  - `/{workspace}/artifacts/{prefix:path}/__files__/{file_path:path}` for downloading a file from the artifact (will be redirected to a pre-signed URL).
 
-### Path Parameters:
-
-- **workspace**: The workspace in which the artifact is stored.
-- **prefix**: The relative prefix to the artifact. For private artifacts, it requires proper authentication by passing the user's token in the request headers.
-- **file_path**: The relative path to a file within the artifact. This is optional and only required when downloading a file.
 
 ### Request Format:
 
 - **Method**: `GET`
 - **Headers**:
   - `Authorization`: Optional. The user's token for accessing private artifacts (obtained via the login logic or created by `api.generate_token()`). Not required for public artifacts.
-- **Parameters**:
-  - `workspace`: The workspace in which the artifact is stored.
-  - `prefix`: The relative prefix to the artifact (e.g., `collections/dataset-gallery/example-dataset`). It should not contain the workspace ID.
-  - `stage` (optional): A boolean flag to indicate whether to fetch the staged version of the manifest (`_manifest.yaml`). Default is `False`.
-  - `silent` (optional): A boolean flag to suppress the view count increment. Default is `False`.
+
+### Path Parameters:
+
+The path parameters are used to specify the artifact or file to access. The following parameters are supported:
+
+- **workspace**: The workspace in which the artifact is stored.
+- **prefix**: The relative prefix to the artifact. For private artifacts, it requires proper authentication by passing the user's token in the request headers.
+- **file_path**: Optional, the relative path to a file within the artifact. This is optional and only required when downloading a file.
+
+### Query Parameters:
+
+Qury parameters are passed after the `?` in the URL and are used to control the behavior of the API. The following query parameters are supported:
+
+- **stage**: A boolean flag to fetch the staged version of the manifest (`_manifest.yaml`). Default is `False`.
+- **silent**: A boolean flag to suppress the view count increment. Default is `False`.
+- **include_metadata**: A boolean flag to include metadata such as download statistics in the manifest. Default is `False`.
+
+- **keywords**: A list of search terms used for fuzzy searching across all manifest fields, separated by commas.
+- **filters**: A dictionary of filters to apply to the search, in the format of a JSON string.
+- **mode**: The mode for combining multiple conditions. Default is `AND`.
+- **page**: The page number for pagination. Default is `0`.
+- **page_size**: The maximum number of artifacts to return per page. Default is `100`.
+- **order_by**: The field used to order results. Default is ascending by prefix.
+- **summary_fields**: A list of fields to include in the summary for each artifact when listing children. Default to the `summary_fields` value from the parent collection, otherwise, the default summary fields (`id`, `type`, `name`) are used. To include all manifest fields, add `"*"` to the list, and to include all internal fields, add `".*"` to the list.
+- **silent**: A boolean flag to prevent incrementing the view count for the parent artifact when listing children, listing files, or reading the artifact. Default is `False`.
 
 ### Response:
 
