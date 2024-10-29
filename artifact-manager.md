@@ -39,7 +39,8 @@ gallery_manifest = {
 }
 
 # Create the collection with read permission for everyone and create permission for all authenticated users
-await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r", "@": "r+"})
+# We set orphan=True to create a collection without a parent
+await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r", "@": "r+"}, orphan=True)
 print("Dataset Gallery created.")
 ```
 
@@ -126,7 +127,8 @@ async def main():
         "collection": [],
     }
     # Create the collection with read permission for everyone and create permission for all authenticated users
-    await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+", "@": "r+"})
+    # We set orphan=True to create a collection without a parent
+    await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+", "@": "r+"}, orphan=True)
     print("Dataset Gallery created.")
 
     # Create a new dataset inside the Dataset Gallery
@@ -197,7 +199,7 @@ gallery_manifest = {
     "collection": [],
 }
 # Create the collection with read permission for everyone and create permission for all authenticated users
-await artifact_manager.create(prefix="collections/schema-dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+", "@": "r+"})
+await artifact_manager.create(prefix="collections/schema-dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+", "@": "r+"}, orphan=True)
 print("Schema-based Dataset Gallery created.")
 ```
 
@@ -226,7 +228,7 @@ print("Valid dataset committed.")
 
 ## API References
 
-### `create(prefix: str, manifest: dict, permissions: dict=None, stage: bool = False) -> None`
+### `create(prefix: str, manifest: dict, permissions: dict=None, stage: bool = False, orphan: bool = False) -> None`
 
 Creates a new artifact or collection with the specified manifest. The artifact is staged until committed. For collections, the `collection` field should be an empty list.
 
@@ -236,11 +238,17 @@ Creates a new artifact or collection with the specified manifest. The artifact i
 - `manifest`: The manifest of the new artifact. Ensure the manifest follows the required schema if applicable (e.g., for collections).
 - `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
 - `stage`: Optional. A boolean flag to stage the artifact. Default is `False`.
+- `orphan`: Optional. A boolean flag to create the artifact without a parent collection. Default is `False`. If `True`, the artifact will not be associated with any collection. This is mainly used for creating top-level collections, and making sure the artifact is not associated with any parent collection (with inheritance of permissions).
+
+**Note 1: If you set `stage=True`, you must call `commit()` to finalize the artifact.**
+
+**Note 2: If you set `orphan=True`, the artifact will not be associated with any collection. An non-orphan artifact must have a parent collection.**
 
 **Example:**
 
 ```python
-await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True)
+# Assuming we have already created a dataset-gallery collection, otherwise create it first or set orphan=True
+await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True, orphan=False)
 ```
 
 ### Permissions
@@ -351,18 +359,22 @@ await artifact_manager.commit(prefix="collections/dataset-gallery/example-datase
 
 ---
 
-### `delete(prefix: str) -> None`
+### `delete(prefix: str, delete_files: bool = False, recursive: bool = False) -> None`
 
 Deletes an artifact, its manifest, and all associated files from both the database and S3 storage.
 
 **Parameters:**
 
 - `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
+- `delete_files`: Optional. A boolean flag to delete all files associated with the artifact. Default is `False`.
+- `recursive`: Optional. A boolean flag to delete all child artifacts recursively. Default is `False`.
+
+**Warning: If `delete_files` is set to `True`, `recursive` must be set to `True`, all child artifacts will be deleted, and all files associated with the child artifacts will be permanently deleted from the S3 storage. This operation is irreversible.**
 
 **Example:**
 
 ```python
-await artifact_manager.delete(prefix="collections/dataset-gallery/example-dataset")
+await artifact_manager.delete(prefix="collections/dataset-gallery/example-dataset", delete_files=True)
 ```
 
 ---
@@ -465,9 +477,9 @@ manifest = await artifact_manager.read(prefix="collections/dataset-gallery/examp
 
 ---
 
-### `list(prefix: str, keywords: list = None, filters: dict = None, mode: str = "AND", page: int = 0, page_size: int = 100) -> list`
+### `list(prefix: str, keywords: list = None, filters: dict = None, mode: str = "AND", page: int = 0, page_size: int = 100, order_by: str = None, stage: bool = False, silent: bool = False) -> list`
 
-List or search for artifacts within a collection based on keywords or filters, supporting both `AND` and `OR` modes.
+List or search for child artifacts within a collection based on keywords or filters, supporting both `AND` and `OR` modes.
 
 **Parameters:**
 
@@ -477,6 +489,9 @@ List or search for artifacts within a collection based on keywords or filters, s
 - `mode`: Either `"AND"` or `"OR"` to combine conditions. Default is `"AND"`.
 - `page`: Optional. The page number for paginated results. Default is `0`.
 - `page_size`: Optional. The number of items per page. Default is `100`.
+- `order_by`: Optional. The field to order results by. Default is `None` (ascending order by prefix). The available fields are `view_count`, `download_count`, `last_modified`, `created_at`, and `prefix`. You can also append `<` or `>` to the field name for ascending or descending order. For example, `view_count<` will order by view count in ascending order.
+- `stage`: Optional. If `True`, lists staged artifacts. Default is `False`.
+- `silent`: Optional. If `True`, suppresses the view count increment. Default is `False`.
 
 **Returns:** A list of matching artifacts with summary fields.
 
@@ -522,7 +537,8 @@ gallery_manifest = {
     "collection": [],
 }
 # Create the collection with read permission for everyone and create permission for all authenticated users
-await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r", "@": "r+"})
+# We set orphan=True to create a collection without a parent
+await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r", "@": "r+"}, orphan=True)
 
 # Step 3: Add a dataset to the gallery
 dataset_manifest = {
