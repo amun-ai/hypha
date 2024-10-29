@@ -101,13 +101,18 @@ class ArtifactController:
         async def get_artifact(
             workspace: str,
             prefix: str,
+            # The following are used for reading the artifact
             stage: bool = False,
-            silent: bool = False,
             include_metadata: bool = False,
+            # The following are used for listing children
             keywords: str = None,
             filters: str = None,
+            mode: str = "AND",
             page: int = 0,
             page_size: int = 100,
+            order_by: str = None,
+            summary_fields: str = None,
+            silent: bool = False,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """Get artifact manifest or file."""
@@ -125,6 +130,7 @@ class ArtifactController:
                         url = await self.get_file(
                             prefix,
                             path,
+                            options={"silent": silent},
                             context={"ws": workspace, "user": user_info.model_dump()},
                         )
                         # Redirect to the pre-signed URL
@@ -143,12 +149,18 @@ class ArtifactController:
                         keywords = keywords.split(",")
                     if filters:
                         filters = json.loads(filters)
+                    if summary_fields:
+                        summary_fields = summary_fields.split(",")
                     return await self.list_children(
                         prefix,
                         page=page,
                         page_size=page_size,
                         filters=filters,
+                        mode=mode,
+                        order_by=order_by,
                         keywords=keywords,
+                        summary_fields=summary_fields,
+                        silent=silent,
                         context={"ws": workspace, "user": user_info.model_dump()},
                     )
 
