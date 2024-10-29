@@ -3,6 +3,7 @@ import time
 import sys
 import json
 import copy
+import traceback
 from sqlalchemy import (
     event,
     Column,
@@ -163,7 +164,7 @@ class ArtifactController:
             except PermissionError as e:
                 raise HTTPException(status_code=403, detail=str(e))
             except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
+                raise HTTPException(status_code=500, detail=str(traceback.format_exc()))
 
         self.store.set_artifact_manager(self)
         self.store.register_public_service(self.get_artifact_service())
@@ -459,6 +460,7 @@ class ArtifactController:
         manifest: dict,
         overwrite=False,
         stage=False,
+        orphan=False,
         permissions: dict = None,
         context: dict = None,
     ):
@@ -504,10 +506,24 @@ class ArtifactController:
                     parent_artifact = await self._get_artifact(
                         session, ws, parent_prefix
                     )
+                    if parent_artifact and not parent_artifact.manifest:
+                        raise ValueError(
+                            f"Parent artifact under prefix '{parent_prefix}' must be committed before creating a child artifact."
+                        )
                     if parent_artifact and permissions is None:
                         permissions = parent_artifact.permissions
                 else:
                     parent_artifact = None
+
+                if not orphan and not parent_artifact:
+                    raise ValueError(
+                        f"Parent artifact not found (prefix: {parent_prefix}) for non-orphan artifact, please create the parent artifact first or set orphan=True."
+                    )
+
+                if parent_artifact and orphan:
+                    raise ValueError(
+                        f"Parent artifact found (prefix: {parent_prefix}) for orphan artifact, please set orphan=False."
+                    )
 
                 existing_artifact = await self._get_artifact(session, ws, prefix)
 
@@ -718,7 +734,9 @@ class ArtifactController:
         finally:
             await session.close()
 
-    async def delete(self, prefix, context: dict):
+    async def delete(
+        self, prefix, delete_files=False, recursive=False, context: dict = None
+    ):
         """Delete an artifact from the database and S3."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
@@ -728,10 +746,30 @@ class ArtifactController:
         else:
             ws = context["ws"]
 
+        if delete_files and not recursive:
+            raise ValueError("Delete files requires recursive=True.")
+
         user_info = UserInfo.model_validate(context["user"])
         artifact = await self._get_artifact_with_permission(
             ws, user_info, prefix, "delete"
         )
+
+        if recursive:
+            # Remove all child artifacts
+            children = await self.list_children(prefix, context=context)
+            for child in children:
+                await self.delete(
+                    child["_prefix"], delete_files=delete_files, context=context
+                )
+
+        if delete_files:
+            # Remove all files in the artifact's S3 prefix
+            artifact_path = safe_join(ws, f"{prefix}") + "/"
+            async with self.s3_controller.create_client_async() as s3_client:
+                await remove_objects_async(
+                    s3_client, self.workspace_bucket, artifact_path
+                )
+
         session = await self._get_session()
         try:
             async with session.begin():
@@ -742,15 +780,6 @@ class ArtifactController:
             raise e
         finally:
             await session.close()
-
-        # Remove files from S3
-        await self._delete_s3_files(ws, prefix)
-
-    async def _delete_s3_files(self, ws, prefix):
-        """Helper method to delete files associated with an artifact in S3."""
-        artifact_path = safe_join(ws, f"{prefix}") + "/"
-        async with self.s3_controller.create_client_async() as s3_client:
-            await remove_objects_async(s3_client, self.workspace_bucket, artifact_path)
 
     async def list_files(
         self,
@@ -788,17 +817,13 @@ class ArtifactController:
         mode="AND",
         page: int = 0,
         page_size: int = 100,
+        order_by=None,
+        stage=False,
         silent=False,
         context: dict = None,
     ):
         """
         List artifacts within a collection under a specific prefix.
-        Supports:
-        - `keywords`: list of fuzzy search terms across all manifest fields.
-        - `filters`: dictionary of exact or fuzzy match for specific fields.
-        - `mode`: either 'AND' or 'OR' to combine conditions.
-        - `page`: the page number (0-indexed) for pagination.
-        - `page_size`: the number of results per page.
         """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
@@ -824,6 +849,12 @@ class ArtifactController:
                     ArtifactModel.workspace == ws,
                     ArtifactModel.prefix.like(f"{prefix}/%"),
                 )
+
+                if stage:
+                    base_query = base_query.filter(ArtifactModel.stage_manifest != None)
+                else:
+                    base_query = base_query.filter(ArtifactModel.manifest != None)
+
                 # Handle keyword-based search (fuzzy search across all manifest fields)
                 conditions = []
                 if keywords:
@@ -867,12 +898,37 @@ class ArtifactController:
                     query = base_query
 
                 offset = page * page_size
-                query = (
-                    query.order_by(ArtifactModel.last_modified.desc())
-                    .limit(page_size)
-                    .offset(offset)
-                )
+                if order_by is None:
+                    query = query.order_by(ArtifactModel.prefix.asc())
+                elif order_by.startswith("view_count"):
+                    if order_by.endswith("<"):
+                        query = query.order_by(ArtifactModel.view_count.asc())
+                    else:
+                        query = query.order_by(ArtifactModel.view_count.desc())
+                elif order_by.startswith("download_count"):
+                    if order_by.endswith("<"):
+                        query = query.order_by(ArtifactModel.download_count.asc())
+                    else:
+                        query = query.order_by(ArtifactModel.download_count.desc())
+                elif order_by.startswith("last_modified"):
+                    if order_by.endswith("<"):
+                        query = query.order_by(ArtifactModel.last_modified.asc())
+                    else:
+                        query = query.order_by(ArtifactModel.last_modified.desc())
+                elif order_by.startswith("created_at"):
+                    if order_by.endswith("<"):
+                        query = query.order_by(ArtifactModel.created_at.asc())
+                    else:
+                        query = query.order_by(ArtifactModel.created_at.desc())
+                elif order_by.startswith("prefix"):
+                    if order_by.endswith("<"):
+                        query = query.order_by(ArtifactModel.prefix.asc())
+                    else:
+                        query = query.order_by(ArtifactModel.prefix.desc())
+                else:
+                    raise ValueError(f"Invalid order_by field: {order_by}")
 
+                query = query.limit(page_size).offset(offset)
                 # Execute the query
                 result = await session.execute(query)
                 artifacts = result.scalars().all()
@@ -886,20 +942,22 @@ class ArtifactController:
                     summary_fields = DEFAULT_SUMMARY_FIELDS
                 results = []
                 for artifact in artifacts:
-                    if not artifact.manifest:
+                    manifest = artifact.stage_manifest if stage else artifact.manifest
+                    if not manifest:
                         continue
                     summary = {"_prefix": f"/{ws}/{artifact.prefix}"}
                     for field in summary_fields:
-                        summary[field] = artifact.manifest.get(field)
+                        summary[field] = manifest.get(field)
 
                     if "_metadata" in summary_fields:
                         summary["_metadata"] = self._generate_metadata(artifact)
                     results.append(summary)
 
-                # Increment the view count for the parent artifact
-                await self._read_manifest(
-                    parent_artifact, stage=False, increment_view_count=not silent
-                )
+                if not stage:
+                    # Increment the view count for the parent artifact
+                    await self._read_manifest(
+                        parent_artifact, stage=False, increment_view_count=not silent
+                    )
 
                 return results
         except Exception as e:

@@ -48,6 +48,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
         manifest=collection_manifest,
         # allow public read access and create access for authenticated users
         permissions={"*": "r", "@": "r+"},
+        orphan=True,
     )
 
     # Create an artifact inside the public collection
@@ -88,6 +89,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
         prefix="collections/private-dataset-gallery",
         manifest=private_collection_manifest,
         permissions={},
+        orphan=True,
     )
 
     # Create an artifact inside the private collection
@@ -148,6 +150,7 @@ async def test_artifact_permissions(
         manifest=collection_manifest,
         # allow public read access and create access for authenticated users
         permissions={"*": "r", "@": "r+"},
+        orphan=True,
     )
     await artifact_manager.reset_stats(
         prefix=f"/{api.config.workspace}/public/collections/dataset-gallery"
@@ -228,6 +231,7 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server):
         manifest=collection_manifest,
         stage=False,
         permissions={"*": "r", "@": "r+"},
+        orphan=True,
     )
 
     dataset_manifest = {
@@ -307,6 +311,7 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
         prefix="collections/edit-test-collection",
         manifest=collection_manifest,
         stage=False,
+        orphan=True,
     )
 
     # Create an artifact (a dataset in this case) within the collection
@@ -329,7 +334,9 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
     )
 
     # Ensure that the dataset appears in the collection's index
-    items = await artifact_manager.list(prefix="collections/edit-test-collection")
+    items = await artifact_manager.list(
+        prefix="collections/edit-test-collection", order_by="last_modified"
+    )
     assert find_item(
         items,
         "_prefix",
@@ -430,6 +437,7 @@ async def test_artifact_schema_validation(minio_server, fastapi_server):
         prefix="collections/schema-test-collection",
         manifest=collection_manifest,
         stage=False,
+        orphan=True,
     )
 
     # Create a valid dataset artifact that conforms to the schema
@@ -525,6 +533,7 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
         manifest=collection_manifest,
         stage=False,
         permissions={"*": "r", "@": "r+"},
+        orphan=True,
     )
 
     # get the collection via http
@@ -575,6 +584,15 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
         prefix="collections/test-collection/test-dataset"
     )
     assert find_item(files, "name", "test.txt")
+
+    items = await artifact_manager.list(
+        prefix="collections/test-collection", stage=True
+    )
+    assert find_item(
+        items,
+        "_prefix",
+        f"/{api.config.workspace}/collections/test-collection/test-dataset",
+    )
 
     # Commit the artifact (finalize it)
     await artifact_manager.commit(prefix="collections/test-collection/test-dataset")
@@ -672,10 +690,23 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
         "type": "collection",
         "collection": [],
     }
+
+    with pytest.raises(
+        Exception,
+        match=r".*Parent artifact not found.*",
+    ):
+        await artifact_manager.create(
+            prefix="collections/edge-case-collection",
+            manifest=collection_manifest,
+            stage=False,
+            orphan=False,
+        )
+
     await artifact_manager.create(
         prefix="collections/edge-case-collection",
         manifest=collection_manifest,
         stage=False,
+        orphan=True,
     )
 
     # Try to create an artifact that already exists within the collection without overwriting
@@ -782,6 +813,7 @@ async def test_artifact_search_in_manifest(minio_server, fastapi_server):
         prefix="collections/search-test-collection",
         manifest=collection_manifest,
         stage=False,
+        orphan=True,
     )
 
     # Create multiple artifacts inside the collection
@@ -856,6 +888,7 @@ async def test_artifact_search_with_filters(minio_server, fastapi_server):
         prefix="collections/search-test-collection",
         manifest=collection_manifest,
         stage=False,
+        orphan=True,
     )
 
     # Create multiple artifacts inside the collection
@@ -942,6 +975,7 @@ async def test_download_count(minio_server, fastapi_server):
         prefix="collections/download-test-collection",
         manifest=collection_manifest,
         stage=False,
+        orphan=True,
     )
 
     # Create an artifact inside the collection
@@ -1068,6 +1102,8 @@ async def test_download_count(minio_server, fastapi_server):
 
     # Clean up by deleting the dataset and the collection
     await artifact_manager.delete(
-        prefix="collections/download-test-collection/download-test-dataset"
+        prefix="collections/download-test-collection/download-test-dataset",
+        delete_files=True,
+        recursive=True,
     )
     await artifact_manager.delete(prefix="collections/download-test-collection")
