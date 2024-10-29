@@ -11,7 +11,7 @@ import urllib.request
 import aiofiles
 import yaml
 from hypha_rpc.utils import ObjectProxy
-from hypha_rpc.websocket_client import connect_to_server
+from hypha_rpc import connect_to_server
 
 
 logging.basicConfig(stream=sys.stdout)

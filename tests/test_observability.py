@@ -7,7 +7,7 @@ import asyncio
 import pytest
 import requests
 from prometheus_client.parser import text_string_to_metric_families
-from hypha_rpc.websocket_client import connect_to_server
+from hypha_rpc import connect_to_server
 
 from . import (
     SERVER_URL,

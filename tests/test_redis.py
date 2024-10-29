@@ -4,7 +4,7 @@ import time
 import numpy as np
 import pytest
 import pytest_asyncio
-from hypha_rpc.websocket_client import connect_to_server
+from hypha_rpc import connect_to_server
 
 from hypha.core.store import RedisStore
 

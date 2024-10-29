@@ -1,6 +1,6 @@
 """Test the hypha workspace."""
 import pytest
-from hypha_rpc.websocket_client import connect_to_server
+from hypha_rpc import connect_to_server
 
 from . import (
     WS_SERVER_URL,

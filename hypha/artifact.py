@@ -9,7 +9,6 @@ from sqlalchemy import (
     Column,
     String,
     Integer,
-    Boolean,
     Float,
     JSON,
     UniqueConstraint,
@@ -65,6 +64,7 @@ class ArtifactModel(Base):
     download_count = Column(Float, nullable=False, default=0.0)  # New counter field
     view_count = Column(Float, nullable=False, default=0.0)  # New counter field
     created_at = Column(Integer, nullable=False)
+    created_by = Column(String, nullable=True)
     last_modified = Column(Integer, nullable=False)
     permissions = Column(
         JSON, nullable=True
@@ -103,6 +103,7 @@ class ArtifactController:
             prefix: str,
             stage: bool = False,
             silent: bool = False,
+            include_metadata: bool = False,
             keywords: str = None,
             filters: str = None,
             page: int = 0,
@@ -155,7 +156,10 @@ class ArtifactController:
                     workspace, user_info, prefix, "read"
                 )
                 manifest = await self._read_manifest(
-                    artifact, stage=stage, increment_view_count=not silent
+                    artifact,
+                    stage=stage,
+                    increment_view_count=not silent,
+                    include_metadata=include_metadata,
                 )
 
                 return manifest
@@ -226,13 +230,23 @@ class ArtifactController:
 
     def _generate_metadata(self, artifact):
         return {
-            "created_at": int(artifact.created_at or 0),
-            "modified_at": int(artifact.last_modified or 0),
-            "download_count": int(artifact.download_count or 0),
-            "view_count": int(artifact.view_count or 0),
+            ".type": artifact.type,
+            ".workspace": artifact.workspace,
+            ".prefix": artifact.prefix,
+            ".created_by": artifact.created_by,
+            ".created_at": int(artifact.created_at or 0),
+            ".modified_at": int(artifact.last_modified or 0),
+            ".download_count": int(artifact.download_count or 0),
+            ".view_count": int(artifact.view_count or 0),
+            ".permissions": artifact.permissions or {},
+            ".download_weights": artifact.download_weights or {},
+            ".stage": artifact.stage_manifest is not None,
+            ".stage_files": artifact.stage_files or [],
         }
 
-    async def _read_manifest(self, artifact, stage=False, increment_view_count=False):
+    async def _read_manifest(
+        self, artifact, stage=False, increment_view_count=False, include_metadata=False
+    ):
         manifest = artifact.stage_manifest if stage else artifact.manifest
         prefix = artifact.prefix
         if not manifest:
@@ -254,7 +268,8 @@ class ArtifactController:
                     await session.execute(stmt)
                     await session.commit()
                     artifact.view_count += 1
-                manifest["_metadata"] = self._generate_metadata(artifact)
+                if include_metadata:
+                    manifest.update(self._generate_metadata(artifact))
                 return manifest
         except Exception as e:
             raise e
@@ -358,10 +373,7 @@ class ArtifactController:
             async with session.begin():
                 artifact = await self._get_artifact(session, workspace, prefix)
                 if not artifact:
-                    if operation != "create":
-                        raise KeyError(
-                            f"Artifact with prefix '{prefix}' does not exist."
-                        )
+                    raise KeyError(f"Artifact with prefix '{prefix}' does not exist.")
                 else:
                     # Step 1: Check artifact-specific permissions
                     # Check if there are specific permissions for this artifact
@@ -483,8 +495,6 @@ class ArtifactController:
             ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
 
-        await self._get_artifact_with_permission(ws, user_info, prefix, "create")
-
         # Validate based on the type of manifest
         if manifest["type"] == "collection":
             CollectionArtifact.model_validate(manifest)
@@ -503,15 +513,24 @@ class ArtifactController:
                 # if permissions is not set, try to use the parent artifact's permissions setting
                 parent_prefix = "/".join(prefix.split("/")[:-1])
                 if parent_prefix:
-                    parent_artifact = await self._get_artifact(
-                        session, ws, parent_prefix
-                    )
-                    if parent_artifact and not parent_artifact.manifest:
-                        raise ValueError(
-                            f"Parent artifact under prefix '{parent_prefix}' must be committed before creating a child artifact."
+                    try:
+                        parent_artifact = await self._get_artifact_with_permission(
+                            ws, user_info, parent_prefix, "create"
                         )
-                    if parent_artifact and permissions is None:
-                        permissions = parent_artifact.permissions
+                        if not parent_artifact.manifest:
+                            raise ValueError(
+                                f"Parent artifact under prefix '{parent_prefix}' must be committed before creating a child artifact."
+                            )
+
+                        if permissions is None:
+                            permissions = parent_artifact.permissions
+                        else:
+                            # Merge the parent artifact's permissions with the new permissions
+                            for key, value in parent_artifact.permissions.items():
+                                if key not in permissions:
+                                    permissions[key] = value
+                    except KeyError:
+                        parent_artifact = None
                 else:
                     parent_artifact = None
 
@@ -524,6 +543,13 @@ class ArtifactController:
                     raise ValueError(
                         f"Parent artifact found (prefix: {parent_prefix}) for orphan artifact, please set orphan=False."
                     )
+
+                if orphan:
+                    # Make sure the user has permission to the workspace
+                    if not user_info.check_permission(ws, UserPermission.read_write):
+                        raise PermissionError(
+                            f"User does not have permission to create an orphan artifact in the workspace '{ws}'."
+                        )
 
                 existing_artifact = await self._get_artifact(session, ws, prefix)
 
@@ -547,6 +573,7 @@ class ArtifactController:
                     stage_manifest=manifest if stage else None,
                     stage_files=[] if stage else None,
                     download_weights=None,
+                    created_by=user_info.id,
                     created_at=int(time.time()),
                     last_modified=int(time.time()),
                     permissions=permissions,
@@ -593,7 +620,14 @@ class ArtifactController:
         finally:
             await session.close()
 
-    async def read(self, prefix, stage=False, silent=False, context: dict = None):
+    async def read(
+        self,
+        prefix,
+        stage=False,
+        silent=False,
+        include_metadata=False,
+        context: dict = None,
+    ):
         """Read the artifact's manifest from the database and populate collections dynamically."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
@@ -608,7 +642,10 @@ class ArtifactController:
             ws, user_info, prefix, "read"
         )
         manifest = await self._read_manifest(
-            artifact, stage=stage, increment_view_count=not silent
+            artifact,
+            stage=stage,
+            increment_view_count=not silent,
+            include_metadata=include_metadata,
         )
         return manifest
 
@@ -756,10 +793,12 @@ class ArtifactController:
 
         if recursive:
             # Remove all child artifacts
-            children = await self.list_children(prefix, context=context)
+            children = await self.list_children(
+                prefix, summary_fields=[".prefix"], context=context
+            )
             for child in children:
                 await self.delete(
-                    child["_prefix"], delete_files=delete_files, context=context
+                    child[".prefix"], delete_files=delete_files, context=context
                 )
 
         if delete_files:
@@ -818,7 +857,7 @@ class ArtifactController:
         page: int = 0,
         page_size: int = 100,
         order_by=None,
-        stage=False,
+        summary_fields=None,
         silent=False,
         context: dict = None,
     ):
@@ -838,6 +877,7 @@ class ArtifactController:
             ws, user_info, prefix, "list"
         )
         session = await self._get_session(read_only=True)
+        stage = False
         try:
             async with session.begin():
                 # Get the database backend from the SQLAlchemy engine
@@ -849,11 +889,6 @@ class ArtifactController:
                     ArtifactModel.workspace == ws,
                     ArtifactModel.prefix.like(f"{prefix}/%"),
                 )
-
-                if stage:
-                    base_query = base_query.filter(ArtifactModel.stage_manifest != None)
-                else:
-                    base_query = base_query.filter(ArtifactModel.manifest != None)
 
                 # Handle keyword-based search (fuzzy search across all manifest fields)
                 conditions = []
@@ -870,6 +905,124 @@ class ArtifactController:
                 # Handle filter-based search (specific key-value matching)
                 if filters:
                     for key, value in filters.items():
+                        if key == ".stage":
+                            if value:
+                                condition = ArtifactModel.stage_manifest != None
+                                stage = True
+                            else:
+                                condition = ArtifactModel.manifest != None
+                            conditions.append(condition)
+                            continue
+
+                        elif key == ".type":
+                            # check ArtifactModel.type
+                            condition = ArtifactModel.type == value
+                            conditions.append(condition)
+                            continue
+
+                        elif key == ".created_by":
+                            # check ArtifactModel.created_by
+                            condition = ArtifactModel.created_by == value
+                            conditions.append(condition)
+                            continue
+
+                        elif key == ".created_at":
+                            # if the value is a list, it should be a range
+                            # otherwise, it should be a single value which is the lower bound
+                            if isinstance(value, list):
+                                assert (
+                                    len(value) == 2
+                                ), "created_at range should have 2 values"
+                                if value[0] is None:
+                                    condition = ArtifactModel.created_at <= value[1]
+                                elif value[1] is None:
+                                    condition = ArtifactModel.created_at >= value[0]
+                                else:
+                                    condition = and_(
+                                        ArtifactModel.created_at >= value[0],
+                                        ArtifactModel.created_at <= value[1],
+                                    )
+                            else:
+                                condition = ArtifactModel.created_at >= value
+
+                            conditions.append(condition)
+                            continue
+
+                        elif key == ".last_modified":
+                            if isinstance(value, list):
+                                assert (
+                                    len(value) == 2
+                                ), "last_modified range should have 2 values"
+                                if value[0] is None:
+                                    condition = ArtifactModel.last_modified <= value[1]
+                                elif value[1] is None:
+                                    condition = ArtifactModel.last_modified >= value[0]
+                                else:
+                                    condition = and_(
+                                        ArtifactModel.last_modified >= value[0],
+                                        ArtifactModel.last_modified <= value[1],
+                                    )
+                            else:
+                                condition = ArtifactModel.last_modified >= value
+
+                            conditions.append(condition)
+                            continue
+
+                        elif key == ".download_count":
+                            if isinstance(value, list):
+                                assert (
+                                    len(value) == 2
+                                ), "download_count range should have 2 values"
+                                if value[0] is None:
+                                    condition = ArtifactModel.download_count <= value[1]
+                                elif value[1] is None:
+                                    condition = ArtifactModel.download_count >= value[0]
+                                else:
+                                    condition = and_(
+                                        ArtifactModel.download_count >= value[0],
+                                        ArtifactModel.download_count <= value[1],
+                                    )
+                            else:
+                                condition = ArtifactModel.download_count >= value
+
+                            conditions.append(condition)
+                            continue
+
+                        elif key == ".view_count":
+                            if isinstance(value, list):
+                                assert (
+                                    len(value) == 2
+                                ), "view_count range should have 2 values"
+                                if value[0] is None:
+                                    condition = ArtifactModel.view_count <= value[1]
+                                elif value[1] is None:
+                                    condition = ArtifactModel.view_count >= value[0]
+                                else:
+                                    condition = and_(
+                                        ArtifactModel.view_count >= value[0],
+                                        ArtifactModel.view_count <= value[1],
+                                    )
+                            else:
+                                condition = ArtifactModel.view_count >= value
+
+                            conditions.append(condition)
+                            continue
+                        elif key.startswith(".permissions/"):
+                            # format: permissions/user.id=permission
+                            user_id = key.split("/")[1]
+                            if backend == "postgresql":
+                                condition = text(
+                                    f"permissions->>'{user_id}' = '{value}'"
+                                )
+                            else:
+                                condition = text(
+                                    f"json_extract(permissions, '$.{user_id}') = '{value}'"
+                                )
+                            conditions.append(condition)
+                            continue
+                        elif key.startswith("."):
+                            raise ValueError(f"Invalid filter key: {key}")
+
                         if "*" in value:  # Fuzzy matching
                             if backend == "postgresql":
                                 condition = text(
@@ -933,30 +1086,42 @@ class ArtifactController:
                 result = await session.execute(query)
                 artifacts = result.scalars().all()
 
-                if parent_artifact.manifest.get("type") == "collection":
-                    # Generate the results with summary_fields
-                    summary_fields = parent_artifact.manifest.get(
-                        "summary_fields", DEFAULT_SUMMARY_FIELDS
-                    )
-                else:
-                    summary_fields = DEFAULT_SUMMARY_FIELDS
+                if summary_fields is None:
+                    if parent_artifact.manifest.get("type") == "collection":
+                        # Generate the results with summary_fields
+                        summary_fields = parent_artifact.manifest.get(
+                            "summary_fields", DEFAULT_SUMMARY_FIELDS
+                        )
+                    else:
+                        summary_fields = DEFAULT_SUMMARY_FIELDS
                 results = []
                 for artifact in artifacts:
                     manifest = artifact.stage_manifest if stage else artifact.manifest
                     if not manifest:
                         continue
-                    summary = {"_prefix": f"/{ws}/{artifact.prefix}"}
+                    summary = {}
+                    _metadata = self._generate_metadata(artifact)
                     for field in summary_fields:
-                        summary[field] = manifest.get(field)
+                        if field == ".*":
+                            summary.update(_metadata)
+                            continue
+                        if field == "*":
+                            summary.update(manifest)
+                            continue
+                        if field.startswith("."):
+                            summary[field] = _metadata.get(field)
+                        else:
+                            summary[field] = manifest.get(field)
 
-                    if "_metadata" in summary_fields:
-                        summary["_metadata"] = self._generate_metadata(artifact)
                     results.append(summary)
 
                 if not stage:
                     # Increment the view count for the parent artifact
                     await self._read_manifest(
-                        parent_artifact, stage=False, increment_view_count=not silent
+                        parent_artifact,
+                        stage=False,
+                        increment_view_count=not silent,
+                        include_metadata=False,
                     )
 
                 return results

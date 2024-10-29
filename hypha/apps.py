@@ -85,7 +85,12 @@ class ServerAppController:
             ],
         }
         await self.artifact_manager.create(
-            "applications", manifest, overwrite=overwrite, stage=False, context=context
+            "applications",
+            manifest,
+            overwrite=overwrite,
+            stage=False,
+            orphan=True,
+            context=context,
         )
         logger.info(f"Applications collection created for workspace {ws}")
 

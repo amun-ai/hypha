@@ -55,7 +55,6 @@ dataset_manifest = {
     "name": "Example Dataset",
     "description": "A dataset with example data",
     "type": "dataset",
-    "files": [],
 }
 
 await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True)
@@ -137,7 +136,6 @@ async def main():
         "name": "Example Dataset",
         "description": "A dataset with example data",
         "type": "dataset",
-        "files": [],
     }
     await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True)
     print("Dataset added to the gallery.")
@@ -181,10 +179,6 @@ dataset_schema = {
         "name": {"type": "string"},
         "description": {"type": "string"},
         "type": {"type": "string", "enum": ["dataset", "model", "application"]},
-        "files": {
-            "type": "array",
-            "items": {"type": "object", "properties": {"path": {"type": "string"}}},
-        },
     },
     "required": ["id", "name", "description", "type"]
 }
@@ -235,10 +229,12 @@ Creates a new artifact or collection with the specified manifest. The artifact i
 **Parameters:**
 
 - `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
-- `manifest`: The manifest of the new artifact. Ensure the manifest follows the required schema if applicable (e.g., for collections).
+- `manifest`: The manifest of the new artifact. Ensure the manifest follows the required schema if applicable (e.g., for collections). For collections, the manifest can contain the following special fields:
+  - `collection_schema`: Optional. A JSON schema that defines the structure of child artifacts in the collection. This schema is used to validate child artifacts when they are created or edited. If a child artifact does not conform to the schema, the creation or edit operation will fail.
+  - `summary_fields`: Optional. A list of fields to include in the summary for each child artifact when calling `list(prefix)`. If not specified, the default summary fields (`id`, `type`, `name`) are used. To include all the fields in the summary, add `"*"` to the list. If you want to include internal fields such as `.created_at`, `.last_modified`, or other download/view statistics such as `.download_count`, you can also specify them individually in the `summary_fields`. If you want to include all fields, you can add `".*"` to the list.
 - `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
 - `stage`: Optional. A boolean flag to stage the artifact. Default is `False`.
-- `orphan`: Optional. A boolean flag to create the artifact without a parent collection. Default is `False`. If `True`, the artifact will not be associated with any collection. This is mainly used for creating top-level collections, and making sure the artifact is not associated with any parent collection (with inheritance of permissions).
+- `orphan`: Optional. A boolean flag to create the artifact without a parent collection. Default is `False`. If `True`, the artifact will not be associated with any collection. This is mainly used for creating top-level collections, and making sure the artifact is not associated with any parent collection (with inheritance of permissions). To create an orphan artifact, you will need write permissions on the workspace.
 
 **Note 1: If you set `stage=True`, you must call `commit()` to finalize the artifact.**
 
@@ -457,7 +453,7 @@ files = await artifact_manager.list_files(prefix="collections/dataset-gallery/ex
 
 ---
 
-### `read(prefix: str, stage: bool = False, silent: bool = False) -> dict`
+### `read(prefix: str, stage: bool = False, silent: bool = False, include_metadata: bool = False) -> dict`
 
 Reads and returns the manifest of an artifact or collection. If in staging mode, reads from `_manifest.yaml`.
 
@@ -466,6 +462,7 @@ Reads and returns the manifest of an artifact or collection. If in staging mode,
 - `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
 - `stage`: Optional. If `True`, reads the `_manifest.yaml`. Default is `False`.
 - `silent`: Optional. If `True`, suppresses the view count increment. Default is `False`.
+- `include_metadata`: Optional. If `True`, includes metadata such as download statistics in the manifest (fields starting with `"."`). Default is `False`.
 
 **Returns:** The manifest as a dictionary, including view/download statistics and collection details (if applicable).
 
@@ -477,28 +474,57 @@ manifest = await artifact_manager.read(prefix="collections/dataset-gallery/examp
 
 ---
 
-### `list(prefix: str, keywords: list = None, filters: dict = None, mode: str = "AND", page: int = 0, page_size: int = 100, order_by: str = None, stage: bool = False, silent: bool = False) -> list`
+### `list(prefix: str, keywords: List[str] = None, filters: dict = None, mode: str = "AND", page: int = 0, page_size: int = 100, order_by: str = None, summary_fields: List[str] = None, silent: bool = False) -> list`
 
-List or search for child artifacts within a collection based on keywords or filters, supporting both `AND` and `OR` modes.
+Retrieve a list of child artifacts within a specified collection, supporting keyword-based fuzzy search, field-specific filters, and flexible ordering. This function allows detailed control over the search and pagination of artifacts in a collection, including staged artifacts if specified.
 
 **Parameters:**
 
-- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
-- `keywords`: Optional. A list of terms to search across all fields in the manifest.
-- `filters`: Optional. A dictionary of key-value pairs for exact or fuzzy matching in specific fields.
-- `mode`: Either `"AND"` or `"OR"` to combine conditions. Default is `"AND"`.
-- `page`: Optional. The page number for paginated results. Default is `0`.
-- `page_size`: Optional. The number of items per page. Default is `100`.
-- `order_by`: Optional. The field to order results by. Default is `None` (ascending order by prefix). The available fields are `view_count`, `download_count`, `last_modified`, `created_at`, and `prefix`. You can also append `<` or `>` to the field name for ascending or descending order. For example, `view_count<` will order by view count in ascending order.
-- `stage`: Optional. If `True`, lists staged artifacts. Default is `False`.
-- `silent`: Optional. If `True`, suppresses the view count increment. Default is `False`.
+- `prefix` (str): The path to the artifact, either as a relative prefix within the workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or as an absolute path including the workspace ID (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`). This defines the collection or artifact directory to search within.
 
-**Returns:** A list of matching artifacts with summary fields.
+- `keywords` (List[str], optional): A list of search terms used for fuzzy searching across all manifest fields. Each term is searched independently, and results matching any term will be included. For example, `["sample", "dataset"]` returns artifacts containing either "sample" or "dataset" in any field of the manifest.
 
-**Example:**
+- `filters` (dict, optional): A dictionary where each key is a manifest field name and each value specifies the match for that field. Filters support both exact and range-based matching, depending on the field. You can filter based on the keys inside the manifest, as well as internal fields like permissions and view/download statistics by adding a dot (`.`) before the field name. Supported internal fields include:
+  - **`.type`**: Matches the artifact type exactly, e.g., `{"type": "application"}`.
+  - **`.created_by`**: Matches the exact creator ID, e.g., `{"created_by": "user123"}`.
+  - **`.created_at`** and **`last_modified`**: Accept a single timestamp (lower bound) or a range for filtering. For example, `{"created_at": [1620000000, 1630000000]}` filters artifacts created between the two timestamps.
+  - **`.view_count`** and **`download_count`**: Accept a single value or a range for filtering, as with date fields. For example, `{"view_count": [10, 100]}` filters artifacts viewed between 10 and 100 times.
+  - **`.permissions/<user_id>`**: Searches for artifacts with specific permissions assigned to the given `user_id`.
+  - **`.stage`**: If `true`, returns only artifacts in staging mode. Example: `{"stage": true}`. By default, .stage filter is always set to `false`.
+  - **`any other field in manifest`**: Matches the exact value of the field, e.g., `{"name": "example-dataset"}`. These filters also support fuzzy matching if a value contains a wildcard (`*`), e.g., `{"name": "dataset*"}`, depending on the SQL backend.
+
+- `mode` (str, optional): Defines how multiple conditions (from keywords and filters) are combined. Use `"AND"` to ensure all conditions must match, or `"OR"` to include artifacts meeting any condition. Default is `"AND"`.
+
+- `page` (int, optional): The page number for pagination. Used in conjunction with `page_size` to limit results. Default is `0`, which returns the first page of results.
+
+- `page_size` (int, optional): The maximum number of artifacts to return per page. This is capped at 1000 for performance considerations. Default is `100`.
+
+- `order_by` (str, optional): The field used to order results. Options include:
+  - `view_count`, `download_count`, `last_modified`, `created_at`, and `prefix`.
+  - Use a suffix `<` or `>` to specify ascending or descending order, respectively (e.g., `view_count<` for ascending).
+  - Default ordering is ascending by prefix if not specified.
+
+- `summary_fields` (List[str], optional): A list of fields to include in the summary for each artifact. If not specified, it will use the `summary_fields` value from the parent collection, otherwise, the default summary fields (`id`, `type`, `name`) are used. You can add `"*"` to the list if you want to include all the manifest fields. If you want to include internal fields such as `.created_at`, `.last_modified`, or other download/view statistics such as `.download_count`, you can also specify them individually in the `summary_fields`. If you want to include all fields, you can add `".*"` to the list.
+
+- `silent` (bool, optional): If `True`, prevents incrementing the view count for the parent artifact when listing children. Default is `False`.
+
+**Returns:**
+A list of artifacts that match the search criteria, each represented by a dictionary containing summary fields. Fields are specified in the `summary_fields` attribute of the parent artifact's manifest; if this attribute is undefined, default summary fields (`id`, `type`, `name`) are used.
+
+**Example Usage:**
 
 ```python
-results = await artifact_manager.list(prefix="collections/dataset-gallery", keywords=["example"], mode="AND")
+# Retrieve artifacts in the 'dataset-gallery' collection, filtering by creator and keywords,
+# with results ordered by descending view count.
+results = await artifact_manager.list(
+    prefix="collections/dataset-gallery",
+    keywords=["example"],
+    filters={"created_by": "user123", "stage": False},
+    order_by="view_count>",
+    mode="AND",
+    page=1,
+    page_size=50
+)
 ```
 
 ---
@@ -546,7 +572,6 @@ dataset_manifest = {
     "name": "Example Dataset",
     "description": "A dataset with example data",
     "type": "dataset",
-    "files": [],
 }
 await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True)
 
@@ -604,7 +629,7 @@ The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifes
 
 ### Response:
 
-For `/{workspace}/artifacts/{prefix:path}`, the response will be a JSON object representing the artifact manifest. For `/{workspace}/artifacts/{prefix:path}/__files__/{file_path:path}`, the response will be a pre-signed URL to download the file. The artifact manifest will also include any metadata such as download statistics in the `_metadata` field. For private artifacts, make sure if the user has the necessary permissions.
+For `/{workspace}/artifacts/{prefix:path}`, the response will be a JSON object representing the artifact manifest. For `/{workspace}/artifacts/{prefix:path}/__files__/{file_path:path}`, the response will be a pre-signed URL to download the file. The artifact manifest will also include any metadata such as download statistics under keys starting with dot (`.`), e.g. `.view_count`, `.download_count`. For private artifacts, make sure if the user has the necessary permissions.
 
 For `/{workspace}/artifacts/{prefix:path}/__children__`, the response will be a list of artifacts in the collection.
 
@@ -623,7 +648,7 @@ response = requests.get(f"{SERVER_URL}/{workspace}/artifacts/collections/dataset
 if response.ok:
     artifact = response.json()
     print(artifact["name"])  # Output: Example Dataset
-    print(artifact["_metadata"]["download_count"])  # Output: Download count for the dataset
+    print(artifact[".download_count"])  # Output: Download count for the dataset
 else:
     print(f"Error: {response.status_code}")
 ```

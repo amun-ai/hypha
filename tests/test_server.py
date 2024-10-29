@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 import requests
-from hypha_rpc.websocket_client import connect_to_server
+from hypha_rpc import connect_to_server
 
 from . import (
     SERVER_URL,

@@ -7,7 +7,7 @@ import time
 
 import pytest
 import requests
-from hypha_rpc.websocket_client import connect_to_server
+from hypha_rpc import connect_to_server
 from requests import RequestException
 
 from . import SIO_PORT, WS_SERVER_URL
