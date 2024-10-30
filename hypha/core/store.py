@@ -333,6 +333,21 @@ class RedisStore:
             else:
                 logger.info("'created_by' column already exists in 'artifacts' table")
 
+            # Check if 'config' column exists (JSON type, nullable)
+            if "config" not in [col["name"] for col in columns]:
+                logger.info("Adding 'config' column to 'artifacts' table.")
+
+                # Step 1: Add 'config' column (JSON type)
+                conn.execute(text("ALTER TABLE artifacts ADD COLUMN config JSON"))
+                logger.info("Successfully added 'config' column to 'artifacts' table.")
+
+                database_change_log.append(
+                    {
+                        "time": datetime.datetime.now().isoformat(),
+                        "version": __version__,
+                        "change": "Added 'config' column to 'artifacts' table",
+                    }
+                )
             # Check if 'permissions' column exists
             if "permissions" not in [col["name"] for col in columns]:
                 logger.info("Adding 'permissions' column to 'artifacts' table.")

@@ -31,7 +31,6 @@ Once connected, you can create a collection to organize datasets in the gallery.
 ```python
 # Create a collection for the Dataset Gallery
 gallery_manifest = {
-    "id": "dataset-gallery",
     "name": "Dataset Gallery",
     "description": "A collection for organizing datasets",
     "type": "collection",
@@ -51,7 +50,6 @@ After creating the gallery, you can start adding datasets to it. Each dataset wi
 ```python
 # Create a new dataset inside the Dataset Gallery
 dataset_manifest = {
-    "id": "example-dataset",
     "name": "Example Dataset",
     "description": "A dataset with example data",
     "type": "dataset",
@@ -119,7 +117,6 @@ async def main():
 
     # Create a collection for the Dataset Gallery
     gallery_manifest = {
-        "id": "dataset-gallery",
         "name": "Dataset Gallery",
         "description": "A collection for organizing datasets",
         "type": "collection",
@@ -132,7 +129,6 @@ async def main():
 
     # Create a new dataset inside the Dataset Gallery
     dataset_manifest = {
-        "id": "example-dataset",
         "name": "Example Dataset",
         "description": "A dataset with example data",
         "type": "dataset",
@@ -175,25 +171,21 @@ You can define a schema for the collection that specifies the required fields fo
 dataset_schema = {
     "type": "object",
     "properties": {
-        "id": {"type": "string"},
         "name": {"type": "string"},
         "description": {"type": "string"},
         "type": {"type": "string", "enum": ["dataset", "model", "application"]},
     },
-    "required": ["id", "name", "description", "type"]
+    "required": ["name", "description", "type"]
 }
 
 # Create a collection with the schema
 gallery_manifest = {
-    "id": "schema-dataset-gallery",
     "name": "Schema Dataset Gallery",
     "description": "A gallery of datasets with enforced schema",
     "type": "collection",
-    "collection_schema": dataset_schema,
-    "collection": [],
 }
 # Create the collection with read permission for everyone and create permission for all authenticated users
-await artifact_manager.create(prefix="collections/schema-dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+", "@": "r+"}, orphan=True)
+await artifact_manager.create(prefix="collections/schema-dataset-gallery", manifest=gallery_manifest, config={"collection_schema": dataset_schema}, permissions={"*": "r+", "@": "r+"}, orphan=True)
 print("Schema-based Dataset Gallery created.")
 ```
 
@@ -204,7 +196,6 @@ When you commit a dataset to this collection, it will be validated against the s
 ```python
 # Create a valid dataset that conforms to the schema
 valid_dataset_manifest = {
-    "id": "valid-dataset",
     "name": "Valid Dataset",
     "description": "A valid dataset conforming to the schema",
     "type": "dataset",
@@ -222,18 +213,27 @@ print("Valid dataset committed.")
 
 ## API References
 
-### `create(prefix: str, manifest: dict, permissions: dict=None, stage: bool = False, orphan: bool = False) -> None`
+### `create(prefix: str, manifest: dict, permissions: dict=None, config: dict=None, stage: bool = False, orphan: bool = False) -> None`
 
 Creates a new artifact or collection with the specified manifest. The artifact is staged until committed. For collections, the `collection` field should be an empty list.
 
 **Parameters:**
 
-- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
-- `manifest`: The manifest of the new artifact. Ensure the manifest follows the required schema if applicable (e.g., for collections). For collections, the manifest can contain the following special fields:
+- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`). To generate an auto-id, you can use patterns like `"{uuid}"` or `"{timestamp}"`. The following patterns are supported:
+  - `{uuid}`: Generates a random UUID.
+  - `{timestamp}`: Generates a timestamp in milliseconds.
+  - `{zenodo_id}`: If `publish_to` is set to `zenodo` or `sandbox_zenodo`, it will use the Zenodo deposit ID (which changes when a new version is created).
+  - `{zenodo_conceptrecid}`: If `publish_to` is set to `zenodo` or `sandbox_zenodo`, it will use the Zenodo concept id (which does not change when a new version is created).
+  - **Id Parts**: You can also use id parts stored in the parent collection's config['id_parts'] to generate an id. For example, if the parent collection has `{"animals": ["dog", "cat", ...], "colors": ["red", "blue", ...]}`, you can use `"{colors}-{animals}"` to generate an id like `red-dog`.
+- `manifest`: The manifest of the new artifact. Ensure the manifest follows the required schema if applicable (e.g., for collections). 
+
+- `config`: Optional. A dictionary containing additional configuration options for the artifact. For collections, the config can contain the following special fields:
   - `collection_schema`: Optional. A JSON schema that defines the structure of child artifacts in the collection. This schema is used to validate child artifacts when they are created or edited. If a child artifact does not conform to the schema, the creation or edit operation will fail.
   - `summary_fields`: Optional. A list of fields to include in the summary for each child artifact when calling `list(prefix)`. If not specified, the default summary fields (`id`, `type`, `name`) are used. To include all the fields in the summary, add `"*"` to the list. If you want to include internal fields such as `.created_at`, `.last_modified`, or other download/view statistics such as `.download_count`, you can also specify them individually in the `summary_fields`. If you want to include all fields, you can add `".*"` to the list.
+  - `id_parts`: Optional. A dictionary of id name parts to be used in generating the id for child artifacts. For example: `{"animals": ["dog", "cat", ...], "colors": ["red", "blue", ...]}`. This can be used for creating child artifacts with auto-generated ids based on the id parts. For example, when calling `create`, you can specify the prefix as `collections/my-collection/{colors}-{animals}`, and the id will be generated based on the id parts, e.g., `collections/my-collection/red-dog`.
+
 - `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
-- `stage`: Optional. A boolean flag to stage the artifact. Default is `False`.
+- `stage`: Optional. A boolean flag to stage the artifact. Default is `False`. If it's set to `True`, the artifact will be staged and not committed. You will need to call `commit()` to finalize the artifact.
 - `orphan`: Optional. A boolean flag to create the artifact without a parent collection. Default is `False`. If `True`, the artifact will not be associated with any collection. This is mainly used for creating top-level collections, and making sure the artifact is not associated with any parent collection (with inheritance of permissions). To create an orphan artifact, you will need write permissions on the workspace.
 
 **Note 1: If you set `stage=True`, you must call `commit()` to finalize the artifact.**
@@ -324,7 +324,7 @@ The following list shows how permission expansions work:
 
 ---
 
-### `edit(prefix: str, manifest: dict, permissions: dict = None) -> None`
+### `edit(prefix: str, manifest: dict, permissions: dict = None, config: dict = None, stage: bool = False) -> None`
 
 Edits an existing artifact's manifest. The new manifest is staged until committed. The updated manifest is stored temporarily as `_manifest.yaml`.
 
@@ -333,6 +333,8 @@ Edits an existing artifact's manifest. The new manifest is staged until committe
 - `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
 - `manifest`: The updated manifest. Ensure the manifest follows the required schema if applicable (e.g., for collections).
 - `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
+- `config`: Optional. A dictionary containing additional configuration options for the artifact.
+- `stage`: Optional. A boolean flag to stage the artifact. Default is `False`. If it's set to `True`, the artifact will be staged and not committed. You will need to call `commit()` to finalize the changes.
 
 **Example:**
 
@@ -559,7 +561,6 @@ artifact_manager = await server.get_service("public/artifact-manager")
 
 # Step 2: Create a gallery collection
 gallery_manifest = {
-    "id": "dataset-gallery",
     "name": "Dataset Gallery",
     "description": "A collection for organizing datasets",
     "type": "collection",
@@ -571,7 +572,6 @@ await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gal
 
 # Step 3: Add a dataset to the gallery
 dataset_manifest = {
-    "id": "example-dataset",
     "name": "Example Dataset",
     "description": "A dataset with example data",
     "type": "dataset",

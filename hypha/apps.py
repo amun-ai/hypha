@@ -272,18 +272,14 @@ class ServerAppController:
         self, app_id: str, context: Optional[dict] = None
     ) -> List[dict]:
         """List files of an installed application."""
-        workspace = context["ws"]
-
         prefix = f"applications/{app_id}"
         manifest = await self.artifact_manager.read(prefix=prefix, context=context)
         return manifest["files"]
 
     async def edit(self, app_id: str, context: Optional[dict] = None):
         """Edit an application by re-opening its artifact."""
-        workspace = context["ws"]
-
         prefix = f"applications/{app_id}"
-        await self.artifact_manager.edit(prefix=prefix, context=context)
+        await self.artifact_manager.edit(prefix=prefix, stage=True, context=context)
 
     async def commit(
         self,
@@ -457,11 +453,8 @@ class ServerAppController:
                 prefix=f"applications/{app_id}",
                 manifest=artifact.model_dump(mode="json"),
                 context=context,
+                stage=stage,
             )
-            if not stage:
-                await self.artifact_manager.commit(
-                    prefix=f"applications/{app_id}", context=context
-                )
 
         except asyncio.TimeoutError:
             raise Exception(
