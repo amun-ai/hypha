@@ -227,7 +227,7 @@ Creates a new artifact or collection with the specified manifest. The artifact i
   - **Id Parts**: You can also use id parts stored in the parent collection's config['id_parts'] to generate an id. For example, if the parent collection has `{"animals": ["dog", "cat", ...], "colors": ["red", "blue", ...]}`, you can use `"{colors}-{animals}"` to generate an id like `red-dog`.
 - `manifest`: The manifest of the new artifact. Ensure the manifest follows the required schema if applicable (e.g., for collections). 
 
-- `config`: Optional. A dictionary containing additional configuration options for the artifact. For collections, the config can contain the following special fields:
+- `config`: Optional. A dictionary containing additional configuration options for the artifact (shared for both staged and committed). For collections, the config can contain the following special fields:
   - `collection_schema`: Optional. A JSON schema that defines the structure of child artifacts in the collection. This schema is used to validate child artifacts when they are created or edited. If a child artifact does not conform to the schema, the creation or edit operation will fail.
   - `summary_fields`: Optional. A list of fields to include in the summary for each child artifact when calling `list(prefix)`. If not specified, the default summary fields (`id`, `type`, `name`) are used. To include all the fields in the summary, add `"*"` to the list. If you want to include internal fields such as `.created_at`, `.last_modified`, or other download/view statistics such as `.download_count`, you can also specify them individually in the `summary_fields`. If you want to include all fields, you can add `".*"` to the list.
   - `id_parts`: Optional. A dictionary of id name parts to be used in generating the id for child artifacts. For example: `{"animals": ["dog", "cat", ...], "colors": ["red", "blue", ...]}`. This can be used for creating child artifacts with auto-generated ids based on the id parts. For example, when calling `create`, you can specify the prefix as `collections/my-collection/{colors}-{animals}`, and the id will be generated based on the id parts, e.g., `collections/my-collection/red-dog`.
@@ -326,7 +326,7 @@ The following list shows how permission expansions work:
 
 ### `edit(prefix: str, manifest: dict, permissions: dict = None, config: dict = None, stage: bool = False) -> None`
 
-Edits an existing artifact's manifest. The new manifest is staged until committed. The updated manifest is stored temporarily as `_manifest.yaml`.
+Edits an existing artifact's manifest. The new manifest is staged until committed.
 
 **Parameters:**
 
@@ -346,7 +346,7 @@ await artifact_manager.edit(prefix="collections/dataset-gallery/example-dataset"
 
 ### `commit(prefix: str) -> None`
 
-Finalizes and commits an artifact's staged changes. Validates uploaded files and renames `_manifest.yaml` to `manifest.yaml`. This process also updates view and download statistics.
+Finalizes and commits an artifact's staged changes. Validates uploaded files and commit the staged manifest. This process also updates view and download statistics.
 
 **Parameters:**
 
@@ -460,12 +460,12 @@ files = await artifact_manager.list_files(prefix="collections/dataset-gallery/ex
 
 ### `read(prefix: str, stage: bool = False, silent: bool = False, include_metadata: bool = False) -> dict`
 
-Reads and returns the manifest of an artifact or collection. If in staging mode, reads from `_manifest.yaml`.
+Reads and returns the manifest of an artifact or collection. If in staging mode, reads the staged manifest.
 
 **Parameters:**
 
 - `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
-- `stage`: Optional. If `True`, reads the `_manifest.yaml`. Default is `False`.
+- `stage`: Optional. If `True`, reads the staged manifest. Default is `False`.
 - `silent`: Optional. If `True`, suppresses the view count increment. Default is `False`.
 - `include_metadata`: Optional. If `True`, includes metadata such as download statistics in the manifest (fields starting with `"."`). Default is `False`.
 
@@ -632,7 +632,7 @@ The path parameters are used to specify the artifact or file to access. The foll
 
 Qury parameters are passed after the `?` in the URL and are used to control the behavior of the API. The following query parameters are supported:
 
-- **stage**: A boolean flag to fetch the staged version of the manifest (`_manifest.yaml`). Default is `False`.
+- **stage**: A boolean flag to fetch the staged version of the manifest. Default is `False`.
 - **silent**: A boolean flag to suppress the view count increment. Default is `False`.
 - **include_metadata**: A boolean flag to include metadata such as download statistics in the manifest. Default is `False`.
 
