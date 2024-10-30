@@ -34,3 +34,5 @@ jobs:
           redis-port: 6333
       - name: Test with tox
         run: tox
+        env:
+          SANDBOX_ZENODO_TOKEN: ${{ secrets.SANDBOX_ZENODO_TOKEN }}

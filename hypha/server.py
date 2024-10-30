@@ -103,6 +103,8 @@ def start_builtin_services(
         artifact_manager = ArtifactController(
             store,
             s3_controller=s3_controller,
+            zenodo_token=args.zenodo_token,
+            sandbox_zenodo_token=args.sandbox_zenodo_token,
             workspace_bucket=args.workspace_bucket,
         )
 
@@ -414,6 +416,21 @@ def get_argparser(add_help=True):
         action="store_true",
         help="enable S3 proxy for serving pre-signed URLs",
     )
+
+    parser.add_argument(
+        "--zenodo-token",
+        type=str,
+        default=None,
+        help="Access token for zenodo: https://zenodo.org",
+    )
+
+    parser.add_argument(
+        "--sandbox-zenodo-token",
+        type=str,
+        default=None,
+        help="Access token for sandbox version of zenodo: https://sandbox.zenodo.org",
+    )
+
     return parser
 
 

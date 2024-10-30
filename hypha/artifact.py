@@ -2,8 +2,11 @@ import logging
 import time
 import sys
 import json
-import copy
+import httpx
 import traceback
+import uuid
+import random
+import re
 from sqlalchemy import (
     event,
     Column,
@@ -36,6 +39,7 @@ from hypha.core import (
     ApplicationArtifact,
     WorkspaceInfo,
 )
+from hypha.utils.zenodo import ZenodoClient, Deposition
 from hypha_rpc.utils import ObjectProxy
 from jsonschema import validate
 from typing import Union, List
@@ -69,12 +73,66 @@ class ArtifactModel(Base):
     permissions = Column(
         JSON, nullable=True
     )  # New field for storing permissions for the artifact
+    config = Column(JSON, nullable=True)
     __table_args__ = (
         UniqueConstraint("workspace", "prefix", name="_workspace_prefix_uc"),
     )
 
 
-DEFAULT_SUMMARY_FIELDS = ["id", "type", "name"]
+DEFAULT_SUMMARY_FIELDS = ["type", "name"]
+
+
+async def generate_unique_prefix(
+    id_parts,
+    pattern,
+    session,
+    workspace,
+    batch_size=10,
+    max_attempts=10,
+    additional_parts=None,
+):
+    placeholder_pattern = re.compile(r"\{(\w+)\}")
+    placeholders = placeholder_pattern.findall(pattern)
+
+    # Ensure placeholders in pattern exist in id_parts
+    if not all(placeholder in id_parts for placeholder in placeholders):
+        raise ValueError("Some placeholders in the pattern are missing in id_parts")
+
+    for _ in range(max_attempts):
+        # Generate a batch of candidate prefixes
+        candidate_prefixes = set()
+        for _ in range(batch_size):
+            generated_parts = {
+                placeholder: random.choice(id_parts[placeholder])
+                for placeholder in placeholders
+            }
+            if additional_parts:
+                generated_parts.update(additional_parts)
+            candidate_prefix = pattern
+            for placeholder, value in generated_parts.items():
+                candidate_prefix = candidate_prefix.replace(f"{{{placeholder}}}", value)
+            candidate_prefixes.add(candidate_prefix)
+
+        # Check which prefixes already exist in a single query
+        existing_prefixes = await _batch_prefix_exists(
+            session, workspace, candidate_prefixes
+        )
+
+        # Find a unique prefix in the batch
+        unique_prefixes = candidate_prefixes - existing_prefixes
+        if unique_prefixes:
+            return unique_prefixes.pop()  # Return any unique prefix found
+
+    raise RuntimeError("Could not generate a unique prefix within the maximum attempts")
+
+
+async def _batch_prefix_exists(session, workspace, prefixes):
+    """Check which prefixes already exist in the database."""
+    query = select(ArtifactModel.prefix).filter(
+        ArtifactModel.workspace == workspace, ArtifactModel.prefix.in_(prefixes)
+    )
+    result = await session.execute(query)
+    return set(row[0] for row in result.fetchall())
 
 
 class ArtifactController:
@@ -84,6 +142,8 @@ class ArtifactController:
         self,
         store,
         s3_controller,
+        zenodo_token=None,
+        sandbox_zenodo_token=None,
         workspace_bucket="hypha-workspaces",
     ):
         """Set up controller with SQLAlchemy database and S3 for file storage."""
@@ -94,7 +154,17 @@ class ArtifactController:
         self.s3_controller = s3_controller
         self.workspace_bucket = workspace_bucket
         self.store = store
+        if zenodo_token:
+            self.zenodo_client = ZenodoClient(zenodo_token, "https://zenodo.org")
+        else:
+            self.zenodo_client = None
 
+        if sandbox_zenodo_token:
+            self.sandbox_zenodo_client = ZenodoClient(
+                sandbox_zenodo_token, "https://sandbox.zenodo.org"
+            )
+        else:
+            self.sandbox_zenodo_client = None
         router = APIRouter()
 
         @router.get("/{workspace}/artifacts/{prefix:path}")
@@ -183,7 +253,10 @@ class ArtifactController:
                 raise HTTPException(status_code=500, detail=str(traceback.format_exc()))
 
         self.store.set_artifact_manager(self)
-        self.store.register_public_service(self.get_artifact_service())
+        artifact_service = self.get_artifact_service()
+        if self.zenodo_client or self.sandbox_zenodo_client:
+            artifact_service["publish"] = self.publish
+        self.store.register_public_service(artifact_service)
         self.store.register_router(router)
 
     async def init_db(self):
@@ -241,20 +314,22 @@ class ArtifactController:
         return session
 
     def _generate_metadata(self, artifact):
-        return {
-            ".type": artifact.type,
-            ".workspace": artifact.workspace,
-            ".prefix": artifact.prefix,
-            ".created_by": artifact.created_by,
-            ".created_at": int(artifact.created_at or 0),
-            ".modified_at": int(artifact.last_modified or 0),
-            ".download_count": int(artifact.download_count or 0),
-            ".view_count": int(artifact.view_count or 0),
-            ".permissions": artifact.permissions or {},
-            ".download_weights": artifact.download_weights or {},
-            ".stage": artifact.stage_manifest is not None,
-            ".stage_files": artifact.stage_files or [],
+        metadata = {
+            "type": artifact.type,
+            "workspace": artifact.workspace,
+            "prefix": artifact.prefix,
+            "created_by": artifact.created_by,
+            "created_at": int(artifact.created_at or 0),
+            "modified_at": int(artifact.last_modified or 0),
+            "download_count": int(artifact.download_count or 0),
+            "view_count": int(artifact.view_count or 0),
+            "permissions": artifact.permissions or {},
+            "download_weights": artifact.download_weights or {},
+            "stage": artifact.stage_manifest is not None,
+            "stage_files": artifact.stage_files or [],
+            "config": artifact.config or {},
         }
+        return {f".{k}": v for k, v in metadata.items()}
 
     async def _read_manifest(
         self, artifact, stage=False, increment_view_count=False, include_metadata=False
@@ -287,14 +362,6 @@ class ArtifactController:
             raise e
         finally:
             await session.close()
-
-    async def _get_artifact(self, session, workspace, prefix):
-        query = select(ArtifactModel).filter(
-            ArtifactModel.workspace == workspace,
-            ArtifactModel.prefix == prefix,
-        )
-        result = await session.execute(query)
-        return result.scalar_one_or_none()
 
     def _expand_permission(self, permission):
         """Get the alias for the operation."""
@@ -352,6 +419,7 @@ class ArtifactController:
                     "remove_file",
                     "create",
                     "reset_stats",
+                    "publish",
                 ]
             else:
                 raise ValueError(f"Permission '{permission}' is not supported.")
@@ -379,7 +447,7 @@ class ArtifactController:
             perm = UserPermission.read
         elif operation in ["create", "edit", "commit", "put_file", "remove_file"]:
             perm = UserPermission.read_write
-        elif operation in ["delete", "reset_stats"]:
+        elif operation in ["delete", "reset_stats", "publish"]:
             perm = UserPermission.admin
         else:
             raise ValueError(f"Operation '{operation}' is not supported.")
@@ -490,6 +558,8 @@ class ArtifactController:
         stage=False,
         orphan=False,
         permissions: dict = None,
+        config: dict = None,
+        publish_to=None,
         context: dict = None,
     ):
         """Create a new artifact and store its manifest in the database."""
@@ -522,12 +592,14 @@ class ArtifactController:
         # Convert ObjectProxy to dict if necessary
         if isinstance(manifest, ObjectProxy):
             manifest = ObjectProxy.toDict(manifest)
-
         session = await self._get_session()
         try:
             async with session.begin():
                 # if permissions is not set, try to use the parent artifact's permissions setting
                 parent_prefix = "/".join(prefix.split("/")[:-1])
+                assert (
+                    "{" not in parent_prefix and "}" not in parent_prefix
+                ), "Curly braces are not allowed in artifact prefix."
                 if parent_prefix:
                     try:
                         parent_artifact = await self._get_artifact_with_permission(
@@ -567,7 +639,72 @@ class ArtifactController:
                             f"User does not have permission to create an orphan artifact in the workspace '{ws}'."
                         )
 
-                existing_artifact = await self._get_artifact(session, ws, prefix)
+                if publish_to:
+                    if publish_to == "zenodo":
+                        zenodo_client = self.zenodo_client
+                        assert zenodo_client, "Zenodo access token is not configured."
+                    elif publish_to == "sandbox_zenodo":
+                        zenodo_client = self.sandbox_zenodo_client
+                        assert (
+                            zenodo_client
+                        ), "Sandbox Zenodo access token is not configured."
+                    else:
+                        raise ValueError(
+                            f"Publishing to '{publish_to}' is not supported."
+                        )
+                    deposition_info = await zenodo_client.create_deposition()
+                    if config:
+                        assert (
+                            "zenodo" not in config
+                        ), "Zenodo config already exists in the artifact."
+                        config["zenodo"] = deposition_info
+                    else:
+                        config = {"zenodo": deposition_info}
+                else:
+                    deposition_info = None
+
+                if "{" in prefix and "}" in prefix:
+                    default_parts = {
+                        "uuid": str(uuid.uuid4()),
+                        "timestamp": str(time.time()),
+                    }
+                    if deposition_info:
+                        default_parts["zenodo_id"] = deposition_info["id"]
+                        default_parts["zenodo_conceptrecid"] = deposition_info[
+                            "conceptrecid"
+                        ]
+                    # check if parent artifact is a collection
+                    if (
+                        parent_artifact
+                        and parent_artifact.type == "collection"
+                        and parent_artifact.config
+                    ):
+                        id_parts = parent_artifact.config.get("id_parts")
+                        if id_parts:
+                            # id parts example: {"animals": ["dog", "cat", ...], "colors": ["red", "blue", ...]}
+                            # say if the prefix is "collections/{animals}-{colors}"
+                            # then the prefix will be generate as "collections/dog-red", "collections/dog-blue", ...
+                            try:
+                                prefix = await generate_unique_prefix(
+                                    id_parts,
+                                    prefix,
+                                    session,
+                                    ws,
+                                    additional_parts=default_parts,
+                                )
+                            except Exception as e:
+                                raise e
+                        else:
+                            prefix = prefix.format(**default_parts)
+                    else:
+                        prefix = prefix.format(**default_parts)
+                    existing_artifact = await self._get_artifact(session, ws, prefix)
+                    if existing_artifact:
+                        raise RuntimeError(
+                            f"Failed to generate unique prefix for artifact '{prefix}'."
+                        )
+                else:
+                    existing_artifact = await self._get_artifact(session, ws, prefix)
 
                 if existing_artifact:
                     if not overwrite:
@@ -582,6 +719,7 @@ class ArtifactController:
             async with session.begin():
                 permissions = permissions or {}
                 permissions[user_info.id] = "*"
+
                 new_artifact = ArtifactModel(
                     workspace=ws,
                     prefix=prefix,
@@ -593,6 +731,7 @@ class ArtifactController:
                     created_at=int(time.time()),
                     last_modified=int(time.time()),
                     permissions=permissions,
+                    config=config,
                     type=manifest["type"],
                 )
                 session.add(new_artifact)
@@ -602,8 +741,7 @@ class ArtifactController:
             raise e
         finally:
             await session.close()
-
-        return manifest
+        return self._generate_metadata(new_artifact)
 
     async def reset_stats(self, prefix, context: dict):
         """Reset the artifact's manifest's download count and view count."""
@@ -666,7 +804,13 @@ class ArtifactController:
         return manifest
 
     async def edit(
-        self, prefix, manifest=None, permissions: dict = None, context: dict = None
+        self,
+        prefix,
+        manifest=None,
+        permissions: dict = None,
+        config: dict = None,
+        stage: bool = False,
+        context: dict = None,
     ):
         """Edit the artifact's manifest and save it in the database."""
         if context is None or "ws" not in context:
@@ -698,11 +842,18 @@ class ArtifactController:
         session = await self._get_session()
         try:
             async with session.begin():
-                if manifest is None:
-                    manifest = copy.deepcopy(artifact.manifest)
-                artifact.stage_manifest = manifest
+                if stage:
+                    artifact.stage_manifest = manifest
+                    flag_modified(
+                        artifact, "stage_manifest"
+                    )  # Mark JSON field as modified
+                elif manifest:
+                    artifact.manifest = manifest
+                    flag_modified(artifact, "manifest")
+                if config:
+                    artifact.config = config
+                    flag_modified(artifact, "config")
                 artifact.last_modified = int(time.time())
-                flag_modified(artifact, "stage_manifest")  # Mark JSON field as modified
                 if permissions is not None:
                     artifact.permissions = permissions
                     flag_modified(artifact, "permissions")
@@ -760,11 +911,10 @@ class ArtifactController:
                     )
                     if (
                         parent_artifact
-                        and "collection_schema" in parent_artifact.manifest
+                        and parent_artifact.config
+                        and "collection_schema" in parent_artifact.config
                     ):
-                        collection_schema = parent_artifact.manifest[
-                            "collection_schema"
-                        ]
+                        collection_schema = parent_artifact.config["collection_schema"]
                         try:
                             validate(instance=manifest, schema=collection_schema)
                         except Exception as e:
@@ -1105,8 +1255,10 @@ class ArtifactController:
                 if summary_fields is None:
                     if parent_artifact.manifest.get("type") == "collection":
                         # Generate the results with summary_fields
-                        summary_fields = parent_artifact.manifest.get(
-                            "summary_fields", DEFAULT_SUMMARY_FIELDS
+                        summary_fields = (
+                            parent_artifact.config
+                            and parent_artifact.config.get("summary_fields")
+                            or DEFAULT_SUMMARY_FIELDS
                         )
                     else:
                         summary_fields = DEFAULT_SUMMARY_FIELDS
@@ -1161,6 +1313,7 @@ class ArtifactController:
         artifact = await self._get_artifact_with_permission(
             ws, user_info, prefix, "put_file"
         )
+        assert artifact.stage_manifest, "Artifact must be in staging mode to put files."
 
         options = options or {}
 
@@ -1267,6 +1420,9 @@ class ArtifactController:
         artifact = await self._get_artifact_with_permission(
             ws, user_info, prefix, "remove_file"
         )
+        assert (
+            artifact.stage_manifest
+        ), "Artifact must be in staging mode to remove files."
 
         session = await self._get_session()
         try:
@@ -1304,6 +1460,142 @@ class ArtifactController:
 
         logger.info(f"Removed file from artifact: {file_key}")
 
+    async def publish(
+        self, prefix: str, to: str = None, metadata=None, context: dict = None
+    ):
+        """Publish the artifact to public archive."""
+        ws = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        # read the artifact
+        artifact = await self._get_artifact_with_permission(
+            ws, user_info, prefix, "publish"
+        )
+        manifest = await self._read_manifest(
+            artifact,
+            stage=False,
+            increment_view_count=False,
+            include_metadata=True,
+        )
+        config = artifact.config or {}
+        if config and "zenodo" in config:
+            # Infer the target Zenodo instance from the existing config
+            deposition_info = config["zenodo"]
+            if deposition_info["links"]["self"].startswith(
+                "https://sandbox.zenodo.org"
+            ):
+                assert (
+                    to is None or to == "sandbox_zenodo"
+                ), "Cannot publish to Zenodo from Sandbox Zenodo."
+                to = "sandbox_zenodo"
+            else:
+                assert (
+                    to is None or to == "zenodo"
+                ), "Cannot publish to Sandbox Zenodo from Zenodo."
+                to = "zenodo"
+
+        if to == "zenodo":
+            zenodo_client = self.zenodo_client
+            assert zenodo_client, "Zenodo access token is not configured."
+        elif to == "sandbox_zenodo":
+            zenodo_client = self.sandbox_zenodo_client
+            assert zenodo_client, "Sandbox Zenodo access token is not configured."
+        else:
+            raise ValueError(f"Publishing to '{to}' is not supported.")
+
+        if "zenodo" in config:
+            deposition_id = config["zenodo"]["id"]
+            deposition_info = await zenodo_client.load_deposition(deposition_id)
+        else:
+            deposition_info = await zenodo_client.create_deposition()
+        deposition = Deposition(zenodo_client, deposition_info)
+
+        assert manifest, "Manifest is empty or not committed."
+        assert "name" in manifest, "Manifest must have a name."
+        assert "type" in manifest, "Manifest must have a type."
+        assert "description" in manifest, "Manifest must have a description."
+
+        # Map authors to creators format required by Zenodo
+        creators = []
+        if "authors" in manifest:
+            creators = [
+                {
+                    "name": author.get("name"),
+                    "affiliation": author.get("affiliation", ""),
+                }
+                for author in manifest["authors"]
+            ]
+        else:
+            creators = [{"name": user_info.id}]
+        # Update the metadata
+        _metadata = {
+            "title": manifest.get("name", "Untitled"),
+            "upload_type": "dataset" if manifest.get("type") == "dataset" else "other",
+            "description": manifest.get("description", "No description provided."),
+            "creators": creators,
+            "access_right": "open",
+            "license": manifest.get("license", "cc-by"),
+            "keywords": manifest.get("tags", []),
+            "notes": f"Published automatically from Hypha ({self.store.public_base_url}).",
+        }
+        if metadata:
+            _metadata.update(metadata)
+        await deposition.update_metadata(_metadata)
+
+        # Add a file to the deposition
+        # list the files in the artifact then upload one by one
+        async def upload_files(dir_path=""):
+            files = await self.list_files(
+                prefix, dir_path=dir_path, max_length=100, context=context
+            )
+            for file_info in files:
+                name = file_info["name"]
+                if file_info["type"] == "directory":
+                    await upload_files(safe_join(dir_path, name))
+                else:
+                    url = await self.get_file(
+                        prefix, safe_join(dir_path, name), context=context
+                    )
+                    async with httpx.AsyncClient() as client:
+                        async with client.stream("GET", url) as response:
+
+                            async def s3_response_chunk_reader(
+                                response, chunk_size: int = 2048
+                            ):
+                                async for chunk in response.aiter_bytes(chunk_size):
+                                    yield chunk
+
+                            put_response = await zenodo_client.client.put(
+                                f"{deposition.bucket_url}/{name}",
+                                params=zenodo_client.params,
+                                headers={"Content-Type": "application/octet-stream"},
+                                data=s3_response_chunk_reader(response),
+                            )
+                            put_response.raise_for_status()
+                            logger.info(f"Uploaded file: {name} to Zenodo.")
+
+        await upload_files()
+        # Publish the deposition
+        record = await deposition.publish()
+        logger.info(
+            f"Published artifact under prefix: {prefix} to Zenodo, DOI: {record.get('doi')}"
+        )
+
+        # Save the record to the artifact's config for future reference
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact = await self._get_artifact(session, ws, prefix)
+                artifact.config = artifact.config or {}
+                artifact.config["zenodo"] = record
+                flag_modified(artifact, "config")
+                session.add(artifact)
+                await session.commit()
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+        return record
+
     def get_artifact_service(self):
         """Return the artifact service definition."""
         return {
@@ -1322,4 +1614,5 @@ class ArtifactController:
             "get_file": self.get_file,
             "list": self.list_children,
             "list_files": self.list_files,
+            "publish": self.publish,
         }

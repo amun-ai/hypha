@@ -171,6 +171,8 @@ def fastapi_server_fixture(minio_server):
             f"--access-key-id={MINIO_ROOT_USER}",
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            f"--zenodo-token={os.environ.get('ZENODO_TOKEN', '')}",
+            f"--sandbox-zenodo-token={os.environ.get('SANDBOX_ZENODO_TOKEN', '')}",
             "--enable-s3-proxy",
             f"--workspace-bucket=my-workspaces",
             "--s3-admin-type=minio",

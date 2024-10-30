@@ -38,11 +38,9 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
 
     # Create a public collection
     collection_manifest = {
-        "id": "dataset-gallery",
         "name": "Public Dataset Gallery",
         "description": "A public collection for organizing datasets",
         "type": "collection",
-        "collection": [],
     }
     await artifact_manager.create(
         prefix="public/collections/dataset-gallery",
@@ -54,7 +52,6 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
 
     # Create an artifact inside the public collection
     dataset_manifest = {
-        "id": "public-example-dataset",
         "name": "Public Example Dataset",
         "description": "A public dataset with example data",
         "type": "dataset",
@@ -80,11 +77,9 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
 
     # Now create a non-public collection
     private_collection_manifest = {
-        "id": "private-dataset-gallery",
         "name": "Private Dataset Gallery",
         "description": "A private collection for organizing datasets",
         "type": "collection",
-        "collection": [],
     }
     await artifact_manager.create(
         prefix="collections/private-dataset-gallery",
@@ -95,7 +90,6 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
 
     # Create an artifact inside the private collection
     private_dataset_manifest = {
-        "id": "private-example-dataset",
         "name": "Private Example Dataset",
         "description": "A private dataset with example data",
         "type": "dataset",
@@ -141,11 +135,9 @@ async def test_artifact_permissions(
 
     # Create a public collection
     collection_manifest = {
-        "id": "dataset-gallery",
         "name": "Public Dataset Gallery",
         "description": "A public collection for organizing datasets",
         "type": "collection",
-        "collection": [],
     }
     await artifact_manager.create(
         prefix="public/collections/dataset-gallery",
@@ -168,11 +160,10 @@ async def test_artifact_permissions(
     collection = await artifact_manager_anonymous.read(
         prefix=f"/{api.config.workspace}/public/collections/dataset-gallery"
     )
-    assert collection["id"] == "dataset-gallery"
+    assert collection["name"] == "Public Dataset Gallery"
 
     # Create an artifact inside the public collection
     dataset_manifest = {
-        "id": "public-example-dataset",
         "name": "Public Example Dataset",
         "description": "A public dataset with example data",
         "type": "dataset",
@@ -213,6 +204,69 @@ async def test_artifact_permissions(
         )
 
 
+async def test_artifact_prefix_pattern(minio_server, fastapi_server):
+    """Test artifact prefix pattern."""
+    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    artifact_manager = await api.get_service("public/artifact-manager")
+    # Create a collection for testing prefix pattern
+    collection_manifest = {
+        "name": "Prefix Pattern Collection",
+        "description": "A collection to test prefix pattern",
+        "type": "collection",
+    }
+    await artifact_manager.create(
+        prefix="collections/prefix-pattern-collection",
+        manifest=collection_manifest,
+        config={
+            "id_parts": {
+                "animals": ["dog", "cat", "bird"],
+                "colors": ["red", "blue", "green"],
+            }
+        },
+        stage=False,
+        orphan=True,
+    )
+    metadata = await artifact_manager.create(
+        prefix="collections/prefix-pattern-collection/{colors}-{animals}",
+        manifest={"name": "My test data", "type": "dataset"},
+        stage=True,
+    )
+    prefix = metadata[".prefix"]
+    color, animal = prefix.split("/")[-1].split("-")
+    assert color in ["red", "blue", "green"]
+    assert animal in ["dog", "cat", "bird"]
+
+
+async def test_publish_artifact(minio_server, fastapi_server):
+    """Test publishing an artifact."""
+    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    artifact_manager = await api.get_service("public/artifact-manager")
+    # Create an artifact (orphan)
+    dataset_manifest = {
+        "name": "Test Dataset",
+        "description": "A test dataset to publish",
+        "type": "dataset",
+    }
+
+    metadata = await artifact_manager.create(
+        prefix="test-collection/{zenodo_id}",
+        manifest=dataset_manifest,
+        stage=True,
+        orphan=True,
+        publish_to="sandbox_zenodo",
+    )
+    # add files
+    put_url = await artifact_manager.put_file(
+        prefix=metadata[".prefix"],
+        file_path="example.txt",
+    )
+    source = "file contents of example.txt"
+    response = requests.put(put_url, data=source)
+    assert response.ok
+    await artifact_manager.commit(prefix=metadata[".prefix"])
+    await artifact_manager.publish(prefix=metadata[".prefix"], to="sandbox_zenodo")
+
+
 async def test_artifact_filtering(minio_server, fastapi_server):
     """Test artifact filtering with various fields, including type, created_by, view_count, and stage."""
     api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
@@ -221,15 +275,14 @@ async def test_artifact_filtering(minio_server, fastapi_server):
 
     # Create a collection for testing filters
     collection_manifest = {
-        "id": "filter-test-collection",
         "name": "Filter Test Collection",
         "description": "A collection to test filter functionality",
         "type": "collection",
-        "summary_fields": ["name", "description", ".*", "type"],
     }
     await artifact_manager.create(
         prefix="collections/filter-test-collection",
         manifest=collection_manifest,
+        config={"summary_fields": ["name", "description", ".*", "type"]},
         stage=False,
         orphan=True,
         permissions={"*": "r+"},
@@ -239,7 +292,6 @@ async def test_artifact_filtering(minio_server, fastapi_server):
     created_artifacts = []
     for i in range(5):
         artifact_manifest = {
-            "id": f"artifact-{i}",
             "name": f"Artifact {i}",
             "description": f"Description for artifact {i}",
             "type": "dataset" if i % 2 == 0 else "application",
@@ -266,7 +318,6 @@ async def test_artifact_filtering(minio_server, fastapi_server):
 
     for i in range(5, 10):
         artifact_manifest = {
-            "id": f"artifact-{i}",
             "name": f"Artifact {i}",
             "description": f"Description for artifact {i}",
             "type": "dataset" if i % 2 == 0 else "application",
@@ -334,7 +385,6 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server):
     artifact_manager = await api.get_service("public/artifact-manager")
 
     collection_manifest = {
-        "id": "test-collection",
         "name": "test-collection",
         "description": "A test collection",
         "type": "collection",
@@ -348,7 +398,6 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server):
     )
 
     dataset_manifest = {
-        "id": "test-dataset",
         "name": "test-dataset",
         "description": "A test dataset to edit",
         "type": "dataset",
@@ -403,7 +452,7 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server):
         f"{SERVER_URL}/{api.config.workspace}/artifacts/collections/test-collection/__children__"
     )
     assert response.status_code == 200
-    assert "test-dataset" in response.json()[0]["id"]
+    assert "test-dataset" in response.json()[0]["name"]
 
 
 async def test_edit_existing_artifact(minio_server, fastapi_server):
@@ -415,11 +464,9 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
 
     # Create a collection first
     collection_manifest = {
-        "id": "edit-test-collection",
         "name": "edit-test-collection",
         "description": "A test collection for editing artifacts",
         "type": "collection",
-        "collection": [],
     }
     await artifact_manager.create(
         prefix="collections/edit-test-collection",
@@ -430,7 +477,6 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
 
     # Create an artifact (a dataset in this case) within the collection
     dataset_manifest = {
-        "id": "edit-test-dataset",
         "name": "edit-test-dataset",
         "description": "A test dataset to edit",
         "type": "dataset",
@@ -471,7 +517,6 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
 
     # Edit the artifact's manifest
     edited_manifest = {
-        "id": "edit-test-dataset",
         "name": "edit-test-dataset",
         "description": "Edited description of the test dataset",
         "type": "dataset",
@@ -482,6 +527,7 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
     await artifact_manager.edit(
         prefix="collections/edit-test-collection/edit-test-dataset",
         manifest=edited_manifest,
+        stage=True,
     )
 
     # Ensure that the changes are reflected in the manifest (read the artifact in stage mode)
@@ -531,34 +577,30 @@ async def test_artifact_schema_validation(minio_server, fastapi_server):
     collection_schema = {
         "type": "object",
         "properties": {
-            "id": {"type": "string"},
             "name": {"type": "string"},
             "description": {"type": "string"},
             "type": {"type": "string", "enum": ["dataset", "model", "application"]},
         },
-        "required": ["id", "name", "description", "type"],
+        "required": ["name", "description", "type"],
     }
 
     # Create a collection with the schema
     collection_manifest = {
-        "id": "schema-test-collection",
         "name": "Schema Test Collection",
         "description": "A test collection with schema validation",
         "type": "collection",
-        "collection_schema": collection_schema,
-        "collection": [],
     }
 
     await artifact_manager.create(
         prefix="collections/schema-test-collection",
         manifest=collection_manifest,
+        config={"collection_schema": collection_schema},
         stage=False,
         orphan=True,
     )
 
     # Create a valid dataset artifact that conforms to the schema
     valid_dataset_manifest = {
-        "id": "valid-dataset",
         "name": "Valid Dataset",
         "description": "A dataset that conforms to the collection schema",
         "type": "dataset",
@@ -598,7 +640,6 @@ async def test_artifact_schema_validation(minio_server, fastapi_server):
 
     # Now, create an invalid dataset artifact that does not conform to the schema (missing required fields)
     invalid_dataset_manifest = {
-        "id": "invalid-dataset",
         "name": "Invalid Dataset",
         # "description" field is missing, which are required by the schema
         "type": "dataset",
@@ -638,16 +679,15 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
 
     # Create a collection
     collection_manifest = {
-        "id": "test-collection",
         "name": "test-collection",
         "description": "A test collection",
         "type": "collection",
-        "summary_fields": ["name", "description", ".*"],
     }
 
     await artifact_manager.create(
         prefix="collections/test-collection",
         manifest=collection_manifest,
+        config={"summary_fields": ["name", "description", ".*"]},
         stage=False,
         permissions={"*": "r", "@": "r+"},
         orphan=True,
@@ -662,7 +702,6 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
 
     # Create an artifact (a dataset in this case) within the collection
     dataset_manifest = {
-        "id": "test-dataset",
         "name": "test-dataset",
         "description": "A test dataset in the collection",
         "type": "dataset",
@@ -688,14 +727,14 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
     manifest_data = await artifact_manager.read(
         prefix="collections/test-collection/test-dataset", stage=True
     )
-    assert manifest_data["id"] == "test-dataset"
+    assert manifest_data["name"] == "test-dataset"
 
     # Test using absolute prefix
     manifest_data = await artifact_manager.read(
         prefix=f"/{api.config.workspace}/collections/test-collection/test-dataset",
         stage=True,
     )
-    assert manifest_data["id"] == "test-dataset"
+    assert manifest_data["name"] == "test-dataset"
 
     files = await artifact_manager.list_files(
         prefix="collections/test-collection/test-dataset"
@@ -754,7 +793,6 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
 
     # Test overwriting the existing artifact within the collection
     new_dataset_manifest = {
-        "id": "test-dataset",
         "name": "test-dataset",
         "description": "Overwritten test dataset in collection",
         "type": "dataset",
@@ -778,7 +816,7 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
 
     # Ensure that the dataset artifact is removed
     artifacts = await artifact_manager.list(prefix="collections/test-collection")
-    assert not find_item(artifacts, "id", "test-dataset")
+    assert not find_item(artifacts, "name", "test-dataset")
 
     # Ensure the collection is updated after removing the dataset
     items = await artifact_manager.list(
@@ -803,11 +841,9 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
 
     # Create a collection first
     collection_manifest = {
-        "id": "edge-case-collection",
         "name": "edge-case-collection",
         "description": "A test collection for edge cases",
         "type": "collection",
-        "collection": [],
     }
 
     with pytest.raises(
@@ -830,7 +866,6 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
 
     # Try to create an artifact that already exists within the collection without overwriting
     manifest = {
-        "id": "edge-case-dataset",
         "name": "edge-case-dataset",
         "description": "Edge case test dataset",
         "type": "dataset",
@@ -881,7 +916,6 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
 
     # Test validation without uploading a file
     incomplete_manifest = {
-        "id": "incomplete-dataset",
         "name": "incomplete-dataset",
         "description": "This dataset is incomplete",
         "type": "dataset",
@@ -924,11 +958,9 @@ async def test_artifact_search_in_manifest(minio_server, fastapi_server):
 
     # Create a collection for testing search
     collection_manifest = {
-        "id": "search-test-collection",
         "name": "Search Test Collection",
         "description": "A collection to test search functionality",
         "type": "collection",
-        "collection": [],
     }
     await artifact_manager.create(
         prefix="collections/search-test-collection",
@@ -940,7 +972,6 @@ async def test_artifact_search_in_manifest(minio_server, fastapi_server):
     # Create multiple artifacts inside the collection
     for i in range(5):
         dataset_manifest = {
-            "id": f"test-dataset-{i}",
             "name": f"Test Dataset {i}",
             "description": f"A test dataset {i}",
             "type": "dataset",
@@ -999,11 +1030,9 @@ async def test_artifact_search_with_filters(minio_server, fastapi_server):
 
     # Create a collection for testing search
     collection_manifest = {
-        "id": "search-test-collection",
         "name": "Search Test Collection",
         "description": "A collection to test search functionality",
         "type": "collection",
-        "collection": [],
     }
     await artifact_manager.create(
         prefix="collections/search-test-collection",
@@ -1015,7 +1044,6 @@ async def test_artifact_search_with_filters(minio_server, fastapi_server):
     # Create multiple artifacts inside the collection
     for i in range(5):
         dataset_manifest = {
-            "id": f"test-dataset-{i}",
             "name": f"Test Dataset {i}",
             "description": f"A test dataset {i}",
             "type": "dataset",
@@ -1086,11 +1114,9 @@ async def test_download_count(minio_server, fastapi_server):
 
     # Create a collection for testing download count
     collection_manifest = {
-        "id": "download-test-collection",
         "name": "Download Test Collection",
         "description": "A collection to test download count functionality",
         "type": "collection",
-        "collection": [],
     }
     await artifact_manager.create(
         prefix="collections/download-test-collection",
@@ -1101,7 +1127,6 @@ async def test_download_count(minio_server, fastapi_server):
 
     # Create an artifact inside the collection
     dataset_manifest = {
-        "id": "download-test-dataset",
         "name": "Download Test Dataset",
         "description": "A test dataset for download count",
         "type": "dataset",
