@@ -213,7 +213,7 @@ print("Valid dataset committed.")
 
 ## API References
 
-### `create(prefix: str, manifest: dict, permissions: dict=None, config: dict=None, stage: bool = False, orphan: bool = False) -> None`
+### `create(prefix: str, manifest: dict, permissions: dict=None, config: dict=None, stage: bool = False, orphan: bool = False, publish_to: str = None) -> None`
 
 Creates a new artifact or collection with the specified manifest. The artifact is staged until committed. For collections, the `collection` field should be an empty list.
 
@@ -231,10 +231,11 @@ Creates a new artifact or collection with the specified manifest. The artifact i
   - `collection_schema`: Optional. A JSON schema that defines the structure of child artifacts in the collection. This schema is used to validate child artifacts when they are created or edited. If a child artifact does not conform to the schema, the creation or edit operation will fail.
   - `summary_fields`: Optional. A list of fields to include in the summary for each child artifact when calling `list(prefix)`. If not specified, the default summary fields (`id`, `type`, `name`) are used. To include all the fields in the summary, add `"*"` to the list. If you want to include internal fields such as `.created_at`, `.last_modified`, or other download/view statistics such as `.download_count`, you can also specify them individually in the `summary_fields`. If you want to include all fields, you can add `".*"` to the list.
   - `id_parts`: Optional. A dictionary of id name parts to be used in generating the id for child artifacts. For example: `{"animals": ["dog", "cat", ...], "colors": ["red", "blue", ...]}`. This can be used for creating child artifacts with auto-generated ids based on the id parts. For example, when calling `create`, you can specify the prefix as `collections/my-collection/{colors}-{animals}`, and the id will be generated based on the id parts, e.g., `collections/my-collection/red-dog`.
-
+  - `archives`: Optional. Configurations for the public archive servers such as Zenodo for the collection. For example, `"archives": {"sandbox_zenodo": {"access_token": "your sandbox zenodo token"}}, "zenodo": {"access_token": "your zenodo token"}}`. This is used for publishing artifacts to Zenodo.
 - `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
 - `stage`: Optional. A boolean flag to stage the artifact. Default is `False`. If it's set to `True`, the artifact will be staged and not committed. You will need to call `commit()` to finalize the artifact.
 - `orphan`: Optional. A boolean flag to create the artifact without a parent collection. Default is `False`. If `True`, the artifact will not be associated with any collection. This is mainly used for creating top-level collections, and making sure the artifact is not associated with any parent collection (with inheritance of permissions). To create an orphan artifact, you will need write permissions on the workspace.
+- `publish_to`: Optional. A string specifying the target platform to publish the artifact. Supported values are `zenodo` and `sandbox_zenodo`. If set, the artifact will be published to the specified platform. The artifact must have a valid Zenodo metadata schema to be published.
 
 **Note 1: If you set `stage=True`, you must call `commit()` to finalize the artifact.**
 
@@ -546,6 +547,23 @@ Resets the download and view counts for the artifact.
 
 ```python
 await artifact_manager.reset_stats(prefix="collections/dataset-gallery/example-dataset")
+```
+
+---
+
+### `publish(prefix: str, to: str = None) -> None`
+
+Publishes the artifact to a specified platform, such as Zenodo. The artifact must have a valid Zenodo metadata schema to be published.
+
+**Parameters:**
+
+- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
+- `to`: Optional, the target platform to publish the artifact. Supported values are `zenodo` and `sandbox_zenodo`. This parameter should be the same as the `publish_to` parameter in the `create` function or left empty to use the platform specified in the artifact's metadata.
+
+**Example:**
+
+```python
+await artifact_manager.publish(prefix="collections/dataset-gallery/example-dataset", to="sandbox_zenodo")
 ```
 
 ---
