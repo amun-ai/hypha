@@ -1,7 +1,7 @@
 """Test Artifact services."""
 import pytest
 import requests
-import time
+import os
 from hypha_rpc import connect_to_server
 
 from . import SERVER_URL, find_item
@@ -241,6 +241,24 @@ async def test_publish_artifact(minio_server, fastapi_server):
     """Test publishing an artifact."""
     api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
     artifact_manager = await api.get_service("public/artifact-manager")
+    # Create a collection for testing publishing
+    collection_manifest = {
+        "name": "Publish Test Collection",
+        "description": "A collection to test publishing",
+        "type": "collection",
+    }
+
+    access_token = os.environ.get("SANDBOX_ZENODO_TOKEN")
+    assert access_token, "Please set SANDBOX_ZENODO_TOKEN environment variable"
+    collection_config = {"archives": {"sandbox_zenodo": {"access_token": access_token}}}
+    await artifact_manager.create(
+        prefix="test-collection",
+        manifest=collection_manifest,
+        config=collection_config,
+        stage=False,
+        orphan=True,
+    )
+
     # Create an artifact (orphan)
     dataset_manifest = {
         "name": "Test Dataset",
@@ -252,7 +270,6 @@ async def test_publish_artifact(minio_server, fastapi_server):
         prefix="test-collection/{zenodo_id}",
         manifest=dataset_manifest,
         stage=True,
-        orphan=True,
         publish_to="sandbox_zenodo",
     )
     # add files

@@ -21,6 +21,7 @@ from sqlalchemy import (
     or_,
 )
 from hypha.utils import remove_objects_async, list_objects_async, safe_join
+from hypha.utils.zenodo import ZenodoClient, Deposition
 from botocore.exceptions import ClientError
 from sqlalchemy import update
 from sqlalchemy.ext.declarative import declarative_base
@@ -39,7 +40,6 @@ from hypha.core import (
     ApplicationArtifact,
     WorkspaceInfo,
 )
-from hypha.utils.zenodo import ZenodoClient, Deposition
 from hypha_rpc.utils import ObjectProxy
 from jsonschema import validate
 from typing import Union, List
@@ -142,8 +142,6 @@ class ArtifactController:
         self,
         store,
         s3_controller,
-        zenodo_token=None,
-        sandbox_zenodo_token=None,
         workspace_bucket="hypha-workspaces",
     ):
         """Set up controller with SQLAlchemy database and S3 for file storage."""
@@ -154,17 +152,6 @@ class ArtifactController:
         self.s3_controller = s3_controller
         self.workspace_bucket = workspace_bucket
         self.store = store
-        if zenodo_token:
-            self.zenodo_client = ZenodoClient(zenodo_token, "https://zenodo.org")
-        else:
-            self.zenodo_client = None
-
-        if sandbox_zenodo_token:
-            self.sandbox_zenodo_client = ZenodoClient(
-                sandbox_zenodo_token, "https://sandbox.zenodo.org"
-            )
-        else:
-            self.sandbox_zenodo_client = None
         router = APIRouter()
 
         @router.get("/{workspace}/artifacts/{prefix:path}")
@@ -254,8 +241,6 @@ class ArtifactController:
 
         self.store.set_artifact_manager(self)
         artifact_service = self.get_artifact_service()
-        if self.zenodo_client or self.sandbox_zenodo_client:
-            artifact_service["publish"] = self.publish
         self.store.register_public_service(artifact_service)
         self.store.register_router(router)
 
@@ -550,6 +535,31 @@ class ArtifactController:
             f"User does not have permission to perform the operation '{operation}' on the artifact."
         )
 
+    def _get_zenodo_client(self, parent_artifact, publish_to):
+        archives_config = parent_artifact.config.get("archives")
+        if publish_to == "zenodo":
+            if (
+                "zenodo" not in archives_config
+                or "access_token" not in archives_config["zenodo"]
+            ):
+                raise ValueError("Zenodo access token is not configured.")
+            zenodo_token = archives_config["zenodo"]["access_token"]
+            zenodo_client = ZenodoClient(zenodo_token, "https://zenodo.org")
+            assert zenodo_client, "Zenodo access token is not configured."
+        elif publish_to == "sandbox_zenodo":
+            if (
+                "sandbox_zenodo" not in archives_config
+                or "access_token" not in archives_config["sandbox_zenodo"]
+            ):
+                raise ValueError("Sandbox Zenodo access token is not configured.")
+            sandbox_zenodo_token = archives_config["sandbox_zenodo"]["access_token"]
+            zenodo_client = ZenodoClient(
+                sandbox_zenodo_token, "https://sandbox.zenodo.org"
+            )
+        else:
+            raise ValueError(f"Publishing to '{publish_to}' is not supported.")
+        return zenodo_client
+
     async def create(
         self,
         prefix,
@@ -640,18 +650,8 @@ class ArtifactController:
                         )
 
                 if publish_to:
-                    if publish_to == "zenodo":
-                        zenodo_client = self.zenodo_client
-                        assert zenodo_client, "Zenodo access token is not configured."
-                    elif publish_to == "sandbox_zenodo":
-                        zenodo_client = self.sandbox_zenodo_client
-                        assert (
-                            zenodo_client
-                        ), "Sandbox Zenodo access token is not configured."
-                    else:
-                        raise ValueError(
-                            f"Publishing to '{publish_to}' is not supported."
-                        )
+                    assert parent_artifact, "A parent artifact is required"
+                    zenodo_client = self._get_zenodo_client(parent_artifact, publish_to)
                     deposition_info = await zenodo_client.create_deposition()
                     if config:
                         assert (
@@ -1476,6 +1476,23 @@ class ArtifactController:
             increment_view_count=False,
             include_metadata=True,
         )
+
+        parent_prefix = "/".join(prefix.split("/")[:-1])
+        assert parent_prefix, "Parent artifact not found."
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                parent_artifact = await self._get_artifact(session, ws, parent_prefix)
+                zenodo_client = self._get_zenodo_client(parent_artifact, to)
+                if not parent_artifact:
+                    raise ValueError(
+                        f"Parent artifact under prefix '{parent_prefix}' not found."
+                    )
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
         config = artifact.config or {}
         if config and "zenodo" in config:
             # Infer the target Zenodo instance from the existing config
@@ -1492,15 +1509,6 @@ class ArtifactController:
                     to is None or to == "zenodo"
                 ), "Cannot publish to Sandbox Zenodo from Zenodo."
                 to = "zenodo"
-
-        if to == "zenodo":
-            zenodo_client = self.zenodo_client
-            assert zenodo_client, "Zenodo access token is not configured."
-        elif to == "sandbox_zenodo":
-            zenodo_client = self.sandbox_zenodo_client
-            assert zenodo_client, "Sandbox Zenodo access token is not configured."
-        else:
-            raise ValueError(f"Publishing to '{to}' is not supported.")
 
         if "zenodo" in config:
             deposition_id = config["zenodo"]["id"]
