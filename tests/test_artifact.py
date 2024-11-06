@@ -9,119 +9,157 @@ from . import SERVER_URL, find_item
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
 
-import pytest
-import requests
-from hypha_rpc import connect_to_server
-from jsonschema import validate, ValidationError
-
-from . import SERVER_URL, find_item
-
-# All test coroutines will be treated as marked.
-pytestmark = pytest.mark.asyncio
-
-
-"""Test Artifact services."""
-import pytest
-import requests
-from hypha_rpc import connect_to_server
-
-from . import SERVER_URL, find_item
-
-# All test coroutines will be treated as marked.
-pytestmark = pytest.mark.asyncio
-
 
 async def test_serve_artifact_endpoint(minio_server, fastapi_server):
     """Test the artifact serving endpoint."""
     api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
     artifact_manager = await api.get_service("public/artifact-manager")
 
-    # Create a public collection
+    # Create a public collection and retrieve the UUID
     collection_manifest = {
         "name": "Public Dataset Gallery",
         "description": "A public collection for organizing datasets",
-        "type": "collection",
     }
-    await artifact_manager.create(
-        prefix="public/collections/dataset-gallery",
+    collection_info = await artifact_manager.create(
+        type="collection",
+        alias="public-dataset-gallery",
         manifest=collection_manifest,
-        # allow public read access and create access for authenticated users
-        permissions={"*": "r", "@": "r+"},
-        orphan=True,
+        config={"permissions": {"*": "r", "@": "r+"}},
     )
 
+    # list artifact in current workspace
+    artifacts = await artifact_manager.list()
+    assert collection_info.id in [artifact["id"] for artifact in artifacts]
     # Create an artifact inside the public collection
     dataset_manifest = {
         "name": "Public Example Dataset",
         "description": "A public dataset with example data",
-        "type": "dataset",
     }
-    await artifact_manager.create(
-        prefix="public/collections/dataset-gallery/public-example-dataset",
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection_info.id,
         manifest=dataset_manifest,
         stage=True,
-        # permissions={"*": "r+"}, # This is not necessary since the collection is already public
     )
 
     # Commit the artifact
-    await artifact_manager.commit(
-        prefix="public/collections/dataset-gallery/public-example-dataset"
-    )
+    await artifact_manager.commit(artifact_id=dataset.id)
 
     # Ensure the public artifact is available via HTTP
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/public/collections/dataset-gallery/public-example-dataset"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.id}"
     )
     assert response.status_code == 200
-    assert "Public Example Dataset" in response.json()["name"]
+    assert "Public Example Dataset" in response.json()["manifest"]["name"]
 
     # Now create a non-public collection
     private_collection_manifest = {
         "name": "Private Dataset Gallery",
         "description": "A private collection for organizing datasets",
-        "type": "collection",
     }
-    await artifact_manager.create(
-        prefix="collections/private-dataset-gallery",
+    private_collection = await artifact_manager.create(
+        type="collection",
         manifest=private_collection_manifest,
-        permissions={},
-        orphan=True,
     )
 
     # Create an artifact inside the private collection
     private_dataset_manifest = {
         "name": "Private Example Dataset",
         "description": "A private dataset with example data",
-        "type": "dataset",
         "custom_key": 192,
     }
-    await artifact_manager.create(
-        prefix="collections/private-dataset-gallery/private-example-dataset",
+    private_dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=private_collection.id,
         manifest=private_dataset_manifest,
         stage=True,
     )
 
     # Commit the private artifact
-    await artifact_manager.commit(
-        prefix="collections/private-dataset-gallery/private-example-dataset"
-    )
+    await artifact_manager.commit(artifact_id=private_dataset.id)
 
     token = await api.generate_token()
     # Ensure the private artifact is available via HTTP (requires authentication or special permissions)
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/collections/private-dataset-gallery/private-example-dataset",
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{private_dataset.id}",
         headers={"Authorization": f"Bearer {token}"},
     )
-
     assert response.status_code == 200
-    assert "Private Example Dataset" in response.json()["name"]
-    assert response.json()["custom_key"] == 192
+    assert "Private Example Dataset" in response.json()["manifest"]["name"]
+    assert response.json()["manifest"]["custom_key"] == 192
 
-    # If no authentication is provided, the server should return a 401 Unauthorized status code
+    # If no authentication is provided, the server should return a 403 Forbidden status code
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/collections/private-dataset-gallery/private-example-dataset"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{private_dataset.id}"
     )
     assert response.status_code == 403
+
+
+async def test_http_file_and_directory_endpoint(minio_server, fastapi_server):
+    """Test the HTTP file serving and directory listing endpoint."""
+
+    # Connect and get the artifact manager service
+    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection and retrieve the UUID
+    collection_manifest = {
+        "name": "test-collection",
+        "description": "A test collection",
+    }
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest=collection_manifest,
+        config={"permissions": {"*": "r", "@": "r+"}},
+    )
+
+    # Create a dataset within the collection
+    dataset_manifest = {
+        "name": "test-dataset",
+        "description": "A test dataset",
+    }
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest=dataset_manifest,
+        stage=True,
+    )
+
+    # Add a file to the dataset artifact
+    file_contents = "file contents of example.txt"
+    put_url = await artifact_manager.put_file(
+        artifact_id=dataset.id,
+        file_path="example.txt",
+        download_weight=1,
+    )
+    response = requests.put(put_url, data=file_contents)
+    assert response.ok
+
+    # Commit the dataset artifact
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    files = await artifact_manager.list_files(artifact_id=dataset.id)
+    assert len(files) == 1
+
+    # Retrieve the file via HTTP
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.id}/files/example.txt"
+    )
+    assert response.status_code == 200
+    assert response.text == file_contents
+
+    # Check download count increment
+    artifact = await artifact_manager.read(
+        artifact_id=dataset.id,
+    )
+    assert artifact["download_count"] == 1
+
+    # Attempt to list directory contents (should be successful after attempting file)
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.id}/files/"
+    )
+    assert response.status_code == 200
+    assert "example.txt" in [file["name"] for file in response.json()]
 
 
 async def test_artifact_permissions(
@@ -133,23 +171,18 @@ async def test_artifact_permissions(
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
-    # Create a public collection
+    # Create a public collection and get its UUID
     collection_manifest = {
         "name": "Public Dataset Gallery",
         "description": "A public collection for organizing datasets",
-        "type": "collection",
     }
-    await artifact_manager.create(
-        prefix="public/collections/dataset-gallery",
+    collection = await artifact_manager.create(
+        type="collection",
         manifest=collection_manifest,
-        # allow public read access and create access for authenticated users
-        permissions={"*": "r", "@": "r+"},
-        orphan=True,
-    )
-    await artifact_manager.reset_stats(
-        prefix=f"/{api.config.workspace}/public/collections/dataset-gallery"
+        config={"permissions": {"*": "r", "@": "r+"}},
     )
 
+    # Verify that anonymous access to the collection works
     api_anonymous = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL}
     )
@@ -157,131 +190,156 @@ async def test_artifact_permissions(
         "public/artifact-manager"
     )
 
-    collection = await artifact_manager_anonymous.read(
-        prefix=f"/{api.config.workspace}/public/collections/dataset-gallery"
-    )
-    assert collection["name"] == "Public Dataset Gallery"
+    collection = await artifact_manager_anonymous.read(artifact_id=collection.id)
+    assert collection["manifest"]["name"] == "Public Dataset Gallery"
 
-    # Create an artifact inside the public collection
+    # Attempt to create an artifact inside the collection as an anonymous user
     dataset_manifest = {
         "name": "Public Example Dataset",
         "description": "A public dataset with example data",
-        "type": "dataset",
     }
     with pytest.raises(
-        Exception, match=r".*PermissionError: User does not have permission.*"
+        Exception, match=r".*User does not have permission to perform the operation.*"
     ):
         await artifact_manager_anonymous.create(
-            prefix=f"/{api.config.workspace}/public/collections/dataset-gallery/public-example-dataset",
+            type="dataset",
+            parent_id=collection.id,
             manifest=dataset_manifest,
         )
 
+    # Verify that anonymous user cannot reset stats on the public collection
     with pytest.raises(
         Exception,
         match=r".*PermissionError: User does not have permission to perform the operation.*",
     ):
-        await artifact_manager_anonymous.reset_stats(
-            prefix=f"/{api.config.workspace}/public/collections/dataset-gallery"
-        )
+        await artifact_manager_anonymous.reset_stats(artifact_id=collection.id)
 
+    # Authenticated user 2 can create a child artifact within the collection
     api_2 = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token_2}
     )
     artifact_manager_2 = await api_2.get_service("public/artifact-manager")
 
-    # authenticaed user can create artifact
-    await artifact_manager_2.create(
-        prefix=f"/{api.config.workspace}/public/collections/dataset-gallery/public-example-dataset",
+    # Create a dataset as a child of the public collection
+    dataset = await artifact_manager_2.create(
+        parent_id=collection.id,
         manifest=dataset_manifest,
     )
-    # but can't reset stats
+
+    await artifact_manager_anonymous.read(artifact_id=dataset.id)
+
+    # User 2 cannot reset stats on the newly created dataset
     with pytest.raises(
         Exception,
         match=r".*PermissionError: User does not have permission to perform the operation.*",
     ):
-        await artifact_manager_anonymous.reset_stats(
-            prefix=f"/{api.config.workspace}/public/collections/dataset-gallery/public-example-dataset"
-        )
+        await artifact_manager_anonymous.reset_stats(artifact_id=dataset.id)
 
 
-async def test_artifact_prefix_pattern(minio_server, fastapi_server):
-    """Test artifact prefix pattern."""
+async def test_artifact_alias_pattern(minio_server, fastapi_server):
+    """Test artifact alias pattern functionality."""
     api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
     artifact_manager = await api.get_service("public/artifact-manager")
-    # Create a collection for testing prefix pattern
+
+    # Create a collection with an alias pattern configuration
     collection_manifest = {
-        "name": "Prefix Pattern Collection",
-        "description": "A collection to test prefix pattern",
-        "type": "collection",
+        "name": "Alias Pattern Collection",
+        "description": "A collection to test alias pattern functionality",
     }
-    await artifact_manager.create(
-        prefix="collections/prefix-pattern-collection",
+    collection_config = {
+        "id_parts": {
+            "animals": ["dog", "cat", "bird"],
+            "colors": ["red", "blue", "green"],
+        }
+    }
+    collection = await artifact_manager.create(
+        type="collection",
         manifest=collection_manifest,
-        config={
-            "id_parts": {
-                "animals": ["dog", "cat", "bird"],
-                "colors": ["red", "blue", "green"],
-            }
-        },
-        stage=False,
-        orphan=True,
+        config=collection_config,
     )
-    metadata = await artifact_manager.create(
-        prefix="collections/prefix-pattern-collection/{colors}-{animals}",
-        manifest={"name": "My test data", "type": "dataset"},
+
+    # Create an artifact with alias pattern under the collection
+    dataset_manifest = {"name": "My test data"}
+    alias_pattern = "{colors}-{animals}"
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest=dataset_manifest,
+        alias=alias_pattern,
         stage=True,
     )
-    prefix = metadata[".prefix"]
-    color, animal = prefix.split("/")[-1].split("-")
+
+    # Fetch metadata to confirm the generated alias
+    dataset_metadata = await artifact_manager.read(artifact_id=dataset.id, stage=True)
+    generated_alias = dataset_metadata["alias"].split("/")[-1]
+
+    # Extract and validate parts of the generated alias
+    color, animal = generated_alias.split("-")
     assert color in ["red", "blue", "green"]
     assert animal in ["dog", "cat", "bird"]
+
+    # read the artifact using the generated alias
+    dataset = await artifact_manager.read(dataset_metadata["alias"], stage=True)
+    # Verify the alias pattern is correctly applied
+    assert dataset["manifest"]["name"] == "My test data"
 
 
 async def test_publish_artifact(minio_server, fastapi_server):
     """Test publishing an artifact."""
     api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
     artifact_manager = await api.get_service("public/artifact-manager")
+
     # Create a collection for testing publishing
     collection_manifest = {
         "name": "Publish Test Collection",
         "description": "A collection to test publishing",
-        "type": "collection",
     }
 
-    access_token = os.environ.get("SANDBOX_ZENODO_TOKEN")
-    assert access_token, "Please set SANDBOX_ZENODO_TOKEN environment variable"
-    collection_config = {"archives": {"sandbox_zenodo": {"access_token": access_token}}}
-    await artifact_manager.create(
-        prefix="test-collection",
-        manifest=collection_manifest,
-        config=collection_config,
-        stage=False,
-        orphan=True,
+    # Define secrets, including the Zenodo sandbox access token
+    secrets = {"SANDBOX_ZENODO_ACCESS_TOKEN": os.environ.get("SANDBOX_ZENODO_TOKEN")}
+    assert secrets[
+        "SANDBOX_ZENODO_ACCESS_TOKEN"
+    ], "Please set SANDBOX_ZENODO_TOKEN environment variable"
+
+    # Create the collection artifact with the necessary secrets
+    collection = await artifact_manager.create(
+        type="collection", manifest=collection_manifest, secrets=secrets
     )
 
-    # Create an artifact (orphan)
+    # Create an artifact within the collection with a publish target to sandbox Zenodo
     dataset_manifest = {
         "name": "Test Dataset",
         "description": "A test dataset to publish",
-        "type": "dataset",
     }
 
-    metadata = await artifact_manager.create(
-        prefix="test-collection/{zenodo_id}",
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
         manifest=dataset_manifest,
         stage=True,
         publish_to="sandbox_zenodo",
     )
-    # add files
+
+    # Add a file to the artifact
     put_url = await artifact_manager.put_file(
-        prefix=metadata[".prefix"],
+        artifact_id=dataset.id,
         file_path="example.txt",
     )
     source = "file contents of example.txt"
     response = requests.put(put_url, data=source)
     assert response.ok
-    await artifact_manager.commit(prefix=metadata[".prefix"])
-    await artifact_manager.publish(prefix=metadata[".prefix"], to="sandbox_zenodo")
+
+    # Commit the artifact after adding the file
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Publish the artifact to Zenodo Sandbox
+    await artifact_manager.publish(artifact_id=dataset.id, to="sandbox_zenodo")
+
+    # Retrieve and validate the updated metadata, confirming it includes publication info
+    dataset_metadata = await artifact_manager.read(artifact_id=dataset.id)
+    assert (
+        "zenodo" in dataset_metadata["config"]
+    ), "Zenodo publication information missing in config"
 
 
 async def test_artifact_filtering(minio_server, fastapi_server):
@@ -294,15 +352,14 @@ async def test_artifact_filtering(minio_server, fastapi_server):
     collection_manifest = {
         "name": "Filter Test Collection",
         "description": "A collection to test filter functionality",
-        "type": "collection",
     }
-    await artifact_manager.create(
-        prefix="collections/filter-test-collection",
+    collection = await artifact_manager.create(
+        type="collection",
         manifest=collection_manifest,
-        config={"summary_fields": ["name", "description", ".*", "type"]},
+        config={
+            "permissions": {"*": "r+"},
+        },
         stage=False,
-        orphan=True,
-        permissions={"*": "r+"},
     )
 
     # Create artifacts with varied attributes inside the collection (created by user_id1)
@@ -311,280 +368,248 @@ async def test_artifact_filtering(minio_server, fastapi_server):
         artifact_manifest = {
             "name": f"Artifact {i}",
             "description": f"Description for artifact {i}",
-            "type": "dataset" if i % 2 == 0 else "application",
         }
-        await artifact_manager.create(
-            prefix=f"collections/filter-test-collection/artifact-{i}",
+        artifact = await artifact_manager.create(
+            type="dataset" if i % 2 == 0 else "application",
+            parent_id=collection.id,
             manifest=artifact_manifest,
             stage=(i % 2 == 0),
         )
-        await artifact_manager.commit(
-            prefix=f"collections/filter-test-collection/artifact-{i}"
-        )
-
-        if i % 2 == 0:
-            await artifact_manager.read(
-                prefix=f"collections/filter-test-collection/artifact-{i}"
-            )
-        created_artifacts.append(artifact_manifest)
+        await artifact_manager.read(artifact_id=artifact.id, stage=(i % 2 == 0))
+        created_artifacts.append(artifact)
 
     # Create a second client (user_id2) to create additional artifacts
     api2 = await connect_to_server({"name": "test-client-2", "server_url": SERVER_URL})
     artifact_manager2 = await api2.get_service("public/artifact-manager")
-    # user_id2 = api2.config.user["id"]
 
     for i in range(5, 10):
         artifact_manifest = {
             "name": f"Artifact {i}",
             "description": f"Description for artifact {i}",
-            "type": "dataset" if i % 2 == 0 else "application",
         }
-        await artifact_manager2.create(
-            prefix=f"/{api.config.workspace}/collections/filter-test-collection/artifact-{i}",
+        artifact = await artifact_manager2.create(
+            type="dataset" if i % 2 == 0 else "application",
+            parent_id=collection.id,
             manifest=artifact_manifest,
             stage=(i % 2 == 0),
         )
-        created_artifacts.append(artifact_manifest)
+        if i % 2 == 0:
+            await artifact_manager2.commit(artifact_id=artifact.id)
+        created_artifacts.append(artifact)
 
     # Filter by `type`: Only datasets should be returned
     results = await artifact_manager.list(
-        prefix="collections/filter-test-collection",
-        filters={".type": "dataset"},
-        mode="AND",
+        parent_id=collection.id, filters={"type": "dataset"}, mode="AND"
     )
-    assert len(results) == 3
+    assert len(results) == 2
     for result in results:
-        assert result[".type"] == "dataset"
+        assert result["type"] == "dataset"
 
     # Filter by `created_by`: Only artifacts created by user_id1 should be returned
     results = await artifact_manager.list(
-        prefix="collections/filter-test-collection",
-        filters={".created_by": user_id1, ".stage": False},
-        mode="AND",
-    )
-    assert len(results) == 3
-    for result in results:
-        assert result[".created_by"] == user_id1
-
-    # Filter by `view_count`: Return artifacts that have been viewed at least once (incremented for every even-indexed artifact)
-    results = await artifact_manager.list(
-        prefix="collections/filter-test-collection",
-        filters={".view_count": [1, None]},  # Filter for any view count >= 1
-        mode="AND",
-    )
-    assert len(results) == 3
-    for result in results:
-        assert result[".view_count"] >= 1
-
-    # Filter by `stage`: Only staged artifacts should be returned
-    results = await artifact_manager.list(
-        prefix="collections/filter-test-collection",
-        filters={".stage": True},
+        parent_id=collection.id,
+        filters={"created_by": user_id1, "stage": False},
         mode="AND",
     )
     assert len(results) == 2
+    for result in results:
+        assert result["created_by"] == user_id1
+
+    # Filter by `view_count`: Return artifacts that have been viewed at least once
+    results = await artifact_manager.list(
+        parent_id=collection.id,
+        filters={"view_count": [1, None]},  # Filter for any view count >= 1
+        mode="AND",
+    )
+    assert len(results) == 2
+    for result in results:
+        assert result["view_count"] >= 1
+
+    # Filter by `stage`: Only staged artifacts should be returned
+    results = await artifact_manager.list(
+        parent_id=collection.id, filters={"stage": True}, mode="AND"
+    )
+    assert len(results) == 3
 
     # Clean up by deleting the artifacts and the collection
     for i in range(10):
-        await artifact_manager.delete(
-            prefix=f"collections/filter-test-collection/artifact-{i}"
-        )
-    await artifact_manager.delete(prefix="collections/filter-test-collection")
+        artifact = created_artifacts[i]
+        await artifact_manager.delete(artifact_id=artifact.id)
+    await artifact_manager.delete(artifact_id=collection.id)
 
 
 async def test_http_artifact_endpoint(minio_server, fastapi_server):
-    """Test the HTTP artifact serving endpoint."""
+    """Test the HTTP artifact serving endpoint for retrieving files and listing directories."""
 
-    # create a artifact with a file
+    # Set up connection and artifact manager
     api = await connect_to_server(
         {"name": "test deploy client", "server_url": SERVER_URL}
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
+    # Create a collection
     collection_manifest = {
-        "name": "test-collection",
-        "description": "A test collection",
-        "type": "collection",
+        "name": "Test Collection",
+        "description": "A test collection for HTTP endpoint",
     }
-    await artifact_manager.create(
-        prefix="collections/test-collection",
+    collection = await artifact_manager.create(
+        type="collection",
         manifest=collection_manifest,
-        stage=False,
-        permissions={"*": "r", "@": "r+"},
-        orphan=True,
+        config={"permissions": {"*": "r", "@": "r+"}},
     )
 
+    # Create an artifact within the collection
     dataset_manifest = {
-        "name": "test-dataset",
-        "description": "A test dataset to edit",
-        "type": "dataset",
+        "name": "Test Dataset",
+        "description": "A test dataset for HTTP endpoint",
     }
-    await artifact_manager.create(
-        prefix="collections/test-collection/test-dataset",
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
         manifest=dataset_manifest,
         stage=True,
-        permissions={"*": "r", "@": "r+"},
+        config={"permissions": {"*": "r", "@": "r+"}},
     )
+
     # Add a file to the artifact
-    source = "file contents of example.txt"
+    file_content = "File contents of example.txt"
     put_url = await artifact_manager.put_file(
-        prefix="collections/test-collection/test-dataset",
-        file_path="example.txt",
-        options={"download_weight": 1},
+        artifact_id=dataset.id, file_path="example.txt", download_weight=1
     )
-    response = requests.put(put_url, data=source)
+    response = requests.put(put_url, data=file_content)
     assert response.ok
-    await artifact_manager.commit(prefix="collections/test-collection/test-dataset")
 
-    # get the dataset manifest via http
+    # Commit the artifact
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Retrieve the dataset manifest via HTTP
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/collections/test-collection/test-dataset"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.id}"
     )
     assert response.status_code == 200
-    assert "test-dataset" in response.json()["name"]
+    assert "Test Dataset" in response.json()["manifest"]["name"]
 
-    # get file list
+    # List the files in the dataset directory via HTTP
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/collections/test-collection/test-dataset/__files__"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.id}/files/"
     )
     assert response.status_code == 200
-    assert "example.txt" in response.json()[0]["name"]
+    assert "example.txt" in [file["name"] for file in response.json()]
 
-    # get the file via http
+    # Retrieve the file content via HTTP
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/collections/test-collection/test-dataset/__files__/example.txt"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.id}/files/example.txt"
     )
     assert response.status_code == 200
-    assert response.text == source
+    assert response.text == file_content
 
-    # check download count
-    artifact = await artifact_manager.read(
-        prefix="collections/test-collection/test-dataset",
-        include_metadata=True,
+    # Verify that download count has incremented
+    artifact_data = await artifact_manager.read(
+        artifact_id=dataset.id,
     )
-    assert artifact[".download_count"] == 1
+    assert artifact_data["download_count"] == 1
 
-    # get childre of the collection
+    # Retrieve the collection's children to verify the dataset presence
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/collections/test-collection/__children__"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.id}/children"
     )
     assert response.status_code == 200
-    assert "test-dataset" in response.json()[0]["name"]
+    item = find_item(response.json(), "id", dataset.id)
+    manifest = item["manifest"]
+    assert "Test Dataset" == manifest["name"]
 
 
 async def test_edit_existing_artifact(minio_server, fastapi_server):
     """Test editing an existing artifact."""
+
+    # Set up connection and artifact manager
     api = await connect_to_server(
         {"name": "test deploy client", "server_url": SERVER_URL}
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
-    # Create a collection first
+    # Create a collection for testing
     collection_manifest = {
-        "name": "edit-test-collection",
-        "description": "A test collection for editing artifacts",
-        "type": "collection",
+        "name": "Edit Test Collection",
+        "description": "A collection for testing artifact edits",
     }
-    await artifact_manager.create(
-        prefix="collections/edit-test-collection",
+    collection = await artifact_manager.create(
+        type="collection",
         manifest=collection_manifest,
-        stage=False,
-        orphan=True,
+        config={"permissions": {"*": "r", "@": "r+"}},
     )
 
-    # Create an artifact (a dataset in this case) within the collection
+    # Create an artifact (dataset) within the collection
     dataset_manifest = {
-        "name": "edit-test-dataset",
-        "description": "A test dataset to edit",
-        "type": "dataset",
+        "name": "Edit Test Dataset",
+        "description": "A dataset to test editing",
     }
-
-    await artifact_manager.create(
-        prefix="collections/edit-test-collection/edit-test-dataset",
-        manifest=dataset_manifest,
-        stage=True,
+    dataset = await artifact_manager.create(
+        type="dataset", parent_id=collection.id, manifest=dataset_manifest, stage=True
     )
 
-    # Commit the dataset artifact (finalize it)
-    await artifact_manager.commit(
-        prefix="collections/edit-test-collection/edit-test-dataset"
-    )
+    # Commit the artifact
+    await artifact_manager.commit(artifact_id=dataset.id)
 
-    # Ensure that the dataset appears in the collection's index
-    items = await artifact_manager.list(
-        prefix="collections/edit-test-collection",
-        order_by="last_modified",
-        summary_fields=[".prefix"],
-    )
-    assert find_item(
-        items,
-        ".prefix",
-        f"collections/edit-test-collection/edit-test-dataset",
-    )
-
-    collection = await artifact_manager.read(
-        prefix="collections/edit-test-collection", include_metadata=True
-    )
-    initial_view_count = collection[".view_count"]
-    assert initial_view_count > 0
-    collection = await artifact_manager.read(
-        prefix="collections/edit-test-collection", include_metadata=True
-    )
-    assert collection[".view_count"] == initial_view_count + 1
+    # Verify the artifact is listed under the collection
+    items = await artifact_manager.list(parent_id=collection.id)
+    item = find_item(items, "id", dataset.id)
+    assert item["manifest"]["name"] == "Edit Test Dataset"
 
     # Edit the artifact's manifest
     edited_manifest = {
-        "name": "edit-test-dataset",
-        "description": "Edited description of the test dataset",
-        "type": "dataset",
+        "name": "Edit Test Dataset",
+        "description": "Updated description of the test dataset",
         "custom_key": 19222,
     }
 
-    # Call edit on the artifact
+    # Edit the artifact using the new manifest
     await artifact_manager.edit(
-        prefix="collections/edit-test-collection/edit-test-dataset",
-        manifest=edited_manifest,
-        stage=True,
+        type="dataset", artifact_id=dataset.id, manifest=edited_manifest, stage=True
     )
 
-    # Ensure that the changes are reflected in the manifest (read the artifact in stage mode)
-    updated_manifest = await artifact_manager.read(
-        prefix="collections/edit-test-collection/edit-test-dataset", stage=True
-    )
-    assert updated_manifest["description"] == "Edited description of the test dataset"
-    assert updated_manifest["custom_key"] == 19222
+    # Verify the manifest updates are staged (not committed yet)
+    staged_artifact = await artifact_manager.read(artifact_id=dataset.id, stage=True)
+    staged_manifest = staged_artifact["manifest"]
+    assert staged_manifest["description"] == "Updated description of the test dataset"
+    assert staged_manifest["custom_key"] == 19222
 
     # Add a file to the artifact
-    source = "file contents of example.txt"
+    file_content = "File contents of example.txt"
     put_url = await artifact_manager.put_file(
-        prefix="collections/edit-test-collection/edit-test-dataset",
-        file_path="example.txt",
+        artifact_id=dataset.id, file_path="example.txt"
     )
-
-    # Use the pre-signed URL to upload the file
-    response = requests.put(put_url, data=source)
+    response = requests.put(put_url, data=file_content)
     assert response.ok
 
-    # Commit the artifact again after editing
-    await artifact_manager.commit(
-        prefix="collections/edit-test-collection/edit-test-dataset"
-    )
+    # Commit the artifact after editing
+    await artifact_manager.commit(artifact_id=dataset.id)
 
-    # Ensure that the file is included in the manifest
-    manifest_data = await artifact_manager.read(
-        prefix="collections/edit-test-collection/edit-test-dataset"
+    # Verify the committed manifest reflects the edited data
+    committed_artifact = await artifact_manager.read(artifact_id=dataset.id)
+    committed_manifest = committed_artifact["manifest"]
+    assert (
+        committed_manifest["description"] == "Updated description of the test dataset"
     )
-    assert manifest_data["custom_key"] == 19222
+    assert committed_manifest["custom_key"] == 19222
+
+    # Retrieve and verify the uploaded file
+    get_url = await artifact_manager.get_file(
+        artifact_id=dataset.id, path="example.txt"
+    )
+    response = requests.get(get_url)
+    assert response.status_code == 200
+    assert response.text == file_content
 
     # Clean up by deleting the dataset and collection
-    await artifact_manager.delete(
-        prefix="collections/edit-test-collection/edit-test-dataset"
-    )
-    await artifact_manager.delete(prefix="collections/edit-test-collection")
+    await artifact_manager.delete(artifact_id=dataset.id)
+    await artifact_manager.delete(artifact_id=collection.id)
 
 
 async def test_artifact_schema_validation(minio_server, fastapi_server):
     """Test schema validation when committing artifacts to a collection."""
+
+    # Set up connection and artifact manager
     api = await connect_to_server(
         {"name": "test deploy client", "server_url": SERVER_URL}
     )
@@ -596,99 +621,78 @@ async def test_artifact_schema_validation(minio_server, fastapi_server):
         "properties": {
             "name": {"type": "string"},
             "description": {"type": "string"},
-            "type": {"type": "string", "enum": ["dataset", "model", "application"]},
+            "record_type": {
+                "type": "string",
+                "enum": ["dataset", "model", "application"],
+            },
         },
-        "required": ["name", "description", "type"],
+        "required": ["name", "description", "record_type"],
     }
 
     # Create a collection with the schema
     collection_manifest = {
         "name": "Schema Test Collection",
-        "description": "A test collection with schema validation",
-        "type": "collection",
+        "description": "A collection with schema validation",
     }
-
-    await artifact_manager.create(
-        prefix="collections/schema-test-collection",
+    collection = await artifact_manager.create(
+        type="collection",
         manifest=collection_manifest,
-        config={"collection_schema": collection_schema},
-        stage=False,
-        orphan=True,
+        config={
+            "collection_schema": collection_schema,
+            "permissions": {"*": "r", "@": "r+"},
+        },
     )
 
     # Create a valid dataset artifact that conforms to the schema
     valid_dataset_manifest = {
+        "record_type": "dataset",
         "name": "Valid Dataset",
-        "description": "A dataset that conforms to the collection schema",
-        "type": "dataset",
+        "description": "A dataset that conforms to the schema",
     }
-
-    await artifact_manager.create(
-        prefix="collections/schema-test-collection/valid-dataset",
-        manifest=valid_dataset_manifest,
-        stage=True,
+    valid_dataset = await artifact_manager.create(
+        parent_id=collection.id, manifest=valid_dataset_manifest, stage=True
     )
 
     # Add a file to the valid dataset artifact
-    source = "file contents of valid_file.txt"
+    file_content = "Contents of valid_file.txt"
     put_url = await artifact_manager.put_file(
-        prefix="collections/schema-test-collection/valid-dataset",
-        file_path="valid_file.txt",
+        artifact_id=valid_dataset.id, file_path="valid_file.txt"
     )
-
-    # Use the pre-signed URL to upload the file
-    response = requests.put(put_url, data=source)
+    response = requests.put(put_url, data=file_content)
     assert response.ok
 
-    # Commit the valid dataset artifact (finalize it)
-    await artifact_manager.commit(
-        prefix="collections/schema-test-collection/valid-dataset"
-    )
+    # Commit the valid dataset artifact (should succeed as it conforms to the schema)
+    await artifact_manager.commit(artifact_id=valid_dataset.id)
 
-    # Ensure that the dataset appears in the collection's index
-    items = await artifact_manager.list(
-        prefix="collections/schema-test-collection", summary_fields=[".prefix"]
-    )
-    assert find_item(
-        items,
-        ".prefix",
-        f"collections/schema-test-collection/valid-dataset",
-    )
+    # Confirm the dataset is listed in the collection
+    items = await artifact_manager.list(parent_id=collection.id)
+    item = find_item(items, "id", valid_dataset.id)
+    assert item["manifest"]["name"] == "Valid Dataset"
 
-    # Now, create an invalid dataset artifact that does not conform to the schema (missing required fields)
+    # Attempt to create an invalid dataset artifact (missing required 'description' field)
     invalid_dataset_manifest = {
         "name": "Invalid Dataset",
-        # "description" field is missing, which are required by the schema
-        "type": "dataset",
+        "record_type": "dataset",
     }
-
-    await artifact_manager.create(
-        prefix="collections/schema-test-collection/invalid-dataset",
-        manifest=invalid_dataset_manifest,
-        stage=True,
+    invalid_dataset = await artifact_manager.create(
+        parent_id=collection.id, manifest=invalid_dataset_manifest, stage=True
     )
 
-    # Commit should raise a ValidationError due to the schema violation
+    # Commit should raise a validation error due to schema violation
     with pytest.raises(
-        Exception,
-        match=r".*ValidationError: 'description' is a required property.*",
+        Exception, match=r".*ValidationError: 'description' is a required property.*"
     ):
-        await artifact_manager.commit(
-            prefix="collections/schema-test-collection/invalid-dataset"
-        )
+        await artifact_manager.commit(artifact_id=invalid_dataset.id)
 
-    # Clean up by deleting the artifacts and the collection
-    await artifact_manager.delete(
-        prefix="collections/schema-test-collection/valid-dataset"
-    )
-    await artifact_manager.delete(
-        prefix="collections/schema-test-collection/invalid-dataset"
-    )
-    await artifact_manager.delete(prefix="collections/schema-test-collection")
+    # Clean up by deleting the valid dataset and the collection
+    await artifact_manager.delete(artifact_id=valid_dataset.id)
+    await artifact_manager.delete(artifact_id=collection.id)
 
 
 async def test_artifact_manager_with_collection(minio_server, fastapi_server):
-    """Test artifact controller with collections."""
+    """Test artifact management within collections."""
+
+    # Connect to the server and set up the artifact manager
     api = await connect_to_server(
         {"name": "test deploy client", "server_url": SERVER_URL}
     )
@@ -698,430 +702,395 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
     collection_manifest = {
         "name": "test-collection",
         "description": "A test collection",
-        "type": "collection",
     }
-
-    await artifact_manager.create(
-        prefix="collections/test-collection",
+    collection = await artifact_manager.create(
+        type="collection",
         manifest=collection_manifest,
-        config={"summary_fields": ["name", "description", ".*"]},
-        stage=False,
-        permissions={"*": "r", "@": "r+"},
-        orphan=True,
+        config={
+            "permissions": {"*": "r", "@": "r+"},
+        },
     )
 
-    # get the collection via http
+    # Retrieve the collection via HTTP to confirm creation
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/collections/test-collection"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.id}"
     )
     assert response.status_code == 200
-    assert "test-collection" in response.json()["name"]
+    assert "test-collection" in response.json()["manifest"]["name"]
 
-    # Create an artifact (a dataset in this case) within the collection
+    # Create a dataset artifact within the collection
     dataset_manifest = {
         "name": "test-dataset",
-        "description": "A test dataset in the collection",
-        "type": "dataset",
+        "description": "A test dataset within the collection",
     }
-
-    await artifact_manager.create(
-        prefix="collections/test-collection/test-dataset",
+    dataset = await artifact_manager.create(
+        type="dataset",
+        alias="test-dataset",
+        parent_id=collection.id,
         manifest=dataset_manifest,
         stage=True,
     )
 
-    # Add a file to the artifact (test file)
-    source = "file contents of test.txt"
+    # Add a file to the dataset artifact
+    file_content = "file contents of test.txt"
     put_url = await artifact_manager.put_file(
-        prefix="collections/test-collection/test-dataset", file_path="test.txt"
+        artifact_id=dataset.id, file_path="test.txt"
     )
-
-    # Use the pre-signed URL to upload the file
-    response = requests.put(put_url, data=source)
+    response = requests.put(put_url, data=file_content)
     assert response.ok
 
-    # Ensure that the file is included in the manifest
-    manifest_data = await artifact_manager.read(
-        prefix="collections/test-collection/test-dataset", stage=True
+    # Confirm the dataset's inclusion in the collection
+    collection_items = await artifact_manager.list(
+        parent_id=collection.id, filters={"stage": True}
     )
-    assert manifest_data["name"] == "test-dataset"
+    item = find_item(collection_items, "id", dataset.id)
+    assert item["manifest"]["name"] == "test-dataset"
 
-    # Test using absolute prefix
-    manifest_data = await artifact_manager.read(
-        prefix=f"/{api.config.workspace}/collections/test-collection/test-dataset",
-        stage=True,
-    )
-    assert manifest_data["name"] == "test-dataset"
+    # Commit the dataset artifact to finalize it
+    await artifact_manager.commit(artifact_id=dataset.id)
 
-    files = await artifact_manager.list_files(
-        prefix="collections/test-collection/test-dataset"
-    )
-    assert find_item(files, "name", "test.txt")
+    # Verify the dataset is listed in the collection after commit
+    collection_items = await artifact_manager.list(parent_id=collection.id)
+    item = find_item(collection_items, "id", dataset.id)
+    dataset_item = item["manifest"]
+    assert dataset_item["description"] == "A test dataset within the collection"
+    assert item["view_count"] == 0
 
-    items = await artifact_manager.list(
-        prefix="collections/test-collection",
-        filters={".stage": True},
-        summary_fields=[".prefix"],
-    )
-    assert find_item(
-        items,
-        ".prefix",
-        f"collections/test-collection/test-dataset",
-    )
+    # Increase the view count by reading the dataset
+    dataset_summary = await artifact_manager.read(artifact_id=dataset.id)
+    assert dataset_summary["view_count"] == 1
 
-    # Commit the artifact (finalize it)
-    await artifact_manager.commit(prefix="collections/test-collection/test-dataset")
+    # Verify that view count is reflected in the collection list
+    collection_items = await artifact_manager.list(parent_id=collection.id)
+    dataset_item = next(item for item in collection_items if item["id"] == dataset.id)
+    assert dataset_item["view_count"] == 1
 
-    # Ensure that the dataset appears in the collection's index
-    items = await artifact_manager.list(prefix="collections/test-collection")
-    assert find_item(
-        items,
-        ".prefix",
-        f"collections/test-collection/test-dataset",
-    )
-    # all the summary fields should be in the collection
-    dataset_summary = find_item(items, "name", "test-dataset")
-    assert dataset_summary["name"] == "test-dataset"
-    assert dataset_summary["description"] == "A test dataset in the collection"
-    assert dataset_summary[".view_count"] == 0
-
-    # view the dataset
-    dataset_summary = await artifact_manager.read(
-        prefix="collections/test-collection/test-dataset", include_metadata=True
-    )
-    assert dataset_summary[".view_count"] == 1
-
-    # now we should have 1 view count
-    items = await artifact_manager.list(prefix="collections/test-collection")
-    dataset_summary = find_item(items, "name", "test-dataset")
-    assert dataset_summary[".view_count"] == 1
-
-    # Ensure that the manifest.yaml is finalized and the artifact is validated
-    artifacts = await artifact_manager.list(prefix="collections/test-collection")
-    assert find_item(artifacts, "name", "test-dataset")
-
-    # Retrieve the file via the get_file method
-    get_url = await artifact_manager.get_file(
-        prefix="collections/test-collection/test-dataset", path="test.txt"
-    )
+    # Retrieve the file in the dataset via HTTP to verify contents
+    get_url = await artifact_manager.get_file(artifact_id=dataset.id, path="test.txt")
     response = requests.get(get_url)
     assert response.ok
-    assert response.text == source
+    assert response.text == file_content
 
-    # Test overwriting the existing artifact within the collection
-    new_dataset_manifest = {
+    # Test overwriting the existing dataset artifact within the collection
+    updated_dataset_manifest = {
         "name": "test-dataset",
-        "description": "Overwritten test dataset in collection",
-        "type": "dataset",
+        "description": "Overwritten description for dataset",
     }
-
     await artifact_manager.create(
-        prefix="collections/test-collection/test-dataset",
-        manifest=new_dataset_manifest,
+        type="dataset",
+        parent_id=collection.id,
+        alias="test-dataset",
+        manifest=updated_dataset_manifest,
         overwrite=True,
         stage=False,
     )
 
-    # Ensure that the old manifest has been overwritten
-    manifest_data = await artifact_manager.read(
-        prefix="collections/test-collection/test-dataset"
+    # Confirm that the description update is reflected
+    updated_manifest = await artifact_manager.read(
+        artifact_id=f"{api.config.workspace}/test-dataset"
     )
-    assert manifest_data["description"] == "Overwritten test dataset in collection"
+    updated_manifest = updated_manifest["manifest"]
+    assert updated_manifest["description"] == "Overwritten description for dataset"
 
-    # Remove the dataset artifact
-    await artifact_manager.delete(prefix="collections/test-collection/test-dataset")
+    # Remove the dataset artifact from the collection
+    await artifact_manager.delete(artifact_id=dataset.id)
 
-    # Ensure that the dataset artifact is removed
-    artifacts = await artifact_manager.list(prefix="collections/test-collection")
-    assert not find_item(artifacts, "name", "test-dataset")
-
-    # Ensure the collection is updated after removing the dataset
-    items = await artifact_manager.list(
-        prefix="collections/test-collection", summary_fields=[".prefix"]
-    )
-    assert not find_item(
-        items,
-        ".prefix",
-        "collections/test-collection/test-dataset",
-    )
+    # Confirm deletion by checking the collection’s children
+    collection_items = await artifact_manager.list(parent_id=collection.id)
+    item = find_item(collection_items, "id", dataset.id)
+    assert item is None
 
     # Clean up by deleting the collection
-    await artifact_manager.delete(prefix="collections/test-collection")
+    await artifact_manager.delete(artifact_id=collection.id)
 
 
 async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server):
-    """Test artifact edge cases with collections."""
+    """Test edge cases with artifact collections."""
+
+    # Connect to the server and set up the artifact manager
     api = await connect_to_server(
         {"name": "test deploy client", "server_url": SERVER_URL}
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
-    # Create a collection first
+    # Attempt to create a collection with orphan=False, which should fail
     collection_manifest = {
         "name": "edge-case-collection",
         "description": "A test collection for edge cases",
-        "type": "collection",
     }
 
     with pytest.raises(
-        Exception,
-        match=r".*Parent artifact not found.*",
+        Exception, match=r".*Artifact with ID 'non-existent-parent' does not exist.*"
     ):
         await artifact_manager.create(
-            prefix="collections/edge-case-collection",
+            type="collection",
+            parent_id="non-existent-parent",
             manifest=collection_manifest,
-            stage=False,
-            orphan=False,
+            config={"permissions": {"*": "r", "@": "r+"}},
         )
 
-    await artifact_manager.create(
-        prefix="collections/edge-case-collection",
-        manifest=collection_manifest,
-        stage=False,
-        orphan=True,
+    # Successfully create the collection with orphan set by default
+    collection = await artifact_manager.create(
+        manifest=collection_manifest, config={"permissions": {"*": "r", "@": "r+"}}
     )
 
-    # Try to create an artifact that already exists within the collection without overwriting
-    manifest = {
+    # Create a dataset artifact within the collection
+    dataset_manifest = {
         "name": "edge-case-dataset",
-        "description": "Edge case test dataset",
-        "type": "dataset",
+        "description": "A dataset for testing edge cases",
     }
-
-    # Create the artifact first
-    await artifact_manager.create(
-        prefix="collections/edge-case-collection/edge-case-dataset",
-        manifest=manifest,
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        alias="edge-case-dataset",
+        manifest=dataset_manifest,
         stage=True,
     )
 
-    # Attempt to create the same artifact without overwrite
+    # Try to create the same artifact again without overwrite, expecting it to fail
     with pytest.raises(
-        Exception,
-        match=r".*FileExistsError: Artifact under prefix .*",
+        Exception, match=r".*already exists. Use overwrite=True to overwrite.*"
     ):
         await artifact_manager.create(
-            prefix="collections/edge-case-collection/edge-case-dataset",
-            manifest=manifest,
+            type="dataset",
+            parent_id=collection.id,
+            alias="edge-case-dataset",
+            manifest=dataset_manifest,
             overwrite=False,
             stage=True,
         )
 
-    # Add a file to the artifact
+    # Add a file to the dataset artifact
     put_url = await artifact_manager.put_file(
-        prefix="collections/edge-case-collection/edge-case-dataset",
-        file_path="example.txt",
+        artifact_id=dataset.id, file_path="example.txt"
     )
-    source = "some content"
-    response = requests.put(put_url, data=source)
+    file_content = "sample file content"
+    response = requests.put(put_url, data=file_content)
     assert response.ok
 
-    # Commit the artifact
-    await artifact_manager.commit(
-        prefix="collections/edge-case-collection/edge-case-dataset"
-    )
+    # Commit the dataset artifact to finalize it
+    await artifact_manager.commit(artifact_id=dataset.id)
 
-    # Ensure that the collection index is updated
-    items = await artifact_manager.list(
-        prefix="collections/edge-case-collection", summary_fields=[".prefix"]
-    )
-    assert find_item(
-        items,
-        ".prefix",
-        f"collections/edge-case-collection/edge-case-dataset",
-    )
+    # Ensure the dataset is listed under the collection
+    collection_items = await artifact_manager.list(parent_id=collection.id)
+    item = find_item(collection_items, "id", dataset.id)
+    assert item["manifest"]["name"] == "edge-case-dataset"
 
-    # Test validation without uploading a file
+    # Test committing a dataset artifact with missing files, expecting a failure
     incomplete_manifest = {
         "name": "incomplete-dataset",
-        "description": "This dataset is incomplete",
-        "type": "dataset",
+        "description": "Dataset missing a required file",
     }
-
-    await artifact_manager.create(
-        prefix="collections/edge-case-collection/incomplete-dataset",
+    incomplete_dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
         manifest=incomplete_manifest,
         stage=True,
     )
 
     await artifact_manager.put_file(
-        prefix="collections/edge-case-collection/incomplete-dataset",
-        file_path="missing_file.txt",
+        artifact_id=incomplete_dataset.id, file_path="missing_file.txt"
     )
 
-    # Commit should raise an error due to the missing file
-    with pytest.raises(
-        Exception,
-        match=r".*FileNotFoundError: .*",
-    ):
-        await artifact_manager.commit(
-            prefix="collections/edge-case-collection/incomplete-dataset"
-        )
+    # Commit should fail due to missing file
+    with pytest.raises(Exception, match=r".*FileNotFoundError: .*"):
+        await artifact_manager.commit(artifact_id=incomplete_dataset.id)
 
-    # Clean up the artifacts
-    await artifact_manager.delete(
-        prefix="collections/edge-case-collection/edge-case-dataset"
-    )
-    await artifact_manager.delete(
-        prefix="collections/edge-case-collection/incomplete-dataset"
-    )
-    await artifact_manager.delete(prefix="collections/edge-case-collection")
+    # Clean up by deleting the artifacts and the collection
+    await artifact_manager.delete(artifact_id=dataset.id)
+    await artifact_manager.delete(artifact_id=incomplete_dataset.id)
+    await artifact_manager.delete(artifact_id=collection.id)
 
 
 async def test_artifact_search_in_manifest(minio_server, fastapi_server):
-    """Test search functionality within the 'manifest' field of artifacts with multiple keywords and both AND and OR modes."""
+    """Test search functionality within the 'manifest' field of artifacts using keywords and filters in both AND and OR modes."""
+
+    # Connect to the server and set up the artifact manager
     api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
     artifact_manager = await api.get_service("public/artifact-manager")
 
     # Create a collection for testing search
     collection_manifest = {
         "name": "Search Test Collection",
-        "description": "A collection to test search functionality",
-        "type": "collection",
+        "description": "A collection for testing search functionality",
     }
-    await artifact_manager.create(
-        prefix="collections/search-test-collection",
+    collection = await artifact_manager.create(
+        type="collection",
         manifest=collection_manifest,
-        stage=False,
-        orphan=True,
+        config={"permissions": {"*": "r", "@": "r+"}},
     )
 
-    # Create multiple artifacts inside the collection
+    # Create multiple artifacts within the collection for search tests
     for i in range(5):
         dataset_manifest = {
             "name": f"Test Dataset {i}",
             "description": f"A test dataset {i}",
-            "type": "dataset",
         }
-        await artifact_manager.create(
-            prefix=f"collections/search-test-collection/test-dataset-{i}",
+        artifact = await artifact_manager.create(
+            type="dataset",
+            alias=f"test-dataset-{i}",
+            parent_id=collection.id,
             manifest=dataset_manifest,
             stage=True,
         )
-        await artifact_manager.commit(
-            prefix=f"collections/search-test-collection/test-dataset-{i}"
-        )
+        await artifact_manager.commit(artifact_id=artifact.id)
 
-    # Use the search function to find datasets with 'Dataset 3' in the 'name' field using AND mode
+    # Test search by exact match keyword using AND mode
     search_results = await artifact_manager.list(
-        prefix="collections/search-test-collection", keywords=["Dataset 3"], mode="AND"
+        parent_id=collection.id, keywords=["Dataset 3"], mode="AND"
     )
-
-    # Assert that the search results contain only the relevant dataset
     assert len(search_results) == 1
-    assert search_results[0]["name"] == "Test Dataset 3"
+    assert search_results[0]["manifest"]["name"] == "Test Dataset 3"
 
-    # Test search for multiple results by 'description' field using OR mode
+    # Test search for multiple results by description using OR mode
     search_results = await artifact_manager.list(
-        prefix="collections/search-test-collection",
-        keywords=["test", "dataset"],
-        mode="OR",
+        parent_id=collection.id, keywords=["test", "dataset"], mode="OR"
     )
+    assert (
+        len(search_results) == 5
+    )  # All datasets have "test" and "dataset" in their description
 
-    # Assert that all datasets are returned because both keywords appear in the description
-    assert len(search_results) == 5
-
-    # Test search with multiple keywords using AND mode (this should return fewer results)
+    # Test search with multiple keywords using AND mode (returns fewer results)
     search_results = await artifact_manager.list(
-        prefix="collections/search-test-collection",
-        keywords=["Test Dataset", "3"],
+        parent_id=collection.id, keywords=["Test Dataset", "3"], mode="AND"
+    )
+    assert len(search_results) == 1
+    assert search_results[0]["manifest"]["name"] == "Test Dataset 3"
+
+    # Test search using filters to match manifest field directly
+    search_results = await artifact_manager.list(
+        parent_id=collection.id,
+        filters={"manifest": {"name": "Test Dataset 3"}},
         mode="AND",
     )
-
-    # Assert that only the dataset with 'Test Dataset 3' is returned
     assert len(search_results) == 1
-    assert search_results[0]["name"] == "Test Dataset 3"
+    assert search_results[0]["manifest"]["name"] == "Test Dataset 3"
 
-    # Clean up by deleting the datasets and the collection
+    # Test fuzzy search using filters within the manifest
+    search_results = await artifact_manager.list(
+        parent_id=collection.id, filters={"manifest": {"name": "Test*"}}, mode="OR"
+    )
+    assert len(search_results) == 5  # All datasets match "Test*" in the name
+
+    # Test search with multiple filters in AND mode for exact match on both name and description
+    search_results = await artifact_manager.list(
+        parent_id=collection.id,
+        filters={
+            "manifest": {"name": "Test Dataset 3", "description": "A test dataset 3"}
+        },
+        mode="AND",
+    )
+    assert len(search_results) == 1
+    assert search_results[0]["manifest"]["name"] == "Test Dataset 3"
+
+    # Test search with multiple filters in OR mode for matching any field
+    search_results = await artifact_manager.list(
+        parent_id=collection.id,
+        filters={
+            "manifest": {"name": "Test Dataset 3", "description": "A test dataset 1"}
+        },
+        mode="OR",
+    )
+    assert (
+        len(search_results) == 2
+    )  # Matches for either dataset 1 or 3 based on OR filter
+
+    # Clean up by deleting all artifacts and the collection
     for i in range(5):
-        await artifact_manager.delete(
-            prefix=f"collections/search-test-collection/test-dataset-{i}"
-        )
-    await artifact_manager.delete(prefix="collections/search-test-collection")
+        await artifact_manager.delete(artifact_id=f"test-dataset-{i}")
+    await artifact_manager.delete(artifact_id=collection.id)
 
 
 async def test_artifact_search_with_filters(minio_server, fastapi_server):
-    """Test search functionality with specific key-value filters in the manifest with multiple filters and AND/OR modes."""
+    """Test search functionality with specific key-value filters in the manifest, supporting multiple filters and AND/OR modes."""
+
+    # Connect to the server and initialize the artifact manager
     api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
     artifact_manager = await api.get_service("public/artifact-manager")
 
-    # Create a collection for testing search
+    # Create a collection for testing filter-based search
     collection_manifest = {
-        "name": "Search Test Collection",
-        "description": "A collection to test search functionality",
-        "type": "collection",
+        "name": "Filter Test Collection",
+        "description": "A collection to test filter functionality",
     }
-    await artifact_manager.create(
-        prefix="collections/search-test-collection",
+    collection = await artifact_manager.create(
+        type="collection",
         manifest=collection_manifest,
-        stage=False,
-        orphan=True,
+        config={"permissions": {"*": "r", "@": "r+"}},
     )
 
-    # Create multiple artifacts inside the collection
+    # Create multiple artifacts with varied attributes inside the collection
     for i in range(5):
         dataset_manifest = {
-            "name": f"Test Dataset {i}",
-            "description": f"A test dataset {i}",
-            "type": "dataset",
+            "name": f"Dataset {i}",
+            "description": f"Description for dataset {i}",
         }
         await artifact_manager.create(
-            prefix=f"collections/search-test-collection/test-dataset-{i}",
+            type="dataset" if i % 2 == 0 else "application",
+            alias=f"dataset-{i}",
+            parent_id=collection.id,
             manifest=dataset_manifest,
-            stage=True,
-        )
-        await artifact_manager.commit(
-            prefix=f"collections/search-test-collection/test-dataset-{i}"
+            stage=False,
         )
 
-    # Use the search function to find datasets with an exact name match using AND mode
+    # Filter by type to return only datasets
     search_results = await artifact_manager.list(
-        prefix="collections/search-test-collection",
-        filters={"name": "Test Dataset 3"},
-        mode="AND",
+        parent_id=collection.id, filters={"type": "dataset"}, mode="AND"
     )
+    assert len(search_results) == 3
+    for result in search_results:
+        assert result["type"] == "dataset"
 
-    # Assert that the search results contain only the relevant dataset
-    assert len(search_results) == 1
-    assert search_results[0]["name"] == "Test Dataset 3"
-
-    # Test search with fuzzy match on name using OR mode
+    # Filter by a field in the manifest: exact name match
     search_results = await artifact_manager.list(
-        prefix="collections/search-test-collection",
-        filters={"name": "Test*"},
+        parent_id=collection.id, filters={"manifest": {"name": "Dataset 3"}}, mode="AND"
+    )
+    assert len(search_results) == 1
+    assert search_results[0]["manifest"]["name"] == "Dataset 3"
+
+    # Filter by multiple fields in the manifest using OR mode
+    search_results = await artifact_manager.list(
+        parent_id=collection.id,
+        filters={
+            "manifest": {
+                "name": "Dataset 3",
+                "description": "Description for dataset 1",
+            }
+        },
         mode="OR",
     )
+    assert (
+        len(search_results) == 2
+    )  # Matches for either dataset 1 or 3 based on OR filter
 
-    # Assert that all datasets are returned since the fuzzy match applies to all
-    assert len(search_results) == 5
-
-    # Test search with multiple filters in AND mode (exact match on name and description)
+    # Filter by multiple fields in the manifest using AND mode
     search_results = await artifact_manager.list(
-        prefix="collections/search-test-collection",
-        filters={"name": "Test Dataset 3", "description": "A test dataset 3"},
+        parent_id=collection.id,
+        filters={
+            "manifest": {
+                "name": "Dataset 3",
+                "description": "Description for dataset 3",
+            }
+        },
         mode="AND",
     )
-
-    # Assert that only one dataset is returned
     assert len(search_results) == 1
-    assert search_results[0]["name"] == "Test Dataset 3"
+    assert search_results[0]["manifest"]["name"] == "Dataset 3"
 
-    # Test search with multiple filters in OR mode (match any of the fields)
+    # Filter with a fuzzy match in the description
     search_results = await artifact_manager.list(
-        prefix="collections/search-test-collection",
-        filters={"name": "Test Dataset 3", "description": "A test dataset 1"},
-        mode="OR",
+        parent_id=collection.id,
+        filters={"manifest": {"description": "Description for dataset*"}},
+        mode="AND",
     )
-
-    # Assert that two datasets are returned (matching either name or description)
-    assert len(search_results) == 2
+    assert (
+        len(search_results) == 5
+    )  # All items match since the description pattern is common
 
     # Clean up by deleting the datasets and the collection
     for i in range(5):
-        await artifact_manager.delete(
-            prefix=f"collections/search-test-collection/test-dataset-{i}"
-        )
-    await artifact_manager.delete(prefix="collections/search-test-collection")
+        await artifact_manager.delete(artifact_id=f"dataset-{i}")
+    await artifact_manager.delete(artifact_id=collection.id)
 
 
 async def test_download_count(minio_server, fastapi_server):
@@ -1133,63 +1102,51 @@ async def test_download_count(minio_server, fastapi_server):
     collection_manifest = {
         "name": "Download Test Collection",
         "description": "A collection to test download count functionality",
-        "type": "collection",
     }
-    await artifact_manager.create(
-        prefix="collections/download-test-collection",
+    collection = await artifact_manager.create(
+        type="collection",
         manifest=collection_manifest,
-        stage=False,
-        orphan=True,
+        config={"permissions": {"*": "r", "@": "r+"}},
     )
 
     # Create an artifact inside the collection
     dataset_manifest = {
         "name": "Download Test Dataset",
         "description": "A test dataset for download count",
-        "type": "dataset",
     }
-    await artifact_manager.create(
-        prefix="collections/download-test-collection/download-test-dataset",
-        manifest=dataset_manifest,
-        stage=True,
+    artifact = await artifact_manager.create(
+        type="dataset", parent_id=collection.id, manifest=dataset_manifest, stage=True
     )
 
-    # Put a file in the artifact
+    # Put a primary file in the artifact
     put_url = await artifact_manager.put_file(
-        prefix="collections/download-test-collection/download-test-dataset",
+        artifact_id=artifact.id,
         file_path="example.txt",
-        options={
-            "download_weight": 0.5
-        },  # Set the file as primary so downloading it will be count as a download
+        download_weight=0.5,  # Set as primary for download count
     )
     source = "file contents of example.txt"
     response = requests.put(put_url, data=source)
     assert response.ok
 
-    # put another file in the artifact but not setting weights
+    # Put another non-primary file in the artifact
     put_url = await artifact_manager.put_file(
-        prefix="collections/download-test-collection/download-test-dataset",
-        file_path="example2.txt",
+        artifact_id=artifact.id, file_path="example2.txt"
     )
-    source = "file contents of example2.txt"
-    response = requests.put(put_url, data=source)
+    response = requests.put(put_url, data="file contents of example2.txt")
     assert response.ok
 
     # Commit the artifact
-    await artifact_manager.commit(
-        prefix="collections/download-test-collection/download-test-dataset"
-    )
+    await artifact_manager.commit(artifact_id=artifact.id)
 
     # Ensure that the download count is initially zero
     artifact = await artifact_manager.read(
-        prefix="collections/download-test-collection/download-test-dataset",
-        include_metadata=True,
+        artifact_id=artifact.id,
     )
-    assert artifact[".download_count"] == 0
+    assert artifact["download_count"] == 0
 
     # Increment the download count of the artifact by download the primary file
     get_url = await artifact_manager.get_file(
-        prefix="collections/download-test-collection/download-test-dataset",
+        artifact_id=artifact.id,
         path="example.txt",
     )
     response = requests.get(get_url)
@@ -1197,15 +1154,14 @@ async def test_download_count(minio_server, fastapi_server):
 
     # Ensure that the download count is incremented
     artifact = await artifact_manager.read(
-        prefix="collections/download-test-collection/download-test-dataset",
+        artifact_id=artifact.id,
         silent=True,
-        include_metadata=True,
     )
-    assert artifact[".download_count"] == 0
+    assert artifact["download_count"] == 0
 
     # download twice will increment the download count by 1
     get_url = await artifact_manager.get_file(
-        prefix="collections/download-test-collection/download-test-dataset",
+        artifact_id=artifact.id,
         path="example.txt",
     )
     response = requests.get(get_url)
@@ -1213,38 +1169,36 @@ async def test_download_count(minio_server, fastapi_server):
 
     # Ensure that the download count is incremented
     artifact = await artifact_manager.read(
-        prefix="collections/download-test-collection/download-test-dataset",
+        artifact_id=artifact.id,
         silent=True,
-        include_metadata=True,
     )
-    assert artifact[".download_count"] == 1
+    assert artifact["download_count"] == 1
 
     # If we get the example file in silent mode, the download count won't increment
     get_url = await artifact_manager.get_file(
-        prefix="collections/download-test-collection/download-test-dataset",
+        artifact_id=artifact.id,
         path="example.txt",
-        options={"silent": True},
+        silent=True,
     )
     response = requests.get(get_url)
     assert response.ok
     get_url = await artifact_manager.get_file(
-        prefix="collections/download-test-collection/download-test-dataset",
+        artifact_id=artifact.id,
         path="example.txt",
-        options={"silent": True},
+        silent=True,
     )
     response = requests.get(get_url)
     assert response.ok
 
     # Ensure that the download count is not incremented
     artifact = await artifact_manager.read(
-        prefix="collections/download-test-collection/download-test-dataset",
-        include_metadata=True,
+        artifact_id=artifact.id,
     )
-    assert artifact[".download_count"] == 1
+    assert artifact["download_count"] == 1
 
     # download example 2 won't increment the download count
     get_url = await artifact_manager.get_file(
-        prefix="collections/download-test-collection/download-test-dataset",
+        artifact_id=artifact.id,
         path="example2.txt",
     )
     response = requests.get(get_url)
@@ -1252,27 +1206,25 @@ async def test_download_count(minio_server, fastapi_server):
 
     # Ensure that the download count is incremented
     artifact = await artifact_manager.read(
-        prefix="collections/download-test-collection/download-test-dataset",
-        include_metadata=True,
+        artifact_id=artifact.id,
     )
-    assert artifact[".download_count"] == 1
+    assert artifact["download_count"] == 1
 
     # Let's call reset_stats to reset the download count
     await artifact_manager.reset_stats(
-        prefix="collections/download-test-collection/download-test-dataset"
+        artifact_id=artifact.id,
     )
 
     # Ensure that the download count is reset
     artifact = await artifact_manager.read(
-        prefix="collections/download-test-collection/download-test-dataset",
-        include_metadata=True,
+        artifact_id=artifact.id,
     )
-    assert artifact[".download_count"] == 0
+    assert artifact["download_count"] == 0
 
     # Clean up by deleting the dataset and the collection
     await artifact_manager.delete(
-        prefix="collections/download-test-collection/download-test-dataset",
+        artifact_id=artifact.id,
         delete_files=True,
         recursive=True,
     )
-    await artifact_manager.delete(prefix="collections/download-test-collection")
+    await artifact_manager.delete(artifact_id=collection.id)

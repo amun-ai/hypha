@@ -6,7 +6,6 @@ import ssl
 import sys
 from calendar import timegm
 import datetime
-import traceback
 from os import environ as env
 from typing import List, Union, Dict
 from urllib.request import urlopen

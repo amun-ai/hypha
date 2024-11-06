@@ -46,6 +46,7 @@ class ServerAppController:
         self.artifact_manager = artifact_manager
         self.workspace_bucket = workspace_bucket
         self._sessions = {}  # Track running sessions
+        self.collection_id = None
         self.event_bus = store.get_event_bus()
         self.local_base_url = store.local_base_url
         self.public_base_url = store.public_base_url
@@ -71,28 +72,19 @@ class ServerAppController:
         # Create an collection in the workspace
         manifest = {
             "id": "applications",
-            "type": "collection",
             "name": "Applications",
             "description": f"A collection of applications for workspace {ws}",
-            "summary_fields": [
-                "id",
-                "name",
-                "description",
-                "app_id",
-                "workspace",
-                "config",
-                "services",
-            ],
         }
-        await self.artifact_manager.create(
-            "applications",
-            manifest,
+        collection = await self.artifact_manager.create(
+            type="collection",
+            alias="applications",
+            manifest=manifest,
             overwrite=overwrite,
             stage=False,
-            orphan=True,
             context=context,
         )
         logger.info(f"Applications collection created for workspace {ws}")
+        return collection["id"]
 
     async def install(
         self,
@@ -196,24 +188,31 @@ class ServerAppController:
 
         app_id = f"{mhash}"
 
-        public_url = f"{self.public_base_url}/{workspace_info.id}/applications/{app_id}/{entry_point}"
+        public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}"
         artifact_obj = convert_config_to_artifact(config, app_id, public_url)
         artifact_obj.update(
             {
-                "local_url": f"{self.local_base_url}/{workspace_info.id}/applications/{app_id}/{entry_point}",
+                "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}",
                 "public_url": public_url,
             }
         )
         ApplicationArtifact.model_validate(artifact_obj)
 
-        try:
-            await self.artifact_manager.read("applications", context=context)
-        except KeyError:
-            await self.setup_applications_collection(overwrite=True, context=context)
+        if not self.collection_id:
+            try:
+                artifact = await self.artifact_manager.read(
+                    "applications", context=context
+                )
+                self.collection_id = artifact["id"]
+            except KeyError:
+                self.collection_id = await self.setup_applications_collection(
+                    overwrite=True, context=context
+                )
+
         # Create artifact using the artifact controller
-        prefix = f"applications/{app_id}"
-        await self.artifact_manager.create(
-            prefix=prefix,
+        artifact = await self.artifact_manager.create(
+            parent_id=self.collection_id,
+            alias=f"applications:{app_id}",
             manifest=artifact_obj,
             overwrite=overwrite,
             stage=True,
@@ -222,14 +221,13 @@ class ServerAppController:
 
         # Upload the main source file
         put_url = await self.artifact_manager.put_file(
-            prefix=prefix, file_path=config["entry_point"], context=context
+            artifact["id"], file_path=config["entry_point"], context=context
         )
         async with httpx.AsyncClient() as client:
             response = await client.put(put_url, data=source)
             assert (
                 response.status_code == 200
             ), f"Failed to upload {config['entry_point']}"
-
         # Commit the artifact if stage is not enabled
         if not stage:
             await self.commit(
@@ -247,9 +245,8 @@ class ServerAppController:
         context: Optional[dict] = None,
     ):
         """Add a file to the installed application."""
-        prefix = f"applications/{app_id}"
         put_url = await self.artifact_manager.put_file(
-            prefix=prefix, file_path=file_path, context=context
+            f"applications:{app_id}", file_path=file_path, context=context
         )
         response = httpx.put(put_url, data=file_content)
         assert response.status_code == 200, f"Failed to upload {file_path} to {app_id}"
@@ -261,25 +258,23 @@ class ServerAppController:
         context: Optional[dict] = None,
     ):
         """Remove a file from the installed application."""
-        workspace = context["ws"]
-
-        prefix = f"applications/{app_id}"
         await self.artifact_manager.remove_file(
-            prefix=prefix, file_path=file_path, context=context
+            f"applications:{app_id}", file_path=file_path, context=context
         )
 
     async def list_files(
         self, app_id: str, context: Optional[dict] = None
     ) -> List[dict]:
         """List files of an installed application."""
-        prefix = f"applications/{app_id}"
-        manifest = await self.artifact_manager.read(prefix=prefix, context=context)
-        return manifest["files"]
+        return await self.artifact_manager.list_files(
+            f"applications:{app_id}", context=context
+        )
 
     async def edit(self, app_id: str, context: Optional[dict] = None):
         """Edit an application by re-opening its artifact."""
-        prefix = f"applications/{app_id}"
-        await self.artifact_manager.edit(prefix=prefix, stage=True, context=context)
+        await self.artifact_manager.edit(
+            f"applications:{app_id}", stage=True, context=context
+        )
 
     async def commit(
         self,
@@ -288,8 +283,6 @@ class ServerAppController:
         context: Optional[dict] = None,
     ):
         """Finalize the edits to the application by committing the artifact."""
-
-        prefix = f"applications/{app_id}"
         try:
             info = await self.start(
                 app_id,
@@ -311,12 +304,11 @@ class ServerAppController:
             raise Exception(
                 f"Failed to start the app: {app_id} during installation, error: {exp}"
             )
-        await self.artifact_manager.commit(prefix=prefix, context=context)
+        await self.artifact_manager.commit(f"applications:{app_id}", context=context)
 
     async def uninstall(self, app_id: str, context: Optional[dict] = None) -> None:
         """Uninstall an application by removing its artifact."""
-        prefix = f"applications/{app_id}"
-        await self.artifact_manager.delete(prefix=prefix, context=context)
+        await self.artifact_manager.delete(f"applications:{app_id}", context=context)
 
     async def launch(
         self,
@@ -372,16 +364,17 @@ class ServerAppController:
         if client_id is None:
             client_id = random_id(readable=True)
 
-        artifact = await self.artifact_manager.read(
-            prefix=f"applications/{app_id}", stage=stage, context=context
+        artifact_info = await self.artifact_manager.read(
+            f"applications:{app_id}", stage=stage, context=context
         )
+        artifact = artifact_info.get("manifest", {})
         artifact = ApplicationArtifact.model_validate(artifact)
 
         entry_point = artifact.entry_point
         assert entry_point, f"Entry point not found for app {app_id}."
         server_url = self.local_base_url
         local_url = (
-            f"{self.local_base_url}/{workspace}/applications/{app_id}/{entry_point}?"
+            f"{self.local_base_url}/{workspace}/artifacts/applications:{app_id}/files/{entry_point}?"
             + f"client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}"
@@ -391,7 +384,7 @@ class ServerAppController:
         )
         server_url = self.public_base_url
         public_url = (
-            f"{self.public_base_url}/{workspace}/applications/{app_id}/{entry_point}?"
+            f"{self.public_base_url}/{workspace}/artifacts/applications:{app_id}/files/{entry_point}?"
             + f"client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}"
@@ -450,7 +443,7 @@ class ServerAppController:
                 artifact.model_dump(mode="json")
             )
             await self.artifact_manager.edit(
-                prefix=f"applications/{app_id}",
+                f"applications:{app_id}",
                 manifest=artifact.model_dump(mode="json"),
                 context=context,
                 stage=stage,
@@ -518,9 +511,9 @@ class ServerAppController:
         """List applications in the workspace."""
         try:
             apps = await self.artifact_manager.list_children(
-                prefix="applications", context=context
+                "applications", context=context
             )
-            return apps
+            return [app["manifest"] for app in apps]
         except KeyError:
             return []
         except Exception as exp:

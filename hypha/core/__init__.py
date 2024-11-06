@@ -228,7 +228,7 @@ class Artifact(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    type: str
+    type: Optional[str] = "generic"
     format_version: str = "0.2.1"
     name: Optional[str] = None
     id: Optional[str] = None
@@ -262,9 +262,8 @@ class Artifact(BaseModel):
 class CollectionArtifact(Artifact):
     """Represent collection artifact."""
 
-    type: str = "collection"
+    type: Optional[str] = "collection"
     collection: Optional[List[str]] = []
-    summary_fields: Optional[List[str]] = None
     collection_schema: Optional[Dict[str, Any]] = None
 
     @classmethod
@@ -284,7 +283,7 @@ class CollectionArtifact(Artifact):
 class ApplicationArtifact(Artifact):
     """Represent application artifact."""
 
-    type: str = "application"
+    type: Optional[str] = "application"
     entry_point: Optional[str] = None  # entry point for the application
     services: Optional[List[SerializeAsAny[ServiceInfo]]] = None  # for application
 

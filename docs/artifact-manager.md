@@ -33,13 +33,12 @@ Once connected, you can create a collection to organize datasets in the gallery.
 gallery_manifest = {
     "name": "Dataset Gallery",
     "description": "A collection for organizing datasets",
-    "type": "collection",
-    "collection": [],
 }
 
 # Create the collection with read permission for everyone and create permission for all authenticated users
 # We set orphan=True to create a collection without a parent
-await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r", "@": "r+"}, orphan=True)
+collection = await artifact_manager.create(alias="dataset-gallery", 
+type="collection", manifest=gallery_manifest, permissions={"*": "r", "@": "r+"})
 print("Dataset Gallery created.")
 ```
 
@@ -52,10 +51,10 @@ After creating the gallery, you can start adding datasets to it. Each dataset wi
 dataset_manifest = {
     "name": "Example Dataset",
     "description": "A dataset with example data",
-    "type": "dataset",
 }
 
-await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True)
+# We set the parent to the collection we created earlier
+dataset = await artifact_manager.create(parent_id=collection.id, alias="example-dataset", manifest=dataset_manifest, stage=True)
 print("Dataset added to the gallery.")
 ```
 
@@ -66,8 +65,9 @@ Once you have created a dataset, you can upload files to it by generating a pre-
 Additionally, when uploading files to an artifact, you can specify a `download_weight` for each file. This weight determines how the file impacts the artifact's download count when it is accessed. For example, primary files might have a higher `download_weight`, while secondary files might have no impact. The download count is automatically updated whenever users download files from the artifact.
 
 ```python
+# To index the artifact you can use its alias ('dataset-gallery') or its id (dataset.id)
 # Get a pre-signed URL to upload a file, with a download_weight assigned
-put_url = await artifact_manager.put_file(prefix="collections/dataset-gallery/example-dataset", file_path="data.csv", options={"download_weight": 0.5})
+put_url = await artifact_manager.put_file(dataset.id, file_path="data.csv", download_weight=0.5)
 
 # Upload the file using an HTTP PUT request
 with open("path/to/local/data.csv", "rb") as f:
@@ -83,7 +83,7 @@ After uploading the files, commit the dataset to finalize it. This will check th
 
 ```python
 # Finalize and commit the dataset
-await artifact_manager.commit(prefix="collections/dataset-gallery/example-dataset")
+await artifact_manager.commit(dataset.id)
 print("Dataset committed.")
 ```
 
@@ -93,7 +93,7 @@ You can retrieve a list of all datasets in the collection to display on a webpag
 
 ```python
 # List all datasets in the gallery
-datasets = await artifact_manager.list(prefix="collections/dataset-gallery")
+datasets = await artifact_manager.list(collection.id)
 print("Datasets in the gallery:", datasets)
 ```
 
@@ -119,25 +119,21 @@ async def main():
     gallery_manifest = {
         "name": "Dataset Gallery",
         "description": "A collection for organizing datasets",
-        "type": "collection",
-        "collection": [],
     }
     # Create the collection with read permission for everyone and create permission for all authenticated users
-    # We set orphan=True to create a collection without a parent
-    await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+", "@": "r+"}, orphan=True)
+    collection = await artifact_manager.create(type="collection", alias="dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+", "@": "r+"})
     print("Dataset Gallery created.")
 
     # Create a new dataset inside the Dataset Gallery
     dataset_manifest = {
         "name": "Example Dataset",
         "description": "A dataset with example data",
-        "type": "dataset",
     }
-    await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True)
+    dataset = await artifact_manager.create(parent_id=collection.id, alias="example-dataset", manifest=dataset_manifest, stage=True)
     print("Dataset added to the gallery.")
 
     # Get a pre-signed URL to upload a file, with a download_weight assigned
-    put_url = await artifact_manager.put_file(prefix="collections/dataset-gallery/example-dataset", file_path="data.csv", options={"download_weight": 0.5})
+    put_url = await artifact_manager.put_file(dataset.id, file_path="data.csv", download_weight=0.5)
 
     # Upload the file using an HTTP PUT request
     with open("path/to/local/data.csv", "rb") as f:
@@ -146,11 +142,11 @@ async def main():
     print("File uploaded to the dataset.")
 
     # Finalize and commit the dataset
-    await artifact_manager.commit(prefix="collections/dataset-gallery/example-dataset")
+    await artifact_manager.commit(dataset.id)
     print("Dataset committed.")
 
     # List all datasets in the gallery
-    datasets = await artifact_manager.list(prefix="collections/dataset-gallery")
+    datasets = await artifact_manager.list(collection.id)
     print("Datasets in the gallery:", datasets)
 
 asyncio.run(main())
@@ -173,19 +169,18 @@ dataset_schema = {
     "properties": {
         "name": {"type": "string"},
         "description": {"type": "string"},
-        "type": {"type": "string", "enum": ["dataset", "model", "application"]},
+        "item_type": {"type": "string", "enum": ["dataset", "model", "application"]},
     },
-    "required": ["name", "description", "type"]
+    "required": ["name", "description", "item_type"]
 }
 
 # Create a collection with the schema
 gallery_manifest = {
     "name": "Schema Dataset Gallery",
     "description": "A gallery of datasets with enforced schema",
-    "type": "collection",
 }
 # Create the collection with read permission for everyone and create permission for all authenticated users
-await artifact_manager.create(prefix="collections/schema-dataset-gallery", manifest=gallery_manifest, config={"collection_schema": dataset_schema}, permissions={"*": "r+", "@": "r+"}, orphan=True)
+collection = await artifact_manager.create(type="collection", alias="schema-dataset-gallery", manifest=gallery_manifest, config={"collection_schema": dataset_schema}, permissions={"*": "r+", "@": "r+"})
 print("Schema-based Dataset Gallery created.")
 ```
 
@@ -198,14 +193,14 @@ When you commit a dataset to this collection, it will be validated against the s
 valid_dataset_manifest = {
     "name": "Valid Dataset",
     "description": "A valid dataset conforming to the schema",
-    "type": "dataset",
+    "item_type": "dataset",
 }
 
-await artifact_manager.create(prefix="collections/schema-dataset-gallery/valid-dataset", manifest=valid_dataset_manifest, stage=True)
+dataset = await artifact_manager.create(parent_id=collection.id, alias="valid-dataset", manifest=valid_dataset_manifest, stage=True)
 print("Valid dataset created.")
 
 # Commit the valid dataset (this should pass schema validation)
-await artifact_manager.commit(prefix="collections/schema-dataset-gallery/valid-dataset")
+await artifact_manager.commit(dataset.id)
 print("Valid dataset committed.")
 ```
 
@@ -213,39 +208,47 @@ print("Valid dataset committed.")
 
 ## API References
 
-### `create(prefix: str, manifest: dict, permissions: dict=None, config: dict=None, stage: bool = False, orphan: bool = False, publish_to: str = None) -> None`
+### `create(parent_id: str, alias: str, type: str, manifest: dict, permissions: dict=None, config: dict=None, stage: bool = False, publish_to: str = None) -> None`
 
 Creates a new artifact or collection with the specified manifest. The artifact is staged until committed. For collections, the `collection` field should be an empty list.
 
 **Parameters:**
 
-- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`). To generate an auto-id, you can use patterns like `"{uuid}"` or `"{timestamp}"`. The following patterns are supported:
+- `parent_id`: The id of the parent collection where the artifact will be created. If the artifact is a top-level collection, leave this field empty or set to None.
+- `alias`: A human readable name for indexing the artifact, it can be a text with lower case letters and numbers. You can set it to absolute alias in the format of `"workspace_id/alias"` or just `"alias"`. In the alias itself, `/` is not allowed, you should use `:` instead in the alias.
+To generate an auto-id, you can use patterns like `"{uuid}"` or `"{timestamp}"`. The following patterns are supported:
   - `{uuid}`: Generates a random UUID.
   - `{timestamp}`: Generates a timestamp in milliseconds.
+  - `{user_id}`: Generate the user id of the creator.
   - `{zenodo_id}`: If `publish_to` is set to `zenodo` or `sandbox_zenodo`, it will use the Zenodo deposit ID (which changes when a new version is created).
   - `{zenodo_conceptrecid}`: If `publish_to` is set to `zenodo` or `sandbox_zenodo`, it will use the Zenodo concept id (which does not change when a new version is created).
   - **Id Parts**: You can also use id parts stored in the parent collection's config['id_parts'] to generate an id. For example, if the parent collection has `{"animals": ["dog", "cat", ...], "colors": ["red", "blue", ...]}`, you can use `"{colors}-{animals}"` to generate an id like `red-dog`.
-- `manifest`: The manifest of the new artifact. Ensure the manifest follows the required schema if applicable (e.g., for collections). 
-
+- `type`: The type of the artifact. Supported values are `collection`, `generic` and any other custom type. By default, it's set to `generic` which contains fields tailored for displaying the artifact as cards on a webpage.
+- `manifest`: The manifest of the new artifact. Ensure the manifest follows the required schema if applicable (e.g., for collections).
 - `config`: Optional. A dictionary containing additional configuration options for the artifact (shared for both staged and committed). For collections, the config can contain the following special fields:
   - `collection_schema`: Optional. A JSON schema that defines the structure of child artifacts in the collection. This schema is used to validate child artifacts when they are created or edited. If a child artifact does not conform to the schema, the creation or edit operation will fail.
-  - `summary_fields`: Optional. A list of fields to include in the summary for each child artifact when calling `list(prefix)`. If not specified, the default summary fields (`id`, `type`, `name`) are used. To include all the fields in the summary, add `"*"` to the list. If you want to include internal fields such as `.created_at`, `.last_modified`, or other download/view statistics such as `.download_count`, you can also specify them individually in the `summary_fields`. If you want to include all fields, you can add `".*"` to the list.
-  - `id_parts`: Optional. A dictionary of id name parts to be used in generating the id for child artifacts. For example: `{"animals": ["dog", "cat", ...], "colors": ["red", "blue", ...]}`. This can be used for creating child artifacts with auto-generated ids based on the id parts. For example, when calling `create`, you can specify the prefix as `collections/my-collection/{colors}-{animals}`, and the id will be generated based on the id parts, e.g., `collections/my-collection/red-dog`.
-  - `archives`: Optional. Configurations for the public archive servers such as Zenodo for the collection. For example, `"archives": {"sandbox_zenodo": {"access_token": "your sandbox zenodo token"}}, "zenodo": {"access_token": "your zenodo token"}}`. This is used for publishing artifacts to Zenodo.
+  - `id_parts`: Optional. A dictionary of id name parts to be used in generating the id for child artifacts. For example: `{"animals": ["dog", "cat", ...], "colors": ["red", "blue", ...]}`. This can be used for creating child artifacts with auto-generated ids based on the id parts. For example, when calling `create`, you can specify the alias as `my-pet-{colors}-{animals}`, and the id will be generated based on the id parts, e.g., `my-pet-red-dog`.
 - `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
 - `stage`: Optional. A boolean flag to stage the artifact. Default is `False`. If it's set to `True`, the artifact will be staged and not committed. You will need to call `commit()` to finalize the artifact.
-- `orphan`: Optional. A boolean flag to create the artifact without a parent collection. Default is `False`. If `True`, the artifact will not be associated with any collection. This is mainly used for creating top-level collections, and making sure the artifact is not associated with any parent collection (with inheritance of permissions). To create an orphan artifact, you will need write permissions on the workspace.
+- `secrets`: Optional. A dictionary containing secrets to be stored with the artifact. Secrets are encrypted and can only be accessed by the artifact owner or users with appropriate permissions. The following keys can be used:
+  - `ZENODO_ACCESS_TOKEN`: The Zenodo access token to publish the artifact to Zenodo.
+  - `SANDBOX_ZENODO_ACCESS_TOKEN`: The Zenodo access token to publish the artifact to the Zenodo sandbox.
+  - `S3_ENDPOINT_URL`: The endpoint URL of the S3 storage for the artifact.
+  - `S3_ACCESS_KEY_ID`: The access key ID for the S3 storage for the artifact.
+  - `S3_SECRET_ACCESS_KEY`: The secret access key for the S3 storage for the artifact.
+  - `S3_REGION_NAME`: The region name of the S3 storage for the artifact.
+  - `S3_BUCKET`: The bucket name of the S3 storage for the artifact. Default to the hypha workspaces bucket.
+  - `S3_PREFIX`: The prefix of the S3 storage for the artifact. Default: `""`.
+
 - `publish_to`: Optional. A string specifying the target platform to publish the artifact. Supported values are `zenodo` and `sandbox_zenodo`. If set, the artifact will be published to the specified platform. The artifact must have a valid Zenodo metadata schema to be published.
 
 **Note 1: If you set `stage=True`, you must call `commit()` to finalize the artifact.**
 
-**Note 2: If you set `orphan=True`, the artifact will not be associated with any collection. An non-orphan artifact must have a parent collection.**
-
 **Example:**
 
 ```python
-# Assuming we have already created a dataset-gallery collection, otherwise create it first or set orphan=True
-await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True, orphan=False)
+# Assuming we have already created a dataset-gallery collection, we can add a new dataset to it
+await artifact_manager.create(artifact_id="dataset-gallery", alias="example-dataset", manifest=dataset_manifest, stage=True)
 ```
 
 ### Permissions
@@ -325,7 +328,7 @@ The following list shows how permission expansions work:
 
 ---
 
-### `edit(prefix: str, manifest: dict, permissions: dict = None, config: dict = None, stage: bool = False) -> None`
+### `edit(artifact_id: str, manifest: dict = None, type: str = None,  permissions: dict = None, config: dict = None, secrets: dict = None, stage: bool = False) -> None`
 
 Edits an existing artifact's manifest. The new manifest is staged until committed.
 
@@ -333,41 +336,49 @@ Edits an existing artifact's manifest. The new manifest is staged until committe
 
 - `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
 - `manifest`: The updated manifest. Ensure the manifest follows the required schema if applicable (e.g., for collections).
+- `type`: Optional. The type of the artifact. Supported values are `collection`, `generic` and any other custom type. By default, it's set to `generic` which contains fields tailored for displaying the artifact as cards on a webpage.
 - `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
+- `secrets`: Optional. A dictionary containing secrets to be stored with the artifact. Secrets are encrypted and can only be accessed by the artifact owner or users with appropriate permissions. See the `create` function for a list of supported secrets.
 - `config`: Optional. A dictionary containing additional configuration options for the artifact.
 - `stage`: Optional. A boolean flag to stage the artifact. Default is `False`. If it's set to `True`, the artifact will be staged and not committed. You will need to call `commit()` to finalize the changes.
 
 **Example:**
 
 ```python
-await artifact_manager.edit(prefix="collections/dataset-gallery/example-dataset", manifest=updated_manifest)
+await artifact_manager.edit(artifact_id="example-dataset", manifest=updated_manifest)
 ```
 
 ---
 
-### `commit(prefix: str) -> None`
+### `commit(artifact_id: str) -> None`
 
 Finalizes and commits an artifact's staged changes. Validates uploaded files and commit the staged manifest. This process also updates view and download statistics.
 
 **Parameters:**
 
-- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
+- `artifact_id`: The id of the artifact to commit. It can be an uuid generated by `create` or `edit` function, or it can be an alias of the artifact under the current workspace. If you want to refer to an artifact in another workspace, you should use the full alias in the format of `"workspace_id/alias"`.
 
 **Example:**
 
 ```python
-await artifact_manager.commit(prefix="collections/dataset-gallery/example-dataset")
+await artifact_manager.commit(artifact_id=artifact.id)
+
+# If "example-dataset" is an alias of the artifact under the current workspace
+await artifact_manager.commit(artifact_id="example-dataset")
+
+# If "example-dataset" is an alias of the artifact under another workspace
+await artifact_manager.commit(artifact_id="other_workspace/example-dataset")
 ```
 
 ---
 
-### `delete(prefix: str, delete_files: bool = False, recursive: bool = False) -> None`
+### `delete(artifact_id: str, delete_files: bool = False, recursive: bool = False) -> None`
 
 Deletes an artifact, its manifest, and all associated files from both the database and S3 storage.
 
 **Parameters:**
 
-- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
+- `artifact_id`: The id of the artifact to delete. It can be an uuid generated by `create` or `edit` function, or it can be an alias of the artifact under the current workspace. If you want to refer to an artifact in another workspace, you should use the full alias in the format of `"workspace_id/alias"`.
 - `delete_files`: Optional. A boolean flag to delete all files associated with the artifact. Default is `False`.
 - `recursive`: Optional. A boolean flag to delete all child artifacts recursively. Default is `False`.
 
@@ -376,77 +387,104 @@ Deletes an artifact, its manifest, and all associated files from both the databa
 **Example:**
 
 ```python
-await artifact_manager.delete(prefix="collections/dataset-gallery/example-dataset", delete_files=True)
+await artifact_manager.delete(artifact_id=artifact.id, delete_files=True)
+
+# If "example-dataset" is an alias of the artifact under the current workspace
+await artifact_manager.delete(artifact_id="example-dataset", delete_files=True)
+
+# If "example-dataset" is an alias of the artifact under another workspace
+await artifact_manager.delete(artifact_id="other_workspace/example-dataset", delete_files=True)
 ```
 
 ---
 
-### `put_file(prefix: str, file_path: str, options: dict = None) -> str`
+### `put_file(artifact_id: str, file_path: str, download_weight: int = 0) -> str`
 
 Generates a pre-signed URL to upload a file to the artifact in S3. The URL can be used with an HTTP `PUT` request to upload the file. The file is staged until the artifact is committed.
 
 **Parameters:**
 
-- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
+- `artifact_id`: The id of the artifact to upload the file to. It can be an uuid generated by `create` or `edit` function, or it can be an alias of the artifact under the current workspace. If you want to refer to an artifact in another workspace, you should use the full alias in the format of `"workspace_id/alias"`.
 - `file_path`: The relative path of the file to upload within the artifact (e.g., `"data.csv"`).
-- `options`: Optional. Additional options such as:
-  - `download_weight`: A float value representing the file's impact on download count (0-1). Defaults to `None`.
+- `download_weight`: A float value representing the file's impact on download count (0-1). Defaults to `None`.
 
 **Returns:** A pre-signed URL for uploading the file.
 
 **Example:**
 
 ```python
-put_url = await artifact_manager.put_file(prefix="collections/dataset-gallery/example-dataset", file_path="data.csv", options={"download_weight": 1.0})
+put_url = await artifact_manager.put_file(artifact.id, file_path="data.csv", download_weight=1.0)
+
+# If "example-dataset" is an alias of the artifact under the current workspace
+put_url = await artifact_manager.put_file(artifact_id="example-dataset", file_path="data.csv")
+
+# If "example-dataset" is an alias of the artifact under another workspace
+put_url = await artifact_manager.put_file(artifact_id="other_workspace/example-dataset", file_path="data.csv")
+
+# Upload the file using an HTTP PUT request
+with open("path/to/local/data.csv", "rb") as f:
+    response = requests.put(put_url, data=f)
+    assert response.ok, "File upload failed"
 ```
 
 ---
 
-### `remove_file(prefix: str, file_path: str) -> None`
+### `remove_file(artifact_id: str, file_path: str) -> None`
 
 Removes a file from the artifact and updates the staged manifest. The file is also removed from the S3 storage.
 
 **Parameters:**
 
-- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
+- `artifact_id`: The id of the artifact to remove the file from. It can be an uuid generated by `create` or `edit` function, or it can be an alias of the artifact under the current workspace. If you want to refer to an artifact in another workspace, you should use the full alias in the format of `"workspace_id/alias"`.
 - `file_path`: The relative path of the file to be removed (e.g., `"data.csv"`).
 
 **Example:**
 
 ```python
-await artifact_manager.remove_file(prefix="collections/dataset-gallery/example-dataset", file_path="data.csv")
+await artifact_manager.remove_file(artifact_id=artifact.id, file_path="data.csv")
+
+# If "example-dataset" is an alias of the artifact under the current workspace
+await artifact_manager.remove_file(artifact_id="example-dataset", file_path="data.csv")
+
+# If "example-dataset" is an alias of the artifact under another workspace
+await artifact_manager.remove_file(artifact_id="other_workspace/example-dataset", file_path="data.csv")
 ```
 
 ---
 
-### `get_file(prefix: str, path: str, options: dict = None) -> str`
+### `get_file(artifact_id: str, path: str, silent: bool = False) -> str`
 
 Generates a pre-signed URL to download a file from the artifact stored in S3.
 
 **Parameters:**
 
-- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
+- `artifact_id`: The id of the artifact to download the file from. It can be an uuid generated by `create` or `edit` function, or it can be an alias of the artifact under the current workspace. If you want to refer to an artifact in another workspace, you should use the full alias in the format of `"workspace_id/alias"`.
 - `path`: The relative path of the file to download (e.g., `"data.csv"`).
-- `options`: Optional. Controls for the download behavior, such as:
-  - `silent`: A boolean to suppress the download count increment. Default is `False`.
+- `silent`: A boolean to suppress the download count increment. Default is `False`.
 
 **Returns:** A pre-signed URL for downloading the file.
 
 **Example:**
 
 ```python
-get_url = await artifact_manager.get_file(prefix="collections/dataset-gallery/example-dataset", path="data.csv")
+get_url = await artifact_manager.get_file(artifact_id=artifact.id, path="data.csv")
+
+# If "example-dataset" is an alias of the artifact under the current workspace
+get_url = await artifact_manager.get_file(artifact_id="example-dataset", path="data.csv")
+
+# If "example-dataset" is an alias of the artifact under another workspace
+get_url = await artifact_manager.get_file(artifact_id="other_workspace/example-dataset", path="data.csv")
 ```
 
 ---
 
-### `list_files(prefix: str, dir_path: str=None) -> list`
+### `list_files(artifact_id: str, dir_path: str=None) -> list`
 
 Lists all files in the artifact.
 
 **Parameters:**
 
-- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
+- `artifact_id`: The id of the artifact to list files from. It can be an uuid generated by `create` or `edit` function, or it can be an alias of the artifact under the current workspace. If you want to refer to an artifact in another workspace, you should use the full alias in the format of `"workspace_id/alias"`.
 - `dir_path`: Optional. The directory path within the artifact to list files. Default is `None`.
 
 **Returns:** A list of files in the artifact.
@@ -454,18 +492,24 @@ Lists all files in the artifact.
 **Example:**
 
 ```python
-files = await artifact_manager.list_files(prefix="collections/dataset-gallery/example-dataset")
+files = await artifact_manager.list_files(artifact_id=artifact.id)
+
+# If "example-dataset" is an alias of the artifact under the current workspace
+files = await artifact_manager.list_files(artifact_id="example-dataset")
+
+# If "example-dataset" is an alias of the artifact under another workspace
+files = await artifact_manager.list_files(artifact_id="other_workspace/example-dataset")
 ```
 
 ---
 
-### `read(prefix: str, stage: bool = False, silent: bool = False, include_metadata: bool = False) -> dict`
+### `read(artifact_id: str, stage: bool = False, silent: bool = False, include_metadata: bool = False) -> dict`
 
 Reads and returns the manifest of an artifact or collection. If in staging mode, reads the staged manifest.
 
 **Parameters:**
 
-- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
+- `artifact_id`: The id of the artifact to read. It can be an uuid generated by `create` or `edit` function, or it can be an alias of the artifact under the current workspace. If you want to refer to an artifact in another workspace, you should use the full alias in the format of `"workspace_id/alias"`.
 - `stage`: Optional. If `True`, reads the staged manifest. Default is `False`.
 - `silent`: Optional. If `True`, suppresses the view count increment. Default is `False`.
 - `include_metadata`: Optional. If `True`, includes metadata such as download statistics in the manifest (fields starting with `"."`). Default is `False`.
@@ -475,19 +519,24 @@ Reads and returns the manifest of an artifact or collection. If in staging mode,
 **Example:**
 
 ```python
-manifest = await artifact_manager.read(prefix="collections/dataset-gallery/example-dataset")
+manifest = await artifact_manager.read(artifact_id=artifact.id)
+
+# If "example-dataset" is an alias of the artifact under the current workspace
+manifest = await artifact_manager.read(artifact_id="example-dataset")
+
+# If "example-dataset" is an alias of the artifact under another workspace
+manifest = await artifact_manager.read(artifact_id="other_workspace/example-dataset")
 ```
 
 ---
 
-### `list(prefix: str, keywords: List[str] = None, filters: dict = None, mode: str = "AND", page: int = 0, page_size: int = 100, order_by: str = None, summary_fields: List[str] = None, silent: bool = False) -> list`
+### `list(artifact_id: str, keywords: List[str] = None, filters: dict = None, mode: str = "AND", page: int = 0, page_size: int = 100, order_by: str = None, silent: bool = False) -> list`
 
 Retrieve a list of child artifacts within a specified collection, supporting keyword-based fuzzy search, field-specific filters, and flexible ordering. This function allows detailed control over the search and pagination of artifacts in a collection, including staged artifacts if specified.
 
 **Parameters:**
 
-- `prefix` (str): The path to the artifact, either as a relative prefix within the workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or as an absolute path including the workspace ID (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`). This defines the collection or artifact directory to search within.
-
+- `artifact_id` (str): The id of the parent artifact or collection to list children from. It can be an uuid generated by `create` or `edit` function, or it can be an alias of the artifact under the current workspace. If you want to refer to an artifact in another workspace, you should use the full alias in the format of `"workspace_id/alias"`.
 - `keywords` (List[str], optional): A list of search terms used for fuzzy searching across all manifest fields. Each term is searched independently, and results matching any term will be included. For example, `["sample", "dataset"]` returns artifacts containing either "sample" or "dataset" in any field of the manifest.
 
 - `filters` (dict, optional): A dictionary where each key is a manifest field name and each value specifies the match for that field. Filters support both exact and range-based matching, depending on the field. You can filter based on the keys inside the manifest, as well as internal fields like permissions and view/download statistics by adding a dot (`.`) before the field name. Supported internal fields include:
@@ -510,12 +559,10 @@ Retrieve a list of child artifacts within a specified collection, supporting key
   - Use a suffix `<` or `>` to specify ascending or descending order, respectively (e.g., `view_count<` for ascending).
   - Default ordering is ascending by prefix if not specified.
 
-- `summary_fields` (List[str], optional): A list of fields to include in the summary for each artifact. If not specified, it will use the `summary_fields` value from the parent collection, otherwise, the default summary fields (`id`, `type`, `name`) are used. You can add `"*"` to the list if you want to include all the manifest fields. If you want to include internal fields such as `.created_at`, `.last_modified`, or other download/view statistics such as `.download_count`, you can also specify them individually in the `summary_fields`. If you want to include all fields, you can add `".*"` to the list.
-
 - `silent` (bool, optional): If `True`, prevents incrementing the view count for the parent artifact when listing children. Default is `False`.
 
 **Returns:**
-A list of artifacts that match the search criteria, each represented by a dictionary containing summary fields. Fields are specified in the `summary_fields` attribute of the parent artifact's manifest; if this attribute is undefined, default summary fields (`id`, `type`, `name`) are used.
+A list of artifacts that match the search criteria, each represented by a dictionary containing all the fields.
 
 **Example Usage:**
 
@@ -523,7 +570,7 @@ A list of artifacts that match the search criteria, each represented by a dictio
 # Retrieve artifacts in the 'dataset-gallery' collection, filtering by creator and keywords,
 # with results ordered by descending view count.
 results = await artifact_manager.list(
-    prefix="collections/dataset-gallery",
+    artifact_id=collection.id, # Or full alias: "my_workspace/dataset-gallery"
     keywords=["example"],
     filters={"created_by": "user123", "stage": False},
     order_by="view_count>",
@@ -535,35 +582,47 @@ results = await artifact_manager.list(
 
 ---
 
-### `reset_stats(prefix: str) -> None`
+### `reset_stats(artifact_id: str) -> None`
 
 Resets the download and view counts for the artifact.
 
 **Parameters:**
 
-- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
+- `artifact_id`: The id of the artifact to reset statistics for. It can be an uuid generated by `create` or `edit` function, or it can be an alias of the artifact under the current workspace. If you want to refer to an artifact in another workspace, you should use the full alias in the format of `"workspace_id/alias"`.
 
 **Example:**
 
 ```python
-await artifact_manager.reset_stats(prefix="collections/dataset-gallery/example-dataset")
+await artifact_manager.reset_stats(artifact_id=artifact.id)
+
+# If "example-dataset" is an alias of the artifact under the current workspace
+await artifact_manager.reset_stats(artifact_id="example-dataset")
+
+# If "example-dataset" is an alias of the artifact under another workspace
+await artifact_manager.reset_stats(artifact_id="other_workspace/example-dataset")
 ```
 
 ---
 
-### `publish(prefix: str, to: str = None) -> None`
+### `publish(artifact_id: str, to: str = None) -> None`
 
 Publishes the artifact to a specified platform, such as Zenodo. The artifact must have a valid Zenodo metadata schema to be published.
 
 **Parameters:**
 
-- `prefix`: The path of the artifact, it can be a prefix relative to the current workspace (e.g., `"collections/dataset-gallery/example-dataset"`) or an absolute prefix with the workspace id (e.g., `"/my_workspace_id/collections/dataset-gallery/example-dataset"`).
+- `artifact_id`: The id of the artifact to publish. It can be an uuid generated by `create` or `edit` function, or it can be an alias of the artifact under the current workspace. If you want to refer to an artifact in another workspace, you should use the full alias in the format of `"workspace_id/alias"`.
 - `to`: Optional, the target platform to publish the artifact. Supported values are `zenodo` and `sandbox_zenodo`. This parameter should be the same as the `publish_to` parameter in the `create` function or left empty to use the platform specified in the artifact's metadata.
 
 **Example:**
 
 ```python
-await artifact_manager.publish(prefix="collections/dataset-gallery/example-dataset", to="sandbox_zenodo")
+await artifact_manager.publish(artifact_id=artifact.id, to="sandbox_zenodo")
+
+# If "example-dataset" is an alias of the artifact under the current workspace
+await artifact_manager.publish(artifact_id="example-dataset", to="sandbox_zenodo")
+
+# If "example-dataset" is an alias of the artifact under another workspace
+await artifact_manager.publish(artifact_id="other_workspace/example-dataset", to="sandbox_zenodo")
 ```
 
 ---
@@ -581,12 +640,9 @@ artifact_manager = await server.get_service("public/artifact-manager")
 gallery_manifest = {
     "name": "Dataset Gallery",
     "description": "A collection for organizing datasets",
-    "type": "collection",
-    "collection": [],
 }
 # Create the collection with read permission for everyone and create permission for all authenticated users
-# We set orphan=True to create a collection without a parent
-await artifact_manager.create(prefix="collections/dataset-gallery", manifest=gallery_manifest, permissions={"*": "r", "@": "r+"}, orphan=True)
+collection = await artifact_manager.create(type="collection", alias="dataset-gallery", manifest=gallery_manifest, permissions={"*": "r", "@": "r+"})
 
 # Step 3: Add a dataset to the gallery
 dataset_manifest = {
@@ -594,31 +650,22 @@ dataset_manifest = {
     "description": "A dataset with example data",
     "type": "dataset",
 }
-await artifact_manager.create(prefix="collections/dataset-gallery/example-dataset", manifest=dataset_manifest, stage=True)
+dataset = await artifact_manager.create(parent_id=collection.id, alias="example-dataset" manifest=dataset_manifest, stage=True)
 
 # Step 4: Upload a file to the dataset
-put_url = await artifact_manager.put_file(prefix="collections/dataset-gallery/example-dataset", file_path="data.csv")
+put_url = await artifact_manager.put_file(dataset.id, file_path="data.csv")
 with open("path/to/local/data.csv", "rb") as f:
     response = requests.put(put_url, data=f)
     assert response.ok, "File upload failed"
 
 # Step 5: Commit the dataset
-await artifact_manager.commit(prefix="collections/dataset-gallery/example-dataset")
+await artifact_manager.commit(dataset.id)
 
 # Step 6: List all datasets in the gallery
-datasets = await artifact_manager.list(prefix="collections/dataset-gallery")
+datasets = await artifact_manager.list(collection.id)
 print("Datasets in the gallery:", datasets)
 ```
 
-
-### Resetting Download Statistics
-
-You can reset the download statistics of a dataset using the `reset_stats` function.
-
-```python
-await artifact_manager.reset_stats(prefix="collections/dataset-gallery/example-dataset")
-print("Download statistics reset.")
-```
 
 ## HTTP API for Accessing Artifacts and Download Counts
 
@@ -626,10 +673,10 @@ The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifes
 
 ### Endpoints:
 
- - `/{workspace}/artifacts/{prefix:path}` for fetching the artifact manifest.
- - `/{workspace}/artifacts/{prefix:path}/__children__` for listing all artifacts in a collection.
- - `/{workspace}/artifacts/{prefix:path}/__files__` for listing all files in the artifact.
- - `/{workspace}/artifacts/{prefix:path}/__files__/{file_path:path}` for downloading a file from the artifact (will be redirected to a pre-signed URL).
+ - `/{workspace}/artifacts/{artifact_id}` for fetching the artifact manifest.
+ - `/{workspace}/artifacts/{artifact_id}/children` for listing all artifacts in a collection.
+ - `/{workspace}/artifacts/{artifact_id}/files` for listing all files in the artifact.
+ - `/{workspace}/artifacts/{artifact_id}/files/{file_path:path}` for downloading a file from the artifact (will be redirected to a pre-signed URL).
 
 
 ### Request Format:
@@ -643,7 +690,7 @@ The `Artifact Manager` provides an HTTP endpoint for retrieving artifact manifes
 The path parameters are used to specify the artifact or file to access. The following parameters are supported:
 
 - **workspace**: The workspace in which the artifact is stored.
-- **prefix**: The relative prefix to the artifact. For private artifacts, it requires proper authentication by passing the user's token in the request headers.
+- **artifact_id**: The id of the artifact to access. This can be an uuid generated by `create` or `edit` function, or it can be an alias of the artifact under the current workspace. Note that this artifact_id can only be the uuid or the alias without the workspace id.
 - **file_path**: Optional, the relative path to a file within the artifact. This is optional and only required when downloading a file.
 
 ### Query Parameters:
@@ -652,7 +699,6 @@ Qury parameters are passed after the `?` in the URL and are used to control the 
 
 - **stage**: A boolean flag to fetch the staged version of the manifest. Default is `False`.
 - **silent**: A boolean flag to suppress the view count increment. Default is `False`.
-- **include_metadata**: A boolean flag to include metadata such as download statistics in the manifest. Default is `False`.
 
 - **keywords**: A list of search terms used for fuzzy searching across all manifest fields, separated by commas.
 - **filters**: A dictionary of filters to apply to the search, in the format of a JSON string.
@@ -660,18 +706,17 @@ Qury parameters are passed after the `?` in the URL and are used to control the 
 - **page**: The page number for pagination. Default is `0`.
 - **page_size**: The maximum number of artifacts to return per page. Default is `100`.
 - **order_by**: The field used to order results. Default is ascending by prefix.
-- **summary_fields**: A list of fields to include in the summary for each artifact when listing children. Default to the `summary_fields` value from the parent collection, otherwise, the default summary fields (`id`, `type`, `name`) are used. To include all manifest fields, add `"*"` to the list, and to include all internal fields, add `".*"` to the list.
 - **silent**: A boolean flag to prevent incrementing the view count for the parent artifact when listing children, listing files, or reading the artifact. Default is `False`.
 
 ### Response:
 
-For `/{workspace}/artifacts/{prefix:path}`, the response will be a JSON object representing the artifact manifest. For `/{workspace}/artifacts/{prefix:path}/__files__/{file_path:path}`, the response will be a pre-signed URL to download the file. The artifact manifest will also include any metadata such as download statistics under keys starting with dot (`.`), e.g. `.view_count`, `.download_count`. For private artifacts, make sure if the user has the necessary permissions.
+For `/{workspace}/artifacts/{artifact_id}`, the response will be a JSON object representing the artifact manifest. For `/{workspace}/artifacts/{artifact_id}/__files__/{file_path:path}`, the response will be a pre-signed URL to download the file. The artifact manifest will also include any metadata such as download statistics, e.g. `view_count`, `download_count`. For private artifacts, make sure if the user has the necessary permissions.
 
-For `/{workspace}/artifacts/{prefix:path}/__children__`, the response will be a list of artifacts in the collection.
+For `/{workspace}/artifacts/{artifact_id}/children`, the response will be a list of artifacts in the collection.
 
-For `/{workspace}/artifacts/{prefix:path}/__files__`, the response will be a list of files in the artifact, each file is a dictionary with the `name` and `type` fields.
+For `/{workspace}/artifacts/{artifact_id}/files`, the response will be a list of files in the artifact, each file is a dictionary with the `name` and `type` fields.
 
-For `/{workspace}/artifacts/{prefix:path}/__files__/{file_path:path}`, the response will be a pre-signed URL to download the file.
+For `/{workspace}/artifacts/{artifact_id}/files/{file_path:path}`, the response will be a pre-signed URL to download the file.
 
 ### Example: Fetching a public artifact with download statistics
 
@@ -680,13 +725,11 @@ import requests
 
 SERVER_URL = "https://hypha.aicell.io"
 workspace = "my-workspace"
-response = requests.get(f"{SERVER_URL}/{workspace}/artifacts/collections/dataset-gallery/example-dataset")
+response = requests.get(f"{SERVER_URL}/{workspace}/artifacts/example-dataset")
 if response.ok:
     artifact = response.json()
-    print(artifact["name"])  # Output: Example Dataset
-    print(artifact[".download_count"])  # Output: Download count for the dataset
+    print(artifact["manifest"]["name"])  # Output: Example Dataset
+    print(artifact["download_count"])  # Output: Download count for the dataset
 else:
     print(f"Error: {response.status_code}")
 ```
-
-

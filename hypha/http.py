@@ -683,56 +683,6 @@ class HTTPProxy:
                 url=f"{base_path.rstrip('/')}/{workspace}/apps/{service_id}/"
             )
 
-        @app.get(norm_url("/{workspace}/applications/{app_id}/{path:path}"))
-        async def get_browser_app_file(
-            workspace: str, app_id: str, path: str, token: str = None
-        ) -> Response:
-            """Route for getting browser app files."""
-            if token is None:
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "success": False,
-                        "detail": (f"Token not provided for {workspace}/{path}"),
-                    },
-                )
-            try:
-                user_info = await store.parse_user_token(token)
-            except jose.exceptions.JWTError:
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "success": False,
-                        "detail": (
-                            f"Invalid token not provided for {workspace}/{path}"
-                        ),
-                    },
-                )
-            if not user_info.check_permission(workspace, UserPermission.read):
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "success": False,
-                        "detail": (
-                            f"{user_info['username']} has no"
-                            f" permission to access {workspace}"
-                        ),
-                    },
-                )
-            key = safe_join(workspace, "applications", app_id, path)
-            assert self.s3_enabled, "S3 is not enabled."
-            from hypha.s3 import FSFileResponse
-            from aiobotocore.session import get_session
-
-            s3_client = get_session().create_client(
-                "s3",
-                endpoint_url=self.endpoint_url,
-                aws_access_key_id=self.access_key_id,
-                aws_secret_access_key=self.secret_access_key,
-                region_name=self.region_name,
-            )
-            return FSFileResponse(s3_client, self.workspace_bucket, key)
-
         @app.get(norm_url("/{workspace}/services/{service_id}/{function_key}"))
         @app.post(norm_url("/{workspace}/services/{service_id}/{function_key}"))
         async def call_service_function(
