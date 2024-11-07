@@ -51,6 +51,11 @@ SERVICE_SUMMARY_FIELD = ["id", "name", "type", "description", "config"]
 _allowed_characters = re.compile(r"^[a-zA-Z0-9-_/|*]*$")
 
 
+# Function to return a timezone-naive datetime
+def naive_utc_now():
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
+
 # SQLAlchemy model for storing events
 class EventLog(Base):
     __tablename__ = "event_logs"
@@ -59,9 +64,7 @@ class EventLog(Base):
     event_type = Column(String, nullable=False)
     workspace = Column(String, nullable=False)
     user_id = Column(String, nullable=False)
-    timestamp = Column(
-        DateTime, default=datetime.datetime.now(datetime.timezone.utc), index=True
-    )
+    timestamp = Column(DateTime, default=naive_utc_now, index=True)
     data = Column(JSON, nullable=True)  # Store any additional event metadata
 
     def to_dict(self):
@@ -71,7 +74,7 @@ class EventLog(Base):
             "event_type": self.event_type,
             "workspace": self.workspace,
             "user_id": self.user_id,
-            "timestamp": self.timestamp.isoformat(),  # Convert datetime to ISO string
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
             "data": self.data,
         }
 
