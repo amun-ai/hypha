@@ -12,6 +12,8 @@ from threading import Thread
 import pytest_asyncio
 import requests
 from requests import RequestException
+import pytest_asyncio
+from sqlalchemy import create_engine
 
 from hypha.core import UserInfo, auth, UserPermission
 from hypha.core.auth import generate_presigned_token, create_scope
@@ -29,7 +31,13 @@ from . import (
     SIO_PORT2,
     SIO_PORT_REDIS_1,
     SIO_PORT_REDIS_2,
+    SIO_PORT_SQLITE,
     TRITON_PORT,
+    POSTGRES_PORT,
+    POSTGRES_USER,
+    POSTGRES_PASSWORD,
+    POSTGRES_DB,
+    POSTGRES_URI,
 )
 
 JWT_SECRET = str(uuid.uuid4())
@@ -122,6 +130,61 @@ def triton_server():
     yield
 
 
+@pytest_asyncio.fixture(name="postgres_server", scope="session")
+def postgres_server():
+    """Start a PostgreSQL server as a test fixture and tear down after the test."""
+
+    # Check if the container is already running
+    existing_container = subprocess.run(
+        ["docker", "ps", "-q", "-f", "name=hypha-postgres"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    if existing_container:
+        print("Using existing PostgreSQL container:", existing_container)
+    else:
+        # Start a new PostgreSQL container if none is running
+        print("Starting a new PostgreSQL container")
+        subprocess.Popen(
+            [
+                "docker",
+                "run",
+                "--name",
+                "hypha-postgres",
+                "--rm",
+                "-e",
+                f"POSTGRES_PASSWORD={POSTGRES_PASSWORD}",
+                "-p",
+                f"{POSTGRES_PORT}:5432",
+                "-d",
+                "postgres",
+            ]
+        )
+        time.sleep(2)  # Give the container time to initialize
+
+    # Wait for the PostgreSQL server to become available
+    timeout = 10
+    while timeout > 0:
+        try:
+            engine = create_engine(
+                f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@localhost:{POSTGRES_PORT}/{POSTGRES_DB}"
+            )
+            with engine.connect() as connection:
+                connection.execute("SELECT 1")
+            break
+        except Exception:
+            timeout -= 1
+            time.sleep(1)
+
+    yield  # Test code executes here
+
+    # Stop and remove the container only if we started it
+    if not existing_container:
+        print("Stopping PostgreSQL container")
+        subprocess.run(["docker", "stop", "hypha-postgres"])
+
+
 @pytest_asyncio.fixture(name="redis_server", scope="session")
 def redis_server():
     """Start a redis server as test fixture and tear down after test."""
@@ -151,12 +214,8 @@ def redis_server():
 
 
 @pytest_asyncio.fixture(name="fastapi_server", scope="session")
-def fastapi_server_fixture(minio_server):
+def fastapi_server_fixture(minio_server, postgres_server):
     """Start server as test fixture and tear down after test."""
-    # create a temporary directory for the artifacts database
-    dirpath = tempfile.mkdtemp()
-    print(f"Artifacts database directory: {dirpath}")
-    db_path = f"sqlite+aiosqlite:///{dirpath}/artifacts.db"
     with subprocess.Popen(
         [
             sys.executable,
@@ -165,7 +224,7 @@ def fastapi_server_fixture(minio_server):
             f"--port={SIO_PORT}",
             "--enable-server-apps",
             "--enable-s3",
-            f"--database-uri={db_path}",
+            f"--database-uri={POSTGRES_URI}",
             "--reset-redis",
             f"--endpoint-url={MINIO_SERVER_URL}",
             f"--access-key-id={MINIO_ROOT_USER}",
@@ -195,6 +254,53 @@ def fastapi_server_fixture(minio_server):
         if timeout <= 0:
             raise TimeoutError("Server (fastapi_server) did not start in time")
         response = requests.get(f"http://127.0.0.1:{SIO_PORT}/health/liveness")
+        assert response.ok
+        yield
+        proc.kill()
+        proc.terminate()
+
+
+@pytest_asyncio.fixture(name="fastapi_server_sqlite", scope="session")
+def fastapi_server_sqlite_fixture(minio_server):
+    """Start server as test fixture and tear down after test."""
+    # create a temporary directory for the artifacts database
+    dirpath = tempfile.mkdtemp()
+    print(f"Artifacts database directory: {dirpath}")
+    db_path = f"sqlite+aiosqlite:///{dirpath}/artifacts.db"
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "hypha.server",
+            f"--port={SIO_PORT_SQLITE}",
+            "--enable-server-apps",
+            "--enable-s3",
+            f"--database-uri={db_path}",
+            "--reset-redis",
+            f"--endpoint-url={MINIO_SERVER_URL}",
+            f"--access-key-id={MINIO_ROOT_USER}",
+            f"--secret-access-key={MINIO_ROOT_PASSWORD}",
+            f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            f"--workspace-bucket=my-workspaces",
+            "--s3-admin-type=generic",
+        ],
+        env=test_env,
+    ) as proc:
+        timeout = 20
+        while timeout > 0:
+            try:
+                response = requests.get(
+                    f"http://127.0.0.1:{SIO_PORT_SQLITE}/health/readiness"
+                )
+                if response.ok:
+                    break
+            except RequestException:
+                pass
+            timeout -= 0.1
+            time.sleep(0.1)
+        if timeout <= 0:
+            raise TimeoutError("Server (fastapi_server) did not start in time")
+        response = requests.get(f"http://127.0.0.1:{SIO_PORT_SQLITE}/health/liveness")
         assert response.ok
         yield
         proc.kill()

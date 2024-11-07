@@ -4,10 +4,89 @@ import requests
 import os
 from hypha_rpc import connect_to_server
 
-from . import SERVER_URL, find_item
+from . import SERVER_URL, SERVER_URL_SQLITE, find_item
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
+
+
+async def test_sqlite_create_and_search_artifacts(minio_server, fastapi_server_sqlite):
+    """Test creating a collection, adding datasets with files, and performing a search on manifest fields."""
+
+    # Set up connection and artifact manager
+    api = await connect_to_server(
+        {"name": "sqlite test client", "server_url": SERVER_URL_SQLITE}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection for the SQLite test
+    collection_manifest = {
+        "name": "SQLite Test Collection",
+        "description": "A collection for testing SQLite backend",
+    }
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest=collection_manifest,
+        config={"permissions": {"*": "r", "@": "r+"}},
+    )
+
+    # Add multiple datasets to the collection
+    dataset_manifests = [
+        {"name": "Dataset 1", "description": "First dataset for SQLite testing"},
+        {"name": "Dataset 2", "description": "Second dataset for SQLite testing"},
+        {"name": "Dataset 3", "description": "Third dataset for SQLite testing"},
+    ]
+    datasets = []
+    for dataset_manifest in dataset_manifests:
+        dataset = await artifact_manager.create(
+            type="dataset",
+            parent_id=collection.id,
+            manifest=dataset_manifest,
+            stage=True,
+        )
+        datasets.append(dataset)
+
+    # Test read operation on the datasets
+    for dataset in datasets:
+        dataset_data = await artifact_manager.read(artifact_id=dataset.id, stage=True)
+        assert dataset_data["manifest"]["name"] in [
+            dataset_manifest["name"] for dataset_manifest in dataset_manifests
+        ]
+
+    # Add files to each dataset
+    file_contents = [
+        "Contents of file 1 for Dataset 1",
+        "Contents of file 2 for Dataset 2",
+        "Contents of file 3 for Dataset 3",
+    ]
+    for idx, dataset in enumerate(datasets):
+        put_url = await artifact_manager.put_file(
+            artifact_id=dataset.id, file_path=f"file_{idx+1}.txt"
+        )
+        response = requests.put(put_url, data=file_contents[idx])
+        assert response.ok
+
+    # Commit the datasets
+    for dataset in datasets:
+        await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Search for artifacts based on manifest fields
+    search_results = await artifact_manager.list(
+        parent_id=collection.id,
+        keywords=["SQLite"],
+        filters={"manifest": {"description": "*dataset*"}},
+        mode="AND",
+    )
+
+    # Validate the search results contain the added datasets
+    assert len(search_results) == len(datasets)
+    assert set([result["manifest"]["name"] for result in search_results]) == set(
+        [dataset_manifest["name"] for dataset_manifest in dataset_manifests]
+    )
+    # Clean up by deleting datasets and the collection
+    for dataset in datasets:
+        await artifact_manager.delete(artifact_id=dataset.id)
+    await artifact_manager.delete(artifact_id=collection.id)
 
 
 async def test_serve_artifact_endpoint(minio_server, fastapi_server):

@@ -39,7 +39,7 @@ REQUIREMENTS = [
     "sqlalchemy>=2.0.35",
     "aiosqlite>=0.20.0",
     "prometheus-client>=0.21.0",
-    "uuid-uuid>=0.9.0",
+    "uuid-utils>=0.9.0",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()
@@ -76,6 +76,7 @@ setup(
             "base58>=2.1.0",
             "pymultihash>=0.8.2",
         ],
+        "postgres": ["psycopg2-binary>=2.9.10", "asyncpg>=0.30.0"],
     },
     zip_safe=False,
     entry_points={"console_scripts": ["hypha = hypha.__main__:main"]},
