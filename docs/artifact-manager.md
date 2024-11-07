@@ -1,10 +1,9 @@
+
 # Artifact Manager
 
-The `Artifact Manager` is a built-in Hypha service for indexing, managing, and storing resources such as datasets, AI models, and applications. It provides a structured way to manage datasets and similar resources, enabling efficient listing, uploading, updating, and deleting of files. It also now supports tracking download statistics for each artifact.
+The `Artifact Manager` is an essential Hypha service for managing resources such as datasets, AI models, and applications. It allows for structured resource management, providing APIs to create collections, manage datasets, track download statistics, enforce schemas, and control access permissions. The `Artifact Manager` can be used as a backend for web applications, supporting complex operations like indexing, searching, and schema validation.
 
-A typical use case for the `Artifact Manager` is as a backend for a single-page web application that displays a gallery of datasets, AI models, applications, or other types of resources. The default metadata of an artifact is designed to render a grid of cards on a webpage. It also supports tracking download statistics.
-
-**Note:** The `Artifact Manager` is only available when your Hypha server has S3 storage enabled.
+**Note:** The `Artifact Manager` is available only when S3 storage is enabled on your Hypha server.
 
 ---
 
@@ -12,62 +11,69 @@ A typical use case for the `Artifact Manager` is as a backend for a single-page 
 
 ### Step 1: Connecting to the Artifact Manager Service
 
-To use the `Artifact Manager`, you first need to connect to the Hypha server. This API allows you to create, read, edit, and delete datasets in the artifact registry (stored in an S3 bucket for each workspace).
+To use the `Artifact Manager`, start by connecting to the Hypha server. This connection allows you to interact with the artifact registry, including creating, editing, and deleting datasets, as well as managing permissions and tracking download statistics.
 
 ```python
 from hypha_rpc import connect_to_server
 
 SERVER_URL = "https://hypha.aicell.io"  # Replace with your server URL
 
-# Connect to the Dataset Manager API
+# Connect to the Artifact Manager API
 server = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
 artifact_manager = await server.get_service("public/artifact-manager")
 ```
 
 ### Step 2: Creating a Dataset Gallery Collection
 
-Once connected, you can create a collection to organize datasets in the gallery.
+Once connected, you can create a collection that organizes datasets, providing metadata and access permissions for each.
 
 ```python
-# Create a collection for the Dataset Gallery
+# Define metadata for the dataset gallery
 gallery_manifest = {
     "name": "Dataset Gallery",
     "description": "A collection for organizing datasets",
 }
 
-# Create the collection with read permission for everyone and create permission for all authenticated users
-# We set orphan=True to create a collection without a parent
-collection = await artifact_manager.create(alias="dataset-gallery", 
-type="collection", manifest=gallery_manifest, permissions={"*": "r", "@": "r+"})
+# Create the collection with read access for everyone and create access for authenticated users
+collection = await artifact_manager.create(
+    alias="dataset-gallery",
+    type="collection",
+    manifest=gallery_manifest,
+    config={"permissions": {"*": "r", "@": "r+"}}
+)
 print("Dataset Gallery created.")
 ```
 
 ### Step 3: Adding a Dataset to the Gallery
 
-After creating the gallery, you can start adding datasets to it. Each dataset will have its own manifest that describes the dataset and any associated files.
+After creating the gallery, you can add datasets to it, with each dataset having its own metadata and permissions.
 
 ```python
-# Create a new dataset inside the Dataset Gallery
+# Define metadata for the new dataset
 dataset_manifest = {
     "name": "Example Dataset",
-    "description": "A dataset with example data",
+    "description": "A dataset containing example data",
 }
 
-# We set the parent to the collection we created earlier
-dataset = await artifact_manager.create(parent_id=collection.id, alias="example-dataset", manifest=dataset_manifest, stage=True)
+# Add the dataset to the gallery and stage it for review
+dataset = await artifact_manager.create(
+    parent_id=collection.id,
+    alias="example-dataset",
+    manifest=dataset_manifest,
+    stage=True
+)
 print("Dataset added to the gallery.")
 ```
 
 ### Step 4: Uploading Files to the Dataset with Download Statistics
 
-Once you have created a dataset, you can upload files to it by generating a pre-signed URL. This URL allows you to upload the actual files to the artifact's S3 bucket.
-
-Additionally, when uploading files to an artifact, you can specify a `download_weight` for each file. This weight determines how the file impacts the artifact's download count when it is accessed. For example, primary files might have a higher `download_weight`, while secondary files might have no impact. The download count is automatically updated whenever users download files from the artifact.
+Each dataset can contain multiple files. Use pre-signed URLs for secure uploads and set `download_weight` to track file downloads.
 
 ```python
-# To index the artifact you can use its alias ('dataset-gallery') or its id (dataset.id)
-# Get a pre-signed URL to upload a file, with a download_weight assigned
-put_url = await artifact_manager.put_file(dataset.id, file_path="data.csv", download_weight=0.5)
+# Generate a pre-signed URL to upload a file with a specific download weight
+put_url = await artifact_manager.put_file(
+    dataset.id, file_path="data.csv", download_weight=0.5
+)
 
 # Upload the file using an HTTP PUT request
 with open("path/to/local/data.csv", "rb") as f:
@@ -79,17 +85,17 @@ print("File uploaded to the dataset.")
 
 ### Step 5: Committing the Dataset
 
-After uploading the files, commit the dataset to finalize it. This will check that all files have been uploaded and update the collection.
+After uploading files, commit the dataset to finalize its status in the collection. Committed datasets are accessible based on their permissions.
 
 ```python
-# Finalize and commit the dataset
+# Commit the dataset to finalize its status
 await artifact_manager.commit(dataset.id)
 print("Dataset committed.")
 ```
 
 ### Step 6: Listing All Datasets in the Gallery
 
-You can retrieve a list of all datasets in the collection to display on a webpage or for further processing.
+Retrieve a list of all datasets in the collection for display or further processing.
 
 ```python
 # List all datasets in the gallery
@@ -101,7 +107,7 @@ print("Datasets in the gallery:", datasets)
 
 ## Full Example: Creating and Managing a Dataset Gallery
 
-Here’s a full example that shows how to connect to the service, create a dataset gallery, add a dataset, upload files with download statistics, and commit the dataset.
+Here’s a complete example showing how to connect to the service, create a dataset gallery, add a dataset, upload files, and commit the dataset.
 
 ```python
 import asyncio
@@ -111,7 +117,7 @@ from hypha_rpc import connect_to_server
 SERVER_URL = "https://hypha.aicell.io"
 
 async def main():
-    # Connect to the Dataset Manager API
+    # Connect to the Artifact Manager API
     api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
     artifact_manager = await api.get_service("public/artifact-manager")
 
@@ -120,28 +126,35 @@ async def main():
         "name": "Dataset Gallery",
         "description": "A collection for organizing datasets",
     }
-    # Create the collection with read permission for everyone and create permission for all authenticated users
-    collection = await artifact_manager.create(type="collection", alias="dataset-gallery", manifest=gallery_manifest, permissions={"*": "r+", "@": "r+"})
+    collection = await artifact_manager.create(
+        type="collection",
+        alias="dataset-gallery",
+        manifest=gallery_manifest,
+        config={"permissions": {"*": "r+", "@": "r+"}}
+    )
     print("Dataset Gallery created.")
 
-    # Create a new dataset inside the Dataset Gallery
+    # Add a dataset to the gallery
     dataset_manifest = {
         "name": "Example Dataset",
-        "description": "A dataset with example data",
+        "description": "A dataset containing example data",
     }
-    dataset = await artifact_manager.create(parent_id=collection.id, alias="example-dataset", manifest=dataset_manifest, stage=True)
+    dataset = await artifact_manager.create(
+        parent_id=collection.id,
+        alias="example-dataset",
+        manifest=dataset_manifest,
+        stage=True
+    )
     print("Dataset added to the gallery.")
 
-    # Get a pre-signed URL to upload a file, with a download_weight assigned
+    # Upload a file to the dataset
     put_url = await artifact_manager.put_file(dataset.id, file_path="data.csv", download_weight=0.5)
-
-    # Upload the file using an HTTP PUT request
     with open("path/to/local/data.csv", "rb") as f:
         response = requests.put(put_url, data=f)
         assert response.ok, "File upload failed"
     print("File uploaded to the dataset.")
 
-    # Finalize and commit the dataset
+    # Commit the dataset
     await artifact_manager.commit(dataset.id)
     print("Dataset committed.")
 
@@ -156,11 +169,11 @@ asyncio.run(main())
 
 ## Advanced Usage: Enforcing Schema for Dataset Validation
 
-The `Artifact Manager` supports enforcing a schema to ensure that datasets conform to a specific structure. This can be useful in scenarios where you want to maintain consistency across multiple datasets.
+The `Artifact Manager` allows schema enforcement to ensure datasets meet specific requirements. This is helpful when maintaining consistency across multiple datasets.
 
 ### Step 1: Create a Collection with a Schema
 
-You can define a schema for the collection that specifies the required fields for each dataset.
+Define a schema for datasets to specify required fields.
 
 ```python
 # Define a schema for datasets in the gallery
@@ -169,40 +182,50 @@ dataset_schema = {
     "properties": {
         "name": {"type": "string"},
         "description": {"type": "string"},
-        "item_type": {"type": "string", "enum": ["dataset", "model", "application"]},
+        "record_type": {"type": "string", "enum": ["dataset", "model", "application"]},
     },
-    "required": ["name", "description", "item_type"]
+    "required": ["name", "description", "record_type"]
 }
 
-# Create a collection with the schema
+# Create a collection with schema validation
 gallery_manifest = {
     "name": "Schema Dataset Gallery",
-    "description": "A gallery of datasets with enforced schema",
+    "description": "A gallery with schema-enforced datasets",
 }
-# Create the collection with read permission for everyone and create permission for all authenticated users
-collection = await artifact_manager.create(type="collection", alias="schema-dataset-gallery", manifest=gallery_manifest, config={"collection_schema": dataset_schema}, permissions={"*": "r+", "@": "r+"})
+collection = await artifact_manager.create(
+    type="collection",
+    alias="schema-dataset-gallery",
+    manifest=gallery_manifest,
+    config={"collection_schema": dataset_schema, "permissions": {"*": "r+", "@": "r+"}}
+)
 print("Schema-based Dataset Gallery created.")
 ```
 
 ### Step 2: Validate Dataset Against Schema
 
-When you commit a dataset to this collection, it will be validated against the schema.
+Datasets in the collection will be validated against the defined schema during creation and commit.
 
 ```python
-# Create a valid dataset that conforms to the schema
+# Define a valid dataset that conforms to the schema
 valid_dataset_manifest = {
     "name": "Valid Dataset",
-    "description": "A valid dataset conforming to the schema",
-    "item_type": "dataset",
+    "description": "A valid dataset meeting schema requirements",
+    "record_type": "dataset",
 }
 
-dataset = await artifact_manager.create(parent_id=collection.id, alias="valid-dataset", manifest=valid_dataset_manifest, stage=True)
+dataset = await artifact_manager.create(
+    parent_id=collection.id,
+    alias="valid-dataset",
+    manifest=valid_dataset_manifest,
+    stage=True
+)
 print("Valid dataset created.")
 
-# Commit the valid dataset (this should pass schema validation)
+# Commit the dataset (will pass schema validation)
 await artifact_manager.commit(dataset.id)
 print("Valid dataset committed.")
 ```
+
 
 ---
 
