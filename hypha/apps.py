@@ -46,7 +46,6 @@ class ServerAppController:
         self.artifact_manager = artifact_manager
         self.workspace_bucket = workspace_bucket
         self._sessions = {}  # Track running sessions
-        self.collection_id = None
         self.event_bus = store.get_event_bus()
         self.local_base_url = store.local_base_url
         self.public_base_url = store.public_base_url
@@ -198,20 +197,17 @@ class ServerAppController:
         )
         ApplicationArtifact.model_validate(artifact_obj)
 
-        if not self.collection_id:
-            try:
-                artifact = await self.artifact_manager.read(
-                    "applications", context=context
-                )
-                self.collection_id = artifact["id"]
-            except KeyError:
-                self.collection_id = await self.setup_applications_collection(
-                    overwrite=True, context=context
-                )
+        try:
+            artifact = await self.artifact_manager.read("applications", context=context)
+            collection_id = artifact["id"]
+        except KeyError:
+            collection_id = await self.setup_applications_collection(
+                overwrite=True, context=context
+            )
 
         # Create artifact using the artifact controller
         artifact = await self.artifact_manager.create(
-            parent_id=self.collection_id,
+            parent_id=collection_id,
             alias=f"applications:{app_id}",
             manifest=artifact_obj,
             overwrite=overwrite,

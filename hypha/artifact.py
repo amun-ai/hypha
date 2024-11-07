@@ -32,14 +32,11 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import relationship  # For parent-child relationships
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import RedirectResponse
 from hypha.core import (
     UserInfo,
     UserPermission,
     Artifact,
     CollectionArtifact,
-    ApplicationArtifact,
-    WorkspaceInfo,
 )
 from hypha_rpc.utils import ObjectProxy
 from jsonschema import validate
@@ -1332,9 +1329,14 @@ class ArtifactController:
                 )  # Database type (e.g., 'postgresql', 'sqlite')
 
                 # Prepare base query for children artifacts
-                base_query = select(ArtifactModel).filter(
-                    ArtifactModel.parent_id == parent_artifact.id,
-                )
+                if parent_artifact:
+                    base_query = select(ArtifactModel).filter(
+                        ArtifactModel.parent_id == parent_artifact.id,
+                    )
+                else:
+                    base_query = select(ArtifactModel).filter(
+                        ArtifactModel.parent_id == None
+                    )
                 conditions = []
 
                 # Handle keyword-based search across manifest fields

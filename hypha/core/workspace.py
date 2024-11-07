@@ -1252,7 +1252,7 @@ class WorkspaceManager:
             "applications", context={"ws": workspace, "user": user_info.model_dump()}
         )
         applications = {
-            item["id"]: ApplicationArtifact.model_validate(item)
+            item["manifest"]["id"]: ApplicationArtifact.model_validate(item["manifest"])
             for item in applications
         }
         if app_id not in applications:
