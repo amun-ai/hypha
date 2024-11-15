@@ -41,6 +41,7 @@ REQUIREMENTS = [
     "prometheus-client>=0.21.0",
     "uuid-utils>=0.9.0",
     "sqlmodel>=0.0.22",
+    "alembic>=1.14.0",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()

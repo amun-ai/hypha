@@ -300,7 +300,9 @@ class ServerAppController:
             raise Exception(
                 f"Failed to start the app: {app_id} during installation, error: {exp}"
             )
-        await self.artifact_manager.commit(f"applications:{app_id}", version=version, context=context)
+        await self.artifact_manager.commit(
+            f"applications:{app_id}", version=version, context=context
+        )
 
     async def uninstall(self, app_id: str, context: Optional[dict] = None) -> None:
         """Uninstall an application by removing its artifact."""
@@ -359,7 +361,7 @@ class ServerAppController:
 
         if client_id is None:
             client_id = random_id(readable=True)
-        
+
         version = version or "latest"
 
         artifact_info = await self.artifact_manager.read(

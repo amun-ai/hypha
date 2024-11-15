@@ -4,7 +4,7 @@
 
  - Revise artifact manager to use artifact id as the primary key, remove `prefix` based keys.
  - Support versioning and custom config (e.g. artifact specific s3 credentials) for the artifact manager.
- - Use SQLModel
+ - Use SQLModel and support database migration using `alembic`.
 
 ### 0.20.38
 
