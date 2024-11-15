@@ -4,6 +4,7 @@ import sys
 import uuid_utils as uuid
 import random
 import re
+import json
 from sqlalchemy import (
     event,
     Column,
@@ -23,6 +24,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from hypha.utils import remove_objects_async, list_objects_async, safe_join
 from hypha.utils.zenodo import ZenodoClient
 from botocore.exceptions import ClientError
+from hypha.s3 import FSFileResponse
 from aiobotocore.session import get_session
 from sqlalchemy import update
 from sqlalchemy.ext.declarative import declarative_base
@@ -60,14 +62,14 @@ class ArtifactModel(Base):
     parent_id = Column(String, ForeignKey("artifacts.id"), nullable=True)
     alias = Column(String, nullable=True)
     manifest = Column(JSON, nullable=True)  # Store committed manifest
-    stage_manifest = Column(JSON, nullable=True)  # Store staged manifest
-    stage_files = Column(JSON, nullable=True)  # Store staged files during staging
+    staging = Column(JSON, nullable=True)  # Store staged changes
     download_count = Column(Float, nullable=False, default=0.0)  # New counter field
     view_count = Column(Float, nullable=False, default=0.0)  # New counter field
     file_count = Column(Integer, nullable=False, default=0)  # New counter field
     created_at = Column(Integer, nullable=False)
     created_by = Column(String, nullable=True)
     last_modified = Column(Integer, nullable=False)
+    versions = Column(JSON, nullable=True)  # Store version history
     config = Column(
         JSON, nullable=True
     )  # Store additional configuration and permissions
@@ -96,6 +98,12 @@ def update_summary(summary, field, _metadata):
     else:
         value = get_nested_value(field, _metadata)
         set_nested_value(summary, field, value)
+
+
+def model_to_dict(model):
+    return {
+        column.name: getattr(model, column.name) for column in model.__table__.columns
+    }
 
 
 def get_nested_value(field, _metadata):
@@ -142,8 +150,8 @@ class ArtifactController:
         async def get_artifact(
             workspace: str,
             artifact_id: str,
-            stage: bool = False,
             silent: bool = False,
+            version: str = None,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """Get artifact metadata, manifest, and config (excluding secrets)."""
@@ -156,8 +164,16 @@ class ArtifactController:
                         user_info, artifact_id, "read", session
                     )
 
-                    # Prepare artifact representation
-                    artifact_data = self._generate_artifact_data(artifact, stage)
+                    version_index = self._get_version_index(artifact, version)
+
+                    if version_index == self._get_version_index(artifact, "latest"):
+                        # Prepare artifact representation
+                        artifact_data = self._generate_artifact_data(artifact)
+                    else:
+                        s3_config = self._get_s3_config(artifact)
+                        artifact_data = await self._load_version_from_s3(
+                            artifact, version_index, s3_config
+                        )
 
                     # Increment view count unless silent
                     if not silent:
@@ -256,6 +272,7 @@ class ArtifactController:
             artifact_id: str,
             path: str = "",
             silent: bool = False,
+            version: str = None,
             token: str = None,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
@@ -273,18 +290,21 @@ class ArtifactController:
                     ) = await self._get_artifact_with_permission(
                         user_info, artifact_id, "get_file", session
                     )
-                    base_key = safe_join(
-                        workspace, f"{self._artifacts_dir}/{artifact.id}"
+                    version_index = self._get_version_index(artifact, version)
+                    s3_config = self._get_s3_config(artifact, parent_artifact)
+                    file_key = safe_join(
+                        s3_config["prefix"],
+                        workspace,
+                        f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
+                        path,
                     )
-                    file_key = safe_join(base_key, path)
                     if path.endswith("/") or path == "":
-                        s3_config = self._get_s3_config(artifact, parent_artifact)
                         async with self._create_client_async(
                             s3_config,
                         ) as s3_client:
                             items = await list_objects_async(
                                 s3_client,
-                                self.workspace_bucket,
+                                s3_config["bucket"],
                                 file_key.rstrip("/") + "/",
                                 max_length=1000,
                             )
@@ -295,16 +315,13 @@ class ArtifactController:
                                 )
                             return items
 
-                    from hypha.s3 import FSFileResponse
-
-                    s3_config = self._get_s3_config(artifact, parent_artifact)
                     s3_client = self._create_client_async(s3_config)
                     # Increment download count unless silent
                     if not silent:
                         await self._increment_stat(
                             session, artifact.id, "download_count"
                         )
-                    return FSFileResponse(s3_client, self.workspace_bucket, file_key)
+                    return FSFileResponse(s3_client, s3_config["bucket"], file_key)
 
             except KeyError:
                 raise HTTPException(status_code=404, detail="Artifact not found")
@@ -399,22 +416,10 @@ class ArtifactController:
             parent_artifact = parent_result.scalar_one_or_none()
         return artifact, parent_artifact
 
-    def _generate_artifact_data(self, artifact, stage=False):
-        artifact_data = {
-            "id": artifact.id,
-            "type": artifact.type,
-            "workspace": artifact.workspace,
-            "parent_id": artifact.parent_id,
-            "alias": artifact.alias,
-            "created_by": artifact.created_by,
-            "created_at": int(artifact.created_at or 0),
-            "last_modified": int(artifact.last_modified or 0),
-            "download_count": int(artifact.download_count or 0),
-            "view_count": int(artifact.view_count or 0),
-            "manifest": artifact.stage_manifest if stage else artifact.manifest,
-            "config": artifact.config or {},
-        }
+    def _generate_artifact_data(self, artifact):
+        artifact_data = model_to_dict(artifact)
         # Exclude 'secrets' from artifact_data to prevent exposure
+        artifact_data.pop("secrets", None)
         return artifact_data
 
     def _expand_permission(self, permission):
@@ -742,6 +747,103 @@ class ArtifactController:
         except KeyError:
             return None
 
+    async def _save_version_to_s3(self, version_index: int, artifact, s3_config):
+        """
+        Save the staged version to S3 and update the artifact's manifest.
+        """
+        assert version_index >= 0, "Version index must be non-negative."
+        async with self._create_client_async(s3_config) as s3_client:
+            version_key = safe_join(
+                s3_config["prefix"],
+                artifact.workspace,
+                f"{self._artifacts_dir}",
+                artifact.id,
+                f"v{version_index}.json",
+            )
+            await s3_client.put_object(
+                Bucket=s3_config["bucket"],
+                Key=version_key,
+                Body=json.dumps(model_to_dict(artifact)),
+            )
+
+    async def _load_version_from_s3(
+        self, artifact, version_index: int, s3_config, include_secrets=False
+    ):
+        """
+        Load the version from S3.
+        """
+        assert version_index >= 0, "Version index must be non-negative."
+        s3_config = self._get_s3_config(artifact)
+        version_key = safe_join(
+            s3_config["prefix"],
+            artifact.workspace,
+            f"{self._artifacts_dir}",
+            artifact.id,
+            f"v{version_index}.json",
+        )
+        async with self._create_client_async(s3_config) as s3_client:
+            response = await s3_client.get_object(
+                Bucket=s3_config["bucket"], Key=version_key
+            )
+            body = await response["Body"].read()
+            data = json.loads(body)
+            if not include_secrets:
+                data.pop("secrets", None)
+            return data
+
+    def _get_version_index(self, artifact, version):
+        """Get the version index based on the version string."""
+        if version == "latest":
+            version_index = len(artifact.versions) - 1
+            return version_index
+        elif version == "stage":
+            version_index = len(artifact.versions)
+        elif version is None:
+            version_index = len(artifact.versions) - 1
+        elif isinstance(version, str):
+            # find the version index
+            version_index = -1
+            for i, v in enumerate(artifact.versions):
+                if v["version"] == version:
+                    version_index = i
+                    break
+            if version_index < 0:
+                if version.isdigit():
+                    version_index = int(version)
+                raise ValueError(f"Version '{version}' does not exist.")
+        elif isinstance(version, int):
+            assert version >= 0, "Version must be non-negative."
+            version_index = version
+        else:
+            raise ValueError("Version must be a string or an integer.")
+
+        return version_index
+
+    async def _delete_version_files_from_s3(
+        self, version_index: int, artifact, s3_config, delete_files=False
+    ):
+        """
+        Delete the staged version from S3.
+        """
+        assert version_index >= 0, "Version index must be non-negative."
+        async with self._create_client_async(s3_config) as s3_client:
+            version_key = safe_join(
+                s3_config["prefix"],
+                artifact.workspace,
+                f"{self._artifacts_dir}",
+                artifact.id,
+                f"v{version_index}",
+            )
+            await s3_client.delete_object(
+                Bucket=s3_config["bucket"], Key=version_key + ".json"
+            )
+            if delete_files:
+                await remove_objects_async(
+                    s3_client,
+                    s3_config["bucket"],
+                    version_key + "/",
+                )
+
     async def create(
         self,
         alias: str = None,
@@ -749,11 +851,12 @@ class ArtifactController:
         parent_id: str = None,
         manifest: dict = None,
         overwrite=False,
-        stage=False,
         type="generic",
         config: dict = None,
         secrets: dict = None,
         publish_to=None,
+        version: str = None,
+        comment: str = None,
         context: dict = None,
     ):
         """Create a new artifact and store its manifest in the database."""
@@ -805,7 +908,7 @@ class ArtifactController:
                         raise PermissionError(
                             f"User does not have permission to create an orphan artifact in the workspace '{workspace}'."
                         )
-
+                config = config or {}
                 if alias and "{" in alias and "}" in alias:
                     id_parts = {}
                     additional_parts = {
@@ -822,10 +925,7 @@ class ArtifactController:
                         additional_parts["zenodo_conceptrecid"] = str(
                             deposition_info["conceptrecid"]
                         )
-                        if config is None:
-                            config = {"zenodo": deposition_info}
-                        else:
-                            config["zenodo"] = deposition_info
+                        config["zenodo"] = deposition_info
 
                     if parent_artifact and parent_artifact.config:
                         id_parts.update(parent_artifact.config.get("id_parts", {}))
@@ -852,31 +952,48 @@ class ArtifactController:
                 permissions = config.get("permissions", {}) if config else {}
                 permissions[user_info.id] = "*"
                 permissions.update(parent_permissions)
-                if config:
-                    config["permissions"] = permissions
-                else:
-                    config = {"permissions": permissions}
+                config["permissions"] = permissions
 
+                versions = []
+                if version != "stage":
+                    # Increase the version number
+                    version = version or f"v{len(versions)}"
+                    comment = comment or f"Initial version"
+                    versions.append(
+                        {
+                            "version": version,
+                            "comment": comment,
+                            "created_at": int(time.time()),
+                        }
+                    )
                 assert manifest, "Manifest must be provided."
                 new_artifact = ArtifactModel(
                     id=id,
                     workspace=workspace,
                     parent_id=parent_id,
                     alias=alias,
-                    manifest=None if stage else manifest,
-                    stage_manifest=manifest if stage else None,
-                    stage_files=[] if stage else None,
+                    staging=[] if version == "stage" else None,
+                    manifest=manifest,
                     created_by=user_info.id,
                     created_at=int(time.time()),
                     last_modified=int(time.time()),
                     config=config,
                     secrets=secrets,
+                    versions=versions,
                     type=type,
                 )
-
+                if version != "stage":
+                    version_index = len(new_artifact.versions) - 1
+                else:
+                    version_index = len(new_artifact.versions)
                 session.add(new_artifact)
                 await session.commit()
-                return self._generate_artifact_data(new_artifact, stage=stage)
+                await self._save_version_to_s3(
+                    version_index,
+                    new_artifact,
+                    self._get_s3_config(new_artifact, parent_artifact),
+                )
+                return self._generate_artifact_data(new_artifact)
         except Exception as e:
             raise e
         finally:
@@ -930,7 +1047,8 @@ class ArtifactController:
         type=None,
         config: dict = None,
         secrets: dict = None,
-        stage: bool = False,
+        version: str = None,
+        comment: str = None,
         context: dict = None,
     ):
         """Edit the artifact's manifest and save it in the database."""
@@ -953,12 +1071,27 @@ class ArtifactController:
                     if isinstance(manifest, ObjectProxy):
                         manifest = ObjectProxy.toDict(manifest)
 
-                if stage:
-                    artifact.stage_manifest = manifest
-                    flag_modified(artifact, "stage_manifest")
-                elif manifest:
+                if manifest:
                     artifact.manifest = manifest
                     flag_modified(artifact, "manifest")
+
+                if version != "stage":
+                    # Increase the version number
+                    versions = artifact.versions or []
+                    version = version or f"v{len(versions)}"
+                    versions.append(
+                        {
+                            "version": version,
+                            "comment": comment,
+                            "created_at": int(time.time()),
+                        }
+                    )
+                    artifact.versions = versions
+                    flag_modified(artifact, "versions")
+                    version_index = len(artifact.versions) - 1
+                else:
+                    version_index = len(artifact.versions)
+
                 if config is not None:
                     if parent_artifact:
                         parent_permissions = (
@@ -975,21 +1108,28 @@ class ArtifactController:
                 if secrets is not None:
                     artifact.secrets = secrets
                     flag_modified(artifact, "secrets")
-
                 artifact.last_modified = int(time.time())
-                session.add(artifact)
-                await session.commit()
+                artifact.staging = artifact.staging or []
+                flag_modified(artifact, "staging")
+                if version != "stage":
+                    session.add(artifact)
+                    await session.commit()
+                await self._save_version_to_s3(
+                    version_index,
+                    artifact,
+                    self._get_s3_config(artifact, parent_artifact),
+                )
+                return self._generate_artifact_data(artifact)
         except Exception as e:
             raise e
         finally:
             await session.close()
-        return self._generate_artifact_data(artifact, stage=stage)
 
     async def read(
         self,
         artifact_id,
-        stage=False,
         silent=False,
+        version: str = None,
         context: dict = None,
     ):
         """Read the artifact's data including manifest and config."""
@@ -1005,7 +1145,15 @@ class ArtifactController:
                 artifact, _ = await self._get_artifact_with_permission(
                     user_info, artifact_id, "read", session
                 )
-                artifact_data = self._generate_artifact_data(artifact, stage=stage)
+
+                version_index = self._get_version_index(artifact, version)
+                if version_index == self._get_version_index(artifact, "latest"):
+                    artifact_data = self._generate_artifact_data(artifact)
+                else:
+                    s3_config = self._get_s3_config(artifact)
+                    artifact_data = await self._load_version_from_s3(
+                        artifact, version_index, s3_config
+                    )
 
                 if not silent:
                     await session.commit()
@@ -1016,7 +1164,13 @@ class ArtifactController:
         finally:
             await session.close()
 
-    async def commit(self, artifact_id, context: dict):
+    async def commit(
+        self,
+        artifact_id,
+        version: str = None,
+        comment: str = None,
+        context: dict = None,
+    ):
         """Commit the artifact by finalizing the staged manifest and files."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
@@ -1028,19 +1182,28 @@ class ArtifactController:
                 artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "commit", session
                 )
+                # the new version index
+                version_index = len(artifact.versions)
+                # Load the staged version
+                s3_config = self._get_s3_config(artifact)
+                artifact_data = await self._load_version_from_s3(
+                    artifact, version_index, s3_config
+                )
+                artifact = ArtifactModel(**artifact_data)
 
+                versions = artifact.versions or []
                 artifact.config = artifact.config or {}
-                if artifact.stage_files:
+                if artifact.staging:
                     s3_config = self._get_s3_config(artifact, parent_artifact)
                     async with self._create_client_async(
                         s3_config,
                     ) as s3_client:
                         download_weights = {}
-                        for file_info in artifact.stage_files:
+                        for file_info in artifact.staging:
                             file_key = safe_join(
                                 s3_config["prefix"],
                                 artifact.workspace,
-                                f"{self._artifacts_dir}/{artifact.id}/{file_info['path']}",
+                                f"{self._artifacts_dir}/{artifact.id}/v{version_index}/{file_info['path']}",
                             )
                             try:
                                 await s3_client.head_object(
@@ -1057,6 +1220,7 @@ class ArtifactController:
                         if download_weights:
                             artifact.config["download_weights"] = download_weights
                             flag_modified(artifact, "config")
+                        artifact.file_count = len(artifact.staging)
 
                 parent_artifact_config = (
                     parent_artifact.config if parent_artifact else {}
@@ -1067,34 +1231,43 @@ class ArtifactController:
                 ):
                     collection_schema = parent_artifact_config["collection_schema"]
                     try:
-                        validate(
-                            instance=artifact.stage_manifest, schema=collection_schema
-                        )
+                        validate(instance=artifact.manifest, schema=collection_schema)
                     except Exception as e:
                         raise ValueError(f"ValidationError: {str(e)}")
-                assert (
-                    artifact.stage_manifest
-                ), "Artifact must be in staging mode to commit."
+                assert artifact.manifest, "Artifact must be in staging mode to commit."
 
-                artifact.file_count = (
-                    len(artifact.stage_files) if artifact.stage_files else 0
+                versions.append(
+                    {
+                        "version": version or str(len(versions)),
+                        "comment": comment,
+                        "created_at": int(time.time()),
+                    }
                 )
-                artifact.manifest = artifact.stage_manifest
-                artifact.stage_manifest = None
-                artifact.stage_files = None
+                artifact.versions = versions
+                flag_modified(artifact, "versions")
+                artifact.staging = None
                 artifact.last_modified = int(time.time())
-                flag_modified(artifact, "stage_manifest")
                 flag_modified(artifact, "manifest")
-                flag_modified(artifact, "stage_files")
-                session.add(artifact)
+                flag_modified(artifact, "staging")
+                await session.merge(artifact)
                 await session.commit()
+                await self._save_version_to_s3(
+                    len(artifact.versions) - 1,
+                    artifact,
+                    self._get_s3_config(artifact, parent_artifact),
+                )
         except Exception as e:
             raise e
         finally:
             await session.close()
 
     async def delete(
-        self, artifact_id, delete_files=False, recursive=False, context: dict = None
+        self,
+        artifact_id,
+        delete_files=False,
+        recursive=False,
+        version=None,
+        context: dict = None,
     ):
         """Delete an artifact from the database and S3."""
         if context is None or "ws" not in context:
@@ -1108,33 +1281,62 @@ class ArtifactController:
             artifact, parent_artifact = await self._get_artifact_with_permission(
                 user_info, artifact_id, "delete", session
             )
+            version_index = len(artifact.versions) - 1
+            s3_config = self._get_s3_config(artifact, parent_artifact)
+            if version is None:
+                # Handle recursive deletion first
+                if recursive:
+                    children = await self.list_children(artifact_id, context=context)
+                    for child in children:
+                        await self.delete(
+                            child["id"], delete_files=delete_files, context=context
+                        )
 
-            # Handle recursive deletion first
-            if recursive:
-                children = await self.list_children(artifact_id, context=context)
-                for child in children:
-                    await self.delete(
-                        child["id"], delete_files=delete_files, context=context
+                # Delete files if requested
+                if delete_files and artifact.file_count > 0:
+                    artifact_path = safe_join(
+                        s3_config["prefix"],
+                        artifact.workspace,
+                        f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
                     )
+                    async with self._create_client_async(
+                        s3_config,
+                    ) as s3_client:
+                        await remove_objects_async(
+                            s3_client, s3_config["bucket"], artifact_path + "/"
+                        )
 
-            # Delete files if requested
-            if delete_files and artifact.file_count > 0:
-                artifact_path = safe_join(
-                    artifact.workspace, f"{self._artifacts_dir}/{artifact_id}"
+                # Delete the artifact
+                await session.refresh(artifact)
+                artifact.parent_id = None
+                await session.flush()
+                await session.delete(artifact)
+            else:
+                if isinstance(version, str):
+                    # find the version index
+                    version_index = -1
+                    for i, v in enumerate(artifact.versions):
+                        if v["version"] == version:
+                            version_index = i
+                            break
+                    if version_index < 0:
+                        raise ValueError(f"Version '{version}' does not exist.")
+                else:
+                    assert isinstance(
+                        version, int
+                    ), "Version must be a string or an integer."
+                    version_index = version
+                assert version_index >= 0, "Version index must be non-negative."
+                # Delete a specific version
+                if version < 0 or version >= len(artifact.versions):
+                    raise ValueError("Invalid version index.")
+                del artifact.versions[version]
+                flag_modified(artifact, "versions")
+                session.add(artifact)
+                # Delete the version from S3
+                self._delete_version_files_from_s3(
+                    version_index, artifact, s3_config, delete_files=delete_files
                 )
-                s3_config = self._get_s3_config(artifact, parent_artifact)
-                async with self._create_client_async(
-                    s3_config,
-                ) as s3_client:
-                    await remove_objects_async(
-                        s3_client, self.workspace_bucket, artifact_path + "/"
-                    )
-
-            # Delete the artifact
-            await session.refresh(artifact)
-            artifact.parent_id = None
-            await session.flush()
-            await session.delete(artifact)
             await session.commit()
 
         except Exception as e:
@@ -1159,36 +1361,38 @@ class ArtifactController:
                 artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "put_file", session
                 )
-                assert (
-                    artifact.stage_manifest
-                ), "Artifact must be in staging mode to put files."
+                assert artifact.staging is not None, "Artifact must be in staging mode."
+                # The new version is not committed yet, so we use a new version index
+                version_index = len(artifact.versions)
 
                 s3_config = self._get_s3_config(artifact, parent_artifact)
                 async with self._create_client_async(
                     s3_config,
                 ) as s3_client:
                     file_key = safe_join(
+                        s3_config["prefix"],
                         artifact.workspace,
-                        f"{self._artifacts_dir}/{artifact_id}/{file_path}",
+                        f"{self._artifacts_dir}/{artifact.id}/v{version_index}/{file_path}",
                     )
                     presigned_url = await s3_client.generate_presigned_url(
                         "put_object",
-                        Params={"Bucket": self.workspace_bucket, "Key": file_key},
+                        Params={"Bucket": s3_config["bucket"], "Key": file_key},
                         ExpiresIn=3600,
                     )
 
-                artifact.stage_files = artifact.stage_files or []
-                if not any(f["path"] == file_path for f in artifact.stage_files):
-                    artifact.stage_files.append(
-                        {
-                            "path": file_path,
-                            "download_weight": download_weight,
-                        }
-                    )
-                    flag_modified(artifact, "stage_files")
-
-                session.add(artifact)
-                await session.commit()
+                    artifact.staging = artifact.staging or []
+                    if not any(f["path"] == file_path for f in artifact.staging):
+                        artifact.staging.append(
+                            {
+                                "path": file_path,
+                                "download_weight": download_weight,
+                            }
+                        )
+                        # flag_modified(artifact, "staging")
+                    # save the artifact to s3
+                    await self._save_version_to_s3(version_index, artifact, s3_config)
+                    # session.add(artifact)
+                    # await session.commit()
             return presigned_url
         except Exception as e:
             raise e
@@ -1207,9 +1411,10 @@ class ArtifactController:
                 artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "remove_file", session
                 )
-                assert (
-                    artifact.stage_manifest
-                ), "Artifact must be in staging mode to remove files."
+
+                assert artifact.staging is not None, "Artifact must be in staging mode."
+                # The new version is not committed yet, so we use a new version index
+                version_index = len(artifact.versions)
 
                 s3_config = self._get_s3_config(artifact, parent_artifact)
                 async with self._create_client_async(
@@ -1218,17 +1423,17 @@ class ArtifactController:
                     file_key = safe_join(
                         s3_config["prefix"],
                         artifact.workspace,
-                        f"{self._artifacts_dir}/{artifact_id}/{file_path}",
+                        f"{self._artifacts_dir}/{artifact.id}/v{version_index}/{file_path}",
                     )
                     await s3_client.delete_object(
                         Bucket=s3_config["bucket"], Key=file_key
                     )
 
-                if artifact.stage_files:
-                    artifact.stage_files = [
-                        f for f in artifact.stage_files if f["path"] != file_path
+                if artifact.staging:
+                    artifact.staging = [
+                        f for f in artifact.staging if f["path"] != file_path
                     ]
-                    flag_modified(artifact, "stage_files")
+                    flag_modified(artifact, "staging")
 
                 session.add(artifact)
                 await session.commit()
@@ -1237,7 +1442,9 @@ class ArtifactController:
         finally:
             await session.close()
 
-    async def get_file(self, artifact_id, path, silent=False, context: dict = None):
+    async def get_file(
+        self, artifact_id, path, silent=False, version=None, context: dict = None
+    ):
         """Generate a pre-signed URL to download a file from an artifact in S3."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
@@ -1249,6 +1456,7 @@ class ArtifactController:
                 artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "get_file", session
                 )
+                version_index = self._get_version_index(artifact, version)
                 s3_config = self._get_s3_config(artifact, parent_artifact)
                 async with self._create_client_async(
                     s3_config,
@@ -1256,7 +1464,7 @@ class ArtifactController:
                     file_key = safe_join(
                         s3_config["prefix"],
                         artifact.workspace,
-                        f"{self._artifacts_dir}/{artifact_id}/{path}",
+                        f"{self._artifacts_dir}/{artifact.id}/v{version_index}/{path}",
                     )
                     try:
                         await s3_client.head_object(
@@ -1268,7 +1476,7 @@ class ArtifactController:
                         )
                     presigned_url = await s3_client.generate_presigned_url(
                         "get_object",
-                        Params={"Bucket": self.workspace_bucket, "Key": file_key},
+                        Params={"Bucket": s3_config["bucket"], "Key": file_key},
                         ExpiresIn=3600,
                     )
                 # Increment download count unless silent
@@ -1287,6 +1495,60 @@ class ArtifactController:
                         )
                     await session.commit()
             return presigned_url
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
+    async def list_files(
+        self,
+        artifact_id: str,
+        dir_path: str = None,
+        max_length: int = 1000,
+        version: str = None,
+        context: dict = None,
+    ):
+        """List files in the specified artifact's S3 path."""
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.model_validate(context["user"])
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "list_files", session
+                )
+                version_index = self._get_version_index(artifact, version)
+                s3_config = self._get_s3_config(artifact, parent_artifact)
+                async with self._create_client_async(
+                    s3_config,
+                ) as s3_client:
+                    if dir_path:
+                        full_path = (
+                            safe_join(
+                                s3_config["prefix"],
+                                artifact.workspace,
+                                f"{self._artifacts_dir}/{artifact.id}/v{version_index}/{dir_path}",
+                            )
+                            + "/"
+                        )
+                    else:
+                        full_path = (
+                            safe_join(
+                                s3_config["prefix"],
+                                artifact.workspace,
+                                f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
+                            )
+                            + "/"
+                        )
+                    items = await list_objects_async(
+                        s3_client,
+                        s3_config["bucket"],
+                        full_path,
+                        max_length=max_length,
+                    )
+            return items
         except Exception as e:
             raise e
         finally:
@@ -1330,13 +1592,11 @@ class ArtifactController:
 
                 # Prepare base query for children artifacts
                 if parent_artifact:
-                    base_query = select(ArtifactModel).filter(
+                    query = select(ArtifactModel).where(
                         ArtifactModel.parent_id == parent_artifact.id,
                     )
                 else:
-                    base_query = select(ArtifactModel).filter(
-                        ArtifactModel.parent_id == None
-                    )
+                    query = select(ArtifactModel).where(ArtifactModel.parent_id == None)
                 conditions = []
 
                 # Handle keyword-based search across manifest fields
@@ -1436,15 +1696,28 @@ class ArtifactController:
                             else:
                                 raise ValueError(f"Invalid filter key: {key}")
 
-                # Filter by stage mode
-                if stage:
-                    query = base_query.where(
-                        ArtifactModel.stage_manifest != None
-                    )  # Use `!= None` instead of `isnot(None)`
+                if backend == "sqlite":
+                    if stage:
+                        stage_condition = and_(
+                            ArtifactModel.staging.isnot(None), text("staging != 'null'")
+                        )
+                    else:
+                        stage_condition = or_(
+                            ArtifactModel.staging.is_(None), text("staging = 'null'")
+                        )
                 else:
-                    query = base_query.where(
-                        ArtifactModel.manifest != None
-                    )  # Use `!= None` instead of `isnot(None)`
+                    if stage:
+                        stage_condition = and_(
+                            ArtifactModel.staging.isnot(None),
+                            text("staging::text != 'null'"),
+                        )
+                    else:
+                        stage_condition = or_(
+                            ArtifactModel.staging.is_(None),
+                            text("staging::text = 'null'"),
+                        )
+
+                query = query.where(stage_condition)
 
                 # Combine conditions based on mode (AND/OR)
                 if conditions:
@@ -1465,7 +1738,7 @@ class ArtifactController:
                 }
                 order_by = order_by or "id"
                 order_field = order_field_map.get(
-                    order_by.split("<")[0] if order_by else "artifact_id"
+                    order_by.split("<")[0] if order_by else "id"
                 )
                 ascending = "<" in order_by if order_by else True
                 query = (
@@ -1483,10 +1756,7 @@ class ArtifactController:
                 # Compile summary results for each artifact
                 results = []
                 for artifact in artifacts:
-                    manifest = artifact.stage_manifest if stage else artifact.manifest
-                    if not manifest:
-                        continue
-                    _artifact_data = self._generate_artifact_data(artifact, stage=stage)
+                    _artifact_data = self._generate_artifact_data(artifact)
                     results.append(_artifact_data)
 
                 # Increment view count for parent artifact if not in stage mode
@@ -1501,56 +1771,6 @@ class ArtifactController:
             raise ValueError(
                 f"An error occurred while executing the search query: {str(e)}"
             )
-        finally:
-            await session.close()
-
-    async def list_files(
-        self,
-        artifact_id: str,
-        dir_path: str = None,
-        max_length: int = 1000,
-        context: dict = None,
-    ):
-        """List files in the specified artifact's S3 path."""
-        if context is None or "ws" not in context:
-            raise ValueError("Context must include 'ws' (workspace).")
-        artifact_id = self._validate_artifact_id(artifact_id, context)
-        user_info = UserInfo.model_validate(context["user"])
-        session = await self._get_session()
-        try:
-            async with session.begin():
-                artifact, parent_artifact = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "list_files", session
-                )
-                s3_config = self._get_s3_config(artifact, parent_artifact)
-                async with self._create_client_async(
-                    s3_config,
-                ) as s3_client:
-                    if dir_path:
-                        full_path = (
-                            safe_join(
-                                artifact.workspace,
-                                f"{self._artifacts_dir}/{artifact_id}/{dir_path}",
-                            )
-                            + "/"
-                        )
-                    else:
-                        full_path = (
-                            safe_join(
-                                artifact.workspace,
-                                f"{self._artifacts_dir}/{artifact_id}",
-                            )
-                            + "/"
-                        )
-                    items = await list_objects_async(
-                        s3_client,
-                        self.workspace_bucket,
-                        full_path,
-                        max_length=max_length,
-                    )
-            return items
-        except Exception as e:
-            raise e
         finally:
             await session.close()
 
@@ -1601,7 +1821,7 @@ class ArtifactController:
 
                 async def upload_files(dir_path=""):
                     files = await self.list_files(
-                        artifact_id, dir_path=dir_path, context=context
+                        artifact.id, dir_path=dir_path, context=context
                     )
                     for file_info in files:
                         name = file_info["name"]
@@ -1609,7 +1829,7 @@ class ArtifactController:
                             await upload_files(safe_join(dir_path, name))
                         else:
                             url = await self.get_file(
-                                artifact_id, safe_join(dir_path, name), context=context
+                                artifact.id, safe_join(dir_path, name), context=context
                             )
                             await zenodo_client.import_file(deposition_info, name, url)
 

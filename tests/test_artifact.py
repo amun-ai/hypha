@@ -42,13 +42,15 @@ async def test_sqlite_create_and_search_artifacts(minio_server, fastapi_server_s
             type="dataset",
             parent_id=collection.id,
             manifest=dataset_manifest,
-            stage=True,
+            version="stage",
         )
         datasets.append(dataset)
 
     # Test read operation on the datasets
     for dataset in datasets:
-        dataset_data = await artifact_manager.read(artifact_id=dataset.id, stage=True)
+        dataset_data = await artifact_manager.read(
+            artifact_id=dataset.id, version="stage"
+        )
         assert dataset_data["manifest"]["name"] in [
             dataset_manifest["name"] for dataset_manifest in dataset_manifests
         ]
@@ -65,6 +67,13 @@ async def test_sqlite_create_and_search_artifacts(minio_server, fastapi_server_s
         )
         response = requests.put(put_url, data=file_contents[idx])
         assert response.ok
+
+    search_results = await artifact_manager.list(
+        parent_id=collection.id,
+        filters={"stage": True},
+    )
+
+    assert len(search_results) == len(datasets)
 
     # Commit the datasets
     for dataset in datasets:
@@ -118,7 +127,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
         type="dataset",
         parent_id=collection_info.id,
         manifest=dataset_manifest,
-        stage=True,
+        version="stage",
     )
 
     # Commit the artifact
@@ -151,7 +160,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
         type="dataset",
         parent_id=private_collection.id,
         manifest=private_dataset_manifest,
-        stage=True,
+        version="stage",
     )
 
     # Commit the private artifact
@@ -201,7 +210,7 @@ async def test_http_file_and_directory_endpoint(minio_server, fastapi_server):
         type="dataset",
         parent_id=collection.id,
         manifest=dataset_manifest,
-        stage=True,
+        version="stage",
     )
 
     # Add a file to the dataset artifact
@@ -345,11 +354,13 @@ async def test_artifact_alias_pattern(minio_server, fastapi_server):
         parent_id=collection.id,
         manifest=dataset_manifest,
         alias=alias_pattern,
-        stage=True,
+        version="stage",
     )
 
     # Fetch metadata to confirm the generated alias
-    dataset_metadata = await artifact_manager.read(artifact_id=dataset.id, stage=True)
+    dataset_metadata = await artifact_manager.read(
+        artifact_id=dataset.id, version="stage"
+    )
     generated_alias = dataset_metadata["alias"].split("/")[-1]
 
     # Extract and validate parts of the generated alias
@@ -358,7 +369,7 @@ async def test_artifact_alias_pattern(minio_server, fastapi_server):
     assert animal in ["dog", "cat", "bird"]
 
     # read the artifact using the generated alias
-    dataset = await artifact_manager.read(dataset_metadata["alias"], stage=True)
+    dataset = await artifact_manager.read(dataset_metadata["alias"], version="stage")
     # Verify the alias pattern is correctly applied
     assert dataset["manifest"]["name"] == "My test data"
 
@@ -395,7 +406,7 @@ async def test_publish_artifact(minio_server, fastapi_server):
         type="dataset",
         parent_id=collection.id,
         manifest=dataset_manifest,
-        stage=True,
+        version="stage",
         publish_to="sandbox_zenodo",
     )
 
@@ -438,7 +449,6 @@ async def test_artifact_filtering(minio_server, fastapi_server):
         config={
             "permissions": {"*": "r+"},
         },
-        stage=False,
     )
 
     # Create artifacts with varied attributes inside the collection (created by user_id1)
@@ -452,9 +462,11 @@ async def test_artifact_filtering(minio_server, fastapi_server):
             type="dataset" if i % 2 == 0 else "application",
             parent_id=collection.id,
             manifest=artifact_manifest,
-            stage=(i % 2 == 0),
+            version="stage" if (i % 2 == 0) else None,
         )
-        await artifact_manager.read(artifact_id=artifact.id, stage=(i % 2 == 0))
+        await artifact_manager.read(
+            artifact_id=artifact.id, version="stage" if (i % 2 == 0) else None
+        )
         created_artifacts.append(artifact)
 
     # Create a second client (user_id2) to create additional artifacts
@@ -470,7 +482,7 @@ async def test_artifact_filtering(minio_server, fastapi_server):
             type="dataset" if i % 2 == 0 else "application",
             parent_id=collection.id,
             manifest=artifact_manifest,
-            stage=(i % 2 == 0),
+            version="stage" if (i % 2 == 0) else None,
         )
         if i % 2 == 0:
             await artifact_manager2.commit(artifact_id=artifact.id)
@@ -546,7 +558,7 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server):
         type="dataset",
         parent_id=collection.id,
         manifest=dataset_manifest,
-        stage=True,
+        version="stage",
         config={"permissions": {"*": "r", "@": "r+"}},
     )
 
@@ -624,7 +636,10 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
         "description": "A dataset to test editing",
     }
     dataset = await artifact_manager.create(
-        type="dataset", parent_id=collection.id, manifest=dataset_manifest, stage=True
+        type="dataset",
+        parent_id=collection.id,
+        manifest=dataset_manifest,
+        version="stage",
     )
 
     # Commit the artifact
@@ -644,11 +659,16 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
 
     # Edit the artifact using the new manifest
     await artifact_manager.edit(
-        type="dataset", artifact_id=dataset.id, manifest=edited_manifest, stage=True
+        type="dataset",
+        artifact_id=dataset.id,
+        manifest=edited_manifest,
+        version="stage",
     )
 
     # Verify the manifest updates are staged (not committed yet)
-    staged_artifact = await artifact_manager.read(artifact_id=dataset.id, stage=True)
+    staged_artifact = await artifact_manager.read(
+        artifact_id=dataset.id, version="stage"
+    )
     staged_manifest = staged_artifact["manifest"]
     assert staged_manifest["description"] == "Updated description of the test dataset"
     assert staged_manifest["custom_key"] == 19222
@@ -729,7 +749,7 @@ async def test_artifact_schema_validation(minio_server, fastapi_server):
         "description": "A dataset that conforms to the schema",
     }
     valid_dataset = await artifact_manager.create(
-        parent_id=collection.id, manifest=valid_dataset_manifest, stage=True
+        parent_id=collection.id, manifest=valid_dataset_manifest, version="stage"
     )
 
     # Add a file to the valid dataset artifact
@@ -754,7 +774,7 @@ async def test_artifact_schema_validation(minio_server, fastapi_server):
         "record_type": "dataset",
     }
     invalid_dataset = await artifact_manager.create(
-        parent_id=collection.id, manifest=invalid_dataset_manifest, stage=True
+        parent_id=collection.id, manifest=invalid_dataset_manifest, version="stage"
     )
 
     # Commit should raise a validation error due to schema violation
@@ -807,7 +827,7 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
         alias="test-dataset",
         parent_id=collection.id,
         manifest=dataset_manifest,
-        stage=True,
+        version="stage",
     )
 
     # Add a file to the dataset artifact
@@ -861,7 +881,6 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
         alias="test-dataset",
         manifest=updated_dataset_manifest,
         overwrite=True,
-        stage=False,
     )
 
     # Confirm that the description update is reflected
@@ -923,7 +942,7 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
         parent_id=collection.id,
         alias="edge-case-dataset",
         manifest=dataset_manifest,
-        stage=True,
+        version="stage",
     )
 
     # Try to create the same artifact again without overwrite, expecting it to fail
@@ -936,7 +955,7 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
             alias="edge-case-dataset",
             manifest=dataset_manifest,
             overwrite=False,
-            stage=True,
+            version="stage",
         )
 
     # Add a file to the dataset artifact
@@ -964,7 +983,7 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
         type="dataset",
         parent_id=collection.id,
         manifest=incomplete_manifest,
-        stage=True,
+        version="stage",
     )
 
     await artifact_manager.put_file(
@@ -1010,7 +1029,7 @@ async def test_artifact_search_in_manifest(minio_server, fastapi_server):
             alias=f"test-dataset-{i}",
             parent_id=collection.id,
             manifest=dataset_manifest,
-            stage=True,
+            version="stage",
         )
         await artifact_manager.commit(artifact_id=artifact.id)
 
@@ -1109,7 +1128,6 @@ async def test_artifact_search_with_filters(minio_server, fastapi_server):
             alias=f"dataset-{i}",
             parent_id=collection.id,
             manifest=dataset_manifest,
-            stage=False,
         )
 
     # Filter by type to return only datasets
@@ -1194,7 +1212,10 @@ async def test_download_count(minio_server, fastapi_server):
         "description": "A test dataset for download count",
     }
     artifact = await artifact_manager.create(
-        type="dataset", parent_id=collection.id, manifest=dataset_manifest, stage=True
+        type="dataset",
+        parent_id=collection.id,
+        manifest=dataset_manifest,
+        version="stage",
     )
 
     # Put a primary file in the artifact
@@ -1236,7 +1257,7 @@ async def test_download_count(minio_server, fastapi_server):
         artifact_id=artifact.id,
         silent=True,
     )
-    assert artifact["download_count"] == 0
+    assert artifact["download_count"] == 0.5
 
     # download twice will increment the download count by 1
     get_url = await artifact_manager.get_file(

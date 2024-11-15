@@ -132,8 +132,7 @@ def triton_server():
 
 @pytest_asyncio.fixture(name="postgres_server", scope="session")
 def postgres_server():
-    """Start a PostgreSQL server as a test fixture and tear down after the test."""
-
+    """Start a fresh PostgreSQL server as a test fixture and tear down after the test."""
     # Check if the container is already running
     existing_container = subprocess.run(
         ["docker", "ps", "-q", "-f", "name=hypha-postgres"],
@@ -141,10 +140,39 @@ def postgres_server():
         text=True,
     ).stdout.strip()
 
+    # Stop and remove the existing container if it is running
     if existing_container:
-        print("Using existing PostgreSQL container:", existing_container)
+        if os.environ.get("GITHUB_ACTIONS") != "true":
+            print(
+                "Stopping and removing existing PostgreSQL container:",
+                existing_container,
+            )
+            subprocess.run(["docker", "stop", "hypha-postgres"], check=True)
+            # Attempt to remove the container, but ignore errors if it does not exist
+            subprocess.run(["docker", "rm", "hypha-postgres"], check=False)
+
+            # Start a new PostgreSQL container
+            print("Starting a new PostgreSQL container")
+            subprocess.Popen(
+                [
+                    "docker",
+                    "run",
+                    "--name",
+                    "hypha-postgres",
+                    "--rm",
+                    "-e",
+                    f"POSTGRES_PASSWORD={POSTGRES_PASSWORD}",
+                    "-p",
+                    f"{POSTGRES_PORT}:5432",
+                    "-d",
+                    "postgres",
+                ]
+            )
+            time.sleep(2)  # Give the container time to initialize
+        else:
+            print("Using existing PostgreSQL container:", existing_container)
     else:
-        # Start a new PostgreSQL container if none is running
+        # Start a new PostgreSQL container
         print("Starting a new PostgreSQL container")
         subprocess.Popen(
             [
@@ -161,7 +189,7 @@ def postgres_server():
                 "postgres",
             ]
         )
-        time.sleep(2)  # Give the container time to initialize
+        time.sleep(2)
 
     # Wait for the PostgreSQL server to become available
     timeout = 10
@@ -179,10 +207,9 @@ def postgres_server():
 
     yield  # Test code executes here
 
-    # Stop and remove the container only if we started it
-    if not existing_container:
-        print("Stopping PostgreSQL container")
-        subprocess.run(["docker", "stop", "hypha-postgres"])
+    # Stop the PostgreSQL container
+    print("Stopping PostgreSQL container")
+    subprocess.run(["docker", "stop", "hypha-postgres"], check=True)
 
 
 @pytest_asyncio.fixture(name="redis_server", scope="session")

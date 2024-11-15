@@ -183,19 +183,22 @@ class ASGIRoutingMiddleware:
 
     def _get_access_token_from_cookies(self, scope):
         """Extract the access_token cookie from the scope."""
-        cookies = None
-        for key, value in scope.get("headers", []):
-            if key.decode("utf-8").lower() == "cookie":
-                cookies = value.decode("utf-8")
-                break
-        if not cookies:
+        try:
+            cookies = None
+            for key, value in scope.get("headers", []):
+                if key.decode("utf-8").lower() == "cookie":
+                    cookies = value.decode("utf-8")
+                    break
+            if not cookies:
+                return None
+            # Split cookies and find the access_token
+            cookie_dict = {
+                k.strip(): v.strip()
+                for k, v in (cookie.split("=") for cookie in cookies.split(";"))
+            }
+            return cookie_dict.get("access_token")
+        except Exception as exp:
             return None
-        # Split cookies and find the access_token
-        cookie_dict = {
-            k.strip(): v.strip()
-            for k, v in (cookie.split("=") for cookie in cookies.split(";"))
-        }
-        return cookie_dict.get("access_token")
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
@@ -280,7 +283,7 @@ class ASGIRoutingMiddleware:
                             )
                         return
                 except Exception as exp:
-                    logger.error(f"Error in ASGI service: {exp}")
+                    logger.exception(f"Error in ASGI service: {exp}")
                     await send(
                         {
                             "type": "http.response.start",

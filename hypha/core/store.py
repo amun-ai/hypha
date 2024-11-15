@@ -259,7 +259,13 @@ class RedisStore:
         def _upgrade_schema_if_needed(conn):
             """Run schema upgrade by replacing the 'public' column with 'permissions' column."""
             inspector = inspect(conn)
-            columns = inspector.get_columns("artifacts")
+            try:
+                columns = inspector.get_columns("artifacts")
+            except NoSuchTableError:
+                logger.info(
+                    f"Skipping schema upgrade for 'artifacts' table as it does not exist."
+                )
+                return
 
             # Check if 'created_at' column exists
             # If not, insert 'created_at' column (integer type) and 'last_modified' column (integer type) with the current timestamp = int(time.time())
