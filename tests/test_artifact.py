@@ -46,6 +46,17 @@ async def test_sqlite_create_and_search_artifacts(minio_server, fastapi_server_s
         )
         datasets.append(dataset)
 
+    # create an application artifact
+    application = await artifact_manager.create(
+        type="application",
+        parent_id=collection.id,
+        manifest={
+            "name": "Application 1",
+            "description": "First application for SQLite testing",
+        },
+        version="stage",
+    )
+
     # Test read operation on the datasets
     for dataset in datasets:
         dataset_data = await artifact_manager.read(
@@ -54,6 +65,11 @@ async def test_sqlite_create_and_search_artifacts(minio_server, fastapi_server_s
         assert dataset_data["manifest"]["name"] in [
             dataset_manifest["name"] for dataset_manifest in dataset_manifests
         ]
+
+    application_data = await artifact_manager.read(
+        artifact_id=application.id, version="stage"
+    )
+    assert application_data["manifest"]["name"] == "Application 1"
 
     # Add files to each dataset
     file_contents = [
@@ -70,14 +86,22 @@ async def test_sqlite_create_and_search_artifacts(minio_server, fastapi_server_s
 
     search_results = await artifact_manager.list(
         parent_id=collection.id,
-        filters={"stage": True},
+        filters={"stage": True, "manifest": {"description": "*dataset*"}},
     )
 
     assert len(search_results) == len(datasets)
 
+    # list application only
+    search_results = await artifact_manager.list(
+        parent_id=collection.id, filters={"stage": True, "type": "application"}
+    )
+    assert len(search_results) == 1
+
     # Commit the datasets
     for dataset in datasets:
         await artifact_manager.commit(artifact_id=dataset.id)
+
+    await artifact_manager.commit(artifact_id=application.id)
 
     # Search for artifacts based on manifest fields
     search_results = await artifact_manager.list(
@@ -92,6 +116,16 @@ async def test_sqlite_create_and_search_artifacts(minio_server, fastapi_server_s
     assert set([result["manifest"]["name"] for result in search_results]) == set(
         [dataset_manifest["name"] for dataset_manifest in dataset_manifests]
     )
+
+    # Search for application
+    search_results = await artifact_manager.list(
+        parent_id=collection.id,
+        keywords=["SQLite"],
+        filters={"type": "application"},
+        mode="AND",
+    )
+    assert len(search_results) == 1
+
     # Clean up by deleting datasets and the collection
     for dataset in datasets:
         await artifact_manager.delete(artifact_id=dataset.id)
