@@ -791,19 +791,19 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
     response = requests.get(get_url)
     assert response.status_code == 200
     assert response.text == file_content
-    
+
     # Edit it directly
     await artifact_manager.edit(
         type="dataset",
         artifact_id=dataset.id,
         manifest={"name": "Edit Test Dataset"},
     )
-    
+
     # Verify the manifest updates are committed
     committed_artifact = await artifact_manager.read(artifact_id=dataset.id)
     committed_manifest = committed_artifact["manifest"]
     assert committed_manifest["name"] == "Edit Test Dataset"
-    
+
     # Check list of artifacts
     items = await artifact_manager.list(parent_id=collection.id)
     item = find_item(items, "id", committed_artifact.id)

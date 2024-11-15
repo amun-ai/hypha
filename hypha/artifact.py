@@ -862,6 +862,13 @@ class ArtifactController:
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
 
+        wss = workspace or context["ws"]
+        info = await self.store.get_workspace_info(wss, load=True)
+        if not info.persistent:
+            raise PermissionError(
+                "Cannot create artifact in a non-persistent workspace, you may need to login."
+            )
+
         user_info = UserInfo.model_validate(context["user"])
 
         # Validate the manifest
@@ -993,9 +1000,13 @@ class ArtifactController:
                     self._get_s3_config(new_artifact, parent_artifact),
                 )
                 if version != "stage":
-                    logger.info(f"Created artifact with ID: {id} (committed), alias: {alias}, parent: {parent_id}")
+                    logger.info(
+                        f"Created artifact with ID: {id} (committed), alias: {alias}, parent: {parent_id}"
+                    )
                 else:
-                    logger.info(f"Created artifact with ID: {id} (staged), alias: {alias}, parent: {parent_id}")
+                    logger.info(
+                        f"Created artifact with ID: {id} (staged), alias: {alias}, parent: {parent_id}"
+                    )
                 return self._generate_artifact_data(new_artifact)
         except Exception as e:
             raise e
@@ -1117,10 +1128,14 @@ class ArtifactController:
                     flag_modified(artifact, "staging")
                     session.add(artifact)
                     await session.commit()
-                    logger.info(f"Edited artifact with ID: {artifact_id} (committed), alias: {artifact.alias}, version: {version}")
+                    logger.info(
+                        f"Edited artifact with ID: {artifact_id} (committed), alias: {artifact.alias}, version: {version}"
+                    )
                 else:
                     artifact.staging = artifact.staging or []
-                    logger.info(f"Edited artifact with ID: {artifact_id} (staged), alias: {artifact.alias}")
+                    logger.info(
+                        f"Edited artifact with ID: {artifact_id} (staged), alias: {artifact.alias}"
+                    )
                 await self._save_version_to_s3(
                     version_index,
                     artifact,
@@ -1264,7 +1279,9 @@ class ArtifactController:
                     artifact,
                     self._get_s3_config(artifact, parent_artifact),
                 )
-                logger.info(f"Committed artifact with ID: {artifact_id}, alias: {artifact.alias}, version: {version}")
+                logger.info(
+                    f"Committed artifact with ID: {artifact_id}, alias: {artifact.alias}, version: {version}"
+                )
         except Exception as e:
             raise e
         finally:
@@ -1347,7 +1364,9 @@ class ArtifactController:
                     version_index, artifact, s3_config, delete_files=delete_files
                 )
             await session.commit()
-            logger.info(f"Deleted artifact with ID: {artifact_id}, alias: {artifact.alias}, version: {version}")
+            logger.info(
+                f"Deleted artifact with ID: {artifact_id}, alias: {artifact.alias}, version: {version}"
+            )
         except Exception as e:
             if session:
                 await session.rollback()
@@ -1402,7 +1421,9 @@ class ArtifactController:
                     await self._save_version_to_s3(version_index, artifact, s3_config)
                     session.add(artifact)
                     await session.commit()
-                    logger.info(f"Put file '{file_path}' to artifact with ID: {artifact_id}")
+                    logger.info(
+                        f"Put file '{file_path}' to artifact with ID: {artifact_id}"
+                    )
             return presigned_url
         except Exception as e:
             raise e
@@ -1447,7 +1468,9 @@ class ArtifactController:
 
                 session.add(artifact)
                 await session.commit()
-                logger.info(f"Removed file '{file_path}' from artifact with ID: {artifact_id}")
+                logger.info(
+                    f"Removed file '{file_path}' from artifact with ID: {artifact_id}"
+                )
         except Exception as e:
             raise e
         finally:

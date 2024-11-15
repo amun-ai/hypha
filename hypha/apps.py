@@ -223,7 +223,7 @@ class ServerAppController:
             assert (
                 response.status_code == 200
             ), f"Failed to upload {config['entry_point']}"
-        
+
         if version != "stage":
             # Commit the artifact if stage is not enabled
             await self.commit(
