@@ -207,9 +207,10 @@ def postgres_server():
 
     yield  # Test code executes here
 
-    # Stop the PostgreSQL container
-    print("Stopping PostgreSQL container")
-    subprocess.run(["docker", "stop", "hypha-postgres"], check=True)
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        # Stop the PostgreSQL container
+        print("Stopping PostgreSQL container")
+        subprocess.run(["docker", "stop", "hypha-postgres"], check=True)
 
 
 @pytest_asyncio.fixture(name="redis_server", scope="session")
