@@ -8,14 +8,10 @@ import json
 from sqlalchemy import (
     event,
     Column,
-    String,
-    Integer,
-    Float,
     JSON,
     UniqueConstraint,
     select,
     text,
-    ForeignKey,  # For linking to parent artifact ID
     and_,
     or_,
 )
@@ -27,7 +23,6 @@ from botocore.exceptions import ClientError
 from hypha.s3 import FSFileResponse
 from aiobotocore.session import get_session
 from sqlalchemy import update
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     AsyncSession,
@@ -43,46 +38,50 @@ from hypha.core import (
 from hypha_rpc.utils import ObjectProxy
 from jsonschema import validate
 from typing import Union, List
+from sqlmodel import SQLModel, Field, Relationship, UniqueConstraint
+from typing import Optional, List
 
 # Logger setup
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("artifact")
 logger.setLevel(logging.INFO)
 
-Base = declarative_base()
 
-
-# SQLAlchemy model for storing artifacts
-class ArtifactModel(Base):
+# SQLModel model for storing artifacts
+class ArtifactModel(SQLModel, table=True):  # `table=True` makes it a table model
     __tablename__ = "artifacts"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid7()))
-    type = Column(String, nullable=True)
-    workspace = Column(String, nullable=False, index=True)
-    parent_id = Column(String, ForeignKey("artifacts.id"), nullable=True)
-    alias = Column(String, nullable=True)
-    manifest = Column(JSON, nullable=True)  # Store committed manifest
-    staging = Column(JSON, nullable=True)  # Store staged changes
-    download_count = Column(Float, nullable=False, default=0.0)  # New counter field
-    view_count = Column(Float, nullable=False, default=0.0)  # New counter field
-    file_count = Column(Integer, nullable=False, default=0)  # New counter field
-    created_at = Column(Integer, nullable=False)
-    created_by = Column(String, nullable=True)
-    last_modified = Column(Integer, nullable=False)
-    versions = Column(JSON, nullable=True)  # Store version history
-    config = Column(
-        JSON, nullable=True
-    )  # Store additional configuration and permissions
-    secrets = Column(JSON, nullable=True)  # Store secrets (write-only, flat dictionary)
+    id: str = Field(default_factory=lambda: str(uuid.uuid7()), primary_key=True)
+    type: Optional[str] = Field(default=None)
+    workspace: str = Field(index=True)
+    parent_id: Optional[str] = Field(default=None, foreign_key="artifacts.id")
+    alias: Optional[str] = Field(default=None)
+    manifest: Optional[dict] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
+    staging: Optional[dict] = Field(default=None, sa_column=Column(JSON, nullable=True))
+    download_count: float = Field(default=0.0)
+    view_count: float = Field(default=0.0)
+    file_count: int = Field(default=0)
+    created_at: int = Field()
+    created_by: Optional[str] = Field(default=None)
+    last_modified: int = Field()
+    versions: Optional[dict] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
+    config: Optional[dict] = Field(default=None, sa_column=Column(JSON, nullable=True))
+    secrets: Optional[dict] = Field(default=None, sa_column=Column(JSON, nullable=True))
 
     # Relationships
-    parent = relationship("ArtifactModel", remote_side=[id], backref="children")
+    parent: Optional["ArtifactModel"] = Relationship(
+        back_populates="children",
+        sa_relationship_kwargs={"remote_side": "ArtifactModel.id"},
+    )
+    children: List["ArtifactModel"] = Relationship(back_populates="parent")
 
     # Table constraints
     __table_args__ = (
-        UniqueConstraint(
-            "workspace", "alias", name="_workspace_alias_uc"
-        ),  # Ensure alias is unique within a workspace
+        UniqueConstraint("workspace", "alias", name="_workspace_alias_uc"),
     )
 
 
@@ -222,7 +221,7 @@ class ArtifactController:
                     # Query child artifacts
                     query = (
                         select(ArtifactModel)
-                        .filter(
+                        .where(
                             ArtifactModel.workspace == workspace,
                             ArtifactModel.parent_id == parent_artifact.id,
                         )
@@ -344,7 +343,7 @@ class ArtifactController:
     async def init_db(self):
         """Initialize the database and create tables."""
         async with self.engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(ArtifactModel.metadata.create_all)
             logger.info("Database tables created successfully.")
 
     async def _get_session(self, read_only=False):
@@ -371,12 +370,12 @@ class ArtifactController:
         if "/" in artifact_id:
             assert len(artifact_id.split("/")) == 2, "Invalid artifact ID format."
             ws, alias = artifact_id.split("/")
-            query = select(ArtifactModel).filter(
+            query = select(ArtifactModel).where(
                 ArtifactModel.workspace == ws,
                 ArtifactModel.alias == alias,
             )
         else:
-            query = select(ArtifactModel).filter(
+            query = select(ArtifactModel).where(
                 ArtifactModel.id == artifact_id,
             )
         result = await session.execute(query)
@@ -394,12 +393,12 @@ class ArtifactController:
                 len(artifact_id.split("/")) == 2
             ), "Invalid artifact ID format, it should be `workspace/alias`."
             ws, alias = artifact_id.split("/")
-            query = select(ArtifactModel).filter(
+            query = select(ArtifactModel).where(
                 ArtifactModel.workspace == ws,
                 ArtifactModel.alias == alias,
             )
         else:
-            query = select(ArtifactModel).filter(
+            query = select(ArtifactModel).where(
                 ArtifactModel.id == artifact_id,
             )
 
@@ -409,7 +408,7 @@ class ArtifactController:
             raise KeyError(f"Artifact with ID '{artifact_id}' does not exist.")
         parent_artifact = None
         if artifact and artifact.parent_id:
-            parent_query = select(ArtifactModel).filter(
+            parent_query = select(ArtifactModel).where(
                 ArtifactModel.id == artifact.parent_id,
             )
             parent_result = await session.execute(parent_query)
@@ -690,7 +689,7 @@ class ArtifactController:
         """
         Check which aliases already exist under the given parent artifact.
         """
-        query = select(ArtifactModel.alias).filter(
+        query = select(ArtifactModel.alias).where(
             ArtifactModel.workspace == workspace,
             ArtifactModel.alias.in_(aliases),
         )

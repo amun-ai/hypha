@@ -40,6 +40,7 @@ REQUIREMENTS = [
     "aiosqlite>=0.20.0",
     "prometheus-client>=0.21.0",
     "uuid-utils>=0.9.0",
+    "sqlmodel>=0.0.22",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()

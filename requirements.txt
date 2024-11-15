@@ -30,3 +30,4 @@ prometheus-client==0.21.0
 uuid-utils==0.9.0
 psycopg2==2.9.9
 asyncpg==0.30.0
+sqlmodel==0.0.22
