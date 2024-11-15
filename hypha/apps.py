@@ -79,7 +79,6 @@ class ServerAppController:
             alias="applications",
             manifest=manifest,
             overwrite=overwrite,
-            stage=False,
             context=context,
         )
         logger.info(f"Applications collection created for workspace {ws}")
@@ -91,9 +90,9 @@ class ServerAppController:
         source_hash: str = None,
         config: Optional[Dict[str, Any]] = None,
         workspace: Optional[str] = None,
-        stage: bool = False,
         overwrite: bool = False,
         timeout: float = 60,
+        version: str = None,
         context: Optional[dict] = None,
     ) -> str:
         """Save a server app."""
@@ -211,7 +210,7 @@ class ServerAppController:
             alias=f"applications:{app_id}",
             manifest=artifact_obj,
             overwrite=overwrite,
-            stage=True,
+            version="stage",
             context=context,
         )
 
@@ -225,12 +224,12 @@ class ServerAppController:
                 response.status_code == 200
             ), f"Failed to upload {config['entry_point']}"
         # Commit the artifact if stage is not enabled
-        if not stage:
-            await self.commit(
-                app_id,
-                timeout=timeout,
-                context=context,
-            )
+        await self.commit(
+            app_id,
+            timeout=timeout,
+            version=version,
+            context=context,
+        )
         return artifact_obj
 
     async def add_file(
@@ -269,13 +268,14 @@ class ServerAppController:
     async def edit(self, app_id: str, context: Optional[dict] = None):
         """Edit an application by re-opening its artifact."""
         await self.artifact_manager.edit(
-            f"applications:{app_id}", stage=True, context=context
+            f"applications:{app_id}", version="stage", context=context
         )
 
     async def commit(
         self,
         app_id: str,
         timeout: int = 30,
+        version: str = None,
         context: Optional[dict] = None,
     ):
         """Finalize the edits to the application by committing the artifact."""
@@ -284,7 +284,7 @@ class ServerAppController:
                 app_id,
                 timeout=timeout,
                 wait_for_service="default",
-                stage=True,
+                version="stage",
                 context=context,
             )
             await self.stop(info["id"], context=context)
@@ -300,7 +300,7 @@ class ServerAppController:
             raise Exception(
                 f"Failed to start the app: {app_id} during installation, error: {exp}"
             )
-        await self.artifact_manager.commit(f"applications:{app_id}", context=context)
+        await self.artifact_manager.commit(f"applications:{app_id}", version=version, context=context)
 
     async def uninstall(self, app_id: str, context: Optional[dict] = None) -> None:
         """Uninstall an application by removing its artifact."""
@@ -335,7 +335,7 @@ class ServerAppController:
         app_id,
         client_id=None,
         timeout: float = 60,
-        stage: bool = False,
+        version: str = None,
         wait_for_service: Union[str, bool] = None,
         context: Optional[dict] = None,
     ):
@@ -361,7 +361,7 @@ class ServerAppController:
             client_id = random_id(readable=True)
 
         artifact_info = await self.artifact_manager.read(
-            f"applications:{app_id}", stage=stage, context=context
+            f"applications:{app_id}", version=version, context=context
         )
         artifact = artifact_info.get("manifest", {})
         artifact = ApplicationArtifact.model_validate(artifact)
@@ -442,7 +442,6 @@ class ServerAppController:
                 f"applications:{app_id}",
                 manifest=artifact.model_dump(mode="json"),
                 context=context,
-                stage=stage,
             )
 
         except asyncio.TimeoutError:

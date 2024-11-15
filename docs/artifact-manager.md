@@ -60,7 +60,7 @@ dataset = await artifact_manager.create(
     parent_id=collection.id,
     alias="example-dataset",
     manifest=dataset_manifest,
-    stage=True
+    version="stage"
 )
 print("Dataset added to the gallery.")
 ```
@@ -143,7 +143,7 @@ async def main():
         parent_id=collection.id,
         alias="example-dataset",
         manifest=dataset_manifest,
-        stage=True
+        version="stage"
     )
     print("Dataset added to the gallery.")
 
@@ -217,7 +217,7 @@ dataset = await artifact_manager.create(
     parent_id=collection.id,
     alias="valid-dataset",
     manifest=valid_dataset_manifest,
-    stage=True
+    version="stage"
 )
 print("Valid dataset created.")
 
@@ -231,7 +231,7 @@ print("Valid dataset committed.")
 
 ## API References
 
-### `create(parent_id: str, alias: str, type: str, manifest: dict, permissions: dict=None, config: dict=None, stage: bool = False, publish_to: str = None) -> None`
+### `create(parent_id: str, alias: str, type: str, manifest: dict, permissions: dict=None, config: dict=None, version: str = None, publish_to: str = None) -> None`
 
 Creates a new artifact or collection with the specified manifest. The artifact is staged until committed. For collections, the `collection` field should be an empty list.
 
@@ -252,7 +252,7 @@ To generate an auto-id, you can use patterns like `"{uuid}"` or `"{timestamp}"`.
   - `collection_schema`: Optional. A JSON schema that defines the structure of child artifacts in the collection. This schema is used to validate child artifacts when they are created or edited. If a child artifact does not conform to the schema, the creation or edit operation will fail.
   - `id_parts`: Optional. A dictionary of id name parts to be used in generating the id for child artifacts. For example: `{"animals": ["dog", "cat", ...], "colors": ["red", "blue", ...]}`. This can be used for creating child artifacts with auto-generated ids based on the id parts. For example, when calling `create`, you can specify the alias as `my-pet-{colors}-{animals}`, and the id will be generated based on the id parts, e.g., `my-pet-red-dog`.
 - `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
-- `stage`: Optional. A boolean flag to stage the artifact. Default is `False`. If it's set to `True`, the artifact will be staged and not committed. You will need to call `commit()` to finalize the artifact.
+- `version`: Optional. The version of the artifact to create. By default, it set to None, which will generate a version similar to `v1`, `v2`, etc. If you want to create a staged version, you can set it to `"stage"`.
 - `secrets`: Optional. A dictionary containing secrets to be stored with the artifact. Secrets are encrypted and can only be accessed by the artifact owner or users with appropriate permissions. The following keys can be used:
   - `ZENODO_ACCESS_TOKEN`: The Zenodo access token to publish the artifact to Zenodo.
   - `SANDBOX_ZENODO_ACCESS_TOKEN`: The Zenodo access token to publish the artifact to the Zenodo sandbox.
@@ -265,13 +265,13 @@ To generate an auto-id, you can use patterns like `"{uuid}"` or `"{timestamp}"`.
 
 - `publish_to`: Optional. A string specifying the target platform to publish the artifact. Supported values are `zenodo` and `sandbox_zenodo`. If set, the artifact will be published to the specified platform. The artifact must have a valid Zenodo metadata schema to be published.
 
-**Note 1: If you set `stage=True`, you must call `commit()` to finalize the artifact.**
+**Note 1: If you set `version="stage"`, you must call `commit()` to finalize the artifact.**
 
 **Example:**
 
 ```python
 # Assuming we have already created a dataset-gallery collection, we can add a new dataset to it
-await artifact_manager.create(artifact_id="dataset-gallery", alias="example-dataset", manifest=dataset_manifest, stage=True)
+await artifact_manager.create(artifact_id="dataset-gallery", alias="example-dataset", manifest=dataset_manifest, version="stage")
 ```
 
 ### Permissions
@@ -351,7 +351,7 @@ The following list shows how permission expansions work:
 
 ---
 
-### `edit(artifact_id: str, manifest: dict = None, type: str = None,  permissions: dict = None, config: dict = None, secrets: dict = None, stage: bool = False) -> None`
+### `edit(artifact_id: str, manifest: dict = None, type: str = None,  permissions: dict = None, config: dict = None, secrets: dict = None, version: str = None) -> None`
 
 Edits an existing artifact's manifest. The new manifest is staged until committed.
 
@@ -363,7 +363,7 @@ Edits an existing artifact's manifest. The new manifest is staged until committe
 - `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
 - `secrets`: Optional. A dictionary containing secrets to be stored with the artifact. Secrets are encrypted and can only be accessed by the artifact owner or users with appropriate permissions. See the `create` function for a list of supported secrets.
 - `config`: Optional. A dictionary containing additional configuration options for the artifact.
-- `stage`: Optional. A boolean flag to stage the artifact. Default is `False`. If it's set to `True`, the artifact will be staged and not committed. You will need to call `commit()` to finalize the changes.
+- `version`: Optional. The version of the artifact to edit. By default, it set to None, which will generate a version similar to `v1`, `v2`, etc. If you want to create a staged version, you can set it to `"stage"`.
 
 **Example:**
 
@@ -533,7 +533,7 @@ Reads and returns the manifest of an artifact or collection. If in staging mode,
 **Parameters:**
 
 - `artifact_id`: The id of the artifact to read. It can be an uuid generated by `create` or `edit` function, or it can be an alias of the artifact under the current workspace. If you want to refer to an artifact in another workspace, you should use the full alias in the format of `"workspace_id/alias"`.
-- `stage`: Optional. If `True`, reads the staged manifest. Default is `False`.
+- `version`: Optional. The version of the artifact to read. By default, it reads the latest version. If you want to read a staged version, you can set it to `"stage"`.
 - `silent`: Optional. If `True`, suppresses the view count increment. Default is `False`.
 - `include_metadata`: Optional. If `True`, includes metadata such as download statistics in the manifest (fields starting with `"."`). Default is `False`.
 
@@ -673,7 +673,7 @@ dataset_manifest = {
     "description": "A dataset with example data",
     "type": "dataset",
 }
-dataset = await artifact_manager.create(parent_id=collection.id, alias="example-dataset" manifest=dataset_manifest, stage=True)
+dataset = await artifact_manager.create(parent_id=collection.id, alias="example-dataset" manifest=dataset_manifest, version="stage")
 
 # Step 4: Upload a file to the dataset
 put_url = await artifact_manager.put_file(dataset.id, file_path="data.csv")
