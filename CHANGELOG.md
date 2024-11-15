@@ -1,5 +1,11 @@
 # Hypha Change Log
 
+### 0.20.39
+
+ - Revise artifact manager to use artifact id as the primary key, remove `prefix` based keys.
+ - Support versioning and custom config (e.g. artifact specific s3 credentials) for the artifact manager.
+ - Use SQLModel
+
 ### 0.20.38
 
  - Support event logging in the workspace, use `log_event` to log events in the workspace and use `get_events` to get the events in the workspace. The events will be persists in the SQL database.

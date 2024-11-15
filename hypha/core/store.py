@@ -422,7 +422,7 @@ class RedisStore:
             except NoInspectionAvailable as e:
                 logger.error(f"Error inspecting the database: {str(e)}")
 
-        # For <=0.20.38, upgrade workspaces so it contains `type` key but not containing `applications` key
+        # For <=0.20.39, upgrade workspaces so it contains `type` key but not containing `applications` key
         workspaces = await self._redis.hgetall("workspaces")
         for k, v in workspaces.items():
             workspace_info = json.loads(v.decode())

@@ -27,7 +27,7 @@ loadPyodide().then(async (pyodide) => {
     pyodide.setStderr({ batched: (msg) => console.error(msg) });
     await pyodide.loadPackage("micropip");
     const micropip = pyodide.pyimport("micropip");
-    await micropip.install('hypha-rpc==0.20.38');
+    await micropip.install('hypha-rpc==0.20.39');
     const isWindow = typeof window !== "undefined";
     
     setTimeout(() => {
