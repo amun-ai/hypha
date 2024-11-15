@@ -223,13 +223,15 @@ class ServerAppController:
             assert (
                 response.status_code == 200
             ), f"Failed to upload {config['entry_point']}"
-        # Commit the artifact if stage is not enabled
-        await self.commit(
-            app_id,
-            timeout=timeout,
-            version=version,
-            context=context,
-        )
+        
+        if version != "stage":
+            # Commit the artifact if stage is not enabled
+            await self.commit(
+                app_id,
+                timeout=timeout,
+                version=version,
+                context=context,
+            )
         return artifact_obj
 
     async def add_file(
@@ -362,8 +364,6 @@ class ServerAppController:
         if client_id is None:
             client_id = random_id(readable=True)
 
-        version = version or "latest"
-
         artifact_info = await self.artifact_manager.read(
             f"applications:{app_id}", version=version, context=context
         )
@@ -375,7 +375,7 @@ class ServerAppController:
         server_url = self.local_base_url
         local_url = (
             f"{self.local_base_url}/{workspace}/artifacts/applications:{app_id}/files/{entry_point}?"
-            + f"version={version}"
+            + f"version={version or 'latest'}"
             + f"&client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}"
@@ -386,7 +386,7 @@ class ServerAppController:
         server_url = self.public_base_url
         public_url = (
             f"{self.public_base_url}/{workspace}/artifacts/applications:{app_id}/files/{entry_point}?"
-            + f"version={version}"
+            + f"version={version or 'latest'}"
             + f"&client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}"

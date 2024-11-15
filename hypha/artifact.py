@@ -992,6 +992,10 @@ class ArtifactController:
                     new_artifact,
                     self._get_s3_config(new_artifact, parent_artifact),
                 )
+                if version != "stage":
+                    logger.info(f"Created artifact with ID: {id} (committed), alias: {alias}, parent: {parent_id}")
+                else:
+                    logger.info(f"Created artifact with ID: {id} (staged), alias: {alias}, parent: {parent_id}")
                 return self._generate_artifact_data(new_artifact)
         except Exception as e:
             raise e
@@ -1108,11 +1112,15 @@ class ArtifactController:
                     artifact.secrets = secrets
                     flag_modified(artifact, "secrets")
                 artifact.last_modified = int(time.time())
-                artifact.staging = artifact.staging or []
-                flag_modified(artifact, "staging")
                 if version != "stage":
+                    artifact.staging = None
+                    flag_modified(artifact, "staging")
                     session.add(artifact)
                     await session.commit()
+                    logger.info(f"Edited artifact with ID: {artifact_id} (committed), alias: {artifact.alias}, version: {version}")
+                else:
+                    artifact.staging = artifact.staging or []
+                    logger.info(f"Edited artifact with ID: {artifact_id} (staged), alias: {artifact.alias}")
                 await self._save_version_to_s3(
                     version_index,
                     artifact,
@@ -1176,6 +1184,7 @@ class ArtifactController:
         artifact_id = self._validate_artifact_id(artifact_id, context)
         user_info = UserInfo.model_validate(context["user"])
         session = await self._get_session()
+        assert version != "stage", "Version cannot be 'stage' when committing."
         try:
             async with session.begin():
                 artifact, parent_artifact = await self._get_artifact_with_permission(
@@ -1255,6 +1264,7 @@ class ArtifactController:
                     artifact,
                     self._get_s3_config(artifact, parent_artifact),
                 )
+                logger.info(f"Committed artifact with ID: {artifact_id}, alias: {artifact.alias}, version: {version}")
         except Exception as e:
             raise e
         finally:
@@ -1337,7 +1347,7 @@ class ArtifactController:
                     version_index, artifact, s3_config, delete_files=delete_files
                 )
             await session.commit()
-
+            logger.info(f"Deleted artifact with ID: {artifact_id}, alias: {artifact.alias}, version: {version}")
         except Exception as e:
             if session:
                 await session.rollback()
@@ -1390,8 +1400,9 @@ class ArtifactController:
                         # flag_modified(artifact, "staging")
                     # save the artifact to s3
                     await self._save_version_to_s3(version_index, artifact, s3_config)
-                    # session.add(artifact)
-                    # await session.commit()
+                    session.add(artifact)
+                    await session.commit()
+                    logger.info(f"Put file '{file_path}' to artifact with ID: {artifact_id}")
             return presigned_url
         except Exception as e:
             raise e
@@ -1436,6 +1447,7 @@ class ArtifactController:
 
                 session.add(artifact)
                 await session.commit()
+                logger.info(f"Removed file '{file_path}' from artifact with ID: {artifact_id}")
         except Exception as e:
             raise e
         finally:

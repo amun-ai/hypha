@@ -358,6 +358,64 @@ async def test_artifact_permissions(
         await artifact_manager_anonymous.reset_stats(artifact_id=dataset.id)
 
 
+async def test_versioning_artifacts(minio_server, fastapi_server_sqlite):
+    """Test versioning features for artifacts."""
+
+    # Set up connection and artifact manager
+    api = await connect_to_server(
+        {"name": "sqlite test client", "server_url": SERVER_URL_SQLITE}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create an artifact with an initial version
+    initial_manifest = {
+        "name": "Versioned Artifact",
+        "description": "Artifact to test versioning",
+    }
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest=initial_manifest,
+        version="v1",
+    )
+
+    # Verify the initial version
+    artifact_data = await artifact_manager.read(artifact_id=artifact.id, version="v1")
+    assert artifact_data["versions"][-1]["version"] == "v1"
+
+    # Stage a new version
+    updated_manifest = {
+        "name": "Versioned Artifact",
+        "description": "Updated version description",
+    }
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest=updated_manifest,
+        version="stage",
+    )
+
+    # Read the staged version to confirm the update
+    staged_data = await artifact_manager.read(artifact_id=artifact.id, version="stage")
+    assert staged_data["manifest"]["description"] == "Updated version description"
+
+    # Commit the staged version
+    await artifact_manager.commit(artifact_id=artifact.id, version="v2")
+
+    # Verify the staged version is accessible
+    staged_data = await artifact_manager.read(artifact_id=artifact.id, version="v2")
+    assert staged_data["manifest"]["description"] == "Updated version description"
+
+    # Test reading the latest version
+    latest_data = await artifact_manager.read(artifact_id=artifact.id, version="latest")
+    assert latest_data["manifest"]["description"] == "Updated version description"
+
+    # Attempt to read a non-existent version
+    with pytest.raises(Exception, match=r".*Artifact version 'v999' does not exist.*"):
+        await artifact_manager.read(artifact_id=artifact.id, version="v999")
+
+    # Clean up by deleting the artifact
+    await artifact_manager.delete(artifact_id=artifact.id)
+
+
 async def test_artifact_alias_pattern(minio_server, fastapi_server):
     """Test artifact alias pattern functionality."""
     api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
@@ -733,6 +791,22 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
     response = requests.get(get_url)
     assert response.status_code == 200
     assert response.text == file_content
+    
+    # Edit it directly
+    await artifact_manager.edit(
+        type="dataset",
+        artifact_id=dataset.id,
+        manifest={"name": "Edit Test Dataset"},
+    )
+    
+    # Verify the manifest updates are committed
+    committed_artifact = await artifact_manager.read(artifact_id=dataset.id)
+    committed_manifest = committed_artifact["manifest"]
+    assert committed_manifest["name"] == "Edit Test Dataset"
+    
+    # Check list of artifacts
+    items = await artifact_manager.list(parent_id=collection.id)
+    item = find_item(items, "id", committed_artifact.id)
 
     # Clean up by deleting the dataset and collection
     await artifact_manager.delete(artifact_id=dataset.id)

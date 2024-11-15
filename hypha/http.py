@@ -585,7 +585,7 @@ class HTTPProxy:
             """Route for get apps under a workspace."""
             try:
                 async with self.store.get_workspace_interface(
-                    user_info, user_info.scope.current_workspace
+                    user_info, workspace or user_info.scope.current_workspace
                 ) as manager:
                     try:
                         controller = await manager.get_service("public/server-apps")
