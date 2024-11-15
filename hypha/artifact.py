@@ -809,7 +809,7 @@ class ArtifactController:
             if version_index < 0:
                 if version.isdigit():
                     version_index = int(version)
-                raise ValueError(f"Version '{version}' does not exist.")
+                raise ValueError(f"Artifact version '{version}' does not exist.")
         elif isinstance(version, int):
             assert version >= 0, "Version must be non-negative."
             version_index = version

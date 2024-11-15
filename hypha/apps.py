@@ -359,6 +359,8 @@ class ServerAppController:
 
         if client_id is None:
             client_id = random_id(readable=True)
+        
+        version = version or "latest"
 
         artifact_info = await self.artifact_manager.read(
             f"applications:{app_id}", version=version, context=context
@@ -371,7 +373,8 @@ class ServerAppController:
         server_url = self.local_base_url
         local_url = (
             f"{self.local_base_url}/{workspace}/artifacts/applications:{app_id}/files/{entry_point}?"
-            + f"client_id={client_id}&workspace={workspace}"
+            + f"version={version}"
+            + f"&client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}"
             + f"&token={token}"
@@ -381,7 +384,8 @@ class ServerAppController:
         server_url = self.public_base_url
         public_url = (
             f"{self.public_base_url}/{workspace}/artifacts/applications:{app_id}/files/{entry_point}?"
-            + f"client_id={client_id}&workspace={workspace}"
+            + f"version={version}"
+            + f"&client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}"
             + f"&token={token}"
@@ -440,6 +444,7 @@ class ServerAppController:
             )
             await self.artifact_manager.edit(
                 f"applications:{app_id}",
+                version=version,
                 manifest=artifact.model_dump(mode="json"),
                 context=context,
             )
