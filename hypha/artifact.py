@@ -1593,20 +1593,20 @@ class ArtifactController:
                 # Prepare base query for children artifacts
                 if parent_artifact:
                     config = parent_artifact.config or {}
-                    summary_fields = config.get("summary_fields")
-                    if summary_fields:
+                    list_fields = config.get("list_fields")
+                    if list_fields:
                         assert isinstance(
-                            summary_fields, list
-                        ), "Invalid summary_fields, it should be a list."
+                            list_fields, list
+                        ), "Invalid list_fields, it should be a list."
                         assert (
-                            "secrets" not in summary_fields
-                        ), "Secrets cannot be included in summary_fields."
-                        # If summary_fields is specified and is a list, select only those fields
+                            "secrets" not in list_fields
+                        ), "Secrets cannot be included in list_fields."
+                        # If list_fields is specified and is a list, select only those fields
                         query = select(
-                            *[getattr(ArtifactModel, field) for field in summary_fields]
+                            *[getattr(ArtifactModel, field) for field in list_fields]
                         ).where(ArtifactModel.parent_id == parent_artifact.id)
                     else:
-                        # If summary_fields is empty or not specified, select all columns
+                        # If list_fields is empty or not specified, select all columns
                         query = select(ArtifactModel).where(
                             ArtifactModel.parent_id == parent_artifact.id
                         )
