@@ -1816,10 +1816,9 @@ class ArtifactController:
                     await session.commit()
 
                 return results
+        
         except Exception as e:
-            raise ValueError(
-                f"An error occurred while executing the search query: {str(e)}"
-            )
+            raise e
         finally:
             await session.close()
 
