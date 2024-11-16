@@ -468,6 +468,14 @@ class ServerAppController:
         self, session_id: str, raise_exception=True, context: Optional[dict] = None
     ) -> None:
         """Stop a server app instance."""
+        user_info = UserInfo.model_validate(context["user"])
+        workspace = context["ws"]
+        if not user_info.check_permission(workspace, UserPermission.read):
+            raise Exception(
+                f"User {user_info.id} does not have permission"
+                f" to stop app {session_id} in workspace {workspace}."
+            )
+
         if session_id in self._sessions:
             app_info = self._sessions.pop(session_id, None)
             try:
@@ -489,6 +497,13 @@ class ServerAppController:
         context: Optional[dict] = None,
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get server app instance log."""
+        user_info = UserInfo.model_validate(context["user"])
+        workspace = context["ws"]
+        if not user_info.check_permission(workspace, UserPermission.read):
+            raise Exception(
+                f"User {user_info.id} does not have permission"
+                f" to get log for app {session_id} in workspace {workspace}."
+            )
         if session_id in self._sessions:
             return await self._sessions[session_id]["_runner"].get_log(
                 session_id, type=type, offset=offset, limit=limit
@@ -515,8 +530,7 @@ class ServerAppController:
         except KeyError:
             return []
         except Exception as exp:
-            logger.exception("Failed to list apps: %s", exp)
-            return []
+            raise Exception(f"Failed to list apps: {exp}") from exp
 
     async def close(self) -> None:
         """Close the app controller."""

@@ -70,7 +70,7 @@ async def test_server_apps_unauthorized(
     await controller.stop(app_info.id)
     # Now disconnect it
     await api.disconnect()
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0.5)
 
     # now it should disappear from the stats
     async with connect_to_server(
