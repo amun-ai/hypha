@@ -318,7 +318,9 @@ class ArtifactController:
                     # Increment download count unless silent
                     if not silent:
                         if artifact.config and "download_weights" in artifact.config:
-                            download_weights = artifact.config.get("download_weights", {})
+                            download_weights = artifact.config.get(
+                                "download_weights", {}
+                            )
                         else:
                             download_weights = {}
                         download_weight = download_weights.get(path) or 0

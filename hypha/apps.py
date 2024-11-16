@@ -375,24 +375,20 @@ class ServerAppController:
         server_url = self.local_base_url
         local_url = (
             f"{self.local_base_url}/{workspace}/artifacts/applications:{app_id}/files/{entry_point}?"
-            + f"version={version or 'latest'}"
-            + f"&client_id={client_id}&workspace={workspace}"
+            + f"client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}"
-            + f"&token={token}"
-            if token
-            else ""
+            + (f"&token={token}" if token else "")
+            + (f"&version={version}" if version else "")
         )
         server_url = self.public_base_url
         public_url = (
             f"{self.public_base_url}/{workspace}/artifacts/applications:{app_id}/files/{entry_point}?"
-            + f"version={version or 'latest'}"
-            + f"&client_id={client_id}&workspace={workspace}"
+            + f"client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}"
-            + f"&token={token}"
-            if token
-            else ""
+            + (f"&token={token}" if token else "")
+            + (f"&version={version}" if version else "")
         )
 
         runner = random.choice(self._runner)
