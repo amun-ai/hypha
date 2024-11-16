@@ -165,7 +165,7 @@ class ArtifactController:
 
                     version_index = self._get_version_index(artifact, version)
 
-                    if version_index == self._get_version_index(artifact, "latest"):
+                    if version_index == self._get_version_index(artifact, None):
                         # Prepare artifact representation
                         artifact_data = self._generate_artifact_data(artifact)
                     else:
@@ -317,9 +317,19 @@ class ArtifactController:
                     s3_client = self._create_client_async(s3_config)
                     # Increment download count unless silent
                     if not silent:
-                        await self._increment_stat(
-                            session, artifact.id, "download_count"
-                        )
+                        if artifact.config and "download_weights" in artifact.config:
+                            download_weights = artifact.config.get("download_weights", {})
+                        else:
+                            download_weights = {}
+                        download_weight = download_weights.get(path) or 0
+                        if download_weight > 0:
+                            await self._increment_stat(
+                                session,
+                                artifact.id,
+                                "download_count",
+                                increment=download_weight,
+                            )
+                        await session.commit()
                     return FSFileResponse(s3_client, s3_config["bucket"], file_key)
 
             except KeyError:
@@ -1163,14 +1173,14 @@ class ArtifactController:
         session = await self._get_session()
         try:
             async with session.begin():
-                if not silent:
-                    await self._increment_stat(session, artifact_id, "view_count")
                 artifact, _ = await self._get_artifact_with_permission(
                     user_info, artifact_id, "read", session
                 )
+                if not silent:
+                    await self._increment_stat(session, artifact_id, "view_count")
 
                 version_index = self._get_version_index(artifact, version)
-                if version_index == self._get_version_index(artifact, "latest"):
+                if version_index == self._get_version_index(artifact, None):
                     artifact_data = self._generate_artifact_data(artifact)
                 else:
                     s3_config = self._get_s3_config(artifact)
