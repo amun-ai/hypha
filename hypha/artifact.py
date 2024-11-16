@@ -792,13 +792,13 @@ class ArtifactController:
 
     def _get_version_index(self, artifact, version):
         """Get the version index based on the version string."""
-        if version == "latest":
+        if version is None:
+            version_index = max(0, len(artifact.versions) - 1)
+        elif version == "latest":
             version_index = len(artifact.versions) - 1
             return version_index
         elif version == "stage":
             version_index = len(artifact.versions)
-        elif version is None:
-            version_index = len(artifact.versions) - 1
         elif isinstance(version, str):
             # find the version index
             version_index = -1
@@ -961,8 +961,8 @@ class ArtifactController:
                 config["permissions"] = permissions
 
                 versions = []
-                if version != "stage":
-                    if version == "auto":
+                if version != "stage" and version is not None:
+                    if version == "new":
                         version = f"v{len(versions)}"
                     comment = comment or f"Initial version"
                     versions.append(
@@ -988,10 +988,7 @@ class ArtifactController:
                     versions=versions,
                     type=type,
                 )
-                if version != "stage":
-                    version_index = len(new_artifact.versions) - 1
-                else:
-                    version_index = len(new_artifact.versions)
+                version_index = self._get_version_index(new_artifact, version)
                 session.add(new_artifact)
                 await session.commit()
                 await self._save_version_to_s3(
@@ -1089,23 +1086,26 @@ class ArtifactController:
                     artifact.manifest = manifest
                     flag_modified(artifact, "manifest")
 
-                if version != "stage":
-                    # Increase the version number
-                    versions = artifact.versions or []
-                    if version == "auto":
-                        version = f"v{len(versions)}"
-                    versions.append(
-                        {
-                            "version": version,
-                            "comment": comment,
-                            "created_at": int(time.time()),
-                        }
-                    )
-                    artifact.versions = versions
-                    flag_modified(artifact, "versions")
-                    version_index = self._get_version_index(artifact, "latest")
+                if version is not None:
+                    if version != "stage":
+                        # Increase the version number
+                        versions = artifact.versions or []
+                        if version == "new":
+                            version = f"v{len(versions)}"
+                        versions.append(
+                            {
+                                "version": version,
+                                "comment": comment,
+                                "created_at": int(time.time()),
+                            }
+                        )
+                        artifact.versions = versions
+                        flag_modified(artifact, "versions")
+                        version_index = self._get_version_index(artifact, "latest")
+                    else:
+                        version_index = self._get_version_index(artifact, "stage")
                 else:
-                    version_index = self._get_version_index(artifact, "stage")
+                    version_index = self._get_version_index(artifact, None)
 
                 if config is not None:
                     if parent_artifact:
@@ -1260,15 +1260,16 @@ class ArtifactController:
                         raise ValueError(f"ValidationError: {str(e)}")
                 assert artifact.manifest, "Artifact must be in staging mode to commit."
 
-                if version == "auto":
-                    version = f"v{len(versions)}"
-                versions.append(
-                    {
-                        "version": version,
-                        "comment": comment,
-                        "created_at": int(time.time()),
-                    }
-                )
+                if version is not None:
+                    if version == "new":
+                        version = f"v{len(versions)}"
+                    versions.append(
+                        {
+                            "version": version,
+                            "comment": comment,
+                            "created_at": int(time.time()),
+                        }
+                    )
                 artifact.versions = versions
                 flag_modified(artifact, "versions")
                 artifact.staging = None
@@ -1278,13 +1279,14 @@ class ArtifactController:
                 await session.merge(artifact)
                 await session.commit()
                 await self._save_version_to_s3(
-                    self._get_version_index(artifact, "latest"),
+                    self._get_version_index(artifact, None),
                     artifact,
                     self._get_s3_config(artifact, parent_artifact),
                 )
                 logger.info(
                     f"Committed artifact with ID: {artifact_id}, alias: {artifact.alias}, version: {version}"
                 )
+                return self._generate_artifact_data(artifact)
         except Exception as e:
             raise e
         finally:

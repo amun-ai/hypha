@@ -781,7 +781,8 @@ async def test_edit_existing_artifact(minio_server, fastapi_server, test_user_to
     )
 
     # Commit the artifact
-    await artifact_manager.commit(artifact_id=dataset.id)
+    dataset = await artifact_manager.commit(artifact_id=dataset.id)
+    versions = dataset["versions"]
 
     # Verify the artifact is listed under the collection
     items = await artifact_manager.list(parent_id=collection.id)
@@ -819,8 +820,9 @@ async def test_edit_existing_artifact(minio_server, fastapi_server, test_user_to
     response = requests.put(put_url, data=file_content)
     assert response.ok
 
-    # Commit the artifact after editing
-    await artifact_manager.commit(artifact_id=dataset.id)
+    # Commit the artifact after editing, no version specified, so it will overwrite the latest version
+    dataset = await artifact_manager.commit(artifact_id=dataset.id)
+    assert len(versions) == len(dataset["versions"])
 
     # Verify the committed manifest reflects the edited data
     committed_artifact = await artifact_manager.read(artifact_id=dataset.id)
@@ -843,12 +845,14 @@ async def test_edit_existing_artifact(minio_server, fastapi_server, test_user_to
         type="dataset",
         artifact_id=dataset.id,
         manifest={"name": "Edit Test Dataset"},
+        version="new",  # auto will create a new version
     )
 
     # Verify the manifest updates are committed
     committed_artifact = await artifact_manager.read(artifact_id=dataset.id)
     committed_manifest = committed_artifact["manifest"]
     assert committed_manifest["name"] == "Edit Test Dataset"
+    assert len(versions) + 1 == len(committed_artifact["versions"])
 
     # Check list of artifacts
     items = await artifact_manager.list(parent_id=collection.id)
