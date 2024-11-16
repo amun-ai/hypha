@@ -231,7 +231,7 @@ print("Valid dataset committed.")
 
 ## API References
 
-### `create(parent_id: str, alias: str, type: str, manifest: dict, permissions: dict=None, config: dict=None, version: str = None, publish_to: str = None) -> None`
+### `create(parent_id: str, alias: str, type: str, manifest: dict, permissions: dict=None, config: dict=None, version: str = None, comment: str = None, publish_to: str = None) -> None`
 
 Creates a new artifact or collection with the specified manifest. The artifact is staged until committed. For collections, the `collection` field should be an empty list.
 
@@ -252,7 +252,8 @@ To generate an auto-id, you can use patterns like `"{uuid}"` or `"{timestamp}"`.
   - `collection_schema`: Optional. A JSON schema that defines the structure of child artifacts in the collection. This schema is used to validate child artifacts when they are created or edited. If a child artifact does not conform to the schema, the creation or edit operation will fail.
   - `id_parts`: Optional. A dictionary of id name parts to be used in generating the id for child artifacts. For example: `{"animals": ["dog", "cat", ...], "colors": ["red", "blue", ...]}`. This can be used for creating child artifacts with auto-generated ids based on the id parts. For example, when calling `create`, you can specify the alias as `my-pet-{colors}-{animals}`, and the id will be generated based on the id parts, e.g., `my-pet-red-dog`.
 - `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
-- `version`: Optional. The version of the artifact to create. By default, it set to None, which will generate a version similar to `v1`, `v2`, etc. If you want to create a staged version, you can set it to `"stage"`.
+- `version`: Optional. The version of the artifact to create. By default, it set to None or `"new"`, it will generate a version `v0`. If you want to create a staged version, you can set it to `"stage"`.
+- `comment`: Optional. A comment to describe the changes made to the artifact.
 - `secrets`: Optional. A dictionary containing secrets to be stored with the artifact. Secrets are encrypted and can only be accessed by the artifact owner or users with appropriate permissions. The following keys can be used:
   - `ZENODO_ACCESS_TOKEN`: The Zenodo access token to publish the artifact to Zenodo.
   - `SANDBOX_ZENODO_ACCESS_TOKEN`: The Zenodo access token to publish the artifact to the Zenodo sandbox.
@@ -351,7 +352,7 @@ The following list shows how permission expansions work:
 
 ---
 
-### `edit(artifact_id: str, manifest: dict = None, type: str = None,  permissions: dict = None, config: dict = None, secrets: dict = None, version: str = None) -> None`
+### `edit(artifact_id: str, manifest: dict = None, type: str = None,  permissions: dict = None, config: dict = None, secrets: dict = None, version: str = None, comment: str = None) -> None`
 
 Edits an existing artifact's manifest. The new manifest is staged until committed.
 
@@ -363,7 +364,8 @@ Edits an existing artifact's manifest. The new manifest is staged until committe
 - `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
 - `secrets`: Optional. A dictionary containing secrets to be stored with the artifact. Secrets are encrypted and can only be accessed by the artifact owner or users with appropriate permissions. See the `create` function for a list of supported secrets.
 - `config`: Optional. A dictionary containing additional configuration options for the artifact.
-- `version`: Optional. The version of the artifact to edit. By default, it set to None, which will generate a version similar to `v1`, `v2`, etc. If you want to create a staged version, you can set it to `"stage"`.
+- `version`: Optional. The version of the artifact to edit. By default, it set to None, the version will stay the same. If you want to create a staged version, you can set it to `"stage"`. You can set it to any version in text, e.g. `0.1.0` or `v1`. If you set it to `new`, it will generate a version similar to `v0`, `v1`, etc.
+- `comment`: Optional. A comment to describe the changes made to the artifact.
 
 **Example:**
 
@@ -373,13 +375,15 @@ await artifact_manager.edit(artifact_id="example-dataset", manifest=updated_mani
 
 ---
 
-### `commit(artifact_id: str) -> None`
+### `commit(artifact_id: str, version: str = None, comment: str = None) -> None`
 
 Finalizes and commits an artifact's staged changes. Validates uploaded files and commit the staged manifest. This process also updates view and download statistics.
 
 **Parameters:**
 
 - `artifact_id`: The id of the artifact to commit. It can be an uuid generated by `create` or `edit` function, or it can be an alias of the artifact under the current workspace. If you want to refer to an artifact in another workspace, you should use the full alias in the format of `"workspace_id/alias"`.
+- `version`: Optional. The version of the artifact to edit. By default, it set to None, the version will stay the same. If you want to create a staged version, you can set it to `"stage"`. You can set it to any version in text, e.g. `0.1.0` or `v1`. If you set it to `new`, it will generate a version similar to `v0`, `v1`, etc.
+- `comment`: Optional. A comment to describe the changes made to the artifact.
 
 **Example:**
 
