@@ -10,12 +10,18 @@ from . import SERVER_URL, SERVER_URL_SQLITE, find_item
 pytestmark = pytest.mark.asyncio
 
 
-async def test_sqlite_create_and_search_artifacts(minio_server, fastapi_server_sqlite):
+async def test_sqlite_create_and_search_artifacts(
+    minio_server, fastapi_server_sqlite, test_user_token
+):
     """Test creating a collection, adding datasets with files, and performing a search on manifest fields."""
 
     # Set up connection and artifact manager
     api = await connect_to_server(
-        {"name": "sqlite test client", "server_url": SERVER_URL_SQLITE}
+        {
+            "name": "sqlite test client",
+            "server_url": SERVER_URL_SQLITE,
+            "token": test_user_token,
+        }
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
@@ -132,9 +138,11 @@ async def test_sqlite_create_and_search_artifacts(minio_server, fastapi_server_s
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_serve_artifact_endpoint(minio_server, fastapi_server):
+async def test_serve_artifact_endpoint(minio_server, fastapi_server, test_user_token):
     """Test the artifact serving endpoint."""
-    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
     artifact_manager = await api.get_service("public/artifact-manager")
 
     # Create a public collection and retrieve the UUID
@@ -217,11 +225,15 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server):
     assert response.status_code == 403
 
 
-async def test_http_file_and_directory_endpoint(minio_server, fastapi_server):
+async def test_http_file_and_directory_endpoint(
+    minio_server, fastapi_server, test_user_token
+):
     """Test the HTTP file serving and directory listing endpoint."""
 
     # Connect and get the artifact manager service
-    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
     artifact_manager = await api.get_service("public/artifact-manager")
 
     # Create a collection and retrieve the UUID
@@ -289,7 +301,12 @@ async def test_artifact_permissions(
 ):
     """Test artifact permissions."""
     api = await connect_to_server(
-        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+        {
+            "name": "test-client",
+            "server_url": SERVER_URL,
+            "token": test_user_token,
+            "token": test_user_token,
+        }
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
@@ -338,7 +355,12 @@ async def test_artifact_permissions(
 
     # Authenticated user 2 can create a child artifact within the collection
     api_2 = await connect_to_server(
-        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token_2}
+        {
+            "name": "test-client",
+            "server_url": SERVER_URL,
+            "token": test_user_token,
+            "token": test_user_token_2,
+        }
     )
     artifact_manager_2 = await api_2.get_service("public/artifact-manager")
 
@@ -358,12 +380,18 @@ async def test_artifact_permissions(
         await artifact_manager_anonymous.reset_stats(artifact_id=dataset.id)
 
 
-async def test_versioning_artifacts(minio_server, fastapi_server_sqlite):
+async def test_versioning_artifacts(
+    minio_server, fastapi_server_sqlite, test_user_token
+):
     """Test versioning features for artifacts."""
 
     # Set up connection and artifact manager
     api = await connect_to_server(
-        {"name": "sqlite test client", "server_url": SERVER_URL_SQLITE}
+        {
+            "name": "sqlite test client",
+            "server_url": SERVER_URL_SQLITE,
+            "token": test_user_token,
+        }
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
@@ -416,9 +444,11 @@ async def test_versioning_artifacts(minio_server, fastapi_server_sqlite):
     await artifact_manager.delete(artifact_id=artifact.id)
 
 
-async def test_artifact_alias_pattern(minio_server, fastapi_server):
+async def test_artifact_alias_pattern(minio_server, fastapi_server, test_user_token):
     """Test artifact alias pattern functionality."""
-    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
     artifact_manager = await api.get_service("public/artifact-manager")
 
     # Create a collection with an alias pattern configuration
@@ -466,9 +496,11 @@ async def test_artifact_alias_pattern(minio_server, fastapi_server):
     assert dataset["manifest"]["name"] == "My test data"
 
 
-async def test_publish_artifact(minio_server, fastapi_server):
+async def test_publish_artifact(minio_server, fastapi_server, test_user_token):
     """Test publishing an artifact."""
-    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
     artifact_manager = await api.get_service("public/artifact-manager")
 
     # Create a collection for testing publishing
@@ -524,9 +556,13 @@ async def test_publish_artifact(minio_server, fastapi_server):
     ), "Zenodo publication information missing in config"
 
 
-async def test_artifact_filtering(minio_server, fastapi_server):
+async def test_artifact_filtering(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
     """Test artifact filtering with various fields, including type, created_by, view_count, and stage."""
-    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
     artifact_manager = await api.get_service("public/artifact-manager")
     user_id1 = api.config.user["id"]
 
@@ -562,7 +598,9 @@ async def test_artifact_filtering(minio_server, fastapi_server):
         created_artifacts.append(artifact)
 
     # Create a second client (user_id2) to create additional artifacts
-    api2 = await connect_to_server({"name": "test-client-2", "server_url": SERVER_URL})
+    api2 = await connect_to_server(
+        {"name": "test-client-2", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
     artifact_manager2 = await api2.get_service("public/artifact-manager")
 
     for i in range(5, 10):
@@ -621,12 +659,16 @@ async def test_artifact_filtering(minio_server, fastapi_server):
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_http_artifact_endpoint(minio_server, fastapi_server):
+async def test_http_artifact_endpoint(minio_server, fastapi_server, test_user_token):
     """Test the HTTP artifact serving endpoint for retrieving files and listing directories."""
 
     # Set up connection and artifact manager
     api = await connect_to_server(
-        {"name": "test deploy client", "server_url": SERVER_URL}
+        {
+            "name": "test deploy client",
+            "server_url": SERVER_URL,
+            "token": test_user_token,
+        }
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
@@ -702,12 +744,16 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server):
     assert "Test Dataset" == manifest["name"]
 
 
-async def test_edit_existing_artifact(minio_server, fastapi_server):
+async def test_edit_existing_artifact(minio_server, fastapi_server, test_user_token):
     """Test editing an existing artifact."""
 
     # Set up connection and artifact manager
     api = await connect_to_server(
-        {"name": "test deploy client", "server_url": SERVER_URL}
+        {
+            "name": "test deploy client",
+            "server_url": SERVER_URL,
+            "token": test_user_token,
+        }
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
@@ -813,12 +859,18 @@ async def test_edit_existing_artifact(minio_server, fastapi_server):
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_artifact_schema_validation(minio_server, fastapi_server):
+async def test_artifact_schema_validation(
+    minio_server, fastapi_server, test_user_token
+):
     """Test schema validation when committing artifacts to a collection."""
 
     # Set up connection and artifact manager
     api = await connect_to_server(
-        {"name": "test deploy client", "server_url": SERVER_URL}
+        {
+            "name": "test deploy client",
+            "server_url": SERVER_URL,
+            "token": test_user_token,
+        }
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
@@ -896,12 +948,18 @@ async def test_artifact_schema_validation(minio_server, fastapi_server):
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_artifact_manager_with_collection(minio_server, fastapi_server):
+async def test_artifact_manager_with_collection(
+    minio_server, fastapi_server, test_user_token
+):
     """Test artifact management within collections."""
 
     # Connect to the server and set up the artifact manager
     api = await connect_to_server(
-        {"name": "test deploy client", "server_url": SERVER_URL}
+        {
+            "name": "test deploy client",
+            "server_url": SERVER_URL,
+            "token": test_user_token,
+        }
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
@@ -1010,12 +1068,18 @@ async def test_artifact_manager_with_collection(minio_server, fastapi_server):
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server):
+async def test_artifact_edge_cases_with_collection(
+    minio_server, fastapi_server, test_user_token
+):
     """Test edge cases with artifact collections."""
 
     # Connect to the server and set up the artifact manager
     api = await connect_to_server(
-        {"name": "test deploy client", "server_url": SERVER_URL}
+        {
+            "name": "test deploy client",
+            "server_url": SERVER_URL,
+            "token": test_user_token,
+        }
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
@@ -1108,11 +1172,15 @@ async def test_artifact_edge_cases_with_collection(minio_server, fastapi_server)
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_artifact_search_in_manifest(minio_server, fastapi_server):
+async def test_artifact_search_in_manifest(
+    minio_server, fastapi_server, test_user_token
+):
     """Test search functionality within the 'manifest' field of artifacts using keywords and filters in both AND and OR modes."""
 
     # Connect to the server and set up the artifact manager
-    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
     artifact_manager = await api.get_service("public/artifact-manager")
 
     # Create a collection for testing search
@@ -1207,11 +1275,15 @@ async def test_artifact_search_in_manifest(minio_server, fastapi_server):
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_artifact_search_with_filters(minio_server, fastapi_server):
+async def test_artifact_search_with_filters(
+    minio_server, fastapi_server, test_user_token
+):
     """Test search functionality with specific key-value filters in the manifest, supporting multiple filters and AND/OR modes."""
 
     # Connect to the server and initialize the artifact manager
-    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
     artifact_manager = await api.get_service("public/artifact-manager")
 
     # Create a collection for testing filter-based search
@@ -1298,9 +1370,11 @@ async def test_artifact_search_with_filters(minio_server, fastapi_server):
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_download_count(minio_server, fastapi_server):
+async def test_download_count(minio_server, fastapi_server, test_user_token):
     """Test the download count functionality for artifacts."""
-    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
     artifact_manager = await api.get_service("public/artifact-manager")
 
     # Create a collection for testing download count

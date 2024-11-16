@@ -862,13 +862,6 @@ class ArtifactController:
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
 
-        wss = workspace or context["ws"]
-        info = await self.store.get_workspace_info(wss, load=True)
-        if not info.persistent:
-            raise PermissionError(
-                "Cannot create artifact in a non-persistent workspace, you may need to login."
-            )
-
         user_info = UserInfo.model_validate(context["user"])
 
         # Validate the manifest
@@ -914,6 +907,13 @@ class ArtifactController:
                         raise PermissionError(
                             f"User does not have permission to create an orphan artifact in the workspace '{workspace}'."
                         )
+
+                winfo = await self.store.get_workspace_info(workspace, load=True)
+                if not winfo.persistent:
+                    raise PermissionError(
+                        f"Cannot create artifact in a non-persistent workspace `{workspace}`, you may need to login to a persistent workspace."
+                    )
+
                 config = config or {}
                 if alias and "{" in alias and "}" in alias:
                     id_parts = {}
@@ -962,8 +962,8 @@ class ArtifactController:
 
                 versions = []
                 if version != "stage":
-                    # Increase the version number
-                    version = version or f"v{len(versions)}"
+                    if version == "auto":
+                        version = f"v{len(versions)}"
                     comment = comment or f"Initial version"
                     versions.append(
                         {
@@ -1092,7 +1092,8 @@ class ArtifactController:
                 if version != "stage":
                     # Increase the version number
                     versions = artifact.versions or []
-                    version = version or f"v{len(versions)}"
+                    if version == "auto":
+                        version = f"v{len(versions)}"
                     versions.append(
                         {
                             "version": version,
@@ -1259,9 +1260,11 @@ class ArtifactController:
                         raise ValueError(f"ValidationError: {str(e)}")
                 assert artifact.manifest, "Artifact must be in staging mode to commit."
 
+                if version == "auto":
+                    version = f"v{len(versions)}"
                 versions.append(
                     {
-                        "version": version or str(len(versions)),
+                        "version": version,
                         "comment": comment,
                         "created_at": int(time.time()),
                     }
