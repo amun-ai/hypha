@@ -1103,9 +1103,9 @@ class ArtifactController:
                     )
                     artifact.versions = versions
                     flag_modified(artifact, "versions")
-                    version_index = len(artifact.versions) - 1
+                    version_index = self._get_version_index(artifact, "latest")
                 else:
-                    version_index = len(artifact.versions)
+                    version_index = self._get_version_index(artifact, "stage")
 
                 if config is not None:
                     if parent_artifact:
@@ -1207,7 +1207,7 @@ class ArtifactController:
                     user_info, artifact_id, "commit", session
                 )
                 # the new version index
-                version_index = len(artifact.versions)
+                version_index = self._get_version_index(artifact, "stage")
                 # Load the staged version
                 s3_config = self._get_s3_config(artifact)
                 artifact_data = await self._load_version_from_s3(
@@ -1278,7 +1278,7 @@ class ArtifactController:
                 await session.merge(artifact)
                 await session.commit()
                 await self._save_version_to_s3(
-                    len(artifact.versions) - 1,
+                    self._get_version_index(artifact, "latest"),
                     artifact,
                     self._get_s3_config(artifact, parent_artifact),
                 )
@@ -1310,7 +1310,7 @@ class ArtifactController:
             artifact, parent_artifact = await self._get_artifact_with_permission(
                 user_info, artifact_id, "delete", session
             )
-            version_index = len(artifact.versions) - 1
+
             s3_config = self._get_s3_config(artifact, parent_artifact)
             if version is None:
                 # Handle recursive deletion first
@@ -1326,7 +1326,7 @@ class ArtifactController:
                     artifact_path = safe_join(
                         s3_config["prefix"],
                         artifact.workspace,
-                        f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
+                        f"{self._artifacts_dir}/{artifact.id}",
                     )
                     async with self._create_client_async(
                         s3_config,
@@ -1341,25 +1341,8 @@ class ArtifactController:
                 await session.flush()
                 await session.delete(artifact)
             else:
-                if isinstance(version, str):
-                    # find the version index
-                    version_index = -1
-                    for i, v in enumerate(artifact.versions):
-                        if v["version"] == version:
-                            version_index = i
-                            break
-                    if version_index < 0:
-                        raise ValueError(f"Version '{version}' does not exist.")
-                else:
-                    assert isinstance(
-                        version, int
-                    ), "Version must be a string or an integer."
-                    version_index = version
-                assert version_index >= 0, "Version index must be non-negative."
-                # Delete a specific version
-                if version < 0 or version >= len(artifact.versions):
-                    raise ValueError("Invalid version index.")
-                del artifact.versions[version]
+                version_index = self._get_version_index(artifact, version)
+                artifact.versions.pop(version_index)
                 flag_modified(artifact, "versions")
                 session.add(artifact)
                 # Delete the version from S3
@@ -1394,7 +1377,7 @@ class ArtifactController:
                 )
                 assert artifact.staging is not None, "Artifact must be in staging mode."
                 # The new version is not committed yet, so we use a new version index
-                version_index = len(artifact.versions)
+                version_index = self._get_version_index(artifact, "stage")
 
                 s3_config = self._get_s3_config(artifact, parent_artifact)
                 async with self._create_client_async(
@@ -1448,7 +1431,7 @@ class ArtifactController:
 
                 assert artifact.staging is not None, "Artifact must be in staging mode."
                 # The new version is not committed yet, so we use a new version index
-                version_index = len(artifact.versions)
+                version_index = self._get_version_index(artifact, "stage")
 
                 s3_config = self._get_s3_config(artifact, parent_artifact)
                 async with self._create_client_async(
