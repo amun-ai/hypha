@@ -1,8 +1,9 @@
 aioboto3==13.1.1
 aiofiles==23.2.1
+websockets==13.1
 base58==2.1.1
 fastapi==0.106.0
-hypha-rpc==0.20.38
+hypha-rpc==0.20.39
 jinja2==3.1.4
 lxml==4.9.3
 msgpack==1.0.8
@@ -27,3 +28,8 @@ jsonschema==3.2.0
 sqlalchemy==2.0.35
 aiosqlite==0.20.0
 prometheus-client==0.21.0
+uuid-utils==0.9.0
+psycopg2==2.9.9
+asyncpg==0.30.0
+sqlmodel==0.0.22
+alembic==1.14.0

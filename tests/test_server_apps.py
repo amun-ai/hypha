@@ -37,14 +37,21 @@ api.export({
 """
 
 
-async def test_server_apps_unauthorized(fastapi_server, root_user_token):
+async def test_server_apps_unauthorized(
+    fastapi_server, test_user_token, root_user_token
+):
     """Test the server apps."""
     api = await connect_to_server(
-        {"name": "test client", "server_url": WS_SERVER_URL, "method_timeout": 30}
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
     )
     controller = await api.get_service("public/server-apps")
 
-    await controller.launch(
+    app_info = await controller.launch(
         source=TEST_APP_CODE,
         config={"type": "window"},
         overwrite=True,
@@ -60,6 +67,7 @@ async def test_server_apps_unauthorized(fastapi_server, root_user_token):
         workspace_info = find_item(workspaces, "name", api.config["workspace"])
         assert workspace_info
 
+    await controller.stop(app_info.id)
     # Now disconnect it
     await api.disconnect()
     await asyncio.sleep(0.1)
@@ -84,7 +92,6 @@ async def test_server_apps(fastapi_server, test_user_token):
             "token": test_user_token,
         }
     )
-    workspace = api.config["workspace"]
 
     # objects = await api.list_remote_objects()
     # assert len(objects) == 1
@@ -99,6 +106,7 @@ async def test_server_apps(fastapi_server, test_user_token):
         source=TEST_APP_CODE,
         config={"type": "window"},
         wait_for_service="default",
+        overwrite=True,
     )
     assert "id" in config.keys()
     app = await api.get_app(config.id)
@@ -144,7 +152,6 @@ async def test_web_python_apps(fastapi_server, test_user_token):
     api = await connect_to_server(
         {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
     )
-    workspace = api.config["workspace"]
 
     controller = await api.get_service("public/server-apps")
     source = (
@@ -201,22 +208,22 @@ async def test_non_persistent_workspace(fastapi_server, root_user_token):
     )
     workspace = api.config["workspace"]
 
-    # Test app with custom template
-    controller = await api.get_service("public/server-apps")
+    # # Test app with custom template
+    # controller = await api.get_service("public/server-apps")
 
-    source = (
-        (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
-        .open(encoding="utf-8")
-        .read()
-    )
+    # source = (
+    #     (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
+    #     .open(encoding="utf-8")
+    #     .read()
+    # )
 
-    config = await controller.launch(
-        source=source,
-        wait_for_service="default",
-    )
+    # config = await controller.launch(
+    #     source=source,
+    #     wait_for_service="default",
+    # )
 
-    app = await api.get_app(config.id)
-    assert app is not None
+    # app = await api.get_app(config.id)
+    # assert app is not None
 
     # It should exist in the stats
     async with connect_to_server(

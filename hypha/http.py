@@ -183,19 +183,22 @@ class ASGIRoutingMiddleware:
 
     def _get_access_token_from_cookies(self, scope):
         """Extract the access_token cookie from the scope."""
-        cookies = None
-        for key, value in scope.get("headers", []):
-            if key.decode("utf-8").lower() == "cookie":
-                cookies = value.decode("utf-8")
-                break
-        if not cookies:
+        try:
+            cookies = None
+            for key, value in scope.get("headers", []):
+                if key.decode("utf-8").lower() == "cookie":
+                    cookies = value.decode("utf-8")
+                    break
+            if not cookies:
+                return None
+            # Split cookies and find the access_token
+            cookie_dict = {
+                k.strip(): v.strip()
+                for k, v in (cookie.split("=") for cookie in cookies.split(";"))
+            }
+            return cookie_dict.get("access_token")
+        except Exception as exp:
             return None
-        # Split cookies and find the access_token
-        cookie_dict = {
-            k.strip(): v.strip()
-            for k, v in (cookie.split("=") for cookie in cookies.split(";"))
-        }
-        return cookie_dict.get("access_token")
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
@@ -280,7 +283,7 @@ class ASGIRoutingMiddleware:
                             )
                         return
                 except Exception as exp:
-                    logger.error(f"Error in ASGI service: {exp}")
+                    logger.exception(f"Error in ASGI service: {exp}")
                     await send(
                         {
                             "type": "http.response.start",
@@ -582,7 +585,7 @@ class HTTPProxy:
             """Route for get apps under a workspace."""
             try:
                 async with self.store.get_workspace_interface(
-                    user_info, user_info.scope.current_workspace
+                    user_info, workspace or user_info.scope.current_workspace
                 ) as manager:
                     try:
                         controller = await manager.get_service("public/server-apps")
@@ -682,56 +685,6 @@ class HTTPProxy:
             return RedirectResponse(
                 url=f"{base_path.rstrip('/')}/{workspace}/apps/{service_id}/"
             )
-
-        @app.get(norm_url("/{workspace}/applications/{app_id}/{path:path}"))
-        async def get_browser_app_file(
-            workspace: str, app_id: str, path: str, token: str = None
-        ) -> Response:
-            """Route for getting browser app files."""
-            if token is None:
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "success": False,
-                        "detail": (f"Token not provided for {workspace}/{path}"),
-                    },
-                )
-            try:
-                user_info = await store.parse_user_token(token)
-            except jose.exceptions.JWTError:
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "success": False,
-                        "detail": (
-                            f"Invalid token not provided for {workspace}/{path}"
-                        ),
-                    },
-                )
-            if not user_info.check_permission(workspace, UserPermission.read):
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "success": False,
-                        "detail": (
-                            f"{user_info['username']} has no"
-                            f" permission to access {workspace}"
-                        ),
-                    },
-                )
-            key = safe_join(workspace, "applications", app_id, path)
-            assert self.s3_enabled, "S3 is not enabled."
-            from hypha.s3 import FSFileResponse
-            from aiobotocore.session import get_session
-
-            s3_client = get_session().create_client(
-                "s3",
-                endpoint_url=self.endpoint_url,
-                aws_access_key_id=self.access_key_id,
-                aws_secret_access_key=self.secret_access_key,
-                region_name=self.region_name,
-            )
-            return FSFileResponse(s3_client, self.workspace_bucket, key)
 
         @app.get(norm_url("/{workspace}/services/{service_id}/{function_key}"))
         @app.post(norm_url("/{workspace}/services/{service_id}/{function_key}"))

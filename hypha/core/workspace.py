@@ -15,14 +15,11 @@ from hypha_rpc.utils.schema import schema_method
 from pydantic import BaseModel, Field
 from sqlalchemy import (
     Column,
-    String,
-    Integer,
     JSON,
-    DateTime,
     select,
     func,
 )
-from sqlalchemy.ext.declarative import declarative_base
+from sqlmodel import SQLModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from hypha.core import (
@@ -42,8 +39,6 @@ logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("workspace")
 logger.setLevel(logging.INFO)
 
-Base = declarative_base()
-
 
 SERVICE_SUMMARY_FIELD = ["id", "name", "type", "description", "config"]
 
@@ -51,27 +46,32 @@ SERVICE_SUMMARY_FIELD = ["id", "name", "type", "description", "config"]
 _allowed_characters = re.compile(r"^[a-zA-Z0-9-_/|*]*$")
 
 
-# SQLAlchemy model for storing events
-class EventLog(Base):
+# Function to return a timezone-naive datetime
+def naive_utc_now():
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
+
+# SQLModel model for storing events
+class EventLog(SQLModel, table=True):
     __tablename__ = "event_logs"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    event_type = Column(String, nullable=False)
-    workspace = Column(String, nullable=False)
-    user_id = Column(String, nullable=False)
-    timestamp = Column(
-        DateTime, default=datetime.datetime.now(datetime.timezone.utc), index=True
+    id: Optional[int] = Field(default=None, primary_key=True)
+    event_type: str = Field(nullable=False)
+    workspace: str = Field(nullable=False)
+    user_id: str = Field(nullable=False)
+    timestamp: datetime.datetime = Field(default_factory=naive_utc_now, index=True)
+    data: Optional[Dict[str, Any]] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
     )
-    data = Column(JSON, nullable=True)  # Store any additional event metadata
 
-    def to_dict(self):
-        """Convert the SQLAlchemy model instance to a dictionary."""
+    def to_dict(self) -> dict:
+        """Convert the SQLModel model instance to a dictionary."""
         return {
             "id": self.id,
             "event_type": self.event_type,
             "workspace": self.workspace,
             "user_id": self.user_id,
-            "timestamp": self.timestamp.isoformat(),  # Convert datetime to ISO string
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
             "data": self.data,
         }
 
@@ -156,7 +156,7 @@ class WorkspaceManager:
         )
         if self._sql_engine:
             async with self._sql_engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
+                await conn.run_sync(EventLog.metadata.create_all)
                 logger.info("Database tables created successfully.")
         self._initialized = True
         return rpc
@@ -1252,7 +1252,7 @@ class WorkspaceManager:
             "applications", context={"ws": workspace, "user": user_info.model_dump()}
         )
         applications = {
-            item["id"]: ApplicationArtifact.model_validate(item)
+            item["manifest"]["id"]: ApplicationArtifact.model_validate(item["manifest"])
             for item in applications
         }
         if app_id not in applications:

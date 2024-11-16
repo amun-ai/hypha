@@ -380,6 +380,12 @@ def get_argparser(add_help=True):
         help="set database URI for the artifact manager",
     )
     parser.add_argument(
+        "--migrate-database",
+        type=str,
+        default=None,
+        help="migrate the database using alembic to the specified revision, e.g. head",
+    )
+    parser.add_argument(
         "--workspace-bucket",
         type=str,
         default="hypha-workspaces",
@@ -423,6 +429,17 @@ if __name__ == "__main__":
 
     arg_parser = get_argparser()
     opt = arg_parser.parse_args()
-    app = create_application(opt)
 
+    # Apply database migrations
+    if opt.migrate_database is not None:
+        from alembic.config import Config
+        from alembic import command
+
+        alembic_cfg = Config()
+        migration_dir = Path(__file__).parent / "migrations"
+        alembic_cfg.set_main_option("script_location", str(migration_dir))
+        alembic_cfg.set_main_option("sqlalchemy.url", opt.database_uri)
+        command.upgrade(alembic_cfg, "head")
+
+    app = create_application(opt)
     uvicorn.run(app, host=opt.host, port=int(opt.port))
