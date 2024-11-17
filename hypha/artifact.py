@@ -622,16 +622,21 @@ class ArtifactController:
         region_name = secrets.get("S3_REGION_NAME")
         bucket = secrets.get("S3_BUCKET")
         prefix = secrets.get("S3_PREFIX")
+        public_endpoint_url = secrets.get("S3_PUBLIC_ENDPOINT_URL")
 
         if not access_key_id or not secret_access_key:
-            return {
+            s3_config = {
                 "endpoint_url": self.s3_controller.endpoint_url,
                 "access_key_id": self.s3_controller.access_key_id,
                 "secret_access_key": self.s3_controller.secret_access_key,
                 "region_name": self.s3_controller.region_name,
                 "bucket": self.workspace_bucket,
                 "prefix": "",
+                "public_endpoint_url": None,
             }
+            if self.s3_controller.enable_s3_proxy:
+                s3_config["public_endpoint_url"] = f"{self.store.public_base_url}/s3"
+            return s3_config
         else:
             return {
                 "endpoint_url": endpoint_url,
@@ -640,6 +645,7 @@ class ArtifactController:
                 "region_name": region_name,
                 "bucket": bucket or self.workspace_bucket,
                 "prefix": prefix or "",
+                "public_endpoint_url": public_endpoint_url,
             }
 
     def _create_client_async(self, s3_config):
@@ -1407,7 +1413,11 @@ class ArtifactController:
                         Params={"Bucket": s3_config["bucket"], "Key": file_key},
                         ExpiresIn=3600,
                     )
-
+                    if s3_config["public_endpoint_url"]:
+                        # replace the endpoint with the proxy base URL
+                        presigned_url = presigned_url.replace(
+                            s3_config["endpoint_url"], s3_config["public_endpoint_url"]
+                        )
                     artifact.staging = artifact.staging or []
                     if not any(f["path"] == file_path for f in artifact.staging):
                         artifact.staging.append(
@@ -1513,6 +1523,11 @@ class ArtifactController:
                         Params={"Bucket": s3_config["bucket"], "Key": file_key},
                         ExpiresIn=3600,
                     )
+                    if s3_config["public_endpoint_url"]:
+                        # replace the endpoint with the proxy base URL
+                        presigned_url = presigned_url.replace(
+                            s3_config["endpoint_url"], s3_config["public_endpoint_url"]
+                        )
                 # Increment download count unless silent
                 if not silent:
                     if artifact.config and "download_weights" in artifact.config:
@@ -1816,7 +1831,7 @@ class ArtifactController:
                     await session.commit()
 
                 return results
-        
+
         except Exception as e:
             raise e
         finally:
