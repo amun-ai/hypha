@@ -751,7 +751,7 @@ class ArtifactController:
             )
             if parent_id != existing_artifact.parent_id:
                 raise FileExistsError(
-                    f"Artifact with alias '{alias}' already exists in a different parent artifact."
+                    f"Artifact with alias '{alias}' already exists in a different parent artifact, please remove it first."
                 )
             if not overwrite:
                 raise FileExistsError(
@@ -905,6 +905,7 @@ class ArtifactController:
             async with session.begin():
                 parent_artifact = None
                 if parent_id:
+                    parent_id = self._validate_artifact_id(parent_id, context)
                     parent_artifact, _ = await self._get_artifact_with_permission(
                         user_info, parent_id, "create", session
                     )
