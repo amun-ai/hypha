@@ -263,6 +263,7 @@ To generate an auto-id, you can use patterns like `"{uuid}"` or `"{timestamp}"`.
   - `S3_REGION_NAME`: The region name of the S3 storage for the artifact.
   - `S3_BUCKET`: The bucket name of the S3 storage for the artifact. Default to the hypha workspaces bucket.
   - `S3_PREFIX`: The prefix of the S3 storage for the artifact. Default: `""`.
+  - `S3_PUBLIC_ENDPOINT_URL`: The public endpoint URL of the S3 storage for the artifact. If the S3 server is not public, you can set this to the public endpoint URL. Default: `None`.
 
 - `publish_to`: Optional. A string specifying the target platform to publish the artifact. Supported values are `zenodo` and `sandbox_zenodo`. If set, the artifact will be published to the specified platform. The artifact must have a valid Zenodo metadata schema to be published.
 
