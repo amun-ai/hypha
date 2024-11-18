@@ -15,6 +15,7 @@ from sqlalchemy import (
     and_,
     or_,
 )
+from hrid import HRID
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified
 from hypha.utils import remove_objects_async, list_objects_async, safe_join
@@ -673,14 +674,17 @@ class ArtifactController:
 
     async def _generate_candidate_aliases(
         self,
-        alias_pattern: str,
-        id_parts: dict,
+        alias_pattern: str = None,
+        id_parts: dict = None,
         additional_parts: dict = None,
         max_candidates: int = 10,
     ):
         """
         Generate a list of candidate aliases based on the alias pattern and id_parts.
         """
+        if alias_pattern is None:
+            hrid = HRID(delimeter="-", hridfmt=("adjective", "noun", "verb", "adverb"))
+            return [hrid.generate() for _ in range(max_candidates)]
         placeholder_pattern = re.compile(r"\{(\w+)\}")
         placeholders = placeholder_pattern.findall(alias_pattern)
         if not placeholders:
@@ -721,8 +725,8 @@ class ArtifactController:
         self,
         session,
         workspace,
-        alias_pattern,
-        id_parts,
+        alias_pattern=None,
+        id_parts=None,
         additional_parts=None,
         max_attempts=10,
     ):
@@ -893,15 +897,6 @@ class ArtifactController:
         if isinstance(manifest, ObjectProxy):
             manifest = ObjectProxy.toDict(manifest)
 
-        if alias:
-            if re.match(
-                r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                alias,
-            ):
-                raise ValueError(
-                    "Alias should be a human readable string, it cannot be a UUID."
-                )
-
         session = await self._get_session()
         try:
             async with session.begin():
@@ -937,6 +932,7 @@ class ArtifactController:
                     )
 
                 config = config or {}
+                id = str(uuid.uuid7())
                 if alias and "{" in alias and "}" in alias:
                     id_parts = {}
                     additional_parts = {
@@ -965,16 +961,25 @@ class ArtifactController:
                         id_parts,
                         additional_parts=additional_parts,
                     )
-                id = str(uuid.uuid7())
-                # Modified main section:
-                if alias:
+                elif alias is None:
+                    alias = await self._generate_unique_alias(
+                        session,
+                        workspace,
+                    )
+                else:
+                    if re.match(
+                        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                        alias,
+                    ):
+                        raise ValueError(
+                            "Alias should be a human readable string, it cannot be a UUID."
+                        )
+                    # Check if the alias already exists
                     existing_id = await self._handle_existing_artifact(
                         session, workspace, parent_id, alias, overwrite
                     )
                     if existing_id:
                         id = existing_id
-                else:
-                    alias = id
 
                 parent_permissions = (
                     parent_artifact.config["permissions"] if parent_artifact else {}

@@ -224,7 +224,7 @@
             return (
                 <div className={`sidebar ${isCollapsed ? 'collapsed' : ''}`}>
                     <div className="logo">
-                        <a href="../"><img src="./static/img/hypha-logo-black.svg" className={`h-10 invert ${isCollapsed ? 'hidden' : 'block'}`} alt="Hypha Logo" /></a>
+                        <a href="/"><img src="/static/img/hypha-logo-black.svg" className={`h-10 invert ${isCollapsed ? 'hidden' : 'block'}`} alt="Hypha Logo" /></a>
                     </div>
                     <div className="menu-item" onClick={() => onToggle()}>
                         <i className="fas fa-bars"></i>
@@ -247,6 +247,12 @@
                     <div className="menu-item" onClick={() => setActivePanel('files')}>
                         <i className="fas fa-file-alt"></i>
                         <span className="ml-2">Files</span>
+                    </div>
+                    )}
+                    {enabledPanels.includes('artifacts') && (
+                    <div className="menu-item" onClick={() => setActivePanel('artifacts')}>
+                        <i className="fas fa-file-alt"></i>
+                        <span className="ml-2">Artifacts</span>
                     </div>
                     )}
                     {enabledPanels.includes('development') && (
@@ -365,22 +371,25 @@
                         </div>
                         <div className="file-item-buttons">
                             {!isDirectory && (
+                                <>
                                 <button
                                     className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300"
                                     onClick={() => onDownload(fullPath)}
                                 >
                                     <i className="fas fa-download"></i>
                                 </button>
+                                <button
+                                    className="bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 ml-2"
+                                    onClick={() => onDelete(fullPath, file.type)}
+                                >
+                                    <i className="fas fa-trash"></i>
+                                </button>
+                                </>
                             )}
-                            <button
-                                className="bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 ml-2"
-                                onClick={() => onDelete(fullPath, file.type)}
-                            >
-                                <i className="fas fa-trash"></i>
-                            </button>
+                            
                         </div>
                     </div>
-                    {isExpanded && <div className="w-full mt-4 ml-4">{children}</div>}
+                    {isExpanded && <div className="w-full mt-3 ml-3">{children}</div>}
                 </div>
             );
         };        
@@ -390,12 +399,10 @@
             onDownload,
             onDelete,
             listFiles,
-            // Receive the centralized expandedDirs and setExpandedDirs from props
             expandedDirs,
             setExpandedDirs,
-            parentPath = '',
+            parentPath = "",
         }) => {
-        
             const handleToggle = async (fullPath) => {
                 const isExpanded = !!expandedDirs[fullPath];
                 if (isExpanded) {
@@ -412,14 +419,13 @@
                         const fullPath = parentPath ? `${parentPath}/${file.name}` : file.name;
                         return (
                             <FileCard
-                                key={`${fullPath}-${file.type}`} // Ensure key is unique by combining fullPath and file type
+                                key={`${fullPath}-${file.type}`} // Ensure key is unique
                                 file={file}
                                 onDownload={onDownload}
                                 onDelete={onDelete}
                                 isExpanded={!!expandedDirs[fullPath]}
                                 onToggle={handleToggle}
                                 fullPath={fullPath}
-                                // No need to pass setExpandedDirs to FileCard anymore
                             >
                                 {expandedDirs[fullPath] && (
                                     <FileTree
@@ -427,7 +433,6 @@
                                         onDownload={onDownload}
                                         onDelete={onDelete}
                                         listFiles={listFiles}
-                                        // Pass the centralized expandedDirs and setExpandedDirs down the tree
                                         expandedDirs={expandedDirs}
                                         setExpandedDirs={setExpandedDirs}
                                         parentPath={fullPath}
@@ -438,7 +443,7 @@
                     })}
                 </div>
             );
-        };              
+        };                    
 
         const Modal = ({ serviceInfo, onClose }) => {
             return (
@@ -539,6 +544,371 @@
                 </div>
             );
         };
+        const ArtifactCard = ({
+            artifact,
+            onToggle,
+            isExpanded,
+            children,
+            fullPath,
+            onMoreInfo,
+            onDelete,
+        }) => {
+            const isCollection = artifact.type === "collection";
+        
+            return (
+                <div className="artifact-card flex flex-col justify-between items-start p-3 bg-gray-700 shadow-md">
+                    <div className="artifact-item flex items-center w-full justify-between">
+                        <div className="flex items-center p-6 bg-gray-800 rounded-lg shadow-lg mb-6 w-full">
+                            {isCollection && (
+                                <button className="mr-2" onClick={() => onToggle(fullPath)}>
+                                    {isExpanded ? "-" : "+"}
+                                </button>
+                            )}
+                            <i
+                                className={`fas ${
+                                    isCollection ? "fa-folder" : "fa-file-alt"
+                                } mr-2`}
+                            ></i>
+                            <div className="max-w-full overflow-hidden">
+                                <h4 className="text-xl font-bold truncate">{artifact.manifest?.name}</h4>
+                                <p className="text-gray-400 truncate">{artifact.manifest?.description}</p>
+                                <p className="text-gray-400">Type: {artifact.type}</p>
+                                <code className="text-gray-400 whitespace-pre-wrap break-words w-full break-all">
+                                    ID: {artifact.id}
+                                </code>
+                                <div className="flex space-x-2">
+                                    {/* More Info Button */}
+                                    <button
+                                        className="bg-blue-500 hover:bg-blue-400 text-white font-bold py-1 px-2 rounded"
+                                        onClick={() => onMoreInfo(artifact)}
+                                    >
+                                        More Info
+                                    </button>
+                                    {/* Delete Button */}
+                                    <button
+                                        className="bg-red-500 hover:bg-red-400 text-white font-bold py-1 px-2 rounded"
+                                        onClick={() => onDelete(artifact.id)}
+                                    >
+                                        Delete
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                    </div>
+                    {isExpanded && <div className="w-full mt-3 ml-3">{children}</div>}
+                </div>
+            );
+        };
+        
+        const ArtifactTree = ({
+            artifacts,
+            onToggle,
+            expandedArtifacts,
+            setExpandedArtifacts,
+            parentPath = "",
+            listArtifacts,
+            onMoreInfo,
+            onDelete,
+        }) => {
+            const handleToggle = async (fullPath) => {
+                const isExpanded = !!expandedArtifacts[fullPath];
+                if (isExpanded) {
+                    setExpandedArtifacts({ ...expandedArtifacts, [fullPath]: null });
+                } else {
+                    const children = await listArtifacts(fullPath);
+                    setExpandedArtifacts({ ...expandedArtifacts, [fullPath]: children });
+                }
+            };
+        
+            return (
+                <div>
+                    {artifacts.map((artifact) => {
+                        const fullPath = parentPath
+                            ? `${parentPath}/${artifact.id}`
+                            : artifact.id;
+                        return (
+                            <ArtifactCard
+                                key={`${fullPath}-${artifact.type}`}
+                                artifact={artifact}
+                                onToggle={handleToggle}
+                                isExpanded={!!expandedArtifacts[fullPath]}
+                                fullPath={fullPath}
+                                onMoreInfo={onMoreInfo}
+                                onDelete={(id) => onDelete(id, parentPath || null)} // Pass parent ID to onDelete
+                            >
+                                {expandedArtifacts[fullPath] && (
+                                    <ArtifactTree
+                                        artifacts={expandedArtifacts[fullPath]}
+                                        onToggle={onToggle}
+                                        expandedArtifacts={expandedArtifacts}
+                                        setExpandedArtifacts={setExpandedArtifacts}
+                                        parentPath={fullPath}
+                                        listArtifacts={listArtifacts}
+                                        onMoreInfo={onMoreInfo}
+                                        onDelete={onDelete}
+                                    />
+                                )}
+                            </ArtifactCard>
+                        );
+                    })}
+                </div>
+            );
+        };
+        
+        const ArtifactInfoModal = ({ artifact, onClose, listFiles, am }) => {
+            const [files, setFiles] = React.useState(null);
+            const [loading, setLoading] = React.useState(false);
+            const [uploading, setUploading] = React.useState(false);
+        
+            const handleListFiles = async () => {
+                try {
+                    setLoading(true); // Show loading state
+                    const fileList = await listFiles(artifact.id, ""); // Fetch files at the root of the artifact
+                    setFiles(fileList);
+                } catch (error) {
+                    console.error("Failed to list files:", error);
+                } finally {
+                    setLoading(false); // Hide loading state
+                }
+            };
+        
+            const handleDownloadFile = async (filePath) => {
+                try {
+                    const url = await am.getFile(artifact.id, filePath); // Get the file URL
+                    window.open(url, "_blank"); // Open the URL in a new tab
+                } catch (error) {
+                    console.error("Failed to download file:", error);
+                }
+            };
+        
+            const handleDeleteFile = async (filePath) => {
+                try {
+                    await am.removeFile(artifact.id, filePath); // Delete the file
+                    setFiles(await listFiles(artifact.id, "")); // Refresh the file list
+                } catch (error) {
+                    console.error("Failed to delete file:", error);
+                }
+            };
+        
+            const handleUploadFile = async (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+        
+                const filePath = file.name; // Set the file path to the file's name
+                try {
+                    setUploading(true);
+                    const uploadUrl = await am.putFile(artifact.id, filePath); // Get the upload URL
+                    await axios.put(uploadUrl, file, {
+                        headers: { "Content-Type": file.type || "application/octet-stream" },
+                    });
+                    setFiles(await listFiles(artifact.id, "")); // Refresh the file list
+                } catch (error) {
+                    console.error("Failed to upload file:", error);
+                } finally {
+                    setUploading(false);
+                }
+            };
+        
+            return (
+                <div className="modal fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="modal-content bg-gray-800 rounded-lg shadow-lg p-6 w-full max-w-2xl">
+                        <div className="modal-header flex justify-between items-center border-b border-gray-700 pb-4">
+                            <h2 className="text-2xl font-bold text-white">Artifact Details</h2>
+                            <button
+                                onClick={onClose}
+                                className="text-white text-2xl hover:text-red-500 transition"
+                            >
+                                &times;
+                            </button>
+                        </div>
+                        <div className="modal-body mt-4 text-gray-300">
+                            <p>
+                                <strong>Name:</strong> {artifact.manifest?.name || "N/A"}
+                            </p>
+                            <p>
+                                <strong>Description:</strong>{" "}
+                                {artifact.manifest?.description || "N/A"}
+                            </p>
+                            <p>
+                                <strong>Type:</strong> {artifact.type}
+                            </p>
+                            <p>
+                                <strong>ID:</strong>{" "}
+                                <code className="bg-gray-700 text-gray-300 px-2 py-1 rounded">
+                                    {artifact.id}
+                                </code>
+                            </p>
+                            <p>
+                                <strong>Created At:</strong>{" "}
+                                {new Date(artifact.created_at * 1000).toLocaleString()}
+                            </p>
+                            <p>
+                                <strong>File Count:</strong> {artifact.file_count}
+                            </p>
+                            {artifact.file_count > 0 && (
+                                <button
+                                    className="hover:bg-blue-500 text-white font-bold py-2 px-4 rounded mt-4 flex items-center space-x-2 transition"
+                                    onClick={handleListFiles}
+                                    disabled={loading}
+                                >
+                                    <i className="fas fa-folder-open"></i>
+                                    <span>{loading ? "Loading..." : "List Files"}</span>
+                                </button>
+                            )}
+                            {files && files.length > 0 ? (
+                                <div className="mt-4">
+                                    <h3 className="text-lg font-bold">Files:</h3>
+                                    <ul className="list-disc list-inside text-gray-300 mt-2">
+                                        {files.map((file) => (
+                                            <li key={file.name} className="break-all flex items-center justify-between">
+                                                <span>{file.name}</span>
+                                                {file.type === "file" && (
+                                                    <div className="flex space-x-2">
+                                                        <button
+                                                            className="bg-blue-600 hover:bg-blue-500 text-white py-1 px-3 rounded text-sm transition"
+                                                            onClick={() => handleDownloadFile(file.name)}
+                                                        >
+                                                            Download
+                                                        </button>
+                                                        {artifact.staging !== null && (
+                                                            <button
+                                                                className="bg-red-600 hover:bg-red-500 text-white py-1 px-3 rounded text-sm transition"
+                                                                onClick={() => handleDeleteFile(file.name)}
+                                                            >
+                                                                Delete
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                )}
+
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            ) : (
+                                files !== null && <p className="text-gray-400 mt-2">No files available.</p>
+                            )}
+                            {artifact.staging !== null && (
+                                <div className="mt-4">
+                                    <label
+                                        htmlFor="upload-file"
+                                        className="bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded cursor-pointer transition"
+                                    >
+                                        {uploading ? "Uploading..." : "Upload File"}
+                                    </label>
+                                    <input
+                                        id="upload-file"
+                                        type="file"
+                                        className="hidden"
+                                        onChange={handleUploadFile}
+                                        disabled={uploading}
+                                    />
+                                </div>
+                            )}
+                            <br></br>
+                            <p>
+                                <strong>Artifact Info:</strong>
+                                <pre>{JSON.stringify(artifact, null, 2)}</pre>
+                            </p>
+                        </div>
+                        <div className="modal-footer mt-6 flex justify-end border-t border-gray-700 pt-4">
+                            <button
+                                onClick={onClose}
+                                className="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded transition"
+                            >
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };                  
+        
+        const ArtifactsPanel = ({ am }) => {
+            const [artifacts, setArtifacts] = React.useState([]);
+            const [expandedArtifacts, setExpandedArtifacts] = React.useState({});
+            const [selectedArtifact, setSelectedArtifact] = React.useState(null);
+        
+            React.useEffect(() => {
+                const fetchTopLevelArtifacts = async () => {
+                    if (am) {
+                        const topLevelArtifacts = await am.list(); // Fetch top-level artifacts
+                        setArtifacts(topLevelArtifacts);
+                    }
+                };
+                fetchTopLevelArtifacts();
+            }, [am]);
+        
+            const listArtifacts = async (parentId) => {
+                try {
+                    const children = await am.list(parentId);
+                    return children;
+                } catch (error) {
+                    console.error("Failed to list artifacts:", error);
+                    return [];
+                }
+            };
+        
+            const listFiles = async (artifactId, dir) => {
+                try {
+                    return await am.listFiles(artifactId, dir);
+                } catch (error) {
+                    console.error("Failed to list files:", error);
+                    return [];
+                }
+            };
+        
+            const handleDelete = async (artifactId, parentId = null) => {
+                event.preventDefault();
+                if (confirm(`Are you sure you want to delete the artifact with ID: ${artifactId}?`)) {
+                    try {
+                        await am.delete(artifactId); // Delete the artifact
+            
+                        if (parentId) {
+                            // If the artifact is a child, refresh the parent's children
+                            const updatedChildren = await am.list(parentId);
+                            setExpandedArtifacts((prevState) => ({
+                                ...prevState,
+                                [parentId]: updatedChildren,
+                            }));
+                        } else {
+                            // If the artifact is top-level, refresh the top-level artifacts
+                            setArtifacts(await am.list());
+                        }
+                    } catch (error) {
+                        alert(`Failed to delete artifact with ID: ${artifactId}. Error: ${error}`);
+                    }
+                }
+            };            
+        
+            return (
+                <div className="main-content">
+                    {artifacts.length === 0 ? (
+                        <p>No artifacts available.</p>
+                    ) : (
+                        <ArtifactTree
+                            artifacts={artifacts}
+                            expandedArtifacts={expandedArtifacts}
+                            setExpandedArtifacts={setExpandedArtifacts}
+                            listArtifacts={listArtifacts}
+                            onMoreInfo={setSelectedArtifact}
+                            onDelete={handleDelete}
+                        />
+                    )}
+                    {selectedArtifact && (
+                        <ArtifactInfoModal
+                            artifact={selectedArtifact}
+                            onClose={() => setSelectedArtifact(null)}
+                            listFiles={listFiles}
+                            am={am}
+                        />
+                    )}
+                </div>
+            );
+        };
+        
+
         const WorkspaceCard = ({ workspace, onInfoClick, onEditClick, onBookmarkClick }) => {
             return (
                 <div className="flex flex-col items-start p-6 bg-gray-800 rounded-lg shadow-lg mb-6 w-full relative">
@@ -757,6 +1127,7 @@
             enabledPanels,
             ws,
             s3,
+            am,
             workspaceId,
             panel,
             clients,
@@ -950,35 +1321,41 @@
             const handleFileDelete = async (fullPath, type) => {
                 try {
                     let answer;
-                    if (type === 'directory') {
-                        answer = confirm(`Are you sure you want to delete the directory ${fullPath} and all its contents?`);
+                    if (type === "directory") {
+                        answer = confirm(
+                            `Are you sure you want to delete the directory ${fullPath} and all its contents?`
+                        );
                     } else {
                         answer = confirm(`Are you sure you want to delete the file ${fullPath}?`);
                     }
                     if (!answer) return;
-        
+            
                     // Delete the file or directory
-                    if (type === 'directory') {
-                        await s3.deleteDirectory(fullPath + '/');
+                    if (type === "directory") {
+                        await s3.deleteDirectory(fullPath + "/");
                     } else {
                         await s3.deleteFile(fullPath);
                     }
-        
-                    // Remove the deleted path from the centralized expandedDirs state
-                    setExpandedDirs((prevState) => {
-                        const newExpandedDirs = { ...prevState };
-                        delete newExpandedDirs[fullPath];
-                        return newExpandedDirs;
-                    });
-        
-                    // Re-fetch the parent directory
-                    const parentPath = fullPath.substring(0, fullPath.lastIndexOf('/')) || ''; // If no slash, assume root
-                    const updatedFiles = await listFiles(parentPath);
-                    setFileList(updatedFiles); // Update the fileList state to trigger a re-render
+            
+                    // Determine the parent directory
+                    const parentPath = fullPath.substring(0, fullPath.lastIndexOf("/")) || ""; // Root if no slash
+            
+                    if (parentPath) {
+                        // Refresh the parent directory in expandedDirs
+                        const updatedFiles = await listFiles(parentPath);
+                        setExpandedDirs((prevState) => ({
+                            ...prevState,
+                            [parentPath]: updatedFiles,
+                        }));
+                    } else {
+                        // Refresh the top-level file list
+                        const updatedFiles = await listFiles("");
+                        setFileList(updatedFiles);
+                    }
                 } catch (error) {
                     console.error("Failed to delete file", error);
                 }
-            };
+            };            
         
             const listFiles = async (path = '') => {
                 try {
@@ -1293,6 +1670,17 @@
                             />
                         </>
                     )}
+                    { panel === 'artifacts' && (
+                        <>
+                            <h1 className="text-4xl font-bold capitalize">Artifacts</h1>
+                            <p className="text-xl text-gray-400 mt-4">
+                                Artifacts in workspace: <code>{workspaceId}</code>
+                            </p>
+                            <div className="mt-6">
+                                <ArtifactsPanel am={am} />
+                            </div>
+                        </>
+                    )}
         
                     {showCreateModal && (
                         <CreateWorkspaceModal
@@ -1347,6 +1735,7 @@
             const [files, setFiles] = React.useState([]);
             const [ws, setWs] = React.useState(null);
             const [s3, setS3] = React.useState(null);
+            const [am, setAM] = React.useState(null);
             const [selectedService, setSelectedService] = React.useState(null);
         
             React.useEffect(() => {
@@ -1370,6 +1759,15 @@
                         }
                         catch(e){
                             console.log("S3 storage service not available");
+                        }
+                        try {
+                            // get artifact service
+                            const am = await remoteServer.getService('public/artifact-manager', { case_conversion: 'camel' });
+                            newPanels.push('artifacts');
+                            setAM(am);
+                        }
+                        catch(e){
+                            console.log("Artifacts service not available");
                         }
                         setEnabledPanels([...enabledPanels, ...newPanels]);
                         setWs(remoteServer);
@@ -1405,6 +1803,13 @@
                             setFiles(files);
                         } catch (e) {
                             alert(`Failed to list files: ${e.message}`);
+                        }
+                    } else if (activePanel === 'artifacts') {
+                        try {
+                            const am = await ws.getService('public/artifact-manager', { case_conversion: 'camel' });
+                            setAM(am);
+                        } catch (e) {
+                            alert(`Failed to list artifacts: ${e.message}`);
                         }
                     }
                 };
@@ -1460,6 +1865,7 @@
                         enabledPanels={enabledPanels}
                         ws={ws}
                         s3={s3}
+                        am={am}
                         workspaceId={config.workspace}
                         panel={activePanel}
                         clients={clients}
