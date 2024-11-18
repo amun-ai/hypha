@@ -1045,12 +1045,10 @@ async def test_artifact_manager_with_collection(
         "name": "test-dataset",
         "description": "Overwritten description for dataset",
     }
-    await artifact_manager.create(
+    await artifact_manager.edit(
         type="dataset",
-        parent_id=collection.id,
-        alias="test-dataset",
+        artifact_id="test-dataset",
         manifest=updated_dataset_manifest,
-        overwrite=True,
     )
 
     # Confirm that the description update is reflected
@@ -1123,15 +1121,12 @@ async def test_artifact_edge_cases_with_collection(
     )
 
     # Try to create the same artifact again without overwrite, expecting it to fail
-    with pytest.raises(
-        Exception, match=r".*already exists. Use overwrite=True to overwrite.*"
-    ):
+    with pytest.raises(Exception, match=r".*already exists.*"):
         await artifact_manager.create(
             type="dataset",
             parent_id=collection.id,
             alias="edge-case-dataset",
             manifest=dataset_manifest,
-            overwrite=False,
             version="stage",
         )
 

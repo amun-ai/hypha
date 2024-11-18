@@ -672,6 +672,22 @@ class ArtifactController:
             region_name=region_name,
         )
 
+    async def _count_files_in_prefix(self, s3_client, bucket_name, prefix):
+        paginator = s3_client.get_paginator("list_objects_v2")
+        if prefix and not prefix.endswith("/"):
+            prefix += "/"
+        operation_parameters = {
+            "Bucket": bucket_name,
+            "Prefix": prefix,
+        }
+        file_count = 0
+
+        async for page in paginator.paginate(**operation_parameters):
+            if "Contents" in page:
+                file_count += len(page["Contents"])
+
+        return file_count
+
     async def _generate_candidate_aliases(
         self,
         alias_pattern: str = None,
@@ -746,29 +762,6 @@ class ArtifactController:
         raise RuntimeError(
             "Could not generate a unique alias within the maximum attempts."
         )
-
-    async def _handle_existing_artifact(
-        self, session, workspace, parent_id, alias, overwrite
-    ):
-        """Remove existing artifact if overwrite is enabled."""
-        try:
-            existing_artifact = await self._get_artifact(
-                session, f"{workspace}/{alias}"
-            )
-            if parent_id != existing_artifact.parent_id and not overwrite:
-                raise FileExistsError(
-                    f"Artifact with alias '{alias}' already exists in a different parent artifact. Use overwrite=True to overwrite."
-                )
-            if not overwrite:
-                raise FileExistsError(
-                    f"Artifact with alias '{alias}' already exists. Use overwrite=True to overwrite."
-                )
-            logger.info(f"Overwriting artifact with alias: {alias}")
-            await session.delete(existing_artifact)
-            await session.flush()
-            return existing_artifact.id
-        except KeyError:
-            return None
 
     async def _save_version_to_s3(self, version_index: int, artifact, s3_config):
         """
@@ -873,7 +866,6 @@ class ArtifactController:
         workspace: str = None,
         parent_id: str = None,
         manifest: dict = None,
-        overwrite=False,
         type="generic",
         config: dict = None,
         secrets: dict = None,
@@ -984,12 +976,21 @@ class ArtifactController:
                         raise ValueError(
                             "Alias should be a human readable string, it cannot be a UUID."
                         )
-                    # Check if the alias already exists
-                    existing_id = await self._handle_existing_artifact(
-                        session, workspace, parent_id, alias, overwrite
-                    )
-                    if existing_id:
-                        id = existing_id
+                    try:
+                        # Check if the alias already exists
+                        existing_artifact = await self._get_artifact(
+                            session, f"{workspace}/{alias}"
+                        )
+                        if parent_id != existing_artifact.parent_id:
+                            raise FileExistsError(
+                                f"Artifact with alias '{alias}' already exists under a different parent artifact, please choose a different alias or remove the existing artifact (ID: {existing_artifact.workspace}/{existing_artifact.alias})"
+                            )
+                        else:
+                            raise FileExistsError(
+                                f"Artifact with alias '{alias}' already exists, please choose a different alias or remove the existing artifact (ID: {existing_artifact.workspace}/{existing_artifact.alias})."
+                            )
+                    except KeyError:
+                        pass
 
                 parent_permissions = (
                     parent_artifact.config["permissions"] if parent_artifact else {}
@@ -1283,7 +1284,16 @@ class ArtifactController:
                         if download_weights:
                             artifact.config["download_weights"] = download_weights
                             flag_modified(artifact, "config")
-                        artifact.file_count = len(artifact.staging)
+
+                        artifact.file_count = await self._count_files_in_prefix(
+                            s3_client,
+                            s3_config["bucket"],
+                            safe_join(
+                                s3_config["prefix"],
+                                artifact.workspace,
+                                f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
+                            ),
+                        )
 
                 parent_artifact_config = (
                     parent_artifact.config if parent_artifact else {}
@@ -1363,7 +1373,7 @@ class ArtifactController:
                         )
 
                 # Delete files if requested
-                if delete_files and artifact.file_count > 0:
+                if delete_files:
                     artifact_path = safe_join(
                         s3_config["prefix"],
                         artifact.workspace,
@@ -1447,7 +1457,7 @@ class ArtifactController:
                                 "download_weight": download_weight,
                             }
                         )
-                        # flag_modified(artifact, "staging")
+                        flag_modified(artifact, "staging")
                     # save the artifact to s3
                     await self._save_version_to_s3(version_index, artifact, s3_config)
                     session.add(artifact)
@@ -1475,9 +1485,15 @@ class ArtifactController:
                 )
 
                 assert artifact.staging is not None, "Artifact must be in staging mode."
+                artifact.staging = [
+                    f for f in artifact.staging if f["path"] != file_path
+                ]
+                flag_modified(artifact, "staging")
+                session.add(artifact)
+                await session.commit()
+
                 # The new version is not committed yet, so we use a new version index
                 version_index = self._get_version_index(artifact, "stage")
-
                 s3_config = self._get_s3_config(artifact, parent_artifact)
                 async with self._create_client_async(
                     s3_config,
@@ -1491,14 +1507,6 @@ class ArtifactController:
                         Bucket=s3_config["bucket"], Key=file_key
                     )
 
-                if artifact.staging:
-                    artifact.staging = [
-                        f for f in artifact.staging if f["path"] != file_path
-                    ]
-                    flag_modified(artifact, "staging")
-
-                session.add(artifact)
-                await session.commit()
                 logger.info(
                     f"Removed file '{file_path}' from artifact with ID: {artifact_id}"
                 )

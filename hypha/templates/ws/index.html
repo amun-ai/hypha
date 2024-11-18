@@ -766,7 +766,7 @@
                                     <ul className="list-disc list-inside text-gray-300 mt-2">
                                         {files.map((file) => (
                                             <li key={file.name} className="break-all flex items-center justify-between">
-                                                <span>{file.name}</span>
+                                                <span><i className={`fas ${file.type==='directory' ? 'fa-folder' : 'fa-file-alt'} mr-2`}></i>{file.name}</span>
                                                 {file.type === "file" && (
                                                     <div className="flex space-x-2">
                                                         <button
@@ -1778,6 +1778,7 @@
                     }
                     catch(e){
                         alert(`Failed to connect to the server: ${e.message}`);
+                        window.location.href = '/';
                     }
                 };
                 connectToServer();
