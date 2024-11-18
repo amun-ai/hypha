@@ -241,7 +241,7 @@ Creates a new artifact or collection with the specified manifest. The artifact i
 
 **Parameters:**
 
-- `alias`: A human readable name for indexing the artifact, it can be a text with lower case letters and numbers. You can set it to absolute alias in the format of `"workspace_id/alias"` or just `"alias"`. In the alias itself, `/` is not allowed, you should use `:` instead in the alias.
+- `alias`: A human readable name for indexing the artifact, it can be a text with lower case letters and numbers. You can set it to absolute alias in the format of `"workspace_id/alias"` or just `"alias"`. In the alias itself, `/` is not allowed, you should use `:` instead in the alias. If the alias already exists in the workspace, it will raise an error and you need to either delete the existing artifact or use a different alias.
   To generate an auto-id, you can use patterns like `"{uuid}"` or `"{timestamp}"`. The following patterns are supported:
   - `{uuid}`: Generates a random UUID.
   - `{timestamp}`: Generates a timestamp in milliseconds.
