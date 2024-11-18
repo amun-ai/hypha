@@ -145,17 +145,19 @@ class ArtifactController:
         self._artifacts_dir = artifacts_dir
 
         # HTTP endpoint for getting an artifact
-        @router.get("/{workspace}/artifacts/{artifact_id}")
+        @router.get("/{workspace}/artifacts/{artifact_alias}")
         async def get_artifact(
             workspace: str,
-            artifact_id: str,
+            artifact_alias: str,
             silent: bool = False,
             version: str = None,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """Get artifact metadata, manifest, and config (excluding secrets)."""
             try:
-                artifact_id = self._validate_artifact_id(artifact_id, {"ws": workspace})
+                artifact_id = self._validate_artifact_id(
+                    artifact_alias, {"ws": workspace}
+                )
                 session = await self._get_session(read_only=True)
                 async with session.begin():
                     # Fetch artifact along with parent
@@ -201,10 +203,10 @@ class ArtifactController:
                 await session.close()
 
         # HTTP endpoint for listing child artifacts
-        @router.get("/{workspace}/artifacts/{artifact_id}/children")
+        @router.get("/{workspace}/artifacts/{artifact_alias}/children")
         async def list_children(
             workspace: str,
-            artifact_id: str,
+            artifact_alias: str,
             page: int = 0,
             page_size: int = 100,
             order_by: str = None,
@@ -212,7 +214,9 @@ class ArtifactController:
         ):
             """List child artifacts of a specified artifact."""
             try:
-                artifact_id = self._validate_artifact_id(artifact_id, {"ws": workspace})
+                artifact_id = self._validate_artifact_id(
+                    artifact_alias, {"ws": workspace}
+                )
                 session = await self._get_session(read_only=True)
                 async with session.begin():
                     parent_artifact, _ = await self._get_artifact_with_permission(
@@ -265,10 +269,10 @@ class ArtifactController:
                 await session.close()
 
         # HTTP endpoint for retrieving files within an artifact
-        @router.get("/{workspace}/artifacts/{artifact_id}/files/{path:path}")
+        @router.get("/{workspace}/artifacts/{artifact_alias}/files/{path:path}")
         async def get_file(
             workspace: str,
-            artifact_id: str,
+            artifact_alias: str,
             path: str = "",
             silent: bool = False,
             version: str = None,
@@ -277,7 +281,9 @@ class ArtifactController:
         ):
             """Retrieve a file within an artifact or list files in a directory."""
             try:
-                artifact_id = self._validate_artifact_id(artifact_id, {"ws": workspace})
+                artifact_id = self._validate_artifact_id(
+                    artifact_alias, {"ws": workspace}
+                )
                 session = await self._get_session(read_only=True)
                 if token:
                     user_info = await self.store.parse_user_token(token)
@@ -375,21 +381,27 @@ class ArtifactController:
 
         return session
 
-    async def _get_artifact(self, session, artifact_id):
-        """
-        Retrieve an artifact by its unique ID or by parent ID and alias.
-        """
+    def _get_artifact_id_cond(self, artifact_id):
+        """Get the SQL condition for an artifact ID."""
         if "/" in artifact_id:
-            assert len(artifact_id.split("/")) == 2, "Invalid artifact ID format."
+            assert (
+                len(artifact_id.split("/")) == 2
+            ), "Invalid artifact ID format, it should be `workspace/alias`."
             ws, alias = artifact_id.split("/")
-            query = select(ArtifactModel).where(
+            return and_(
                 ArtifactModel.workspace == ws,
                 ArtifactModel.alias == alias,
             )
         else:
-            query = select(ArtifactModel).where(
-                ArtifactModel.id == artifact_id,
-            )
+            return ArtifactModel.id == artifact_id
+
+    async def _get_artifact(self, session, artifact_id):
+        """
+        Retrieve an artifact by its unique ID or by parent ID and alias.
+        """
+        query = select(ArtifactModel).where(
+            self._get_artifact_id_cond(artifact_id),
+        )
         result = await session.execute(query)
         artifact = result.scalar_one_or_none()
         if not artifact:
@@ -400,19 +412,7 @@ class ArtifactController:
         """
         Retrieve an artifact and its parent artifact in a single SQL query.
         """
-        if "/" in artifact_id:
-            assert (
-                len(artifact_id.split("/")) == 2
-            ), "Invalid artifact ID format, it should be `workspace/alias`."
-            ws, alias = artifact_id.split("/")
-            query = select(ArtifactModel).where(
-                ArtifactModel.workspace == ws,
-                ArtifactModel.alias == alias,
-            )
-        else:
-            query = select(ArtifactModel).where(
-                ArtifactModel.id == artifact_id,
-            )
+        query = select(ArtifactModel).where(self._get_artifact_id_cond(artifact_id))
 
         result = await session.execute(query)
         artifact = result.scalar_one_or_none()
@@ -421,7 +421,7 @@ class ArtifactController:
         parent_artifact = None
         if artifact and artifact.parent_id:
             parent_query = select(ArtifactModel).where(
-                ArtifactModel.id == artifact.parent_id,
+                self._get_artifact_id_cond(artifact.parent_id)
             )
             parent_result = await session.execute(parent_query)
             parent_artifact = parent_result.scalar_one_or_none()
@@ -429,6 +429,8 @@ class ArtifactController:
 
     def _generate_artifact_data(self, artifact):
         artifact_data = model_to_dict(artifact)
+        artifact_data["id"] = f"{artifact.workspace}/{artifact.alias}"
+        artifact_data["_id"] = artifact.id
         # Exclude 'secrets' from artifact_data to prevent exposure
         artifact_data.pop("secrets", None)
         return artifact_data
@@ -571,7 +573,7 @@ class ArtifactController:
             raise ValueError("Field must be 'view_count' or 'download_count'.")
         stmt = (
             update(ArtifactModel)
-            .where(ArtifactModel.id == artifact_id)
+            .where(self._get_artifact_id_cond(artifact_id))
             .values({field: getattr(ArtifactModel, field) + increment})
             .execution_options(synchronize_session="fetch")
         )
@@ -909,6 +911,7 @@ class ArtifactController:
                     parent_artifact, _ = await self._get_artifact_with_permission(
                         user_info, parent_id, "create", session
                     )
+                    parent_id = parent_artifact.id
                     if workspace:
                         assert (
                             workspace == parent_artifact.workspace
@@ -970,6 +973,8 @@ class ArtifactController:
                     )
                     if existing_id:
                         id = existing_id
+                else:
+                    alias = id
 
                 parent_permissions = (
                     parent_artifact.config["permissions"] if parent_artifact else {}

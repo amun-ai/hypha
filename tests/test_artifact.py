@@ -177,7 +177,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server, test_user_t
 
     # Ensure the public artifact is available via HTTP
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.id}"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}"
     )
     assert response.status_code == 200
     assert "Public Example Dataset" in response.json()["manifest"]["name"]
@@ -211,7 +211,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server, test_user_t
     token = await api.generate_token()
     # Ensure the private artifact is available via HTTP (requires authentication or special permissions)
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/{private_dataset.id}",
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{private_dataset.alias}",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 200
@@ -220,7 +220,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server, test_user_t
 
     # If no authentication is provided, the server should return a 403 Forbidden status code
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/{private_dataset.id}"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{private_dataset.alias}"
     )
     assert response.status_code == 403
 
@@ -277,7 +277,7 @@ async def test_http_file_and_directory_endpoint(
 
     # Retrieve the file via HTTP
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.id}/files/example.txt"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/example.txt"
     )
     assert response.status_code == 200
     assert response.text == file_contents
@@ -290,7 +290,7 @@ async def test_http_file_and_directory_endpoint(
 
     # Attempt to list directory contents (should be successful after attempting file)
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.id}/files/"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/"
     )
     assert response.status_code == 200
     assert "example.txt" in [file["name"] for file in response.json()]
@@ -709,21 +709,21 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server, test_user_to
 
     # Retrieve the dataset manifest via HTTP
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.id}"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}"
     )
     assert response.status_code == 200
     assert "Test Dataset" in response.json()["manifest"]["name"]
 
     # List the files in the dataset directory via HTTP
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.id}/files/"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/"
     )
     assert response.status_code == 200
     assert "example.txt" in [file["name"] for file in response.json()]
 
     # Retrieve the file content via HTTP
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.id}/files/example.txt"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/example.txt"
     )
     assert response.status_code == 200
     assert response.text == file_content
@@ -736,7 +736,7 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server, test_user_to
 
     # Retrieve the collection's children to verify the dataset presence
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.id}/children"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children"
     )
     assert response.status_code == 200
     item = find_item(response.json(), "id", dataset.id)
@@ -982,7 +982,7 @@ async def test_artifact_manager_with_collection(
 
     # Retrieve the collection via HTTP to confirm creation
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.id}"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}"
     )
     assert response.status_code == 200
     assert "test-collection" in response.json()["manifest"]["name"]
@@ -1094,7 +1094,8 @@ async def test_artifact_edge_cases_with_collection(
     }
 
     with pytest.raises(
-        Exception, match=r".*Artifact with ID 'non-existent-parent' does not exist.*"
+        Exception,
+        match=r".*Artifact with ID 'ws-user-user-1/non-existent-parent' does not exist.*",
     ):
         await artifact_manager.create(
             type="collection",
