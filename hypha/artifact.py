@@ -897,6 +897,16 @@ class ArtifactController:
         if isinstance(manifest, ObjectProxy):
             manifest = ObjectProxy.toDict(manifest)
 
+        if alias:
+            alias = alias.strip()
+            if "/" in alias:
+                ws, alias = alias.split("/")
+                if workspace and ws != workspace:
+                    raise ValueError(
+                        "Workspace must match the alias workspace, if provided."
+                    )
+                workspace = ws
+
         session = await self._get_session()
         try:
             async with session.begin():
