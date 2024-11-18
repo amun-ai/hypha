@@ -576,22 +576,26 @@
                                 <code className="text-gray-400 whitespace-pre-wrap break-words w-full break-all">
                                     ID: {artifact.id}
                                 </code>
-                                <div className="flex space-x-2">
+                                <div className="flex justify-between w-full">
                                     {/* More Info Button */}
-                                    <button
-                                        className="bg-blue-500 hover:bg-blue-400 text-white font-bold py-1 px-2 rounded"
-                                        onClick={() => onMoreInfo(artifact)}
-                                    >
-                                        More Info
-                                    </button>
+                                    <div>
+                                        <button
+                                            className="bg-blue-500 hover:bg-blue-400 text-white font-bold py-1 px-2 rounded"
+                                            onClick={() => onMoreInfo(artifact)}
+                                        >
+                                            More Info
+                                        </button>
+                                    </div>
                                     {/* Delete Button */}
-                                    <button
-                                        className="bg-red-500 hover:bg-red-400 text-white font-bold py-1 px-2 rounded"
-                                        onClick={() => onDelete(artifact.id)}
-                                    >
-                                        Delete
-                                    </button>
-                                </div>
+                                    <div>
+                                        <button
+                                            className="bg-red-500 hover:bg-red-400 text-white font-bold py-1 px-2 rounded"
+                                            onClick={() => onDelete(artifact.id)}
+                                        >
+                                            Delete
+                                        </button>
+                                    </div>
+                                </div>                                
                             </div>
                         </div>
                         

@@ -1671,7 +1671,10 @@ class ArtifactController:
                             ArtifactModel.parent_id == parent_artifact.id
                         )
                 else:
-                    query = select(ArtifactModel).where(ArtifactModel.parent_id == None)
+                    query = select(ArtifactModel).where(
+                        ArtifactModel.parent_id == None,
+                        ArtifactModel.workspace == context["ws"],
+                    )
                 conditions = []
 
                 # Handle keyword-based search across manifest fields
