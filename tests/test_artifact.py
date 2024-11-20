@@ -81,7 +81,7 @@ async def test_artifact_vector_collection(
     search_results = await artifact_manager.search_by_vector(
         artifact_id=vector_collection.id,
         query_vector=query_vector,
-        page_size=2,
+        limit=2,
     )
     assert len(search_results) <= 2
 
@@ -106,7 +106,7 @@ async def test_artifact_vector_collection(
         artifact_id=vector_collection.id,
         query_filter=query_filter,
         query_vector=np.random.rand(384),
-        page_size=2,
+        limit=2,
     )
     assert len(search_results) <= 2
 
@@ -123,7 +123,7 @@ async def test_artifact_vector_collection(
     text_search_results = await artifact_manager.search_by_text(
         artifact_id=vector_collection.id,
         query=text_query,
-        page_size=2,
+        limit=2,
     )
     assert len(text_search_results) <= 2
 
@@ -137,8 +137,8 @@ async def test_artifact_vector_collection(
     # List vectors in the collection
     vector_list = await artifact_manager.list_vectors(
         artifact_id=vector_collection.id,
-        page=0,
-        page_size=10,
+        offset=0,
+        limit=10,
     )
     assert len(vector_list) > 0
 
@@ -149,8 +149,8 @@ async def test_artifact_vector_collection(
     )
     remaining_vectors = await artifact_manager.list_vectors(
         artifact_id=vector_collection.id,
-        page=0,
-        page_size=10,
+        offset=0,
+        limit=10,
     )
     assert all(v["id"] != vector_list[0]["id"] for v in remaining_vectors)
 

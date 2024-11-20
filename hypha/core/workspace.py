@@ -1594,24 +1594,24 @@ class WorkspaceManager:
     async def list_workspaces(
         self,
         match: dict = Field(None, description="Match pattern for filtering workspaces"),
-        page: int = Field(1, description="Page number for pagination"),
-        page_size: int = Field(256, description="Number of items per page"),
+        offset: int = Field(0, description="Offset for pagination"),
+        limit: int = Field(256, description="Maximum number of workspaces to return"),
         context=None,
     ) -> List[Dict[str, Any]]:
         """Get all workspaces with pagination."""
         self.validate_context(context, permission=UserPermission.read)
         user_info = UserInfo.model_validate(context["user"])
 
-        # Validate page and page_size
-        if page < 1:
-            raise ValueError("Page number must be greater than 0")
-        if page_size < 1 or page_size > 256:
-            raise ValueError("Page size must be greater than 0 and less than 256")
+        # Validate page and limit
+        if offset < 0:
+            raise ValueError("Offset number must be greater than or equal to 0")
+        if limit < 1 or limit > 256:
+            raise ValueError("Limit must be greater than 0 and less than 256")
 
         cursor = 0
         workspaces = []
-        start_index = (page - 1) * page_size
-        end_index = page * page_size
+        start_index = offset
+        end_index = offset + limit
         current_index = 0
 
         while True:

@@ -212,8 +212,8 @@ class ArtifactController:
         async def list_children(
             workspace: str,
             artifact_alias: str,
-            page: int = 0,
-            page_size: int = 100,
+            offset: int = 0,
+            limit: int = 100,
             order_by: str = None,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
@@ -234,8 +234,8 @@ class ArtifactController:
                             ArtifactModel.workspace == workspace,
                             ArtifactModel.parent_id == parent_artifact.id,
                         )
-                        .limit(page_size)
-                        .offset(page * page_size)
+                        .limit(limit)
+                        .offset(offset)
                     )
 
                     if order_by:
@@ -1568,8 +1568,8 @@ class ArtifactController:
         artifact_id: str,
         query_vector,
         query_filter: dict = None,
-        page: int = 0,
-        page_size: int = 10,
+        offset: int = 0,
+        limit: int = 10,
         with_payload: bool = True,
         with_vectors: bool = False,
         context: dict = None,
@@ -1595,8 +1595,8 @@ class ArtifactController:
                     collection_name=f"{artifact.workspace}/{artifact.alias}",
                     query_vector=query_vector,
                     query_filter=query_filter,
-                    limit=page_size,
-                    offset=page * page_size,
+                    limit=limit,
+                    offset=offset,
                     with_payload=with_payload,
                     with_vectors=with_vectors,
                 )
@@ -1611,8 +1611,8 @@ class ArtifactController:
         artifact_id: str,
         query: str,
         query_filter: dict = None,
-        page: int = 0,
-        page_size: int = 10,
+        offset: int = 0,
+        limit: int = 10,
         with_payload: bool = True,
         with_vectors: bool = False,
         context: dict = None,
@@ -1636,8 +1636,8 @@ class ArtifactController:
                     collection_name=f"{artifact.workspace}/{artifact.alias}",
                     query_vector=query_vector,
                     query_filter=query_filter,
-                    limit=page_size,
-                    offset=page * page_size,
+                    limit=limit,
+                    offset=offset,
                     with_payload=with_payload,
                     with_vectors=with_vectors,
                 )
@@ -1711,8 +1711,8 @@ class ArtifactController:
         self,
         artifact_id: str,
         query_filter: dict = None,
-        page: int = 0,
-        page_size: int = 10,
+        offset: int = 0,
+        limit: int = 10,
         order_by: str = None,
         with_payload: bool = True,
         with_vectors: bool = False,
@@ -1738,8 +1738,8 @@ class ArtifactController:
                 points, _ = await self._vectordb_client.scroll(
                     collection_name=f"{artifact.workspace}/{artifact.alias}",
                     scroll_filter=query_filter,
-                    limit=page_size,
-                    offset=page * page_size,
+                    limit=limit,
+                    offset=offset,
                     order_by=order_by,
                     with_payload=with_payload,
                     with_vectors=with_vectors,
@@ -1977,8 +1977,8 @@ class ArtifactController:
         keywords=None,
         filters=None,
         mode="AND",
-        page: int = 0,
-        page_size: int = 100,
+        offset: int = 0,
+        limit: int = 100,
         order_by=None,
         silent=False,
         context: dict = None,
@@ -2163,7 +2163,6 @@ class ArtifactController:
                     )
 
                 # Pagination and ordering
-                offset = page * page_size
                 order_field_map = {
                     "id": ArtifactModel.id,
                     "view_count": ArtifactModel.view_count,
@@ -2180,7 +2179,7 @@ class ArtifactController:
                     query.order_by(
                         order_field.asc() if ascending else order_field.desc()
                     )
-                    .limit(page_size)
+                    .limit(limit)
                     .offset(offset)
                 )
 
