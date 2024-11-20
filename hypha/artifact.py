@@ -904,6 +904,7 @@ class ArtifactController:
                     )
                 workspace = ws
         created_at = int(time.time())
+        upsert = False
         session = await self._get_session()
         try:
             async with session.begin():
@@ -997,6 +998,10 @@ class ArtifactController:
                         parent_id = parent_id or existing_artifact.parent_id
                         id = existing_artifact.id
                         created_at = existing_artifact.created_at
+                        config = config or existing_artifact.config
+                        secrets = secrets or existing_artifact.secrets
+                        manifest = manifest or existing_artifact.manifest
+                        upsert = True
                     except KeyError:
                         pass
 
@@ -1037,7 +1042,10 @@ class ArtifactController:
                     type=type,
                 )
                 version_index = self._get_version_index(new_artifact, version)
-                session.add(new_artifact)
+                if upsert:
+                    await session.merge(new_artifact)
+                else:
+                    session.add(new_artifact)
                 if new_artifact.type == "vector-collection":
                     assert (
                         self._vectordb_client
@@ -1458,7 +1466,7 @@ class ArtifactController:
         context: dict = None,
     ):
         """
-        Upsert a vector field to the artifact.
+        Add vectors to a vector collection.
         """
         user_info = UserInfo.model_validate(context["user"])
         session = await self._get_session()
@@ -1533,7 +1541,7 @@ class ArtifactController:
         context: dict = None,
     ):
         """
-        Upsert a text field to the artifact.
+        Add documents to the artifact.
         """
         user_info = UserInfo.model_validate(context["user"])
         session = await self._get_session()
