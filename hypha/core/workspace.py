@@ -1119,7 +1119,7 @@ class WorkspaceManager:
                 raise ValueError(
                     f"Invalid service_embedding type: {type(redis_data['service_embedding'])}, it must be a numpy array or bytes."
                 )
-        else:
+        elif redis_data.get('docs'): # Only embed the service if it has docs
             assert self._embedding_model, "Embedding model is not available."
             summary = f"{redis_data.get('name', '')}\n{redis_data.get('description', '')}\n{redis_data.get('docs', '')}"
             loop = asyncio.get_event_loop()
