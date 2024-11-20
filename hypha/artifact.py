@@ -3,8 +3,10 @@ import time
 import sys
 import uuid_utils as uuid
 import random
+import numpy as np
 import re
 import json
+import asyncio
 from sqlalchemy import (
     event,
     Column,
@@ -28,7 +30,6 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     AsyncSession,
 )
-from sqlalchemy.orm import relationship  # For parent-child relationships
 from fastapi import APIRouter, Depends, HTTPException
 from hypha.core import (
     UserInfo,
@@ -142,6 +143,9 @@ class ArtifactController:
         self.s3_controller = s3_controller
         self.workspace_bucket = workspace_bucket
         self.store = store
+        self._vectordb_client = self.store.get_vectordb_client()
+        self._openai_client = self.store.get_openai_client()
+        self._cache_dir = self.store.get_cache_dir()
         router = APIRouter()
         self._artifacts_dir = artifacts_dir
 
@@ -1030,6 +1034,20 @@ class ArtifactController:
                 )
                 version_index = self._get_version_index(new_artifact, version)
                 session.add(new_artifact)
+                if new_artifact.type == "vector-collection":
+                    assert (
+                        self._vectordb_client
+                    ), "The server is not configured to use a VectorDB client."
+                    from qdrant_client.models import Distance, VectorParams
+
+                    vectors_config = config.get("vectors_config", {})
+                    await self._vectordb_client.create_collection(
+                        collection_name=f"{new_artifact.workspace}/{new_artifact.alias}",
+                        vectors_config=VectorParams(
+                            size=vectors_config.get("size", 128),
+                            distance=Distance(vectors_config.get("distance", "Cosine")),
+                        ),
+                    )
                 await session.commit()
                 await self._save_version_to_s3(
                     version_index,
@@ -1295,6 +1313,15 @@ class ArtifactController:
                             ),
                         )
 
+                if artifact.type == "vector-collection":
+                    assert (
+                        self._vectordb_client
+                    ), "The server is not configured to use a VectorDB client."
+                    artifact.manifest["points"] = self._vectordb_client.count(
+                        collection_name=f"{artifact.workspace}/{artifact.alias}"
+                    )
+                    flag_modified(artifact, "manifest")
+
                 parent_artifact_config = (
                     parent_artifact.config if parent_artifact else {}
                 )
@@ -1362,6 +1389,14 @@ class ArtifactController:
                 user_info, artifact_id, "delete", session
             )
 
+            if artifact.type == "vector-collection":
+                assert (
+                    self._vectordb_client
+                ), "The server is not configured to use a VectorDB client."
+                self._vectordb_client.delete_collection(
+                    collection_name=f"{artifact.workspace}/{artifact.alias}"
+                )
+
             s3_config = self._get_s3_config(artifact, parent_artifact)
             if version is None:
                 # Handle recursive deletion first
@@ -1411,6 +1446,310 @@ class ArtifactController:
         finally:
             if session:
                 await session.close()
+
+    async def add_vectors(
+        self,
+        artifact_id: str,
+        vectors: list,
+        context: dict = None,
+    ):
+        """
+        Upsert a vector field to the artifact.
+        """
+        user_info = UserInfo.model_validate(context["user"])
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, _ = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "put_file", session
+                )
+                assert (
+                    artifact.type == "vector-collection"
+                ), "Artifact must be a vector collection."
+                assert (
+                    self._vectordb_client
+                ), "The server is not configured to use a VectorDB client."
+                assert artifact.manifest, "Artifact must be committed before upserting."
+                assert isinstance(
+                    vectors, list
+                ), "Vectors must be a list of dictionaries."
+                assert all(
+                    isinstance(v, dict) for v in vectors
+                ), "Vectors must be a list of dictionaries."
+                from qdrant_client.models import PointStruct
+
+                _points = []
+                for p in vectors:
+                    p["id"] = p.get("id") or str(uuid.uuid4())
+                    _points.append(PointStruct(**p))
+                await self._vectordb_client.upsert(
+                    collection_name=f"{artifact.workspace}/{artifact.alias}",
+                    points=_points,
+                )
+                # TODO: Update file_count
+                logger.info(f"Upserted vectors to artifact with ID: {artifact_id}")
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
+    async def _embed_texts(self, config, texts):
+        embedding_model = config.get("embedding_model")  # "text-embedding-3-small"
+        assert (
+            embedding_model
+        ), "Embedding model must be provided, e.g. 'fastembed', 'text-embedding-3-small' for openai or 'all-minilm' for ollama."
+        if embedding_model.startswith("fastembed"):
+            from fastembed import TextEmbedding
+
+            if ":" in embedding_model:
+                model_name = embedding_model.split(":")[-1]
+            else:
+                model_name = "BAAI/bge-small-en-v1.5"
+            embedding_model = TextEmbedding(
+                model_name=model_name, cache_dir=self._cache_dir
+            )
+            loop = asyncio.get_event_loop()
+            embeddings = list(
+                await loop.run_in_executor(None, embedding_model.embed, texts)
+            )
+        else:
+            assert (
+                self._openai_client
+            ), "The server is not configured to use an OpenAI client."
+            result = await self._openai_client.embeddings.create(
+                input=texts, model=embedding_model
+            )
+            embeddings = [data.embedding for data in result.data]
+        return embeddings
+
+    async def add_documents(
+        self,
+        artifact_id: str,
+        documents: str,  # `id`, `text` and other fields
+        context: dict = None,
+    ):
+        """
+        Upsert a text field to the artifact.
+        """
+        user_info = UserInfo.model_validate(context["user"])
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, _ = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "put_file", session
+                )
+                assert (
+                    artifact.type == "vector-collection"
+                ), "Artifact must be a vector collection."
+                texts = [doc["text"] for doc in documents]
+                embeddings = await self._embed_texts(artifact.config, texts)
+                from qdrant_client.models import PointStruct
+
+                points = [
+                    PointStruct(
+                        id=doc.get("id") or str(uuid.uuid4()),
+                        vector=embedding,
+                        payload=doc,
+                    )
+                    for embedding, doc in zip(embeddings, documents)
+                ]
+                await self._vectordb_client.upsert(
+                    collection_name=f"{artifact.workspace}/{artifact.alias}",
+                    points=points,
+                )
+                logger.info(f"Upserted documents to artifact with ID: {artifact_id}")
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
+    async def search_by_vector(
+        self,
+        artifact_id: str,
+        query_vector,
+        query_filter: dict = None,
+        page: int = 0,
+        page_size: int = 10,
+        with_payload: bool = True,
+        with_vectors: bool = False,
+        context: dict = None,
+    ):
+        user_info = UserInfo.model_validate(context["user"])
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, _ = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "list", session
+                )
+                assert (
+                    artifact.type == "vector-collection"
+                ), "Artifact must be a vector collection."
+                # if it's a numpy array, convert it to a list
+                if isinstance(query_vector, np.ndarray):
+                    query_vector = query_vector.tolist()
+                from qdrant_client.models import Filter
+
+                if query_filter:
+                    query_filter = Filter.model_validate(query_filter)
+                search_results = await self._vectordb_client.search(
+                    collection_name=f"{artifact.workspace}/{artifact.alias}",
+                    query_vector=query_vector,
+                    query_filter=query_filter,
+                    limit=page_size,
+                    offset=page * page_size,
+                    with_payload=with_payload,
+                    with_vectors=with_vectors,
+                )
+                return search_results
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
+    async def search_by_text(
+        self,
+        artifact_id: str,
+        query: str,
+        query_filter: dict = None,
+        page: int = 0,
+        page_size: int = 10,
+        with_payload: bool = True,
+        with_vectors: bool = False,
+        context: dict = None,
+    ):
+        user_info = UserInfo.model_validate(context["user"])
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, _ = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "list", session
+                )
+                assert (
+                    artifact.type == "vector-collection"
+                ), "Artifact must be a vector collection."
+                (query_vector,) = await self._embed_texts(artifact.config, [query])
+                from qdrant_client.models import Filter
+
+                if query_filter:
+                    query_filter = Filter.model_validate(query_filter)
+                search_results = await self._vectordb_client.search(
+                    collection_name=f"{artifact.workspace}/{artifact.alias}",
+                    query_vector=query_vector,
+                    query_filter=query_filter,
+                    limit=page_size,
+                    offset=page * page_size,
+                    with_payload=with_payload,
+                    with_vectors=with_vectors,
+                )
+                return search_results
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
+    async def remove_vectors(
+        self,
+        artifact_id: str,
+        ids: list,
+        context: dict = None,
+    ):
+        user_info = UserInfo.model_validate(context["user"])
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, _ = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "remove_file", session
+                )
+                assert (
+                    artifact.type == "vector-collection"
+                ), "Artifact must be a vector collection."
+                assert (
+                    self._vectordb_client
+                ), "The server is not configured to use a VectorDB client."
+                await self._vectordb_client.delete(
+                    collection_name=f"{artifact.workspace}/{artifact.alias}",
+                    points_selector=ids,
+                )
+                logger.info(f"Removed vectors from artifact with ID: {artifact_id}")
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
+    async def get_vector(
+        self,
+        artifact_id: str,
+        id: int,
+        context: dict = None,
+    ):
+        user_info = UserInfo.model_validate(context["user"])
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, _ = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "get_file", session
+                )
+                assert (
+                    artifact.type == "vector-collection"
+                ), "Artifact must be a vector collection."
+                assert (
+                    self._vectordb_client
+                ), "The server is not configured to use a VectorDB client."
+                points = await self._vectordb_client.retrieve(
+                    collection_name=f"{artifact.workspace}/{artifact.alias}",
+                    ids=[id],
+                    with_payload=True,
+                    with_vectors=True,
+                )
+                return points[0]
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
+    async def list_vectors(
+        self,
+        artifact_id: str,
+        query_filter: dict = None,
+        page: int = 0,
+        page_size: int = 10,
+        order_by: str = None,
+        with_payload: bool = True,
+        with_vectors: bool = False,
+        context: dict = None,
+    ):
+        user_info = UserInfo.model_validate(context["user"])
+        session = await self._get_session()
+        try:
+            async with session.begin():
+                artifact, _ = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "list", session
+                )
+                assert (
+                    artifact.type == "vector-collection"
+                ), "Artifact must be a vector collection."
+                assert (
+                    self._vectordb_client
+                ), "The server is not configured to use a VectorDB client."
+                from qdrant_client.models import Filter
+
+                if query_filter:
+                    query_filter = Filter.model_validate(query_filter)
+                points, _ = await self._vectordb_client.scroll(
+                    collection_name=f"{artifact.workspace}/{artifact.alias}",
+                    scroll_filter=query_filter,
+                    limit=page_size,
+                    offset=page * page_size,
+                    order_by=order_by,
+                    with_payload=with_payload,
+                    with_vectors=with_vectors,
+                )
+                return points
+
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
 
     async def put_file(
         self, artifact_id, file_path, download_weight: float = 0, context: dict = None
@@ -1959,5 +2298,12 @@ class ArtifactController:
             "get_file": self.get_file,
             "list": self.list_children,
             "list_files": self.list_files,
+            "add_vectors": self.add_vectors,
+            "add_documents": self.add_documents,
+            "search_by_vector": self.search_by_vector,
+            "search_by_text": self.search_by_text,
+            "remove_vectors": self.remove_vectors,
+            "get_vector": self.get_vector,
+            "list_vectors": self.list_vectors,
             "publish": self.publish,
         }

@@ -62,50 +62,81 @@ class ServiceInfo(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    config: SerializeAsAny[ServiceConfig]
+    config: Optional[SerializeAsAny[ServiceConfig]] = None
     id: str
     name: str
     type: Optional[str] = "generic"
-    description: Optional[constr(max_length=256)] = ""  # type: ignore
+    description: Optional[constr(max_length=256)] = None  # type: ignore
     docs: Optional[str] = None
     app_id: Optional[str] = None
     service_schema: Optional[Dict[str, Any]] = None
+    service_embedding: Optional[Any] = None
 
     def is_singleton(self):
         """Check if the service is singleton."""
         return "single-instance" in self.config.flags
 
     def to_redis_dict(self):
+        """
+        Serialize the model to a Redis-compatible dictionary based on field types.
+        """
         data = self.model_dump()
-        data["config"] = self.config.model_dump_json()
-        return {
-            k: json.dumps(v) if not isinstance(v, str) else v for k, v in data.items()
-        }
+        redis_data = {}
+        # Note: Here we only store the fields that are in the model
+        # and ignore any extra fields that might be present in the data
+        # Iterate over fields and encode based on their type
+        for field_name, field_info in self.model_fields.items():
+            value = data.get(field_name)
+            if value is None:
+                continue
+            elif field_name == "service_embedding":
+                redis_data[field_name] = value
+            elif field_info.annotation in {str, Optional[str]}:
+                redis_data[field_name] = value
+            else:
+                redis_data[field_name] = json.dumps(value)
+
+        return redis_data
 
     @classmethod
-    def from_redis_dict(cls, service_data):
-        converted_service_data = {}
-        for k, v in service_data.items():
-            key_str = k.decode("utf-8")
-            value_str = v.decode("utf-8")
-            if (
-                value_str.startswith("{")
-                and value_str.endswith("}")
-                or value_str.startswith("[")
-                and value_str.endswith("]")
-            ):
-                converted_service_data[key_str] = json.loads(value_str)
+    def from_redis_dict(cls, service_data: Dict[str, Any], in_bytes=True):
+        """
+        Deserialize a Redis-compatible dictionary back to a model instance.
+        """
+        converted_data = {}
+        # Note: Here we only convert the fields that are in the model
+        # and ignore any extra fields that might be present in the data
+        # Iterate over fields and decode based on their type
+        for field_name, field_info in cls.model_fields.items():
+            if not in_bytes:
+                value = service_data.get(field_name)
             else:
-                converted_service_data[key_str] = value_str
-        converted_service_data["config"] = ServiceConfig.model_validate(
-            converted_service_data["config"]
-        )
-        return cls.model_validate(converted_service_data)
+                value = service_data.get(field_name.encode("utf-8"))
+            if value is None:
+                converted_data[field_name] = None
+            elif field_name == "service_embedding":
+                converted_data[field_name] = value
+            elif field_info.annotation in {str, Optional[str]}:
+                converted_data[field_name] = (
+                    value if isinstance(value, str) else value.decode("utf-8")
+                )
+            else:
+                value_str = value if isinstance(value, str) else value.decode("utf-8")
+                converted_data[field_name] = json.loads(value_str)
+
+        # Decode config separately
+        if "config" in converted_data and converted_data["config"]:
+            converted_data["config"] = ServiceConfig.model_validate(
+                converted_data["config"]
+            )
+
+        return cls.model_validate(converted_data)
 
     @classmethod
     def model_validate(cls, data):
         data = data.copy()
-        data["config"] = ServiceConfig.model_validate(data["config"])
+        if "config" in data and data["config"] is not None:
+            data["config"] = ServiceConfig.model_validate(data["config"])
         return super().model_validate(data)
 
 

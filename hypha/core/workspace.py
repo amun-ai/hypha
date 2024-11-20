@@ -1,5 +1,6 @@
 import re
 import json
+import asyncio
 import logging
 import time
 import sys
@@ -7,6 +8,7 @@ from typing import Optional, Union, List, Any, Dict
 from contextlib import asynccontextmanager
 import random
 import datetime
+import numpy as np
 
 from fakeredis import aioredis
 from prometheus_client import Gauge
@@ -108,6 +110,8 @@ class WorkspaceManager:
         sql_engine: Optional[str] = None,
         s3_controller: Optional[Any] = None,
         artifact_manager: Optional[Any] = None,
+        enable_service_search: bool = False,
+        cache_dir: str = None,
     ):
         self._redis = redis
         self._initialized = False
@@ -119,6 +123,7 @@ class WorkspaceManager:
         self._s3_controller = s3_controller
         self._artifact_manager = artifact_manager
         self._sql_engine = sql_engine
+        self._cache_dir = cache_dir
         if self._sql_engine:
             self.SessionLocal = async_sessionmaker(
                 self._sql_engine, expire_on_commit=False, class_=AsyncSession
@@ -129,6 +134,7 @@ class WorkspaceManager:
         self._active_svc = Gauge(
             "active_services", "Number of active services", ["workspace"]
         )
+        self._enable_service_search = enable_service_search
 
     async def _get_sql_session(self):
         """Return an async session for the database."""
@@ -158,6 +164,47 @@ class WorkspaceManager:
             async with self._sql_engine.begin() as conn:
                 await conn.run_sync(EventLog.metadata.create_all)
                 logger.info("Database tables created successfully.")
+
+        self._embedding_model = None
+        self._search_fields = None
+        if self._enable_service_search:
+            from fastembed import TextEmbedding
+
+            self._embedding_model = TextEmbedding(
+                model_name="BAAI/bge-small-en-v1.5", cache_dir=self._cache_dir
+            )
+
+            from redis.commands.search.field import VectorField, TextField, TagField
+            from redis.commands.search.indexDefinition import IndexDefinition, IndexType
+
+            # Define vector field for RedisSearch (assuming cosine similarity)
+            # Manually define Redis fields for each ServiceInfo attribute
+            self._search_fields = [
+                TagField(name="id"),  # id as text
+                TextField(name="name"),  # name as text
+                TagField(name="type"),  # type as tag (enum-like)
+                TextField(name="description"),  # description as text
+                TextField(name="docs"),  # docs as text
+                TagField(name="app_id"),  # app_id as text
+                TextField(
+                    name="service_schema"
+                ),  # service_schema as text (you can store a serialized JSON or string representation)
+                TextField(
+                    name="config"
+                ),  # config as text (you can store a serialized JSON or string representation)
+                VectorField(
+                    "service_embedding",
+                    "FLAT",
+                    {"TYPE": "FLOAT32", "DIM": 384, "DISTANCE_METRIC": "COSINE"},
+                ),  # Embedding vector
+            ]
+            # Create the index with vector field and additional fields for metadata (e.g., title)
+            await self._redis.ft("service_info_index").create_index(
+                fields=self._search_fields,
+                definition=IndexDefinition(
+                    prefix=["services:"], index_type=IndexType.HASH
+                ),
+            )
         self._initialized = True
         return rpc
 
@@ -709,6 +756,166 @@ class WorkspaceManager:
         except Exception as e:
             return f"Failed to ping client {client_id}: {e}"
 
+    def _sanitize_search_value(self, value: str) -> str:
+        """Sanitize a value to prevent injection attacks."""
+        return re.sub(r"[{}@:]", "", value)  # Remove potentially dangerous characters
+
+    def _convert_filters_to_hybrid_query(self, filters: dict) -> str:
+        """
+        Convert a filter dictionary to a Redis hybrid query string.
+
+        Args:
+            filters (dict): Dictionary of filters, e.g., {"type": "my-type", "year": [2011, 2012]}.
+
+        Returns:
+            str: Redis hybrid query string, e.g., "(@type:{my-type} @year:[2011 2012])".
+        """
+        from redis.commands.search.field import TextField, TagField, NumericField
+
+        def escape_redis_syntax(value: str) -> str:
+            """Escape Redis special characters in a query string."""
+            return re.sub(r"([{}|@$\\\-\[\]\(\)\!&~:\"*])", r"\\\1", value)
+
+        def sanitize_search_value(value: str) -> str:
+            """Sanitize a value to prevent injection attacks."""
+            # Remove invalid characters and escape Redis syntax
+            value = re.sub(
+                r"[^a-zA-Z0-9 _\-./]", "", value
+            )  # Remove unwanted characters
+            return escape_redis_syntax(value.strip())
+
+        conditions = []
+
+        for field_name, value in filters.items():
+            # Find the field type in the schema
+            field_type = None
+            for field in self._search_fields:
+                if field.name == field_name:
+                    field_type = type(field)
+                    break
+
+            if not field_type:
+                raise ValueError(f"Unknown field '{field_name}' in filters.")
+
+            # Sanitize the field name
+            sanitized_field_name = sanitize_search_value(field_name)
+
+            if field_type == TagField:
+                # Use `{value}` for TagField
+                if not isinstance(value, str):
+                    raise ValueError(
+                        f"TagField '{field_name}' requires a string value."
+                    )
+                sanitized_value = sanitize_search_value(value)
+                conditions.append(f"@{sanitized_field_name}:{{{sanitized_value}}}")
+
+            elif field_type == NumericField:
+                # Use `[min max]` for NumericField
+                if not isinstance(value, (list, tuple)) or len(value) != 2:
+                    raise ValueError(
+                        f"NumericField '{field_name}' requires a list or tuple with two elements."
+                    )
+                min_val, max_val = value
+                conditions.append(f"@{sanitized_field_name}:[{min_val} {max_val}]")
+
+            elif field_type == TextField:
+                # Use `"value"` for TextField
+                if not isinstance(value, str):
+                    raise ValueError(
+                        f"TextField '{field_name}' requires a string value."
+                    )
+                sanitized_value = sanitize_search_value(value)
+                conditions.append(f'@{sanitized_field_name}:"{sanitized_value}"')
+
+            else:
+                raise ValueError(f"Unsupported field type for '{field_name}'.")
+
+        return " ".join(conditions)
+
+    @schema_method
+    async def search_services(
+        self,
+        text_query: Optional[str] = Field(
+            None, description="Text query for semantic search."
+        ),
+        embedding: Optional[Any] = Field(
+            None,
+            description="Precomputed embedding vector for vector search in numpy format.",
+        ),
+        filters: Optional[Dict[str, Any]] = Field(
+            None, description="Filter dictionary for hybrid search."
+        ),
+        limit: Optional[int] = Field(
+            5, description="Maximum number of results to return."
+        ),
+        offset: Optional[int] = Field(0, description="Offset for pagination."),
+        context: Optional[dict] = None,
+    ):
+        """
+        Search services with support for hybrid queries and pure filter-based queries.
+        """
+        from redis.commands.search.query import Query
+
+        # Generate embedding if text_query is provided
+        if text_query and not embedding:
+            loop = asyncio.get_event_loop()
+            embeddings = list(
+                await loop.run_in_executor(
+                    None, self._embedding_model.embed, [text_query]
+                )
+            )
+            embedding = embeddings[0]
+
+        # If service_embedding is provided, prepare KNN search query
+        if embedding is not None:
+            query_vector = embedding.astype("float32").tobytes()
+            query_params = {"vector": query_vector}
+            knn_query = f"[KNN {limit} @service_embedding $vector AS score]"
+            # Combine filters into the query string
+            if filters:
+                query_string = self._convert_filters_to_hybrid_query(filters)
+                query_string = f"({query_string})=>{knn_query}"
+            else:
+                query_string = f"*=>{knn_query}"
+        else:
+            query_params = {}
+            query_string = self._convert_filters_to_hybrid_query(filters)
+
+        # Fields to retrieve
+        fields = [
+            "id",
+            "name",
+            "type",
+            "description",
+            "docs",
+            "app_id",
+            "service_schema",
+            "config",
+            "score",
+        ]
+        # Build the RedisSearch query
+        query = (
+            Query(query_string)
+            .return_fields(*fields)
+            .sort_by(
+                "score" if (embedding is not None) else "id"
+            )  # Sort by score if KNN is used, otherwise default sorting
+            .paging(offset, limit)
+            .dialect(2)
+        )
+
+        # Perform the search using the RedisSearch index
+        results = await self._redis.ft("service_info_index").search(
+            query, query_params=query_params
+        )
+
+        # Convert results to dictionaries and return
+        services = [
+            ServiceInfo.from_redis_dict(vars(doc), in_bytes=False)
+            for doc in results.docs
+        ]
+        return [service.model_dump() for service in services]
+
     @schema_method
     async def list_services(
         self,
@@ -883,6 +1090,16 @@ class WorkspaceManager:
 
         return services
 
+    async def _embed_service(self, redis_data):
+        if self._embedding_model and "service_embedding" not in redis_data:
+            summary = f"{redis_data.get('name', '')}\n{redis_data.get('description', '')}\n{redis_data.get('docs', '')}"
+            loop = asyncio.get_event_loop()
+            embeddings = list(
+                await loop.run_in_executor(None, self._embedding_model.embed, [summary])
+            )
+            redis_data["service_embedding"] = embeddings[0].tobytes()
+        return redis_data
+
     @schema_method
     async def register_service(
         self,
@@ -952,7 +1169,9 @@ class WorkspaceManager:
             for k in service_exists:
                 logger.info(f"Replacing existing service: {k}")
                 await self._redis.delete(k)
-            await self._redis.hset(key, mapping=service.to_redis_dict())
+
+            redis_data = await self._embed_service(service.to_redis_dict())
+            await self._redis.hset(key, mapping=redis_data)
             if ":built-in@" in key:
                 await self._event_bus.emit(
                     "client_updated", {"id": client_id, "workspace": ws}
@@ -962,7 +1181,8 @@ class WorkspaceManager:
                 await self._event_bus.emit("service_updated", service.model_dump())
                 logger.info(f"Updating service: {service.id}")
         else:
-            await self._redis.hset(key, mapping=service.to_redis_dict())
+            redis_data = await self._embed_service(service.to_redis_dict())
+            await self._redis.hset(key, mapping=redis_data)
             # Default service created by api.export({}), typically used for hypha apps
             if ":default@" in key:
                 try:
@@ -1606,6 +1826,7 @@ class WorkspaceManager:
             "unregister_service": self.unregister_service,
             "list_workspaces": self.list_workspaces,
             "list_services": self.list_services,
+            "search_services": self.search_services,
             "list_clients": self.list_clients,
             "register_service_type": self.register_service_type,
             "get_service_type": self.get_service_type,

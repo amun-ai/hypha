@@ -79,7 +79,12 @@ setup(
             "base58>=2.1.0",
             "pymultihash>=0.8.2",
         ],
-        "postgres": ["psycopg2-binary>=2.9.10", "asyncpg>=0.30.0"],
+        "db": [
+            "psycopg2-binary>=2.9.10",
+            "asyncpg>=0.30.0",
+            "qdrant-client>=1.12.1",
+            "fastembed>=0.3.6",
+        ],
     },
     zip_safe=False,
     entry_points={"console_scripts": ["hypha = hypha.__main__:main"]},

@@ -170,7 +170,6 @@ class S3Controller:
         s3_admin_type="generic",
         enable_s3_proxy=False,
         workspace_bucket="hypha-workspaces",
-        # local_log_dir="./logs",
         workspace_etc_dir="etc",
         executable_path="",
     ):

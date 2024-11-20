@@ -98,7 +98,7 @@ def start_builtin_services(
             s3_admin_type=args.s3_admin_type,
             enable_s3_proxy=args.enable_s3_proxy,
             workspace_bucket=args.workspace_bucket,
-            executable_path=args.executable_path,
+            executable_path=args.executable_path or args.cache_dir,
         )
         artifact_manager = ArtifactController(
             store,
@@ -221,6 +221,14 @@ def create_application(args):
         local_base_url=local_base_url,
         redis_uri=args.redis_uri,
         database_uri=args.database_uri,
+        vectordb_uri=args.vectordb_uri,
+        ollama_host=args.ollama_host,
+        cache_dir=args.cache_dir,
+        openai_config={
+            "base_url": args.openai_base_url,
+            "api_key": args.openai_api_key,
+        },
+        enable_service_search=args.enable_service_search,
         reconnection_token_life_time=float(
             env.get("RECONNECTION_TOKEN_LIFE_TIME", str(2 * 24 * 60 * 60))
         ),
@@ -374,6 +382,30 @@ def get_argparser(add_help=True):
         help="set SecretAccessKey for S3",
     )
     parser.add_argument(
+        "--ollama-host",
+        type=str,
+        default=None,
+        help="set host for the ollama server",
+    )
+    parser.add_argument(
+        "--openai-base-url",
+        type=str,
+        default=None,
+        help="set OpenAI API type",
+    )
+    parser.add_argument(
+        "--openai-api-key",
+        type=str,
+        default=None,
+        help="set OpenAI API key",
+    )
+    parser.add_argument(
+        "--vectordb-uri",
+        type=str,
+        default=None,
+        help="set URI for the vector database",
+    )
+    parser.add_argument(
         "--database-uri",
         type=str,
         default=None,
@@ -420,7 +452,17 @@ def get_argparser(add_help=True):
         action="store_true",
         help="enable S3 proxy for serving pre-signed URLs",
     )
-
+    parser.add_argument(
+        "--cache-dir",
+        type=str,
+        default=None,
+        help="set the cache directory for the server",
+    )
+    parser.add_argument(
+        "--enable-service-search",
+        action="store_true",
+        help="enable semantic service search via vector database",
+    )
     return parser
 
 

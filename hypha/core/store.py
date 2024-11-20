@@ -25,8 +25,6 @@ from hypha.core import (
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
-from sqlalchemy import inspect, text
-from sqlalchemy.exc import NoInspectionAvailable, NoSuchTableError
 
 from hypha.core.auth import (
     create_scope,
@@ -95,6 +93,11 @@ class RedisStore:
         local_base_url=None,
         redis_uri=None,
         database_uri=None,
+        vectordb_uri=None,
+        ollama_host=None,
+        openai_config=None,
+        cache_dir=None,
+        enable_service_search=False,
         reconnection_token_life_time=2 * 24 * 60 * 60,
     ):
         """Initialize the redis store."""
@@ -112,9 +115,11 @@ class RedisStore:
         self._ready = False
         self._workspace_manager = None
         self._websocket_server = None
+        self._cache_dir = cache_dir
         self._server_id = server_id or random_id(readable=True)
         self._manager_id = "manager-" + self._server_id
         self.reconnection_token_life_time = reconnection_token_life_time
+        self._enable_service_search = enable_service_search
         self._server_info = {
             "server_id": self._server_id,
             "hypha_version": __version__,
@@ -128,17 +133,41 @@ class RedisStore:
         }
 
         logger.info("Server info: %s", self._server_info)
+        self._vectordb_uri = vectordb_uri
+        if self._vectordb_uri is not None:
+            from qdrant_client import AsyncQdrantClient
+
+            self._vectordb_client = AsyncQdrantClient(self._vectordb_uri)
+        else:
+            self._vectordb_client = None
 
         self._database_uri = database_uri
         if self._database_uri is None:
-            database_uri = (
+            self._database_uri = (
                 "sqlite+aiosqlite:///:memory:"  # In-memory SQLite for testing
             )
             logger.warning(
                 "Using in-memory SQLite database for event logging, all data will be lost on restart!"
             )
 
-        self._sql_engine = create_async_engine(database_uri, echo=False)
+        self._ollama_host = ollama_host
+        if self._ollama_host is not None:
+            import ollama
+
+            self._ollama_client = ollama.AsyncClient(host=self._ollama_host)
+
+        self._openai_config = openai_config
+        if (
+            self._openai_config is not None
+            and self._openai_config.get("api_key") is not None
+        ):
+            from openai import AsyncClient
+
+            self._openai_client = AsyncClient(**self._openai_config)
+        else:
+            self._openai_client = None
+
+        self._sql_engine = create_async_engine(self._database_uri, echo=False)
 
         if redis_uri and redis_uri.startswith("redis://"):
             from redis import asyncio as aioredis
@@ -170,9 +199,21 @@ class RedisStore:
     def get_sql_engine(self):
         return self._sql_engine
 
+    def get_vectordb_client(self):
+        return self._vectordb_client
+
+    def get_openai_client(self):
+        return self._openai_client
+
+    def get_ollama_client(self):
+        return self._ollama_client
+
     def get_event_bus(self):
         """Get the event bus."""
         return self._event_bus
+
+    def get_cache_dir(self):
+        return self._cache_dir
 
     async def setup_root_user(self) -> UserInfo:
         """Setup the root user."""
@@ -634,6 +675,8 @@ class RedisStore:
             self._sql_engine,
             self._s3_controller,
             self._artifact_manager,
+            self._enable_service_search,
+            self._cache_dir,
         )
         await manager.setup()
         return manager
