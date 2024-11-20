@@ -865,6 +865,8 @@ class WorkspaceManager:
         """
         Search services with support for hybrid queries and pure filter-based queries.
         """
+        if not self._enable_service_search:
+            raise RuntimeError("Service search is not enabled.")
         from redis.commands.search.query import Query
 
         current_workspace = context["ws"]
@@ -1119,7 +1121,7 @@ class WorkspaceManager:
                 raise ValueError(
                     f"Invalid service_embedding type: {type(redis_data['service_embedding'])}, it must be a numpy array or bytes."
                 )
-        elif redis_data.get('docs'): # Only embed the service if it has docs
+        elif redis_data.get("docs"):  # Only embed the service if it has docs
             assert self._embedding_model, "Embedding model is not available."
             summary = f"{redis_data.get('name', '')}\n{redis_data.get('description', '')}\n{redis_data.get('docs', '')}"
             loop = asyncio.get_event_loop()
@@ -1199,7 +1201,12 @@ class WorkspaceManager:
                 logger.info(f"Replacing existing service: {k}")
                 await self._redis.delete(k)
 
-            redis_data = await self._embed_service(service.to_redis_dict())
+            if self._enable_service_search:
+                redis_data = await self._embed_service(service.to_redis_dict())
+            else:
+                redis_data = service.to_redis_dict()
+                if "service_embedding" in redis_data:
+                    del redis_data["service_embedding"]
             await self._redis.hset(key, mapping=redis_data)
             if ":built-in@" in key:
                 await self._event_bus.emit(
@@ -1210,7 +1217,12 @@ class WorkspaceManager:
                 await self._event_bus.emit("service_updated", service.model_dump())
                 logger.info(f"Updating service: {service.id}")
         else:
-            redis_data = await self._embed_service(service.to_redis_dict())
+            if self._enable_service_search:
+                redis_data = await self._embed_service(service.to_redis_dict())
+            else:
+                redis_data = service.to_redis_dict()
+                if "service_embedding" in redis_data:
+                    del redis_data["service_embedding"]
             await self._redis.hset(key, mapping=redis_data)
             # Default service created by api.export({}), typically used for hypha apps
             if ":default@" in key:
