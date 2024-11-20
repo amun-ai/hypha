@@ -166,7 +166,10 @@ class ArtifactController:
                 session = await self._get_session(read_only=True)
                 async with session.begin():
                     # Fetch artifact along with parent
-                    artifact, _ = await self._get_artifact_with_permission(
+                    (
+                        artifact,
+                        parent_artifact,
+                    ) = await self._get_artifact_with_permission(
                         user_info, artifact_id, "read", session
                     )
 
@@ -174,7 +177,9 @@ class ArtifactController:
 
                     if version_index == self._get_version_index(artifact, None):
                         # Prepare artifact representation
-                        artifact_data = self._generate_artifact_data(artifact)
+                        artifact_data = self._generate_artifact_data(
+                            artifact, parent_artifact
+                        )
                     else:
                         s3_config = self._get_s3_config(artifact)
                         artifact_data = await self._load_version_from_s3(
@@ -252,7 +257,10 @@ class ArtifactController:
                     children = result.scalars().all()
 
                     # Return children data, excluding secrets
-                    return [self._generate_artifact_data(child) for child in children]
+                    return [
+                        self._generate_artifact_data(child, parent_artifact)
+                        for child in children
+                    ]
 
             except KeyError:
                 raise HTTPException(status_code=404, detail="Parent artifact not found")
@@ -432,8 +440,12 @@ class ArtifactController:
             parent_artifact = parent_result.scalar_one_or_none()
         return artifact, parent_artifact
 
-    def _generate_artifact_data(self, artifact):
+    def _generate_artifact_data(self, artifact, parent_artifact=None):
         artifact_data = model_to_dict(artifact)
+        if parent_artifact:
+            artifact_data[
+                "parent_id"
+            ] = f"{parent_artifact.workspace}/{parent_artifact.alias}"
         artifact_data["id"] = f"{artifact.workspace}/{artifact.alias}"
         artifact_data["_id"] = artifact.id
         # Exclude 'secrets' from artifact_data to prevent exposure
@@ -1067,7 +1079,7 @@ class ArtifactController:
                     logger.info(
                         f"Created artifact with ID: {id} (staged), alias: {alias}, parent: {parent_id}"
                     )
-                return self._generate_artifact_data(new_artifact)
+                return self._generate_artifact_data(new_artifact, parent_artifact)
         except Exception as e:
             raise e
         finally:
@@ -1205,7 +1217,7 @@ class ArtifactController:
                     artifact,
                     self._get_s3_config(artifact, parent_artifact),
                 )
-                return self._generate_artifact_data(artifact)
+                return self._generate_artifact_data(artifact, parent_artifact)
         except Exception as e:
             raise e
         finally:
@@ -1226,7 +1238,7 @@ class ArtifactController:
         session = await self._get_session()
         try:
             async with session.begin():
-                artifact, _ = await self._get_artifact_with_permission(
+                artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "read", session
                 )
                 if not silent:
@@ -1234,7 +1246,9 @@ class ArtifactController:
 
                 version_index = self._get_version_index(artifact, version)
                 if version_index == self._get_version_index(artifact, None):
-                    artifact_data = self._generate_artifact_data(artifact)
+                    artifact_data = self._generate_artifact_data(
+                        artifact, parent_artifact
+                    )
                 else:
                     s3_config = self._get_s3_config(artifact)
                     artifact_data = await self._load_version_from_s3(
@@ -1300,7 +1314,10 @@ class ArtifactController:
                                 raise FileNotFoundError(
                                     f"File '{file_info['path']}' does not exist in the artifact."
                                 )
-                            if file_info.get("download_weight") is not None:
+                            if (
+                                file_info.get("download_weight") is not None
+                                and file_info["download_weight"] > 0
+                            ):
                                 download_weights[file_info["path"]] = file_info[
                                     "download_weight"
                                 ]
@@ -1367,7 +1384,7 @@ class ArtifactController:
                 logger.info(
                     f"Committed artifact with ID: {artifact_id}, alias: {artifact.alias}, version: {version}"
                 )
-                return self._generate_artifact_data(artifact)
+                return self._generate_artifact_data(artifact, parent_artifact)
         except Exception as e:
             raise e
         finally:
@@ -1765,6 +1782,7 @@ class ArtifactController:
         artifact_id = self._validate_artifact_id(artifact_id, context)
         user_info = UserInfo.model_validate(context["user"])
         session = await self._get_session()
+        assert download_weight >= 0, "Download weight must be a non-negative number."
         try:
             async with session.begin():
                 artifact, parent_artifact = await self._get_artifact_with_permission(
@@ -2195,7 +2213,9 @@ class ArtifactController:
                 # Compile summary results for each artifact
                 results = []
                 for artifact in artifacts:
-                    _artifact_data = self._generate_artifact_data(artifact)
+                    _artifact_data = self._generate_artifact_data(
+                        artifact, parent_artifact
+                    )
                     results.append(_artifact_data)
 
                 # Increment view count for parent artifact if not in stage mode

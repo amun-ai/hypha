@@ -569,7 +569,7 @@
                                     isCollection ? "fa-folder" : "fa-file-alt"
                                 } mr-2`}
                             ></i>
-                            <div className="max-w-full overflow-hidden">
+                            <div className="w-full overflow-hidden">
                                 <h4 className="text-xl font-bold truncate">{artifact.manifest?.name}</h4>
                                 <p className="text-gray-400 truncate">{artifact.manifest?.description}</p>
                                 <p className="text-gray-400">Type: {artifact.type}</p>
@@ -867,7 +867,7 @@
                 event.preventDefault();
                 if (confirm(`Are you sure you want to delete the artifact with ID: ${artifactId}?`)) {
                     try {
-                        await am.delete(artifactId); // Delete the artifact
+                        await am.delete(artifactId, {delete_files: true, recursive: true, _rkwargs: true}); // Delete the artifact
             
                         if (parentId) {
                             // If the artifact is a child, refresh the parent's children

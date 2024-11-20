@@ -5,6 +5,9 @@ import aiofiles
 from pathlib import PurePosixPath
 
 
+ZENODO_TIMEOUT = 30  # seconds
+
+
 class ZenodoClient:
     def __init__(
         self, access_token: str, zenodo_server: str = "https://sandbox.zenodo.org"
@@ -13,7 +16,9 @@ class ZenodoClient:
         self.zenodo_server = zenodo_server
         self.headers = {"Content-Type": "application/json"}
         self.params = {"access_token": self.access_token}
-        self.client = httpx.AsyncClient(headers={"Connection": "close"})
+        self.client = httpx.AsyncClient(
+            headers={"Connection": "close"}, timeout=ZENODO_TIMEOUT
+        )
 
     async def create_deposition(self) -> Dict[str, Any]:
         """Creates a new empty deposition and returns its info."""
@@ -97,7 +102,9 @@ class ZenodoClient:
 
     async def import_file(self, deposition_info, name, target_url):
         bucket_url = deposition_info["links"]["bucket"]
-        async with httpx.AsyncClient(headers={"Connection": "close"}) as client:
+        async with httpx.AsyncClient(
+            headers={"Connection": "close"}, timeout=ZENODO_TIMEOUT
+        ) as client:
             async with client.stream("GET", target_url) as response:
 
                 async def s3_response_chunk_reader(response, chunk_size: int = 2048):

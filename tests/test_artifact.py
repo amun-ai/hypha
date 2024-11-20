@@ -517,6 +517,7 @@ async def test_artifact_permissions(
         parent_id=collection.id,
         manifest=dataset_manifest,
     )
+    assert dataset["parent_id"] == f"{api.config.workspace}/{collection.alias}"
 
     await artifact_manager_anonymous.read(artifact_id=dataset.id)
 
