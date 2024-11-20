@@ -36,4 +36,4 @@ alembic==1.14.0
 hrid==0.2.4
 qdrant-client==1.12.1
 ollama==0.3.3
-fastembed==0.3.6
+fastembed==0.4.2
