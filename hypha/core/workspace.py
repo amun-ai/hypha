@@ -180,23 +180,26 @@ class WorkspaceManager:
             # Define vector field for RedisSearch (assuming cosine similarity)
             # Manually define Redis fields for each ServiceInfo attribute
             self._search_fields = [
-                TagField(name="id"),  # id as text
+                TagField(name="id"),  # id as tag
                 TextField(name="name"),  # name as text
                 TagField(name="type"),  # type as tag (enum-like)
                 TextField(name="description"),  # description as text
                 TextField(name="docs"),  # docs as text
-                TagField(name="app_id"),  # app_id as text
+                TagField(name="app_id"),  # app_id as tag
                 TextField(
                     name="service_schema"
                 ),  # service_schema as text (you can store a serialized JSON or string representation)
-                TextField(
-                    name="config"
-                ),  # config as text (you can store a serialized JSON or string representation)
                 VectorField(
                     "service_embedding",
                     "FLAT",
                     {"TYPE": "FLOAT32", "DIM": 384, "DISTANCE_METRIC": "COSINE"},
-                ),  # Embedding vector
+                ),
+                TagField(name="visibility"),  # visibility as tag
+                TagField(name="require_context"),  # require_context as tag
+                TagField(name="workspace"),  # workspace as tag
+                TagField(name="flags", separator=","),  # flags as tag
+                TagField(name="singleton"),  # singleton as tag
+                TextField(name="created_by"),  # created_by as text
             ]
             # Create the index with vector field and additional fields for metadata (e.g., title)
             await self._redis.ft("service_info_index").create_index(
@@ -236,7 +239,6 @@ class WorkspaceManager:
                 logger.info(
                     f"Logged event: {event_type} by {user_info.id} in {workspace}"
                 )
-            logger.info(f"Event logged: {event_type}")
         except Exception as e:
             logger.error(f"Failed to log event: {event_type}, {e}")
             raise
@@ -838,7 +840,7 @@ class WorkspaceManager:
         text_query: Optional[str] = Field(
             None, description="Text query for semantic search."
         ),
-        embedding: Optional[Any] = Field(
+        vector_query: Optional[Any] = Field(
             None,
             description="Precomputed embedding vector for vector search in numpy format.",
         ),
@@ -849,6 +851,11 @@ class WorkspaceManager:
             5, description="Maximum number of results to return."
         ),
         offset: Optional[int] = Field(0, description="Offset for pagination."),
+        fields: Optional[List[str]] = Field(None, description="Fields to return."),
+        order_by: Optional[str] = Field(
+            None,
+            description="Order by field, default is score if embedding or text_query is provided.",
+        ),
         context: Optional[dict] = None,
     ):
         """
@@ -857,18 +864,18 @@ class WorkspaceManager:
         from redis.commands.search.query import Query
 
         # Generate embedding if text_query is provided
-        if text_query and not embedding:
+        if text_query and not vector_query:
             loop = asyncio.get_event_loop()
             embeddings = list(
                 await loop.run_in_executor(
                     None, self._embedding_model.embed, [text_query]
                 )
             )
-            embedding = embeddings[0]
+            vector_query = embeddings[0]
 
         # If service_embedding is provided, prepare KNN search query
-        if embedding is not None:
-            query_vector = embedding.astype("float32").tobytes()
+        if vector_query is not None:
+            query_vector = vector_query.astype("float32").tobytes()
             query_params = {"vector": query_vector}
             knn_query = f"[KNN {limit} @service_embedding $vector AS score]"
             # Combine filters into the query string
@@ -881,25 +888,24 @@ class WorkspaceManager:
             query_params = {}
             query_string = self._convert_filters_to_hybrid_query(filters)
 
-        # Fields to retrieve
-        fields = [
-            "id",
-            "name",
-            "type",
-            "description",
-            "docs",
-            "app_id",
-            "service_schema",
-            "config",
-            "score",
-        ]
+        all_fields = [field.name for field in self._search_fields] + ["score"]
+        if fields is None:
+            # exclude embedding
+            fields = [field for field in all_fields if field != "service_embedding"]
+        else:
+            for field in fields:
+                if field not in all_fields:
+                    raise ValueError(f"Invalid field: {field}")
+        if order_by is None:
+            order_by = "score" if vector_query is not None else "id"
+        else:
+            if order_by not in all_fields:
+                raise ValueError(f"Invalid order_by field: {order_by}")
         # Build the RedisSearch query
         query = (
             Query(query_string)
             .return_fields(*fields)
-            .sort_by(
-                "score" if (embedding is not None) else "id"
-            )  # Sort by score if KNN is used, otherwise default sorting
+            .sort_by(order_by)
             .paging(offset, limit)
             .dialect(2)
         )

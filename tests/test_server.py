@@ -380,6 +380,7 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
     assert len(services) <= 3
     # The top hit should be the service with "natural language processing" in the `docs` field
     assert "natural language processing" in services[0]["docs"]
+    assert services[0]["score"] < services[1]["score"]
 
     # Test filter-based search with fuzzy matching on the `docs` field
     filters = {"docs": "data*"}
@@ -402,7 +403,7 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
     # Test hybrid search (embedding + filters)
     filters = {"type": "my-type"}
     services = await api.search_services(
-        embedding=np.random.rand(384), filters=filters, limit=3
+        vector_query=np.random.rand(384), filters=filters, limit=3
     )
     assert isinstance(services, list)
     assert all(service["type"] == "my-type" for service in services)
