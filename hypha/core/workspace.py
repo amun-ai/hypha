@@ -53,6 +53,21 @@ def naive_utc_now():
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
 
+def escape_redis_syntax(value: str) -> str:
+    """Escape Redis special characters in a query string, except '*'."""
+    # Escape all special characters except '*'
+    return re.sub(r"([{}|@$\\\-\[\]\(\)\!&~:\"])", r"\\\1", value)
+
+
+def sanitize_search_value(value: str) -> str:
+    """Sanitize a value to prevent injection attacks, allowing '*' for wildcard support."""
+    # Allow alphanumeric characters, spaces, underscores, hyphens, dots, slashes, and '*'
+    value = re.sub(
+        r"[^a-zA-Z0-9 _\-./*]", "", value
+    )  # Remove unwanted characters except '*'
+    return escape_redis_syntax(value.strip())
+
+
 # SQLModel model for storing events
 class EventLog(SQLModel, table=True):
     __tablename__ = "event_logs"
@@ -758,10 +773,6 @@ class WorkspaceManager:
         except Exception as e:
             return f"Failed to ping client {client_id}: {e}"
 
-    def _sanitize_search_value(self, value: str) -> str:
-        """Sanitize a value to prevent injection attacks."""
-        return re.sub(r"[{}@:]", "", value)  # Remove potentially dangerous characters
-
     def _convert_filters_to_hybrid_query(self, filters: dict) -> str:
         """
         Convert a filter dictionary to a Redis hybrid query string.
@@ -773,18 +784,6 @@ class WorkspaceManager:
             str: Redis hybrid query string, e.g., "(@type:{my-type} @year:[2011 2012])".
         """
         from redis.commands.search.field import TextField, TagField, NumericField
-
-        def escape_redis_syntax(value: str) -> str:
-            """Escape Redis special characters in a query string."""
-            return re.sub(r"([{}|@$\\\-\[\]\(\)\!&~:\"*])", r"\\\1", value)
-
-        def sanitize_search_value(value: str) -> str:
-            """Sanitize a value to prevent injection attacks."""
-            # Remove invalid characters and escape Redis syntax
-            value = re.sub(
-                r"[^a-zA-Z0-9 _\-./]", "", value
-            )  # Remove unwanted characters
-            return escape_redis_syntax(value.strip())
 
         conditions = []
 
@@ -826,8 +825,13 @@ class WorkspaceManager:
                     raise ValueError(
                         f"TextField '{field_name}' requires a string value."
                     )
-                sanitized_value = sanitize_search_value(value)
-                conditions.append(f'@{sanitized_field_name}:"{sanitized_value}"')
+                if "*" in value:
+                    assert value.endswith("*"), "Wildcard '*' must be at the end."
+                    sanitized_value = sanitize_search_value(value)
+                    conditions.append(f"@{sanitized_field_name}:{sanitized_value}")
+                else:
+                    sanitized_value = escape_redis_syntax(value)
+                    conditions.append(f'@{sanitized_field_name}:"{sanitized_value}"')
 
             else:
                 raise ValueError(f"Unsupported field type for '{field_name}'.")
@@ -863,6 +867,7 @@ class WorkspaceManager:
         """
         from redis.commands.search.query import Query
 
+        current_workspace = context["ws"]
         # Generate embedding if text_query is provided
         if text_query and not vector_query:
             loop = asyncio.get_event_loop()
@@ -873,6 +878,7 @@ class WorkspaceManager:
             )
             vector_query = embeddings[0]
 
+        auth_filter = f"@visibility:{{public}} | @workspace:{{{sanitize_search_value(current_workspace)}}}"
         # If service_embedding is provided, prepare KNN search query
         if vector_query is not None:
             query_vector = vector_query.astype("float32").tobytes()
@@ -880,13 +886,17 @@ class WorkspaceManager:
             knn_query = f"[KNN {limit} @service_embedding $vector AS score]"
             # Combine filters into the query string
             if filters:
-                query_string = self._convert_filters_to_hybrid_query(filters)
-                query_string = f"({query_string})=>{knn_query}"
+                filter_query = self._convert_filters_to_hybrid_query(filters)
+                query_string = f"(({filter_query}) ({auth_filter}))=>{knn_query}"
             else:
-                query_string = f"*=>{knn_query}"
+                query_string = f"({auth_filter})=>{knn_query}"
         else:
             query_params = {}
-            query_string = self._convert_filters_to_hybrid_query(filters)
+            if filters:
+                filter_query = self._convert_filters_to_hybrid_query(filters)
+                query_string = f"({filter_query}) ({auth_filter})"
+            else:
+                query_string = auth_filter
 
         all_fields = [field.name for field in self._search_fields] + ["score"]
         if fields is None:
@@ -901,11 +911,12 @@ class WorkspaceManager:
         else:
             if order_by not in all_fields:
                 raise ValueError(f"Invalid order_by field: {order_by}")
+
         # Build the RedisSearch query
         query = (
             Query(query_string)
             .return_fields(*fields)
-            .sort_by(order_by)
+            .sort_by(order_by, asc=True)
             .paging(offset, limit)
             .dialect(2)
         )
@@ -1097,7 +1108,19 @@ class WorkspaceManager:
         return services
 
     async def _embed_service(self, redis_data):
-        if self._embedding_model and "service_embedding" not in redis_data:
+        if "service_embedding" in redis_data:
+            if isinstance(redis_data["service_embedding"], np.ndarray):
+                redis_data["service_embedding"] = redis_data[
+                    "service_embedding"
+                ].tobytes()
+            elif isinstance(redis_data["service_embedding"], bytes):
+                pass
+            else:
+                raise ValueError(
+                    f"Invalid service_embedding type: {type(redis_data['service_embedding'])}, it must be a numpy array or bytes."
+                )
+        else:
+            assert self._embedding_model, "Embedding model is not available."
             summary = f"{redis_data.get('name', '')}\n{redis_data.get('description', '')}\n{redis_data.get('docs', '')}"
             loop = asyncio.get_event_loop()
             embeddings = list(
@@ -1208,6 +1231,9 @@ class WorkspaceManager:
                     f"services:*|*:{client_id}:built-in@*"
                 )
             else:
+                # Remove the service embedding from the config
+                if service.config and service.config.service_embedding is not None:
+                    service.config.service_embedding = None
                 await self._event_bus.emit(
                     "service_added", service.model_dump(mode="json")
                 )

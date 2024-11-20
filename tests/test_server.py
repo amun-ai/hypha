@@ -359,6 +359,7 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
             "docs": "This service focuses on image processing for medical imaging.",
         }
     )
+
     await api.register_service(
         {
             "id": "service-3",
@@ -369,7 +370,6 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
             "service_schema": {"example_key": "yet_another_value"},
             "config": {"setting": "value3"},
             "docs": "This service specializes in natural language processing and AI chatbots.",
-            "service_embedding": np.random.rand(384),
         }
     )
 
@@ -382,12 +382,32 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
     assert "natural language processing" in services[0]["docs"]
     assert services[0]["score"] < services[1]["score"]
 
+    embedding = np.ones(384).astype(np.float32)
+    await api.register_service(
+        {
+            "id": "service-88",
+            "name": "example service 88",
+            "type": "another-type",
+            "description": "This is the 88-th test service.",
+            "app_id": "another-app",
+            "service_schema": {"example_key": "another_value"},
+            "config": {"setting": "value2", "service_embedding": embedding},
+            "docs": "This service is used for performing alphafold calculations.",
+        }
+    )
+
+    # Test vector query with the exact embedding
+    services = await api.search_services(vector_query=embedding, limit=3)
+    assert isinstance(services, list)
+    assert len(services) <= 3
+    assert "service-88" in services[0]["id"]
+
     # Test filter-based search with fuzzy matching on the `docs` field
-    filters = {"docs": "data*"}
+    filters = {"docs": "calculations*"}
     services = await api.search_services(filters=filters, limit=3)
     assert isinstance(services, list)
     assert len(services) <= 3
-    assert any("data" in service["docs"].lower() for service in services)
+    assert "calculations" in services[0]["docs"]
 
     # Test hybrid search (text query + filters)
     filters = {"type": "my-type"}
