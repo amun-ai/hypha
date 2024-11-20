@@ -235,7 +235,7 @@ print("Valid dataset committed.")
 
 ## API References
 
-### `create(parent_id: str, alias: str, type: str, manifest: dict, permissions: dict=None, config: dict=None, version: str = None, comment: str = None, publish_to: str = None) -> None`
+### `create(parent_id: str, alias: str, type: str, manifest: dict, permissions: dict=None, config: dict=None, version: str = None, comment: str = None, overwrite: bool = False, publish_to: str = None) -> None`
 
 Creates a new artifact or collection with the specified manifest. The artifact is staged until committed. For collections, the `collection` field should be an empty list.
 
@@ -270,7 +270,7 @@ Creates a new artifact or collection with the specified manifest. The artifact i
   - `S3_BUCKET`: The bucket name of the S3 storage for the artifact. Default to the hypha workspaces bucket.
   - `S3_PREFIX`: The prefix of the S3 storage for the artifact. Default: `""`.
   - `S3_PUBLIC_ENDPOINT_URL`: The public endpoint URL of the S3 storage for the artifact. If the S3 server is not public, you can set this to the public endpoint URL. Default: `None`.
-
+- `overwrite`: Optional. A boolean flag to overwrite the existing artifact with the same alias. Default is `False`.
 - `publish_to`: Optional. A string specifying the target platform to publish the artifact. Supported values are `zenodo` and `sandbox_zenodo`. If set, the artifact will be published to the specified platform. The artifact must have a valid Zenodo metadata schema to be published.
 
 **Note 1: If you set `version="stage"`, you must call `commit()` to finalize the artifact.**

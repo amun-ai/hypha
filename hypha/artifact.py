@@ -876,6 +876,7 @@ class ArtifactController:
         publish_to=None,
         version: str = None,
         comment: str = None,
+        overwrite: bool = False,
         context: dict = None,
     ):
         """Create a new artifact and store its manifest in the database."""
@@ -980,19 +981,23 @@ class ArtifactController:
                         raise ValueError(
                             "Alias should be a human readable string, it cannot be a UUID."
                         )
+                    created_at = int(time.time())
                     try:
                         # Check if the alias already exists
                         existing_artifact = await self._get_artifact(
                             session, f"{workspace}/{alias}"
                         )
-                        if parent_id != existing_artifact.parent_id:
+                        if parent_id != existing_artifact.parent_id and not overwrite:
                             raise FileExistsError(
                                 f"Artifact with alias '{alias}' already exists under a different parent artifact, please choose a different alias or remove the existing artifact (ID: {existing_artifact.workspace}/{existing_artifact.alias})"
                             )
-                        else:
+                        elif not overwrite:
                             raise FileExistsError(
                                 f"Artifact with alias '{alias}' already exists, please choose a different alias or remove the existing artifact (ID: {existing_artifact.workspace}/{existing_artifact.alias})."
                             )
+                        parent_id = parent_id or existing_artifact.parent_id
+                        id = existing_artifact.id
+                        created_at = existing_artifact.created_at
                     except KeyError:
                         pass
 
@@ -1025,7 +1030,7 @@ class ArtifactController:
                     staging=[] if version == "stage" else None,
                     manifest=manifest,
                     created_by=user_info.id,
-                    created_at=int(time.time()),
+                    created_at=created_at,
                     last_modified=int(time.time()),
                     config=config,
                     secrets=secrets,
