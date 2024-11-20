@@ -995,12 +995,7 @@ class ArtifactController:
                             raise FileExistsError(
                                 f"Artifact with alias '{alias}' already exists, please choose a different alias or remove the existing artifact (ID: {existing_artifact.workspace}/{existing_artifact.alias})."
                             )
-                        parent_id = parent_id or existing_artifact.parent_id
                         id = existing_artifact.id
-                        created_at = existing_artifact.created_at
-                        config = config or existing_artifact.config
-                        secrets = secrets or existing_artifact.secrets
-                        manifest = manifest or existing_artifact.manifest
                         upsert = True
                     except KeyError:
                         pass
