@@ -38,7 +38,7 @@ api.export({
 
 
 async def test_server_apps_unauthorized(
-    fastapi_server, test_user_token, root_user_token
+    fastapi_server, test_user_token_5, root_user_token
 ):
     """Test the server apps."""
     api = await connect_to_server(
@@ -46,7 +46,7 @@ async def test_server_apps_unauthorized(
             "name": "test client",
             "server_url": WS_SERVER_URL,
             "method_timeout": 30,
-            "token": test_user_token,
+            "token": test_user_token_5,
         }
     )
     controller = await api.get_service("public/server-apps")
