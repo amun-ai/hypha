@@ -904,7 +904,6 @@ class ArtifactController:
                     )
                 workspace = ws
         created_at = int(time.time())
-        upsert = False
         session = await self._get_session()
         try:
             async with session.begin():
@@ -996,9 +995,8 @@ class ArtifactController:
                                 f"Artifact with alias '{alias}' already exists, please choose a different alias or remove the existing artifact (ID: {existing_artifact.workspace}/{existing_artifact.alias})."
                             )
                         id = existing_artifact.id
-                        upsert = True
                     except KeyError:
-                        pass
+                        overwrite = False
 
                 parent_permissions = (
                     parent_artifact.config["permissions"] if parent_artifact else {}
@@ -1037,7 +1035,7 @@ class ArtifactController:
                     type=type,
                 )
                 version_index = self._get_version_index(new_artifact, version)
-                if upsert:
+                if overwrite:
                     await session.merge(new_artifact)
                 else:
                     session.add(new_artifact)
