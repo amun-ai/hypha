@@ -108,6 +108,12 @@ def generate_authenticated_user_temporary():
     yield from _generate_token("test-user", ["temporary-test-user"])
 
 
+@pytest_asyncio.fixture(name="test_user_token_5", scope="session")
+def generate_authenticated_user_5():
+    """Generate a test user token."""
+    yield from _generate_token("user-5", [])
+
+
 @pytest_asyncio.fixture(name="triton_server", scope="session")
 def triton_server():
     """Start a triton server as test fixture and tear down after test."""
@@ -223,7 +229,14 @@ def redis_server():
     except Exception:
         # user docker to start redis
         subprocess.Popen(
-            ["docker", "run", "-d", "-p", f"{REDIS_PORT}:6379", "redis:6.2.5"]
+            [
+                "docker",
+                "run",
+                "-d",
+                "-p",
+                f"{REDIS_PORT}:6379",
+                "redis/redis-stack:7.2.0-v13",
+            ]
         )
         timeout = 10
         while timeout > 0:
@@ -262,6 +275,8 @@ def fastapi_server_fixture(minio_server, postgres_server):
             "--enable-s3-proxy",
             f"--workspace-bucket=my-workspaces",
             "--s3-admin-type=minio",
+            "--vectordb-uri=:memory:",
+            "--cache-dir=./bin/cache",
             f"--triton-servers=http://127.0.0.1:{TRITON_PORT}",
             "--static-mounts=/tests:./tests",
             "--startup-functions",
@@ -346,17 +361,18 @@ def fastapi_server_redis_1(redis_server, minio_server):
             "-m",
             "hypha.server",
             f"--port={SIO_PORT_REDIS_1}",
-            # "--enable-server-apps",
-            # "--enable-s3",
+            "--enable-server-apps",
+            "--enable-s3",
             # need to define it so the two server can communicate
             f"--public-base-url=http://my-public-url.com",
             "--server-id=server-0",
             f"--redis-uri=redis://127.0.0.1:{REDIS_PORT}/0",
             "--reset-redis",
-            # f"--endpoint-url={MINIO_SERVER_URL}",
-            # f"--access-key-id={MINIO_ROOT_USER}",
-            # f"--secret-access-key={MINIO_ROOT_PASSWORD}",
-            # f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            f"--endpoint-url={MINIO_SERVER_URL}",
+            f"--access-key-id={MINIO_ROOT_USER}",
+            f"--secret-access-key={MINIO_ROOT_PASSWORD}",
+            f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            "--enable-service-search",
         ],
         env=test_env,
     ) as proc:

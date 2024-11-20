@@ -26,6 +26,11 @@ jobs:
         ports:
           - 5432:5432
         options: --health-cmd "pg_isready -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
+      redis:
+        image: redis/redis-stack:7.2.0-v13
+        ports:
+          - 6333:6379
+        options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
@@ -36,11 +41,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install tox tox-gh-actions
-      - name: Start Redis
-        uses: supercharge/redis-github-action@1.8.0
-        with:
-          redis-version: 6
-          redis-port: 6333
       - name: Test with tox
         run: tox
         env:

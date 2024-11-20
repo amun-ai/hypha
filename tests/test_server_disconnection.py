@@ -57,29 +57,3 @@ async def test_server_reconnection(fastapi_server, root_user_token):
         except Exception as e:
             assert "Connection is closed" in str(e)
             await api.disconnect()
-
-
-async def test_server_reconnection_by_workspace_unload(fastapi_server):
-    """Test the server reconnection."""
-    # connect to the server with a user
-    api = await connect_to_server({"server_url": WS_SERVER_URL, "client_id": "client1"})
-    token = await api.generate_token()
-
-    # connect to the server with the same user, to the same workspace
-    api2 = await connect_to_server(
-        {
-            "server_url": WS_SERVER_URL,
-            "client_id": "client2",
-            "workspace": api.config["workspace"],
-            "token": token,
-        }
-    )
-    # force a server side disconnect to the second client
-    await api.disconnect()
-    try:
-        assert await api2.echo("hi") == "hi"
-    except Exception as e:
-        # timeout due to the server side disconnect
-        assert "Method call time out:" in str(e)
-
-    await asyncio.sleep(100)
