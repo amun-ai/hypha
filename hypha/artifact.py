@@ -903,7 +903,7 @@ class ArtifactController:
                         "Workspace must match the alias workspace, if provided."
                     )
                 workspace = ws
-
+        created_at = int(time.time())
         session = await self._get_session()
         try:
             async with session.begin():
@@ -981,7 +981,6 @@ class ArtifactController:
                         raise ValueError(
                             "Alias should be a human readable string, it cannot be a UUID."
                         )
-                    created_at = int(time.time())
                     try:
                         # Check if the alias already exists
                         existing_artifact = await self._get_artifact(
