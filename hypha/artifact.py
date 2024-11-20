@@ -160,39 +160,12 @@ class ArtifactController:
         ):
             """Get artifact metadata, manifest, and config (excluding secrets)."""
             try:
-                artifact_id = self._validate_artifact_id(
-                    artifact_alias, {"ws": workspace}
+                return await self.read(
+                    artifact_id=f"{workspace}/{artifact_alias}",
+                    version=version,
+                    silent=silent,
+                    context={"user": user_info.model_dump(), "ws": workspace},
                 )
-                session = await self._get_session(read_only=True)
-                async with session.begin():
-                    # Fetch artifact along with parent
-                    (
-                        artifact,
-                        parent_artifact,
-                    ) = await self._get_artifact_with_permission(
-                        user_info, artifact_id, "read", session
-                    )
-
-                    version_index = self._get_version_index(artifact, version)
-
-                    if version_index == self._get_version_index(artifact, None):
-                        # Prepare artifact representation
-                        artifact_data = self._generate_artifact_data(
-                            artifact, parent_artifact
-                        )
-                    else:
-                        s3_config = self._get_s3_config(artifact)
-                        artifact_data = await self._load_version_from_s3(
-                            artifact, version_index, s3_config
-                        )
-
-                    # Increment view count unless silent
-                    if not silent:
-                        await self._increment_stat(session, artifact.id, "view_count")
-                        await session.commit()
-
-                    return artifact_data
-
             except KeyError:
                 raise HTTPException(status_code=404, detail="Artifact not found")
             except PermissionError:
@@ -204,64 +177,40 @@ class ArtifactController:
                 logger.error(f"S3 client error: {str(e)}")
                 raise HTTPException(status_code=500, detail="File storage error.")
             except Exception as e:
-                logger.error(f"Unhandled exception: {str(e)}")
+                logger.error(f"Unhandled error in http get_artifact: {str(e)}")
                 raise HTTPException(
-                    status_code=500, detail="An unexpected error occurred."
+                    status_code=500, detail=f"An unexpected error occurred: {str(e)}"
                 )
-
-            finally:
-                await session.close()
 
         # HTTP endpoint for listing child artifacts
         @router.get("/{workspace}/artifacts/{artifact_alias}/children")
         async def list_children(
             workspace: str,
             artifact_alias: str,
+            keywords: str = None,
+            filters: str = None,
             offset: int = 0,
+            mode: str = "AND",
             limit: int = 100,
             order_by: str = None,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """List child artifacts of a specified artifact."""
             try:
-                artifact_id = self._validate_artifact_id(
-                    artifact_alias, {"ws": workspace}
+                if keywords:
+                    keywords = keywords.split(",")
+                if filters:
+                    filters = json.loads(filters)
+                return await self.list_children(
+                    parent_id=f"{workspace}/{artifact_alias}",
+                    offset=offset,
+                    limit=limit,
+                    order_by=order_by,
+                    keywords=keywords,
+                    filters=filters,
+                    mode=mode,
+                    context={"user": user_info.model_dump(), "ws": workspace},
                 )
-                session = await self._get_session(read_only=True)
-                async with session.begin():
-                    parent_artifact, _ = await self._get_artifact_with_permission(
-                        user_info, artifact_id, "list", session
-                    )
-                    # Query child artifacts
-                    query = (
-                        select(ArtifactModel)
-                        .where(
-                            ArtifactModel.workspace == workspace,
-                            ArtifactModel.parent_id == parent_artifact.id,
-                        )
-                        .limit(limit)
-                        .offset(offset)
-                    )
-
-                    if order_by:
-                        if order_by.endswith("<"):
-                            query = query.order_by(
-                                getattr(ArtifactModel, order_by[:-1]).asc()
-                            )
-                        else:
-                            query = query.order_by(
-                                getattr(ArtifactModel, order_by).desc()
-                            )
-
-                    result = await session.execute(query)
-                    children = result.scalars().all()
-
-                    # Return children data, excluding secrets
-                    return [
-                        self._generate_artifact_data(child, parent_artifact)
-                        for child in children
-                    ]
-
             except KeyError:
                 raise HTTPException(status_code=404, detail="Parent artifact not found")
             except PermissionError:
@@ -273,13 +222,10 @@ class ArtifactController:
                 logger.error(f"S3 client error: {str(e)}")
                 raise HTTPException(status_code=500, detail="File storage error.")
             except Exception as e:
-                logger.error(f"Unhandled exception: {str(e)}")
+                logger.error(f"Unhandled exception in http list_children: {str(e)}")
                 raise HTTPException(
-                    status_code=500, detail="An unexpected error occurred."
+                    status_code=500, detail=f"An unexpected error occurred: {str(e)}"
                 )
-
-            finally:
-                await session.close()
 
         # HTTP endpoint for retrieving files within an artifact
         @router.get("/{workspace}/artifacts/{artifact_alias}/files/{path:path}")
@@ -360,8 +306,10 @@ class ArtifactController:
             except HTTPException as e:
                 raise e  # Re-raise HTTPExceptions to be handled by FastAPI
             except Exception as e:
-                logger.error(f"Unhandled exception in get_file: {str(e)}")
-                raise HTTPException(status_code=500, detail="Internal server error")
+                logger.error(f"Unhandled exception in http get_file: {str(e)}")
+                raise HTTPException(
+                    status_code=500, detail=f"Internal server error: {str(e)}"
+                )
             finally:
                 await session.close()
 
@@ -457,48 +405,95 @@ class ArtifactController:
         if isinstance(permission, str):
             permission_map = {
                 "n": [],
-                "l": ["list"],
+                "l": [
+                    "list",
+                ],
                 "l+": ["list", "create", "commit"],
-                "r": ["read", "get_file", "list_files", "list"],
+                "lv": ["list", "list_vectors"],
+                "lv+": [
+                    "list",
+                    "list_vectors",
+                    "create",
+                    "commit",
+                    "add_vectors",
+                    "add_documents",
+                ],
+                "lf": ["list", "list_files"],
+                "lf+": ["list", "list_files", "create", "commit", "put_file"],
+                "r": [
+                    "read",
+                    "get_file",
+                    "list_files",
+                    "list",
+                    "search_by_vector",
+                    "search_by_text",
+                    "get_vector",
+                ],
                 "r+": [
                     "read",
                     "get_file",
                     "put_file",
                     "list_files",
                     "list",
+                    "search_by_vector",
+                    "search_by_text",
+                    "get_vector",
                     "create",
                     "commit",
+                    "add_vectors",
+                    "add_documents",
                 ],
                 "rw": [
                     "read",
                     "get_file",
+                    "get_vector",
+                    "search_by_vector",
+                    "search_by_text",
                     "list_files",
+                    "list_vectors",
                     "list",
                     "edit",
                     "commit",
                     "put_file",
+                    "add_vectors",
+                    "add_documents",
                     "remove_file",
+                    "remove_vectors",
                 ],
                 "rw+": [
                     "read",
                     "get_file",
+                    "get_vector",
+                    "search_by_vector",
+                    "search_by_text",
                     "list_files",
+                    "list_vectors",
                     "list",
                     "edit",
                     "commit",
                     "put_file",
+                    "add_vectors",
+                    "add_documents",
                     "remove_file",
+                    "remove_vectors",
                     "create",
                 ],
                 "*": [
                     "read",
                     "get_file",
+                    "get_vector",
+                    "search_by_vector",
+                    "search_by_text",
                     "list_files",
+                    "list_vectors",
                     "list",
                     "edit",
                     "commit",
                     "put_file",
+                    "add_vectors",
+                    "add_documents",
                     "remove_file",
+                    "remove_vectors",
                     "create",
                     "reset_stats",
                     "publish",
@@ -544,12 +539,19 @@ class ArtifactController:
         operation_map = {
             "list": UserPermission.read,
             "read": UserPermission.read,
+            "get_vector": UserPermission.read,
             "get_file": UserPermission.read,
             "list_files": UserPermission.read,
+            "list_vectors": UserPermission.read,
+            "search_by_text": UserPermission.read,
+            "search_by_vector": UserPermission.read,
             "create": UserPermission.read_write,
             "edit": UserPermission.read_write,
             "commit": UserPermission.read_write,
+            "add_vectors": UserPermission.read_write,
+            "add_documents": UserPermission.read_write,
             "put_file": UserPermission.read_write,
+            "remove_vectors": UserPermission.read_write,
             "remove_file": UserPermission.read_write,
             "delete": UserPermission.admin,
             "reset_stats": UserPermission.admin,
@@ -1483,7 +1485,7 @@ class ArtifactController:
         try:
             async with session.begin():
                 artifact, _ = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "put_file", session
+                    user_info, artifact_id, "add_vectors", session
                 )
                 assert (
                     artifact.type == "vector-collection"
@@ -1558,7 +1560,7 @@ class ArtifactController:
         try:
             async with session.begin():
                 artifact, _ = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "put_file", session
+                    user_info, artifact_id, "add_documents", session
                 )
                 assert (
                     artifact.type == "vector-collection"
@@ -1601,7 +1603,7 @@ class ArtifactController:
         try:
             async with session.begin():
                 artifact, _ = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "list", session
+                    user_info, artifact_id, "search_by_vector", session
                 )
                 assert (
                     artifact.type == "vector-collection"
@@ -1644,7 +1646,7 @@ class ArtifactController:
         try:
             async with session.begin():
                 artifact, _ = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "list", session
+                    user_info, artifact_id, "search_by_text", session
                 )
                 assert (
                     artifact.type == "vector-collection"
@@ -1680,7 +1682,7 @@ class ArtifactController:
         try:
             async with session.begin():
                 artifact, _ = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "remove_file", session
+                    user_info, artifact_id, "remove_vectors", session
                 )
                 assert (
                     artifact.type == "vector-collection"
@@ -1709,7 +1711,7 @@ class ArtifactController:
         try:
             async with session.begin():
                 artifact, _ = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "get_file", session
+                    user_info, artifact_id, "get_vector", session
                 )
                 assert (
                     artifact.type == "vector-collection"
@@ -1745,7 +1747,7 @@ class ArtifactController:
         try:
             async with session.begin():
                 artifact, _ = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "list", session
+                    user_info, artifact_id, "list_vectors", session
                 )
                 assert (
                     artifact.type == "vector-collection"

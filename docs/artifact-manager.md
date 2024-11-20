@@ -290,14 +290,20 @@ Permissions can be set both at the artifact level and the workspace level. In th
 
 **Permission Levels:**
 
+The following permission levels are supported:
+
 - **n**: No access to the artifact.
 - **l**: List-only access (includes `list`).
-- **l+**: List and create access (includes `list`, `create`, `commit`).
-- **r**: Read-only access (includes `read`, `get_file`, `list_files`, `list`).
-- **r+**: Read and create access (includes `read`, `get_file`, `list_files`, `list`, `put_file`, `create`, `commit`).
-- **rw**: Read and write access (includes `read`, `get_file`, `list_files`, `list`, `edit`, `commit`, `put_file`, `remove_file`).
-- **rw+**: Full access, including creation, editing, committing, and file removal (includes `read`, `get_file`, `list_files`, `list`, `edit`, `commit`, `put_file`, `remove_file`, `create`, `reset_stats`).
-- **\***: Full access for all operations (includes all operations listed above).
+- **l+**: List and create access (includes `list`, `create`, and `commit`).
+- **lv**: List and list vectors access (includes `list` and `list_vectors`).
+- **lv+**: List, list vectors, create, and commit access (includes `list`, `list_vectors`, `create`, `commit`, `add_vectors`, and `add_documents`).
+- **lf**: List and list files access (includes `list` and `list_files`).
+- **lf+**: List, list files, create, and commit access (includes `list`, `list_files`, `create`, `commit`, and `put_file`).
+- **r**: Read-only access (includes `read`, `get_file`, `list_files`, `list`, `search_by_vector`, `search_by_text`, and `get_vector`).
+- **r+**: Read, write, and create access (includes `read`, `get_file`, `put_file`, `list_files`, `list`, `search_by_vector`, `search_by_text`, `get_vector`, `create`, `commit`, `add_vectors`, and `add_documents`).
+- **rw**: Read, write, and create access with file management (includes `read`, `get_file`, `get_vector`, `search_by_vector`, `search_by_text`, `list_files`, `list_vectors`, `list`, `edit`, `commit`, `put_file`, `add_vectors`, `add_documents`, `remove_file`, and `remove_vectors`).
+- **rw+**: Read, write, create, and manage access (includes `read`, `get_file`, `get_vector`, `search_by_vector`, `search_by_text`, `list_files`, `list_vectors`, `list`, `edit`, `commit`, `put_file`, `add_vectors`, `add_documents`, `remove_file`, `remove_vectors`, and `create`).
+- **\***: Full access to all operations (includes `read`, `get_file`, `get_vector`, `search_by_vector`, `search_by_text`, `list_files`, `list_vectors`, `list`, `edit`, `commit`, `put_file`, `add_vectors`, `add_documents`, `remove_file`, `remove_vectors`, `create`, and `reset_stats`).
 
 **Shortcut Permission Notation:**
 
