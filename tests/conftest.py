@@ -108,7 +108,7 @@ def generate_authenticated_user_temporary():
     yield from _generate_token("test-user", ["temporary-test-user"])
 
 @pytest_asyncio.fixture(name="test_user_token_5", scope="session")
-def generate_authenticated_user():
+def generate_authenticated_user_5():
     """Generate a test user token."""
     yield from _generate_token("user-5", [])
 
