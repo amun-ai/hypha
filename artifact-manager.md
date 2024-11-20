@@ -235,7 +235,7 @@ print("Valid dataset committed.")
 
 ## API References
 
-### `create(parent_id: str, alias: str, type: str, manifest: dict, permissions: dict=None, config: dict=None, version: str = None, comment: str = None, publish_to: str = None) -> None`
+### `create(parent_id: str, alias: str, type: str, manifest: dict, permissions: dict=None, config: dict=None, version: str = None, comment: str = None, overwrite: bool = False, publish_to: str = None) -> None`
 
 Creates a new artifact or collection with the specified manifest. The artifact is staged until committed. For collections, the `collection` field should be an empty list.
 
@@ -270,7 +270,7 @@ Creates a new artifact or collection with the specified manifest. The artifact i
   - `S3_BUCKET`: The bucket name of the S3 storage for the artifact. Default to the hypha workspaces bucket.
   - `S3_PREFIX`: The prefix of the S3 storage for the artifact. Default: `""`.
   - `S3_PUBLIC_ENDPOINT_URL`: The public endpoint URL of the S3 storage for the artifact. If the S3 server is not public, you can set this to the public endpoint URL. Default: `None`.
-
+- `overwrite`: Optional. A boolean flag to overwrite the existing artifact with the same alias. Default is `False`.
 - `publish_to`: Optional. A string specifying the target platform to publish the artifact. Supported values are `zenodo` and `sandbox_zenodo`. If set, the artifact will be published to the specified platform. The artifact must have a valid Zenodo metadata schema to be published.
 
 **Note 1: If you set `version="stage"`, you must call `commit()` to finalize the artifact.**
@@ -564,7 +564,7 @@ manifest = await artifact_manager.read(artifact_id="other_workspace/example-data
 
 ---
 
-### `list(artifact_id: str=None, keywords: List[str] = None, filters: dict = None, mode: str = "AND", page: int = 0, page_size: int = 100, order_by: str = None, silent: bool = False) -> list`
+### `list(artifact_id: str=None, keywords: List[str] = None, filters: dict = None, mode: str = "AND", offset: int = 0, limit: int = 100, order_by: str = None, silent: bool = False) -> list`
 
 Retrieve a list of child artifacts within a specified collection, supporting keyword-based fuzzy search, field-specific filters, and flexible ordering. This function allows detailed control over the search and pagination of artifacts in a collection, including staged artifacts if specified.
 
@@ -584,9 +584,9 @@ Retrieve a list of child artifacts within a specified collection, supporting key
 
 - `mode` (str, optional): Defines how multiple conditions (from keywords and filters) are combined. Use `"AND"` to ensure all conditions must match, or `"OR"` to include artifacts meeting any condition. Default is `"AND"`.
 
-- `page` (int, optional): The page number for pagination. Used in conjunction with `page_size` to limit results. Default is `0`, which returns the first page of results.
+- `offset` (int, optional): The number of artifacts to skip before listing results. Default is `0`.
 
-- `page_size` (int, optional): The maximum number of artifacts to return per page. This is capped at 1000 for performance considerations. Default is `100`.
+- `limit` (int, optional): The maximum number of artifacts to return. Default is `100`.
 
 - `order_by` (str, optional): The field used to order results. Options include:
   - `view_count`, `download_count`, `last_modified`, `created_at`, and `id`.
@@ -609,8 +609,8 @@ results = await artifact_manager.list(
     filters={"created_by": "user123", "stage": False},
     order_by="view_count>",
     mode="AND",
-    page=1,
-    page_size=50
+    offset=0,
+    limit=50
 )
 ```
 
@@ -737,8 +737,8 @@ Qury parameters are passed after the `?` in the URL and are used to control the 
 - **keywords**: A list of search terms used for fuzzy searching across all manifest fields, separated by commas.
 - **filters**: A dictionary of filters to apply to the search, in the format of a JSON string.
 - **mode**: The mode for combining multiple conditions. Default is `AND`.
-- **page**: The page number for pagination. Default is `0`.
-- **page_size**: The maximum number of artifacts to return per page. Default is `100`.
+- **offset**: The number of artifacts to skip before listing results. Default is `0`.
+- **limit**: The maximum number of artifacts to return. Default is `100`.
 - **order_by**: The field used to order results. Default is ascending by id.
 - **silent**: A boolean flag to prevent incrementing the view count for the parent artifact when listing children, listing files, or reading the artifact. Default is `False`.
 
