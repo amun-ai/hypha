@@ -917,6 +917,7 @@ class ArtifactController:
 
         if alias:
             alias = alias.strip()
+            assert "^" not in alias, "Alias cannot contain the '^' character."
             if "/" in alias:
                 ws, alias = alias.split("/")
                 if workspace and ws != workspace:
@@ -1068,7 +1069,7 @@ class ArtifactController:
 
                     vectors_config = config.get("vectors_config", {})
                     await self._vectordb_client.create_collection(
-                        collection_name=f"{new_artifact.workspace}/{new_artifact.alias}",
+                        collection_name=f"{new_artifact.workspace}^{new_artifact.alias}",
                         vectors_config=VectorParams(
                             size=vectors_config.get("size", 128),
                             distance=Distance(vectors_config.get("distance", "Cosine")),
@@ -1277,7 +1278,7 @@ class ArtifactController:
                     artifact_data["config"] = artifact_data.get("config", {})
                     artifact_data["config"]["vector_count"] = (
                         await self._vectordb_client.count(
-                            collection_name=f"{artifact.workspace}/{artifact.alias}"
+                            collection_name=f"{artifact.workspace}^{artifact.alias}"
                         )
                     ).count
 
@@ -1433,7 +1434,7 @@ class ArtifactController:
                     self._vectordb_client
                 ), "The server is not configured to use a VectorDB client."
                 await self._vectordb_client.delete_collection(
-                    collection_name=f"{artifact.workspace}/{artifact.alias}"
+                    collection_name=f"{artifact.workspace}^{artifact.alias}"
                 )
 
             s3_config = self._get_s3_config(artifact, parent_artifact)
@@ -1522,7 +1523,7 @@ class ArtifactController:
                     p["id"] = p.get("id") or str(uuid.uuid4())
                     _points.append(PointStruct(**p))
                 await self._vectordb_client.upsert(
-                    collection_name=f"{artifact.workspace}/{artifact.alias}",
+                    collection_name=f"{artifact.workspace}^{artifact.alias}",
                     points=_points,
                 )
                 # TODO: Update file_count
@@ -1536,14 +1537,12 @@ class ArtifactController:
         embedding_model = config.get("embedding_model")  # "text-embedding-3-small"
         assert (
             embedding_model
-        ), "Embedding model must be provided, e.g. 'fastembed', 'text-embedding-3-small' for openai or 'all-minilm' for ollama."
+        ), "Embedding model must be provided, e.g. 'fastembed:BAAI/bge-small-en-v1.5', 'openai:text-embedding-3-small' for openai embeddings."
         if embedding_model.startswith("fastembed"):
             from fastembed import TextEmbedding
 
-            if ":" in embedding_model:
-                model_name = embedding_model.split(":")[-1]
-            else:
-                model_name = "BAAI/bge-small-en-v1.5"
+            assert ":" in embedding_model, "Embedding model must be provided."
+            model_name = embedding_model.split(":")[-1]
             embedding_model = TextEmbedding(
                 model_name=model_name, cache_dir=self._cache_dir
             )
@@ -1551,14 +1550,20 @@ class ArtifactController:
             embeddings = list(
                 await loop.run_in_executor(None, embedding_model.embed, texts)
             )
-        else:
+        elif embedding_model.startswith("openai"):
             assert (
                 self._openai_client
             ), "The server is not configured to use an OpenAI client."
+            assert ":" in embedding_model, "Embedding model must be provided."
+            embedding_model = embedding_model.split(":")[-1]
             result = await self._openai_client.embeddings.create(
                 input=texts, model=embedding_model
             )
             embeddings = [data.embedding for data in result.data]
+        else:
+            raise ValueError(
+                f"Unsupported embedding model: {embedding_model}, supported models: 'fastembed:*', 'openai:*'"
+            )
         return embeddings
 
     async def add_documents(
@@ -1593,7 +1598,7 @@ class ArtifactController:
                     for embedding, doc in zip(embeddings, documents)
                 ]
                 await self._vectordb_client.upsert(
-                    collection_name=f"{artifact.workspace}/{artifact.alias}",
+                    collection_name=f"{artifact.workspace}^{artifact.alias}",
                     points=points,
                 )
                 logger.info(f"Upserted documents to artifact with ID: {artifact_id}")
@@ -1632,7 +1637,7 @@ class ArtifactController:
                 if query_filter:
                     query_filter = Filter.model_validate(query_filter)
                 search_results = await self._vectordb_client.search(
-                    collection_name=f"{artifact.workspace}/{artifact.alias}",
+                    collection_name=f"{artifact.workspace}^{artifact.alias}",
                     query_vector=query_vector,
                     query_filter=query_filter,
                     limit=limit,
@@ -1642,7 +1647,7 @@ class ArtifactController:
                 )
                 if pagination:
                     count = await self._vectordb_client.count(
-                        collection_name=f"{artifact.workspace}/{artifact.alias}"
+                        collection_name=f"{artifact.workspace}^{artifact.alias}"
                     )
                     return {
                         "total": count.count,
@@ -1684,7 +1689,7 @@ class ArtifactController:
                 if query_filter:
                     query_filter = Filter.model_validate(query_filter)
                 search_results = await self._vectordb_client.search(
-                    collection_name=f"{artifact.workspace}/{artifact.alias}",
+                    collection_name=f"{artifact.workspace}^{artifact.alias}",
                     query_vector=query_vector,
                     query_filter=query_filter,
                     limit=limit,
@@ -1694,7 +1699,7 @@ class ArtifactController:
                 )
                 if pagination:
                     count = await self._vectordb_client.count(
-                        collection_name=f"{artifact.workspace}/{artifact.alias}"
+                        collection_name=f"{artifact.workspace}^{artifact.alias}"
                     )
                     return {
                         "total": count.count,
@@ -1728,7 +1733,7 @@ class ArtifactController:
                     self._vectordb_client
                 ), "The server is not configured to use a VectorDB client."
                 await self._vectordb_client.delete(
-                    collection_name=f"{artifact.workspace}/{artifact.alias}",
+                    collection_name=f"{artifact.workspace}^{artifact.alias}",
                     points_selector=ids,
                 )
                 logger.info(f"Removed vectors from artifact with ID: {artifact_id}")
@@ -1757,7 +1762,7 @@ class ArtifactController:
                     self._vectordb_client
                 ), "The server is not configured to use a VectorDB client."
                 points = await self._vectordb_client.retrieve(
-                    collection_name=f"{artifact.workspace}/{artifact.alias}",
+                    collection_name=f"{artifact.workspace}^{artifact.alias}",
                     ids=[id],
                     with_payload=True,
                     with_vectors=True,
@@ -1797,7 +1802,7 @@ class ArtifactController:
                 if query_filter:
                     query_filter = Filter.model_validate(query_filter)
                 points, _ = await self._vectordb_client.scroll(
-                    collection_name=f"{artifact.workspace}/{artifact.alias}",
+                    collection_name=f"{artifact.workspace}^{artifact.alias}",
                     scroll_filter=query_filter,
                     limit=limit,
                     offset=offset,

@@ -12,6 +12,7 @@ from fastapi import Header, Cookie
 from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
 from starlette.routing import Mount
+from pydantic.fields import Field
 
 from hypha import __version__
 from hypha.core import (
@@ -278,6 +279,26 @@ class RedisStore:
             # Stop the entire event loop if an error occurs
             asyncio.get_running_loop().stop()
 
+    async def housekeeping(self):
+        """Perform housekeeping tasks."""
+        # Perform housekeeping tasks
+        # Start the housekeeping task after 2 minutes
+        logger.info("Starting housekeeping task in 2 minutes...")
+        await asyncio.sleep(120)
+        while True:
+            try:
+                logger.info("Running housekeeping task...")
+                async with self.get_workspace_interface(
+                    self._root_user, "ws-user-root", client_id="housekeeping"
+                ) as api:
+                    # admin = await api.get_service("admin-utils")
+                    workspaces = await api.list_workspaces()
+                    for workspace in workspaces:
+                        await api.cleanup(workspace.id)
+                await asyncio.sleep(3600)
+            except Exception as e:
+                logger.exception(f"Error in housekeeping: {e}")
+
     async def upgrade(self):
         """Upgrade the store."""
         current_version = await self._redis.get("hypha_version")
@@ -503,6 +524,8 @@ class RedisStore:
         logger.info("Server initialized with server id: %s", self._server_id)
         logger.info("Currently connected hypha servers: %s", servers)
 
+        asyncio.create_task(self.housekeeping())
+
     async def _register_root_services(self):
         """Register root services."""
         self._root_workspace_interface = await self.get_workspace_interface(
@@ -522,8 +545,32 @@ class RedisStore:
                 "list_servers": self.list_servers,
                 "kickout_client": self.kickout_client,
                 "list_workspaces": self.list_all_workspaces,
+                "list_vector_collections": self.list_vector_collections,
+                "delete_vector_collection": self.delete_vector_collection,
             }
         )
+
+    @schema_method
+    async def list_vector_collections(self):
+        """List all vector collections."""
+        if self._vectordb_client is None:
+            raise Exception("Vector database is not configured")
+        # get_collections
+        collections = await self._vectordb_client.get_collections()
+        return collections
+
+    @schema_method
+    async def delete_vector_collection(
+        self,
+        collection_name: str = Field(
+            ..., description="The name of the vector collection to delete."
+        ),
+    ):
+        """Delete a vector collection."""
+        if self._vectordb_client is None:
+            raise Exception("Vector database is not configured")
+        # delete_collection
+        await self._vectordb_client.delete_collection(collection_name)
 
     @schema_method
     async def list_servers(self):

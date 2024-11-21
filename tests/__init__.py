@@ -18,7 +18,7 @@ MINIO_SERVER_URL = f"http://127.0.0.1:{MINIO_PORT}"
 MINIO_SERVER_URL_PUBLIC = f"http://localhost:{MINIO_PORT}"
 MINIO_ROOT_USER = "minio"
 MINIO_ROOT_PASSWORD = str(uuid.uuid4())
-REDIS_PORT = 6333
+REDIS_PORT = 6338
 
 POSTGRES_PORT = 5432
 POSTGRES_USER = "postgres"
@@ -26,6 +26,10 @@ POSTGRES_PASSWORD = "mysecretpassword"
 POSTGRES_DB = "postgres"
 
 POSTGRES_URI = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@localhost:{POSTGRES_PORT}/{POSTGRES_DB}"
+
+
+QDRANT_PORT = 6333
+QDRANT_URL = "http://127.0.0.1:6333"
 
 
 def find_item(items, key, value):

@@ -55,7 +55,7 @@ async def test_artifact_vector_collection(
             },
         },
         {
-            "vector": [np.random.rand(384)],
+            "vector": np.random.rand(384),
             "payload": {
                 "text": "Another document.",
                 "label": "doc2",
@@ -63,7 +63,7 @@ async def test_artifact_vector_collection(
             },
         },
         {
-            "vector": [np.random.rand(384)],
+            "vector": np.random.rand(384),
             "payload": {
                 "text": "Yet another document.",
                 "label": "doc3",
