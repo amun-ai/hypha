@@ -88,6 +88,14 @@ async def test_artifact_vector_collection(
     )
     assert len(search_results) <= 2
 
+    results = await artifact_manager.search_by_vector(
+        artifact_id=vector_collection.id,
+        query_vector=query_vector,
+        limit=2,
+        pagination=True,
+    )
+    assert results["total"] == 3
+
     query_filter = {
         "should": None,
         "min_should": None,
@@ -247,6 +255,14 @@ async def test_sqlite_create_and_search_artifacts(
     )
 
     assert len(search_results) == len(datasets)
+
+    results = await artifact_manager.list(
+        parent_id=collection.id,
+        filters={"stage": True, "manifest": {"description": "*dataset*"}},
+        pagination=True,
+    )
+    assert results["total"] == len(datasets)
+    assert len(results["items"]) == len(datasets)
 
     # list application only
     search_results = await artifact_manager.list(

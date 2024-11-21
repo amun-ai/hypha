@@ -382,6 +382,9 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
     assert "natural language processing" in services[0]["docs"]
     assert services[0]["score"] < services[1]["score"]
 
+    results = await api.search_services(text_query=text_query, limit=3, pagination=True)
+    assert results["total"] >= 1
+
     embedding = np.ones(384).astype(np.float32)
     await api.register_service(
         {

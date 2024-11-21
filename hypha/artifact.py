@@ -196,6 +196,8 @@ class ArtifactController:
             mode: str = "AND",
             limit: int = 100,
             order_by: str = None,
+            pagination: bool = False,
+            silent: bool = False,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """List child artifacts of a specified artifact."""
@@ -212,6 +214,8 @@ class ArtifactController:
                     keywords=keywords,
                     filters=filters,
                     mode=mode,
+                    pagination=pagination,
+                    silent=silent,
                     context={"user": user_info.model_dump(), "ws": workspace},
                 )
             except KeyError:
@@ -1607,6 +1611,7 @@ class ArtifactController:
         limit: int = 10,
         with_payload: bool = True,
         with_vectors: bool = False,
+        pagination: bool = False,
         context: dict = None,
     ):
         user_info = UserInfo.model_validate(context["user"])
@@ -1635,6 +1640,16 @@ class ArtifactController:
                     with_payload=with_payload,
                     with_vectors=with_vectors,
                 )
+                if pagination:
+                    count = await self._vectordb_client.count(
+                        collection_name=f"{artifact.workspace}/{artifact.alias}"
+                    )
+                    return {
+                        "total": count.count,
+                        "items": search_results,
+                        "offset": offset,
+                        "limit": limit,
+                    }
                 return search_results
         except Exception as e:
             raise e
@@ -1650,6 +1665,7 @@ class ArtifactController:
         limit: int = 10,
         with_payload: bool = True,
         with_vectors: bool = False,
+        pagination: bool = False,
         context: dict = None,
     ):
         user_info = UserInfo.model_validate(context["user"])
@@ -1676,6 +1692,16 @@ class ArtifactController:
                     with_payload=with_payload,
                     with_vectors=with_vectors,
                 )
+                if pagination:
+                    count = await self._vectordb_client.count(
+                        collection_name=f"{artifact.workspace}/{artifact.alias}"
+                    )
+                    return {
+                        "total": count.count,
+                        "items": search_results,
+                        "offset": offset,
+                        "limit": limit,
+                    }
                 return search_results
         except Exception as e:
             raise e
@@ -1957,7 +1983,7 @@ class ArtifactController:
         self,
         artifact_id: str,
         dir_path: str = None,
-        max_length: int = 1000,
+        limit: int = 1000,
         version: str = None,
         context: dict = None,
     ):
@@ -1999,7 +2025,7 @@ class ArtifactController:
                         s3_client,
                         s3_config["bucket"],
                         full_path,
-                        max_length=max_length,
+                        max_length=limit,
                     )
             return items
         except Exception as e:
@@ -2015,8 +2041,9 @@ class ArtifactController:
         mode="AND",
         offset: int = 0,
         limit: int = 100,
-        order_by=None,
-        silent=False,
+        order_by: str = None,
+        silent: bool = False,
+        pagination: bool = False,
         context: dict = None,
     ):
         """
@@ -2058,13 +2085,23 @@ class ArtifactController:
                         query = select(
                             *[getattr(ArtifactModel, field) for field in list_fields]
                         ).where(ArtifactModel.parent_id == parent_artifact.id)
+                        count_query = select(func.count()).where(
+                            ArtifactModel.parent_id == parent_artifact.id
+                        )
                     else:
                         # If list_fields is empty or not specified, select all columns
                         query = select(ArtifactModel).where(
                             ArtifactModel.parent_id == parent_artifact.id
                         )
+                        count_query = select(func.count()).where(
+                            ArtifactModel.parent_id == parent_artifact.id
+                        )
                 else:
                     query = select(ArtifactModel).where(
+                        ArtifactModel.parent_id == None,
+                        ArtifactModel.workspace == context["ws"],
+                    )
+                    count_query = select(func.count()).where(
                         ArtifactModel.parent_id == None,
                         ArtifactModel.workspace == context["ws"],
                     )
@@ -2189,6 +2226,7 @@ class ArtifactController:
                         )
 
                 query = query.where(stage_condition)
+                count_query = count_query.where(stage_condition)
 
                 # Combine conditions based on mode (AND/OR)
                 if conditions:
@@ -2197,6 +2235,18 @@ class ArtifactController:
                         if mode == "OR"
                         else query.where(and_(*conditions))
                     )
+                    count_query = (
+                        count_query.where(or_(*conditions))
+                        if mode == "OR"
+                        else count_query.where(and_(*conditions))
+                    )
+
+                if pagination:
+                    # Execute the count query
+                    result = await session.execute(count_query)
+                    total_count = result.scalar()
+                else:
+                    total_count = None
 
                 # Pagination and ordering
                 order_field_map = {
@@ -2237,7 +2287,13 @@ class ArtifactController:
                         session, parent_artifact.id, "view_count"
                     )
                     await session.commit()
-
+                if pagination:
+                    return {
+                        "items": results,
+                        "total": total_count,
+                        "offset": offset,
+                        "limit": limit,
+                    }
                 return results
 
         except Exception as e:

@@ -860,6 +860,9 @@ class WorkspaceManager:
             None,
             description="Order by field, default is score if embedding or text_query is provided.",
         ),
+        pagination: Optional[bool] = Field(
+            False, description="Enable pagination, return metadata with total count."
+        ),
         context: Optional[dict] = None,
     ):
         """
@@ -928,12 +931,30 @@ class WorkspaceManager:
             query, query_params=query_params
         )
 
+        # Handle pagination
+        if pagination:
+            count_query = Query(query_string).paging(0, 0).dialect(2)
+            count_results = await self._redis.ft("service_info_index").search(
+                count_query, query_params=query_params
+            )
+            total_count = count_results.total
+        else:
+            total_count = None
+
         # Convert results to dictionaries and return
         services = [
             ServiceInfo.from_redis_dict(vars(doc), in_bytes=False)
             for doc in results.docs
         ]
-        return [service.model_dump() for service in services]
+        if pagination:
+            return {
+                "items": [service.model_dump() for service in services],
+                "total": total_count,
+                "offset": offset,
+                "limit": limit,
+            }
+        else:
+            return [service.model_dump() for service in services]
 
     @schema_method
     async def list_services(
