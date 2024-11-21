@@ -16,20 +16,23 @@ from sqlalchemy import (
     text,
     and_,
     or_,
+    update,
 )
-from hrid import HRID
+from sqlalchemy.sql import func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.ext.asyncio import (
+    async_sessionmaker,
+    AsyncSession,
+)
+
+from hrid import HRID
 from hypha.utils import remove_objects_async, list_objects_async, safe_join
 from hypha.utils.zenodo import ZenodoClient
 from botocore.exceptions import ClientError
 from hypha.s3 import FSFileResponse
 from aiobotocore.session import get_session
-from sqlalchemy import update
-from sqlalchemy.ext.asyncio import (
-    async_sessionmaker,
-    AsyncSession,
-)
+
 from fastapi import APIRouter, Depends, HTTPException
 from hypha.core import (
     UserInfo,
@@ -1257,6 +1260,23 @@ class ArtifactController:
                         artifact, version_index, s3_config
                     )
 
+                if artifact.type == "collection":
+                    # Use with_only_columns to optimize the count query
+                    count_q = select(func.count()).where(
+                        ArtifactModel.parent_id == artifact.id
+                    )
+                    result = await session.execute(count_q)
+                    child_count = result.scalar()
+                    artifact_data["config"] = artifact_data.get("config", {})
+                    artifact_data["config"]["child_count"] = child_count
+                elif artifact.type == "vector-collection" and self._vectordb_client:
+                    artifact_data["config"] = artifact_data.get("config", {})
+                    artifact_data["config"]["vector_count"] = (
+                        await self._vectordb_client.count(
+                            collection_name=f"{artifact.workspace}/{artifact.alias}"
+                        )
+                    ).count
+
                 if not silent:
                     await session.commit()
 
@@ -1337,15 +1357,6 @@ class ArtifactController:
                             ),
                         )
 
-                if artifact.type == "vector-collection":
-                    assert (
-                        self._vectordb_client
-                    ), "The server is not configured to use a VectorDB client."
-                    artifact.manifest["points"] = self._vectordb_client.count(
-                        collection_name=f"{artifact.workspace}/{artifact.alias}"
-                    )
-                    flag_modified(artifact, "manifest")
-
                 parent_artifact_config = (
                     parent_artifact.config if parent_artifact else {}
                 )
@@ -1417,7 +1428,7 @@ class ArtifactController:
                 assert (
                     self._vectordb_client
                 ), "The server is not configured to use a VectorDB client."
-                self._vectordb_client.delete_collection(
+                await self._vectordb_client.delete_collection(
                     collection_name=f"{artifact.workspace}/{artifact.alias}"
                 )
 

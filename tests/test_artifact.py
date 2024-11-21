@@ -76,6 +76,9 @@ async def test_artifact_vector_collection(
         vectors=vectors,
     )
 
+    vc = await artifact_manager.read(artifact_id=vector_collection.id)
+    assert vc["config"]["vector_count"] == 3
+
     # Search for vectors by query vector
     query_vector = [random.random() for _ in range(384)]
     search_results = await artifact_manager.search_by_vector(
@@ -928,6 +931,9 @@ async def test_edit_existing_artifact(minio_server, fastapi_server, test_user_to
         manifest=dataset_manifest,
         version="stage",
     )
+
+    collection = await artifact_manager.read(artifact_id=collection.id)
+    assert collection["config"]["child_count"] == 1
 
     # Commit the artifact
     dataset = await artifact_manager.commit(artifact_id=dataset.id)
