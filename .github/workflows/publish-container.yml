@@ -6,6 +6,10 @@ on:
       - master
     paths:
       - 'hypha/VERSION'
+      - 'Dockerfile'
+      - '.github/workflows/publish-container.yml'
+      - 'requirements.txt'
+      - 'setup.py'
 
 env:
   REGISTRY: ghcr.io
