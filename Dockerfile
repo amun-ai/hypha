@@ -59,8 +59,7 @@ RUN conda update -n base -c defaults conda -y && \
 ADD . .
 
 # Install Python dependencies and Playwright
-RUN pip install psycopg2-binary==2.9.10 asyncpg==0.30.0 --no-cache-dir && \
-    pip install -r requirements.txt --no-cache-dir && \
+RUN pip install -r requirements.txt --no-cache-dir && \
     pip install .[server-apps] --no-cache-dir && \
     pip install playwright --no-cache-dir && \
     playwright install --with-deps
