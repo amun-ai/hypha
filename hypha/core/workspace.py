@@ -1865,7 +1865,7 @@ class WorkspaceManager:
                 logger.error(f"Failed to ping client {client}: {e}")
                 # Remove dead client
                 await self.delete_client(
-                    client, ws, context["user"], unload=False, context=context
+                    client, workspace, context["user"], unload=False, context=context
                 )
                 removed.append(client)
         if removed:

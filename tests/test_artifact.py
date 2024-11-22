@@ -696,10 +696,16 @@ async def test_publish_artifact(minio_server, fastapi_server, test_user_token):
 
     dataset = await artifact_manager.create(
         type="dataset",
+        alias="{zenodo_conceptrecid}",
         parent_id=collection.id,
         manifest=dataset_manifest,
         version="stage",
         publish_to="sandbox_zenodo",
+    )
+
+    assert (
+        dataset.alias != "{zenodo_conceptrecid}"
+        and str(int(dataset.alias)) == dataset.alias
     )
 
     # Add a file to the artifact
