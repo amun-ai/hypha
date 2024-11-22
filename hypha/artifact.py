@@ -633,7 +633,7 @@ class ArtifactController:
 
         return zenodo_client
 
-    def _get_s3_config(self, artifact, parent_artifact=None):
+    def _get_s3_config(self, artifact, parent_artifact):
         """
         Get S3 configuration using credentials from the artifact's or parent artifact's secrets.
         """
@@ -808,13 +808,18 @@ class ArtifactController:
             )
 
     async def _load_version_from_s3(
-        self, artifact, version_index: int, s3_config, include_secrets=False
+        self,
+        artifact,
+        parent_artifact,
+        version_index: int,
+        s3_config,
+        include_secrets=False,
     ):
         """
         Load the version from S3.
         """
         assert version_index >= 0, "Version index must be non-negative."
-        s3_config = self._get_s3_config(artifact)
+        s3_config = self._get_s3_config(artifact, parent_artifact)
         version_key = safe_join(
             s3_config["prefix"],
             artifact.workspace,
@@ -1260,9 +1265,9 @@ class ArtifactController:
                         artifact, parent_artifact
                     )
                 else:
-                    s3_config = self._get_s3_config(artifact)
+                    s3_config = self._get_s3_config(artifact, parent_artifact)
                     artifact_data = await self._load_version_from_s3(
-                        artifact, version_index, s3_config
+                        artifact, parent_artifact, version_index, s3_config
                     )
 
                 if artifact.type == "collection":
@@ -1313,9 +1318,9 @@ class ArtifactController:
                 # the new version index
                 version_index = self._get_version_index(artifact, "stage")
                 # Load the staged version
-                s3_config = self._get_s3_config(artifact)
+                s3_config = self._get_s3_config(artifact, parent_artifact)
                 artifact_data = await self._load_version_from_s3(
-                    artifact, version_index, s3_config
+                    artifact, parent_artifact, version_index, s3_config
                 )
                 artifact = ArtifactModel(**artifact_data)
 
