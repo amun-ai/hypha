@@ -37,8 +37,6 @@ jobs:
             - 6333:6333
             - 6334:6334
           options: --health-cmd "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1" --health-interval 10s --health-timeout 5s --health-retries 5
-          volumes:
-            - ./qdrant_storage:/qdrant/storage:z
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
