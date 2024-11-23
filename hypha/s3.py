@@ -16,10 +16,13 @@ from aiocache.decorators import cached
 import botocore
 from aiobotocore.session import get_session
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
+from asgiproxy.simple_proxy import make_simple_proxy_app
+from asgiproxy.context import ProxyContext
+from asgiproxy.config import BaseURLProxyConfigMixin, ProxyConfig
 
 from hypha.core import UserInfo, WorkspaceInfo, UserPermission
 from hypha.minio import MinioClient
@@ -367,118 +370,19 @@ class S3Controller:
 
         if self.enable_s3_proxy:
 
-            @router.api_route(
-                "/s3/{path:path}",
-                methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"],
-            )
-            async def proxy_s3_request(
-                path: str,
-                request: Request,
-            ):
-                """
-                Proxy request to S3, forwarding only essential headers such as Range,
-                and handling different methods (GET, POST, PUT).
-                """
-                # Extract the query parameters from the client request
-                query_params = dict(request.query_params)
+            class S3ProxyConfig(BaseURLProxyConfigMixin, ProxyConfig):
+                # Set your S3 root endpoint
+                upstream_base_url = self.endpoint_url
+                rewrite_host_header = (
+                    self.endpoint_url.replace("https://", "")
+                    .replace("http://", "")
+                    .split("/")[0]
+                )
 
-                # Construct the S3 presigned URL using the internal endpoint_url
-                if query_params:
-                    s3_url = f"{self.endpoint_url}/{path}?" + urlencode(query_params)
-                else:
-                    s3_url = f"{self.endpoint_url}/{path}"
-
-                # Define the method
-                method = request.method
-
-                # Create a case-insensitive headers dictionary
-                incoming_headers = dict(request.headers)
-                normalized_headers = {
-                    key.lower(): value for key, value in incoming_headers.items()
-                }
-
-                # Keep only the essential headers for the request
-                essential_headers = {}
-                if "range" in normalized_headers:
-                    essential_headers["Range"] = normalized_headers["range"]
-
-                # Add content-type and content-length only for upload requests (POST/PUT)
-                if method in ["POST", "PUT"]:
-                    if "content-type" in normalized_headers:
-                        essential_headers["Content-Type"] = normalized_headers[
-                            "content-type"
-                        ]
-                    if "content-length" in normalized_headers:
-                        essential_headers["Content-Length"] = normalized_headers[
-                            "content-length"
-                        ]
-
-                # Stream data to/from S3
-                async with httpx.AsyncClient() as client:
-                    try:
-                        # For methods like POST/PUT, pass the request body
-                        if method in ["POST", "PUT", "PATCH"]:
-                            # Read and stream the request body in chunks
-                            async def request_body_stream():
-                                async for chunk in request.stream():
-                                    yield chunk
-
-                            response = await client.request(
-                                method,
-                                s3_url,
-                                content=request_body_stream(),  # Stream the request body to S3
-                                headers=essential_headers,  # Forward essential headers
-                                timeout=None,  # Remove timeout for large file uploads
-                            )
-                        else:
-                            response = await client.request(
-                                method,
-                                s3_url,
-                                headers=essential_headers,  # Forward essential headers
-                                timeout=None,
-                            )
-
-                        # Return the response, stream data for GET requests
-                        if method == "GET":
-                            return StreamingResponse(
-                                response.iter_bytes(),  # Async iterator of response body chunks
-                                status_code=response.status_code,
-                                headers={
-                                    k: v
-                                    for k, v in response.headers.items()
-                                    if k.lower()
-                                    not in ["content-encoding", "transfer-encoding"]
-                                },
-                            )
-
-                        elif method in ["POST", "PATCH", "PUT", "DELETE"]:
-                            return Response(
-                                content=response.content,  # Raw response content
-                                status_code=response.status_code,
-                                headers=response.headers,  # Pass raw headers from the response
-                            )
-
-                        elif method == "HEAD":
-                            return Response(
-                                status_code=response.status_code,
-                                headers=response.headers,  # No content for HEAD, just forward headers
-                            )
-
-                        else:
-                            return Response(
-                                status_code=405, content="Method Not Allowed"
-                            )
-
-                    except httpx.HTTPStatusError as exc:
-                        raise HTTPException(
-                            status_code=exc.response.status_code,
-                            detail=f"Error while proxying to S3: {exc.response.text}",
-                        )
-                    except Exception as exc:
-                        raise HTTPException(
-                            status_code=500,
-                            detail=f"Internal server error: {str(exc)}",
-                        )
+            config = S3ProxyConfig()
+            context = ProxyContext(config=config)
+            s3_app = make_simple_proxy_app(context, proxy_websocket_handler=None)
+            self.store.mount_app("/s3", s3_app, "s3-proxy")
 
         @router.get("/{workspace}/files/{path:path}")
         @router.delete("/{workspace}/files/{path:path}")

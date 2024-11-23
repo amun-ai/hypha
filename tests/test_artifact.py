@@ -715,7 +715,7 @@ async def test_publish_artifact(minio_server, fastapi_server, test_user_token):
     )
     source = "file contents of example.txt"
     response = requests.put(put_url, data=source)
-    assert response.ok
+    assert response.ok, response.text
 
     # Commit the artifact after adding the file
     await artifact_manager.commit(artifact_id=dataset.id)

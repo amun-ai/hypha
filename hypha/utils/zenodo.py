@@ -3,7 +3,7 @@ import asyncio
 from typing import Dict, Any, List, Optional
 import aiofiles
 from pathlib import PurePosixPath
-
+from hypha.utils import chunked_transfer_remote_file
 
 ZENODO_TIMEOUT = 30  # seconds
 
@@ -100,24 +100,12 @@ class ZenodoClient:
             data=file_chunk_reader(file_path),
         )
 
-    async def import_file(self, deposition_info, name, target_url):
+    async def import_file(self, deposition_info, name, source_url):
         bucket_url = deposition_info["links"]["bucket"]
-        async with httpx.AsyncClient(
-            headers={"Connection": "close"}, timeout=ZENODO_TIMEOUT
-        ) as client:
-            async with client.stream("GET", target_url) as response:
-
-                async def s3_response_chunk_reader(response, chunk_size: int = 2048):
-                    async for chunk in response.aiter_bytes(chunk_size):
-                        yield chunk
-
-                put_response = await self.client.put(
-                    f"{bucket_url}/{name}",
-                    params=self.params,
-                    headers={"Content-Type": "application/octet-stream"},
-                    data=s3_response_chunk_reader(response),
-                )
-                put_response.raise_for_status()
+        target_url = f"{bucket_url}/{name}"
+        await chunked_transfer_remote_file(
+            source_url, target_url, target_params=self.params
+        )
 
     async def delete_deposition(self, deposition_id: str) -> None:
         """Deletes a deposition. Only unpublished depositions can be deleted."""

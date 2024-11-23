@@ -43,6 +43,7 @@ REQUIREMENTS = [
     "sqlmodel>=0.0.22",
     "alembic>=1.14.0",
     "hrid>=0.2.4",
+    "asgiproxy>=0.1.1",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()

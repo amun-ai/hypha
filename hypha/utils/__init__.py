@@ -8,9 +8,10 @@ import secrets
 import string
 import time
 from datetime import datetime
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Dict
 import shortuuid
 import friendlywords as fw
+import logging
 
 import httpx
 from fastapi.routing import APIRoute
@@ -488,3 +489,107 @@ async def _example_hypha_startup(server):
             "test": lambda x: x + 22,
         }
     )
+
+
+async def chunked_transfer_remote_file(
+    source_url: str,
+    target_url: str,
+    source_params: Optional[Dict] = None,
+    target_params: Optional[Dict] = None,
+    source_headers: Optional[Dict] = None,
+    target_headers: Optional[Dict] = None,
+    logger: Optional[logging.Logger] = None,
+    chunk_size: int = 2048,
+    timeout: int = 60,
+):
+    """
+    Transfers a file from a remote source to a remote target without fully buffering in memory.
+
+    Args:
+        source_url (str): The URL of the source file.
+        target_url (str): The URL where the file will be uploaded.
+        source_params (Dict, optional): Additional query parameters for the source request.
+        target_params (Dict, optional): Additional query parameters for the target request.
+        source_headers (Dict, optional): Headers for the source request.
+        target_headers (Dict, optional): Headers for the target request.
+        logger (logging.Logger, optional): Logger for logging messages.
+        chunk_size (int, optional): Size of chunks for streaming. Default is 2048 bytes.
+        timeout (int, optional): Timeout for the HTTP requests in seconds. Default is 60.
+    """
+    source_params = source_params or {}
+    target_params = target_params or {}
+    source_headers = source_headers or {}
+    target_headers = target_headers or {}
+    logger = logger or logging.getLogger(__name__)
+
+    async with httpx.AsyncClient(
+        headers={"Connection": "close"}, timeout=timeout
+    ) as client:
+        # Step 1: Get file size from the source
+        range_headers = {"Range": "bytes=0-0"}
+        range_headers.update(source_headers)
+
+        logger.info(f"Fetching file size from {source_url}...")
+        range_response = await client.get(
+            source_url, headers=range_headers, params=source_params
+        )
+        if range_response.status_code not in [200, 206]:
+            logger.error(
+                f"Failed to fetch file size. Status code: {range_response.status_code}"
+            )
+            logger.error(f"Response: {range_response.text}")
+            return
+
+        content_range = range_response.headers.get("Content-Range")
+        if not content_range or "/" not in content_range:
+            logger.error("Content-Range header is missing or invalid.")
+            return
+
+        file_size = int(content_range.split("/")[-1])
+        logger.info(f"File size: {file_size} bytes")
+
+        # Step 2: Stream the file from source
+        async def s3_response_chunk_reader(response):
+            async for chunk in response.aiter_bytes(chunk_size):
+                yield chunk
+
+        async with client.stream(
+            "GET", source_url, headers=source_headers, params=source_params
+        ) as response:
+            if response.status_code != 200:
+                info = await response.aread()
+                info = info.decode("utf-8") if info else ""
+                logger.error(
+                    f"Failed to download the file. Status code: {response.status_code}, {info}"
+                )
+                raise Exception(
+                    f"Failed to download the file. Status code: {response.status_code}, {info}"
+                )
+            info = await response.aread()
+            # Step 3: Upload to target with content-length
+            target_headers.update(
+                {
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": str(file_size),
+                }
+            )
+
+            async def upload_generator():
+                async for chunk in s3_response_chunk_reader(response):
+                    yield chunk
+
+            logger.info(f"Uploading file to {target_url}...")
+            put_response = await client.put(
+                target_url,
+                headers=target_headers,
+                data=upload_generator(),
+                params=target_params,
+            )
+
+            if put_response.status_code >= 400:
+                logger.error(
+                    f"Failed to upload the file. Status code: {put_response.status_code}, {put_response.text}"
+                )
+                raise Exception(
+                    f"Failed to upload the file. Status code: {put_response.status_code}, {put_response.text}"
+                )

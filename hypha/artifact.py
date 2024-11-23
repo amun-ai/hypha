@@ -984,6 +984,15 @@ class ArtifactController:
                             deposition_info["conceptrecid"]
                         )
                         config["zenodo"] = deposition_info
+                        config["publish_to"] = publish_to
+
+                    if publish_to not in ["zenodo", "sandbox_zenodo"]:
+                        assert (
+                            "{zenodo_id}" not in alias
+                        ), "Alias cannot contain the '{zenodo_id}' placeholder, set publish_to to 'zenodo' or 'sandbox_zenodo'."
+                        assert (
+                            "{zenodo_conceptrecid}" not in alias
+                        ), "Alias cannot contain the '{zenodo_conceptrecid}' placeholder, set publish_to to 'zenodo' or 'sandbox_zenodo'."
 
                     if parent_artifact and parent_artifact.config:
                         id_parts.update(parent_artifact.config.get("id_parts", {}))
@@ -2331,6 +2340,7 @@ class ArtifactController:
                 assert "description" in manifest, "Manifest must have a description."
 
                 config = artifact.config or {}
+                to = to or config.get("publish_to")
                 zenodo_client = self._get_zenodo_client(
                     artifact, parent_artifact, publish_to=to
                 )
