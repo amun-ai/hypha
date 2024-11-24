@@ -251,14 +251,14 @@ async def test_sqlite_create_and_search_artifacts(
 
     search_results = await artifact_manager.list(
         parent_id=collection.id,
-        filters={"stage": True, "manifest": {"description": "*dataset*"}},
+        filters={"version": "stage", "manifest": {"description": "*dataset*"}},
     )
 
     assert len(search_results) == len(datasets)
 
     results = await artifact_manager.list(
         parent_id=collection.id,
-        filters={"stage": True, "manifest": {"description": "*dataset*"}},
+        filters={"version": "stage", "manifest": {"description": "*dataset*"}},
         pagination=True,
     )
     assert results["total"] == len(datasets)
@@ -266,7 +266,7 @@ async def test_sqlite_create_and_search_artifacts(
 
     # list application only
     search_results = await artifact_manager.list(
-        parent_id=collection.id, filters={"stage": True, "type": "application"}
+        parent_id=collection.id, filters={"version": "stage", "type": "application"}
     )
     assert len(search_results) == 1
 
@@ -444,8 +444,11 @@ async def test_http_file_and_directory_endpoint(
 
     # Retrieve the file via HTTP
     response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/example.txt"
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/example.txt",
+        allow_redirects=True,
     )
+    # Check if the connection has been redirected
+    assert response.history[0].status_code == 302
     assert response.status_code == 200
     assert response.text == file_contents
 
@@ -454,6 +457,19 @@ async def test_http_file_and_directory_endpoint(
         artifact_id=dataset.id,
     )
     assert artifact["download_count"] == 1
+
+    # Try to get it using http proxy
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/example.txt?use_proxy=1"
+    )
+    assert response.status_code == 200
+    assert response.text == file_contents
+
+    # Check download count increment
+    artifact = await artifact_manager.read(
+        artifact_id=dataset.id,
+    )
+    assert artifact["download_count"] == 2
 
     # Attempt to list directory contents (should be successful after attempting file)
     response = requests.get(
@@ -803,7 +819,7 @@ async def test_artifact_filtering(
     # Filter by `created_by`: Only artifacts created by user_id1 should be returned
     results = await artifact_manager.list(
         parent_id=collection.id,
-        filters={"created_by": user_id1, "stage": False},
+        filters={"created_by": user_id1},
         mode="AND",
     )
     assert len(results) == 2
@@ -822,7 +838,7 @@ async def test_artifact_filtering(
 
     # Filter by `stage`: Only staged artifacts should be returned
     results = await artifact_manager.list(
-        parent_id=collection.id, filters={"stage": True}, mode="AND"
+        parent_id=collection.id, filters={"version": "stage"}, mode="AND"
     )
     assert len(results) == 3
 
@@ -909,6 +925,7 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server, test_user_to
     assert artifact_data["download_count"] == 1
 
     # Retrieve the collection's children to verify the dataset presence
+    # This will also trigger caching of the collection's children
     response = requests.get(
         f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children"
     )
@@ -916,6 +933,35 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server, test_user_to
     item = find_item(response.json(), "id", dataset.id)
     manifest = item["manifest"]
     assert "Test Dataset" == manifest["name"]
+
+    # Now let's add a new dataset to the collection
+    dataset_manifest = {
+        "name": "Test Dataset 2",
+        "description": "A test dataset for HTTP endpoint",
+    }
+    dataset2 = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest=dataset_manifest,
+        config={"permissions": {"*": "r", "@": "r+"}},
+    )
+    # now get the children again
+    # due to caching, the new dataset should not be in the response
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children"
+    )
+    assert response.status_code == 200
+    item = find_item(response.json(), "id", dataset2.id)
+    assert item is None
+
+    # But we can force a refresh of the cache with 'no_cache' query parameter
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children?no_cache=1"
+    )
+    assert response.status_code == 200
+    item = find_item(response.json(), "id", dataset2.id)
+    manifest = item["manifest"]
+    assert "Test Dataset 2" == manifest["name"]
 
 
 async def test_edit_existing_artifact(minio_server, fastapi_server, test_user_token):
@@ -1187,7 +1233,7 @@ async def test_artifact_manager_with_collection(
 
     # Confirm the dataset's inclusion in the collection
     collection_items = await artifact_manager.list(
-        parent_id=collection.id, filters={"stage": True}
+        parent_id=collection.id, filters={"version": "stage"}
     )
     item = find_item(collection_items, "id", dataset.id)
     assert item["manifest"]["name"] == "test-dataset"

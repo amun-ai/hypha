@@ -34,6 +34,7 @@ from hypha.s3 import FSFileResponse
 from aiobotocore.session import get_session
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import RedirectResponse
 from hypha.core import (
     UserInfo,
     UserPermission,
@@ -64,14 +65,14 @@ class ArtifactModel(SQLModel, table=True):  # `table=True` makes it a table mode
     manifest: Optional[dict] = Field(
         default=None, sa_column=Column(JSON, nullable=True)
     )
-    staging: Optional[dict] = Field(default=None, sa_column=Column(JSON, nullable=True))
+    staging: Optional[list] = Field(default=None, sa_column=Column(JSON, nullable=True))
     download_count: float = Field(default=0.0)
     view_count: float = Field(default=0.0)
     file_count: int = Field(default=0)
     created_at: int = Field()
     created_by: Optional[str] = Field(default=None)
     last_modified: int = Field()
-    versions: Optional[dict] = Field(
+    versions: Optional[list] = Field(
         default=None, sa_column=Column(JSON, nullable=True)
     )
     config: Optional[dict] = Field(default=None, sa_column=Column(JSON, nullable=True))
@@ -146,6 +147,7 @@ class ArtifactController:
         self.s3_controller = s3_controller
         self.workspace_bucket = workspace_bucket
         self.store = store
+        self._cache = store.get_redis_cache()
         self._vectordb_client = self.store.get_vectordb_client()
         self._openai_client = self.store.get_openai_client()
         self._cache_dir = self.store.get_cache_dir()
@@ -198,16 +200,25 @@ class ArtifactController:
             order_by: str = None,
             pagination: bool = False,
             silent: bool = False,
+            no_cache: bool = False,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """List child artifacts of a specified artifact."""
             try:
+                parent_id = f"{workspace}/{artifact_alias}"
+                cache_key = f"artifact_children:{parent_id}:{offset}:{limit}:{order_by}:{keywords}:{filters}:{mode}"
+                if not no_cache:
+                    logger.info(f"Responding to list request ({parent_id}) from cache")
+                    cached_results = await self._cache.get(cache_key)
+                    if cached_results:
+                        return cached_results
                 if keywords:
                     keywords = keywords.split(",")
                 if filters:
                     filters = json.loads(filters)
-                return await self.list_children(
-                    parent_id=f"{workspace}/{artifact_alias}",
+
+                results = await self.list_children(
+                    parent_id=parent_id,
                     offset=offset,
                     limit=limit,
                     order_by=order_by,
@@ -218,6 +229,8 @@ class ArtifactController:
                     silent=silent,
                     context={"user": user_info.model_dump(), "ws": workspace},
                 )
+                await self._cache.set(cache_key, results, ttl=60)
+                return results
             except KeyError:
                 raise HTTPException(status_code=404, detail="Parent artifact not found")
             except PermissionError:
@@ -243,6 +256,8 @@ class ArtifactController:
             silent: bool = False,
             version: str = None,
             token: str = None,
+            limit: int = 1000,
+            use_proxy: bool = False,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """Retrieve a file within an artifact or list files in a directory."""
@@ -277,7 +292,7 @@ class ArtifactController:
                                 s3_client,
                                 s3_config["bucket"],
                                 file_key.rstrip("/") + "/",
-                                max_length=1000,
+                                max_length=limit,
                             )
                             if not items:
                                 raise HTTPException(
@@ -286,7 +301,6 @@ class ArtifactController:
                                 )
                             return items
 
-                    s3_client = self._create_client_async(s3_config)
                     # Increment download count unless silent
                     if not silent:
                         if artifact.config and "download_weights" in artifact.config:
@@ -304,7 +318,28 @@ class ArtifactController:
                                 increment=download_weight,
                             )
                         await session.commit()
-                    return FSFileResponse(s3_client, s3_config["bucket"], file_key)
+                    if use_proxy:
+                        s3_client = self._create_client_async(s3_config)
+                        return FSFileResponse(s3_client, s3_config["bucket"], file_key)
+                    else:
+                        async with self._create_client_async(
+                            s3_config,
+                        ) as s3_client:
+                            # generate presigned url, then redirect
+                            presigned_url = await s3_client.generate_presigned_url(
+                                "get_object",
+                                Params={
+                                    "Bucket": s3_config["bucket"],
+                                    "Key": file_key,
+                                },
+                            )
+                            if s3_config["public_endpoint_url"]:
+                                # replace the endpoint with the proxy base URL
+                                presigned_url = presigned_url.replace(
+                                    s3_config["endpoint_url"],
+                                    s3_config["public_endpoint_url"],
+                                )
+                            return RedirectResponse(url=presigned_url, status_code=302)
 
             except KeyError:
                 raise HTTPException(status_code=404, detail="Artifact not found")
@@ -393,6 +428,7 @@ class ArtifactController:
             )
             parent_result = await session.execute(parent_query)
             parent_artifact = parent_result.scalar_one_or_none()
+
         return artifact, parent_artifact
 
     def _generate_artifact_data(self, artifact, parent_artifact=None):
@@ -2140,8 +2176,18 @@ class ArtifactController:
                 # Handle filter-based search with specific key-value matching
                 if filters:
                     for key, value in filters.items():
-                        if key == "stage":
-                            stage = bool(value)
+                        if key == "version":
+                            assert value in [
+                                "stage",
+                                "latest",
+                                "*",
+                            ], "Invalid version value, it should be 'stage' or 'latest'."
+                            if value == "stage":
+                                stage = True
+                            elif value == "latest":
+                                stage = False
+                            else:
+                                stage = None
                             continue
 
                         if key == "manifest" and isinstance(value, dict):
@@ -2223,29 +2269,32 @@ class ArtifactController:
                             else:
                                 raise ValueError(f"Invalid filter key: {key}")
 
-                if backend == "sqlite":
-                    if stage:
-                        stage_condition = and_(
-                            ArtifactModel.staging.isnot(None), text("staging != 'null'")
-                        )
+                if stage is not None:
+                    if backend == "sqlite":
+                        if stage:
+                            stage_condition = and_(
+                                ArtifactModel.staging.isnot(None),
+                                text("staging != 'null'"),
+                            )
+                        else:
+                            stage_condition = or_(
+                                ArtifactModel.staging.is_(None),
+                                text("staging = 'null'"),
+                            )
                     else:
-                        stage_condition = or_(
-                            ArtifactModel.staging.is_(None), text("staging = 'null'")
-                        )
-                else:
-                    if stage:
-                        stage_condition = and_(
-                            ArtifactModel.staging.isnot(None),
-                            text("staging::text != 'null'"),
-                        )
-                    else:
-                        stage_condition = or_(
-                            ArtifactModel.staging.is_(None),
-                            text("staging::text = 'null'"),
-                        )
+                        if stage:
+                            stage_condition = and_(
+                                ArtifactModel.staging.isnot(None),
+                                text("staging::text != 'null'"),
+                            )
+                        else:
+                            stage_condition = or_(
+                                ArtifactModel.staging.is_(None),
+                                text("staging::text = 'null'"),
+                            )
 
-                query = query.where(stage_condition)
-                count_query = count_query.where(stage_condition)
+                    query = query.where(stage_condition)
+                    count_query = count_query.where(stage_condition)
 
                 # Combine conditions based on mode (AND/OR)
                 if conditions:

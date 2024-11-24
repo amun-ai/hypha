@@ -11,8 +11,6 @@ from typing import Any, Dict
 import zipfile
 from io import BytesIO
 
-from aiocache import Cache
-from aiocache.decorators import cached
 import botocore
 from aiobotocore.session import get_session
 from botocore.exceptions import ClientError
@@ -122,12 +120,6 @@ class FSFileResponse(FileResponse):
             if self.background is not None:
                 await self.background()
 
-
-@cached(
-    ttl=30,
-    cache=Cache.MEMORY,
-    key_builder=lambda *args, **kwargs: f"{args[1]}/{args[2]}@{args[3]}",
-)
 async def fetch_zip_tail(s3_client, workspace_bucket, s3_key, content_length):
     """
     Fetch the tail part of the zip file that contains the central directory.
@@ -219,6 +211,7 @@ class S3Controller:
 
         store.register_public_service(self.get_s3_service())
         store.set_s3_controller(self)
+        cache = store.get_redis_cache()
 
         router = APIRouter()
 
@@ -321,9 +314,13 @@ class S3Controller:
                             )
 
                     # Fetch the ZIP's central directory from cache or download if not cached
-                    zip_tail = await fetch_zip_tail(
-                        s3_client, self.workspace_bucket, s3_key, content_length
-                    )
+                    cache_key = f"zip_tail:{self.workspace_bucket}:{s3_key}:{content_length}"
+                    zip_tail = await cache.get(cache_key)
+                    if zip_tail is None:
+                        zip_tail = await fetch_zip_tail(
+                            s3_client, self.workspace_bucket, s3_key, content_length
+                        )
+                        await cache.set(cache_key, zip_tail, ttl=60)
 
                     # Open the in-memory ZIP tail and parse it
                     with zipfile.ZipFile(BytesIO(zip_tail)) as zip_file:

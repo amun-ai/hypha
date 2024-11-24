@@ -13,6 +13,7 @@ from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
 from starlette.routing import Mount
 from pydantic.fields import Field
+from aiocache.backends.redis import RedisCache
 
 from hypha import __version__
 from hypha.core import (
@@ -179,6 +180,9 @@ class RedisStore:
 
             self._redis = aioredis.FakeRedis.from_url("redis://localhost:9997/11")
 
+        self._redis_cache = RedisCache()
+        self._redis_cache.client = self._redis
+
         self._root_user = None
         self._event_bus = RedisEventBus(self._redis)
 
@@ -228,6 +232,9 @@ class RedisStore:
             expires_at=None,
         )
         return self._root_user
+
+    def get_redis_cache(self):
+        return self._redis_cache
 
     async def load_or_create_workspace(self, user_info: UserInfo, workspace: str):
         """Setup the workspace."""
