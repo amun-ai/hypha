@@ -685,6 +685,6 @@ class RedisEventBus:
                             logger.info("Unknown channel: %s", channel)
                 except Exception as exp:
                     logger.exception(f"Error processing message: {exp}")
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0)
         except Exception as exp:
             self._ready.set_exception(exp)

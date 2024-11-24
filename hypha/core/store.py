@@ -14,6 +14,7 @@ from hypha_rpc.utils.schema import schema_method
 from starlette.routing import Mount
 from pydantic.fields import Field
 from aiocache.backends.redis import RedisCache
+from aiocache.serializers import PickleSerializer
 
 from hypha import __version__
 from hypha.core import (
@@ -180,7 +181,7 @@ class RedisStore:
 
             self._redis = aioredis.FakeRedis.from_url("redis://localhost:9997/11")
 
-        self._redis_cache = RedisCache()
+        self._redis_cache = RedisCache(serializer=PickleSerializer())
         self._redis_cache.client = self._redis
 
         self._root_user = None

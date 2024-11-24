@@ -120,6 +120,7 @@ class FSFileResponse(FileResponse):
             if self.background is not None:
                 await self.background()
 
+
 async def fetch_zip_tail(s3_client, workspace_bucket, s3_key, content_length):
     """
     Fetch the tail part of the zip file that contains the central directory.
@@ -314,7 +315,9 @@ class S3Controller:
                             )
 
                     # Fetch the ZIP's central directory from cache or download if not cached
-                    cache_key = f"zip_tail:{self.workspace_bucket}:{s3_key}:{content_length}"
+                    cache_key = (
+                        f"zip_tail:{self.workspace_bucket}:{s3_key}:{content_length}"
+                    )
                     zip_tail = await cache.get(cache_key)
                     if zip_tail is None:
                         zip_tail = await fetch_zip_tail(

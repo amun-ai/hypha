@@ -26,6 +26,11 @@ from sqlalchemy.ext.asyncio import (
     AsyncSession,
 )
 
+from datetime import datetime
+from stat import S_IFREG
+from stream_zip import ZIP_32, async_stream_zip
+import httpx
+
 from hrid import HRID
 from hypha.utils import remove_objects_async, list_objects_async, safe_join
 from hypha.utils.zenodo import ZenodoClient
@@ -33,8 +38,8 @@ from botocore.exceptions import ClientError
 from hypha.s3 import FSFileResponse
 from aiobotocore.session import get_session
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import RedirectResponse, StreamingResponse
 from hypha.core import (
     UserInfo,
     UserPermission,
@@ -246,6 +251,168 @@ class ArtifactController:
                 raise HTTPException(
                     status_code=500, detail=f"An unexpected error occurred: {str(e)}"
                 )
+
+        @router.get("/{workspace}/artifacts/{artifact_alias}/zip-files")
+        async def create_zip_file(
+            workspace: str,
+            artifact_alias: str,
+            files: List[str] = Query(None, alias="file"),
+            token: str = None,
+            version: str = None,
+            silent: bool = False,
+            user_info: self.store.login_optional = Depends(self.store.login_optional),
+        ):
+            try:
+                # Validate artifact and permissions
+                artifact_id = self._validate_artifact_id(
+                    artifact_alias, {"ws": workspace}
+                )
+                session = await self._get_session(read_only=True)
+                if token:
+                    user_info = await self.store.parse_user_token(token)
+
+                async with session.begin():
+                    # Fetch artifact and check permissions
+                    (
+                        artifact,
+                        parent_artifact,
+                    ) = await self._get_artifact_with_permission(
+                        user_info, artifact_id, "get_file", session
+                    )
+                    version_index = self._get_version_index(artifact, version)
+                    s3_config = self._get_s3_config(artifact, parent_artifact)
+
+                    async with self._create_client_async(s3_config) as s3_client:
+                        if files is None:
+                            # List all files in the artifact
+                            root_dir_key = safe_join(
+                                s3_config["prefix"],
+                                workspace,
+                                f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
+                            )
+
+                            async def list_all_files(dir_path=""):
+                                try:
+                                    dir_key = f"{root_dir_key}/{dir_path}".strip("/")
+                                    items = await list_objects_async(
+                                        s3_client,
+                                        s3_config["bucket"],
+                                        dir_key + "/",
+                                    )
+                                    for item in items:
+                                        item_path = f"{dir_path}/{item['name']}".strip(
+                                            "/"
+                                        )
+                                        if item["type"] == "file":
+                                            yield item_path
+                                        elif item["type"] == "directory":
+                                            async for sub_item in list_all_files(
+                                                item_path
+                                            ):
+                                                yield sub_item
+                                except Exception as e:
+                                    logger.error(f"Error listing files: {str(e)}")
+                                    raise HTTPException(
+                                        status_code=500, detail="Error listing files"
+                                    )
+
+                            files = list_all_files()
+                        else:
+
+                            async def validate_files(files):
+                                for file in files:
+                                    yield file
+
+                            files = validate_files(files)
+
+                        async def file_stream_generator(presigned_url: str):
+                            """Fetch file content from presigned URL in chunks."""
+                            try:
+                                async with httpx.AsyncClient() as client:
+                                    async with client.stream(
+                                        "GET", presigned_url
+                                    ) as response:
+                                        if response.status_code != 200:
+                                            logger.error(
+                                                f"Failed to fetch file from URL: {presigned_url}, Status: {response.status_code}"
+                                            )
+                                            raise HTTPException(
+                                                status_code=404,
+                                                detail=f"Failed to fetch file: {presigned_url}",
+                                            )
+                                        async for chunk in response.aiter_bytes(
+                                            1024 * 64
+                                        ):  # 64KB chunks
+                                            yield chunk
+                            except Exception as e:
+                                logger.error(f"Error fetching file stream: {str(e)}")
+                                raise HTTPException(
+                                    status_code=500,
+                                    detail="Error fetching file content",
+                                )
+
+                        async def member_files():
+                            """Yield file metadata and content for stream_zip."""
+                            modified_at = datetime.now()
+                            mode = S_IFREG | 0o600
+                            async for path in files:
+                                file_key = safe_join(
+                                    s3_config["prefix"],
+                                    workspace,
+                                    f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
+                                    path,
+                                )
+                                try:
+                                    presigned_url = (
+                                        await s3_client.generate_presigned_url(
+                                            "get_object",
+                                            Params={
+                                                "Bucket": s3_config["bucket"],
+                                                "Key": file_key,
+                                            },
+                                        )
+                                    )
+                                    yield (
+                                        path,
+                                        modified_at,
+                                        mode,
+                                        ZIP_32,
+                                        file_stream_generator(presigned_url),
+                                    )
+                                except Exception as e:
+                                    logger.error(
+                                        f"Error processing file {path}: {str(e)}"
+                                    )
+                                    raise HTTPException(
+                                        status_code=500,
+                                        detail=f"Error processing file: {path}",
+                                    )
+
+                        # Return the ZIP file as a streaming response
+                        return StreamingResponse(
+                            async_stream_zip(member_files()),
+                            media_type="application/zip",
+                            headers={
+                                "Content-Disposition": f"attachment; filename={artifact_alias}.zip"
+                            },
+                        )
+
+                    await session.commit()
+
+            except KeyError:
+                raise HTTPException(status_code=404, detail="Artifact not found")
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Permission denied")
+            except HTTPException as e:
+                logger.error(f"HTTPException: {str(e)}")
+                raise e  # Re-raise HTTPExceptions to be handled by FastAPI
+            except Exception as e:
+                logger.error(f"Unhandled exception in create_zip: {str(e)}")
+                raise HTTPException(
+                    status_code=500, detail=f"Internal server error: {str(e)}"
+                )
+            finally:
+                await session.close()
 
         # HTTP endpoint for retrieving files within an artifact
         @router.get("/{workspace}/artifacts/{artifact_alias}/files/{path:path}")

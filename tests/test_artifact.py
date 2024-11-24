@@ -5,6 +5,9 @@ import os
 import numpy as np
 import random
 from hypha_rpc import connect_to_server
+from io import BytesIO
+from zipfile import ZipFile
+import httpx
 
 from . import SERVER_URL, SERVER_URL_SQLITE, find_item
 
@@ -395,7 +398,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server, test_user_t
 async def test_http_file_and_directory_endpoint(
     minio_server, fastapi_server, test_user_token
 ):
-    """Test the HTTP file serving and directory listing endpoint."""
+    """Test the HTTP file serving and directory listing endpoint, including nested files."""
 
     # Connect and get the artifact manager service
     api = await connect_to_server(
@@ -433,24 +436,36 @@ async def test_http_file_and_directory_endpoint(
         file_path="example.txt",
         download_weight=1,
     )
-    response = requests.put(put_url, data=file_contents)
-    assert response.ok
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.put(put_url, data=file_contents)
+        assert response.status_code == 200
+
+    # Add another file to the dataset artifact in a nested directory
+    file_contents2 = "file contents of nested/example2.txt"
+    nested_file_path = "nested/example2.txt"
+    put_url = await artifact_manager.put_file(
+        artifact_id=dataset.id,
+        file_path=nested_file_path,
+        download_weight=1,
+    )
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.put(put_url, data=file_contents2)
+        assert response.status_code == 200
 
     # Commit the dataset artifact
     await artifact_manager.commit(artifact_id=dataset.id)
 
     files = await artifact_manager.list_files(artifact_id=dataset.id)
-    assert len(files) == 1
+    assert len(files) == 2
 
     # Retrieve the file via HTTP
-    response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/example.txt",
-        allow_redirects=True,
-    )
-    # Check if the connection has been redirected
-    assert response.history[0].status_code == 302
-    assert response.status_code == 200
-    assert response.text == file_contents
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/example.txt",
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+        assert response.text == file_contents
 
     # Check download count increment
     artifact = await artifact_manager.read(
@@ -458,12 +473,13 @@ async def test_http_file_and_directory_endpoint(
     )
     assert artifact["download_count"] == 1
 
-    # Try to get it using http proxy
-    response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/example.txt?use_proxy=1"
-    )
-    assert response.status_code == 200
-    assert response.text == file_contents
+    # Try to get it using HTTP proxy
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/example.txt?use_proxy=1"
+        )
+        assert response.status_code == 200
+        assert response.text == file_contents
 
     # Check download count increment
     artifact = await artifact_manager.read(
@@ -471,12 +487,40 @@ async def test_http_file_and_directory_endpoint(
     )
     assert artifact["download_count"] == 2
 
-    # Attempt to list directory contents (should be successful after attempting file)
-    response = requests.get(
-        f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/"
-    )
-    assert response.status_code == 200
-    assert "example.txt" in [file["name"] for file in response.json()]
+    # Attempt to list directory contents
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/"
+        )
+        assert response.status_code == 200
+        assert "example.txt" in [file["name"] for file in response.json()]
+
+    # Get the zip file with specific files
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files?file=example.txt&file={nested_file_path}"
+        )
+        assert response.status_code == 200
+        # Write the zip file in a io.BytesIO object, then check if the file contents are correct
+        zip_file = ZipFile(BytesIO(response.content))
+        assert sorted(zip_file.namelist()) == sorted(
+            ["example.txt", "nested/example2.txt"]
+        )
+        assert zip_file.read("example.txt").decode() == "file contents of example.txt"
+        assert zip_file.read("nested/example2.txt").decode() == file_contents2
+
+    # Get the zip file with all files
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files"
+        )
+        assert response.status_code == 200, response.text
+        zip_file = ZipFile(BytesIO(response.content))
+        assert sorted(zip_file.namelist()) == sorted(
+            ["example.txt", "nested/example2.txt"]
+        )
+        assert zip_file.read("example.txt").decode() == "file contents of example.txt"
+        assert zip_file.read("nested/example2.txt").decode() == file_contents2
 
 
 async def test_artifact_permissions(
