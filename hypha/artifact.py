@@ -2252,7 +2252,7 @@ class ArtifactController:
             await session.close()
 
     async def get_file(
-        self, artifact_id, path, silent=False, version=None, context: dict = None
+        self, artifact_id, file_path, silent=False, version=None, context: dict = None
     ):
         """Generate a pre-signed URL to download a file from an artifact in S3."""
         if context is None or "ws" not in context:
@@ -2273,7 +2273,7 @@ class ArtifactController:
                     file_key = safe_join(
                         s3_config["prefix"],
                         artifact.workspace,
-                        f"{self._artifacts_dir}/{artifact.id}/v{version_index}/{path}",
+                        f"{self._artifacts_dir}/{artifact.id}/v{version_index}/{file_path}",
                     )
                     try:
                         await s3_client.head_object(
@@ -2281,7 +2281,7 @@ class ArtifactController:
                         )
                     except ClientError:
                         raise FileNotFoundError(
-                            f"File '{path}' does not exist in the artifact."
+                            f"File '{file_path}' does not exist in the artifact."
                         )
                     presigned_url = await s3_client.generate_presigned_url(
                         "get_object",
@@ -2299,7 +2299,7 @@ class ArtifactController:
                         download_weights = artifact.config.get("download_weights", {})
                     else:
                         download_weights = {}
-                    download_weight = download_weights.get(path) or 0
+                    download_weight = download_weights.get(file_path) or 0
                     if download_weight > 0:
                         await self._increment_stat(
                             session,
