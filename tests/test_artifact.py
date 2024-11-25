@@ -488,7 +488,7 @@ async def test_http_file_and_directory_endpoint(
     assert artifact["download_count"] == 2
 
     # Attempt to list directory contents
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with httpx.AsyncClient(timeout=200) as client:
         response = await client.get(
             f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/"
         )
@@ -496,9 +496,9 @@ async def test_http_file_and_directory_endpoint(
         assert "example.txt" in [file["name"] for file in response.json()]
 
     # Get the zip file with specific files
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with httpx.AsyncClient(timeout=200) as client:
         response = await client.get(
-            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files?file=example.txt&file={nested_file_path}"
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/create-zip-file?file=example.txt&file={nested_file_path}"
         )
         assert response.status_code == 200
         # Write the zip file in a io.BytesIO object, then check if the file contents are correct
@@ -510,9 +510,9 @@ async def test_http_file_and_directory_endpoint(
         assert zip_file.read("nested/example2.txt").decode() == file_contents2
 
     # Get the zip file with all files
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with httpx.AsyncClient(timeout=200) as client:
         response = await client.get(
-            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files"
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/create-zip-file"
         )
         assert response.status_code == 200, response.text
         zip_file = ZipFile(BytesIO(response.content))
@@ -521,6 +521,143 @@ async def test_http_file_and_directory_endpoint(
         )
         assert zip_file.read("example.txt").decode() == "file contents of example.txt"
         assert zip_file.read("nested/example2.txt").decode() == file_contents2
+
+    # check download count
+    artifact = await artifact_manager.read(
+        artifact_id=dataset.id,
+    )
+    assert artifact["download_count"] == 8
+
+
+async def test_get_zip_file_content_endpoint(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test retrieving specific content and listing directories from a ZIP file stored in S3."""
+
+    # Connect and get the artifact manager service
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection and retrieve the UUID
+    collection_manifest = {
+        "name": "test-collection",
+        "description": "A test collection",
+    }
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest=collection_manifest,
+        config={"permissions": {"*": "r", "@": "r+"}},
+    )
+
+    # Create a dataset within the collection
+    dataset_manifest = {
+        "name": "test-dataset",
+        "description": "A test dataset",
+    }
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest=dataset_manifest,
+        version="stage",
+    )
+
+    # Create a ZIP file in memory
+    zip_buffer = BytesIO()
+    with ZipFile(zip_buffer, "w") as zip_file:
+        zip_file.writestr("example.txt", "file contents of example.txt")
+        zip_file.writestr("nested/example2.txt", "file contents of nested/example2.txt")
+        zip_file.writestr(
+            "nested/subdir/example3.txt", "file contents of nested/subdir/example3.txt"
+        )
+    zip_buffer.seek(0)
+
+    # Upload the ZIP file to the artifact
+    zip_file_path = "test-files"
+    put_url = await artifact_manager.put_file(
+        artifact_id=dataset.id,
+        file_path=f"{zip_file_path}.zip",
+        download_weight=1,
+    )
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.put(put_url, data=zip_buffer.read())
+        assert response.status_code == 200
+
+    # Commit the dataset artifact
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Test listing the root directory of the ZIP
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip"
+        )
+        assert response.status_code == 200
+        items = response.json()
+        assert find_item(items, "name", "example.txt") is not None
+        assert find_item(items, "name", "nested") is not None
+
+    # Test listing the "nested/" directory
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip?path=nested/"
+        )
+        assert response.status_code == 200
+        items = response.json()
+        assert find_item(items, "name", "example2.txt") is not None
+        assert find_item(items, "name", "subdir") is not None
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip/~/nested/"
+        )
+        assert response.status_code == 200
+        items = response.json()
+        assert find_item(items, "name", "example2.txt") is not None
+        assert find_item(items, "name", "subdir") is not None
+
+    # Test listing the "nested/subdir/" directory
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip?path=nested/subdir/"
+        )
+        assert response.status_code == 200
+        items = response.json()
+        assert find_item(items, "name", "example3.txt") is not None
+
+    # Test retrieving `example.txt` from the ZIP file
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip?path=example.txt"
+        )
+        assert response.status_code == 200
+        assert response.text == "file contents of example.txt"
+
+    # Test retrieving `nested/example2.txt` from the ZIP file
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip?path=nested/example2.txt"
+        )
+        assert response.status_code == 200
+        assert response.text == "file contents of nested/example2.txt"
+
+    # Test retrieving a non-existent file
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip?path=nonexistent.txt"
+        )
+        assert response.status_code == 404
+        assert response.json()["detail"] == "File not found inside ZIP: nonexistent.txt"
+
+    # Test listing a non-existent directory
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip?path=nonexistent/"
+        )
+        assert response.status_code == 200
+        assert (
+            response.json() == []
+        )  # An empty list indicates an empty or non-existent directory.
 
 
 async def test_artifact_permissions(

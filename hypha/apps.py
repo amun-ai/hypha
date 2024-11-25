@@ -380,6 +380,7 @@ class ServerAppController:
             + f"&server_url={server_url}"
             + (f"&token={token}" if token else "")
             + (f"&version={version}" if version else "")
+            + (f"&use_proxy=true")
         )
         server_url = self.public_base_url
         public_url = (
@@ -389,6 +390,7 @@ class ServerAppController:
             + f"&server_url={server_url}"
             + (f"&token={token}" if token else "")
             + (f"&version={version}" if version else "")
+            + (f"&use_proxy=true")
         )
 
         runner = random.choice(self._runner)

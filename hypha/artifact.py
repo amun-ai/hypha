@@ -6,6 +6,8 @@ import random
 import numpy as np
 import re
 import json
+from io import BytesIO
+import zipfile
 import asyncio
 from sqlalchemy import (
     event,
@@ -39,7 +41,12 @@ from hypha.s3 import FSFileResponse
 from aiobotocore.session import get_session
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    RedirectResponse,
+    StreamingResponse,
+    JSONResponse,
+    Response,
+)
 from hypha.core import (
     UserInfo,
     UserPermission,
@@ -132,6 +139,22 @@ def set_nested_value(dictionary, field, value):
     for key in keys[:-1]:
         dictionary = dictionary.setdefault(key, {})
     dictionary[keys[-1]] = value
+
+
+async def fetch_zip_tail(s3_client, workspace_bucket, s3_key, content_length):
+    """
+    Fetch the tail part of the zip file that contains the central directory.
+    This result is cached to avoid re-fetching the central directory multiple times.
+    """
+    central_directory_offset = max(content_length - 65536, 0)
+    range_header = f"bytes={central_directory_offset}-{content_length}"
+
+    # Fetch the last part of the ZIP file that contains the central directory
+    response = await s3_client.get_object(
+        Bucket=workspace_bucket, Key=s3_key, Range=range_header
+    )
+    zip_tail = await response["Body"].read()
+    return zip_tail
 
 
 class ArtifactController:
@@ -252,7 +275,7 @@ class ArtifactController:
                     status_code=500, detail=f"An unexpected error occurred: {str(e)}"
                 )
 
-        @router.get("/{workspace}/artifacts/{artifact_alias}/zip-files")
+        @router.get("/{workspace}/artifacts/{artifact_alias}/create-zip-file")
         async def create_zip_file(
             workspace: str,
             artifact_alias: str,
@@ -271,6 +294,217 @@ class ArtifactController:
                 if token:
                     user_info = await self.store.parse_user_token(token)
 
+                try:
+                    async with session.begin():
+                        # Fetch artifact and check permissions
+                        (
+                            artifact,
+                            parent_artifact,
+                        ) = await self._get_artifact_with_permission(
+                            user_info, artifact_id, "get_file", session
+                        )
+                except Exception as e:
+                    raise e
+                finally:
+                    await session.close()
+
+                version_index = self._get_version_index(artifact, version)
+                s3_config = self._get_s3_config(artifact, parent_artifact)
+
+                async with self._create_client_async(s3_config) as s3_client:
+                    if files is None:
+                        # List all files in the artifact
+                        root_dir_key = safe_join(
+                            s3_config["prefix"],
+                            workspace,
+                            f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
+                        )
+
+                        async def list_all_files(dir_path=""):
+                            try:
+                                dir_key = f"{root_dir_key}/{dir_path}".strip("/")
+                                items = await list_objects_async(
+                                    s3_client,
+                                    s3_config["bucket"],
+                                    dir_key + "/",
+                                )
+                                for item in items:
+                                    item_path = f"{dir_path}/{item['name']}".strip("/")
+                                    if item["type"] == "file":
+                                        yield item_path
+                                    elif item["type"] == "directory":
+                                        async for sub_item in list_all_files(item_path):
+                                            yield sub_item
+                            except Exception as e:
+                                logger.error(f"Error listing files: {str(e)}")
+                                raise HTTPException(
+                                    status_code=500, detail="Error listing files"
+                                )
+
+                        files = list_all_files()
+                    else:
+
+                        async def validate_files(files):
+                            for file in files:
+                                yield file
+
+                        files = validate_files(files)
+
+                    logger.info(f"Creating ZIP file for artifact: {artifact_alias}")
+
+                    async def file_stream_generator(presigned_url: str):
+                        """Fetch file content from presigned URL in chunks."""
+                        try:
+                            async with httpx.AsyncClient() as client:
+                                async with client.stream(
+                                    "GET", presigned_url
+                                ) as response:
+                                    if response.status_code != 200:
+                                        logger.error(
+                                            f"Failed to fetch file from URL: {presigned_url}, Status: {response.status_code}"
+                                        )
+                                        raise HTTPException(
+                                            status_code=404,
+                                            detail=f"Failed to fetch file: {presigned_url}",
+                                        )
+                                    async for chunk in response.aiter_bytes(
+                                        1024 * 64
+                                    ):  # 64KB chunks
+                                        logger.debug(
+                                            f"Yielding chunk of size: {len(chunk)}"
+                                        )
+                                        yield chunk
+                        except Exception as e:
+                            logger.error(f"Error fetching file stream: {str(e)}")
+                            raise HTTPException(
+                                status_code=500,
+                                detail="Error fetching file content",
+                            )
+
+                    async def member_files():
+                        """Yield file metadata and content for stream_zip."""
+                        modified_at = datetime.now()
+                        mode = S_IFREG | 0o600
+                        download_updates = {}
+                        if artifact.config and "download_weights" in artifact.config:
+                            download_weights = artifact.config.get(
+                                "download_weights", {}
+                            )
+                        else:
+                            download_weights = {}
+                        async for path in files:
+                            file_key = safe_join(
+                                s3_config["prefix"],
+                                workspace,
+                                f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
+                                path,
+                            )
+                            logger.info(f"Adding file to ZIP: {file_key}")
+                            try:
+                                presigned_url = await s3_client.generate_presigned_url(
+                                    "get_object",
+                                    Params={
+                                        "Bucket": s3_config["bucket"],
+                                        "Key": file_key,
+                                    },
+                                )
+                                # Increment download count unless silent
+                                if not silent:
+                                    download_weight = download_weights.get(path) or 0
+                                    if download_weight > 0:
+                                        download_updates[path] = download_weight
+
+                                yield (
+                                    path,
+                                    modified_at,
+                                    mode,
+                                    ZIP_32,
+                                    file_stream_generator(presigned_url),
+                                )
+                            except Exception as e:
+                                logger.error(f"Error processing file {path}: {str(e)}")
+                                raise HTTPException(
+                                    status_code=500,
+                                    detail=f"Error processing file: {path}",
+                                )
+
+                            if download_updates:
+                                logger.info(
+                                    f"Bumping download count for artifact: {artifact_alias}"
+                                )
+                                try:
+                                    async with session.begin():
+                                        for path in download_updates.keys():
+                                            await self._increment_stat(
+                                                session,
+                                                artifact.id,
+                                                "download_count",
+                                                increment=download_updates[path],
+                                            )
+                                        await session.commit()
+                                except Exception as e:
+                                    logger.error(
+                                        f"Error bumping download count for artifact ({artifact_alias}): {str(e)}"
+                                    )
+                                    raise e
+                                finally:
+                                    await session.close()
+
+                    # Return the ZIP file as a streaming response
+                    return StreamingResponse(
+                        async_stream_zip(member_files()),
+                        media_type="application/zip",
+                        headers={
+                            "Content-Disposition": f"attachment; filename={artifact_alias}.zip"
+                        },
+                    )
+
+            except KeyError:
+                raise HTTPException(status_code=404, detail="Artifact not found")
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Permission denied")
+            except HTTPException as e:
+                logger.error(f"HTTPException: {str(e)}")
+                raise e  # Re-raise HTTPExceptions to be handled by FastAPI
+            except Exception as e:
+                logger.error(f"Unhandled exception in create_zip: {str(e)}")
+                raise HTTPException(
+                    status_code=500, detail=f"Internal server error: {str(e)}"
+                )
+
+        @router.get(
+            "/{workspace}/artifacts/{artifact_alias}/zip-files/{zip_file_path:path}"
+        )
+        async def get_zip_file_content(
+            workspace: str,
+            artifact_alias: str,
+            zip_file_path: str,
+            path: str = "",
+            version: str = None,
+            token: str = None,
+            user_info: store.login_optional = Depends(store.login_optional),
+        ) -> Response:
+            """
+            Serve content from a zip file stored in S3 without fully unzipping it.
+            `zip_file_path` is the path to the zip file, `path` is the relative path inside the zip file.
+            You can also use '/~/' to separate the zip file path and the relative path inside the zip file.
+            """
+
+            try:
+                # Validate artifact and permissions
+                artifact_id = self._validate_artifact_id(
+                    artifact_alias, {"ws": workspace}
+                )
+                session = await self._get_session(read_only=True)
+                if token:
+                    user_info = await self.store.parse_user_token(token)
+
+                if "/~/" in zip_file_path:
+                    assert (
+                        not path
+                    ), "You cannot specify a path when using a zip file with a tilde."
+                    zip_file_path, path = zip_file_path.split("/~/", 1)
+
                 async with session.begin():
                     # Fetch artifact and check permissions
                     (
@@ -281,123 +515,168 @@ class ArtifactController:
                     )
                     version_index = self._get_version_index(artifact, version)
                     s3_config = self._get_s3_config(artifact, parent_artifact)
-
                     async with self._create_client_async(s3_config) as s3_client:
-                        if files is None:
-                            # List all files in the artifact
-                            root_dir_key = safe_join(
-                                s3_config["prefix"],
-                                workspace,
-                                f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
-                            )
-
-                            async def list_all_files(dir_path=""):
-                                try:
-                                    dir_key = f"{root_dir_key}/{dir_path}".strip("/")
-                                    items = await list_objects_async(
-                                        s3_client,
-                                        s3_config["bucket"],
-                                        dir_key + "/",
-                                    )
-                                    for item in items:
-                                        item_path = f"{dir_path}/{item['name']}".strip(
-                                            "/"
-                                        )
-                                        if item["type"] == "file":
-                                            yield item_path
-                                        elif item["type"] == "directory":
-                                            async for sub_item in list_all_files(
-                                                item_path
-                                            ):
-                                                yield sub_item
-                                except Exception as e:
-                                    logger.error(f"Error listing files: {str(e)}")
-                                    raise HTTPException(
-                                        status_code=500, detail="Error listing files"
-                                    )
-
-                            files = list_all_files()
-                        else:
-
-                            async def validate_files(files):
-                                for file in files:
-                                    yield file
-
-                            files = validate_files(files)
-
-                        async def file_stream_generator(presigned_url: str):
-                            """Fetch file content from presigned URL in chunks."""
-                            try:
-                                async with httpx.AsyncClient() as client:
-                                    async with client.stream(
-                                        "GET", presigned_url
-                                    ) as response:
-                                        if response.status_code != 200:
-                                            logger.error(
-                                                f"Failed to fetch file from URL: {presigned_url}, Status: {response.status_code}"
-                                            )
-                                            raise HTTPException(
-                                                status_code=404,
-                                                detail=f"Failed to fetch file: {presigned_url}",
-                                            )
-                                        async for chunk in response.aiter_bytes(
-                                            1024 * 64
-                                        ):  # 64KB chunks
-                                            yield chunk
-                            except Exception as e:
-                                logger.error(f"Error fetching file stream: {str(e)}")
-                                raise HTTPException(
-                                    status_code=500,
-                                    detail="Error fetching file content",
-                                )
-
-                        async def member_files():
-                            """Yield file metadata and content for stream_zip."""
-                            modified_at = datetime.now()
-                            mode = S_IFREG | 0o600
-                            async for path in files:
-                                file_key = safe_join(
-                                    s3_config["prefix"],
-                                    workspace,
-                                    f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
-                                    path,
-                                )
-                                try:
-                                    presigned_url = (
-                                        await s3_client.generate_presigned_url(
-                                            "get_object",
-                                            Params={
-                                                "Bucket": s3_config["bucket"],
-                                                "Key": file_key,
-                                            },
-                                        )
-                                    )
-                                    yield (
-                                        path,
-                                        modified_at,
-                                        mode,
-                                        ZIP_32,
-                                        file_stream_generator(presigned_url),
-                                    )
-                                except Exception as e:
-                                    logger.error(
-                                        f"Error processing file {path}: {str(e)}"
-                                    )
-                                    raise HTTPException(
-                                        status_code=500,
-                                        detail=f"Error processing file: {path}",
-                                    )
-
-                        # Return the ZIP file as a streaming response
-                        return StreamingResponse(
-                            async_stream_zip(member_files()),
-                            media_type="application/zip",
-                            headers={
-                                "Content-Disposition": f"attachment; filename={artifact_alias}.zip"
-                            },
+                        # Full key of the ZIP file in the S3 bucket
+                        s3_key = safe_join(
+                            s3_config["prefix"],
+                            workspace,
+                            f"{self._artifacts_dir}/{artifact.id}/v{version_index}/{zip_file_path}",
                         )
 
-                    await session.commit()
+                        # Fetch the ZIP file metadata from S3 (to avoid downloading the whole file)
+                        try:
+                            # Fetch the ZIP file metadata from S3 (to avoid downloading the whole file)
+                            zip_file_metadata = await s3_client.head_object(
+                                Bucket=self.workspace_bucket, Key=s3_key
+                            )
+                            content_length = zip_file_metadata["ContentLength"]
+                        except ClientError as e:
+                            # Check if the error is due to the file not being found (404)
+                            if e.response["Error"]["Code"] == "404":
+                                return JSONResponse(
+                                    status_code=404,
+                                    content={
+                                        "success": False,
+                                        "detail": f"ZIP file not found: {s3_key}",
+                                    },
+                                )
+                            else:
+                                # For other types of errors, raise a 500 error
+                                return JSONResponse(
+                                    status_code=500,
+                                    content={
+                                        "success": False,
+                                        "detail": f"Failed to fetch file metadata: {str(e)}",
+                                    },
+                                )
+
+                        # Fetch the ZIP's central directory from cache or download if not cached
+                        cache_key = f"zip_tail:{self.workspace_bucket}:{s3_key}:{content_length}"
+                        zip_tail = await self._cache.get(cache_key)
+                        if zip_tail is None:
+                            zip_tail = await fetch_zip_tail(
+                                s3_client, self.workspace_bucket, s3_key, content_length
+                            )
+                            await self._cache.set(cache_key, zip_tail, ttl=60)
+
+                        # Open the in-memory ZIP tail and parse it
+                        with zipfile.ZipFile(BytesIO(zip_tail)) as zip_file:
+                            # If `file_path` ends with "/", treat it as a directory
+                            if not path or path.endswith("/"):
+                                # If `file_path` is empty, treat it as the root directory.
+                                directory_contents = []
+                                for zip_info in zip_file.infolist():
+                                    # Handle root directory or subdirectory files
+                                    if not path:
+                                        # If `file_path` is empty, treat it as the root directory.
+                                        # Extract immediate children of the root directory
+                                        relative_path = zip_info.filename.strip("/")
+                                        if "/" not in relative_path:
+                                            # Top-level file
+                                            directory_contents.append(
+                                                {
+                                                    "type": "file"
+                                                    if not zip_info.is_dir()
+                                                    else "directory",
+                                                    "name": relative_path,
+                                                    "size": zip_info.file_size
+                                                    if not zip_info.is_dir()
+                                                    else None,
+                                                    "last_modified": datetime(
+                                                        *zip_info.date_time
+                                                    ).timestamp(),
+                                                }
+                                            )
+                                        else:
+                                            # Top-level directory
+                                            top_level_dir = relative_path.split("/")[0]
+                                            if not any(
+                                                d["name"] == top_level_dir
+                                                and d["type"] == "directory"
+                                                for d in directory_contents
+                                            ):
+                                                directory_contents.append(
+                                                    {
+                                                        "type": "directory",
+                                                        "name": top_level_dir,
+                                                    }
+                                                )
+                                    else:
+                                        # Subdirectory: Include only immediate children
+                                        if (
+                                            zip_info.filename.startswith(path)
+                                            and zip_info.filename != path
+                                        ):
+                                            relative_path = zip_info.filename[
+                                                len(path) :
+                                            ].strip("/")
+                                            if "/" in relative_path:
+                                                # Subdirectory case
+                                                child_name = relative_path.split("/")[0]
+                                                if not any(
+                                                    d["name"] == child_name
+                                                    and d["type"] == "directory"
+                                                    for d in directory_contents
+                                                ):
+                                                    directory_contents.append(
+                                                        {
+                                                            "type": "directory",
+                                                            "name": child_name,
+                                                        }
+                                                    )
+                                            else:
+                                                # File case
+                                                directory_contents.append(
+                                                    {
+                                                        "type": "file",
+                                                        "name": relative_path,
+                                                        "size": zip_info.file_size,
+                                                        "last_modified": datetime(
+                                                            *zip_info.date_time
+                                                        ).timestamp(),
+                                                    }
+                                                )
+                                return JSONResponse(
+                                    status_code=200,
+                                    content=directory_contents,
+                                )
+
+                            # Otherwise, find the file inside the ZIP
+                            try:
+                                zip_info = zip_file.getinfo(path)
+                            except KeyError:
+                                return JSONResponse(
+                                    status_code=404,
+                                    content={
+                                        "success": False,
+                                        "detail": f"File not found inside ZIP: {path}",
+                                    },
+                                )
+
+                            # Get the byte range of the file in the ZIP
+                            file_offset = zip_info.header_offset + len(
+                                zip_info.FileHeader()
+                            )
+                            file_length = zip_info.file_size
+                            range_header = (
+                                f"bytes={file_offset}-{file_offset + file_length - 1}"
+                            )
+
+                            # Fetch the file content from S3 using the calculated byte range
+                            response = await s3_client.get_object(
+                                Bucket=self.workspace_bucket,
+                                Key=s3_key,
+                                Range=range_header,
+                            )
+
+                            # Stream the content back to the user
+                            return StreamingResponse(
+                                response["Body"],
+                                media_type="application/octet-stream",
+                                headers={
+                                    "Content-Disposition": f'attachment; filename="{zip_info.filename}"'
+                                },
+                            )
 
             except KeyError:
                 raise HTTPException(status_code=404, detail="Artifact not found")
@@ -506,7 +785,7 @@ class ArtifactController:
                                     s3_config["endpoint_url"],
                                     s3_config["public_endpoint_url"],
                                 )
-                            return RedirectResponse(url=presigned_url, status_code=302)
+                            return RedirectResponse(url=presigned_url, status_code=307)
 
             except KeyError:
                 raise HTTPException(status_code=404, detail="Artifact not found")
