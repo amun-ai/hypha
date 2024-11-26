@@ -698,7 +698,7 @@ class RedisEventBus:
             self._ready.set_result(True)
             while not self._stop:
                 msg = await pubsub.get_message(
-                    ignore_subscribe_messages=True, timeout=0.1
+                    ignore_subscribe_messages=True, timeout=0.05
                 )
                 if msg:
                     asyncio.create_task(process_message(msg))  # Add task to pool
