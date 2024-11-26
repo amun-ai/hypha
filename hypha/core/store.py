@@ -907,10 +907,11 @@ class RedisStore:
         await self.remove_client(
             client_id, self._root_user.get_workspace(), self._root_user, unload=True
         )
-        websockets = self._websocket_server.get_websockets()
-        for ws in websockets.values():
-            try:
-                await ws.close()
-            except GeneratorExit:
-                pass
+        if self._websocket_server:
+            websockets = self._websocket_server.get_websockets()
+            for ws in websockets.values():
+                try:
+                    await ws.close()
+                except GeneratorExit:
+                    pass
         logger.info("Teardown complete")

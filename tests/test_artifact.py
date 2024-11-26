@@ -1079,7 +1079,7 @@ async def test_edit_existing_artifact(minio_server, fastapi_server, test_user_to
 
     # Retrieve and verify the uploaded file
     get_url = await artifact_manager.get_file(
-        artifact_id=dataset.id, path="example.txt"
+        artifact_id=dataset.id, file_path="example.txt"
     )
     response = requests.get(get_url)
     assert response.status_code == 200
@@ -1170,7 +1170,8 @@ async def test_artifact_schema_validation(
     assert response.ok
 
     # Commit the valid dataset artifact (should succeed as it conforms to the schema)
-    await artifact_manager.commit(artifact_id=valid_dataset.id)
+    artifact = await artifact_manager.commit(artifact_id=valid_dataset.id)
+    assert artifact.file_count == 1
 
     # Confirm the dataset is listed in the collection
     items = await artifact_manager.list(parent_id=collection.id)
@@ -1280,7 +1281,9 @@ async def test_artifact_manager_with_collection(
     assert dataset_item["view_count"] == 1
 
     # Retrieve the file in the dataset via HTTP to verify contents
-    get_url = await artifact_manager.get_file(artifact_id=dataset.id, path="test.txt")
+    get_url = await artifact_manager.get_file(
+        artifact_id=dataset.id, file_path="test.txt"
+    )
     response = requests.get(get_url)
     assert response.ok
     assert response.text == file_content
@@ -1674,7 +1677,7 @@ async def test_download_count(minio_server, fastapi_server, test_user_token):
     # Increment the download count of the artifact by download the primary file
     get_url = await artifact_manager.get_file(
         artifact_id=artifact.id,
-        path="example.txt",
+        file_path="example.txt",
     )
     response = requests.get(get_url)
     assert response.ok
@@ -1689,7 +1692,7 @@ async def test_download_count(minio_server, fastapi_server, test_user_token):
     # download twice will increment the download count by 1
     get_url = await artifact_manager.get_file(
         artifact_id=artifact.id,
-        path="example.txt",
+        file_path="example.txt",
     )
     response = requests.get(get_url)
     assert response.ok
@@ -1704,14 +1707,14 @@ async def test_download_count(minio_server, fastapi_server, test_user_token):
     # If we get the example file in silent mode, the download count won't increment
     get_url = await artifact_manager.get_file(
         artifact_id=artifact.id,
-        path="example.txt",
+        file_path="example.txt",
         silent=True,
     )
     response = requests.get(get_url)
     assert response.ok
     get_url = await artifact_manager.get_file(
         artifact_id=artifact.id,
-        path="example.txt",
+        file_path="example.txt",
         silent=True,
     )
     response = requests.get(get_url)
@@ -1726,7 +1729,7 @@ async def test_download_count(minio_server, fastapi_server, test_user_token):
     # download example 2 won't increment the download count
     get_url = await artifact_manager.get_file(
         artifact_id=artifact.id,
-        path="example2.txt",
+        file_path="example2.txt",
     )
     response = requests.get(get_url)
     assert response.ok

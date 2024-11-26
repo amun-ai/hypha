@@ -313,8 +313,7 @@ class ArtifactController:
                         # List all files in the artifact
                         root_dir_key = safe_join(
                             s3_config["prefix"],
-                            workspace,
-                            f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
+                            f"{artifact.id}/v{version_index}",
                         )
 
                         async def list_all_files(dir_path=""):
@@ -392,8 +391,7 @@ class ArtifactController:
                         async for path in files:
                             file_key = safe_join(
                                 s3_config["prefix"],
-                                workspace,
-                                f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
+                                f"{artifact.id}/v{version_index}",
                                 path,
                             )
                             logger.info(f"Adding file to ZIP: {file_key}")
@@ -516,8 +514,7 @@ class ArtifactController:
                         # Full key of the ZIP file in the S3 bucket
                         s3_key = safe_join(
                             s3_config["prefix"],
-                            workspace,
-                            f"{self._artifacts_dir}/{artifact.id}/v{version_index}/{zip_file_path}",
+                            f"{artifact.id}/v{version_index}/{zip_file_path}",
                         )
 
                         # Fetch the ZIP file metadata from S3 (to avoid downloading the whole file)
@@ -723,8 +720,7 @@ class ArtifactController:
                     s3_config = self._get_s3_config(artifact, parent_artifact)
                     file_key = safe_join(
                         s3_config["prefix"],
-                        workspace,
-                        f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
+                        f"{artifact.id}/v{version_index}",
                         path,
                     )
                     if path.endswith("/") or path == "":
@@ -1132,7 +1128,7 @@ class ArtifactController:
                 "secret_access_key": self.s3_controller.secret_access_key,
                 "region_name": self.s3_controller.region_name,
                 "bucket": self.workspace_bucket,
-                "prefix": "",
+                "prefix": safe_join(artifact.workspace, self._artifacts_dir),
                 "public_endpoint_url": None,
             }
             if self.s3_controller.enable_s3_proxy:
@@ -1269,8 +1265,6 @@ class ArtifactController:
         async with self._create_client_async(s3_config) as s3_client:
             version_key = safe_join(
                 s3_config["prefix"],
-                artifact.workspace,
-                f"{self._artifacts_dir}",
                 artifact.id,
                 f"v{version_index}.json",
             )
@@ -1295,8 +1289,6 @@ class ArtifactController:
         s3_config = self._get_s3_config(artifact, parent_artifact)
         version_key = safe_join(
             s3_config["prefix"],
-            artifact.workspace,
-            f"{self._artifacts_dir}",
             artifact.id,
             f"v{version_index}.json",
         )
@@ -1348,8 +1340,6 @@ class ArtifactController:
         async with self._create_client_async(s3_config) as s3_client:
             version_key = safe_join(
                 s3_config["prefix"],
-                artifact.workspace,
-                f"{self._artifacts_dir}",
                 artifact.id,
                 f"v{version_index}",
             )
@@ -1798,46 +1788,45 @@ class ArtifactController:
 
                 versions = artifact.versions or []
                 artifact.config = artifact.config or {}
-                if artifact.staging:
-                    s3_config = self._get_s3_config(artifact, parent_artifact)
-                    async with self._create_client_async(
-                        s3_config,
-                    ) as s3_client:
-                        download_weights = {}
-                        for file_info in artifact.staging:
-                            file_key = safe_join(
-                                s3_config["prefix"],
-                                artifact.workspace,
-                                f"{self._artifacts_dir}/{artifact.id}/v{version_index}/{file_info['path']}",
-                            )
-                            try:
-                                await s3_client.head_object(
-                                    Bucket=s3_config["bucket"], Key=file_key
-                                )
-                            except ClientError:
-                                raise FileNotFoundError(
-                                    f"File '{file_info['path']}' does not exist in the artifact."
-                                )
-                            if (
-                                file_info.get("download_weight") is not None
-                                and file_info["download_weight"] > 0
-                            ):
-                                download_weights[file_info["path"]] = file_info[
-                                    "download_weight"
-                                ]
-                        if download_weights:
-                            artifact.config["download_weights"] = download_weights
-                            flag_modified(artifact, "config")
 
-                        artifact.file_count = await self._count_files_in_prefix(
-                            s3_client,
-                            s3_config["bucket"],
-                            safe_join(
-                                s3_config["prefix"],
-                                artifact.workspace,
-                                f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
-                            ),
+                s3_config = self._get_s3_config(artifact, parent_artifact)
+                async with self._create_client_async(
+                    s3_config,
+                ) as s3_client:
+                    download_weights = {}
+                    for file_info in artifact.staging or []:
+                        file_key = safe_join(
+                            s3_config["prefix"],
+                            f"{artifact.id}/v{version_index}/{file_info['path']}",
                         )
+                        try:
+                            await s3_client.head_object(
+                                Bucket=s3_config["bucket"], Key=file_key
+                            )
+                        except ClientError:
+                            raise FileNotFoundError(
+                                f"File '{file_info['path']}' does not exist in the artifact."
+                            )
+                        if (
+                            file_info.get("download_weight") is not None
+                            and file_info["download_weight"] > 0
+                        ):
+                            download_weights[file_info["path"]] = file_info[
+                                "download_weight"
+                            ]
+
+                    if download_weights:
+                        artifact.config["download_weights"] = download_weights
+                        flag_modified(artifact, "config")
+
+                    artifact.file_count = await self._count_files_in_prefix(
+                        s3_client,
+                        s3_config["bucket"],
+                        safe_join(
+                            s3_config["prefix"],
+                            f"{artifact.id}/v{version_index}",
+                        ),
+                    )
 
                 parent_artifact_config = (
                     parent_artifact.config if parent_artifact else {}
@@ -1925,8 +1914,7 @@ class ArtifactController:
                 if delete_files:
                     artifact_path = safe_join(
                         s3_config["prefix"],
-                        artifact.workspace,
-                        f"{self._artifacts_dir}/{artifact.id}",
+                        artifact.id,
                     )
                     async with self._create_client_async(
                         s3_config,
@@ -2172,8 +2160,7 @@ class ArtifactController:
                 ) as s3_client:
                     file_key = safe_join(
                         s3_config["prefix"],
-                        artifact.workspace,
-                        f"{self._artifacts_dir}/{artifact.id}/v{version_index}/{file_path}",
+                        f"{artifact.id}/v{version_index}/{file_path}",
                     )
                     presigned_url = await s3_client.generate_presigned_url(
                         "put_object",
@@ -2236,8 +2223,7 @@ class ArtifactController:
                 ) as s3_client:
                     file_key = safe_join(
                         s3_config["prefix"],
-                        artifact.workspace,
-                        f"{self._artifacts_dir}/{artifact.id}/v{version_index}/{file_path}",
+                        f"{artifact.id}/v{version_index}/{file_path}",
                     )
                     await s3_client.delete_object(
                         Bucket=s3_config["bucket"], Key=file_key
@@ -2272,8 +2258,7 @@ class ArtifactController:
                 ) as s3_client:
                     file_key = safe_join(
                         s3_config["prefix"],
-                        artifact.workspace,
-                        f"{self._artifacts_dir}/{artifact.id}/v{version_index}/{file_path}",
+                        f"{artifact.id}/v{version_index}/{file_path}",
                     )
                     try:
                         await s3_client.head_object(
@@ -2342,8 +2327,7 @@ class ArtifactController:
                         full_path = (
                             safe_join(
                                 s3_config["prefix"],
-                                artifact.workspace,
-                                f"{self._artifacts_dir}/{artifact.id}/v{version_index}/{dir_path}",
+                                f"{artifact.id}/v{version_index}/{dir_path}",
                             )
                             + "/"
                         )
@@ -2351,8 +2335,7 @@ class ArtifactController:
                         full_path = (
                             safe_join(
                                 s3_config["prefix"],
-                                artifact.workspace,
-                                f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
+                                f"{artifact.id}/v{version_index}",
                             )
                             + "/"
                         )

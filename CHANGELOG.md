@@ -1,5 +1,11 @@
 # Hypha Change Log
 
+### 0.20.40
+ 
+ - Add vector store service to support vector search and retrieval.
+ - Fix zenodo file upload issue
+ - Speed up server by removing the `asyncio.sleep(0.01)` throttling and support concurrent handling of events in the redis event bus.
+
 ### 0.20.39
 
  - Revise artifact manager to use artifact id as the primary key, remove `prefix` based keys.
