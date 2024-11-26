@@ -66,10 +66,13 @@ class WebsocketServer:
                     return
             else:
                 logger.warning("Rejecting legacy imjoy-rpc client (%s)", client_id)
-                await websocket.close(
-                    code=status.WS_1008_POLICY_VIOLATION,
-                    reason="Connection rejected, please  upgrade to `hypha-rpc` which pass the authentication information in the first message",
-                )
+                try:
+                    await websocket.close(
+                        code=status.WS_1008_POLICY_VIOLATION,
+                        reason="Connection rejected, please  upgrade to `hypha-rpc` which pass the authentication information in the first message",
+                    )
+                except GeneratorExit:
+                    pass
                 return
 
             try:
@@ -164,11 +167,18 @@ class WebsocketServer:
                     e,
                 )
 
+    def get_websockets(self):
+        """Get the active websockets."""
+        return self._websockets
+
     async def force_disconnect(self, workspace, client_id, code, reason):
         """Force disconnect a client."""
         assert f"{workspace}/{client_id}" in self._websockets, "Client not connected"
         websocket = self._websockets[f"{workspace}/{client_id}"]
-        await websocket.close(code=code, reason=reason)
+        try:
+            await websocket.close(code=code, reason=reason)
+        except GeneratorExit:
+            pass  # Suppress GeneratorExit to avoid RuntimeError
 
     async def check_client(self, client_id, workspace, user_info):
         """Check if the client is already connected."""
@@ -367,7 +377,10 @@ class WebsocketServer:
             await websocket.send_text(json.dumps({"type": "error", "message": reason}))
         try:
             if websocket.client_state.name not in ["CLOSED", "CLOSING", "DISCONNECTED"]:
-                await websocket.close(code=code, reason=reason)
+                try:
+                    await websocket.close(code=code, reason=reason)
+                except GeneratorExit:
+                    pass  # Suppress GeneratorExit to avoid RuntimeError
         except Exception as e:
             logger.error(f"Error disconnecting websocket: {str(e)}")
 

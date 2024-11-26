@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import sys
+import os
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, Field, field_validator
@@ -547,7 +548,11 @@ class RedisEventBus:
         loop = asyncio.get_running_loop()
         self._ready = loop.create_future()
         self._loop = loop
+
+        # Start the Redis subscription task
         loop.create_task(self._subscribe_redis())
+
+        # Wait for readiness signal
         await self._ready
 
     def on(self, event_name, func):
@@ -652,39 +657,50 @@ class RedisEventBus:
         self._stop = True
 
     async def _subscribe_redis(self):
+        cpu_count = os.cpu_count() or 1
+        concurrent_tasks = cpu_count * 10
         pubsub = self._redis.pubsub()
         self._stop = False
+        semaphore = asyncio.Semaphore(concurrent_tasks)  # Limit concurrent tasks
+
+        async def process_message(msg):
+            """Process a single message while respecting the semaphore."""
+            async with semaphore:  # Acquire semaphore
+                try:
+                    channel = msg["channel"].decode("utf-8")
+                    RedisEventBus._counter.labels(event="*").inc()
+
+                    if channel.startswith("event:b:"):
+                        event_type = channel[8:]
+                        data = msg["data"]
+                        await self._redis_event_bus.emit(event_type, data)
+                        if ":" not in event_type:
+                            RedisEventBus._counter.labels(event=event_type).inc()
+                    elif channel.startswith("event:d:"):
+                        event_type = channel[8:]
+                        data = json.loads(msg["data"])
+                        await self._redis_event_bus.emit(event_type, data)
+                        if ":" not in event_type:
+                            RedisEventBus._counter.labels(event=event_type).inc()
+                    elif channel.startswith("event:s:"):
+                        event_type = channel[8:]
+                        data = msg["data"].decode("utf-8")
+                        await self._redis_event_bus.emit(event_type, data)
+                        if ":" not in event_type:
+                            RedisEventBus._counter.labels(event=event_type).inc()
+                    else:
+                        logger.info("Unknown channel: %s", channel)
+                except Exception as exp:
+                    logger.exception(f"Error processing message: {exp}")
+
         try:
             await pubsub.psubscribe("event:*")
             self._ready.set_result(True)
-            while self._stop is False:
-                msg = await pubsub.get_message(ignore_subscribe_messages=True)
-                try:
-                    if msg:
-                        channel = msg["channel"].decode("utf-8")
-                        RedisEventBus._counter.labels(event="*").inc()
-                        if channel.startswith("event:b:"):
-                            event_type = channel[8:]
-                            data = msg["data"]
-                            await self._redis_event_bus.emit(event_type, data)
-                            if ":" not in event_type:
-                                RedisEventBus._counter.labels(event=event_type).inc()
-                        elif channel.startswith("event:d:"):
-                            event_type = channel[8:]
-                            data = json.loads(msg["data"])
-                            await self._redis_event_bus.emit(event_type, data)
-                            if ":" not in event_type:
-                                RedisEventBus._counter.labels(event=event_type).inc()
-                        elif channel.startswith("event:s:"):
-                            event_type = channel[8:]
-                            data = msg["data"].decode("utf-8")
-                            await self._redis_event_bus.emit(event_type, data)
-                            if ":" not in event_type:
-                                RedisEventBus._counter.labels(event=event_type).inc()
-                        else:
-                            logger.info("Unknown channel: %s", channel)
-                except Exception as exp:
-                    logger.exception(f"Error processing message: {exp}")
-                await asyncio.sleep(0)
+            while not self._stop:
+                msg = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=0.1
+                )
+                if msg:
+                    asyncio.create_task(process_message(msg))  # Add task to pool
         except Exception as exp:
             self._ready.set_exception(exp)
