@@ -1798,46 +1798,47 @@ class ArtifactController:
 
                 versions = artifact.versions or []
                 artifact.config = artifact.config or {}
-                if artifact.staging:
-                    s3_config = self._get_s3_config(artifact, parent_artifact)
-                    async with self._create_client_async(
-                        s3_config,
-                    ) as s3_client:
-                        download_weights = {}
-                        for file_info in artifact.staging:
-                            file_key = safe_join(
-                                s3_config["prefix"],
-                                artifact.workspace,
-                                f"{self._artifacts_dir}/{artifact.id}/v{version_index}/{file_info['path']}",
-                            )
-                            try:
-                                await s3_client.head_object(
-                                    Bucket=s3_config["bucket"], Key=file_key
-                                )
-                            except ClientError:
-                                raise FileNotFoundError(
-                                    f"File '{file_info['path']}' does not exist in the artifact."
-                                )
-                            if (
-                                file_info.get("download_weight") is not None
-                                and file_info["download_weight"] > 0
-                            ):
-                                download_weights[file_info["path"]] = file_info[
-                                    "download_weight"
-                                ]
-                        if download_weights:
-                            artifact.config["download_weights"] = download_weights
-                            flag_modified(artifact, "config")
 
-                        artifact.file_count = await self._count_files_in_prefix(
-                            s3_client,
-                            s3_config["bucket"],
-                            safe_join(
-                                s3_config["prefix"],
-                                artifact.workspace,
-                                f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
-                            ),
+                s3_config = self._get_s3_config(artifact, parent_artifact)
+                async with self._create_client_async(
+                    s3_config,
+                ) as s3_client:
+                    download_weights = {}
+                    for file_info in artifact.staging or []:
+                        file_key = safe_join(
+                            s3_config["prefix"],
+                            artifact.workspace,
+                            f"{self._artifacts_dir}/{artifact.id}/v{version_index}/{file_info['path']}",
                         )
+                        try:
+                            await s3_client.head_object(
+                                Bucket=s3_config["bucket"], Key=file_key
+                            )
+                        except ClientError:
+                            raise FileNotFoundError(
+                                f"File '{file_info['path']}' does not exist in the artifact."
+                            )
+                        if (
+                            file_info.get("download_weight") is not None
+                            and file_info["download_weight"] > 0
+                        ):
+                            download_weights[file_info["path"]] = file_info[
+                                "download_weight"
+                            ]
+
+                    if download_weights:
+                        artifact.config["download_weights"] = download_weights
+                        flag_modified(artifact, "config")
+
+                    artifact.file_count = await self._count_files_in_prefix(
+                        s3_client,
+                        s3_config["bucket"],
+                        safe_join(
+                            s3_config["prefix"],
+                            artifact.workspace,
+                            f"{self._artifacts_dir}/{artifact.id}/v{version_index}",
+                        ),
+                    )
 
                 parent_artifact_config = (
                     parent_artifact.config if parent_artifact else {}
