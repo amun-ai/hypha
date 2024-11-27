@@ -63,14 +63,14 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
 
     # Test semantic search using `text_query`
     text_query = "NLP"
-    services = await api.search_services(text_query=text_query, limit=3)
+    services = await api.search_services(query=text_query, limit=3)
     assert isinstance(services, list)
     assert len(services) <= 3
     # The top hit should be the service with "natural language processing" in the `docs` field
     assert "natural language processing" in services[0]["docs"]
     assert services[0]["score"] < services[1]["score"]
 
-    results = await api.search_services(text_query=text_query, limit=3, pagination=True)
+    results = await api.search_services(query=text_query, limit=3, pagination=True)
     assert results["total"] >= 1
 
     embedding = np.ones(384).astype(np.float32)
@@ -88,7 +88,7 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
     )
 
     # Test vector query with the exact embedding
-    services = await api.search_services(vector_query=embedding, limit=3)
+    services = await api.search_services(query=embedding, limit=3)
     assert isinstance(services, list)
     assert len(services) <= 3
     assert "service-88" in services[0]["id"]
@@ -103,9 +103,7 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
     # Test hybrid search (text query + filters)
     filters = {"type": "my-type"}
     text_query = "genomics workflows"
-    services = await api.search_services(
-        text_query=text_query, filters=filters, limit=3
-    )
+    services = await api.search_services(query=text_query, filters=filters, limit=3)
     assert isinstance(services, list)
     assert all(service["type"] == "my-type" for service in services)
     # The top hit should be the service with "genomics" in the `docs` field
@@ -114,7 +112,7 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
     # Test hybrid search (embedding + filters)
     filters = {"type": "my-type"}
     services = await api.search_services(
-        vector_query=np.random.rand(384), filters=filters, limit=3
+        query=np.random.rand(384), filters=filters, limit=3
     )
     assert isinstance(services, list)
     assert all(service["type"] == "my-type" for service in services)

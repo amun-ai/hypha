@@ -19,7 +19,6 @@ from hypha.core import UserInfo, auth, UserPermission
 from hypha.core.auth import generate_presigned_token, create_scope
 from hypha.minio import setup_minio_executables
 from redis import Redis
-from qdrant_client import QdrantClient
 
 from . import (
     MINIO_PORT,
@@ -39,8 +38,6 @@ from . import (
     POSTGRES_PASSWORD,
     POSTGRES_DB,
     POSTGRES_URI,
-    QDRANT_PORT,
-    QDRANT_URL,
 )
 
 JWT_SECRET = str(uuid.uuid4())
@@ -262,67 +259,8 @@ def redis_server():
         time.sleep(1)
 
 
-@pytest_asyncio.fixture(name="qdrant_server", scope="session")
-def qdrant_server():
-    """Start a Qdrant server as test fixture and tear down after test."""
-    try:
-        # Check if Qdrant is already running
-        client = QdrantClient(QDRANT_URL)
-        client.info()
-        print(f"Qdrant is running, using vectordb at {QDRANT_URL}")
-        yield QDRANT_URL
-    except Exception:
-        # Pull the Qdrant image
-        print("Pulling Qdrant Docker image...")
-        subprocess.run(
-            ["docker", "pull", "qdrant/qdrant:v1.12.4-unprivileged"], check=True
-        )
-        # Start Qdrant using Docker
-        print("Qdrant is not running, starting a Qdrant server using Docker...")
-        dirpath = tempfile.mkdtemp()
-        subprocess.Popen(
-            [
-                "docker",
-                "run",
-                "-d",
-                "--name",
-                "qdrant",
-                "-p",
-                f"{QDRANT_PORT}:{QDRANT_PORT}",
-                "-p",
-                "6334:6334",
-                "-v",
-                f"{dirpath}:/qdrant/storage:z",
-                "qdrant/qdrant:v1.12.4-unprivileged",
-            ]
-        )
-
-        # Wait for Qdrant to be ready
-        timeout = 10
-        while timeout > 0:
-            try:
-                client = QdrantClient(QDRANT_URL)
-                client.info()
-                print(f"Qdrant is running at {QDRANT_URL}")
-                break
-            except Exception:
-                pass
-            timeout -= 0.1
-            time.sleep(0.1)
-
-        if timeout <= 0:
-            raise RuntimeError("Failed to start Qdrant server.")
-
-        yield QDRANT_URL
-
-        # Stop and remove the Docker container after the test
-        subprocess.Popen(["docker", "stop", "qdrant"])
-        subprocess.Popen(["docker", "rm", "qdrant"])
-        time.sleep(1)
-
-
 @pytest_asyncio.fixture(name="fastapi_server", scope="session")
-def fastapi_server_fixture(minio_server, postgres_server, qdrant_server):
+def fastapi_server_fixture(minio_server, postgres_server):
     """Start server as test fixture and tear down after test."""
     with subprocess.Popen(
         [
@@ -342,7 +280,6 @@ def fastapi_server_fixture(minio_server, postgres_server, qdrant_server):
             "--enable-s3-proxy",
             f"--workspace-bucket=my-workspaces",
             "--s3-admin-type=minio",
-            f"--vectordb-uri={qdrant_server}",
             "--cache-dir=./bin/cache",
             f"--triton-servers=http://127.0.0.1:{TRITON_PORT}",
             "--static-mounts=/tests:./tests",

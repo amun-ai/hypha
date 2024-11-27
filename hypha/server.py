@@ -221,7 +221,6 @@ def create_application(args):
         local_base_url=local_base_url,
         redis_uri=args.redis_uri,
         database_uri=args.database_uri,
-        vectordb_uri=args.vectordb_uri,
         ollama_host=args.ollama_host,
         cache_dir=args.cache_dir,
         openai_config={
@@ -398,12 +397,6 @@ def get_argparser(add_help=True):
         type=str,
         default=None,
         help="set OpenAI API key",
-    )
-    parser.add_argument(
-        "--vectordb-uri",
-        type=str,
-        default=None,
-        help="set URI for the vector database",
     )
     parser.add_argument(
         "--database-uri",

@@ -5,14 +5,14 @@ import random
 from hypha_rpc import connect_to_server
 
 
-from . import SERVER_URL, find_item
+from . import SERVER_URL_REDIS_1
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
 
 
 async def test_artifact_vector_collection(
-    minio_server, fastapi_server, test_user_token
+    minio_server, fastapi_server_redis_1, test_user_token
 ):
     """Test vector-related functions within a vector-collection artifact."""
 
@@ -20,7 +20,7 @@ async def test_artifact_vector_collection(
     api = await connect_to_server(
         {
             "name": "test deploy client",
-            "server_url": SERVER_URL,
+            "server_url": SERVER_URL_REDIS_1,
             "token": test_user_token,
         }
     )
@@ -32,11 +32,24 @@ async def test_artifact_vector_collection(
         "description": "A test vector collection",
     }
     vector_collection_config = {
-        "vectors_config": {
-            "size": 384,
-            "distance": "Cosine",
+        "vector_fields": [
+            {
+                "type": "VECTOR",
+                "name": "vector",
+                "algorithm": "FLAT",
+                "attributes": {
+                    "TYPE": "FLOAT32",
+                    "DIM": 384,
+                    "DISTANCE_METRIC": "COSINE",
+                },
+            },
+            {"type": "TEXT", "name": "text"},
+            {"type": "TAG", "name": "label"},
+            {"type": "NUMERIC", "name": "rand_number"},
+        ],
+        "embedding_models": {
+            "vector": "fastembed:BAAI/bge-small-en-v1.5",
         },
-        "embedding_model": "fastembed:BAAI/bge-small-en-v1.5",
     }
     vector_collection = await artifact_manager.create(
         type="vector-collection",
@@ -47,27 +60,21 @@ async def test_artifact_vector_collection(
     vectors = [
         {
             "vector": [random.random() for _ in range(384)],
-            "payload": {
-                "text": "This is a test document.",
-                "label": "doc1",
-                "rand_number": random.randint(0, 10),
-            },
+            "text": "This is a test document.",
+            "label": "doc1",
+            "rand_number": random.randint(0, 10),
         },
         {
             "vector": np.random.rand(384),
-            "payload": {
-                "text": "Another document.",
-                "label": "doc2",
-                "rand_number": random.randint(0, 10),
-            },
+            "text": "Another document.",
+            "label": "doc2",
+            "rand_number": random.randint(0, 10),
         },
         {
             "vector": np.random.rand(384),
-            "payload": {
-                "text": "Yet another document.",
-                "label": "doc3",
-                "rand_number": random.randint(0, 10),
-            },
+            "text": "Yet another document.",
+            "label": "doc3",
+            "rand_number": random.randint(0, 10),
         },
     ]
     await artifact_manager.add_vectors(
@@ -82,57 +89,48 @@ async def test_artifact_vector_collection(
     query_vector = [random.random() for _ in range(384)]
     search_results = await artifact_manager.search_vectors(
         artifact_id=vector_collection.id,
-        query_vector=query_vector,
+        query={"vector": query_vector},
         limit=2,
     )
     assert len(search_results) <= 2
 
     results = await artifact_manager.search_vectors(
         artifact_id=vector_collection.id,
-        query_vector=query_vector,
-        limit=2,
+        query={"vector": query_vector},
+        limit=3,
         pagination=True,
     )
     assert results["total"] == 3
 
-    query_filter = {
-        "should": None,
-        "min_should": None,
-        "must": [
-            {
-                "key": "rand_number",
-                "match": None,
-                "range": {"lt": None, "gt": None, "gte": 3.0, "lte": None},
-                "geo_bounding_box": None,
-                "geo_radius": None,
-                "geo_polygon": None,
-                "values_count": None,
-            }
-        ],
-        "must_not": None,
-    }
+    search_results = await artifact_manager.search_vectors(
+        artifact_id=vector_collection.id,
+        filters={"rand_number": [-2, -1]},
+        query={"vector": np.random.rand(384)},
+        limit=2,
+    )
+    assert len(search_results) == 0
 
     search_results = await artifact_manager.search_vectors(
         artifact_id=vector_collection.id,
-        query_filter=query_filter,
-        query_vector=np.random.rand(384),
+        filters={"rand_number": [0, 10]},
+        query={"vector": np.random.rand(384)},
         limit=2,
     )
-    assert len(search_results) <= 2
+    assert len(search_results) > 0
 
     # Search for vectors by text
-    documents = [
-        {"text": "This is a test document.", "label": "doc1"},
-        {"text": "Another test document.", "label": "doc2"},
+    vectors = [
+        {"vector": "This is a test document.", "label": "doc1"},
+        {"vector": "Another test document.", "label": "doc2"},
     ]
-    await artifact_manager.add_documents(
+    await artifact_manager.add_vectors(
         artifact_id=vector_collection.id,
-        documents=documents,
+        vectors=vectors,
     )
-    text_query = "test document"
+
     text_search_results = await artifact_manager.search_vectors(
         artifact_id=vector_collection.id,
-        query_text=text_query,
+        query={"vector": "test document"},
         limit=2,
     )
     assert len(text_search_results) <= 2
@@ -142,7 +140,7 @@ async def test_artifact_vector_collection(
         artifact_id=vector_collection.id,
         id=text_search_results[0]["id"],
     )
-    assert retrieved_vector.id == text_search_results[0]["id"]
+    assert "label" in retrieved_vector
 
     # List vectors in the collection
     vector_list = await artifact_manager.list_vectors(

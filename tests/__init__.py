@@ -28,10 +28,6 @@ POSTGRES_DB = "postgres"
 POSTGRES_URI = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@localhost:{POSTGRES_PORT}/{POSTGRES_DB}"
 
 
-QDRANT_PORT = 6333
-QDRANT_URL = "http://127.0.0.1:6333"
-
-
 def find_item(items, key, value):
     """Find an item with key or attributes in an object list."""
     filtered = [
