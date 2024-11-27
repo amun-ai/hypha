@@ -740,7 +740,7 @@ async def test_publish_artifact(minio_server, fastapi_server, test_user_token):
         manifest=dataset_manifest,
         config={
             "publish_to": "sandbox_zenodo"
-        }
+        },
         version="stage",
     )
 
