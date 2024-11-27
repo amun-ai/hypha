@@ -235,7 +235,7 @@ print("Valid dataset committed.")
 
 ## API References
 
-### `create(parent_id: str, alias: str, type: str, manifest: dict, permissions: dict=None, config: dict=None, version: str = None, comment: str = None, overwrite: bool = False, publish_to: str = None) -> None`
+### `create(parent_id: str, alias: str, type: str, manifest: dict, permissions: dict=None, config: dict=None, version: str = None, comment: str = None, overwrite: bool = False) -> None`
 
 Creates a new artifact or collection with the specified manifest. The artifact is staged until committed. For collections, the `collection` field should be an empty list.
 
@@ -251,13 +251,14 @@ Creates a new artifact or collection with the specified manifest. The artifact i
   - **Id Parts**: You can also use id parts stored in the parent collection's config['id_parts'] to generate an id. For example, if the parent collection has `{"animals": ["dog", "cat", ...], "colors": ["red", "blue", ...]}`, you can use `"{colors}-{animals}"` to generate an id like `red-dog`.
 - `workspace`: Optional. The workspace id where the artifact will be created. If not set, it will be created in the default workspace. If specified, it should match the workspace in the alias and also the parent_id.
 - `parent_id`: The id of the parent collection where the artifact will be created. If the artifact is a top-level collection, leave this field empty or set to None.
-- `type`: The type of the artifact. Supported values are `collection`, `generic` and any other custom type. By default, it's set to `generic` which contains fields tailored for displaying the artifact as cards on a webpage.
+- `type`: The type of the artifact. Supported values are `collection`, `vector-collection`, `generic` and any other custom type. By default, it's set to `generic` which contains fields tailored for displaying the artifact as cards on a webpage.
 - `manifest`: The manifest of the new artifact. Ensure the manifest follows the required schema if applicable (e.g., for collections).
 - `config`: Optional. A dictionary containing additional configuration options for the artifact (shared for both staged and committed). For collections, the config can contain the following special fields:
   - `collection_schema`: Optional. A JSON schema that defines the structure of child artifacts in the collection. This schema is used to validate child artifacts when they are created or edited. If a child artifact does not conform to the schema, the creation or edit operation will fail.
   - `id_parts`: Optional. A dictionary of id name parts to be used in generating the id for child artifacts. For example: `{"animals": ["dog", "cat", ...], "colors": ["red", "blue", ...]}`. This can be used for creating child artifacts with auto-generated ids based on the id parts. For example, when calling `create`, you can specify the alias as `my-pet-{colors}-{animals}`, and the id will be generated based on the id parts, e.g., `my-pet-red-dog`.
   - `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
   - `list_fields`: Optional. A list of fields to be collected when calling ``list`` function. By default, it collects all fields in the artifacts. If you want to collect only specific fields, you can set this field to a list of field names, e.g. `["manifest", "download_count"]`.
+  - `publish_to`: Optional. A string specifying the target platform to publish the artifact. Supported values are `zenodo` and `sandbox_zenodo`. If set, the artifact will be published to the specified platform. The artifact must have a valid Zenodo metadata schema to be published.
 - `version`: Optional. The version of the artifact to create. By default, it set to None or `"new"`, it will generate a version `v0`. If you want to create a staged version, you can set it to `"stage"`.
 - `comment`: Optional. A comment to describe the changes made to the artifact.
 - `secrets`: Optional. A dictionary containing secrets to be stored with the artifact. Secrets are encrypted and can only be accessed by the artifact owner or users with appropriate permissions. The following keys can be used:
@@ -271,7 +272,7 @@ Creates a new artifact or collection with the specified manifest. The artifact i
   - `S3_PREFIX`: The prefix of the S3 storage for the artifact. Default: `""`.
   - `S3_PUBLIC_ENDPOINT_URL`: The public endpoint URL of the S3 storage for the artifact. If the S3 server is not public, you can set this to the public endpoint URL. Default: `None`.
 - `overwrite`: Optional. A boolean flag to overwrite the existing artifact with the same alias. Default is `False`.
-- `publish_to`: Optional. A string specifying the target platform to publish the artifact. Supported values are `zenodo` and `sandbox_zenodo`. If set, the artifact will be published to the specified platform. The artifact must have a valid Zenodo metadata schema to be published.
+
 
 **Note 1: If you set `version="stage"`, you must call `commit()` to finalize the artifact.**
 
@@ -434,6 +435,118 @@ await artifact_manager.delete(artifact_id="example-dataset", delete_files=True)
 
 # If "example-dataset" is an alias of the artifact under another workspace
 await artifact_manager.delete(artifact_id="other_workspace/example-dataset", delete_files=True)
+```
+
+---
+
+### `add_vectors(artifact_id: str, vectors: list, embedding_models: Optional[Dict[str, str]] = None, context: dict = None) -> None`
+
+Adds vectors to a vector collection artifact.
+
+**Parameters:**
+
+- `artifact_id`: The ID of the artifact to which vectors will be added. This must be a vector-collection artifact.
+- `vectors`: A list of vectors to add to the collection.
+- `embedding_models`: (Optional) A dictionary specifying embedding models to be used. If not provided, the default models from the artifact's configuration will be used.
+- `context`: A dictionary containing user and session context information.
+
+**Returns:** None.
+
+**Example:**
+
+```python
+await artifact_manager.add_vectors(artifact_id="example-id", vectors=[{"id": 1, "vector": [0.1, 0.2]}])
+```
+
+---
+
+### `search_vectors(artifact_id: str, query: Optional[Dict[str, Any]] = None, embedding_models: Optional[str] = None, filters: Optional[dict[str, Any]] = None, limit: Optional[int] = 5, offset: Optional[int] = 0, return_fields: Optional[List[str]] = None, order_by: Optional[str] = None, pagination: Optional[bool] = False, context: dict = None) -> list`
+
+Searches vectors in a vector collection artifact based on a query.
+
+**Parameters:**
+
+- `artifact_id`: The ID of the artifact to search within. This must be a vector-collection artifact.
+- `query`: (Optional) A dictionary representing the query vector or conditions.
+- `embedding_models`: (Optional) Specifies which embedding model to use. Defaults to the artifact's configuration.
+- `filters`: (Optional) Filters for refining the search results.
+- `limit`: (Optional) Maximum number of results to return. Defaults to 5.
+- `offset`: (Optional) Number of results to skip. Defaults to 0.
+- `return_fields`: (Optional) A list of fields to include in the results.
+- `order_by`: (Optional) Field to order the results by.
+- `pagination`: (Optional) Whether to include pagination metadata. Defaults to `False`.
+- `context`: A dictionary containing user and session context information.
+
+**Returns:** A list of search results.
+
+**Example:**
+
+```python
+results = await artifact_manager.search_vectors(artifact_id="example-id", query={"vector": [0.1, 0.2]}, limit=10)
+```
+
+---
+
+### `remove_vectors(artifact_id: str, ids: list, context: dict = None) -> None`
+
+Removes vectors from a vector collection artifact.
+
+**Parameters:**
+
+- `artifact_id`: The ID of the artifact from which vectors will be removed. This must be a vector-collection artifact.
+- `ids`: A list of vector IDs to remove.
+- `context`: A dictionary containing user and session context information.
+
+**Returns:** None.
+
+**Example:**
+
+```python
+await artifact_manager.remove_vectors(artifact_id="example-id", ids=[1, 2, 3])
+```
+
+---
+
+### `get_vector(artifact_id: str, id: int, context: dict = None) -> dict`
+
+Fetches a specific vector by its ID from a vector collection artifact.
+
+**Parameters:**
+
+- `artifact_id`: The ID of the artifact to fetch the vector from. This must be a vector-collection artifact.
+- `id`: The ID of the vector to fetch.
+- `context`: A dictionary containing user and session context information.
+
+**Returns:** A dictionary containing the vector data.
+
+**Example:**
+
+```python
+vector = await artifact_manager.get_vector(artifact_id="example-id", id=123)
+```
+
+---
+
+### `list_vectors(artifact_id: str, offset: int = 0, limit: int = 10, return_fields: List[str] = None, order_by: str = None, pagination: bool = False, context: dict = None) -> list`
+
+Lists vectors in a vector collection artifact.
+
+**Parameters:**
+
+- `artifact_id`: The ID of the artifact to list vectors from. This must be a vector-collection artifact.
+- `offset`: (Optional) Number of results to skip. Defaults to 0.
+- `limit`: (Optional) Maximum number of results to return. Defaults to 10.
+- `return_fields`: (Optional) A list of fields to include in the results.
+- `order_by`: (Optional) Field to order the results by.
+- `pagination`: (Optional) Whether to include pagination metadata. Defaults to `False`.
+- `context`: A dictionary containing user and session context information.
+
+**Returns:** A list of vectors.
+
+**Example:**
+
+```python
+vectors = await artifact_manager.list_vectors(artifact_id="example-id", limit=20)
 ```
 
 ---

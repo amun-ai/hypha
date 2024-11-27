@@ -96,7 +96,6 @@ class RedisStore:
         local_base_url=None,
         redis_uri=None,
         database_uri=None,
-        vectordb_uri=None,
         ollama_host=None,
         openai_config=None,
         cache_dir=None,
@@ -136,13 +135,6 @@ class RedisStore:
         }
 
         logger.info("Server info: %s", self._server_info)
-        self._vectordb_uri = vectordb_uri
-        if self._vectordb_uri is not None:
-            from qdrant_client import AsyncQdrantClient
-
-            self._vectordb_client = AsyncQdrantClient(self._vectordb_uri)
-        else:
-            self._vectordb_client = None
 
         self._database_uri = database_uri
         if self._database_uri is None:
@@ -204,9 +196,6 @@ class RedisStore:
 
     def get_sql_engine(self):
         return self._sql_engine
-
-    def get_vectordb_client(self):
-        return self._vectordb_client
 
     def get_openai_client(self):
         return self._openai_client
@@ -553,32 +542,8 @@ class RedisStore:
                 "list_servers": self.list_servers,
                 "kickout_client": self.kickout_client,
                 "list_workspaces": self.list_all_workspaces,
-                "list_vector_collections": self.list_vector_collections,
-                "delete_vector_collection": self.delete_vector_collection,
             }
         )
-
-    @schema_method
-    async def list_vector_collections(self):
-        """List all vector collections."""
-        if self._vectordb_client is None:
-            raise Exception("Vector database is not configured")
-        # get_collections
-        collections = await self._vectordb_client.get_collections()
-        return collections
-
-    @schema_method
-    async def delete_vector_collection(
-        self,
-        collection_name: str = Field(
-            ..., description="The name of the vector collection to delete."
-        ),
-    ):
-        """Delete a vector collection."""
-        if self._vectordb_client is None:
-            raise Exception("Vector database is not configured")
-        # delete_collection
-        await self._vectordb_client.delete_collection(collection_name)
 
     @schema_method
     async def list_servers(self):

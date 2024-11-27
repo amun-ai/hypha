@@ -34,6 +34,7 @@ from hypha.core import (
     UserPermission,
     ServiceTypeInfo,
 )
+from hypha.vectors import VectorSearchEngine
 from hypha.core.auth import generate_presigned_token, create_scope, valid_token
 from hypha.utils import EventBus, random_id
 
@@ -181,47 +182,44 @@ class WorkspaceManager:
                 logger.info("Database tables created successfully.")
 
         self._embedding_model = None
-        self._search_fields = None
         if self._enable_service_search:
             from fastembed import TextEmbedding
 
             self._embedding_model = TextEmbedding(
                 model_name="BAAI/bge-small-en-v1.5", cache_dir=self._cache_dir
             )
-
-            from redis.commands.search.field import VectorField, TextField, TagField
-            from redis.commands.search.indexDefinition import IndexDefinition, IndexType
-
-            # Define vector field for RedisSearch (assuming cosine similarity)
-            # Manually define Redis fields for each ServiceInfo attribute
-            self._search_fields = [
-                TagField(name="id"),  # id as tag
-                TextField(name="name"),  # name as text
-                TagField(name="type"),  # type as tag (enum-like)
-                TextField(name="description"),  # description as text
-                TextField(name="docs"),  # docs as text
-                TagField(name="app_id"),  # app_id as tag
-                TextField(
-                    name="service_schema"
-                ),  # service_schema as text (you can store a serialized JSON or string representation)
-                VectorField(
-                    "service_embedding",
-                    "FLAT",
-                    {"TYPE": "FLOAT32", "DIM": 384, "DISTANCE_METRIC": "COSINE"},
-                ),
-                TagField(name="visibility"),  # visibility as tag
-                TagField(name="require_context"),  # require_context as tag
-                TagField(name="workspace"),  # workspace as tag
-                TagField(name="flags", separator=","),  # flags as tag
-                TagField(name="singleton"),  # singleton as tag
-                TextField(name="created_by"),  # created_by as text
-            ]
-            # Create the index with vector field and additional fields for metadata (e.g., title)
-            await self._redis.ft("service_info_index").create_index(
-                fields=self._search_fields,
-                definition=IndexDefinition(
-                    prefix=["services:"], index_type=IndexType.HASH
-                ),
+            self._vector_search = VectorSearchEngine(
+                self._redis,
+                prefix=None,
+                cache_dir=self._cache_dir,
+            )
+            await self._vector_search.create_collection(
+                collection_name="services",
+                vector_fields=[
+                    {"type": "TAG", "name": "id"},
+                    {"type": "TEXT", "name": "name"},
+                    {"type": "TAG", "name": "type"},
+                    {"type": "TEXT", "name": "description"},
+                    {"type": "TEXT", "name": "docs"},
+                    {"type": "TAG", "name": "app_id"},
+                    {"type": "TEXT", "name": "service_schema"},
+                    {
+                        "type": "VECTOR",
+                        "name": "service_embedding",
+                        "algorithm": "FLAT",
+                        "attributes": {
+                            "TYPE": "FLOAT32",
+                            "DIM": 384,
+                            "DISTANCE_METRIC": "COSINE",
+                        },
+                    },
+                    {"type": "TAG", "name": "visibility"},
+                    {"type": "TAG", "name": "require_context"},
+                    {"type": "TAG", "name": "workspace"},
+                    {"type": "TAG", "name": "flags", "separator": ","},
+                    {"type": "TAG", "name": "singleton"},
+                    {"type": "TEXT", "name": "created_by"},
+                ],
             )
         self._initialized = True
         return rpc
@@ -841,12 +839,9 @@ class WorkspaceManager:
     @schema_method
     async def search_services(
         self,
-        text_query: Optional[str] = Field(
-            None, description="Text query for semantic search."
-        ),
-        vector_query: Optional[Any] = Field(
+        query: Optional[Union[str, Any]] = Field(
             None,
-            description="Precomputed embedding vector for vector search in numpy format.",
+            description="Text query or precomputed embedding vector for vector search in numpy format.",
         ),
         filters: Optional[Dict[str, Any]] = Field(
             None, description="Filter dictionary for hybrid search."
@@ -855,7 +850,9 @@ class WorkspaceManager:
             5, description="Maximum number of results to return."
         ),
         offset: Optional[int] = Field(0, description="Offset for pagination."),
-        fields: Optional[List[str]] = Field(None, description="Fields to return."),
+        return_fields: Optional[List[str]] = Field(
+            None, description="Fields to return."
+        ),
         order_by: Optional[str] = Field(
             None,
             description="Order by field, default is score if embedding or text_query is provided.",
@@ -870,91 +867,40 @@ class WorkspaceManager:
         """
         if not self._enable_service_search:
             raise RuntimeError("Service search is not enabled.")
-        from redis.commands.search.query import Query
 
         current_workspace = context["ws"]
         # Generate embedding if text_query is provided
-        if text_query and not vector_query:
+        if isinstance(query, str):
             loop = asyncio.get_event_loop()
             embeddings = list(
-                await loop.run_in_executor(
-                    None, self._embedding_model.embed, [text_query]
-                )
+                await loop.run_in_executor(None, self._embedding_model.embed, [query])
             )
             vector_query = embeddings[0]
+        else:
+            vector_query = query
 
         auth_filter = f"@visibility:{{public}} | @workspace:{{{sanitize_search_value(current_workspace)}}}"
-        # If service_embedding is provided, prepare KNN search query
-        if vector_query is not None:
-            query_vector = vector_query.astype("float32").tobytes()
-            query_params = {"vector": query_vector}
-            knn_query = f"[KNN {limit} @service_embedding $vector AS score]"
-            # Combine filters into the query string
-            if filters:
-                filter_query = self._convert_filters_to_hybrid_query(filters)
-                query_string = f"(({filter_query}) ({auth_filter}))=>{knn_query}"
-            else:
-                query_string = f"({auth_filter})=>{knn_query}"
-        else:
-            query_params = {}
-            if filters:
-                filter_query = self._convert_filters_to_hybrid_query(filters)
-                query_string = f"({filter_query}) ({auth_filter})"
-            else:
-                query_string = auth_filter
-
-        all_fields = [field.name for field in self._search_fields] + ["score"]
-        if fields is None:
-            # exclude embedding
-            fields = [field for field in all_fields if field != "service_embedding"]
-        else:
-            for field in fields:
-                if field not in all_fields:
-                    raise ValueError(f"Invalid field: {field}")
-        if order_by is None:
-            order_by = "score" if vector_query is not None else "id"
-        else:
-            if order_by not in all_fields:
-                raise ValueError(f"Invalid order_by field: {order_by}")
-
-        # Build the RedisSearch query
-        query = (
-            Query(query_string)
-            .return_fields(*fields)
-            .sort_by(order_by, asc=True)
-            .paging(offset, limit)
-            .dialect(2)
+        results = await self._vector_search.search_vectors(
+            "services",
+            query={"service_embedding": vector_query},
+            filters=filters,
+            extra_filter=auth_filter,
+            limit=limit,
+            offset=offset,
+            return_fields=return_fields,
+            order_by=order_by,
+            pagination=True,
         )
-
-        # Perform the search using the RedisSearch index
-        results = await self._redis.ft("service_info_index").search(
-            query, query_params=query_params
-        )
-
-        # Handle pagination
-        if pagination:
-            count_query = Query(query_string).paging(0, 0).dialect(2)
-            count_results = await self._redis.ft("service_info_index").search(
-                count_query, query_params=query_params
-            )
-            total_count = count_results.total
-        else:
-            total_count = None
 
         # Convert results to dictionaries and return
-        services = [
-            ServiceInfo.from_redis_dict(vars(doc), in_bytes=False)
-            for doc in results.docs
+        results["items"] = [
+            ServiceInfo.from_redis_dict(doc, in_bytes=False).model_dump()
+            for doc in results["items"]
         ]
         if pagination:
-            return {
-                "items": [service.model_dump() for service in services],
-                "total": total_count,
-                "offset": offset,
-                "limit": limit,
-            }
+            return results
         else:
-            return [service.model_dump() for service in services]
+            return results["items"]
 
     @schema_method
     async def list_services(

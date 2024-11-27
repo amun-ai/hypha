@@ -5,6 +5,7 @@ import uuid_utils as uuid
 import random
 import re
 import json
+import math
 from io import BytesIO
 import zipfile
 from sqlalchemy import (
@@ -53,14 +54,30 @@ from hypha.core import (
 )
 from hypha.vectors import VectorSearchEngine
 from hypha_rpc.utils import ObjectProxy
+import numpy as np
 from jsonschema import validate
 from sqlmodel import SQLModel, Field, Relationship, UniqueConstraint
-from typing import Optional, Union, List, Any
+from typing import Optional, Union, List, Any, Dict
 
 # Logger setup
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("artifact")
 logger.setLevel(logging.INFO)
+
+
+def make_json_safe(data):
+    if isinstance(data, dict):
+        return {k: make_json_safe(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [make_json_safe(v) for v in data]
+    elif data == float("inf"):
+        return "Infinity"
+    elif data == float("-inf"):
+        return "-Infinity"
+    elif isinstance(data, float) and math.isnan(data):
+        return "NaN"
+    else:
+        return data
 
 
 # SQLModel model for storing artifacts
@@ -175,7 +192,9 @@ class ArtifactController:
         self.store = store
         self._cache = store.get_redis_cache()
         self._openai_client = self.store.get_openai_client()
-        self._vector_engine = VectorSearchEngine(store)
+        self._vector_engine = VectorSearchEngine(
+            store.get_redis(), store.get_cache_dir()
+        )
         router = APIRouter()
         self._artifacts_dir = artifacts_dir
 
@@ -190,12 +209,13 @@ class ArtifactController:
         ):
             """Get artifact metadata, manifest, and config (excluding secrets)."""
             try:
-                return await self.read(
+                artifact = await self.read(
                     artifact_id=f"{workspace}/{artifact_alias}",
                     version=version,
                     silent=silent,
                     context={"user": user_info.model_dump(), "ws": workspace},
                 )
+                return artifact
             except KeyError:
                 raise HTTPException(status_code=404, detail="Artifact not found")
             except PermissionError:
@@ -255,6 +275,7 @@ class ArtifactController:
                     context={"user": user_info.model_dump(), "ws": workspace},
                 )
                 await self._cache.set(cache_key, results, ttl=60)
+
                 return results
             except KeyError:
                 raise HTTPException(status_code=404, detail="Parent artifact not found")
@@ -898,7 +919,6 @@ class ArtifactController:
                     "create",
                     "commit",
                     "add_vectors",
-                    "add_documents",
                 ],
                 "lf": ["list", "list_files"],
                 "lf+": ["list", "list_files", "create", "commit", "put_file"],
@@ -921,7 +941,6 @@ class ArtifactController:
                     "create",
                     "commit",
                     "add_vectors",
-                    "add_documents",
                 ],
                 "rw": [
                     "read",
@@ -935,7 +954,6 @@ class ArtifactController:
                     "commit",
                     "put_file",
                     "add_vectors",
-                    "add_documents",
                     "remove_file",
                     "remove_vectors",
                 ],
@@ -951,7 +969,6 @@ class ArtifactController:
                     "commit",
                     "put_file",
                     "add_vectors",
-                    "add_documents",
                     "remove_file",
                     "remove_vectors",
                     "create",
@@ -968,7 +985,6 @@ class ArtifactController:
                     "commit",
                     "put_file",
                     "add_vectors",
-                    "add_documents",
                     "remove_file",
                     "remove_vectors",
                     "create",
@@ -1025,7 +1041,6 @@ class ArtifactController:
             "edit": UserPermission.read_write,
             "commit": UserPermission.read_write,
             "add_vectors": UserPermission.read_write,
-            "add_documents": UserPermission.read_write,
             "put_file": UserPermission.read_write,
             "remove_vectors": UserPermission.read_write,
             "remove_file": UserPermission.read_write,
@@ -1362,7 +1377,6 @@ class ArtifactController:
         type="generic",
         config: dict = None,
         secrets: dict = None,
-        publish_to=None,
         version: str = None,
         comment: str = None,
         overwrite: bool = False,
@@ -1383,9 +1397,11 @@ class ArtifactController:
         if isinstance(manifest, ObjectProxy):
             manifest = ObjectProxy.toDict(manifest)
 
+        manifest = manifest and make_json_safe(manifest)
+        config = config and make_json_safe(config)
+
         if alias:
             alias = alias.strip()
-            assert "^" not in alias, "Alias cannot contain the '^' character."
             if "/" in alias:
                 ws, alias = alias.split("/")
                 if workspace and ws != workspace:
@@ -1437,6 +1453,7 @@ class ArtifactController:
                         "timestamp": str(int(time.time())),
                         "user_id": user_info.id,
                     }
+                    publish_to = config.get("publish_to")
                     if publish_to:
                         zenodo_client = self._get_zenodo_client(
                             parent_artifact, publish_to=publish_to
@@ -1447,7 +1464,6 @@ class ArtifactController:
                             deposition_info["conceptrecid"]
                         )
                         config["zenodo"] = deposition_info
-                        config["publish_to"] = publish_to
 
                     if publish_to not in ["zenodo", "sandbox_zenodo"]:
                         assert (
@@ -1540,8 +1556,8 @@ class ArtifactController:
                     session.add(new_artifact)
                 if new_artifact.type == "vector-collection":
                     await self._vector_engine.create_collection(
-                        f"{new_artifact.workspace}^{new_artifact.alias}",
-                        vectors_config=config.get("vectors_config", {}),
+                        f"{new_artifact.workspace}/{new_artifact.alias}",
+                        config.get("vector_fields", []),
                     )
                 await session.commit()
                 await self._save_version_to_s3(
@@ -1621,6 +1637,8 @@ class ArtifactController:
         user_info = UserInfo.model_validate(context["user"])
         artifact_id = self._validate_artifact_id(artifact_id, context)
         session = await self._get_session()
+        manifest = manifest and make_json_safe(manifest)
+        config = config and make_json_safe(config)
         try:
             async with session.begin():
                 artifact, parent_artifact = await self._get_artifact_with_permission(
@@ -1747,7 +1765,7 @@ class ArtifactController:
                     artifact_data["config"][
                         "vector_count"
                     ] = await self._vector_engine.count(
-                        f"{artifact.workspace}^{artifact.alias}"
+                        f"{artifact.workspace}/{artifact.alias}"
                     )
                 if not silent:
                     await session.commit()
@@ -1897,7 +1915,7 @@ class ArtifactController:
 
             if artifact.type == "vector-collection":
                 await self._vector_engine.delete_collection(
-                    f"{artifact.workspace}^{artifact.alias}"
+                    f"{artifact.workspace}/{artifact.alias}"
                 )
 
             s3_config = self._get_s3_config(artifact, parent_artifact)
@@ -1953,6 +1971,7 @@ class ArtifactController:
         self,
         artifact_id: str,
         vectors: list,
+        embedding_models: Optional[Dict[str, str]] = None,
         context: dict = None,
     ):
         """
@@ -1971,38 +1990,12 @@ class ArtifactController:
 
                 assert artifact.manifest, "Artifact must be committed before upserting."
                 await self._vector_engine.add_vectors(
-                    f"{artifact.workspace}^{artifact.alias}", vectors
+                    f"{artifact.workspace}/{artifact.alias}",
+                    vectors,
+                    embedding_models=embedding_models
+                    or artifact.config.get("embedding_models"),
                 )
                 logger.info(f"Added vectors to artifact with ID: {artifact_id}")
-        except Exception as e:
-            raise e
-        finally:
-            await session.close()
-
-    async def add_documents(
-        self,
-        artifact_id: str,
-        documents: str,  # `id`, `text` and other fields
-        context: dict = None,
-    ):
-        """
-        Add documents to the artifact.
-        """
-        user_info = UserInfo.model_validate(context["user"])
-        session = await self._get_session()
-        try:
-            async with session.begin():
-                artifact, _ = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "add_documents", session
-                )
-                assert (
-                    artifact.type == "vector-collection"
-                ), "Artifact must be a vector collection."
-                embedding_model = artifact.config.get("embedding_model")
-                await self._vector_engine.add_documents(
-                    f"{artifact.workspace}^{artifact.alias}", documents, embedding_model
-                )
-                logger.info(f"Added documents to artifact with ID: {artifact_id}")
         except Exception as e:
             raise e
         finally:
@@ -2011,14 +2004,14 @@ class ArtifactController:
     async def search_vectors(
         self,
         artifact_id: str,
-        query_text: str = None,
-        query_vector: Any = None,
-        query_filter: dict = None,
-        offset: int = 0,
-        limit: int = 10,
-        with_payload: bool = True,
-        with_vectors: bool = False,
-        pagination: bool = False,
+        query: Optional[Dict[str, Any]] = None,
+        embedding_models: Optional[str] = None,
+        filters: Optional[dict[str, Any]] = None,
+        limit: Optional[int] = 5,
+        offset: Optional[int] = 0,
+        return_fields: Optional[List[str]] = None,
+        order_by: Optional[str] = None,
+        pagination: Optional[bool] = False,
         context: dict = None,
     ):
         user_info = UserInfo.model_validate(context["user"])
@@ -2032,17 +2025,18 @@ class ArtifactController:
                     artifact.type == "vector-collection"
                 ), "Artifact must be a vector collection."
 
-                embedding_model = artifact.config.get("embedding_model")
+                embedding_models = embedding_models or artifact.config.get(
+                    "embedding_models"
+                )
                 return await self._vector_engine.search_vectors(
-                    f"{artifact.workspace}^{artifact.alias}",
-                    embedding_model=embedding_model,
-                    query_text=query_text,
-                    query_vector=query_vector,
-                    query_filter=query_filter,
-                    offset=offset,
+                    f"{artifact.workspace}/{artifact.alias}",
+                    query=query,
+                    embedding_models=embedding_models,
+                    filters=filters,
                     limit=limit,
-                    with_payload=with_payload,
-                    with_vectors=with_vectors,
+                    offset=offset,
+                    return_fields=return_fields,
+                    order_by=order_by,
                     pagination=pagination,
                 )
         except Exception as e:
@@ -2067,7 +2061,7 @@ class ArtifactController:
                     artifact.type == "vector-collection"
                 ), "Artifact must be a vector collection."
                 await self._vector_engine.remove_vectors(
-                    f"{artifact.workspace}^{artifact.alias}", ids
+                    f"{artifact.workspace}/{artifact.alias}", ids
                 )
                 logger.info(f"Removed vectors from artifact with ID: {artifact_id}")
         except Exception as e:
@@ -2092,7 +2086,7 @@ class ArtifactController:
                     artifact.type == "vector-collection"
                 ), "Artifact must be a vector collection."
                 return await self._vector_engine.get_vector(
-                    f"{artifact.workspace}^{artifact.alias}", id
+                    f"{artifact.workspace}/{artifact.alias}", id
                 )
         except Exception as e:
             raise e
@@ -2102,12 +2096,11 @@ class ArtifactController:
     async def list_vectors(
         self,
         artifact_id: str,
-        query_filter: dict = None,
         offset: int = 0,
         limit: int = 10,
+        return_fields: List[str] = None,
         order_by: str = None,
-        with_payload: bool = True,
-        with_vectors: bool = False,
+        pagination: bool = False,
         context: dict = None,
     ):
         user_info = UserInfo.model_validate(context["user"])
@@ -2121,13 +2114,12 @@ class ArtifactController:
                     artifact.type == "vector-collection"
                 ), "Artifact must be a vector collection."
                 return await self._vector_engine.list_vectors(
-                    f"{artifact.workspace}^{artifact.alias}",
-                    query_filter=query_filter,
+                    f"{artifact.workspace}/{artifact.alias}",
                     offset=offset,
                     limit=limit,
+                    return_fields=return_fields,
                     order_by=order_by,
-                    with_payload=with_payload,
-                    with_vectors=with_vectors,
+                    pagination=pagination,
                 )
 
         except Exception as e:
@@ -2724,7 +2716,6 @@ class ArtifactController:
             "list": self.list_children,
             "list_files": self.list_files,
             "add_vectors": self.add_vectors,
-            "add_documents": self.add_documents,
             "search_vectors": self.search_vectors,
             "remove_vectors": self.remove_vectors,
             "get_vector": self.get_vector,

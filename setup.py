@@ -84,7 +84,6 @@ setup(
         "db": [
             "psycopg2-binary>=2.9.10",
             "asyncpg>=0.30.0",
-            "qdrant-client>=1.12.1",
             "fastembed>=0.4.2",
         ],
     },

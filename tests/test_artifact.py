@@ -6,6 +6,7 @@ from hypha_rpc import connect_to_server
 from io import BytesIO
 from zipfile import ZipFile
 import httpx
+import yaml
 
 from . import SERVER_URL, SERVER_URL_SQLITE, find_item
 
@@ -737,8 +738,10 @@ async def test_publish_artifact(minio_server, fastapi_server, test_user_token):
         alias="{zenodo_conceptrecid}",
         parent_id=collection.id,
         manifest=dataset_manifest,
+        config={
+            "publish_to": "sandbox_zenodo"
+        },
         version="stage",
-        publish_to="sandbox_zenodo",
     )
 
     assert (
@@ -895,11 +898,13 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server, test_user_to
         config={"permissions": {"*": "r", "@": "r+"}},
     )
 
-    # Create an artifact within the collection
-    dataset_manifest = {
-        "name": "Test Dataset",
-        "description": "A test dataset for HTTP endpoint",
-    }
+    # Create a string in yaml with infinite float
+    yaml_str = """
+    name: Test Dataset
+    description: A test dataset for HTTP endpoint
+    inf_float: [-.inf, .inf]
+    """
+    dataset_manifest = yaml.safe_load(yaml_str)
     dataset = await artifact_manager.create(
         type="dataset",
         parent_id=collection.id,
