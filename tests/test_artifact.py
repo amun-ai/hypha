@@ -738,8 +738,10 @@ async def test_publish_artifact(minio_server, fastapi_server, test_user_token):
         alias="{zenodo_conceptrecid}",
         parent_id=collection.id,
         manifest=dataset_manifest,
+        config={
+            "publish_to": "sandbox_zenodo"
+        }
         version="stage",
-        publish_to="sandbox_zenodo",
     )
 
     assert (
