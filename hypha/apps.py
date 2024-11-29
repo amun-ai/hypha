@@ -54,16 +54,27 @@ class ServerAppController:
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
         )
         self.templates_dir = Path(__file__).parent / "templates"
+        self._runners = None
+
+        def shutdown(_) -> None:
+            asyncio.ensure_future(self.shutdown())
+
+        self.event_bus.on_local("shutdown", shutdown)
+
+    async def get_runners(self):
         # start the browser runner
-        self._runner = [
-            BrowserAppRunner(self.store, in_docker=self.in_docker),
-            BrowserAppRunner(self.store, in_docker=self.in_docker),
+        server = await self.store.get_public_api()
+        svcs = await server.list_services("public/server-app-worker")
+        runners = [await server.get_service(svc["id"]) for svc in svcs]
+        if runners:
+            return runners
+        elif self._runners:
+            return self._runners
+        self._runners = [
+            BrowserAppRunner(in_docker=self.in_docker),
+            BrowserAppRunner(in_docker=self.in_docker),
         ]
-
-        def close(_) -> None:
-            asyncio.ensure_future(self.close())
-
-        self.event_bus.on_local("shutdown", close)
+        return self._runners
 
     async def setup_applications_collection(self, overwrite=True, context=None):
         """Set up the workspace."""
@@ -341,6 +352,7 @@ class ServerAppController:
         timeout: float = 60,
         version: str = None,
         wait_for_service: Union[str, bool] = None,
+        time_limit: Optional[int] = 600,
         context: Optional[dict] = None,
     ):
         """Start the app and keep it alive."""
@@ -393,10 +405,12 @@ class ServerAppController:
             + (f"&use_proxy=true")
         )
 
-        runner = random.choice(self._runner)
+        runner = random.choice(await self.get_runners())
 
         full_client_id = workspace + "/" + client_id
-        await runner.start(url=local_url, session_id=full_client_id)
+        await runner.start(
+            url=local_url, session_id=full_client_id, time_limit=time_limit
+        )
         self._sessions[full_client_id] = {
             "id": full_client_id,
             "app_id": app_id,
@@ -450,12 +464,16 @@ class ServerAppController:
             )
 
         except asyncio.TimeoutError:
+            logs = await runner.get_log(full_client_id)
+            await runner.stop(full_client_id)
             raise Exception(
-                f"Failed to start the app: {workspace}/{app_id}, timeout reached ({timeout}s)."
+                f"Failed to start the app: {workspace}/{app_id}, timeout reached ({timeout}s), browser logs:\n{logs}"
             )
         except Exception as exp:
+            logs = await runner.get_log(full_client_id)
+            await runner.stop(full_client_id)
             raise Exception(
-                f"Failed to start the app: {workspace}/{app_id}, error: {exp}"
+                f"Failed to start the app: {workspace}/{app_id}, error: {exp}, browser logs:\n{logs}"
             ) from exp
         finally:
             self.event_bus.off_local("service_added", service_added)
@@ -534,8 +552,8 @@ class ServerAppController:
         except Exception as exp:
             raise Exception(f"Failed to list apps: {exp}") from exp
 
-    async def close(self) -> None:
-        """Close the app controller."""
+    async def shutdown(self) -> None:
+        """Shutdown the app controller."""
         logger.info("Closing the server app controller...")
         for app in self._sessions.values():
             await self.stop(app["id"])

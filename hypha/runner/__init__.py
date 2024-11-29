@@ -12,6 +12,7 @@ import aiofiles
 import yaml
 from hypha_rpc.utils import ObjectProxy
 from hypha_rpc import connect_to_server
+from hypha.runner.browser import BrowserAppRunner
 
 
 logging.basicConfig(stream=sys.stdout)
@@ -106,15 +107,43 @@ async def run_app(app_file, default_config, quit_on_ready=False):
         raise RuntimeError(f"Invalid script file type ({app_file})")
 
 
+async def run_server_app_worker(server_config):
+    """Run the server app worker."""
+    server = await connect_to_server(server_config)
+
+    bar = BrowserAppRunner()
+    await bar.initialize()
+    svc = await server.register_service(
+        {
+            "id": "server-app-worker",
+            "name": "Server App Worker",
+            "description": "A worker for running server apps",
+            "config": {"visibility": "protected"},
+            "start": bar.start,
+            "stop": bar.stop,
+            "list": bar.list,
+            "get_log": bar.get_log,
+            "shutdown": bar.shutdown,
+        }
+    )
+    logger.info(
+        f"Browser worker running at {server.config.public_base_url}/{server.config.workspace}/services/{svc['id'].split('/')[1]}"
+    )
+    await server.serve()
+
+
 async def start(args):
     """Run the app."""
     try:
-        default_config = {
+        server_config = {
             "server_url": args.server_url,
             "workspace": args.workspace,
             "token": args.token,
         }
-        await run_app(args.file, default_config, quit_on_ready=args.quit_on_ready)
+        if args.app == "browser-worker":
+            await run_server_app_worker(server_config)
+        else:
+            await run_app(args.app, server_config, quit_on_ready=args.quit_on_ready)
     except Exception:  # pylint: disable=broad-except
         logger.exception("Failed to run app, exiting.")
         loop = asyncio.get_event_loop()

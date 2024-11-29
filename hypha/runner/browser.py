@@ -1,5 +1,5 @@
 """Provide a browser runner."""
-import asyncio
+import uuid
 import logging
 import sys
 from typing import Any, Dict, List, Optional, Union
@@ -48,7 +48,6 @@ class BrowserAppRunner:
 
     def __init__(
         self,
-        store: RedisStore,
         in_docker: bool = False,
     ):
         """Initialize the class."""
@@ -57,14 +56,6 @@ class BrowserAppRunner:
         self.controller_id = str(BrowserAppRunner.instance_counter)
         BrowserAppRunner.instance_counter += 1
         self.in_docker = in_docker
-        self.event_bus = store.get_event_bus()
-        self.store = store
-
-        def close(_) -> None:
-            asyncio.get_running_loop().create_task(self.close())
-
-        self.event_bus.on_local("shutdown", close)
-        # asyncio.ensure_future(self.initialize())
 
     async def initialize(self) -> None:
         """Initialize the app controller."""
@@ -81,7 +72,7 @@ class BrowserAppRunner:
         self.browser = await playwright.chromium.launch(args=args)
         return self.browser
 
-    async def close(self) -> None:
+    async def shutdown(self) -> None:
         """Close the app controller."""
         logger.info("Closing the browser app controller...")
         if self.browser:
@@ -91,10 +82,12 @@ class BrowserAppRunner:
     async def start(
         self,
         url: str,
-        session_id: str,
+        session_id: Optional[str] = None,
+        time_limit: Optional[int] = None,
     ):
         """Start a browser app instance."""
-        assert session_id, "client_id is required"
+        if session_id is None:
+            session_id = str(uuid.uuid4())
         if not self.browser:
             await self.initialize()
         # context = await self.browser.createIncognitoBrowserContext()
@@ -122,6 +115,15 @@ class BrowserAppRunner:
             await page.close()
             del self._browser_sessions[session_id]
             raise
+        if time_limit and time_limit > 0:
+            await page.evaluate(
+                f"setTimeout(() => {{ window.close() }} , {time_limit*1000})"
+            )
+        return {
+            "session_id": session_id,
+            "status": "connected",
+            "url": url,
+        }
 
     async def stop(self, session_id: str) -> None:
         """Stop a browser app instance."""
