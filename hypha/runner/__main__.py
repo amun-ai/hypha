@@ -5,7 +5,11 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("file", type=str, help="path to a app file")
+    parser.add_argument(
+        "app",
+        type=str,
+        help="the app to run, can be a .py or .imjoy.html file, or `server-app-worker` for launching a server app worker",
+    )
     parser.add_argument(
         "--server-url",
         type=str,

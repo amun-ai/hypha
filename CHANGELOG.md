@@ -1,5 +1,10 @@
 # Hypha Change Log
 
+### 0.20.41
+
+ - Add `time_limit` for server apps to limit the running time
+ - Support launching server apps worker in a separate service
+
 ### 0.20.40
  
  - Add vector store service to support vector search and retrieval.
