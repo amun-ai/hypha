@@ -110,7 +110,9 @@ def start_builtin_services(
         assert args.enable_s3, "Server apps require S3 to be enabled"
         # pylint: disable=import-outside-toplevel
         from hypha.apps import ServerAppController
+        from hypha.runner import BrowserAppRunner
 
+        bar = BrowserAppRunner(store, in_docker=args.in_docker)
         ServerAppController(
             store,
             port=args.port,

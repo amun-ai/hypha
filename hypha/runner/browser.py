@@ -1,5 +1,6 @@
 """Provide a browser runner."""
 import uuid
+import asyncio
 import logging
 import sys
 from typing import Any, Dict, List, Optional, Union
@@ -48,6 +49,7 @@ class BrowserAppRunner:
 
     def __init__(
         self,
+        store,
         in_docker: bool = False,
     ):
         """Initialize the class."""
@@ -55,7 +57,9 @@ class BrowserAppRunner:
         self._browser_sessions = {}
         self.controller_id = str(BrowserAppRunner.instance_counter)
         BrowserAppRunner.instance_counter += 1
+        store.register_public_service(self.get_service())
         self.in_docker = in_docker
+        self._initialized = False
 
     async def initialize(self) -> None:
         """Initialize the app controller."""
@@ -83,7 +87,7 @@ class BrowserAppRunner:
         self,
         url: str,
         session_id: Optional[str] = None,
-        time_limit: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ):
         """Start a browser app instance."""
         if session_id is None:
@@ -98,6 +102,7 @@ class BrowserAppRunner:
             "status": "connecting",
             "page": page,
             "logs": logs,
+            "metadata": metadata,
         }
 
         _capture_logs_from_browser_tabs(page, logs)
@@ -115,10 +120,6 @@ class BrowserAppRunner:
             await page.close()
             del self._browser_sessions[session_id]
             raise
-        if time_limit and time_limit > 0:
-            await page.evaluate(
-                f"setTimeout(() => {{ window.close() }} , {time_limit*1000})"
-            )
         return {
             "session_id": session_id,
             "status": "connected",
@@ -160,3 +161,17 @@ class BrowserAppRunner:
                 offset : offset + limit
             ]
         raise Exception(f"browser app instance not found: {session_id}")
+
+    def get_service(self):
+        """Get the service."""
+        return {
+            "id": "server-app-worker",
+            "name": "Server App Worker",
+            "description": "A worker for running server apps",
+            "config": {"visibility": "protected"},
+            "start": self.start,
+            "stop": self.stop,
+            "list": self.list,
+            "get_log": self.get_log,
+            "shutdown": self.shutdown,
+        }
