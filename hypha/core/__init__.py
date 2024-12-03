@@ -68,7 +68,7 @@ class ServiceInfo(BaseModel):
     id: str
     name: str
     type: Optional[str] = "generic"
-    description: Optional[constr(max_length=256)] = None  # type: ignore
+    description: Optional[constr(max_length=1024)] = None  # type: ignore
     docs: Optional[str] = None
     app_id: Optional[str] = None
     service_schema: Optional[Dict[str, Any]] = None

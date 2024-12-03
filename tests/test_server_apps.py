@@ -279,11 +279,50 @@ async def test_lazy_plugin(fastapi_server, test_user_token):
     apps = await controller.list_apps()
     assert find_item(apps, "id", app_info.id)
 
-    app = await api.get_service(f"echo@{app_info.id}")
+    app = await api.get_service(f"echo@{app_info.id}", mode="first")
     assert app is not None
 
     await controller.uninstall(app_info.id)
 
+    await api.disconnect()
+
+
+async def test_time_limit(fastapi_server, test_user_token):
+    """Test app with time limit."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    # Test app with custom template
+    controller = await api.get_service("public/server-apps")
+
+    source = (
+        (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
+        .open(encoding="utf-8")
+        .read()
+    )
+
+    app_info = await controller.install(
+        source=source,
+        overwrite=True,
+    )
+
+    apps = await controller.list_apps()
+    assert find_item(apps, "id", app_info.id)
+
+    # start the app
+    app = await controller.start(app_info.id, time_limit=0.5)
+    apps = await controller.list_running()
+    assert find_item(apps, "id", app.id) is not None
+    await asyncio.sleep(0.5)
+    apps = await controller.list_running()
+    assert find_item(apps, "id", app.id) is None
+    await controller.uninstall(app_info.id)
     await api.disconnect()
 
 
@@ -313,7 +352,7 @@ async def test_lazy_service(fastapi_server, test_user_token):
         overwrite=True,
     )
 
-    service = await api.get_service("echo@" + app_info.id)
+    service = await api.get_service("echo@" + app_info.id, mode="first")
     assert service.echo is not None
     assert await service.echo("hello") == "hello"
 

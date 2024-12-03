@@ -1554,16 +1554,26 @@ class ArtifactController:
                     await session.merge(new_artifact)
                 else:
                     session.add(new_artifact)
+                s3_config = self._get_s3_config(new_artifact, parent_artifact)
                 if new_artifact.type == "vector-collection":
-                    await self._vector_engine.create_collection(
-                        f"{new_artifact.workspace}/{new_artifact.alias}",
-                        config.get("vector_fields", []),
-                    )
+                    async with self._create_client_async(s3_config) as s3_client:
+                        prefix = safe_join(
+                            s3_config["prefix"],
+                            f"{new_artifact.id}/v0",
+                        )
+                        await self._vector_engine.create_collection(
+                            f"{new_artifact.workspace}/{new_artifact.alias}",
+                            config.get("vector_fields", []),
+                            overwrite=overwrite,
+                            s3_client=s3_client,
+                            bucket=s3_config["bucket"],
+                            prefix=prefix,
+                        )
                 await session.commit()
                 await self._save_version_to_s3(
                     version_index,
                     new_artifact,
-                    self._get_s3_config(new_artifact, parent_artifact),
+                    s3_config,
                 )
                 if version != "stage":
                     logger.info(
@@ -1914,9 +1924,20 @@ class ArtifactController:
             )
 
             if artifact.type == "vector-collection":
-                await self._vector_engine.delete_collection(
-                    f"{artifact.workspace}/{artifact.alias}"
-                )
+                s3_config = self._get_s3_config(artifact, parent_artifact)
+                async with self._create_client_async(
+                    s3_config,
+                ) as s3_client:
+                    prefix = safe_join(
+                        s3_config["prefix"],
+                        f"{artifact.id}/v0",
+                    )
+                    await self._vector_engine.delete_collection(
+                        f"{artifact.workspace}/{artifact.alias}",
+                        s3_client=s3_client,
+                        bucket=s3_config["bucket"],
+                        prefix=prefix,
+                    )
 
             s3_config = self._get_s3_config(artifact, parent_artifact)
             if version is None:
@@ -1981,7 +2002,7 @@ class ArtifactController:
         session = await self._get_session()
         try:
             async with session.begin():
-                artifact, _ = await self._get_artifact_with_permission(
+                artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "add_vectors", session
                 )
                 assert (
@@ -1989,12 +2010,21 @@ class ArtifactController:
                 ), "Artifact must be a vector collection."
 
                 assert artifact.manifest, "Artifact must be committed before upserting."
-                await self._vector_engine.add_vectors(
-                    f"{artifact.workspace}/{artifact.alias}",
-                    vectors,
-                    embedding_models=embedding_models
-                    or artifact.config.get("embedding_models"),
-                )
+                s3_config = self._get_s3_config(artifact, parent_artifact)
+                async with self._create_client_async(s3_config) as s3_client:
+                    prefix = safe_join(
+                        s3_config["prefix"],
+                        f"{artifact.id}/v0",
+                    )
+                    await self._vector_engine.add_vectors(
+                        f"{artifact.workspace}/{artifact.alias}",
+                        vectors,
+                        embedding_models=embedding_models
+                        or artifact.config.get("embedding_models"),
+                        s3_client=s3_client,
+                        bucket=s3_config["bucket"],
+                        prefix=prefix,
+                    )
                 logger.info(f"Added vectors to artifact with ID: {artifact_id}")
         except Exception as e:
             raise e
@@ -2054,15 +2084,27 @@ class ArtifactController:
         session = await self._get_session()
         try:
             async with session.begin():
-                artifact, _ = await self._get_artifact_with_permission(
+                artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "remove_vectors", session
                 )
                 assert (
                     artifact.type == "vector-collection"
                 ), "Artifact must be a vector collection."
-                await self._vector_engine.remove_vectors(
-                    f"{artifact.workspace}/{artifact.alias}", ids
-                )
+                s3_config = self._get_s3_config(artifact, parent_artifact)
+                async with self._create_client_async(
+                    s3_config,
+                ) as s3_client:
+                    prefix = safe_join(
+                        s3_config["prefix"],
+                        f"{artifact.id}/v0",
+                    )
+                    await self._vector_engine.remove_vectors(
+                        f"{artifact.workspace}/{artifact.alias}",
+                        ids,
+                        s3_client=s3_client,
+                        bucket=s3_config["bucket"],
+                        prefix=prefix,
+                    )
                 logger.info(f"Removed vectors from artifact with ID: {artifact_id}")
         except Exception as e:
             raise e

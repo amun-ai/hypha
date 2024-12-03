@@ -220,6 +220,7 @@ class WorkspaceManager:
                     {"type": "TAG", "name": "singleton"},
                     {"type": "TEXT", "name": "created_by"},
                 ],
+                overwrite=True,
             )
         self._initialized = True
         return rpc
@@ -529,18 +530,7 @@ class WorkspaceManager:
             await self.bookmark(
                 {"bookmark_type": "workspace", "id": workspace.id}, context=context
             )
-
-        # clean up the user's workspace
-        summary = await self.cleanup(
-            workspace.id,
-            context={"ws": workspace.id, "user": self._root_user.model_dump()},
-        )
-        if summary:
-            logger.info(
-                "Created workspace %s, clean up summary: %s", workspace.id, summary
-            )
-        else:
-            logger.info("Created workspace %s", workspace.id)
+        logger.info("Created workspace %s", workspace.id)
         return workspace.model_dump()
 
     @schema_method
@@ -1791,6 +1781,7 @@ class WorkspaceManager:
         ws = context["ws"]
         if workspace is None:
             workspace = ws
+        workspace_info = await self.load_workspace_info(workspace)
         user_info = UserInfo.model_validate(context["user"])
         if not user_info.check_permission(workspace, UserPermission.admin):
             raise PermissionError(
@@ -1814,6 +1805,11 @@ class WorkspaceManager:
                     client, workspace, context["user"], unload=False, context=context
                 )
                 removed.append(client)
+        if client_keys:
+            client_keys = await self._list_client_keys(workspace)
+        if len(client_keys) == 0 and not workspace_info.persistent:
+            logger.info(f"Workspace {workspace} is empty, unloading...")
+            await self.unload(context=context)
         if removed:
             summary["removed_clients"] = removed
         return summary

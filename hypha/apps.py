@@ -11,7 +11,6 @@ from hypha import main_version
 from jinja2 import Environment, PackageLoader, select_autoescape
 from typing import Any, Dict, List, Optional, Union
 from hypha.core import UserInfo, UserPermission, ServiceInfo, ApplicationArtifact
-from hypha.runner.browser import BrowserAppRunner
 from hypha.utils import (
     random_id,
     PLUGIN_CONFIG_FIELDS,
@@ -68,13 +67,8 @@ class ServerAppController:
         runners = [await server.get_service(svc["id"]) for svc in svcs]
         if runners:
             return runners
-        elif self._runners:
-            return self._runners
-        self._runners = [
-            BrowserAppRunner(in_docker=self.in_docker),
-            BrowserAppRunner(in_docker=self.in_docker),
-        ]
-        return self._runners
+        else:
+            raise Exception("No server app worker found.")
 
     async def setup_applications_collection(self, overwrite=True, context=None):
         """Set up the workspace."""
@@ -408,10 +402,7 @@ class ServerAppController:
         runner = random.choice(await self.get_runners())
 
         full_client_id = workspace + "/" + client_id
-        await runner.start(
-            url=local_url, session_id=full_client_id, time_limit=time_limit
-        )
-        self._sessions[full_client_id] = {
+        metadata = {
             "id": full_client_id,
             "app_id": app_id,
             "workspace": workspace,
@@ -419,6 +410,27 @@ class ServerAppController:
             "public_url": public_url,
             "_runner": runner,
         }
+
+        await runner.start(
+            url=local_url,
+            session_id=full_client_id,
+            metadata=metadata,
+        )
+        self._sessions[full_client_id] = metadata
+
+        if time_limit and time_limit > 0:
+
+            async def _close_after_time_limit():
+                await asyncio.sleep(time_limit)
+                if full_client_id in self._sessions:
+                    await runner.stop(full_client_id)
+                    del self._sessions[full_client_id]
+                logger.info(
+                    f"App {full_client_id} stopped after time limit {time_limit} reached."
+                )
+
+            asyncio.create_task(_close_after_time_limit())
+
         # collecting services registered during the startup of the script
         collected_services: List[ServiceInfo] = []
         app_info = {

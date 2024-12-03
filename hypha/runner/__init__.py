@@ -113,19 +113,7 @@ async def run_server_app_worker(server_config):
 
     bar = BrowserAppRunner()
     await bar.initialize()
-    svc = await server.register_service(
-        {
-            "id": "server-app-worker",
-            "name": "Server App Worker",
-            "description": "A worker for running server apps",
-            "config": {"visibility": "protected"},
-            "start": bar.start,
-            "stop": bar.stop,
-            "list": bar.list,
-            "get_log": bar.get_log,
-            "shutdown": bar.shutdown,
-        }
-    )
+    svc = await server.register_service(bar.get_service())
     logger.info(
         f"Browser worker running at {server.config.public_base_url}/{server.config.workspace}/services/{svc['id'].split('/')[1]}"
     )

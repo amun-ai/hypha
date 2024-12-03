@@ -4,7 +4,9 @@ import uuid
 import logging
 import sys
 import re
+import json
 from typing import Any, List, Dict, Optional
+from hypha.utils import list_objects_async, remove_objects_async
 from fakeredis import aioredis
 from redis.commands.search.field import (
     TagField,
@@ -68,6 +70,7 @@ class VectorSearchEngine:
         self._redis: aioredis.FakeRedis = redis
         self._index_name_prefix = prefix
         self._cache_dir = cache_dir
+        self._maximum_search_results = None
 
     def _get_index_name(self, collection_name: str) -> str:
         return (
@@ -86,6 +89,10 @@ class VectorSearchEngine:
         self,
         collection_name: str,
         vector_fields: List[Dict[str, Any]],
+        overwrite: bool = False,
+        s3_client=None,
+        bucket=None,
+        prefix=None,
     ):
         """
         Creates a RedisSearch index collection.
@@ -124,6 +131,18 @@ class VectorSearchEngine:
                 redis_fields.append(field_class(field_name, algorithm, attributes))
             else:
                 redis_fields.append(field_class(name=field_name))
+        # Check if the collection already exists, remove it if overwrite is True
+        # otherwise raise an error
+        try:
+            await self._redis.ft(index_name).info()
+            if overwrite:
+                # Drop the index
+                await self._redis.ft(index_name).dropindex(delete_documents=False)
+            else:
+                raise ValueError(f"Collection {collection_name} already exists.")
+        # ResponseError is raised if the collection does not exist
+        except aioredis.ResponseError:
+            pass
 
         # Create the index
         await self._redis.ft(index_name).create_index(
@@ -132,7 +151,11 @@ class VectorSearchEngine:
                 prefix=[f"{index_name}:"], index_type=IndexType.HASH
             ),
         )
-        fields_info = [f"{field.name} ({type(field)})" for field in redis_fields]
+        if s3_client:
+            await self._dump_index(collection_name, s3_client, bucket, prefix)
+        fields_info = [
+            f"{field.name} ({type(field).__name__})" for field in redis_fields
+        ]
         logger.info(f"Collection {collection_name} created with fields: {fields_info}.")
 
     async def count(self, collection_name: str):
@@ -141,15 +164,174 @@ class VectorSearchEngine:
         results = await self._redis.ft(index_name).search(count_query)
         return results.total
 
-    async def delete_collection(self, collection_name: str):
+    async def delete_collection(
+        self, collection_name: str, s3_client=None, bucket=None, prefix=None
+    ):
         index_name = self._get_index_name(collection_name)
-        await self._redis.ft(index_name).dropindex()
-        logger.info(f"Collection {collection_name} deleted.")
+
+        # Drop the index
+        await self._redis.ft(index_name).dropindex(delete_documents=True)
+        if s3_client:
+            if not prefix.endswith("/"):
+                prefix = f"{prefix}/"
+            await remove_objects_async(s3_client, bucket, prefix)
+
+        logger.info(f"Collection {collection_name} and all associated keys deleted.")
+
+    async def _dump_vectors(
+        self,
+        vectors: List[Dict[str, Any]],
+        fields: Dict[str, Any],
+        s3_client,
+        bucket: str,
+        prefix: str,
+    ):
+        # Dump vector data for the current page
+        for vector in vectors:
+            vector_id = vector["id"]
+            vector_data = {key: value for key, value in vector.items()}
+
+            # Convert vector bytes to list for JSON serialization
+            for key, value in vector_data.items():
+                if fields[key]["type"] == "VECTOR":
+                    vector_data[key] = (
+                        np.frombuffer(value, dtype=np.float32).astype(float).tolist()
+                    )
+
+            vector_key = f"{prefix}{vector_id}.json"
+            await s3_client.put_object(
+                Bucket=bucket,
+                Key=vector_key,
+                Body=json.dumps(vector_data),
+            )
+
+    async def _dump_index(
+        self, collection_name: str, s3_client, bucket: str, prefix: str
+    ):
+        # Dump index settings
+        fields = await self._get_fields(collection_name)
+        dump_fields = []
+        for field in fields.values():
+            field_data = {
+                "type": field["type"],
+                "name": field["identifier"],
+            }
+            if field["type"] == "VECTOR":
+                field_data["algorithm"] = field["algorithm"]
+                field_data["attributes"] = {
+                    "TYPE": field["data_type"],
+                    "DIM": field["dim"],
+                    "DISTANCE_METRIC": field["distance_metric"],
+                }
+            dump_fields.append(field_data)
+        index_settings = {
+            "collection_name": collection_name,
+            "index_name": self._get_index_name(collection_name),
+            "fields": dump_fields,
+        }
+        index_key = f"{prefix}_index.json"
+        await s3_client.put_object(
+            Bucket=bucket,
+            Key=index_key,
+            Body=json.dumps(index_settings),
+        )
+
+    async def dump_collection(
+        self,
+        collection_name: str,
+        s3_client,
+        bucket: str,
+        prefix: str,
+        page_size: int = 100,
+    ):
+        fields = await self._get_fields(collection_name)
+        if not prefix.endswith("/"):
+            prefix = f"{prefix}/"
+        offset = 0
+        while True:
+            # Fetch vectors in pages
+            vectors = await self.list_vectors(
+                collection_name,
+                offset=offset,
+                limit=page_size,
+                return_fields=list(fields.keys()),
+            )
+            if not vectors:  # Exit loop if no more vectors are found
+                break
+
+            if s3_client:
+                # Dump vectors to S3
+                await self._dump_vectors(vectors, fields, s3_client, bucket, prefix)
+
+            # Move to the next page
+            offset += page_size
+
+        if s3_client:
+            await self._dump_index(collection_name, s3_client, bucket, prefix)
+        logger.info(
+            f"Collection {collection_name} dumped to S3 bucket {bucket} under prefix {prefix}."
+        )
+
+    async def load_collection(
+        self,
+        collection_name: str,
+        s3_client,
+        bucket: str,
+        prefix: str,
+        overwrite: bool = False,
+    ):
+        if not prefix.endswith("/"):
+            prefix = f"{prefix}/"
+        index_key = f"{prefix}_index.json"
+
+        # Load index settings
+        index_response = await s3_client.get_object(Bucket=bucket, Key=index_key)
+        index_settings = json.loads(await index_response["Body"].read())
+        await self.create_collection(
+            collection_name, index_settings["fields"], overwrite=overwrite
+        )
+
+        # List vector files
+
+        vector_prefix = prefix
+        vector_objects = await list_objects_async(s3_client, bucket, vector_prefix)
+
+        # Load vectors
+        for obj in vector_objects:
+            if obj["name"].endswith(".json") and not obj["name"].endswith(
+                "_index.json"
+            ):
+                if obj["type"] != "file":
+                    continue
+                key = f"{vector_prefix}{obj['name']}"
+                vector_response = await s3_client.get_object(Bucket=bucket, Key=key)
+                vector_data = json.loads(await vector_response["Body"].read())
+
+                # Convert vector lists back to bytes
+                for key, value in vector_data.items():
+                    if isinstance(value, list):
+                        vector_data[key] = np.array(value, dtype=np.float32)
+
+                # Add vector to Redis
+                await self.add_vectors(
+                    collection_name, [{"_id": obj["name"].split(".")[0], **vector_data}]
+                )
+
+        logger.info(
+            f"Collection {collection_name} loaded from S3 bucket {bucket} under prefix {prefix}."
+        )
 
     async def list_collections(self):
         # use redis.ft to list all collections
         collections = await self._redis.execute_command("FT._LIST")
-        return [c.decode("utf-8") for c in collections]
+
+        items = []
+        for c in collections:
+            # remove the prefix from the collection names
+            items.append(
+                {"name": c.decode("utf-8").replace(f"{self._index_name_prefix}:", "")}
+            )
+        return items
 
     async def _embed_texts(
         self,
@@ -176,6 +358,9 @@ class VectorSearchEngine:
         collection_name: str,
         vectors: List[Dict[str, Any]],
         embedding_models: Optional[Dict[str, str]] = None,
+        s3_client=None,
+        bucket=None,
+        prefix=None,
     ):
         index_name = self._get_index_name(collection_name)
         fields = await self._get_fields(collection_name)
@@ -209,6 +394,10 @@ class VectorSearchEngine:
                 mapping=vector,
             )
 
+        if s3_client:
+            assert bucket and prefix, "S3 bucket and prefix must be provided."
+            self._dump_vectors(vectors, fields, s3_client, bucket, prefix)
+
         logger.info(f"Added {len(vectors)} vectors to collection {collection_name}.")
         return ids
 
@@ -216,6 +405,8 @@ class VectorSearchEngine:
         formated = []
         for doc in docs:
             d = vars(doc)
+            if "payload" in d:
+                del d["payload"]
             if "id" in d:
                 d["id"] = d["id"].replace(f"{index_name}:", "")
             formated.append(d)
@@ -304,6 +495,7 @@ class VectorSearchEngine:
         """
         index_name = self._get_index_name(collection_name)
         collection_fields = await self._get_fields(collection_name)
+        fields = {field["identifier"]: field for field in collection_fields.values()}
         all_fields = [field for field in collection_fields.keys()] + ["score"]
         # Generate embedding if text_query is provided
         if query:
@@ -384,12 +576,18 @@ class VectorSearchEngine:
         # Build the RedisSearch query
         query = (
             Query(query_string)
-            .return_fields(*return_fields)
             .sort_by(order_by, asc=True)
             .paging(offset, limit)
             .dialect(2)
         )
-
+        for field in fields.values():
+            if field["identifier"] in return_fields:
+                if field["type"] == "VECTOR":
+                    query.return_field(field["identifier"], decode_field=False)
+                else:
+                    query.return_field(
+                        field["identifier"], decode_field=True, encoding="utf-8"
+                    )
         # Perform the search using the RedisSearch index
         results = await self._redis.ft(index_name).search(
             query, query_params=query_params
@@ -417,10 +615,20 @@ class VectorSearchEngine:
         else:
             return docs
 
-    async def remove_vectors(self, collection_name: str, ids: List[str]):
+    async def remove_vectors(
+        self,
+        collection_name: str,
+        ids: List[str],
+        s3_client=None,
+        bucket=None,
+        prefix=None,
+    ):
         index_name = self._get_index_name(collection_name)
         for id in ids:
             await self._redis.delete(f"{index_name}:{id}")
+            if s3_client:
+                key = f"{prefix}{id}.json"
+                await s3_client.delete_object(Bucket=bucket, Key=key)
         logger.info(f"Removed {len(ids)} vectors from collection {collection_name}.")
 
     async def get_vector(self, collection_name: str, id: str):
@@ -430,6 +638,20 @@ class VectorSearchEngine:
             raise ValueError(f"Vector {id} not found in collection {collection_name}.")
 
         return {key.decode("utf-8"): value for key, value in vector.items()}
+
+    async def _get_max_search_results(self) -> int:
+        try:
+            result = await self._redis.execute_command(
+                "FT.CONFIG", "GET", "MAXSEARCHRESULTS"
+            )
+            result = result[0]
+            config = {
+                result[i].decode(): result[i + 1].decode()
+                for i in range(0, len(result), 2)
+            }
+            return int(config.get("MAXSEARCHRESULTS", 0))  # Default to 0 if not found
+        except Exception as e:
+            raise RuntimeError(f"Error retrieving MAXSEARCHRESULTS: {e}")
 
     async def list_vectors(
         self,
@@ -455,16 +677,27 @@ class VectorSearchEngine:
                 raise ValueError(f"Invalid order_by field: {order_by}")
 
         query_string = "*"
+        if limit is None:
+            if not self._maximum_search_results:
+                self._maximum_search_results = await self._get_max_search_results()
+            limit = self._maximum_search_results
+        if offset is None:
+            offset = 0
 
         query = (
             Query(query_string)
-            .return_fields(*return_fields)
             .paging(offset, limit)
             .dialect(2)
             .sort_by(order_by, asc=True)
         )
-
-        # Perform the search using the RedisSearch index
+        for field in fields.values():
+            if field["identifier"] in return_fields:
+                if field["type"] == "VECTOR":
+                    query.return_field(field["identifier"], decode_field=False)
+                else:
+                    query.return_field(
+                        field["identifier"], decode_field=True, encoding="utf-8"
+                    )
         results = await self._redis.ft(index_name).search(query)
         docs = self._format_docs(results.docs, index_name)
 
