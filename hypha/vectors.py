@@ -588,6 +588,8 @@ class VectorSearchEngine:
                     query.return_field(
                         field["identifier"], decode_field=True, encoding="utf-8"
                     )
+        if "score" in return_fields:
+            query.return_field("score")
         # Perform the search using the RedisSearch index
         results = await self._redis.ft(index_name).search(
             query, query_params=query_params
