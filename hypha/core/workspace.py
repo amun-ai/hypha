@@ -1751,9 +1751,9 @@ class WorkspaceManager:
             )
             await self._event_bus.emit(f"unload:{ws}", "Unloading workspace: " + ws)
 
-        # if winfo.persistent and self._s3_controller:
-        #     # since the workspace will be persisted, we can remove the workspace info from the redis store
-        #     await self._redis.hdel("workspaces", ws)
+        if winfo.persistent and self._s3_controller:
+            # since the workspace will be persisted, we can remove the workspace info from the redis store
+            await self._redis.hdel("workspaces", ws)
 
         if not winfo.persistent:
             # delete all the items in redis starting with `workspaces_name:`
