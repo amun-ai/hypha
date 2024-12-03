@@ -1792,6 +1792,10 @@ class WorkspaceManager:
         client_keys = await self._list_client_keys(workspace)
         removed = []
         summary = {}
+        if not workspace_info.persistent:
+            unload = True
+        else:
+            unload = False
         for client in client_keys:
             try:
                 assert (
@@ -1800,16 +1804,12 @@ class WorkspaceManager:
                 )
             except Exception as e:
                 logger.error(f"Failed to ping client {client}: {e}")
+
                 # Remove dead client
                 await self.delete_client(
-                    client, workspace, context["user"], unload=False, context=context
+                    client, workspace, context["user"], unload=unload, context=context
                 )
                 removed.append(client)
-        if client_keys:
-            client_keys = await self._list_client_keys(workspace)
-        if len(client_keys) == 0 and not workspace_info.persistent:
-            logger.info(f"Workspace {workspace} is empty, unloading...")
-            await self.unload(context=context)
         if removed:
             summary["removed_clients"] = removed
         return summary
