@@ -112,7 +112,7 @@ def start_builtin_services(
         from hypha.apps import ServerAppController
         from hypha.runner import BrowserAppRunner
 
-        bar = BrowserAppRunner(store, in_docker=args.in_docker)
+        BrowserAppRunner(store, in_docker=args.in_docker)
         ServerAppController(
             store,
             port=args.port,
