@@ -2,7 +2,6 @@
 import asyncio
 import json
 import logging
-import time
 import sys
 import datetime
 from typing import List, Union
@@ -29,6 +28,7 @@ from hypha.core import (
     UserInfo,
     WorkspaceInfo,
 )
+from hypha.core.activity import ActivityTracker
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
@@ -105,6 +105,7 @@ class RedisStore:
         cache_dir=None,
         enable_service_search=False,
         reconnection_token_life_time=2 * 24 * 60 * 60,
+        activity_check_interval=10,
     ):
         """Initialize the redis store."""
         self._s3_controller = None
@@ -126,6 +127,7 @@ class RedisStore:
         self._manager_id = "manager-" + self._server_id
         self.reconnection_token_life_time = reconnection_token_life_time
         self._enable_service_search = enable_service_search
+        self._activity_check_interval = activity_check_interval
         self._server_info = {
             "server_id": self._server_id,
             "hypha_version": __version__,
@@ -192,6 +194,9 @@ class RedisStore:
         self._redis_cache.client = self._redis
         self._root_user = None
         self._event_bus = RedisEventBus(self._redis)
+
+        self._tracker = None
+        self._tracker_task = None
 
     def set_websocket_server(self, websocket_server):
         """Set the websocket server."""
@@ -462,6 +467,10 @@ class RedisStore:
             logger.warning("RESETTING ALL REDIS DATA!!!")
             await self._redis.flushall()
         await self._event_bus.init()
+        self._tracker = ActivityTracker(check_interval=self._activity_check_interval)
+        self._tracker_task = asyncio.create_task(self._tracker.monitor_entities())
+        RedisRPCConnection.set_activity_tracker(self._tracker)
+
         await self.setup_root_user()
         await self.check_and_cleanup_servers()
         self._workspace_manager = await self.register_workspace_manager()
@@ -602,6 +611,9 @@ class RedisStore:
             client_id = key_parts[1].split(":")[0]
             clients.add(client_id)
         return list(clients)
+
+    def get_activity_tracker(self):
+        return self._tracker
 
     async def get_public_api(self):
         """Get the public API."""
@@ -925,6 +937,13 @@ class RedisStore:
         except asyncio.CancelledError:
             print("Scheduler successfully exited.")
         await self._scheduler.shutdown()
+
+        if self._tracker_task:
+            self._tracker_task.cancel()
+            try:
+                await self._tracker_task
+            except asyncio.CancelledError:
+                print("Activity tracker successfully exited.")
 
         client_id = self._public_workspace_interface.rpc.get_client_info()["id"]
         await self.remove_client(client_id, "public", self._root_user, unload=True)

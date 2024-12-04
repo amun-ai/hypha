@@ -432,7 +432,7 @@ class HTTPProxy:
         async def hypha_rpc_websocket_mjs(request: Request):
             if not self.rpc_lib_esm_content:
                 _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{main_version}/dist/hypha-rpc-websocket.mjs"
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(timeout=10) as client:
                     response = await client.get(_rpc_lib_script)
                     response.raise_for_status()
                     self.rpc_lib_esm_content = response.content

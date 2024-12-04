@@ -22,6 +22,7 @@ from pydantic import (  # pylint: disable=no-name-in-module
 
 from hypha.utils import EventBus
 import jsonschema
+from hypha.core.activity import ActivityTracker
 
 from prometheus_client import Counter
 
@@ -436,6 +437,11 @@ class RedisRPCConnection:
     """Represent a Redis connection for handling RPC-like messaging."""
 
     _counter = Counter("rpc_call", "Counts the RPC calls", ["workspace"])
+    _tracker = None
+
+    @classmethod
+    def set_activity_tracker(cls, tracker: ActivityTracker):
+        cls._tracker = tracker
 
     def __init__(
         self,
@@ -512,6 +518,9 @@ class RedisRPCConnection:
         # logger.info(f"Sending message to channel {target_id}:msg")
         await self._event_bus.emit(f"{target_id}:msg", packed_message)
         RedisRPCConnection._counter.labels(workspace=self._workspace).inc()
+        await RedisRPCConnection._tracker.reset_timer(
+            self._workspace + "/" + self._client_id, "client"
+        )
 
     async def disconnect(self, reason=None):
         """Handle disconnection."""
@@ -526,6 +535,10 @@ class RedisRPCConnection:
         logger.debug(f"Redis Connection Disconnected: {reason}")
         if self._handle_disconnected:
             await self._handle_disconnected(reason)
+
+        RedisRPCConnection._tracker.remove_entity(
+            self._workspace + "/" + self._client_id, "client"
+        )
 
 
 class RedisEventBus:

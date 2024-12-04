@@ -209,6 +209,7 @@
                         const exp = decodedToken.exp;
                         const maxAge = exp - Math.floor(Date.now() / 1000);
                         document.cookie = `access_token=${accessToken}; path=/; max-age=${maxAge}; samesite=lax`;
+                        document.cookie = `hypha_version=${config.hypha_version}; path=/; max-age=${maxAge}; samesite=lax`;
                     });
                 }
             }, [isLoggedIn, user]);
@@ -244,6 +245,7 @@
 
             const onLogout = async () => {
                 document.cookie = 'access_token=; path=/; max-age=0; samesite=lax';
+                document.cookie = 'hypha_version=; path=/; max-age=0; samesite=lax';
                 await window.auth0Client.logout({
                     logoutParams: { returnTo: window.location.origin }
                 });

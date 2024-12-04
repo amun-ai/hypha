@@ -233,6 +233,7 @@ def create_application(args):
         reconnection_token_life_time=float(
             env.get("RECONNECTION_TOKEN_LIFE_TIME", str(2 * 24 * 60 * 60))
         ),
+        activity_check_interval=float(env.get("ACTIVITY_CHECK_INTERVAL", str(10))),
     )
 
     websocket_server = WebsocketServer(store, path=norm_url(args.base_path, "/ws"))

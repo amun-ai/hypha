@@ -37,7 +37,7 @@ api.export({
 """
 
 
-async def test_server_apps_unauthorized(
+async def test_server_apps_workspace_removal(
     fastapi_server, test_user_token_5, root_user_token
 ):
     """Test the server apps."""
@@ -287,7 +287,7 @@ async def test_lazy_plugin(fastapi_server, test_user_token):
     await api.disconnect()
 
 
-async def test_time_limit(fastapi_server, test_user_token):
+async def test_stop_after_inactive(fastapi_server, test_user_token):
     """Test app with time limit."""
     api = await connect_to_server(
         {
@@ -316,10 +316,10 @@ async def test_time_limit(fastapi_server, test_user_token):
     assert find_item(apps, "id", app_info.id)
 
     # start the app
-    app = await controller.start(app_info.id, time_limit=0.5)
+    app = await controller.start(app_info.id, stop_after_inactive=1)
     apps = await controller.list_running()
     assert find_item(apps, "id", app.id) is not None
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(3)
     apps = await controller.list_running()
     assert find_item(apps, "id", app.id) is None
     await controller.uninstall(app_info.id)

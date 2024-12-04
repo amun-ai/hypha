@@ -360,7 +360,7 @@ class ServerAppController:
         timeout: float = 60,
         version: str = None,
         wait_for_service: Union[str, bool] = None,
-        time_limit: Optional[int] = 600,
+        stop_after_inactive: Optional[int] = 600,
         context: Optional[dict] = None,
     ):
         """Start the app and keep it alive."""
@@ -432,17 +432,23 @@ class ServerAppController:
         )
         self._sessions[full_client_id] = metadata
 
-        if time_limit and time_limit > 0:
+        # test activity tracker
+        tracker = self.store.get_activity_tracker()
+        if stop_after_inactive and stop_after_inactive > 0:
 
-            async def _close_after_time_limit():
-                await asyncio.sleep(time_limit)
+            async def _stop_after_inactive():
                 if full_client_id in self._sessions:
                     await runner.stop(full_client_id)
                 logger.info(
-                    f"App {full_client_id} stopped after time limit {time_limit} reached."
+                    f"App {full_client_id} stopped because of inactive for {stop_after_inactive}s."
                 )
 
-            asyncio.create_task(_close_after_time_limit())
+            tracker.register(
+                full_client_id,
+                inactive_period=stop_after_inactive,
+                on_inactive=_stop_after_inactive,
+                entity_type="client",
+            )
 
         # collecting services registered during the startup of the script
         collected_services: List[ServiceInfo] = []

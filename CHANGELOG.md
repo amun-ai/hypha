@@ -2,7 +2,7 @@
 
 ### 0.20.41
 
- - Add `time_limit` for server apps to limit the running time
+ - Add `stop_after_inactive` option for server apps to stop the server app after a period of inactivity.
  - Support launching server apps worker in a separate service
 
 ### 0.20.40
