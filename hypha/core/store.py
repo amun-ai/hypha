@@ -925,11 +925,7 @@ class RedisStore:
         logger.info("Tearing down the redis store...")
         if self._house_keeping_schedule:
             await self._house_keeping_schedule.unschedule()
-        self._broker_task.cancel()
-        try:
-            await self._broker_task
-        except asyncio.CancelledError:
-            print("Broker successfully exited.")
+
         await self._broker.shutdown()
         self._scheduler_task.cancel()
         try:
@@ -944,7 +940,6 @@ class RedisStore:
                 await self._tracker_task
             except asyncio.CancelledError:
                 print("Activity tracker successfully exited.")
-
         client_id = self._public_workspace_interface.rpc.get_client_info()["id"]
         await self.remove_client(client_id, "public", self._root_user, unload=True)
         client_id = self._root_workspace_interface.rpc.get_client_info()["id"]
@@ -958,4 +953,12 @@ class RedisStore:
                     await ws.close()
                 except GeneratorExit:
                     pass
+
+        # Note: This has to be the last thing to do
+        # Otherwise, the server got stuck in the shutdown process
+        self._broker_task.cancel()
+        try:
+            await self._broker_task
+        except asyncio.CancelledError:
+            print("Broker successfully exited.")
         logger.info("Teardown complete")
