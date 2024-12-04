@@ -150,6 +150,9 @@ class WorkspaceManager:
         self._active_svc = Gauge(
             "active_services", "Number of active services", ["workspace"]
         )
+        self._active_clients = Gauge(
+            "active_clients", "Number of active clients", ["workspace"]
+        )
         self._enable_service_search = enable_service_search
 
     async def _get_sql_session(self):
@@ -1196,9 +1199,7 @@ class WorkspaceManager:
                     "client_connected", {"id": client_id, "workspace": ws}
                 )
                 logger.info(f"Adding built-in service: {service.id}")
-                builtins = await self._redis.keys(
-                    f"services:*|*:{client_id}:built-in@*"
-                )
+                self._active_clients.labels(workspace=ws).inc()
             else:
                 # Remove the service embedding from the config
                 if service.config and service.config.service_embedding is not None:
@@ -1323,6 +1324,7 @@ class WorkspaceManager:
                 await self._event_bus.emit(
                     "client_disconnected", {"id": client_id, "workspace": ws}
                 )
+                self._active_clients.labels(workspace=ws).dec()
             else:
                 await self._event_bus.emit("service_removed", service.model_dump())
                 self._active_svc.labels(workspace=ws).dec()
@@ -1710,6 +1712,12 @@ class WorkspaceManager:
         for key in keys:
             await self._redis.delete(key)
 
+        await self._event_bus.emit(
+            "client_disconnected", {"id": client_id, "workspace": cws}
+        )
+        self._active_clients.labels(workspace=cws).dec()
+        self._active_svc.labels(workspace=cws).dec(len(keys) - 1)
+
         if unload:
             if await self._redis.hexists("workspaces", cws):
                 if user_info.is_anonymous and cws == user_info.get_workspace():
@@ -1765,6 +1773,8 @@ class WorkspaceManager:
                 await self._s3_controller.cleanup_workspace(winfo)
 
         self._active_ws.dec()
+        self._active_clients.remove(ws)
+        self._active_svc.remove(ws)
 
         await self._event_bus.emit("workspace_unloaded", winfo.model_dump())
         logger.info("Workspace %s unloaded.", ws)

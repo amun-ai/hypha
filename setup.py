@@ -46,6 +46,7 @@ REQUIREMENTS = [
     "hrid>=0.2.4",
     "asgiproxy>=0.1.1",
     "stream-zip>=0.0.83",
+    "taskiq>=0.11.9",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()

@@ -60,6 +60,20 @@ class ServerAppController:
 
         self.event_bus.on_local("shutdown", shutdown)
 
+        async def client_disconnected(info: dict) -> None:
+            """Handle client disconnected event."""
+            # {"id": client_id, "workspace": ws}
+            client_id = info["id"]
+            full_client_id = info["workspace"] + "/" + client_id
+            if full_client_id in self._sessions:
+                app_info = self._sessions.pop(full_client_id, None)
+                try:
+                    await app_info["_runner"].stop(full_client_id)
+                except Exception as exp:
+                    logger.warning(f"Failed to stop browser tab: {exp}")
+
+        self.event_bus.on_local("client_disconnected", client_disconnected)
+
     async def get_runners(self):
         # start the browser runner
         server = await self.store.get_public_api()
@@ -424,7 +438,6 @@ class ServerAppController:
                 await asyncio.sleep(time_limit)
                 if full_client_id in self._sessions:
                     await runner.stop(full_client_id)
-                    del self._sessions[full_client_id]
                 logger.info(
                     f"App {full_client_id} stopped after time limit {time_limit} reached."
                 )

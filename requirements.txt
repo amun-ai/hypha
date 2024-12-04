@@ -39,3 +39,4 @@ fastembed==0.4.2
 asgiproxy==0.1.1
 stream-zip==0.0.83
 greenlet==3.0.3
+taskiq==0.11.9

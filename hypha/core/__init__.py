@@ -523,7 +523,7 @@ class RedisRPCConnection:
             self._event_bus.off(f"{self._workspace}/*:msg", self._handle_message)
 
         self._handle_message = None
-        logger.info(f"Redis Connection Disconnected: {reason}")
+        logger.debug(f"Redis Connection Disconnected: {reason}")
         if self._handle_disconnected:
             await self._handle_disconnected(reason)
 
