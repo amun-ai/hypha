@@ -1439,6 +1439,8 @@ class ArtifactController:
                         )
 
                 winfo = await self.store.get_workspace_info(workspace, load=True)
+                if not winfo:
+                    raise ValueError(f"Workspace '{workspace}' does not exist.")
                 if not winfo.persistent:
                     raise PermissionError(
                         f"Cannot create artifact in a non-persistent workspace `{workspace}`, you may need to login to a persistent workspace."
