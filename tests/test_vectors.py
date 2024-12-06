@@ -438,8 +438,7 @@ async def test_load_dump_vector_collections(
             artifact_id=vector_collection.id,
             vectors=vectors,
         )
-
-    await asyncio.sleep(0.2)
+    await asyncio.sleep(1)
     async with connect_to_server(
         {
             "server_url": SERVER_URL_REDIS_1,
@@ -452,6 +451,7 @@ async def test_load_dump_vector_collections(
         workspaces = await admin.list_workspaces()
         assert not find_item(workspaces, "id", api.config["workspace"])
 
+    await asyncio.sleep(1)
     async with connect_to_server(
         {
             "name": "test deploy client",
