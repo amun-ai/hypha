@@ -9,7 +9,6 @@ import time
 import uuid
 from threading import Thread
 
-import pytest_asyncio
 import requests
 from requests import RequestException
 import pytest_asyncio
@@ -42,6 +41,7 @@ from . import (
 
 JWT_SECRET = str(uuid.uuid4())
 os.environ["JWT_SECRET"] = JWT_SECRET
+os.environ["ACTIVITY_CHECK_INTERVAL"] = "0.3"
 test_env = os.environ.copy()
 
 
@@ -228,7 +228,7 @@ def redis_server():
     try:
         r = Redis(host="localhost", port=REDIS_PORT)
         r.ping()
-        yield
+        yield f"redis://127.0.0.1:{REDIS_PORT}/0"
     except Exception:
         # Pull the Redis image
         subprocess.run(["docker", "pull", "redis/redis-stack:7.2.0-v13"], check=True)
@@ -253,7 +253,7 @@ def redis_server():
                 pass
             timeout -= 0.1
             time.sleep(0.1)
-        yield
+        yield f"redis://127.0.0.1:{REDIS_PORT}/0"
         subprocess.Popen(["docker", "stop", "redis"])
         subprocess.Popen(["docker", "rm", "redis"])
         time.sleep(1)
@@ -505,7 +505,7 @@ def minio_server_fixture():
             timeout -= 0.1
             time.sleep(0.1)
         print("\nMinio server started.")
-        yield
+        yield MINIO_SERVER_URL
 
         proc.terminate()
         # shutil.rmtree(dirpath, ignore_errors=True)

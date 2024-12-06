@@ -131,7 +131,7 @@ async def test_workspace(fastapi_server, test_user_token):
     await api.disconnect()
 
 
-async def test_create_workspace_token(test_user_token):
+async def test_create_workspace_token(fastapi_server, test_user_token):
     server_url = WS_SERVER_URL
     # Connect to the Hypha server
     user = await connect_to_server(
@@ -162,3 +162,15 @@ async def test_create_workspace_token(test_user_token):
         }
     )
     print(f"Token generated: {token}")
+
+
+async def test_workspace_ready(fastapi_server):
+    """Test workspace."""
+    server_url = WS_SERVER_URL
+    server = await connect_to_server(
+        {
+            "server_url": server_url,
+        }
+    )
+    result = await server.wait_until_ready(timeout=1)
+    assert result and result.ready is True and not result.errors

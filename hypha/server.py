@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from hypha import __version__
 from hypha.core.auth import create_login_service
 from hypha.core.store import RedisStore
-from hypha.core.queue import create_queue_service
+from hypha.queue import create_queue_service
 from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
 from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
@@ -110,7 +110,9 @@ def start_builtin_services(
         assert args.enable_s3, "Server apps require S3 to be enabled"
         # pylint: disable=import-outside-toplevel
         from hypha.apps import ServerAppController
+        from hypha.runner import BrowserAppRunner
 
+        BrowserAppRunner(store, in_docker=args.in_docker)
         ServerAppController(
             store,
             port=args.port,
@@ -231,6 +233,7 @@ def create_application(args):
         reconnection_token_life_time=float(
             env.get("RECONNECTION_TOKEN_LIFE_TIME", str(2 * 24 * 60 * 60))
         ),
+        activity_check_interval=float(env.get("ACTIVITY_CHECK_INTERVAL", str(10))),
     )
 
     websocket_server = WebsocketServer(store, path=norm_url(args.base_path, "/ws"))

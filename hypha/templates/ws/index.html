@@ -160,7 +160,7 @@
 <body class="bg-black text-white font-poppins">
     <div id="app"></div>
     <script type="module">
-        import { HyphaCore } from "https://cdn.jsdelivr.net/npm/hypha-core@0.20.41/dist/hypha-core.mjs";
+        import { HyphaCore } from "https://cdn.jsdelivr.net/npm/hypha-core@0.20.42/dist/hypha-core.mjs";
 
         const defaultService = {
             getServerConfig(context){
@@ -1777,8 +1777,16 @@
                         setWs(remoteServer);
                     }
                     catch(e){
-                        alert(`Failed to connect to the server: ${e.message}`);
-                        window.location.href = '/';
+                        if(e.message === "Permission denied"){
+                            const redirectUrl = '/public/apps/hypha-login/?redirect=' + window.location.href;
+                            alert(`Failed to connect to the server: ${e.message}, redirecting to login: ${redirectUrl}`);
+                            setTimeout(() => {
+                                window.location.href = redirectUrl;
+                            }, 1000);
+                        }
+                        else{
+                            alert(`Failed to connect to the server: ${e.message}`);
+                        }
                     }
                 };
                 connectToServer();

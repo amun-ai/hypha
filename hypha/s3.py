@@ -309,7 +309,9 @@ class S3Controller:
     async def load_workspace_info(self, workspace_name, user_info):
         """Load workspace from s3 record."""
         if not user_info.check_permission(workspace_name, UserPermission.read_write):
-            return None
+            raise PermissionError(
+                f"Permission denied: {workspace_name}, {user_info.id}"
+            )
         config_path = f"{self.workspace_etc_dir}/{workspace_name}/manifest.json"
         try:
             async with self.create_client_async() as s3_client:
@@ -527,6 +529,7 @@ class S3Controller:
                 await remove_objects_async(
                     s3client, self.workspace_bucket, workspace.id + "/"
                 )
+                logger.info("Workspace's S3 storage cleaned up: %s", workspace.id)
 
         if self.minio_client:
             try:
@@ -543,8 +546,6 @@ class S3Controller:
     async def setup_workspace(self, workspace: WorkspaceInfo):
         """Set up workspace."""
         assert isinstance(workspace, WorkspaceInfo)
-        if workspace.read_only:
-            return
         # Save the workspace info
         # workspace_dir = self.local_log_dir / workspace.id
         # os.makedirs(workspace_dir, exist_ok=True)

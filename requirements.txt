@@ -3,7 +3,7 @@ aiofiles==23.2.1
 websockets==13.1
 base58==2.1.1
 fastapi==0.106.0
-hypha-rpc==0.20.41
+hypha-rpc==0.20.42
 jinja2==3.1.4
 lxml==4.9.3
 msgpack==1.0.8
@@ -21,7 +21,7 @@ uvicorn==0.23.2
 httpx==0.27.0
 pyotritonclient==0.2.6
 fakeredis==2.24.1
-redis==4.6.0
+redis==5.2.0
 friendlywords==1.1.3
 aiocache==0.12.2
 jsonschema==3.2.0
@@ -38,3 +38,5 @@ ollama==0.3.3
 fastembed==0.4.2
 asgiproxy==0.1.1
 stream-zip==0.0.83
+greenlet==3.0.3
+taskiq==0.11.9

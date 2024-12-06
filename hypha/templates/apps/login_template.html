@@ -79,6 +79,7 @@
         </div>
     </div>
     <script>
+        const HYPHA_VERSION = '{{ hypha_version }}';
         const AUTH0_AUDIENCE = '{{ auth0_audience }}';
         const auth0 = new window.auth0.Auth0Client({
             domain: '{{ auth0_domain }}',
@@ -94,12 +95,13 @@
         document.addEventListener('DOMContentLoaded', async () => {
             try {
                 await window.showUserProfile();
+                if (window.location.search.split('logout=')[1]) {
+                    logout();
+                }
             } catch (e) {
                 console.log("Not logged in, showing login button.");
             }
-            if (window.location.search.split('logout=')[1]) {
-                logout();
-            }
+            
         });
 
         const _generateToken = async (workspace, expires_in) =>{
@@ -172,6 +174,7 @@
             const exp = decodedToken.exp;
             const maxAge = exp - Math.floor(Date.now() / 1000);
             document.cookie = `access_token=${accessToken}; path=/; max-age=${maxAge}; samesite=lax`;
+            document.cookie = `hypha_version=${HYPHA_VERSION}; path=/; max-age=${maxAge}; samesite=lax`;
             document.getElementById("login-btn").style.display = "none";
             document.getElementById("name").innerHTML = user.name;
             document.getElementById("email").innerHTML = user.email;
@@ -191,6 +194,7 @@
             const workspace = urlParams.get('workspace') || ""
             const expires_in = urlParams.get('expires_in') || ""
             const report_url = "{{ login_service_url }}/report";
+            const redirect = urlParams.get('redirect');
 
             if (key && report_url.startsWith('http')) {
                 const url = `${report_url}?key=${key}&token=${accessToken}&workspace=${workspace}&expires_in=${expires_in}&email=${user.email}&email_verified=${user.email_verified}&name=${user.name}&nickname=${user.nickname}&user_id=${user.sub}&picture=${encodeURIComponent(user.picture)}`;
@@ -200,19 +204,33 @@
                     alert(`Failed to report token. Please try again later. (${response.status}: ${response.statusText})`);
                 }
                 else{
-                    setTimeout(() => {
-                        window.close();
-                    }, 500);
+                    if (redirect) {
+                        setTimeout(() => {
+                            window.location.href = redirect;
+                        }, 500);
+                    }
+                    else {
+                        setTimeout(() => {
+                            window.close();
+                        }, 500);
+                    }
                 }
+            }
+            else if (redirect) {
+                setTimeout(() => {
+                    window.location.href = redirect;
+                }, 500);
             }
         };
 
         window.logout = async () => {
-            let href = window.location.href;
-            if(!href.endsWith("/")){
-                href += "/";
+            const urlParams = new URLSearchParams(window.location.search);
+            let href = window.location.href.split('?')[0];
+            if (urlParams.get('redirect')) {
+                href = urlParams.get('redirect');
             }
             document.cookie = 'access_token=; path=/; max-age=0; samesite=lax';
+            document.cookie = 'hypha_version=; path=/; max-age=0; samesite=lax';
             await auth0.logout({ logoutParams: { returnTo: href } });
         };
 

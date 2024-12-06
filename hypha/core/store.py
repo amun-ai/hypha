@@ -2,19 +2,24 @@
 import asyncio
 import json
 import logging
-import time
 import sys
 import datetime
-from typing import List, Union
+from typing import List, Union, Optional
 from pydantic import BaseModel
 from fastapi import Header, Cookie
 
 from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
 from starlette.routing import Mount
-from pydantic.fields import Field
 from aiocache.backends.redis import RedisCache
 from aiocache.serializers import PickleSerializer
+from taskiq import TaskiqScheduler
+from taskiq.kicker import AsyncKicker
+from taskiq.api import run_receiver_task, run_scheduler_task
+from hypha.taskiq_utils.redis_broker import ListQueueBroker
+from hypha.taskiq_utils.redis_backend import RedisAsyncResultBackend
+from hypha.taskiq_utils.schedule_source import RedisScheduleSource
+
 
 from hypha import __version__
 from hypha.core import (
@@ -25,6 +30,7 @@ from hypha.core import (
     UserInfo,
     WorkspaceInfo,
 )
+from hypha.core.activity import ActivityTracker
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
@@ -101,9 +107,11 @@ class RedisStore:
         cache_dir=None,
         enable_service_search=False,
         reconnection_token_life_time=2 * 24 * 60 * 60,
+        activity_check_interval=10,
     ):
         """Initialize the redis store."""
         self._s3_controller = None
+        self._server_app_controller = None
         self._artifact_manager = None
         self._app = app
         self._codecs = {}
@@ -122,6 +130,7 @@ class RedisStore:
         self._manager_id = "manager-" + self._server_id
         self.reconnection_token_life_time = reconnection_token_life_time
         self._enable_service_search = enable_service_search
+        self._activity_check_interval = activity_check_interval
         self._server_info = {
             "server_id": self._server_id,
             "hypha_version": __version__,
@@ -168,16 +177,32 @@ class RedisStore:
             from redis import asyncio as aioredis
 
             self._redis = aioredis.from_url(redis_uri)
+
         else:  #  Create a redis server with fakeredis
             from fakeredis import aioredis
 
             self._redis = aioredis.FakeRedis.from_url("redis://localhost:9997/11")
 
+        self._result_backend = RedisAsyncResultBackend(self._redis)
+        self._broker = ListQueueBroker(self._redis).with_result_backend(
+            self._result_backend
+        )
+        self._broker_task = None
+        self._source = RedisScheduleSource(self._redis)
+        self._scheduler = TaskiqScheduler(
+            broker=self._broker,
+            sources=[self._source],
+        )
+        self._house_keeping_schedule = None
+        self._first_run = True
+
         self._redis_cache = RedisCache(serializer=PickleSerializer())
         self._redis_cache.client = self._redis
-
         self._root_user = None
         self._event_bus = RedisEventBus(self._redis)
+
+        self._tracker = None
+        self._tracker_task = None
 
     def set_websocket_server(self, websocket_server):
         """Set the websocket server."""
@@ -278,23 +303,25 @@ class RedisStore:
 
     async def housekeeping(self):
         """Perform housekeeping tasks."""
-        # Perform housekeeping tasks
-        # Start the housekeeping task after 2 minutes
-        logger.info("Starting housekeeping task in 2 minutes...")
-        await asyncio.sleep(120)
-        while True:
-            try:
-                logger.info("Running housekeeping task...")
-                async with self.get_workspace_interface(
-                    self._root_user, "ws-user-root", client_id="housekeeping"
-                ) as api:
-                    # admin = await api.get_service("admin-utils")
-                    workspaces = await api.list_workspaces()
-                    for workspace in workspaces:
-                        await api.cleanup(workspace.id)
-                await asyncio.sleep(3600)
-            except Exception as e:
-                logger.exception(f"Error in housekeeping: {e}")
+        if self._first_run:
+            logger.info("Skipping housekeeping on first run")
+            self._first_run = False
+            return
+        try:
+            logger.info(f"Running housekeeping task at {datetime.datetime.now()}")
+            async with self.get_workspace_interface(
+                self._root_user, "ws-user-root", client_id="housekeeping"
+            ) as api:
+                # admin = await api.get_service("admin-utils")
+                workspaces = await api.list_workspaces()
+                for workspace in workspaces:
+                    summary = await api.cleanup(workspace.id)
+                    if "removed_clients" in summary:
+                        logger.info(
+                            f"Removed {len(summary['removed_clients'])} clients from workspace {workspace.id}"
+                        )
+        except Exception as e:
+            logger.exception(f"Error in housekeeping: {e}")
 
     async def upgrade(self):
         """Upgrade the store."""
@@ -446,6 +473,10 @@ class RedisStore:
             logger.warning("RESETTING ALL REDIS DATA!!!")
             await self._redis.flushall()
         await self._event_bus.init()
+        self._tracker = ActivityTracker(check_interval=self._activity_check_interval)
+        self._tracker_task = asyncio.create_task(self._tracker.monitor_entities())
+        RedisRPCConnection.set_activity_tracker(self._tracker)
+
         await self.setup_root_user()
         await self.check_and_cleanup_servers()
         self._workspace_manager = await self.register_workspace_manager()
@@ -521,7 +552,67 @@ class RedisStore:
         logger.info("Server initialized with server id: %s", self._server_id)
         logger.info("Currently connected hypha servers: %s", servers)
 
-        asyncio.create_task(self.housekeeping())
+        # Setup broker and scheduler
+        await self._broker.startup()
+        self._broker_task = asyncio.create_task(run_receiver_task(self._broker))
+        await self._scheduler.startup()
+        self._scheduler_task = asyncio.create_task(run_scheduler_task(self._scheduler))
+
+        # Do house keeping every 10 minutes
+        self._house_keeping_schedule = await self.schedule_task(
+            self.housekeeping, task_name="housekeeping", corn="*/1 * * * *"
+        )
+        self._first_run = True
+
+    async def schedule_task(
+        self,
+        task,
+        *args,
+        corn: Optional[str] = None,
+        time: Optional[datetime.datetime] = None,
+        task_name: Optional[str] = None,
+        task_id: Optional[str] = None,
+        schedule_id: Optional[str] = None,
+        **kwargs,
+    ):
+        """Schedule a task."""
+        assert not (corn and time), "Only one of corn or time can be provided"
+        assert corn or time, "Either corn or time must be provided"
+        my_task: AsyncKicker = self._broker.register_task(
+            task, task_name=task_name
+        ).kicker()
+        if task_id:
+            my_task = my_task.with_task_id(task_id)
+        if schedule_id:
+            my_task = my_task.with_schedule_id(schedule_id)
+        if corn:
+            return await my_task.schedule_by_cron(self._source, corn, *args, **kwargs)
+        if time:
+            return await my_task.schedule_by_time(self._source, time, *args, **kwargs)
+
+    async def delete_schedule(self, schedule_id: str):
+        """Remove schedule by id."""
+        await self._source.delete_schedule(schedule_id)
+
+    async def run_task(
+        self,
+        task,
+        *args,
+        task_name: Optional[str] = None,
+        task_id: Optional[str] = None,
+        **kwargs,
+    ):
+        """Send a task."""
+        my_task: AsyncKicker = self._broker.register_task(
+            task, task_name=task_name
+        ).kicker()
+        if task_id:
+            my_task = my_task.with_task_id(task_id)
+        return await my_task.kiq(*args, **kwargs)
+
+    async def get_task_result(self, task_id, with_logs: bool = False):
+        """Get the task result."""
+        return await self._result_backend.get_result(task_id, with_logs=with_logs)
 
     async def _register_root_services(self):
         """Register root services."""
@@ -542,8 +633,21 @@ class RedisStore:
                 "list_servers": self.list_servers,
                 "kickout_client": self.kickout_client,
                 "list_workspaces": self.list_all_workspaces,
+                "unload_workspace": self.unload_workspace,
             }
         )
+
+    @schema_method
+    async def unload_workspace(self, workspace: str, wait: bool = False, timeout=10):
+        """Unload a workspace."""
+        context = {"user": self._root_user.model_dump(), "ws": workspace}
+        await self._workspace_manager.unload(context=context)
+        if wait:
+            if not await self.workspace_exists(workspace):
+                return
+            await self._event_bus.wait_for(
+                "workspace_unloaded", match={"id": workspace}, timeout=timeout
+            )
 
     @schema_method
     async def list_servers(self):
@@ -557,6 +661,9 @@ class RedisStore:
             client_id = key_parts[1].split(":")[0]
             clients.add(client_id)
         return list(clients)
+
+    def get_activity_tracker(self):
+        return self._tracker
 
     async def get_public_api(self):
         """Get the public API."""
@@ -687,6 +794,7 @@ class RedisStore:
     async def register_workspace_manager(self):
         """Register a workspace manager."""
         manager = WorkspaceManager(
+            self,
             self._redis,
             self._root_user,
             self._event_bus,
@@ -694,6 +802,7 @@ class RedisStore:
             self._manager_id,
             self._sql_engine,
             self._s3_controller,
+            self._server_app_controller,
             self._artifact_manager,
             self._enable_service_search,
             self._cache_dir,
@@ -749,7 +858,7 @@ class RedisStore:
         """Create a rpc object for a workspace."""
         client_id = client_id or "anonymous-client-" + random_id(readable=False)
         assert "/" not in client_id
-        logger.info("Creating RPC for client %s", client_id)
+        logger.debug("Creating RPC for client %s", client_id)
         assert user_info is not None, "User info is required"
         connection = RedisRPCConnection(
             self._event_bus,
@@ -795,6 +904,14 @@ class RedisStore:
     def set_s3_controller(self, controller):
         """Set the s3 controller."""
         self._s3_controller = controller
+
+    def set_server_app_controller(self, controller):
+        """Set the server app controller."""
+        self._server_app_controller = controller
+
+    def get_server_app_controller(self):
+        """Get the server app controller."""
+        return self._server_app_controller
 
     def set_artifact_manager(self, controller):
         """Set the artifact controller."""
@@ -865,7 +982,24 @@ class RedisStore:
     async def teardown(self):
         """Teardown the server."""
         self._ready = False
-        logger.info("Tearing down the public workspace...")
+        logger.info("Tearing down the redis store...")
+        if self._house_keeping_schedule:
+            await self._house_keeping_schedule.unschedule()
+
+        await self._broker.shutdown()
+        self._scheduler_task.cancel()
+        try:
+            await self._scheduler_task
+        except asyncio.CancelledError:
+            print("Scheduler successfully exited.")
+        await self._scheduler.shutdown()
+
+        if self._tracker_task:
+            self._tracker_task.cancel()
+            try:
+                await self._tracker_task
+            except asyncio.CancelledError:
+                print("Activity tracker successfully exited.")
         client_id = self._public_workspace_interface.rpc.get_client_info()["id"]
         await self.remove_client(client_id, "public", self._root_user, unload=True)
         client_id = self._root_workspace_interface.rpc.get_client_info()["id"]
@@ -879,4 +1013,14 @@ class RedisStore:
                     await ws.close()
                 except GeneratorExit:
                     pass
+
+        await self._event_bus.stop()
+
+        # Note: This has to be the last thing to do
+        # Otherwise, the server got stuck in the shutdown process
+        self._broker_task.cancel()
+        try:
+            await self._broker_task
+        except asyncio.CancelledError:
+            print("Broker successfully exited.")
         logger.info("Teardown complete")

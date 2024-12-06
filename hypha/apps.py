@@ -10,8 +10,7 @@ from pathlib import Path
 from hypha import main_version
 from jinja2 import Environment, PackageLoader, select_autoescape
 from typing import Any, Dict, List, Optional, Union
-from hypha.core import UserInfo, UserPermission, ServiceInfo, ApplicationArtifact
-from hypha.runner.browser import BrowserAppRunner
+from hypha.core import UserInfo, UserPermission, ServiceInfo, ApplicationManifest
 from hypha.utils import (
     random_id,
     PLUGIN_CONFIG_FIELDS,
@@ -20,6 +19,7 @@ from hypha.utils import (
 import base58
 import random
 from hypha.plugin_parser import convert_config_to_artifact, parse_imjoy_plugin
+from hypha.core import WorkspaceInfo
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("apps")
@@ -54,27 +54,38 @@ class ServerAppController:
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
         )
         self.templates_dir = Path(__file__).parent / "templates"
-        self._runners = None
 
         def shutdown(_) -> None:
             asyncio.ensure_future(self.shutdown())
 
         self.event_bus.on_local("shutdown", shutdown)
 
+        async def client_disconnected(info: dict) -> None:
+            """Handle client disconnected event."""
+            # {"id": client_id, "workspace": ws}
+            client_id = info["id"]
+            full_client_id = info["workspace"] + "/" + client_id
+            if full_client_id in self._sessions:
+                app_info = self._sessions.pop(full_client_id, None)
+                try:
+                    await app_info["_runner"].stop(full_client_id)
+                except Exception as exp:
+                    logger.warning(f"Failed to stop browser tab: {exp}")
+
+        self.event_bus.on_local("client_disconnected", client_disconnected)
+        store.set_server_app_controller(self)
+
     async def get_runners(self):
         # start the browser runner
         server = await self.store.get_public_api()
         svcs = await server.list_services("public/server-app-worker")
+        if not svcs:
+            return []
         runners = [await server.get_service(svc["id"]) for svc in svcs]
         if runners:
             return runners
-        elif self._runners:
-            return self._runners
-        self._runners = [
-            BrowserAppRunner(in_docker=self.in_docker),
-            BrowserAppRunner(in_docker=self.in_docker),
-        ]
-        return self._runners
+        else:
+            []
 
     async def setup_applications_collection(self, overwrite=True, context=None):
         """Set up the workspace."""
@@ -205,7 +216,7 @@ class ServerAppController:
                 "public_url": public_url,
             }
         )
-        ApplicationArtifact.model_validate(artifact_obj)
+        ApplicationManifest.model_validate(artifact_obj)
 
         try:
             artifact = await self.artifact_manager.read("applications", context=context)
@@ -352,7 +363,7 @@ class ServerAppController:
         timeout: float = 60,
         version: str = None,
         wait_for_service: Union[str, bool] = None,
-        time_limit: Optional[int] = 600,
+        stop_after_inactive: Optional[int] = None,
         context: Optional[dict] = None,
     ):
         """Start the app and keep it alive."""
@@ -379,10 +390,24 @@ class ServerAppController:
         artifact_info = await self.artifact_manager.read(
             f"applications:{app_id}", version=version, context=context
         )
-        artifact = artifact_info.get("manifest", {})
-        artifact = ApplicationArtifact.model_validate(artifact)
-
-        entry_point = artifact.entry_point
+        manifest = artifact_info.get("manifest", {})
+        manifest = ApplicationManifest.model_validate(manifest)
+        if manifest.singleton:
+            # check if the app is already running
+            for session_info in self._sessions.values():
+                if session_info["app_id"] == app_id:
+                    raise RuntimeError(
+                        f"App {app_id} is a singleton app and already running (id: {session_info['id']})"
+                    )
+        if manifest.daemon and stop_after_inactive and stop_after_inactive > 0:
+            raise ValueError("Daemon apps should not have stop_after_inactive set.")
+        if stop_after_inactive is None:
+            stop_after_inactive = (
+                600
+                if manifest.stop_after_inactive is None
+                else manifest.stop_after_inactive
+            )
+        entry_point = manifest.entry_point
         assert entry_point, f"Entry point not found for app {app_id}."
         server_url = self.local_base_url
         local_url = (
@@ -404,14 +429,13 @@ class ServerAppController:
             + (f"&version={version}" if version else "")
             + (f"&use_proxy=true")
         )
-
-        runner = random.choice(await self.get_runners())
+        runners = await self.get_runners()
+        if not runners:
+            raise Exception("No server app worker found")
+        runner = random.choice(runners)
 
         full_client_id = workspace + "/" + client_id
-        await runner.start(
-            url=local_url, session_id=full_client_id, time_limit=time_limit
-        )
-        self._sessions[full_client_id] = {
+        metadata = {
             "id": full_client_id,
             "app_id": app_id,
             "workspace": workspace,
@@ -419,6 +443,32 @@ class ServerAppController:
             "public_url": public_url,
             "_runner": runner,
         }
+
+        await runner.start(
+            url=local_url,
+            session_id=full_client_id,
+            metadata=metadata,
+        )
+        self._sessions[full_client_id] = metadata
+
+        # test activity tracker
+        tracker = self.store.get_activity_tracker()
+        if not manifest.daemon and stop_after_inactive and stop_after_inactive > 0:
+
+            async def _stop_after_inactive():
+                if full_client_id in self._sessions:
+                    await runner.stop(full_client_id)
+                logger.info(
+                    f"App {full_client_id} stopped because of inactive for {stop_after_inactive}s."
+                )
+
+            tracker.register(
+                full_client_id,
+                inactive_period=stop_after_inactive,
+                on_inactive=_stop_after_inactive,
+                entity_type="client",
+            )
+
         # collecting services registered during the startup of the script
         collected_services: List[ServiceInfo] = []
         app_info = {
@@ -452,14 +502,14 @@ class ServerAppController:
                 )
 
             # save the services
-            artifact.services = collected_services
-            artifact = ApplicationArtifact.model_validate(
-                artifact.model_dump(mode="json")
+            manifest.services = collected_services
+            manifest = ApplicationManifest.model_validate(
+                manifest.model_dump(mode="json")
             )
             await self.artifact_manager.edit(
                 f"applications:{app_id}",
                 version=version,
-                manifest=artifact.model_dump(mode="json"),
+                manifest=manifest.model_dump(mode="json"),
                 context=context,
             )
 
@@ -495,7 +545,9 @@ class ServerAppController:
                 f"User {user_info.id} does not have permission"
                 f" to stop app {session_id} in workspace {workspace}."
             )
+        await self._stop(session_id, raise_exception=raise_exception)
 
+    async def _stop(self, session_id: str, raise_exception=True):
         if session_id in self._sessions:
             app_info = self._sessions.pop(session_id, None)
             try:
@@ -543,12 +595,13 @@ class ServerAppController:
     async def list_apps(self, context: Optional[dict] = None):
         """List applications in the workspace."""
         try:
+            ws = context["ws"]
             apps = await self.artifact_manager.list_children(
-                "applications", context=context
+                f"{ws}/applications", context=context
             )
             return [app["manifest"] for app in apps]
         except KeyError:
-            return []
+            raise KeyError(f"Applications collection not found: {ws}")
         except Exception as exp:
             raise Exception(f"Failed to list apps: {exp}") from exp
 
@@ -556,7 +609,42 @@ class ServerAppController:
         """Shutdown the app controller."""
         logger.info("Closing the server app controller...")
         for app in self._sessions.values():
-            await self.stop(app["id"])
+            await self.stop(app["id"], raise_exception=False)
+
+    async def prepare_workspace(self, workspace_info: WorkspaceInfo):
+        """Prepare the workspace."""
+        context = {
+            "ws": workspace_info.id,
+            "user": self.store.get_root_user().model_dump(),
+        }
+        apps = await self.list_apps(context=context)
+        # start daemon apps
+        for app in apps:
+            if app.get("daemon"):
+                try:
+                    await self.start(app["id"], context=context)
+                except Exception as exp:
+                    logger.error(
+                        f"Failed to start daemon app: {app['id']}, error: {exp}"
+                    )
+
+    async def close_workspace(self, workspace_info: WorkspaceInfo):
+        """Archive the workspace."""
+        # Stop all running apps
+        for app in list(self._sessions.values()):
+            if app["workspace"] == workspace_info.id:
+                await self._stop(app["id"], raise_exception=False)
+        # Send to all runners
+        runners = await self.get_runners()
+        if not runners:
+            return
+        for runner in runners:
+            try:
+                await runner.close_workspace(workspace_info.id)
+            except Exception as exp:
+                logger.warning(
+                    f"Worker failed to close workspace: {workspace_info.id}, error: {exp}"
+                )
 
     def get_service_api(self) -> Dict[str, Any]:
         """Get a list of service API endpoints."""

@@ -18,6 +18,7 @@ from jose import jwt
 
 from hypha.core import UserInfo, UserTokenInfo, ScopeInfo, UserPermission, WorkspaceInfo
 from hypha.utils import random_id
+from hypha import __version__
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("auth")
@@ -350,6 +351,7 @@ def create_login_service(store):
     )
     temp = jinja_env.get_template("apps/login_template.html")
     login_page = temp.render(
+        hypha_version=__version__,
         login_service_url=login_service_url,
         generate_token_url=generate_token_url,
         auth0_client_id=AUTH0_CLIENT_ID,

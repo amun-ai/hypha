@@ -21,7 +21,7 @@ async def test_singleton_service(fastapi_server):
     ) as api:
         await api.register_service(
             {
-                "id": "test-service",
+                "id": "test-service-1",
                 "name": "Test Service",
                 "config": {"singleton": True},
                 "description": "A test service",
@@ -36,7 +36,7 @@ async def test_singleton_service(fastapi_server):
         with pytest.raises(Exception, match=".*Failed to notify workspace manager.*"):
             await api.register_service(
                 {
-                    "id": "test-service",
+                    "id": "test-service-1",
                     "name": "Test Service",
                     "config": {"singleton": True},
                     "description": "A test service",

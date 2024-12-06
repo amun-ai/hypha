@@ -22,6 +22,7 @@ from pydantic import (  # pylint: disable=no-name-in-module
 
 from hypha.utils import EventBus
 import jsonschema
+from hypha.core.activity import ActivityTracker
 
 from prometheus_client import Counter
 
@@ -68,7 +69,7 @@ class ServiceInfo(BaseModel):
     id: str
     name: str
     type: Optional[str] = "generic"
-    description: Optional[constr(max_length=256)] = None  # type: ignore
+    description: Optional[constr(max_length=1024)] = None  # type: ignore
     docs: Optional[str] = None
     app_id: Optional[str] = None
     service_schema: Optional[Dict[str, Any]] = None
@@ -367,12 +368,21 @@ class CollectionArtifact(Artifact):
         return super().model_validate(data)
 
 
-class ApplicationArtifact(Artifact):
+class ApplicationManifest(Artifact):
     """Represent application artifact."""
 
+    passive: Optional[bool] = False
+    dependencies: Optional[List[str]] = []
+    requirements: Optional[List[str]] = []
+    api_version: Optional[str] = "0.1.0"
+    icon: Optional[str] = None
+    env: Optional[Union[str, Dict[str, Any]]] = None
     type: Optional[str] = "application"
     entry_point: Optional[str] = None  # entry point for the application
+    daemon: Optional[bool] = False  # whether the application is a daemon
+    singleton: Optional[bool] = False  # whether the application is a singleton
     services: Optional[List[SerializeAsAny[ServiceInfo]]] = None  # for application
+    stop_after_inactive: Optional[float] = None  # stop the application after inactivity
 
 
 class ServiceTypeInfo(BaseModel):
@@ -401,6 +411,7 @@ class WorkspaceInfo(BaseModel):
     docs: Optional[str] = None
     service_types: Optional[Dict[str, ServiceTypeInfo]] = {}
     config: Optional[Dict[str, Any]] = {}
+    status: Optional[Dict[str, Any]] = None
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -436,6 +447,11 @@ class RedisRPCConnection:
     """Represent a Redis connection for handling RPC-like messaging."""
 
     _counter = Counter("rpc_call", "Counts the RPC calls", ["workspace"])
+    _tracker = None
+
+    @classmethod
+    def set_activity_tracker(cls, tracker: ActivityTracker):
+        cls._tracker = tracker
 
     def __init__(
         self,
@@ -512,6 +528,9 @@ class RedisRPCConnection:
         # logger.info(f"Sending message to channel {target_id}:msg")
         await self._event_bus.emit(f"{target_id}:msg", packed_message)
         RedisRPCConnection._counter.labels(workspace=self._workspace).inc()
+        await RedisRPCConnection._tracker.reset_timer(
+            self._workspace + "/" + self._client_id, "client"
+        )
 
     async def disconnect(self, reason=None):
         """Handle disconnection."""
@@ -523,9 +542,13 @@ class RedisRPCConnection:
             self._event_bus.off(f"{self._workspace}/*:msg", self._handle_message)
 
         self._handle_message = None
-        logger.info(f"Redis Connection Disconnected: {reason}")
+        logger.debug(f"Redis Connection Disconnected: {reason}")
         if self._handle_disconnected:
             await self._handle_disconnected(reason)
+
+        RedisRPCConnection._tracker.remove_entity(
+            self._workspace + "/" + self._client_id, "client"
+        )
 
 
 class RedisEventBus:
@@ -550,7 +573,7 @@ class RedisEventBus:
         self._loop = loop
 
         # Start the Redis subscription task
-        loop.create_task(self._subscribe_redis())
+        self._subscribe_task = loop.create_task(self._subscribe_redis())
 
         # Wait for readiness signal
         await self._ready
@@ -653,8 +676,14 @@ class RedisEventBus:
             fut.set_result(None)
             return fut
 
-    def stop(self):
+    async def stop(self):
+        """Stop the event bus."""
         self._stop = True
+        self._subscribe_task.cancel()
+        try:
+            await self._subscribe_task
+        except asyncio.CancelledError:
+            pass
 
     async def _subscribe_redis(self):
         cpu_count = os.cpu_count() or 1

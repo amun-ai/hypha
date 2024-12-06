@@ -12,7 +12,7 @@ DESCRIPTION = (
 REQUIREMENTS = [
     "aiofiles",
     "fastapi>=0.70.0,<=0.106.0",
-    "hypha-rpc>=0.20.41",
+    "hypha-rpc>=0.20.42",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=2.6.1",
@@ -37,6 +37,7 @@ REQUIREMENTS = [
     "aiocache>=0.12.2",
     "jsonschema>=3.2.0",
     "sqlalchemy>=2.0.35",
+    "greenlet>=3.0.3",
     "aiosqlite>=0.20.0",
     "prometheus-client>=0.21.0",
     "uuid-utils>=0.9.0",
@@ -45,6 +46,7 @@ REQUIREMENTS = [
     "hrid>=0.2.4",
     "asgiproxy>=0.1.1",
     "stream-zip>=0.0.83",
+    "taskiq>=0.11.9",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()
@@ -73,7 +75,7 @@ setup(
             "aiobotocore>=2.1.0",
         ],
         "server-apps": [
-            "redis>=4.5.5",
+            "redis>=5.2.0",
             "aiobotocore>=2.1.0",
             "aiortc>=1.9.0",
             "requests>=2.26.0",
