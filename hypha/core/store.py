@@ -577,6 +577,7 @@ class RedisStore:
     ):
         """Schedule a task."""
         assert not (corn and time), "Only one of corn or time can be provided"
+        assert corn or time, "Either corn or time must be provided"
         my_task: AsyncKicker = self._broker.register_task(
             task, task_name=task_name
         ).kicker()

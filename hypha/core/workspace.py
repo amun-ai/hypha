@@ -1784,8 +1784,11 @@ class WorkspaceManager:
                 await self._s3_controller.cleanup_workspace(winfo)
 
         self._active_ws.dec()
-        self._active_clients.remove(ws)
-        self._active_svc.remove(ws)
+        try:
+            self._active_clients.remove(ws)
+            self._active_svc.remove(ws)
+        except KeyError:
+            pass
 
         await self._close_workspace(winfo)
 

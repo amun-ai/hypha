@@ -112,23 +112,6 @@ async def test_redis_store(redis_store):
     assert execution_tracker["executed"] is True
     assert execution_tracker["data"] == "test-data"
 
-    # Test scheduling a task with a specific time
-    execution_tracker["executed"] = False  # Reset the tracker
-    scheduled_time = datetime.now() + timedelta(seconds=2)
-    schedule = await redis_store.schedule_task(
-        dummy_task, "scheduled-test-data", time=scheduled_time
-    )
-
-    # Assert that the schedule ID is valid
-    assert schedule.schedule_id is not None
-
-    # Allow enough time for the task to execute
-    await asyncio.sleep(3)
-
-    # Verify that the task executed
-    assert execution_tracker["executed"] is True
-    assert execution_tracker["data"] == "scheduled-test-data"
-
     # Test scheduling a task using a cron expression
     execution_tracker["executed"] = False  # Reset the tracker
     cron_expr = "*/1 * * * *"
@@ -148,6 +131,23 @@ async def test_redis_store(redis_store):
 
     # Clean up the scheduled task
     await redis_store.delete_schedule("cron-test")
+
+    # Test scheduling a task with a specific time
+    execution_tracker["executed"] = False  # Reset the tracker
+    scheduled_time = datetime.now() + timedelta(seconds=2)
+    schedule = await redis_store.schedule_task(
+        dummy_task, "scheduled-test-data", time=scheduled_time, schedule_id="scheduled"
+    )
+
+    # Assert that the schedule ID is valid
+    assert schedule.schedule_id == "scheduled"
+
+    # Allow enough time for the task to execute
+    await asyncio.sleep(3)
+
+    # Verify that the task executed
+    assert execution_tracker["executed"] is True
+    assert execution_tracker["data"] == "scheduled-test-data"
 
 
 async def test_websocket_server(fastapi_server, test_user_token_2):
