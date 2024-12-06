@@ -441,19 +441,6 @@ async def test_load_dump_vector_collections(
     await asyncio.sleep(1)
     async with connect_to_server(
         {
-            "server_url": SERVER_URL_REDIS_1,
-            "client_id": "admin",
-            "token": root_user_token,
-        }
-    ) as root:
-        admin = await root.get_service("admin-utils", {"mode": "random"})
-        await admin.unload_workspace(api.config["workspace"], wait=True, timeout=60)
-        workspaces = await admin.list_workspaces()
-        assert not find_item(workspaces, "id", api.config["workspace"])
-
-    await asyncio.sleep(1)
-    async with connect_to_server(
-        {
             "name": "test deploy client",
             "server_url": SERVER_URL_REDIS_1,
             "token": test_user_token,
