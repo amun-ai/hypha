@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from hypha import __version__
 from hypha.core.auth import create_login_service
 from hypha.core.store import RedisStore
-from hypha.core.queue import create_queue_service
+from hypha.queue import create_queue_service
 from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
 from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware

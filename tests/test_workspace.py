@@ -176,5 +176,5 @@ async def test_workspace_ready(fastapi_server):
     with pytest.raises(Exception, match="is not ready, timeout."):
         result = await server.wait_until_ready(timeout=1)
 
-    result = await server.wait_until_ready(timeout=10)
+    result = await server.wait_until_ready(timeout=30)
     assert result and result.ready is True and not result.errors

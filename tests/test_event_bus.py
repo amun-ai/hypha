@@ -145,7 +145,7 @@ async def test_once_handler(event_bus):
 
 
 async def test_stop(event_bus):
-    event_bus.stop()
+    await event_bus.stop()
     assert event_bus._stop is True
 
 
