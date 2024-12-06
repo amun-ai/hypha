@@ -439,15 +439,16 @@ await artifact_manager.delete(artifact_id="other_workspace/example-dataset", del
 
 ---
 
-### `add_vectors(artifact_id: str, vectors: list, embedding_models: Optional[Dict[str, str]] = None, context: dict = None) -> None`
+### `add_vectors(artifact_id: str, vectors: list, embedding_models: Optional[Dict[str, str]] = None, update: bool = False, context: dict = None) -> None`
 
-Adds vectors to a vector collection artifact.
+Adds vectors to a vector collection artifact. See [RAG](./rag.md) for more detailed use of vector collections.
 
 **Parameters:**
 
 - `artifact_id`: The ID of the artifact to which vectors will be added. This must be a vector-collection artifact.
 - `vectors`: A list of vectors to add to the collection.
 - `embedding_models`: (Optional) A dictionary specifying embedding models to be used. If not provided, the default models from the artifact's configuration will be used.
+- `update`: (Optional) A boolean flag to update existing vectors if they have the same ID. Defaults to `False`. If update is set to `True`, the existing vectors will be updated with the new vectors and every vector are expected to have an `id` field. If the vector does not exist, it will be added.
 - `context`: A dictionary containing user and session context information.
 
 **Returns:** None.
@@ -489,7 +490,7 @@ results = await artifact_manager.search_vectors(artifact_id="example-id", query=
 
 ### `remove_vectors(artifact_id: str, ids: list, context: dict = None) -> None`
 
-Removes vectors from a vector collection artifact.
+Removes vectors from a vector collection artifact. See [RAG](./rag.md) for more detailed use of vector collections.
 
 **Parameters:**
 
@@ -529,7 +530,7 @@ vector = await artifact_manager.get_vector(artifact_id="example-id", id=123)
 
 ### `list_vectors(artifact_id: str, offset: int = 0, limit: int = 10, return_fields: List[str] = None, order_by: str = None, pagination: bool = False, context: dict = None) -> list`
 
-Lists vectors in a vector collection artifact.
+Lists vectors in a vector collection artifact. See [RAG](./rag.md) for more detailed use of vector collections.
 
 **Parameters:**
 
