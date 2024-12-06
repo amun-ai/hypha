@@ -1755,7 +1755,8 @@ class WorkspaceManager:
         self.validate_context(context, permission=UserPermission.admin)
         ws = context["ws"]
         if not await self._redis.hexists("workspaces", ws):
-            raise KeyError(f"Workspace {ws} has already been unloaded.")
+            logger.warning(f"Workspace {ws} has already been unloaded.")
+            return
         winfo = await self.load_workspace_info(ws)
         # list all the clients in the workspace and send a meesage to delete them
         client_keys = await self._list_client_keys(winfo.id)
