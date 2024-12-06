@@ -114,7 +114,7 @@ async def test_redis_store(redis_store):
 
     # Test scheduling a task with a specific time
     execution_tracker["executed"] = False  # Reset the tracker
-    scheduled_time = datetime.now() + timedelta(seconds=0.2)
+    scheduled_time = datetime.now() + timedelta(seconds=2)
     schedule = await redis_store.schedule_task(
         dummy_task, "scheduled-test-data", time=scheduled_time
     )
@@ -123,7 +123,7 @@ async def test_redis_store(redis_store):
     assert schedule.schedule_id is not None
 
     # Allow enough time for the task to execute
-    await asyncio.sleep(10)
+    await asyncio.sleep(3)
 
     # Verify that the task executed
     assert execution_tracker["executed"] is True
