@@ -81,7 +81,10 @@ class VectorSearchEngine:
 
     async def _get_fields(self, collection_name: str):
         index_name = self._get_index_name(collection_name)
-        info = await self._redis.ft(index_name).info()
+        try:
+            info = await self._redis.ft(index_name).info()
+        except aioredis.ResponseError:
+            raise KeyError(f"Vector collection {collection_name} does not exist.")
         fields = parse_attributes(info["attributes"])
         return fields
 
@@ -318,10 +321,17 @@ class VectorSearchEngine:
                     if isinstance(value, list):
                         vector_data[key] = np.array(value, dtype=np.float32)
 
-                # Add vector to Redis
-                await self.add_vectors(
-                    collection_name, [{"id": obj["name"].split(".")[0], **vector_data}]
-                )
+                try:
+                    # Add vector to Redis
+                    await self.add_vectors(
+                        collection_name,
+                        [{"id": obj["name"].split(".")[0], **vector_data}],
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to load vector {obj['name']} from S3 bucket {bucket} under prefix {prefix}: {e}"
+                    )
+                    raise e
 
         logger.info(
             f"Collection {collection_name} loaded from S3 bucket {bucket} under prefix {prefix}."

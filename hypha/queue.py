@@ -15,21 +15,6 @@ def create_queue_service(store: RedisStore):
     """Create a queue service for Hypha."""
     redis: aioredis.FakeRedis = store.get_redis()
 
-    event_bus = store.get_event_bus()
-
-    async def on_workspace_unloaded(workspace):
-        # delete all the keys that start with workspace["name"] + ":q:"
-        keys_pattern = workspace["name"] + ":q:*"
-        cursor = "0"
-        while cursor != 0:
-            cursor, keys = await redis.scan(cursor=cursor, match=keys_pattern)
-            if keys:
-                await redis.delete(*keys)
-        if cursor != "0":
-            logger.info("Removed queue keys for workspace: %s", workspace["name"])
-
-    event_bus.on_local("workspace_unloaded", on_workspace_unloaded)
-
     async def push_task(queue_name, task: dict, context: dict = None):
         workspace = context["ws"]
         await redis.lpush(workspace + ":q:" + queue_name, json.dumps(task))

@@ -79,6 +79,8 @@ class ServerAppController:
         # start the browser runner
         server = await self.store.get_public_api()
         svcs = await server.list_services("public/server-app-worker")
+        if not svcs:
+            return []
         runners = [await server.get_service(svc["id"]) for svc in svcs]
         if runners:
             return runners
@@ -633,7 +635,10 @@ class ServerAppController:
             if app["workspace"] == workspace_info.id:
                 await self._stop(app["id"], raise_exception=False)
         # Send to all runners
-        for runner in await self.get_runners():
+        runners = await self.get_runners()
+        if not runners:
+            return
+        for runner in runners:
             try:
                 await runner.close_workspace(workspace_info.id)
             except Exception as exp:

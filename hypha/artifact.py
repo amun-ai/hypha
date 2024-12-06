@@ -2776,7 +2776,9 @@ class ArtifactController:
                                 bucket=s3_config["bucket"],
                                 prefix=prefix,
                             )
-            logger.info(f"Artifacts in workspace {workspace_info.id} prepared.")
+            logger.info(
+                f"Artifacts (#{len(artifacts)}) in workspace {workspace_info.id} prepared."
+            )
         except Exception as e:
             logger.error(f"Error preparing workspace: {traceback.format_exc()}")
             raise e
@@ -2818,10 +2820,12 @@ class ArtifactController:
                             f"{artifact.workspace}/{artifact.alias}"
                         )
             logger.info(
-                f"Artifacts in workspace {workspace_info.id} prepared for closure."
+                f"Artifacts (#{len(artifacts)}) in workspace {workspace_info.id} prepared for closure."
             )
         except Exception as e:
-            logger.error(f"Error closing workspace: {traceback.format_exc()}")
+            logger.error(
+                f"Error closing workspace {workspace_info.id}: {traceback.format_exc()}"
+            )
             raise e
         finally:
             await session.close()

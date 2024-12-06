@@ -1754,6 +1754,8 @@ class WorkspaceManager:
         """Unload the workspace."""
         self.validate_context(context, permission=UserPermission.admin)
         ws = context["ws"]
+        if not await self._redis.hexists("workspaces", ws):
+            raise KeyError(f"Workspace {ws} has already been unloaded.")
         winfo = await self.load_workspace_info(ws)
         # list all the clients in the workspace and send a meesage to delete them
         client_keys = await self._list_client_keys(winfo.id)
@@ -1770,16 +1772,13 @@ class WorkspaceManager:
 
         # Mark the workspace as not ready
         winfo.status = None
-        if winfo.persistent and self._s3_controller:
-            # since the workspace will be persisted, we can remove the workspace info from the redis store
-            await self._redis.hdel("workspaces", ws)
 
-        elif not winfo.persistent:
+        if not winfo.persistent:
             # delete all the items in redis starting with `workspaces_name:`
+            # Including the queue and other associated resources
             keys = await self._redis.keys(f"{ws}:*")
             for key in keys:
                 await self._redis.delete(key)
-            await self._redis.hdel("workspaces", ws)
             if self._s3_controller:
                 await self._s3_controller.cleanup_workspace(winfo)
 
@@ -1789,11 +1788,8 @@ class WorkspaceManager:
             self._active_svc.remove(ws)
         except KeyError:
             pass
-
         await self._close_workspace(winfo)
-
-        await self._event_bus.emit("workspace_unloaded", winfo.model_dump())
-        logger.info("Workspace %s unloaded.", ws)
+        await self._redis.hdel("workspaces", ws)
 
     async def _prepare_workspace(self, workspace_info: WorkspaceInfo):
         """Prepare the workspace."""
@@ -1824,10 +1820,20 @@ class WorkspaceManager:
         ), "Workspace must be unloaded before archiving."
         if workspace_info.persistent:
             if self._artifact_manager:
-                await self._artifact_manager.close_workspace(workspace_info)
+                try:
+                    await self._artifact_manager.close_workspace(workspace_info)
+                except Exception as e:
+                    logger.error(f"Aritfact manager failed to close workspace: {e}")
             if self._server_app_controller:
-                await self._server_app_controller.close_workspace(workspace_info)
-        logger.info("Workspace %s archived.", workspace_info.id)
+                try:
+                    await self._server_app_controller.close_workspace(workspace_info)
+                except Exception as e:
+                    logger.error(
+                        f"Server app controller failed to close workspace: {e}"
+                    )
+
+        await self._event_bus.emit("workspace_unloaded", workspace_info.model_dump())
+        logger.info("Workspace %s unloaded.", workspace_info.id)
 
     @schema_method
     async def wait_until_ready(self, timeout: Optional[int] = 10, context=None):
