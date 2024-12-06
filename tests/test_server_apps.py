@@ -185,6 +185,61 @@ async def test_singleton_apps(fastapi_server, test_user_token):
     assert not any(app["id"] == config1.id for app in running_apps)
 
 
+async def test_daemon_apps(fastapi_server, test_user_token, root_user_token):
+    """Test the daemon apps."""
+    async with connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    ) as api:
+        controller = await api.get_service("public/server-apps")
+
+        # Launch a daemon app
+        config = await controller.launch(
+            source=TEST_APP_CODE,
+            config={"type": "window", "daemon": True},
+            overwrite=True,
+            wait_for_service="default",
+        )
+        assert "id" in config.keys()
+
+        # Verify the daemon app is running
+        running_apps = await controller.list_running()
+        assert any(app["id"] == config.id for app in running_apps)
+        await controller.stop(config.id)
+
+        apps = await controller.list_apps()
+        assert find_item(apps, "id", config.app_id)
+
+    await asyncio.sleep(0.5)
+
+    async with connect_to_server(
+        {"server_url": WS_SERVER_URL, "client_id": "admin", "token": root_user_token}
+    ) as root:
+        admin = await root.get_service("admin-utils")
+        workspaces = await admin.list_workspaces()
+        assert not find_item(workspaces, "id", api.config["workspace"])
+
+    async with connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    ) as api:
+        controller = await api.get_service("public/server-apps")
+        apps = await controller.list_apps()
+        await api.wait_until_ready()
+        controller = await api.get_service("public/server-apps")
+        running_apps = await controller.list_running()
+        # The daemon app should be running
+        assert any(app["app_id"] == config.app_id for app in running_apps)
+
+
 async def test_web_python_apps(fastapi_server, test_user_token):
     """Test webpython app."""
     api = await connect_to_server(

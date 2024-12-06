@@ -371,6 +371,12 @@ class CollectionArtifact(Artifact):
 class ApplicationManifest(Artifact):
     """Represent application artifact."""
 
+    passive: Optional[bool] = False
+    dependencies: Optional[List[str]] = []
+    requirements: Optional[List[str]] = []
+    api_version: Optional[str] = "0.1.0"
+    icon: Optional[str] = None
+    env: Optional[Union[str, Dict[str, Any]]] = None
     type: Optional[str] = "application"
     entry_point: Optional[str] = None  # entry point for the application
     daemon: Optional[bool] = False  # whether the application is a daemon

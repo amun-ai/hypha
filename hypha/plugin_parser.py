@@ -109,11 +109,17 @@ def convert_config_to_artifact(plugin_config, plugin_id, source_url=None):
             "id": plugin_id,
         }
     )
-    if source_url:
-        artifact["source"] = source_url
-    for field in ApplicationManifest.model_fields.keys():
+
+    fields = [
+        field
+        for field in ApplicationManifest.model_fields.keys()
+        if field not in ["id", "type"]
+    ]
+    for field in fields:
         if field in plugin_config:
             artifact[field] = plugin_config[field]
+    if source_url:
+        artifact["source"] = source_url
     tags = plugin_config.get("labels", []) + plugin_config.get("flags", [])
     artifact["tags"] = tags
 

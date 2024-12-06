@@ -599,7 +599,7 @@ class ServerAppController:
             )
             return [app["manifest"] for app in apps]
         except KeyError:
-            return []
+            raise KeyError(f"Applications collection not found: {ws}")
         except Exception as exp:
             raise Exception(f"Failed to list apps: {exp}") from exp
 
@@ -611,12 +611,16 @@ class ServerAppController:
 
     async def prepare_workspace(self, workspace_info: WorkspaceInfo):
         """Prepare the workspace."""
-        apps = await self.list_apps({"ws": workspace_info.id})
+        context = {
+            "ws": workspace_info.id,
+            "user": self.store.get_root_user().model_dump(),
+        }
+        apps = await self.list_apps(context=context)
         # start daemon apps
         for app in apps:
             if app.get("daemon"):
                 try:
-                    await self.start(app["id"], context={"ws": workspace_info.id})
+                    await self.start(app["id"], context=context)
                 except Exception as exp:
                     logger.error(
                         f"Failed to start daemon app: {app['id']}, error: {exp}"
