@@ -147,6 +147,44 @@ async def test_server_apps(fastapi_server, test_user_token):
     await controller.stop(config.id)
 
 
+async def test_singleton_apps(fastapi_server, test_user_token):
+    """Test the singleton apps."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+    controller = await api.get_service("public/server-apps")
+
+    # Launch the first instance of the singleton app
+    config1 = await controller.launch(
+        source=TEST_APP_CODE,
+        config={"type": "window", "singleton": True},
+        overwrite=True,
+        wait_for_service="default",
+    )
+    assert "id" in config1.keys()
+
+    # Try launching another instance of the same singleton app
+    with pytest.raises(Exception, match="is a singleton app and already running"):
+        await controller.launch(
+            source=TEST_APP_CODE,
+            config={"type": "window", "singleton": True},
+            overwrite=True,
+            wait_for_service="default",
+        )
+
+    # Stop the singleton app
+    await controller.stop(config1.id)
+
+    # Verify the singleton app is no longer running
+    running_apps = await controller.list_running()
+    assert not any(app["id"] == config1.id for app in running_apps)
+
+
 async def test_web_python_apps(fastapi_server, test_user_token):
     """Test webpython app."""
     api = await connect_to_server(

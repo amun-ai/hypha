@@ -529,6 +529,7 @@ class S3Controller:
                 await remove_objects_async(
                     s3client, self.workspace_bucket, workspace.id + "/"
                 )
+                logger.info("Workspace's S3 storage cleaned up: %s", workspace.id)
 
         if self.minio_client:
             try:

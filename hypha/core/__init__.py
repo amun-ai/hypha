@@ -368,12 +368,15 @@ class CollectionArtifact(Artifact):
         return super().model_validate(data)
 
 
-class ApplicationArtifact(Artifact):
+class ApplicationManifest(Artifact):
     """Represent application artifact."""
 
     type: Optional[str] = "application"
     entry_point: Optional[str] = None  # entry point for the application
+    daemon: Optional[bool] = False  # whether the application is a daemon
+    singleton: Optional[bool] = False  # whether the application is a singleton
     services: Optional[List[SerializeAsAny[ServiceInfo]]] = None  # for application
+    stop_after_inactive: Optional[float] = None  # stop the application after inactivity
 
 
 class ServiceTypeInfo(BaseModel):
@@ -402,6 +405,7 @@ class WorkspaceInfo(BaseModel):
     docs: Optional[str] = None
     service_types: Optional[Dict[str, ServiceTypeInfo]] = {}
     config: Optional[Dict[str, Any]] = {}
+    status: Optional[Dict[str, Any]] = None
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -563,7 +567,7 @@ class RedisEventBus:
         self._loop = loop
 
         # Start the Redis subscription task
-        loop.create_task(self._subscribe_redis())
+        self._subscribe_task = loop.create_task(self._subscribe_redis())
 
         # Wait for readiness signal
         await self._ready
@@ -666,8 +670,14 @@ class RedisEventBus:
             fut.set_result(None)
             return fut
 
-    def stop(self):
+    async def stop(self):
+        """Stop the event bus."""
         self._stop = True
+        self._subscribe_task.cancel()
+        try:
+            await self._subscribe_task
+        except asyncio.CancelledError:
+            pass
 
     async def _subscribe_redis(self):
         cpu_count = os.cpu_count() or 1

@@ -2,6 +2,7 @@ import re
 import json
 import asyncio
 import logging
+import traceback
 import time
 import sys
 from typing import Optional, Union, List, Any, Dict
@@ -25,7 +26,7 @@ from sqlmodel import SQLModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from hypha.core import (
-    ApplicationArtifact,
+    ApplicationManifest,
     RedisRPCConnection,
     UserInfo,
     WorkspaceInfo,
@@ -118,6 +119,7 @@ class GetServiceConfig(BaseModel):
 class WorkspaceManager:
     def __init__(
         self,
+        store: Any,
         redis: aioredis.FakeRedis,
         root_user: UserInfo,
         event_bus: EventBus,
@@ -125,11 +127,13 @@ class WorkspaceManager:
         client_id: str,
         sql_engine: Optional[str] = None,
         s3_controller: Optional[Any] = None,
+        server_app_controller: Optional[Any] = None,
         artifact_manager: Optional[Any] = None,
         enable_service_search: bool = False,
         cache_dir: str = None,
     ):
         self._redis = redis
+        self._store = store
         self._initialized = False
         self._rpc = None
         self._root_user = root_user
@@ -138,6 +142,7 @@ class WorkspaceManager:
         self._client_id = client_id
         self._s3_controller = s3_controller
         self._artifact_manager = artifact_manager
+        self._server_app_controller = server_app_controller
         self._sql_engine = sql_engine
         self._cache_dir = cache_dir
         if self._sql_engine:
@@ -1409,9 +1414,11 @@ class WorkspaceManager:
                 )
                 if not workspace_info:
                     raise KeyError(f"Workspace not found: {workspace}")
+                workspace_info.status = None
                 await self._redis.hset(
                     "workspaces", workspace_info.id, workspace_info.model_dump_json()
                 )
+                await self._store.run_task(self._prepare_workspace, workspace_info)
                 self._active_ws.inc()
                 await self._s3_controller.setup_workspace(workspace_info)
                 await self._event_bus.emit(
@@ -1472,10 +1479,11 @@ class WorkspaceManager:
         ], f"Invalid service id: {service_id}"
 
         applications = await self._artifact_manager.list_children(
-            "applications", context={"ws": workspace, "user": user_info.model_dump()}
+            f"{workspace}/applications",
+            context={"ws": workspace, "user": user_info.model_dump()},
         )
         applications = {
-            item["manifest"]["id"]: ApplicationArtifact.model_validate(item["manifest"])
+            item["manifest"]["id"]: ApplicationManifest.model_validate(item["manifest"])
             for item in applications
         }
         if app_id not in applications:
@@ -1499,23 +1507,21 @@ class WorkspaceManager:
                 f"Service id `{service_id}` not found in application {app_id}"
             )
 
-        async with self._get_service_api(
-            "public/server-apps", context=context
-        ) as controller:
-            if not controller:
-                raise Exception(
-                    "Failed to launch application: server-apps service not found."
-                )
-            client_info = await controller.start(
-                app_id,
-                timeout=timeout * 5,
-                wait_for_service=service_id,
+        if not self._server_app_controller:
+            raise Exception(
+                "Failed to launch application: server apps controller is not configured."
             )
-            return await self.get_service(
-                f"{client_info['id']}:{service_id}",  # should not contain @app_id
-                dict(timeout=timeout, case_conversion=case_conversion),
-                context=context,
-            )
+        client_info = await self._server_app_controller.start(
+            app_id,
+            timeout=timeout * 5,
+            wait_for_service=service_id,
+            context=context,
+        )
+        return await self.get_service(
+            f"{client_info['id']}:{service_id}",  # should not contain @app_id
+            dict(timeout=timeout, case_conversion=case_conversion),
+            context=context,
+        )
 
     @asynccontextmanager
     async def _get_service_api(self, service_id: str, context=None):
@@ -1693,6 +1699,7 @@ class WorkspaceManager:
     ):
         """Delete all services associated with the given client_id in the specified workspace."""
         assert context is not None
+        assert isinstance(user_info, UserInfo)
         self.validate_context(context, permission=UserPermission.admin)
         cws = workspace
         validate_key_part(client_id)
@@ -1759,11 +1766,13 @@ class WorkspaceManager:
             )
             await self._event_bus.emit(f"unload:{ws}", "Unloading workspace: " + ws)
 
+        # Mark the workspace as not ready
+        winfo.status = None
         if winfo.persistent and self._s3_controller:
             # since the workspace will be persisted, we can remove the workspace info from the redis store
             await self._redis.hdel("workspaces", ws)
 
-        if not winfo.persistent:
+        elif not winfo.persistent:
             # delete all the items in redis starting with `workspaces_name:`
             keys = await self._redis.keys(f"{ws}:*")
             for key in keys:
@@ -1776,8 +1785,58 @@ class WorkspaceManager:
         self._active_clients.remove(ws)
         self._active_svc.remove(ws)
 
+        await self._close_workspace(winfo)
+
         await self._event_bus.emit("workspace_unloaded", winfo.model_dump())
         logger.info("Workspace %s unloaded.", ws)
+
+    async def _prepare_workspace(self, workspace_info: WorkspaceInfo):
+        """Prepare the workspace."""
+        errors = {}
+        if workspace_info.persistent:
+            try:
+                if self._artifact_manager:
+                    await self._artifact_manager.prepare_workspace(workspace_info)
+            except Exception as e:
+                errors["artifact_manager"] = traceback.format_exc()
+            try:
+                if self._server_app_controller:
+                    await self._server_app_controller.prepare_workspace(workspace_info)
+            except Exception as e:
+                errors["server_app_controller"] = traceback.format_exc()
+        # Mark the workspace as ready
+        workspace_info.status = {"ready": True, "errors": errors}
+        await self._redis.hset(
+            "workspaces", workspace_info.id, workspace_info.model_dump_json()
+        )
+        await self._event_bus.emit("workspace_ready", workspace_info.model_dump())
+        logger.info("Workspace %s prepared.", workspace_info.id)
+
+    async def _close_workspace(self, workspace_info: WorkspaceInfo):
+        """Archive the workspace."""
+        assert (
+            workspace_info.status is None
+        ), "Workspace must be unloaded before archiving."
+        if workspace_info.persistent:
+            if self._artifact_manager:
+                await self._artifact_manager.close_workspace(workspace_info)
+            if self._server_app_controller:
+                await self._server_app_controller.close_workspace(workspace_info)
+        logger.info("Workspace %s archived.", workspace_info.id)
+
+    @schema_method
+    async def wait_until_ready(self, timeout: Optional[int] = 10, context=None):
+        """Wait for the workspace to be ready."""
+        workspace_info = await self.load_workspace_info(context["ws"])
+        if workspace_info.status:
+            return workspace_info.status
+        try:
+            await self._event_bus.wait_for(
+                "workspace_ready", match={"id": context["ws"]}, timeout=timeout
+            )
+            return workspace_info.status
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"Workspace {context['ws']} is not ready, timeout.")
 
     @schema_method
     async def cleanup(
@@ -1814,10 +1873,10 @@ class WorkspaceManager:
                 )
             except Exception as e:
                 logger.error(f"Failed to ping client {client}: {e}")
-
+                user_info = UserInfo.model_validate(context["user"])
                 # Remove dead client
                 await self.delete_client(
-                    client, workspace, context["user"], unload=unload, context=context
+                    client, workspace, user_info, unload=unload, context=context
                 )
                 removed.append(client)
         if removed:
@@ -1860,6 +1919,7 @@ class WorkspaceManager:
             "get_summary": self.get_summary,
             "ping": self.ping_client,
             "cleanup": self.cleanup,
+            "wait_until_ready": self.wait_until_ready,
         }
         interface["config"].update(self._server_info)
         return interface

@@ -4,7 +4,7 @@ import json
 import logging
 import sys
 import datetime
-from typing import List, Union
+from typing import List, Union, Optional
 from pydantic import BaseModel
 from fastapi import Header, Cookie
 
@@ -14,8 +14,10 @@ from starlette.routing import Mount
 from aiocache.backends.redis import RedisCache
 from aiocache.serializers import PickleSerializer
 from taskiq import TaskiqScheduler
+from taskiq.kicker import AsyncKicker
 from taskiq.api import run_receiver_task, run_scheduler_task
 from hypha.taskiq_utils.redis_broker import ListQueueBroker
+from hypha.taskiq_utils.redis_backend import RedisAsyncResultBackend
 from hypha.taskiq_utils.schedule_source import RedisScheduleSource
 
 
@@ -109,6 +111,7 @@ class RedisStore:
     ):
         """Initialize the redis store."""
         self._s3_controller = None
+        self._server_app_controller = None
         self._artifact_manager = None
         self._app = app
         self._codecs = {}
@@ -180,7 +183,10 @@ class RedisStore:
 
             self._redis = aioredis.FakeRedis.from_url("redis://localhost:9997/11")
 
-        self._broker = ListQueueBroker(self._redis)
+        self._result_backend = RedisAsyncResultBackend(self._redis)
+        self._broker = ListQueueBroker(self._redis).with_result_backend(
+            self._result_backend
+        )
         self._broker_task = None
         self._source = RedisScheduleSource(self._redis)
         self._scheduler = TaskiqScheduler(
@@ -562,20 +568,50 @@ class RedisStore:
         self,
         task,
         *args,
-        corn: str = None,
-        time: datetime.datetime = None,
-        task_name: str = None,
+        corn: Optional[str] = None,
+        time: Optional[datetime.datetime] = None,
+        task_name: Optional[str] = None,
+        task_id: Optional[str] = None,
+        schedule_id: Optional[str] = None,
         **kwargs,
     ):
         """Schedule a task."""
         assert not (corn and time), "Only one of corn or time can be provided"
+        my_task: AsyncKicker = self._broker.register_task(
+            task, task_name=task_name
+        ).kicker()
+        if task_id:
+            my_task = my_task.with_task_id(task_id)
+        if schedule_id:
+            my_task = my_task.with_schedule_id(schedule_id)
         if corn:
-            my_task = self._broker.register_task(task, task_name=task_name)
             return await my_task.schedule_by_cron(self._source, corn, *args, **kwargs)
         if time:
-            my_task = self._broker.register_task(my_task, task_name=task_name)
             return await my_task.schedule_by_time(self._source, time, *args, **kwargs)
+
+    async def delete_schedule(self, schedule_id: str):
+        """Remove schedule by id."""
+        await self._source.delete_schedule(schedule_id)
+
+    async def run_task(
+        self,
+        task,
+        *args,
+        task_name: Optional[str] = None,
+        task_id: Optional[str] = None,
+        **kwargs,
+    ):
+        """Send a task."""
+        my_task: AsyncKicker = self._broker.register_task(
+            task, task_name=task_name
+        ).kicker()
+        if task_id:
+            my_task = my_task.with_task_id(task_id)
         return await my_task.kiq(*args, **kwargs)
+
+    async def get_task_result(self, task_id, with_logs: bool = False):
+        """Get the task result."""
+        return await self._result_backend.get_result(task_id, with_logs=with_logs)
 
     async def _register_root_services(self):
         """Register root services."""
@@ -596,8 +632,15 @@ class RedisStore:
                 "list_servers": self.list_servers,
                 "kickout_client": self.kickout_client,
                 "list_workspaces": self.list_all_workspaces,
+                "unload_workspace": self.unload_workspace,
             }
         )
+
+    @schema_method
+    async def unload_workspace(self, workspace: str):
+        """Unload a workspace."""
+        context = {"user": self._root_user.model_dump(), "ws": workspace}
+        await self._workspace_manager.unload(context=context)
 
     @schema_method
     async def list_servers(self):
@@ -744,6 +787,7 @@ class RedisStore:
     async def register_workspace_manager(self):
         """Register a workspace manager."""
         manager = WorkspaceManager(
+            self,
             self._redis,
             self._root_user,
             self._event_bus,
@@ -751,6 +795,7 @@ class RedisStore:
             self._manager_id,
             self._sql_engine,
             self._s3_controller,
+            self._server_app_controller,
             self._artifact_manager,
             self._enable_service_search,
             self._cache_dir,
@@ -853,6 +898,14 @@ class RedisStore:
         """Set the s3 controller."""
         self._s3_controller = controller
 
+    def set_server_app_controller(self, controller):
+        """Set the server app controller."""
+        self._server_app_controller = controller
+
+    def get_server_app_controller(self):
+        """Get the server app controller."""
+        return self._server_app_controller
+
     def set_artifact_manager(self, controller):
         """Set the artifact controller."""
         self._artifact_manager = controller
@@ -953,6 +1006,8 @@ class RedisStore:
                     await ws.close()
                 except GeneratorExit:
                     pass
+
+        await self._event_bus.stop()
 
         # Note: This has to be the last thing to do
         # Otherwise, the server got stuck in the shutdown process

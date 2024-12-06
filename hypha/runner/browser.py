@@ -162,6 +162,12 @@ class BrowserAppRunner:
             ]
         raise Exception(f"browser app instance not found: {session_id}")
 
+    async def close_workspace(self, workspace: str) -> None:
+        """Close all browser app instances for a workspace."""
+        for session_id in list(self._browser_sessions.keys()):
+            if session_id.startswith(workspace + "/"):
+                await self.stop(session_id)
+
     def get_service(self):
         """Get the service."""
         return {
@@ -174,4 +180,5 @@ class BrowserAppRunner:
             "list": self.list,
             "get_log": self.get_log,
             "shutdown": self.shutdown,
+            "close_workspace": self.close_workspace,
         }

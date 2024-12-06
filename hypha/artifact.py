@@ -5,6 +5,7 @@ import uuid_utils as uuid
 import random
 import re
 import json
+import asyncio
 import math
 from io import BytesIO
 import zipfile
@@ -35,6 +36,7 @@ import httpx
 from hrid import HRID
 from hypha.utils import remove_objects_async, list_objects_async, safe_join
 from hypha.utils.zenodo import ZenodoClient
+from hypha.core import WorkspaceInfo
 from botocore.exceptions import ClientError
 from hypha.s3 import FSFileResponse
 from aiobotocore.session import get_session
@@ -2740,6 +2742,14 @@ class ArtifactController:
             raise e
         finally:
             await session.close()
+
+    async def prepare_workspace(self, workspace_info: WorkspaceInfo):
+        """Prepare all artifacts in the workspace."""
+        await asyncio.sleep(5)
+
+    async def close_workspace(self, workspace_info: WorkspaceInfo):
+        """Archive all artifacts in the workspace."""
+        pass
 
     def get_artifact_service(self):
         """Return the artifact service definition."""

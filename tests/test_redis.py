@@ -4,6 +4,7 @@ import time
 import numpy as np
 import pytest
 import pytest_asyncio
+from datetime import datetime, timedelta
 from hypha_rpc import connect_to_server
 
 from hypha.core.store import RedisStore
@@ -13,7 +14,7 @@ from . import SIO_PORT, find_item
 pytestmark = pytest.mark.asyncio
 
 
-@pytest_asyncio.fixture()
+@pytest_asyncio.fixture(name="redis_store")
 async def redis_store():
     """Represent the redis store."""
     store = RedisStore(None, redis_uri=None)
@@ -86,6 +87,67 @@ async def test_redis_store(redis_store):
     assert callable(service.echo)
     assert await service.echo("hello") == "hello"
     assert await service.echo("hello") == "hello"
+
+    # External state to track task execution
+    execution_tracker = {"executed": False, "data": None}
+
+    # Define a dummy task that updates the tracker
+    async def dummy_task(data):
+        execution_tracker["executed"] = True
+        execution_tracker["data"] = data
+        return f"Processed {data}"
+
+    # Schedule the task to run immediately
+    task = await redis_store.run_task(dummy_task, "test-data")
+
+    # Assert that the task ID is valid
+    assert task.task_id is not None
+
+    # Allow enough time for the task to execute
+    await asyncio.sleep(0.5)
+
+    # Fetch the result of the task
+    result = await redis_store.get_task_result(task.task_id)
+    assert result.return_value == "Processed test-data"
+    assert execution_tracker["executed"] is True
+    assert execution_tracker["data"] == "test-data"
+
+    # Test scheduling a task with a specific time
+    execution_tracker["executed"] = False  # Reset the tracker
+    scheduled_time = datetime.now() + timedelta(seconds=0.2)
+    schedule = await redis_store.schedule_task(
+        dummy_task, "scheduled-test-data", time=scheduled_time
+    )
+
+    # Assert that the schedule ID is valid
+    assert schedule.schedule_id is not None
+
+    # Allow enough time for the task to execute
+    await asyncio.sleep(1.5)
+
+    # Verify that the task executed
+    assert execution_tracker["executed"] is True
+    assert execution_tracker["data"] == "scheduled-test-data"
+
+    # Test scheduling a task using a cron expression
+    execution_tracker["executed"] = False  # Reset the tracker
+    cron_expr = "*/1 * * * *"
+    schedule = await redis_store.schedule_task(
+        dummy_task, "cron-test-data", corn=cron_expr, schedule_id="cron-test"
+    )
+
+    # Assert that the schedule ID is valid
+    assert schedule.schedule_id == "cron-test"
+
+    # Allow some time for the cron job to execute
+    await asyncio.sleep(65)  # Wait for at least one minute
+
+    # Check that the cron job executed
+    assert execution_tracker["executed"] is True
+    assert execution_tracker["data"] == "cron-test-data"
+
+    # Clean up the scheduled task
+    await redis_store.delete_schedule("cron-test")
 
 
 async def test_websocket_server(fastapi_server, test_user_token_2):

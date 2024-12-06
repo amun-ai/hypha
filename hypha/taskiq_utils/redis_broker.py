@@ -4,7 +4,7 @@ The library was created by Pavel Kirilin, released under the MIT license.
 """
 from fakeredis import aioredis
 from logging import getLogger
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable, Optional, TypeVar
+from typing import AsyncGenerator, Callable, Optional, TypeVar
 
 from taskiq.abc.broker import AsyncBroker
 from taskiq.abc.result_backend import AsyncResultBackend

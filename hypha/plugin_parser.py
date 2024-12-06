@@ -6,6 +6,7 @@ import yaml
 from lxml import etree
 
 from hypha_rpc.utils import DefaultObjectProxy
+from hypha.core import ApplicationManifest
 
 tag_types = ["config", "script", "link", "window", "style", "docs", "attachment"]
 
@@ -110,26 +111,10 @@ def convert_config_to_artifact(plugin_config, plugin_id, source_url=None):
     )
     if source_url:
         artifact["source"] = source_url
-    fields = [
-        "icon",
-        "name",
-        "version",
-        "api_version",
-        "description",
-        "license",
-        "requirements",
-        "dependencies",
-        "env",
-        "passive",
-        "services",
-        "entry_point",
-    ]
-    for field in fields:
+    for field in ApplicationManifest.model_fields.keys():
         if field in plugin_config:
             artifact[field] = plugin_config[field]
     tags = plugin_config.get("labels", []) + plugin_config.get("flags", [])
-    if "bioengine" not in tags:
-        tags.append("bioengine")
     artifact["tags"] = tags
 
     docs = plugin_config.get("docs")
