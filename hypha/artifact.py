@@ -2745,7 +2745,7 @@ class ArtifactController:
 
     async def prepare_workspace(self, workspace_info: WorkspaceInfo):
         """Prepare all artifacts in the workspace."""
-        await asyncio.sleep(5)
+        pass
 
     async def close_workspace(self, workspace_info: WorkspaceInfo):
         """Archive all artifacts in the workspace."""

@@ -41,7 +41,7 @@ from . import (
 
 JWT_SECRET = str(uuid.uuid4())
 os.environ["JWT_SECRET"] = JWT_SECRET
-os.environ["ACTIVITY_CHECK_INTERVAL"] = "1"
+os.environ["ACTIVITY_CHECK_INTERVAL"] = "0.3"
 test_env = os.environ.copy()
 
 
