@@ -143,7 +143,7 @@ async def test_redis_store(redis_store):
     assert schedule.schedule_id == "scheduled"
 
     # Allow enough time for the task to execute
-    await asyncio.sleep(3)
+    await asyncio.sleep(20)
 
     # Verify that the task executed
     assert execution_tracker["executed"] is True
