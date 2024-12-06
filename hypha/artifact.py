@@ -1997,6 +1997,7 @@ class ArtifactController:
         self,
         artifact_id: str,
         vectors: list,
+        update: bool = False,
         embedding_models: Optional[Dict[str, str]] = None,
         context: dict = None,
     ):
@@ -2024,6 +2025,7 @@ class ArtifactController:
                     await self._vector_engine.add_vectors(
                         f"{artifact.workspace}/{artifact.alias}",
                         vectors,
+                        update=update,
                         embedding_models=embedding_models
                         or artifact.config.get("embedding_models"),
                         s3_client=s3_client,
