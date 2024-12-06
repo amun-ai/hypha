@@ -373,6 +373,7 @@ class VectorSearchEngine:
         self,
         collection_name: str,
         vectors: List[Dict[str, Any]],
+        update: bool = False,
         embedding_models: Optional[Dict[str, str]] = None,
         s3_client=None,
         bucket=None,
@@ -385,6 +386,8 @@ class VectorSearchEngine:
             if "id" in vector:
                 _id = vector["id"]
             else:
+                if update:
+                    raise ValueError("ID is required for update operation.")
                 _id = str(uuid.uuid4())
                 vector["id"] = _id
             ids.append(_id)
