@@ -1837,7 +1837,7 @@ class WorkspaceManager:
         logger.info("Workspace %s unloaded.", workspace_info.id)
 
     @schema_method
-    async def wait_until_ready(self, timeout: Optional[int] = 10, context=None):
+    async def wait_until_ready(self, timeout: Optional[int] = 60, context=None):
         """Wait for the workspace to be ready."""
         workspace_info = await self._redis.hget("workspaces", context["ws"])
         workspace_info = WorkspaceInfo.model_validate(
