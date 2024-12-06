@@ -186,6 +186,8 @@ class VectorSearchEngine:
         bucket: str,
         prefix: str,
     ):
+        if not prefix.endswith("/"):
+            prefix = f"{prefix}/"
         # Dump vector data for the current page
         for vector in vectors:
             vector_id = vector["id"]
@@ -210,6 +212,8 @@ class VectorSearchEngine:
     async def _dump_index(
         self, collection_name: str, s3_client, bucket: str, prefix: str
     ):
+        if not prefix.endswith("/"):
+            prefix = f"{prefix}/"
         # Dump index settings
         fields = await self._get_fields(collection_name)
         dump_fields = []

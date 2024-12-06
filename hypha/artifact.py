@@ -2795,24 +2795,28 @@ class ArtifactController:
                 artifacts = result.scalars().all()
                 for artifact in artifacts:
                     if artifact.type == "vector-collection":
-                        parent_artifact = (
-                            artifact.parent_id
-                            and await self._get_artifact(
-                                session=session, artifact_id=artifact.parent_id
-                            )
+                        # parent_artifact = (
+                        #     artifact.parent_id
+                        #     and await self._get_artifact(
+                        #         session=session, artifact_id=artifact.parent_id
+                        #     )
+                        # )
+                        # s3_config = self._get_s3_config(artifact, parent_artifact)
+                        # async with self._create_client_async(s3_config) as s3_client:
+                        #     prefix = safe_join(
+                        #         s3_config["prefix"],
+                        #         f"{artifact.id}/v0",
+                        #     )
+                        #     await self._vector_engine.dump_collection(
+                        #         f"{artifact.workspace}/{artifact.alias}",
+                        #         s3_client=s3_client,
+                        #         bucket=s3_config["bucket"],
+                        #         prefix=prefix,
+                        #     )
+                        # Delete the collection
+                        await self._vector_engine.delete_collection(
+                            f"{artifact.workspace}/{artifact.alias}"
                         )
-                        s3_config = self._get_s3_config(artifact, parent_artifact)
-                        async with self._create_client_async(s3_config) as s3_client:
-                            prefix = safe_join(
-                                s3_config["prefix"],
-                                f"{artifact.id}/v0",
-                            )
-                            await self._vector_engine.dump_collection(
-                                f"{artifact.workspace}/{artifact.alias}",
-                                s3_client=s3_client,
-                                bucket=s3_config["bucket"],
-                                prefix=prefix,
-                            )
             logger.info(
                 f"Artifacts in workspace {workspace_info.id} prepared for closure."
             )
