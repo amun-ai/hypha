@@ -539,6 +539,8 @@ class WorkspaceManager:
                 {"bookmark_type": "workspace", "id": workspace.id}, context=context
             )
         logger.info("Created workspace %s", workspace.id)
+        # preare the workspace for the user
+        await self._store.run_task(self._prepare_workspace, workspace)
         return workspace.model_dump()
 
     @schema_method
@@ -1827,7 +1829,10 @@ class WorkspaceManager:
     @schema_method
     async def wait_until_ready(self, timeout: Optional[int] = 10, context=None):
         """Wait for the workspace to be ready."""
-        workspace_info = await self.load_workspace_info(context["ws"])
+        workspace_info = await self._redis.hget("workspaces", context["ws"])
+        workspace_info = WorkspaceInfo.model_validate(
+            json.loads(workspace_info.decode())
+        )
         if workspace_info.status:
             return workspace_info.status
         try:

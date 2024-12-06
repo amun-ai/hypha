@@ -193,6 +193,8 @@ class VectorSearchEngine:
 
             # Convert vector bytes to list for JSON serialization
             for key, value in vector_data.items():
+                if key not in fields:
+                    continue
                 if fields[key]["type"] == "VECTOR":
                     vector_data[key] = (
                         np.frombuffer(value, dtype=np.float32).astype(float).tolist()
@@ -314,7 +316,7 @@ class VectorSearchEngine:
 
                 # Add vector to Redis
                 await self.add_vectors(
-                    collection_name, [{"_id": obj["name"].split(".")[0], **vector_data}]
+                    collection_name, [{"id": obj["name"].split(".")[0], **vector_data}]
                 )
 
         logger.info(
@@ -366,11 +368,11 @@ class VectorSearchEngine:
         fields = await self._get_fields(collection_name)
         ids = []
         for vector in vectors:
-            if "_id" in vector:
-                _id = vector["_id"]
-                del vector["_id"]
+            if "id" in vector:
+                _id = vector["id"]
             else:
                 _id = str(uuid.uuid4())
+                vector["id"] = _id
             ids.append(_id)
             # convert numpy arrays to bytes
             for key, value in vector.items():
@@ -396,7 +398,7 @@ class VectorSearchEngine:
 
         if s3_client:
             assert bucket and prefix, "S3 bucket and prefix must be provided."
-            self._dump_vectors(vectors, fields, s3_client, bucket, prefix)
+            await self._dump_vectors(vectors, fields, s3_client, bucket, prefix)
 
         logger.info(f"Added {len(vectors)} vectors to collection {collection_name}.")
         return ids

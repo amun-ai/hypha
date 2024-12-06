@@ -220,7 +220,7 @@ async def test_daemon_apps(fastapi_server, test_user_token, root_user_token):
         {"server_url": WS_SERVER_URL, "client_id": "admin", "token": root_user_token}
     ) as root:
         admin = await root.get_service("admin-utils")
-        await admin.unload_workspace(api.config["workspace"])
+        await admin.unload_workspace(api.config["workspace"], wait=True, timeout=60)
         workspaces = await admin.list_workspaces()
         assert not find_item(workspaces, "id", api.config["workspace"])
 

@@ -1,4 +1,5 @@
 """Test Vector Search."""
+import asyncio
 import pytest
 import numpy as np
 import random
@@ -65,8 +66,8 @@ async def test_add_and_search_vectors(vector_search_engine):
 
     # Add vectors
     vectors = [
-        {"_id": "vec1", "id": "vector1", "vector": np.random.rand(128).tolist()},
-        {"_id": "vec2", "id": "vector2", "vector": np.random.rand(128).tolist()},
+        {"id": "vec1", "vector": np.random.rand(128).tolist()},
+        {"id": "vec2", "vector": np.random.rand(128).tolist()},
     ]
     await vector_search_engine.add_vectors(collection_name, vectors)
 
@@ -122,8 +123,8 @@ async def test_dump_and_load_collection(vector_search_engine, minio_server):
 
         # Add vectors
         vectors = [
-            {"_id": "vec1", "id": "vector1", "vector": np.random.rand(128).tolist()},
-            {"_id": "vec2", "id": "vector2", "vector": np.random.rand(128).tolist()},
+            {"id": "vec1", "vector": np.random.rand(128).tolist()},
+            {"id": "vec2", "vector": np.random.rand(128).tolist()},
         ]
         await vector_search_engine.add_vectors(collection_name, vectors)
 
@@ -166,8 +167,8 @@ async def test_delete_collection(vector_search_engine):
 
     # Add vectors
     vectors = [
-        {"_id": "vec1", "id": "vector1", "vector": np.random.rand(128).tolist()},
-        {"_id": "vec2", "id": "vector2", "vector": np.random.rand(128).tolist()},
+        {"id": "vec1", "vector": np.random.rand(128).tolist()},
+        {"id": "vec2", "vector": np.random.rand(128).tolist()},
     ]
     await vector_search_engine.add_vectors(collection_name, vectors)
 
@@ -332,3 +333,103 @@ async def test_artifact_vector_collection(
 
     # Clean up by deleting the vector collection
     await artifact_manager.delete(artifact_id=vector_collection.id)
+
+
+async def test_load_dump_vector_collections(
+    minio_server, fastapi_server_redis_1, test_user_token, root_user_token
+):
+    """Test loading and dumping vector collections."""
+    # Connect to the server and set up the artifact manager
+    async with connect_to_server(
+        {
+            "name": "test deploy client",
+            "server_url": SERVER_URL_REDIS_1,
+            "token": test_user_token,
+        }
+    ) as api:
+        artifact_manager = await api.get_service("public/artifact-manager")
+
+        # Create a vector-collection artifact
+        vector_collection_manifest = {
+            "name": "vector-collection",
+            "description": "A test vector collection",
+        }
+        vector_collection_config = {
+            "vector_fields": [
+                {
+                    "type": "VECTOR",
+                    "name": "vector",
+                    "algorithm": "FLAT",
+                    "attributes": {
+                        "TYPE": "FLOAT32",
+                        "DIM": 384,
+                        "DISTANCE_METRIC": "COSINE",
+                    },
+                },
+                {"type": "TEXT", "name": "text"},
+                {"type": "TAG", "name": "label"},
+                {"type": "NUMERIC", "name": "rand_number"},
+            ],
+            "embedding_models": {
+                "vector": "fastembed:BAAI/bge-small-en-v1.5",
+            },
+        }
+        vector_collection = await artifact_manager.create(
+            type="vector-collection",
+            manifest=vector_collection_manifest,
+            config=vector_collection_config,
+        )
+
+        # Add vectors to the collection
+        vectors = [
+            {
+                "vector": [random.random() for _ in range(384)],
+                "text": "This is a test document.",
+                "label": "doc1",
+                "rand_number": random.randint(0, 10),
+            },
+            {
+                "vector": np.random.rand(384),
+                "text": "Another document.",
+                "label": "doc2",
+                "rand_number": random.randint(0, 10),
+            },
+            {
+                "vector": np.random.rand(384),
+                "text": "Yet another document.",
+                "label": "doc3",
+                "rand_number": random.randint(0, 10),
+            },
+        ]
+        await artifact_manager.add_vectors(
+            artifact_id=vector_collection.id,
+            vectors=vectors,
+        )
+
+    async with connect_to_server(
+        {
+            "server_url": SERVER_URL_REDIS_1,
+            "client_id": "admin",
+            "token": root_user_token,
+        }
+    ) as root:
+        admin = await root.get_service("admin-utils")
+        await admin.unload_workspace(api.config["workspace"], wait=True, timeout=60)
+        workspaces = await admin.list_workspaces()
+        assert not find_item(workspaces, "id", api.config["workspace"])
+
+    async with connect_to_server(
+        {
+            "name": "test deploy client",
+            "server_url": SERVER_URL_REDIS_1,
+            "token": test_user_token,
+        }
+    ) as api:
+        await api.wait_until_ready(timeout=60)
+        artifact_manager = await api.get_service("public/artifact-manager")
+        vc = await artifact_manager.read(artifact_id=vector_collection.id)
+        assert vc["config"]["vector_count"] == 3
+        assert (
+            vc["config"]["embedding_models"]["vector"]
+            == "fastembed:BAAI/bge-small-en-v1.5"
+        )

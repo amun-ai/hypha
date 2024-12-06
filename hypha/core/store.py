@@ -637,10 +637,16 @@ class RedisStore:
         )
 
     @schema_method
-    async def unload_workspace(self, workspace: str):
+    async def unload_workspace(self, workspace: str, wait: bool = False, timeout=10):
         """Unload a workspace."""
         context = {"user": self._root_user.model_dump(), "ws": workspace}
         await self._workspace_manager.unload(context=context)
+        if wait:
+            if not await self.workspace_exists(workspace):
+                return
+            await self._event_bus.wait_for(
+                "workspace_unloaded", match={"id": workspace}, timeout=timeout
+            )
 
     @schema_method
     async def list_servers(self):

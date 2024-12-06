@@ -1,4 +1,5 @@
 import logging
+import traceback
 import time
 import sys
 import uuid_utils as uuid
@@ -2745,11 +2746,81 @@ class ArtifactController:
 
     async def prepare_workspace(self, workspace_info: WorkspaceInfo):
         """Prepare all artifacts in the workspace."""
-        pass
+        # Iterate through all artifacts in the workspace
+        # If it's a vector collection, load the vectors from S3
+        try:
+            session = await self._get_session(read_only=True)
+            async with session.begin():
+                query = select(ArtifactModel).where(
+                    ArtifactModel.workspace == workspace_info.id
+                )
+                result = await session.execute(query)
+                artifacts = result.scalars().all()
+                for artifact in artifacts:
+                    if artifact.type == "vector-collection":
+                        parent_artifact = (
+                            artifact.parent_id
+                            and await self._get_artifact(
+                                session=session, artifact_id=artifact.parent_id
+                            )
+                        )
+                        s3_config = self._get_s3_config(artifact, parent_artifact)
+                        async with self._create_client_async(s3_config) as s3_client:
+                            prefix = safe_join(
+                                s3_config["prefix"],
+                                f"{artifact.id}/v0",
+                            )
+                            await self._vector_engine.load_collection(
+                                f"{artifact.workspace}/{artifact.alias}",
+                                s3_client=s3_client,
+                                bucket=s3_config["bucket"],
+                                prefix=prefix,
+                            )
+            logger.info(f"Artifacts in workspace {workspace_info.id} prepared.")
+        except Exception as e:
+            logger.error(f"Error preparing workspace: {traceback.format_exc()}")
+            raise e
+        finally:
+            await session.close()
 
     async def close_workspace(self, workspace_info: WorkspaceInfo):
         """Archive all artifacts in the workspace."""
-        pass
+        try:
+            session = await self._get_session(read_only=True)
+            async with session.begin():
+                query = select(ArtifactModel).where(
+                    ArtifactModel.workspace == workspace_info.id
+                )
+                result = await session.execute(query)
+                artifacts = result.scalars().all()
+                for artifact in artifacts:
+                    if artifact.type == "vector-collection":
+                        parent_artifact = (
+                            artifact.parent_id
+                            and await self._get_artifact(
+                                session=session, artifact_id=artifact.parent_id
+                            )
+                        )
+                        s3_config = self._get_s3_config(artifact, parent_artifact)
+                        async with self._create_client_async(s3_config) as s3_client:
+                            prefix = safe_join(
+                                s3_config["prefix"],
+                                f"{artifact.id}/v0",
+                            )
+                            await self._vector_engine.dump_collection(
+                                f"{artifact.workspace}/{artifact.alias}",
+                                s3_client=s3_client,
+                                bucket=s3_config["bucket"],
+                                prefix=prefix,
+                            )
+            logger.info(
+                f"Artifacts in workspace {workspace_info.id} prepared for closure."
+            )
+        except Exception as e:
+            logger.error(f"Error closing workspace: {traceback.format_exc()}")
+            raise e
+        finally:
+            await session.close()
 
     def get_artifact_service(self):
         """Return the artifact service definition."""
