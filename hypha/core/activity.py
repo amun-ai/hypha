@@ -92,8 +92,11 @@ class ActivityTracker:
                 if not reg["is_active"]:
                     reg["is_active"] = True
                     if reg["on_active"]:
-                        await reg["on_active"]()
-                        logger.info(f"{full_id} becomes active")
+                        try:
+                            await reg["on_active"]()
+                            logger.info(f"{full_id} becomes active")
+                        except Exception as e:
+                            logger.error(f"Error calling on_active for {full_id}: {e}")
 
     async def monitor_entities(self):
         """Periodically check the activity of registered entities."""
@@ -101,7 +104,7 @@ class ActivityTracker:
             now = time.time()
             try:
                 # logger.info(f"Checking activity at {now}")
-                for full_id in self._registrations:
+                for full_id in list(self._registrations.keys()):
                     for reg in list(self._registrations[full_id].values()):
                         if (
                             reg["last_activity"]
@@ -111,8 +114,13 @@ class ActivityTracker:
                             # Trigger on_inactive event
                             reg["is_active"] = False
                             if reg["on_inactive"]:
-                                await reg["on_inactive"]()
-                                logger.info(f"{full_id} becomes inactive")
+                                try:
+                                    await reg["on_inactive"]()
+                                    logger.info(f"{full_id} becomes inactive")
+                                except Exception as e:
+                                    logger.error(
+                                        f"Error calling on_inactive for {full_id}: {e}"
+                                    )
                         await asyncio.sleep(0)
             except Exception as e:
                 logger.error(f"Error monitoring activity: {e}")

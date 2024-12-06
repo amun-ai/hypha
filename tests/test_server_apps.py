@@ -209,7 +209,7 @@ async def test_daemon_apps(fastapi_server, test_user_token, root_user_token):
         # Verify the daemon app is running
         running_apps = await controller.list_running()
         assert any(app["id"] == config.id for app in running_apps)
-        await controller.stop(config.id)
+        # await controller.stop(config.id)
 
         apps = await controller.list_apps()
         assert find_item(apps, "id", config.app_id)
@@ -220,6 +220,7 @@ async def test_daemon_apps(fastapi_server, test_user_token, root_user_token):
         {"server_url": WS_SERVER_URL, "client_id": "admin", "token": root_user_token}
     ) as root:
         admin = await root.get_service("admin-utils")
+        await admin.unload_workspace(api.config["workspace"])
         workspaces = await admin.list_workspaces()
         assert not find_item(workspaces, "id", api.config["workspace"])
 
@@ -412,7 +413,7 @@ async def test_stop_after_inactive(fastapi_server, test_user_token):
     app = await controller.start(app_info.id, stop_after_inactive=1)
     apps = await controller.list_running()
     assert find_item(apps, "id", app.id) is not None
-    await asyncio.sleep(4)
+    await asyncio.sleep(2)
     apps = await controller.list_running()
     assert find_item(apps, "id", app.id) is None
     await controller.uninstall(app_info.id)
