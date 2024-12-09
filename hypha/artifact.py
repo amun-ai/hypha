@@ -2412,7 +2412,7 @@ class ArtifactController:
             raise ValueError("Context must include 'ws' (workspace).")
         if parent_id:
             parent_id = self._validate_artifact_id(parent_id, context)
-        user_info = UserInfo.model_validate(context["user"])
+        user_info = UserInfo.model_validate(context.get("user"))
 
         session = await self._get_session(read_only=True)
         stage = False
