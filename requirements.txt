@@ -3,7 +3,7 @@ aiofiles==23.2.1
 websockets==13.1
 base58==2.1.1
 fastapi==0.106.0
-hypha-rpc==0.20.42
+hypha-rpc==0.20.43
 jinja2==3.1.4
 lxml==4.9.3
 msgpack==1.0.8

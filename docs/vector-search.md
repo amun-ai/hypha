@@ -1,4 +1,4 @@
-# Tutorial: Using Vector Collections for Retrieval-Augmented Generation
+# Tutorial: Vector Search for Retrieval-Augmented Generation
 
 Vector collections are a powerful feature in the `Artifact Manager`, enabling the efficient management and querying of high-dimensional data, such as embeddings for text, images, or other data types. These collections are especially useful in advanced applications like Retrieval-Augmented Generation (RAG) systems.
 
