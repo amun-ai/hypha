@@ -445,13 +445,13 @@ async def start_server(server_url):
         # Replace this with your own liveness check
         return {"status": "ok"}
 
-    # Register a probe for the service
-    await server.register_probe({
+    # Register probes for the service
+    await server.register_probes({
         "readiness": check_readiness,
         "liveness": check_liveness,
     })
 
-    # This will register a "probes" service where you can accessed via hypha or the HTTP proxy
+    # This will register probes service where you can accessed via hypha or the HTTP proxy
     print(f"Probes registered at workspace: {server.config.workspace}")
     print(f"Test it with the HTTP proxy: {server_url}/{server.config.workspace}/services/probes/readiness")
 
