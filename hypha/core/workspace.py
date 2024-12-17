@@ -1159,7 +1159,8 @@ class WorkspaceManager:
                 return
         # Check if the service already exists
         service_exists = await self._redis.keys(f"services:*|*:{service.id}@*")
-        key = f"services:{service.config.visibility.value}|{service.type}:{service.id}@{service.app_id}"
+        visibility = service.config.visibility if isinstance(service.config.visibility, str) else service.config.visibility.value
+        key = f"services:{visibility}|{service.type}:{service.id}@{service.app_id}"
 
         if service_exists:
             # remove all the existing services
@@ -1315,7 +1316,8 @@ class WorkspaceManager:
         assert ":" in service.id, "Service id info must contain ':'"
         service.app_id = service.app_id or "*"
         service.type = service.type or "*"
-        key = f"services:{service.config.visibility.value}|{service.type}:{service.id}@{service.app_id}"
+        visibility = service.config.visibility if isinstance(service.config.visibility, str) else service.config.visibility.value
+        key = f"services:{visibility}|{service.type}:{service.id}@{service.app_id}"
 
         # Check if the service exists before removal
         service_keys = await self._redis.keys(key)
