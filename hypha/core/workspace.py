@@ -1892,7 +1892,7 @@ class WorkspaceManager:
         client_keys = await self._list_client_keys(workspace)
         if len(client_keys) <= 0:
             await self.delete_workspace(workspace_info.id, context=context)
-            return {"removed_workspace": 1, "removed_clients": 0}
+            return {"removed_workspace": workspace_info.id, "removed_clients": []}
         removed = []
         summary = {}
         if not workspace_info.persistent:

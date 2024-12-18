@@ -308,21 +308,22 @@ class RedisStore:
             logger.info("Skipping housekeeping on first run")
             self._first_run = False
             return
-        try:
-            logger.info(f"Running housekeeping task at {datetime.datetime.now()}")
-            async with self.get_workspace_interface(
-                self._root_user, "ws-user-root", client_id="housekeeping"
-            ) as api:
-                # admin = await api.get_service("admin-utils")
-                workspaces = await api.list_workspaces()
-                for workspace in workspaces:
+
+        logger.info(f"Running housekeeping task at {datetime.datetime.now()}")
+        async with self.get_workspace_interface(
+            self._root_user, "ws-user-root", client_id="housekeeping"
+        ) as api:
+            # admin = await api.get_service("admin-utils")
+            workspaces = await api.list_workspaces()
+            for workspace in workspaces:
+                try:
                     summary = await api.cleanup(workspace.id)
                     if "removed_clients" in summary:
                         logger.info(
                             f"Removed {len(summary['removed_clients'])} clients from workspace {workspace.id}"
                         )
-        except Exception as e:
-            logger.exception(f"Error in housekeeping: {e}")
+                except Exception as e:
+                    logger.exception(f"Error in housekeeping {workspace}: {e}")
 
     async def upgrade(self):
         """Upgrade the store."""
