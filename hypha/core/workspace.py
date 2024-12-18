@@ -34,6 +34,7 @@ from hypha.core import (
     TokenConfig,
     UserPermission,
     ServiceTypeInfo,
+    VisibilityEnum,
 )
 from hypha.vectors import VectorSearchEngine
 from hypha.core.auth import generate_presigned_token, create_scope, valid_token
@@ -1159,7 +1160,7 @@ class WorkspaceManager:
                 return
         # Check if the service already exists
         service_exists = await self._redis.keys(f"services:*|*:{service.id}@*")
-        visibility = service.config.visibility if isinstance(service.config.visibility, str) else service.config.visibility.value
+        visibility = service.config.visibility.value if isinstance(service.config.visibility, VisibilityEnum) else service.config.visibility
         key = f"services:{visibility}|{service.type}:{service.id}@{service.app_id}"
 
         if service_exists:
@@ -1316,7 +1317,7 @@ class WorkspaceManager:
         assert ":" in service.id, "Service id info must contain ':'"
         service.app_id = service.app_id or "*"
         service.type = service.type or "*"
-        visibility = service.config.visibility if isinstance(service.config.visibility, str) else service.config.visibility.value
+        visibility = service.config.visibility.value if isinstance(service.config.visibility, VisibilityEnum) else service.config.visibility
         key = f"services:{visibility}|{service.type}:{service.id}@{service.app_id}"
 
         # Check if the service exists before removal
