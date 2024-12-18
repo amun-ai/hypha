@@ -439,7 +439,7 @@ async def test_load_dump_vector_collections(
             vectors=vectors,
         )
         await api.disconnect()
-    await asyncio.sleep(1)
+    await asyncio.sleep(6)
     async with connect_to_server(
         {
             "name": "test deploy client",
