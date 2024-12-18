@@ -1776,6 +1776,9 @@ class WorkspaceManager:
 
         # Mark the workspace as not ready
         winfo.status = None
+        await self._redis.hset(
+            "workspaces", winfo.id, winfo.model_dump_json()
+        )
 
         if not winfo.persistent:
             # delete all the items in redis starting with `workspaces_name:`
