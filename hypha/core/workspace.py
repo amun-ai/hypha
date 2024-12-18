@@ -1890,9 +1890,10 @@ class WorkspaceManager:
         # list all the clients and ping them
         # If they are not responding, delete them
         client_keys = await self._list_client_keys(workspace)
-        if len(client_keys) <= 0:
+        if len(client_keys) <= 0 and not workspace_info.persistent:
             await self.delete_workspace(workspace_info.id, context=context)
             return {"removed_workspace": workspace_info.id, "removed_clients": []}
+
         removed = []
         summary = {}
         if not workspace_info.persistent:

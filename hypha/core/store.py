@@ -323,7 +323,7 @@ class RedisStore:
                             f"Removed {len(summary['removed_clients'])} clients from workspace {workspace.id}"
                         )
                 except Exception as e:
-                    logger.exception(f"Error in housekeeping {workspace}: {e}")
+                    logger.exception(f"Error in housekeeping {workspace.id}: {e}")
 
     async def upgrade(self):
         """Upgrade the store."""
