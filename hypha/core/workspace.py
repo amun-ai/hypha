@@ -1761,6 +1761,11 @@ class WorkspaceManager:
             logger.warning(f"Workspace {ws} has already been unloaded.")
             return
         winfo = await self.load_workspace_info(ws)
+        # Mark the workspace as not ready
+        winfo.status = None
+        await self._redis.hset(
+            "workspaces", winfo.id, winfo.model_dump_json()
+        )
         # list all the clients in the workspace and send a meesage to delete them
         client_keys = await self._list_client_keys(winfo.id)
         if len(client_keys) > 0:
@@ -1774,11 +1779,7 @@ class WorkspaceManager:
             )
             await self._event_bus.emit(f"unload:{ws}", "Unloading workspace: " + ws)
 
-        # Mark the workspace as not ready
-        winfo.status = None
-        await self._redis.hset(
-            "workspaces", winfo.id, winfo.model_dump_json()
-        )
+
 
         if not winfo.persistent:
             # delete all the items in redis starting with `workspaces_name:`
