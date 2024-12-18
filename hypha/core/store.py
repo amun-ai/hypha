@@ -195,7 +195,6 @@ class RedisStore:
             sources=[self._source],
         )
         self._house_keeping_schedule = None
-        self._first_run = True
 
         self._redis_cache = RedisCache(serializer=PickleSerializer())
         self._redis_cache.client = self._redis
@@ -304,10 +303,6 @@ class RedisStore:
 
     async def housekeeping(self):
         """Perform housekeeping tasks."""
-        if self._first_run:
-            logger.info("Skipping housekeeping on first run")
-            self._first_run = False
-            return
         try:
             logger.info(f"Running housekeeping task at {datetime.datetime.now()}")
             async with self.get_workspace_interface(
@@ -387,32 +382,6 @@ class RedisStore:
                         "change": f"Upgraded service key from {key} to {new_key}",
                     }
                 )
-
-        workspaces = await self.get_all_workspace()
-        logger.info("Upgrading workspace bookmarks for version < 0.20.34")
-        for workspace in workspaces:
-            workspace.config["bookmarks"] = workspace.config.get("bookmarks") or []
-            for bookmark in workspace.config["bookmarks"]:
-                if "type" in bookmark:
-                    bookmark_type = bookmark["type"]
-                    if not bookmark_type:
-                        continue
-                    logger.info(
-                        f"Convert bookmark type: {bookmark}, workspace: {workspace.id}"
-                    )
-                    bookmark["bookmark_type"] = bookmark_type
-                    del bookmark["type"]
-
-                    # Log the change
-                    change_time = datetime.datetime.now().isoformat()
-                    database_change_log.append(
-                        {
-                            "time": change_time,
-                            "version": __version__,
-                            "change": f"Converted bookmark type in workspace {workspace.id}",
-                        }
-                    )
-            await self.set_workspace(workspace, self._root_user, overwrite=True)
 
         await self._redis.set("hypha_version", __version__)
 
@@ -563,7 +532,6 @@ class RedisStore:
         self._house_keeping_schedule = await self.schedule_task(
             self.housekeeping, task_name="housekeeping", corn="*/1 * * * *"
         )
-        self._first_run = True
 
     async def schedule_task(
         self,
