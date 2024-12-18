@@ -220,7 +220,7 @@ svc = await get_remote_service("http://localhost:9527/ws-user-scintillating-lawy
 Include the following script in your HTML file to load the `hypha-rpc` client:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.42/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.44/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
 Use the following code in JavaScript to connect to the server and access an existing service:
@@ -445,13 +445,13 @@ async def start_server(server_url):
         # Replace this with your own liveness check
         return {"status": "ok"}
 
-    # Register a probe for the service
-    await server.register_probe({
+    # Register probes for the service
+    await server.register_probes({
         "readiness": check_readiness,
         "liveness": check_liveness,
     })
 
-    # This will register a "probes" service where you can accessed via hypha or the HTTP proxy
+    # This will register probes service where you can accessed via hypha or the HTTP proxy
     print(f"Probes registered at workspace: {server.config.workspace}")
     print(f"Test it with the HTTP proxy: {server_url}/{server.config.workspace}/services/probes/readiness")
 
