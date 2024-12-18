@@ -535,10 +535,10 @@ class RedisStore:
         self._scheduler_task = asyncio.create_task(run_scheduler_task(self._scheduler))
 
         # Do house keeping every 10 minutes
-        self._house_keeping_schedule = await self.schedule_task(
-            self.housekeeping, task_name="housekeeping", corn="*/1 * * * *"
-        )
-        self._first_run = True
+        # self._house_keeping_schedule = await self.schedule_task(
+        #     self.housekeeping, task_name="housekeeping", corn="*/1 * * * *"
+        # )
+        # self._first_run = True
 
     async def schedule_task(
         self,
