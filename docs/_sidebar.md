@@ -7,4 +7,5 @@
  * [Launch Service](/launch-service)
  * [Operate Files](/operate-files)
  * [Artifact Manager](/artifact-manager)
+ * [Vector Search](/vector-search)
  * [Development](/development)

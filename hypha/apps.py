@@ -118,11 +118,6 @@ class ServerAppController:
         context: Optional[dict] = None,
     ) -> str:
         """Save a server app."""
-        if config:
-            config["entry_point"] = config.get("entry_point", "index.html")
-            template = config.get("type") + "." + config["entry_point"]
-        else:
-            template = "hypha"
         if not workspace:
             workspace = context["ws"]
 
@@ -134,15 +129,25 @@ class ServerAppController:
                 f"User {user_info.id} does not have permission"
                 f" to install apps in workspace {workspace_info.id}"
             )
-
+        
+        if config:
+            config["entry_point"] = config.get("entry_point", "index.html")
+            template = config.get("type") + "." + config["entry_point"]
+        else:
+            template = "hypha"
+            
         if source.startswith("http"):
-            if not source.startswith("https://"):
-                raise Exception("Only https sources are allowed: " + source)
-            # download source with httpx
-            async with httpx.AsyncClient() as client:
-                response = await client.get(source)
-                assert response.status_code == 200, f"Failed to download {source}"
-                source = response.text
+            if not (source.startswith("https://") or source.startswith("http://localhost") or source.startswith("http://127.0.0.1")):
+                raise Exception("Only secured https urls are allowed: " + source)
+            if source.startswith("https://") and (source.split("?")[0].endswith(".imjoy.html")  or source.split("?")[0].endswith(".hypha.html")):
+                # download source with httpx
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(source)
+                    assert response.status_code == 200, f"Failed to download {source}"
+                    source = response.text
+            else:
+                template = None
+
         # Compute multihash of the source code
         mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
         mhash = mhash.encode("base58").decode("ascii")
@@ -152,7 +157,12 @@ class ServerAppController:
             assert target_mhash.verify(
                 source.encode("utf-8")
             ), f"App source code verification failed (source_hash: {source_hash})."
-        if template == "hypha":
+
+        if template is None:
+            config = config or {}
+            config["entry_point"] = config.get("entry_point", source)
+            entry_point = config["entry_point"]
+        elif template == "hypha":
             if not source:
                 raise Exception("Source should be provided for hypha app.")
             assert config is None, "Config should not be provided for hypha app."
@@ -208,14 +218,17 @@ class ServerAppController:
 
         app_id = f"{mhash}"
 
-        public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}"
-        artifact_obj = convert_config_to_artifact(config, app_id, public_url)
-        artifact_obj.update(
-            {
-                "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}",
-                "public_url": public_url,
-            }
-        )
+        if template:
+            public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}"
+            artifact_obj = convert_config_to_artifact(config, app_id, public_url)
+            artifact_obj.update(
+                {
+                    "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}",
+                    "public_url": public_url,
+                }
+            )
+        else:
+            artifact_obj = convert_config_to_artifact(config, app_id, source)
         ApplicationManifest.model_validate(artifact_obj)
 
         try:
@@ -235,16 +248,17 @@ class ServerAppController:
             version="stage",
             context=context,
         )
-
-        # Upload the main source file
-        put_url = await self.artifact_manager.put_file(
-            artifact["id"], file_path=config["entry_point"], context=context
-        )
-        async with httpx.AsyncClient() as client:
-            response = await client.put(put_url, data=source)
-            assert (
-                response.status_code == 200
-            ), f"Failed to upload {config['entry_point']}"
+        
+        if template:
+            # Upload the main source file
+            put_url = await self.artifact_manager.put_file(
+                artifact["id"], file_path=config["entry_point"], context=context
+            )
+            async with httpx.AsyncClient() as client:
+                response = await client.put(put_url, data=source)
+                assert (
+                    response.status_code == 200
+                ), f"Failed to upload {config['entry_point']}"
 
         if version != "stage":
             # Commit the artifact if stage is not enabled
@@ -409,10 +423,12 @@ class ServerAppController:
             )
         entry_point = manifest.entry_point
         assert entry_point, f"Entry point not found for app {app_id}."
+        if not entry_point.startswith("http"):
+            entry_point = f"{self.local_base_url}/{workspace}/artifacts/applications:{app_id}/files/{entry_point}"
         server_url = self.local_base_url
         local_url = (
-            f"{self.local_base_url}/{workspace}/artifacts/applications:{app_id}/files/{entry_point}?"
-            + f"client_id={client_id}&workspace={workspace}"
+            f"{entry_point}?"
+            + f'server_url={server_url}&client_id={client_id}&workspace={workspace}'
             + f"&app_id={app_id}"
             + f"&server_url={server_url}"
             + (f"&token={token}" if token else "")
@@ -502,6 +518,8 @@ class ServerAppController:
                 )
 
             # save the services
+            manifest.name = manifest.name or app_info.get("name", "Untitled App")
+            manifest.description = manifest.description or app_info.get("description", "")
             manifest.services = collected_services
             manifest = ApplicationManifest.model_validate(
                 manifest.model_dump(mode="json")
@@ -601,7 +619,7 @@ class ServerAppController:
             )
             return [app["manifest"] for app in apps]
         except KeyError:
-            raise KeyError(f"Applications collection not found: {ws}")
+            return []
         except Exception as exp:
             raise Exception(f"Failed to list apps: {exp}") from exp
 

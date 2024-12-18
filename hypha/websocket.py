@@ -366,7 +366,7 @@ class WebsocketServer:
         finally:
             await self.disconnect(
                 websocket,
-                "Client disconnected",
+                f"Client {workspace}/{client_id} disconnected",
                 code,
             )
 

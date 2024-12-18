@@ -49,7 +49,7 @@ class StatusEnum(str, Enum):
 class ServiceConfig(BaseModel):
     """Represent service config."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", use_enum_values=False)
 
     visibility: VisibilityEnum = VisibilityEnum.protected
     require_context: Union[Tuple[str], List[str], bool] = False
@@ -688,6 +688,7 @@ class RedisEventBus:
     async def _subscribe_redis(self):
         cpu_count = os.cpu_count() or 1
         concurrent_tasks = cpu_count * 10
+        logger.info(f"Starting Redis event bus with {concurrent_tasks} concurrent task processing")
         pubsub = self._redis.pubsub()
         self._stop = False
         semaphore = asyncio.Semaphore(concurrent_tasks)  # Limit concurrent tasks
