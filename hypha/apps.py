@@ -129,17 +129,24 @@ class ServerAppController:
                 f"User {user_info.id} does not have permission"
                 f" to install apps in workspace {workspace_info.id}"
             )
-        
+
         if config:
             config["entry_point"] = config.get("entry_point", "index.html")
             template = config.get("type") + "." + config["entry_point"]
         else:
             template = "hypha"
-            
+
         if source.startswith("http"):
-            if not (source.startswith("https://") or source.startswith("http://localhost") or source.startswith("http://127.0.0.1")):
+            if not (
+                source.startswith("https://")
+                or source.startswith("http://localhost")
+                or source.startswith("http://127.0.0.1")
+            ):
                 raise Exception("Only secured https urls are allowed: " + source)
-            if source.startswith("https://") and (source.split("?")[0].endswith(".imjoy.html")  or source.split("?")[0].endswith(".hypha.html")):
+            if source.startswith("https://") and (
+                source.split("?")[0].endswith(".imjoy.html")
+                or source.split("?")[0].endswith(".hypha.html")
+            ):
                 # download source with httpx
                 async with httpx.AsyncClient() as client:
                     response = await client.get(source)
@@ -248,7 +255,7 @@ class ServerAppController:
             version="stage",
             context=context,
         )
-        
+
         if template:
             # Upload the main source file
             put_url = await self.artifact_manager.put_file(
@@ -428,7 +435,7 @@ class ServerAppController:
         server_url = self.local_base_url
         local_url = (
             f"{entry_point}?"
-            + f'server_url={server_url}&client_id={client_id}&workspace={workspace}'
+            + f"server_url={server_url}&client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}"
             + (f"&token={token}" if token else "")
@@ -519,7 +526,9 @@ class ServerAppController:
 
             # save the services
             manifest.name = manifest.name or app_info.get("name", "Untitled App")
-            manifest.description = manifest.description or app_info.get("description", "")
+            manifest.description = manifest.description or app_info.get(
+                "description", ""
+            )
             manifest.services = collected_services
             manifest = ApplicationManifest.model_validate(
                 manifest.model_dump(mode="json")

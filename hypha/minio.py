@@ -1,4 +1,5 @@
 """A module for minio client operations."""
+
 import asyncio
 import json
 import logging

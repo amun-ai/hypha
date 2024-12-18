@@ -1,4 +1,5 @@
 """Test the hypha workspace."""
+
 import pytest
 from hypha_rpc import connect_to_server
 

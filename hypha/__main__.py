@@ -1,4 +1,5 @@
 """Main module for hypha."""
+
 from hypha.server import get_argparser, start_server
 
 

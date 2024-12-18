@@ -1,4 +1,5 @@
 """Test module for app parser."""
+
 from pathlib import Path
 from hypha.plugin_parser import parse_imjoy_plugin
 

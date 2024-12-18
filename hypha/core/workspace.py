@@ -557,9 +557,13 @@ class WorkspaceManager:
         if not user_info.check_permission(ws, UserPermission.admin):
             raise PermissionError(f"Permission denied for workspace {ws}")
         workspace_info = await self.load_workspace_info(workspace)
-        await self._redis.hdel("workspaces", workspace)
+        # delete all the associated keys
+        keys = await self._redis.keys(f"{ws}:*")
+        for key in keys:
+            await self._redis.delete(key)
         if self._s3_controller:
             await self._s3_controller.cleanup_workspace(workspace_info, force=True)
+        await self._redis.hdel("workspaces", workspace)
         await self._event_bus.emit("workspace_deleted", workspace_info.model_dump())
         # remove the workspace from the user's bookmarks
         user_workspace = await self.load_workspace_info(user_info.get_workspace())
@@ -1160,7 +1164,11 @@ class WorkspaceManager:
                 return
         # Check if the service already exists
         service_exists = await self._redis.keys(f"services:*|*:{service.id}@*")
-        visibility = service.config.visibility.value if isinstance(service.config.visibility, VisibilityEnum) else service.config.visibility
+        visibility = (
+            service.config.visibility.value
+            if isinstance(service.config.visibility, VisibilityEnum)
+            else service.config.visibility
+        )
         key = f"services:{visibility}|{service.type}:{service.id}@{service.app_id}"
 
         if service_exists:
@@ -1317,7 +1325,11 @@ class WorkspaceManager:
         assert ":" in service.id, "Service id info must contain ':'"
         service.app_id = service.app_id or "*"
         service.type = service.type or "*"
-        visibility = service.config.visibility.value if isinstance(service.config.visibility, VisibilityEnum) else service.config.visibility
+        visibility = (
+            service.config.visibility.value
+            if isinstance(service.config.visibility, VisibilityEnum)
+            else service.config.visibility
+        )
         key = f"services:{visibility}|{service.type}:{service.id}@{service.app_id}"
 
         # Check if the service exists before removal
@@ -1763,9 +1775,7 @@ class WorkspaceManager:
         winfo = await self.load_workspace_info(ws)
         # Mark the workspace as not ready
         winfo.status = None
-        await self._redis.hset(
-            "workspaces", winfo.id, winfo.model_dump_json()
-        )
+        await self._redis.hset("workspaces", winfo.id, winfo.model_dump_json())
         # list all the clients in the workspace and send a meesage to delete them
         client_keys = await self._list_client_keys(winfo.id)
         if len(client_keys) > 0:
@@ -1778,8 +1788,6 @@ class WorkspaceManager:
                 + client_summary
             )
             await self._event_bus.emit(f"unload:{ws}", "Unloading workspace: " + ws)
-
-
 
         if not winfo.persistent:
             # delete all the items in redis starting with `workspaces_name:`
@@ -1878,9 +1886,13 @@ class WorkspaceManager:
             raise PermissionError(
                 f"Permission denied for workspace {workspace}, user: {user_info.id}"
             )
+        logger.info(f"Cleaning up workspace {workspace_info.id}...")
         # list all the clients and ping them
         # If they are not responding, delete them
         client_keys = await self._list_client_keys(workspace)
+        if len(client_keys) <= 0:
+            await self.delete_workspace(workspace_info.id, context=context)
+            return {"removed_workspace": 1, "removed_clients": 0}
         removed = []
         summary = {}
         if not workspace_info.persistent:

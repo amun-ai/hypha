@@ -1,4 +1,5 @@
 """Test the hypha server."""
+
 import os
 import subprocess
 import sys

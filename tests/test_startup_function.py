@@ -1,4 +1,5 @@
 """Test the hypha server."""
+
 import asyncio
 import os
 import subprocess

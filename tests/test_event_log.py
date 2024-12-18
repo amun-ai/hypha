@@ -1,4 +1,5 @@
 """Test Event Log services."""
+
 import pytest
 import asyncio
 from hypha_rpc import connect_to_server

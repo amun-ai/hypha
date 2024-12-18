@@ -1,4 +1,5 @@
 """Main module for hypha."""
+
 import json
 from pathlib import Path
 

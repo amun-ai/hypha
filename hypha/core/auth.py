@@ -1,4 +1,5 @@
 """Provide authentication."""
+
 import asyncio
 import json
 import logging
@@ -370,9 +371,7 @@ def create_login_service(store):
             + (
                 f"&workspace={workspace}"
                 if workspace
-                else "" + f"&expires_in={expires_in}"
-                if expires_in
-                else ""
+                else "" + f"&expires_in={expires_in}" if expires_in else ""
             ),
             "key": key,
             "report_url": f"{login_service_url}/report",

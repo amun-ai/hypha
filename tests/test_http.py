@@ -1,4 +1,5 @@
 """Test http proxy."""
+
 import gzip
 
 import json

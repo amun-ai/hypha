@@ -593,13 +593,17 @@ class ArtifactController:
                                             # Top-level file
                                             directory_contents.append(
                                                 {
-                                                    "type": "file"
-                                                    if not zip_info.is_dir()
-                                                    else "directory",
+                                                    "type": (
+                                                        "file"
+                                                        if not zip_info.is_dir()
+                                                        else "directory"
+                                                    ),
                                                     "name": relative_path,
-                                                    "size": zip_info.file_size
-                                                    if not zip_info.is_dir()
-                                                    else None,
+                                                    "size": (
+                                                        zip_info.file_size
+                                                        if not zip_info.is_dir()
+                                                        else None
+                                                    ),
                                                     "last_modified": datetime(
                                                         *zip_info.date_time
                                                     ).timestamp(),
@@ -897,9 +901,9 @@ class ArtifactController:
     def _generate_artifact_data(self, artifact, parent_artifact=None):
         artifact_data = model_to_dict(artifact)
         if parent_artifact:
-            artifact_data[
-                "parent_id"
-            ] = f"{parent_artifact.workspace}/{parent_artifact.alias}"
+            artifact_data["parent_id"] = (
+                f"{parent_artifact.workspace}/{parent_artifact.alias}"
+            )
         artifact_data["id"] = f"{artifact.workspace}/{artifact.alias}"
         artifact_data["_id"] = artifact.id
         # Exclude 'secrets' from artifact_data to prevent exposure
@@ -1777,10 +1781,10 @@ class ArtifactController:
                     artifact_data["config"]["child_count"] = child_count
                 elif artifact.type == "vector-collection":
                     artifact_data["config"] = artifact_data.get("config", {})
-                    artifact_data["config"][
-                        "vector_count"
-                    ] = await self._vector_engine.count(
-                        f"{artifact.workspace}/{artifact.alias}"
+                    artifact_data["config"]["vector_count"] = (
+                        await self._vector_engine.count(
+                            f"{artifact.workspace}/{artifact.alias}"
+                        )
                     )
                 if not silent:
                     await session.commit()
@@ -2559,12 +2563,16 @@ class ArtifactController:
                                 model_field = range_fields[key]
                                 if isinstance(value, list):
                                     condition = and_(
-                                        model_field >= value[0]
-                                        if value[0] is not None
-                                        else True,
-                                        model_field <= value[1]
-                                        if value[1] is not None
-                                        else True,
+                                        (
+                                            model_field >= value[0]
+                                            if value[0] is not None
+                                            else True
+                                        ),
+                                        (
+                                            model_field <= value[1]
+                                            if value[1] is not None
+                                            else True
+                                        ),
                                     )
                                 else:
                                     condition = model_field >= value

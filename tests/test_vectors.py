@@ -1,4 +1,5 @@
 """Test Vector Search."""
+
 import asyncio
 import pytest
 import numpy as np

@@ -1,4 +1,5 @@
 """Provide main entrypoint."""
+
 import asyncio
 import inspect
 import json

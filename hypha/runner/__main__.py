@@ -1,4 +1,5 @@
 """Plugin runner."""
+
 from . import start_runner
 
 if __name__ == "__main__":

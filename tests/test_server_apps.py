@@ -1,4 +1,5 @@
 """Test server apps."""
+
 from pathlib import Path
 import asyncio
 import requests

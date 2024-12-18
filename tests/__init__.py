@@ -1,4 +1,5 @@
 """Test the hypha module."""
+
 import uuid
 
 SIO_PORT = 38283

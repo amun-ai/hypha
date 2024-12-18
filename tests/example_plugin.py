@@ -1,4 +1,5 @@
 """Provide an example plugin."""
+
 from hypha_rpc import api
 
 # pylint: disable=no-self-use

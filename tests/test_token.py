@@ -1,4 +1,5 @@
 """Test the token."""
+
 import pytest
 from hypha_rpc import connect_to_server
 

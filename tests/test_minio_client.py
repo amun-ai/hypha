@@ -1,4 +1,5 @@
 """Test minio client."""
+
 import pytest
 from hypha.minio import MinioClient
 from . import MINIO_SERVER_URL, MINIO_ROOT_USER, MINIO_ROOT_PASSWORD, find_item

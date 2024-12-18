@@ -1,4 +1,5 @@
 """Test the hypha server."""
+
 import numpy as np
 
 import pytest

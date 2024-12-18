@@ -1,4 +1,5 @@
 """Test the triton server proxy."""
+
 import gzip
 import sys
 

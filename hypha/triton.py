@@ -1,4 +1,5 @@
 """Provide the triton proxy."""
+
 import random
 from typing import Any, List
 

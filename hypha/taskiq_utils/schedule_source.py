@@ -2,6 +2,7 @@
 We need to patch it so we can use fakeredis when redis is not available.
 The library was created by Pavel Kirilin, released under the MIT license.
 """
+
 from fakeredis import aioredis
 from typing import List, Optional
 

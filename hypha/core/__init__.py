@@ -1,4 +1,5 @@
 """Provide the ImJoy core API interface."""
+
 import asyncio
 import inspect
 import io
@@ -515,9 +516,11 @@ class RedisRPCConnection:
 
         message.update(
             {
-                "ws": target_id.split("/")[0]
-                if self._workspace == "*"
-                else self._workspace,
+                "ws": (
+                    target_id.split("/")[0]
+                    if self._workspace == "*"
+                    else self._workspace
+                ),
                 "to": target_id,
                 "from": source_id,
                 "user": self._user_info,
@@ -688,7 +691,9 @@ class RedisEventBus:
     async def _subscribe_redis(self):
         cpu_count = os.cpu_count() or 1
         concurrent_tasks = cpu_count * 10
-        logger.info(f"Starting Redis event bus with {concurrent_tasks} concurrent task processing")
+        logger.info(
+            f"Starting Redis event bus with {concurrent_tasks} concurrent task processing"
+        )
         pubsub = self._redis.pubsub()
         self._stop = False
         semaphore = asyncio.Semaphore(concurrent_tasks)  # Limit concurrent tasks

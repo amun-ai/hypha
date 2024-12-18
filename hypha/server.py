@@ -1,4 +1,5 @@
 """Provide the server."""
+
 import argparse
 import logging
 import sys

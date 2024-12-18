@@ -1,4 +1,5 @@
 """Test Artifact services."""
+
 import pytest
 import requests
 import os

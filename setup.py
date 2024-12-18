@@ -1,4 +1,5 @@
 """Set up the hypha package."""
+
 import json
 from pathlib import Path
 
