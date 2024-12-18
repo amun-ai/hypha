@@ -195,6 +195,7 @@ class RedisStore:
             sources=[self._source],
         )
         self._house_keeping_schedule = None
+        self._first_run = True
 
         self._redis_cache = RedisCache(serializer=PickleSerializer())
         self._redis_cache.client = self._redis
@@ -303,6 +304,10 @@ class RedisStore:
 
     async def housekeeping(self):
         """Perform housekeeping tasks."""
+        if self._first_run:
+            logger.info("Skipping housekeeping on first run")
+            self._first_run = False
+            return
         try:
             logger.info(f"Running housekeeping task at {datetime.datetime.now()}")
             async with self.get_workspace_interface(
@@ -532,6 +537,7 @@ class RedisStore:
         self._house_keeping_schedule = await self.schedule_task(
             self.housekeeping, task_name="housekeeping", corn="*/1 * * * *"
         )
+        self._first_run = True
 
     async def schedule_task(
         self,
