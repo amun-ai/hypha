@@ -438,7 +438,8 @@ async def test_load_dump_vector_collections(
             artifact_id=vector_collection.id,
             vectors=vectors,
         )
-    await asyncio.sleep(10)
+        await api.disconnect()
+    await asyncio.sleep(6)
     async with connect_to_server(
         {
             "name": "test deploy client",
