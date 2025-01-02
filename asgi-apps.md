@@ -150,7 +150,8 @@ Here’s an example of how you can directly register a FastAPI service with Hyph
 ```python
 import asyncio
 from hypha_rpc import connect_to_server
-from fastapi import FastAPI, HTMLResponse
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 
 app = FastAPI()
 
@@ -183,10 +184,10 @@ async def main():
         "name": "cat",
         "type": "asgi",
         "serve": serve_fastapi,
-        "config": {"visibility": "public"}
+        "config": {"visibility": "public", , "require_context": True}
     })
 
-    print(f"Access your app at: {server.config.workspace}/apps/{svc_info['id'].split(':')[1]}")
+    print(f"Access your app at:  {server.config.public_base_url}/{server.config.workspace}/apps/{svc_info['id'].split(':')[1]}")
     await server.serve()
 
 asyncio.run(main())
@@ -219,12 +220,11 @@ Here’s an example of how to create and serve a FastAPI app in the browser usin
 ```python
 import asyncio
 import micropip
-await micropip.install(["fast
-
-api==0.70.0"])
+await micropip.install(["fastapi==0.70.0"])
 
 from hypha_rpc import connect_to_server
-from fastapi import FastAPI, HTMLResponse
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 
 app = FastAPI()
 
@@ -257,7 +257,7 @@ async def main():
         "name": "cat",
         "type": "asgi",
         "serve": serve_fastapi,
-        "config": {"visibility": "public"}
+        "config": {"visibility": "public", "require_context": True}
     })
 
     print(f"Access your app at: {server.config.workspace}/apps/{svc_info['id'].split(':')[1]}")
