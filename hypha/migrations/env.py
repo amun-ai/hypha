@@ -82,12 +82,17 @@ async def run_async_migrations() -> None:
     await connectable.dispose()
 
 
+background_tasks = set()
+
+
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
     # check if the loop is already running
     if asyncio.get_event_loop().is_running():
         # create a task to run the async migrations
-        asyncio.create_task(run_async_migrations())
+        task = asyncio.create_task(run_async_migrations())
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
     else:
         loop = asyncio.get_event_loop()
         loop.run_until_complete(run_async_migrations())

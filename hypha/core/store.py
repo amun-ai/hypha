@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 import datetime
-from typing import List, Union, Optional
+from typing import List, Union
 from pydantic import BaseModel
 from fastapi import Header, Cookie
 
@@ -14,12 +14,6 @@ from hypha_rpc.utils.schema import schema_method
 from starlette.routing import Mount
 from aiocache.backends.redis import RedisCache
 from aiocache.serializers import PickleSerializer
-from taskiq import TaskiqScheduler
-from taskiq.kicker import AsyncKicker
-from taskiq.api import run_receiver_task, run_scheduler_task
-from hypha.taskiq_utils.redis_broker import ListQueueBroker
-from hypha.taskiq_utils.redis_backend import RedisAsyncResultBackend
-from hypha.taskiq_utils.schedule_source import RedisScheduleSource
 
 
 from hypha import __version__
@@ -184,19 +178,6 @@ class RedisStore:
 
             self._redis = aioredis.FakeRedis.from_url("redis://localhost:9997/11")
 
-        self._result_backend = RedisAsyncResultBackend(self._redis)
-        self._broker = ListQueueBroker(self._redis).with_result_backend(
-            self._result_backend
-        )
-        self._broker_task = None
-        self._source = RedisScheduleSource(self._redis)
-        self._scheduler = TaskiqScheduler(
-            broker=self._broker,
-            sources=[self._source],
-        )
-        self._house_keeping_schedule = None
-        self._first_run = True
-
         self._redis_cache = RedisCache(serializer=PickleSerializer())
         self._redis_cache.client = self._redis
         self._root_user = None
@@ -204,6 +185,7 @@ class RedisStore:
 
         self._tracker = None
         self._tracker_task = None
+        self._house_keeping_task = None
 
     def set_websocket_server(self, websocket_server):
         """Set the websocket server."""
@@ -304,26 +286,28 @@ class RedisStore:
 
     async def housekeeping(self):
         """Perform housekeeping tasks."""
-        if self._first_run:
-            logger.info("Skipping housekeeping on first run")
-            self._first_run = False
-            return
-
-        logger.info(f"Running housekeeping task at {datetime.datetime.now()}")
-        async with self.get_workspace_interface(
-            self._root_user, "ws-user-root", client_id="housekeeping"
-        ) as api:
-            # admin = await api.get_service("admin-utils")
-            workspaces = await api.list_workspaces()
-            for workspace in workspaces:
-                try:
-                    summary = await api.cleanup(workspace.id)
-                    if "removed_clients" in summary:
-                        logger.info(
-                            f"Removed {len(summary['removed_clients'])} clients from workspace {workspace.id}"
-                        )
-                except Exception as e:
-                    logger.exception(f"Error in housekeeping {workspace.id}: {e}")
+        while True:
+            await asyncio.sleep(60 * 3)
+            try:
+                logger.info(f"Running housekeeping task at {datetime.datetime.now()}")
+                async with self.get_workspace_interface(
+                    self._root_user, "ws-user-root", client_id="housekeeping"
+                ) as api:
+                    # admin = await api.get_service("admin-utils")
+                    workspaces = await api.list_workspaces()
+                    for workspace in workspaces:
+                        try:
+                            summary = await api.cleanup(workspace.id)
+                            if "removed_clients" in summary:
+                                logger.info(
+                                    f"Removed {len(summary['removed_clients'])} clients from workspace {workspace.id}"
+                                )
+                        except Exception as e:
+                            logger.exception(
+                                f"Error in housekeeping {workspace.id}: {e}"
+                            )
+            except Exception as exp:
+                logger.error(f"Failed to run housekeeping task, error: {exp}")
 
     async def upgrade(self):
         """Upgrade the store."""
@@ -525,70 +509,10 @@ class RedisStore:
         self._ready = True
         await self.get_event_bus().emit_local("startup")
         servers = await self.list_servers()
+        self._house_keeping_task = asyncio.create_task(self.housekeeping())
+
         logger.info("Server initialized with server id: %s", self._server_id)
         logger.info("Currently connected hypha servers: %s", servers)
-
-        # Setup broker and scheduler
-        await self._broker.startup()
-        self._broker_task = asyncio.create_task(run_receiver_task(self._broker))
-        await self._scheduler.startup()
-        self._scheduler_task = asyncio.create_task(run_scheduler_task(self._scheduler))
-
-        # Do house keeping every 10 minutes
-        # self._house_keeping_schedule = await self.schedule_task(
-        #     self.housekeeping, task_name="housekeeping", corn="*/1 * * * *"
-        # )
-        # self._first_run = True
-
-    async def schedule_task(
-        self,
-        task,
-        *args,
-        corn: Optional[str] = None,
-        time: Optional[datetime.datetime] = None,
-        task_name: Optional[str] = None,
-        task_id: Optional[str] = None,
-        schedule_id: Optional[str] = None,
-        **kwargs,
-    ):
-        """Schedule a task."""
-        assert not (corn and time), "Only one of corn or time can be provided"
-        assert corn or time, "Either corn or time must be provided"
-        my_task: AsyncKicker = self._broker.register_task(
-            task, task_name=task_name
-        ).kicker()
-        if task_id:
-            my_task = my_task.with_task_id(task_id)
-        if schedule_id:
-            my_task = my_task.with_schedule_id(schedule_id)
-        if corn:
-            return await my_task.schedule_by_cron(self._source, corn, *args, **kwargs)
-        if time:
-            return await my_task.schedule_by_time(self._source, time, *args, **kwargs)
-
-    async def delete_schedule(self, schedule_id: str):
-        """Remove schedule by id."""
-        await self._source.delete_schedule(schedule_id)
-
-    async def run_task(
-        self,
-        task,
-        *args,
-        task_name: Optional[str] = None,
-        task_id: Optional[str] = None,
-        **kwargs,
-    ):
-        """Send a task."""
-        my_task: AsyncKicker = self._broker.register_task(
-            task, task_name=task_name
-        ).kicker()
-        if task_id:
-            my_task = my_task.with_task_id(task_id)
-        return await my_task.kiq(*args, **kwargs)
-
-    async def get_task_result(self, task_id, with_logs: bool = False):
-        """Get the task result."""
-        return await self._result_backend.get_result(task_id, with_logs=with_logs)
 
     async def _register_root_services(self):
         """Register root services."""
@@ -959,16 +883,12 @@ class RedisStore:
         """Teardown the server."""
         self._ready = False
         logger.info("Tearing down the redis store...")
-        if self._house_keeping_schedule:
-            await self._house_keeping_schedule.unschedule()
-
-        await self._broker.shutdown()
-        self._scheduler_task.cancel()
-        try:
-            await self._scheduler_task
-        except asyncio.CancelledError:
-            print("Scheduler successfully exited.")
-        await self._scheduler.shutdown()
+        if self._house_keeping_task:
+            self._house_keeping_task.cancel()
+            try:
+                await self._house_keeping_task
+            except asyncio.CancelledError:
+                print("Housekeeping task successfully exited.")
 
         if self._tracker_task:
             self._tracker_task.cancel()
@@ -991,12 +911,4 @@ class RedisStore:
                     pass
 
         await self._event_bus.stop()
-
-        # Note: This has to be the last thing to do
-        # Otherwise, the server got stuck in the shutdown process
-        self._broker_task.cancel()
-        try:
-            await self._broker_task
-        except asyncio.CancelledError:
-            print("Broker successfully exited.")
         logger.info("Teardown complete")

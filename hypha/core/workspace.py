@@ -49,6 +49,7 @@ SERVICE_SUMMARY_FIELD = ["id", "name", "type", "description", "config"]
 
 # Ensure the client_id is safe
 _allowed_characters = re.compile(r"^[a-zA-Z0-9-_/|*]*$")
+background_tasks = set()
 
 
 # Function to return a timezone-naive datetime
@@ -541,7 +542,9 @@ class WorkspaceManager:
             )
         logger.info("Created workspace %s", workspace.id)
         # preare the workspace for the user
-        await self._store.run_task(self._prepare_workspace, workspace)
+        task = asyncio.create_task(self._prepare_workspace(workspace))
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
         return workspace.model_dump()
 
     @schema_method
@@ -1435,7 +1438,9 @@ class WorkspaceManager:
                 await self._redis.hset(
                     "workspaces", workspace_info.id, workspace_info.model_dump_json()
                 )
-                await self._store.run_task(self._prepare_workspace, workspace_info)
+                task = asyncio.create_task(self._prepare_workspace(workspace_info))
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
                 self._active_ws.inc()
                 await self._s3_controller.setup_workspace(workspace_info)
                 await self._event_bus.emit(
