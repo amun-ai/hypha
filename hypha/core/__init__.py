@@ -444,6 +444,9 @@ class TokenConfig(BaseModel):
         return v
 
 
+background_tasks = set()
+
+
 class RedisRPCConnection:
     """Represent a Redis connection for handling RPC-like messaging."""
 
@@ -492,7 +495,9 @@ class RedisRPCConnection:
         # for broadcast messages
         self._event_bus.on(f"{self._workspace}/*:msg", handler)
         if self._handle_connected:
-            asyncio.create_task(self._handle_connected(self))
+            task = asyncio.create_task(self._handle_connected(self))
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
 
     async def emit_message(self, data: Union[dict, bytes]):
         """Send message after packing additional info."""
@@ -736,6 +741,8 @@ class RedisEventBus:
                     ignore_subscribe_messages=True, timeout=0.05
                 )
                 if msg:
-                    asyncio.create_task(process_message(msg))  # Add task to pool
+                    task = asyncio.create_task(process_message(msg))  # Add task to pool
+                    background_tasks.add(task)
+                    task.add_done_callback(background_tasks.discard)
         except Exception as exp:
             self._ready.set_exception(exp)
