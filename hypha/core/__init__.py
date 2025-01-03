@@ -69,7 +69,7 @@ class ServiceInfo(BaseModel):
 
     config: Optional[SerializeAsAny[ServiceConfig]] = None
     id: str
-    name: str
+    name: Optional[str] = None
     type: Optional[str] = "generic"
     description: Optional[constr(max_length=1024)] = None  # type: ignore
     docs: Optional[str] = None

@@ -1138,6 +1138,7 @@ class WorkspaceManager:
         service.type = service.type or "*"
 
         service_name = service.id.split(":")[1]
+        service.name = service.name or service_name
         workspace = service.id.split("/")[0]
         # Store all the info for client's built-in services
         if service_name == "built-in" and service.type == "built-in":
