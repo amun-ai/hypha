@@ -172,13 +172,13 @@ async def test_login(fastapi_server):
             }
         )
         assert token == TOKEN
-        
+
         user_profile = await login(
             {
                 "server_url": SERVER_URL,
                 "login_callback": callback,
                 "login_timeout": 3,
-                "profile": True
+                "profile": True,
             }
         )
         assert user_profile["token"] == TOKEN
