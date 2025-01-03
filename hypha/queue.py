@@ -1,14 +1,16 @@
 """Redis queue service for Hypha."""
 
 import json
+import os
 import sys
 from fakeredis import aioredis
 from hypha.core.store import RedisStore
 import logging
 
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("queue")
-logger.setLevel(logging.INFO)
+logger.setLevel(LOGLEVEL)
 
 
 def create_queue_service(store: RedisStore):

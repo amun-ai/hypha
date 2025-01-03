@@ -35,9 +35,10 @@ from hypha.core.auth import AUTH0_DOMAIN
 from hypha.core.store import RedisStore
 from hypha.utils import GzipRoute, safe_join, is_safe_path
 
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("http")
-logger.setLevel(logging.INFO)
+logger.setLevel(LOGLEVEL)
 
 
 class MsgpackResponse(Response):

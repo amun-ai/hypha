@@ -16,9 +16,10 @@ from hypha_rpc import connect_to_server
 from hypha.runner.browser import BrowserAppRunner
 
 
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("app-runner")
-logger.setLevel(logging.INFO)
+logger.setLevel(LOGLEVEL)
 
 
 async def export_service(app_api, config, hypha_rpc):

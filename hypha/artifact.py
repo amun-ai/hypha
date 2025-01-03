@@ -1,12 +1,12 @@
 import logging
 import traceback
 import time
+import os
 import sys
 import uuid_utils as uuid
 import random
 import re
 import json
-import asyncio
 import math
 from io import BytesIO
 import zipfile
@@ -57,15 +57,15 @@ from hypha.core import (
 )
 from hypha.vectors import VectorSearchEngine
 from hypha_rpc.utils import ObjectProxy
-import numpy as np
 from jsonschema import validate
 from sqlmodel import SQLModel, Field, Relationship, UniqueConstraint
 from typing import Optional, Union, List, Any, Dict
 
 # Logger setup
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("artifact")
-logger.setLevel(logging.INFO)
+logger.setLevel(LOGLEVEL)
 
 
 def make_json_safe(data):

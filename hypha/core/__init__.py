@@ -27,9 +27,10 @@ from hypha.core.activity import ActivityTracker
 
 from prometheus_client import Counter
 
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("core")
-logger.setLevel(logging.INFO)
+logger.setLevel(LOGLEVEL)
 
 
 class VisibilityEnum(str, Enum):

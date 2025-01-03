@@ -3,6 +3,7 @@
 import argparse
 import logging
 import sys
+import os
 from os import environ as env
 from pathlib import Path
 import asyncio
@@ -32,9 +33,10 @@ except ImportError:
     pass
 
 
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("server")
-logger.setLevel(logging.INFO)
+logger.setLevel(LOGLEVEL)
 
 ENV_FILE = find_dotenv()
 if ENV_FILE:

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import ssl
+import os
 import sys
 from calendar import timegm
 import datetime
@@ -21,9 +22,10 @@ from hypha.core import UserInfo, UserTokenInfo, ScopeInfo, UserPermission, Works
 from hypha.utils import random_id
 from hypha import __version__
 
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("auth")
-logger.setLevel(logging.INFO)
+logger.setLevel(LOGLEVEL)
 
 ENV_FILE = find_dotenv()
 if ENV_FILE:
