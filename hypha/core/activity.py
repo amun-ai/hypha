@@ -1,12 +1,14 @@
 import asyncio
+import os
 import time
 from typing import Callable, Dict, Optional
 import logging
 import sys
 
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("activity-tracker")
-logger.setLevel(logging.INFO)
+logger.setLevel(LOGLEVEL)
 
 
 class ActivityTracker:

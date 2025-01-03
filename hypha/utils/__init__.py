@@ -521,7 +521,10 @@ async def chunked_transfer_remote_file(
     target_params = target_params or {}
     source_headers = source_headers or {}
     target_headers = target_headers or {}
-    logger = logger or logging.getLogger(__name__)
+    if not logger:
+        logger = logging.getLogger(__name__)
+        LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+        logger.setLevel(LOGLEVEL)
 
     async with httpx.AsyncClient(
         headers={"Connection": "close"}, timeout=timeout

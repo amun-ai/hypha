@@ -4,9 +4,11 @@ import os
 import sys
 
 
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("services")
-logger.setLevel(logging.INFO)
+logger.setLevel(LOGLEVEL)
+
 import importlib.util
 from importlib import import_module
 

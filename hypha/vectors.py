@@ -2,6 +2,7 @@ import asyncio
 import numpy as np
 import uuid
 import logging
+import os
 import sys
 import re
 import json
@@ -19,10 +20,10 @@ from redis.commands.search.indexDefinition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
 from redis.commands.search.query import Query
 
-# Logger setup
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("vectors")
-logger.setLevel(logging.INFO)
+logger.setLevel(LOGLEVEL)
 
 FIELD_TYPE_MAPPING = {
     "TAG": TagField,

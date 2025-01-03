@@ -11,9 +11,10 @@ import sys
 import tempfile
 import urllib.request
 
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("minio")
-logger.setLevel(logging.INFO)
+logger.setLevel(LOGLEVEL)
 
 MATH_PATTERN = re.compile("{(.+?)}")
 

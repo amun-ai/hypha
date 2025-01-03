@@ -3,8 +3,7 @@
 import asyncio
 import json
 import logging
-from urllib.parse import urlencode
-import httpx
+import os
 import sys
 from datetime import datetime
 from email.utils import formatdate
@@ -14,7 +13,7 @@ import botocore
 from aiobotocore.session import get_session
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
 from asgiproxy.simple_proxy import make_simple_proxy_app
@@ -30,9 +29,10 @@ from hypha.utils import (
     safe_join,
 )
 
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("s3")
-logger.setLevel(logging.INFO)
+logger.setLevel(LOGLEVEL)
 
 
 class FSFileResponse(FileResponse):

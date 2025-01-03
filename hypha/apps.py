@@ -1,5 +1,6 @@
 import httpx
 import logging
+import os
 import sys
 import multihash
 import asyncio
@@ -21,9 +22,10 @@ import random
 from hypha.plugin_parser import convert_config_to_artifact, parse_imjoy_plugin
 from hypha.core import WorkspaceInfo
 
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("apps")
-logger.setLevel(logging.INFO)
+logger.setLevel(LOGLEVEL)
 
 multihash.CodecReg.register("base58", base58.b58encode, base58.b58decode)
 

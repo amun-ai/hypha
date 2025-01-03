@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import sys
 import datetime
 from typing import List, Union
@@ -45,9 +46,10 @@ from hypha.core.workspace import WorkspaceManager
 from hypha.startup import run_startup_function
 from hypha.utils import random_id
 
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("redis-store")
-logger.setLevel(logging.INFO)
+logger.setLevel(LOGLEVEL)
 
 
 class WorkspaceInterfaceContextManager:
