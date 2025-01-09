@@ -511,7 +511,7 @@ class RedisStore:
         self._ready = True
         await self.get_event_bus().emit_local("startup")
         servers = await self.list_servers()
-        self._house_keeping_task = asyncio.create_task(self.housekeeping())
+        # self._house_keeping_task = asyncio.create_task(self.housekeeping())
 
         logger.info("Server initialized with server id: %s", self._server_id)
         logger.info("Currently connected hypha servers: %s", servers)
