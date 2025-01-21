@@ -28,7 +28,7 @@ import os
 
 from starlette.datastructures import Headers, MutableHeaders
 
-from hypha_rpc import RPC
+from hypha_rpc import RPC, connect_to_server
 from hypha import main_version
 from hypha.core import UserPermission
 from hypha.core.auth import AUTH0_DOMAIN
@@ -792,7 +792,14 @@ class HTTPProxy:
             """Used for liveness probe.
             If the liveness probe fails, it means the app is in a failed state and restarts it.
             """
-            return JSONResponse({"status": "OK"})
+            try:
+                await connect_to_server({
+                    "name": "hypha-liveness",
+                    "server_url": "https://hypha.aicell.io"
+                })
+                return JSONResponse({"status": "OK"})
+            except Exception:
+                return JSONResponse({"status": "DOWN"}, status_code=503)
 
         @app.get(norm_url("/login"))
         async def login(request: Request):
