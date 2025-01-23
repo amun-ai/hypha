@@ -7,6 +7,8 @@ import json
 import logging
 import sys
 import os
+import uuid
+import time
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, Field, field_validator
@@ -25,7 +27,7 @@ from hypha.utils import EventBus
 import jsonschema
 from hypha.core.activity import ActivityTracker
 
-from prometheus_client import Counter
+from prometheus_client import Counter, Gauge
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -564,7 +566,11 @@ class RedisEventBus:
     """Represent a redis event bus."""
 
     _counter = Counter(
-        "event_bus", "Counts the events on the redis event bus", ["event"]
+        "event_bus", "Counts the events on the redis event bus", ["event", "status"]
+    )
+    _memory_usage = Gauge("redis_memory_usage_bytes", "Redis memory usage in bytes")
+    _pubsub_latency = Gauge(
+        "redis_pubsub_latency_seconds", "Redis pubsub latency in seconds"
     )
 
     def __init__(self, redis) -> None:
@@ -574,6 +580,16 @@ class RedisEventBus:
         self._stop = False
         self._local_event_bus = EventBus(logger)
         self._redis_event_bus = EventBus(logger)
+        self._reconnect_delay = 1  # Start with 1 second delay
+        self._max_reconnect_delay = 30  # Maximum delay between reconnection attempts
+        self._health_check_interval = 5  # Health check every 5 seconds
+        self._consecutive_failures = 0
+        self._max_failures = 3  # Circuit breaker threshold
+        self._circuit_breaker_open = False
+        self._last_successful_connection = None
+        self._health_check_channel = "health_check:" + str(uuid.uuid4())
+        self._health_check_pubsub = None
+        self._pubsub_health_future = None
 
     async def init(self):
         """Setup the event bus."""
@@ -583,6 +599,7 @@ class RedisEventBus:
 
         # Start the Redis subscription task
         self._subscribe_task = loop.create_task(self._subscribe_redis())
+        self._health_check_task = loop.create_task(self._health_check())
 
         # Wait for readiness signal
         await self._ready
@@ -688,62 +705,244 @@ class RedisEventBus:
     async def stop(self):
         """Stop the event bus."""
         self._stop = True
-        self._subscribe_task.cancel()
+        if self._subscribe_task:
+            self._subscribe_task.cancel()
+        if self._health_check_task:
+            self._health_check_task.cancel()
+        if self._health_check_pubsub:
+            await self._health_check_pubsub.unsubscribe()
+            await self._health_check_pubsub.close()
         try:
-            await self._subscribe_task
+            await asyncio.gather(
+                self._subscribe_task, self._health_check_task, return_exceptions=True
+            )
         except asyncio.CancelledError:
             pass
 
+    async def _check_pubsub_health(self):
+        """Check if pubsub is working by sending and receiving a test message."""
+        try:
+            if not self._health_check_pubsub:
+                self._health_check_pubsub = self._redis.pubsub()
+                await self._health_check_pubsub.subscribe(self._health_check_channel)
+
+            # Create a future to wait for the message
+            self._pubsub_health_future = asyncio.Future()
+
+            # Send test message with timestamp
+            test_message = str(time.time())
+            await self._redis.publish(self._health_check_channel, test_message)
+
+            # Wait for message with timeout
+            try:
+                start_time = time.time()
+                received = await asyncio.wait_for(
+                    self._pubsub_health_future, timeout=2.0
+                )
+                end_time = time.time()
+
+                # Verify it's the message we sent
+                if received == test_message:
+                    latency = end_time - start_time
+                    self._pubsub_latency.set(latency)
+                    self._counter.labels(event="pubsub_health", status="success").inc()
+                    return True
+                else:
+                    logger.warning("Received unexpected message in pubsub health check")
+                    self._counter.labels(event="pubsub_health", status="mismatch").inc()
+                    return False
+
+            except asyncio.TimeoutError:
+                logger.warning("Pubsub health check timed out")
+                self._counter.labels(event="pubsub_health", status="timeout").inc()
+                return False
+
+        except Exception as e:
+            logger.error(f"Pubsub health check failed: {str(e)}")
+            self._counter.labels(event="pubsub_health", status="error").inc()
+            return False
+
+    async def _process_health_check_message(self, message):
+        """Process incoming health check messages."""
+        try:
+            if self._pubsub_health_future and not self._pubsub_health_future.done():
+                self._pubsub_health_future.set_result(message.decode("utf-8"))
+        except Exception as e:
+            logger.error(f"Error processing health check message: {str(e)}")
+
+    async def _health_check(self):
+        """Periodically check Redis health including pubsub, memory usage and performance."""
+        while not self._stop:
+            try:
+                await asyncio.sleep(self._health_check_interval)
+                if self._circuit_breaker_open:
+                    continue
+
+                # Check basic Redis info
+                info = await self._redis.info()
+
+                # Memory checks
+                used_memory = info.get("used_memory", 0)
+                max_memory = info.get("maxmemory", 0)
+                self._memory_usage.set(used_memory)
+
+                if max_memory > 0:
+                    memory_ratio = used_memory / max_memory
+                    if memory_ratio > self._memory_warning_threshold:
+                        logger.warning(f"Redis memory usage high: {memory_ratio:.1%}")
+                        self._counter.labels(
+                            event="health_check", status="memory_warning"
+                        ).inc()
+
+                # Check pubsub functionality
+                pubsub_healthy = await self._check_pubsub_health()
+                if not pubsub_healthy:
+                    self._consecutive_failures += 1
+                    if self._consecutive_failures >= self._max_failures:
+                        logger.error("Circuit breaker opened due to pubsub failures")
+                        self._circuit_breaker_open = True
+                        self._counter.labels(
+                            event="circuit_breaker", status="open"
+                        ).inc()
+                        await self._attempt_reconnection()
+                    continue
+
+                # Reset failure counter on successful health check
+                self._consecutive_failures = 0
+                self._last_successful_connection = asyncio.get_event_loop().time()
+                self._counter.labels(event="health_check", status="success").inc()
+
+            except Exception as e:
+                logger.warning(f"Redis health check failed: {str(e)}")
+                self._counter.labels(event="health_check", status="failure").inc()
+                self._consecutive_failures += 1
+
+                if self._consecutive_failures >= self._max_failures:
+                    logger.error("Circuit breaker opened due to multiple failures")
+                    self._circuit_breaker_open = True
+                    await self._attempt_reconnection()
+
+    async def _attempt_reconnection(self):
+        """Attempt to reconnect with exponential backoff."""
+        while self._circuit_breaker_open and not self._stop:
+            try:
+                # Cancel existing subscription task
+                if self._subscribe_task:
+                    self._subscribe_task.cancel()
+
+                await asyncio.sleep(self._reconnect_delay)
+
+                # Try to ping Redis
+                await self._redis.ping()
+
+                # If successful, reset circuit breaker and restart subscription
+                self._circuit_breaker_open = False
+                self._consecutive_failures = 0
+                self._reconnect_delay = 1
+                self._counter.labels(event="reconnection", status="success").inc()
+
+                self._subscribe_task = self._loop.create_task(self._subscribe_redis())
+                logger.info("Successfully reconnected to Redis")
+                return
+
+            except Exception as e:
+                logger.error(f"Reconnection attempt failed: {str(e)}")
+                self._counter.labels(event="reconnection", status="failure").inc()
+
+                # Exponential backoff with max delay
+                self._reconnect_delay = min(
+                    self._reconnect_delay * 2, self._max_reconnect_delay
+                )
+
     async def _subscribe_redis(self):
+        """Handle Redis subscription with automatic reconnection."""
         cpu_count = os.cpu_count() or 1
         concurrent_tasks = cpu_count * 10
         logger.info(
             f"Starting Redis event bus with {concurrent_tasks} concurrent task processing"
         )
-        pubsub = self._redis.pubsub()
-        self._stop = False
-        semaphore = asyncio.Semaphore(concurrent_tasks)  # Limit concurrent tasks
 
-        async def process_message(msg):
-            """Process a single message while respecting the semaphore."""
-            async with semaphore:  # Acquire semaphore
-                try:
-                    channel = msg["channel"].decode("utf-8")
-                    RedisEventBus._counter.labels(event="*").inc()
+        while not self._stop:
+            try:
+                pubsub = self._redis.pubsub()
+                self._stop = False
+                semaphore = asyncio.Semaphore(concurrent_tasks)
 
-                    if channel.startswith("event:b:"):
-                        event_type = channel[8:]
-                        data = msg["data"]
-                        await self._redis_event_bus.emit(event_type, data)
-                        if ":" not in event_type:
-                            RedisEventBus._counter.labels(event=event_type).inc()
-                    elif channel.startswith("event:d:"):
-                        event_type = channel[8:]
-                        data = json.loads(msg["data"])
-                        await self._redis_event_bus.emit(event_type, data)
-                        if ":" not in event_type:
-                            RedisEventBus._counter.labels(event=event_type).inc()
-                    elif channel.startswith("event:s:"):
-                        event_type = channel[8:]
-                        data = msg["data"].decode("utf-8")
-                        await self._redis_event_bus.emit(event_type, data)
-                        if ":" not in event_type:
-                            RedisEventBus._counter.labels(event=event_type).inc()
-                    else:
-                        logger.info("Unknown channel: %s", channel)
-                except Exception as exp:
-                    logger.exception(f"Error processing message: {exp}")
+                # Subscribe to both events and health check channel
+                await pubsub.psubscribe("event:*")
+                await pubsub.subscribe(self._health_check_channel)
 
-        try:
-            await pubsub.psubscribe("event:*")
-            self._ready.set_result(True)
-            while not self._stop:
-                msg = await pubsub.get_message(
-                    ignore_subscribe_messages=True, timeout=0.05
-                )
-                if msg:
-                    task = asyncio.create_task(process_message(msg))  # Add task to pool
-                    background_tasks.add(task)
-                    task.add_done_callback(background_tasks.discard)
-        except Exception as exp:
-            self._ready.set_exception(exp)
+                self._ready.set_result(True) if not self._ready.done() else None
+                self._counter.labels(event="subscription", status="success").inc()
+
+                while not self._stop:
+                    if self._circuit_breaker_open:
+                        await asyncio.sleep(0.1)
+                        continue
+
+                    try:
+                        msg = await pubsub.get_message(
+                            ignore_subscribe_messages=True, timeout=0.05
+                        )
+                        if msg:
+                            channel = msg["channel"].decode("utf-8")
+                            if channel == self._health_check_channel:
+                                await self._process_health_check_message(msg["data"])
+                            else:
+                                task = asyncio.create_task(
+                                    self._process_message(msg, semaphore)
+                                )
+                                background_tasks.add(task)
+                                task.add_done_callback(background_tasks.discard)
+                    except Exception as e:
+                        logger.warning(f"Error getting message: {str(e)}")
+                        self._counter.labels(
+                            event="message_processing", status="failure"
+                        ).inc()
+                        await asyncio.sleep(0.1)  # Prevent tight loop on errors
+
+            except Exception as exp:
+                logger.error(f"Subscription error: {str(exp)}")
+                self._counter.labels(event="subscription", status="failure").inc()
+                if not self._ready.done():
+                    self._ready.set_exception(exp)
+                await asyncio.sleep(1)  # Prevent tight loop on connection errors
+
+    async def _process_message(self, msg, semaphore):
+        """Process a single message while respecting the semaphore."""
+        async with semaphore:
+            try:
+                channel = msg["channel"].decode("utf-8")
+                RedisEventBus._counter.labels(event="*", status="processed").inc()
+
+                if channel.startswith("event:b:"):
+                    event_type = channel[8:]
+                    data = msg["data"]
+                    await self._redis_event_bus.emit(event_type, data)
+                    if ":" not in event_type:
+                        RedisEventBus._counter.labels(
+                            event=event_type, status="processed"
+                        ).inc()
+                elif channel.startswith("event:d:"):
+                    event_type = channel[8:]
+                    data = json.loads(msg["data"])
+                    await self._redis_event_bus.emit(event_type, data)
+                    if ":" not in event_type:
+                        RedisEventBus._counter.labels(
+                            event=event_type, status="processed"
+                        ).inc()
+                elif channel.startswith("event:s:"):
+                    event_type = channel[8:]
+                    data = msg["data"].decode("utf-8")
+                    await self._redis_event_bus.emit(event_type, data)
+                    if ":" not in event_type:
+                        RedisEventBus._counter.labels(
+                            event=event_type, status="processed"
+                        ).inc()
+                else:
+                    logger.info("Unknown channel: %s", channel)
+            except Exception as exp:
+                logger.exception(f"Error processing message: {exp}")
+                RedisEventBus._counter.labels(
+                    event="message_processing", status="error"
+                ).inc()
