@@ -171,7 +171,7 @@
                 catch(e){
                     token = null;
                 }
-                // extrac workspace from url
+                // extract workspace from url
                 // for example: http://127.0.0.1:9527/ws-user-github%7C478667#services => ws-user-github|478667
                 const workspace = decodeURIComponent(window.location.href.split(window.location.origin)[1].split('/')[1].split("#")[0].split('?')[0]);
                 return {
@@ -1777,16 +1777,11 @@
                         setWs(remoteServer);
                     }
                     catch(e){
-                        if(e.message === "Permission denied"){
-                            const redirectUrl = '/public/apps/hypha-login/?redirect=' + window.location.href;
-                            alert(`Failed to connect to the server: ${e.message}, redirecting to login: ${redirectUrl}`);
-                            setTimeout(() => {
-                                window.location.href = redirectUrl;
-                            }, 1000);
-                        }
-                        else{
-                            alert(`Failed to connect to the server: ${e.message}`);
-                        }
+                        // clear access token
+                        document.cookie = 'access_token=; path=/; max-age=0; samesite=lax';
+                        const redirectUrl = '/public/apps/hypha-login/?redirect=' + window.location.href;
+                        alert(`Failed to connect to the server: ${e}, redirecting to login: ${redirectUrl}`);
+                        window.location.href = redirectUrl;
                     }
                 };
                 connectToServer();
