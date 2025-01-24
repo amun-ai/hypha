@@ -8,9 +8,7 @@ import logging
 import sys
 from pathlib import Path
 import httpx
-
-
-import httpx
+import datetime
 import msgpack
 from fastapi import Depends, Request
 from starlette.routing import Route, Match
@@ -780,19 +778,149 @@ class HTTPProxy:
         @app.get(norm_url("/health/readiness"))
         async def readiness(req: Request) -> JSONResponse:
             """Used for readiness probe.
-            t determines whether the application inside the container is ready to accept traffic or requests.
+            Determines whether the application inside the container is ready to accept traffic or requests.
+            Checks:
+            1. Store initialization status
+            2. Redis connectivity
+            3. Event bus and pubsub functionality
             """
-            if store.is_ready():
-                return JSONResponse({"status": "OK"})
+            try:
+                # Check store readiness
+                if not self.store.is_ready():
+                    return JSONResponse(
+                        {"status": "DOWN", "detail": "Store is not ready"},
+                        status_code=503,
+                    )
 
-            return JSONResponse({"status": "DOWN"}, status_code=503)
+                # Check Redis connectivity
+                try:
+                    redis = self.store.get_redis()
+                    await redis.ping()
+                except Exception as e:
+                    return JSONResponse(
+                        {
+                            "status": "DOWN",
+                            "detail": f"Redis connection failed: {str(e)}",
+                        },
+                        status_code=503,
+                    )
+
+                # Check event bus status
+                event_bus = self.store.get_event_bus()
+                if event_bus._circuit_breaker_open:
+                    return JSONResponse(
+                        {
+                            "status": "DOWN",
+                            "detail": "Event bus circuit breaker is open",
+                        },
+                        status_code=503,
+                    )
+
+                # Check pubsub health
+                pubsub_healthy = await event_bus._check_pubsub_health()
+                if not pubsub_healthy:
+                    return JSONResponse(
+                        {"status": "DOWN", "detail": "Pubsub system is not healthy"},
+                        status_code=503,
+                    )
+
+                return JSONResponse(
+                    {
+                        "status": "OK",
+                        "detail": {
+                            "store": "ready",
+                            "redis": "connected",
+                            "event_bus": "ready",
+                            "pubsub": "healthy",
+                        },
+                    }
+                )
+
+            except Exception as e:
+                logger.error(f"Readiness check failed: {str(e)}")
+                return JSONResponse(
+                    {"status": "DOWN", "detail": f"Readiness check failed: {str(e)}"},
+                    status_code=503,
+                )
 
         @app.get(norm_url("/health/liveness"))
         async def liveness(req: Request) -> JSONResponse:
             """Used for liveness probe.
-            If the liveness probe fails, it means the app is in a failed state and restarts it.
+            If the liveness probe fails, it means the app is in a failed state and needs to be restarted.
+            Checks:
+            1. Store health
+            2. Event bus health
+            3. Pubsub functionality
             """
-            return JSONResponse({"status": "OK"})
+            # Check store health
+            if not self.store.is_ready():
+                return JSONResponse(
+                    {"status": "DOWN", "detail": "Store is not ready"}, status_code=503
+                )
+            try:
+                if not await self.store.is_alive():
+                    return JSONResponse(
+                        {"status": "DOWN", "detail": "Server is not alive"},
+                        status_code=503,
+                    )
+            except Exception as e:
+                logger.error(f"Liveness check failed: {str(e)}")
+                return JSONResponse(
+                    {"status": "DOWN", "detail": f"Liveness check failed: {str(e)}"},
+                    status_code=503,
+                )
+
+            try:
+
+                # Get event bus status
+                event_bus = self.store.get_event_bus()
+
+                # Check event bus consecutive failures
+                if event_bus._consecutive_failures >= event_bus._max_failures:
+                    return JSONResponse(
+                        {
+                            "status": "DOWN",
+                            "detail": f"Event bus has {event_bus._consecutive_failures} consecutive failures",
+                        },
+                        status_code=503,
+                    )
+
+                # Check pubsub health
+                pubsub_healthy = await event_bus._check_pubsub_health()
+                if not pubsub_healthy:
+                    return JSONResponse(
+                        {"status": "DOWN", "detail": "Pubsub system is not healthy"},
+                        status_code=503,
+                    )
+
+                # Return detailed status
+                return JSONResponse(
+                    {
+                        "status": "OK",
+                        "detail": {
+                            "store": "ready",
+                            "event_bus_failures": event_bus._consecutive_failures,
+                            "circuit_breaker": (
+                                "open" if event_bus._circuit_breaker_open else "closed"
+                            ),
+                            "pubsub": "healthy",
+                            "last_successful_connection": (
+                                datetime.datetime.fromtimestamp(
+                                    event_bus._last_successful_connection
+                                ).isoformat()
+                                if event_bus._last_successful_connection
+                                else None
+                            ),
+                        },
+                    }
+                )
+
+            except Exception as e:
+                logger.error(f"Liveness check failed: {str(e)}")
+                return JSONResponse(
+                    {"status": "DOWN", "detail": f"Liveness check failed: {str(e)}"},
+                    status_code=503,
+                )
 
         @app.get(norm_url("/login"))
         async def login(request: Request):

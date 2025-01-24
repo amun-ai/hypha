@@ -861,6 +861,12 @@ class RedisStore:
         """Check if the server is alive."""
         return self._ready
 
+    async def is_alive(self):
+        """Check if the server is alive."""
+        return await self._public_workspace_interface.ping(
+            client_id=self._server_id, timeout=1
+        )
+
     def register_router(self, router):
         """Register a router."""
         self._app.include_router(router)
