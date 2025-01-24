@@ -568,7 +568,6 @@ class RedisEventBus:
     _counter = Counter(
         "event_bus", "Counts the events on the redis event bus", ["event", "status"]
     )
-    _memory_usage = Gauge("redis_memory_usage_bytes", "Redis memory usage in bytes")
     _pubsub_latency = Gauge(
         "redis_pubsub_latency_seconds", "Redis pubsub latency in seconds"
     )
@@ -771,28 +770,13 @@ class RedisEventBus:
             logger.error(f"Error processing health check message: {str(e)}")
 
     async def _health_check(self):
-        """Periodically check Redis health including pubsub, memory usage and performance."""
+        """Periodically check Redis health including pubsub and performance."""
         while not self._stop:
             try:
+                await self._redis.ping()
                 await asyncio.sleep(self._health_check_interval)
                 if self._circuit_breaker_open:
                     continue
-
-                # Check basic Redis info
-                info = await self._redis.info()
-
-                # Memory checks
-                used_memory = info.get("used_memory", 0)
-                max_memory = info.get("maxmemory", 0)
-                self._memory_usage.set(used_memory)
-
-                if max_memory > 0:
-                    memory_ratio = used_memory / max_memory
-                    if memory_ratio > self._memory_warning_threshold:
-                        logger.warning(f"Redis memory usage high: {memory_ratio:.1%}")
-                        self._counter.labels(
-                            event="health_check", status="memory_warning"
-                        ).inc()
 
                 # Check pubsub functionality
                 pubsub_healthy = await self._check_pubsub_health()
