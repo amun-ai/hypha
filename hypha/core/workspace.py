@@ -1692,7 +1692,7 @@ class WorkspaceManager:
         """Update the workspace config."""
         assert isinstance(workspace, WorkspaceInfo) and isinstance(user_info, UserInfo)
         if not user_info.check_permission(workspace.id, UserPermission.read_write):
-            raise PermissionError(f"Permission denied for workspace {workspace}")
+            raise PermissionError(f"Permission denied for workspace {workspace.id}")
 
         workspace_info = await self._redis.hget("workspaces", workspace.id)
         if not overwrite and workspace_info is None:
@@ -1764,12 +1764,15 @@ class WorkspaceManager:
     async def unload_if_empty(self, context=None):
         """Delete the workspace if it is empty."""
         self.validate_context(context, permission=UserPermission.admin)
-        client_keys = await self._list_client_keys(context["ws"])
+        workspace = context["ws"]
+        logger.debug(f"Attempting to unload workspace: {workspace}")
+        client_keys = await self._list_client_keys(workspace)
         if not client_keys:
+            logger.info(f"No active clients in workspace {workspace}. Unloading...")
             await self.unload(context=context)
         else:
             logger.warning(
-                f"Skip unloading workspace {context['ws']} because it is not empty, remaining clients: {client_keys[:10]}..."  # only list the first 10 maximum
+                f"Skip unloading workspace {workspace} because it is not empty, remaining clients: {client_keys[:10]}..."
             )
 
     async def unload(self, context=None):
