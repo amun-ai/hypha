@@ -173,7 +173,10 @@ def create_application(args):
     """Create a hypha application."""
     if args.from_env:
         logger.info("Loading arguments from environment variables")
-        args = get_args_from_env()
+        _args = get_args_from_env()
+        # copy the _args to args
+        for key, value in _args.__dict__.items():
+            setattr(args, key, value)
 
     if args.allow_origins and isinstance(args.allow_origins, str):
         args.allow_origins = args.allow_origins.split(",")
@@ -534,29 +537,37 @@ if __name__ == "__main__":
 else:
     # Create the app instance when imported by uvicorn
     import sys
-    
+
     # Parse uvicorn command line arguments to get host and port
     args = sys.argv
     for i, arg in enumerate(args):
-        if arg == '--host' and i + 1 < len(args):
-            if 'HYPHA_HOST' in env and env['HYPHA_HOST'] != args[i + 1]:
-                raise ValueError(f"HYPHA_HOST ({env['HYPHA_HOST']}) does not match --host argument ({args[i + 1]})")
-            env['HYPHA_HOST'] = args[i + 1]
-        elif arg.startswith('--host='):
-            host = arg.split('=')[1]
-            if 'HYPHA_HOST' in env and env['HYPHA_HOST'] != host:
-                raise ValueError(f"HYPHA_HOST ({env['HYPHA_HOST']}) does not match --host argument ({host})")
-            env['HYPHA_HOST'] = host
-        elif arg == '--port' and i + 1 < len(args):
-            if 'HYPHA_PORT' in env and env['HYPHA_PORT'] != args[i + 1]:
-                raise ValueError(f"HYPHA_PORT ({env['HYPHA_PORT']}) does not match --port argument ({args[i + 1]})")
-            env['HYPHA_PORT'] = args[i + 1]
-        elif arg.startswith('--port='):
-            port = arg.split('=')[1]
-            if 'HYPHA_PORT' in env and env['HYPHA_PORT'] != port:
-                raise ValueError(f"HYPHA_PORT ({env['HYPHA_PORT']}) does not match --port argument ({port})")
-            env['HYPHA_PORT'] = port
-    
+        if arg == "--host" and i + 1 < len(args):
+            if "HYPHA_HOST" in env and env["HYPHA_HOST"] != args[i + 1]:
+                raise ValueError(
+                    f"HYPHA_HOST ({env['HYPHA_HOST']}) does not match --host argument ({args[i + 1]})"
+                )
+            env["HYPHA_HOST"] = args[i + 1]
+        elif arg.startswith("--host="):
+            host = arg.split("=")[1]
+            if "HYPHA_HOST" in env and env["HYPHA_HOST"] != host:
+                raise ValueError(
+                    f"HYPHA_HOST ({env['HYPHA_HOST']}) does not match --host argument ({host})"
+                )
+            env["HYPHA_HOST"] = host
+        elif arg == "--port" and i + 1 < len(args):
+            if "HYPHA_PORT" in env and env["HYPHA_PORT"] != args[i + 1]:
+                raise ValueError(
+                    f"HYPHA_PORT ({env['HYPHA_PORT']}) does not match --port argument ({args[i + 1]})"
+                )
+            env["HYPHA_PORT"] = args[i + 1]
+        elif arg.startswith("--port="):
+            port = arg.split("=")[1]
+            if "HYPHA_PORT" in env and env["HYPHA_PORT"] != port:
+                raise ValueError(
+                    f"HYPHA_PORT ({env['HYPHA_PORT']}) does not match --port argument ({port})"
+                )
+            env["HYPHA_PORT"] = port
+
     arg_parser = get_argparser(add_help=False)
     opt = arg_parser.parse_args(["--from-env"])
     app = create_application(opt)

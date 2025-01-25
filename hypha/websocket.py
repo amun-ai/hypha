@@ -24,6 +24,10 @@ logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("websocket-server")
 logger.setLevel(LOGLEVEL)
 
+_gauge = Gauge(
+    "websocket_connections", "Number of websocket connections", ["workspace"]
+)
+
 
 class WebsocketServer:
     def __init__(self, store: RedisStore, path="/ws"):
@@ -33,9 +37,6 @@ class WebsocketServer:
         self.store.set_websocket_server(self)
         self._stop = False
         self._websockets = {}
-        self._gauge = Gauge(
-            "websocket_connections", "Number of websocket connections", ["workspace"]
-        )
 
         @app.websocket(path)
         async def websocket_endpoint(
@@ -276,7 +277,7 @@ class WebsocketServer:
         conn = RedisRPCConnection(event_bus, workspace, client_id, user_info, None)
         self._websockets[f"{workspace}/{client_id}"] = websocket
         try:
-            self._gauge.labels(workspace=workspace).inc()
+            _gauge.labels(workspace=workspace).inc()
             event_bus.on_local(f"unload:{workspace}", force_disconnect)
 
             async def send_bytes(data):
@@ -339,7 +340,7 @@ class WebsocketServer:
         except Exception as e:
             raise e
         finally:
-            self._gauge.labels(workspace=workspace).dec()
+            _gauge.labels(workspace=workspace).dec()
             await conn.disconnect("disconnected")
             event_bus.off_local(f"unload:{workspace}", force_disconnect)
             if (
