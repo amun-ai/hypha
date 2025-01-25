@@ -31,6 +31,12 @@ python -m hypha.server --host=0.0.0.0 --port=9527 --enable-server-apps
 
 You can test if the server is running by visiting [http://localhost:9527](http://localhost:9527) and checking the Hypha server version.
 
+You can also start the server as a uvicorn server by running:
+```bash
+# arguments are passed in the environment variables, e.g. HYPHA_ENABLE_SERVER_APPS=true
+python -m uvicorn hypha.server:app --host=0.0.0.0 --port=9527
+```
+
 Alternatively, you can use our public testing server at [https://ai.imjoy.io](https://ai.imjoy.io).
 
 ## Serving Static Files
