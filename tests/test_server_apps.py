@@ -235,8 +235,6 @@ async def test_daemon_apps(fastapi_server, test_user_token_5, root_user_token):
     ) as api:
         controller = await api.get_service("public/server-apps")
         apps = await controller.list_apps()
-        await api.wait_until_ready()
-        controller = await api.get_service("public/server-apps")
         running_apps = await controller.list_running()
         # The daemon app should be running
         assert any(app["app_id"] == config.app_id for app in running_apps)

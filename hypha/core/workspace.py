@@ -1865,6 +1865,7 @@ class WorkspaceManager:
     async def wait_until_ready(self, timeout: Optional[int] = 60, context=None):
         """Wait for the workspace to be ready."""
         workspace_info = await self._redis.hget("workspaces", context["ws"])
+        assert workspace_info is not None, f"Workspace {context['ws']} was removed."
         workspace_info = WorkspaceInfo.model_validate(
             json.loads(workspace_info.decode())
         )
