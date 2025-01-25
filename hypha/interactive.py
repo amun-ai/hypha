@@ -2,43 +2,15 @@
 
 import asyncio
 import sys
-from pathlib import Path
 from typing import Any
 
 from prompt_toolkit.patch_stdout import patch_stdout
 from ptpython.repl import embed
 from ptpython.repl import PythonRepl
+from fastapi import FastAPI
 import uvicorn
 
-from hypha.server import get_argparser, create_application
-from hypha.core.store import RedisStore
-
-
-def create_store_from_args(args) -> RedisStore:
-    """Create a RedisStore instance from command line arguments."""
-    local_base_url = f"http://127.0.0.1:{args.port}/{args.base_path.strip('/')}".strip(
-        "/"
-    )
-    public_base_url = (
-        args.public_base_url.strip("/") if args.public_base_url else local_base_url
-    )
-
-    store = RedisStore(
-        None,  # No FastAPI app needed for interactive mode
-        server_id=args.server_id,
-        public_base_url=public_base_url,
-        local_base_url=local_base_url,
-        redis_uri=args.redis_uri,
-        database_uri=args.database_uri,
-        ollama_host=args.ollama_host,
-        cache_dir=args.cache_dir,
-        openai_config={
-            "base_url": args.openai_base_url,
-            "api_key": args.openai_api_key,
-        },
-        enable_service_search=args.enable_service_search,
-    )
-    return store
+from hypha.server import get_argparser
 
 
 def configure_ptpython(repl: PythonRepl) -> None:
@@ -68,10 +40,8 @@ Type 'exit' to quit.
     print(welcome_message)
 
 
-async def start_interactive_shell(args: Any) -> None:
+async def start_interactive_shell(app: FastAPI, args: Any) -> None:
     """Start an interactive shell with the hypha store and server app."""
-    # Create the FastAPI application
-    app = create_application(args)
 
     # Get the store from the app state
     store = app.state.store

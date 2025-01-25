@@ -497,6 +497,11 @@ def get_argparser(add_help=True):
         action="store_true",
         help="enable semantic service search via vector database",
     )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="start an interactive shell with the hypha store",
+    )
     return parser
 
 
@@ -518,4 +523,8 @@ if __name__ == "__main__":
         command.upgrade(alembic_cfg, "head")
 
     app = create_application(opt)
-    uvicorn.run(app, host=opt.host, port=int(opt.port))
+    if opt.interactive:
+        from hypha.interactive import start_interactive_shell
+        asyncio.run(start_interactive_shell(app, opt))
+    else:
+        uvicorn.run(app, host=opt.host, port=int(opt.port))
