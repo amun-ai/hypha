@@ -3,9 +3,9 @@ entries:
   hypha-server:
   - apiVersion: v2
     appVersion: 0.20.14
-    created: "2025-01-25T17:47:13.534400774Z"
+    created: "2025-01-25T18:08:24.495938684Z"
     description: A Helm chart for deploying Hypha Server to Kubernetes
-    digest: 16a6df458075cbd524b2b4ef9c0ac90344a2b091d3097d9de3e2aa608695c4d6
+    digest: f73330240898cc60646fc9e3ad405db2391da40aacb8432d893554d553e967b9
     name: hypha-server
     type: application
     urls:
@@ -14,12 +14,12 @@ entries:
   redis:
   - apiVersion: v2
     appVersion: 5.0.8
-    created: "2025-01-25T17:47:13.534635132Z"
+    created: "2025-01-25T18:08:24.496067785Z"
     description: A Helm chart for deploying Redis to Kubernetes
-    digest: 9450231c69118efd0975014349780a3ac3b6aad22735f97c7703a62b98a02489
+    digest: ccd95785fd3c33f746d754ba93e8335fb66fb0a7d5dc9f005bdc8c9a00cdfdec
     name: redis
     type: application
     urls:
     - https://hypha-server.github.io/helm-charts/redis-0.1.0.tgz
     version: 0.1.0
-generated: "2025-01-25T17:47:13.533473087Z"
+generated: "2025-01-25T18:08:24.495298449Z"
