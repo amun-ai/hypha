@@ -238,6 +238,7 @@ def create_application(args):
         ),
         activity_check_interval=float(env.get("ACTIVITY_CHECK_INTERVAL", str(10))),
     )
+    application.state.store = store
 
     websocket_server = WebsocketServer(store, path=norm_url(args.base_path, "/ws"))
 
@@ -263,14 +264,48 @@ def create_application(args):
 
 def create_application_from_env():
     """Create a hypha application using environment variables."""
-
     # Retrieve the arguments from environment variables
     parser = get_argparser(add_help=False)
     args = parser.parse_args([])
+
+    # Get the argument types from the parser
+    arg_types = {
+        action.dest: action.type
+        for action in parser._actions
+        if action.type is not None
+    }
+    arg_bools = {
+        action.dest
+        for action in parser._actions
+        if isinstance(action, argparse._StoreTrueAction)
+    }
+    arg_lists = {action.dest for action in parser._actions if action.nargs == "*"}
+
     for arg_name in vars(args):
         env_var = "HYPHA_" + arg_name.upper().replace("-", "_")
         if env_var in env:
-            setattr(args, arg_name, env[env_var])
+            value = env[env_var]
+
+            # Handle boolean flags
+            if arg_name in arg_bools:
+                value = value.lower() in ("true", "1", "yes", "y", "on")
+            # Handle other types using the parser's type information
+            elif arg_name in arg_types:
+                try:
+                    # Special handling for lists
+                    if arg_types[arg_name] == str and isinstance(value, str):
+                        if arg_name in arg_lists:
+                            value = value.split()
+                    else:
+                        value = arg_types[arg_name](value)
+                except (ValueError, TypeError) as e:
+                    logger.warning(
+                        f"Failed to convert environment variable {env_var}={value} "
+                        f"to type {arg_types[arg_name]}: {str(e)}"
+                    )
+                    continue
+
+            setattr(args, arg_name, value)
 
     return create_application(args)
 
