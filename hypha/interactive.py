@@ -8,6 +8,7 @@ from typing import Any
 from prompt_toolkit.patch_stdout import patch_stdout
 from ptpython.repl import embed
 from ptpython.repl import PythonRepl
+import uvicorn
 
 from hypha.server import get_argparser, create_application
 from hypha.core.store import RedisStore
@@ -55,8 +56,11 @@ def configure_ptpython(repl: PythonRepl) -> None:
     welcome_message = """Welcome to Hypha Interactive Shell!
 
 Available objects:
-    - store: The initialized Redis store instance
-    - loop: The asyncio event loop
+
+    - server: The FastAPI server instance
+    - app: The FastAPI application instance
+    - store: The Redis store instance
+
 
 You can run async code directly using top-level await.
 Type 'exit' to quit.
@@ -65,20 +69,28 @@ Type 'exit' to quit.
 
 
 async def start_interactive_shell(args: Any) -> None:
-    """Start an interactive shell with the hypha store."""
-    store = create_store_from_args(args)
+    """Start an interactive shell with the hypha store and server app."""
+    # Create the FastAPI application
+    app = create_application(args)
 
-    print("Initializing store...")
-    await store.init(
-        reset_redis=args.reset_redis, startup_functions=args.startup_functions
-    )
-    print("Store initialized successfully!")
+    # Get the store from the app state
+    store = app.state.store
+
+    # Start the server in the background
+    config = uvicorn.Config(app, host=args.host, port=int(args.port))
+    server = uvicorn.Server(config)
+
+    # Run the server in a separate task
+    server_task = asyncio.create_task(server.serve())
+
+    print(f"Server started at http://{args.host}:{args.port}")
+    print("Initializing interactive shell...")
 
     # Prepare the local namespace
     local_ns = {
+        "app": app,
         "store": store,
-        "loop": asyncio.get_event_loop(),
-        "asyncio": asyncio,
+        "server": server,
     }
 
     # Start the interactive shell with stdout patching for better async support
@@ -92,8 +104,12 @@ async def start_interactive_shell(args: Any) -> None:
         )
 
     # Cleanup when shell exits
+    print("\nShutting down server...")
+    server.should_exit = True
+    await server_task
+
     if store.is_ready():
-        print("\nCleaning up store...")
+        print("Cleaning up store...")
         await store.teardown()
         print("Cleanup complete.")
 
