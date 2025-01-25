@@ -22,7 +22,7 @@ def configure_ptpython(repl: PythonRepl) -> None:
     repl.show_status_bar = True
     repl.show_sidebar_help = True
     repl.highlight_matching_parenthesis = True
-    repl.use_code_colorscheme("monokai")
+    repl.use_code_colorscheme("vs")
 
     # Set the welcome message
     welcome_message = """Welcome to Hypha Interactive Shell!
