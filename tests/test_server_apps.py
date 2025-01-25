@@ -186,14 +186,14 @@ async def test_singleton_apps(fastapi_server, test_user_token):
     assert not any(app["id"] == config1.id for app in running_apps)
 
 
-async def test_daemon_apps(fastapi_server, test_user_token, root_user_token):
+async def test_daemon_apps(fastapi_server, test_user_token_5, root_user_token):
     """Test the daemon apps."""
     async with connect_to_server(
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
             "method_timeout": 30,
-            "token": test_user_token,
+            "token": test_user_token_5,
         }
     ) as api:
         controller = await api.get_service("public/server-apps")
@@ -230,7 +230,7 @@ async def test_daemon_apps(fastapi_server, test_user_token, root_user_token):
             "name": "test client",
             "server_url": WS_SERVER_URL,
             "method_timeout": 30,
-            "token": test_user_token,
+            "token": test_user_token_5,
         }
     ) as api:
         controller = await api.get_service("public/server-apps")
