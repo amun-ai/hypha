@@ -37,13 +37,13 @@ AUTH0_DOMAIN = env.get("AUTH0_DOMAIN", "amun-ai.eu.auth0.com")
 AUTH0_AUDIENCE = env.get("AUTH0_AUDIENCE", "https://amun-ai.eu.auth0.com/api/v2/")
 AUTH0_ISSUER = env.get("AUTH0_ISSUER", "https://amun.ai/")
 AUTH0_NAMESPACE = env.get("AUTH0_NAMESPACE", "https://amun.ai/")
-JWT_SECRET = env.get("JWT_SECRET")
+JWT_SECRET = env.get("HYPHA_JWT_SECRET") or env.get("JWT_SECRET")
 LOGIN_SERVICE_URL = "/public/services/hypha-login"
 LOGIN_KEY_PREFIX = "login_key:"
 
 if not JWT_SECRET:
-    logger.warning(
-        "JWT_SECRET is not defined, you will need a fixed JWT_SECRET for clients to reconnect"
+    logger.info(
+        "Neither HYPHA_JWT_SECRET nor JWT_SECRET is defined, using a random JWT_SECRET"
     )
     JWT_SECRET = shortuuid.ShortUUID().random(length=22)
 

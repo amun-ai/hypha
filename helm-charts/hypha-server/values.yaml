@@ -100,19 +100,28 @@ env:
       secretKeyRef:
         name: hypha-secrets
         key: JWT_SECRET
-  - name: PUBLIC_BASE_URL
+  - name: HYPHA_HOST
+    value: "0.0.0.0"
+  - name: HYPHA_PORT
+    value: "9520"
+  - name: HYPHA_PUBLIC_BASE_URL
     value: "https://hypha.amun.ai"
+  - name: HYPHA_DATABASE_URI
+    value: "sqlite+aiosqlite:////data/hypha-app-database.db"
+  # Uncomment to enable Redis for scaling
+  # - name: HYPHA_REDIS_URI
+  #   value: "redis://redis.hypha.svc.cluster.local:6379/0"
 
 # Define command-line arguments here
 startupCommand:
-  command: ["python", "-m", "hypha.server"]
+  command: ["python", "-m", "uvicorn"]
   args:
-    - "--host=0.0.0.0"
-    - "--port=9520"
-    - "--public-base-url=$(PUBLIC_BASE_URL)"
-    # - "--redis-uri=redis://redis.hypha.svc.cluster.local:6379/0"
-    # In the following line, the database URI is set to use SQLite. Note the 4 slashes.
-    - "--database-uri=sqlite+aiosqlite:////data/hypha-app-database.db"
+    - "hypha.server:app"
+    - "--host=$(HYPHA_HOST)"
+    - "--port=$(HYPHA_PORT)"
+    - "--workers=1"
+    - "--loop=uvloop"
+    - "--http=httptools"
 
 # Persistence Configuration
 persistence:
