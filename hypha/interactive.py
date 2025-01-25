@@ -49,12 +49,11 @@ async def start_interactive_shell(app: FastAPI, args: Any) -> None:
     # Start the server in the background
     config = uvicorn.Config(app, host=args.host, port=int(args.port))
     server = uvicorn.Server(config)
-
     # Run the server in a separate task
     server_task = asyncio.create_task(server.serve())
-
-    print(f"Server started at http://{args.host}:{args.port}")
-    print("Initializing interactive shell...")
+    await store.get_event_bus().wait_for_local("startup")
+    print(f"\nServer started at http://{args.host}:{args.port}")
+    print("Initializing interactive shell...\n")
 
     # Prepare the local namespace
     local_ns = {

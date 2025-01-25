@@ -15,6 +15,7 @@ def main():
         asyncio.run(start_interactive_shell(app, opt))
     else:
         import uvicorn
+
         uvicorn.run(app, host=opt.host, port=int(opt.port))
 
 

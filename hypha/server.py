@@ -525,6 +525,7 @@ if __name__ == "__main__":
     app = create_application(opt)
     if opt.interactive:
         from hypha.interactive import start_interactive_shell
+
         asyncio.run(start_interactive_shell(app, opt))
     else:
         uvicorn.run(app, host=opt.host, port=int(opt.port))
