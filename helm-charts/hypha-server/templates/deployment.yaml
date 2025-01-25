@@ -44,6 +44,12 @@ spec:
           args: {{- toYaml .Values.startupCommand.args | nindent 12 }}
           env:
             {{- toYaml .Values.env | nindent 12 }}
+            {{- if .Values.autoscaling.enabled }}
+            - name: HYPHA_SERVER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            {{- end }}
           volumeMounts:
             - name: {{ .Values.persistence.volumeName }}
               mountPath: {{ .Values.persistence.mountPath }}

@@ -171,6 +171,13 @@ def norm_url(base_path, url):
 
 def create_application(args):
     """Create a hypha application."""
+    if args.from_env:
+        logger.info("Loading arguments from environment variables")
+        _args = get_args_from_env()
+        # copy the _args to args
+        for key, value in _args.__dict__.items():
+            setattr(args, key, value)
+
     if args.allow_origins and isinstance(args.allow_origins, str):
         args.allow_origins = args.allow_origins.split(",")
     else:
@@ -238,6 +245,7 @@ def create_application(args):
         ),
         activity_check_interval=float(env.get("ACTIVITY_CHECK_INTERVAL", str(10))),
     )
+    application.state.store = store
 
     websocket_server = WebsocketServer(store, path=norm_url(args.base_path, "/ws"))
 
@@ -261,31 +269,62 @@ def create_application(args):
     return application
 
 
-def create_application_from_env():
+def get_args_from_env():
     """Create a hypha application using environment variables."""
-
     # Retrieve the arguments from environment variables
     parser = get_argparser(add_help=False)
     args = parser.parse_args([])
+
+    # Get the argument types from the parser
+    arg_types = {
+        action.dest: action.type
+        for action in parser._actions
+        if action.type is not None
+    }
+    arg_bools = {
+        action.dest
+        for action in parser._actions
+        if isinstance(action, argparse._StoreTrueAction)
+    }
+    arg_lists = {action.dest for action in parser._actions if action.nargs == "*"}
+
     for arg_name in vars(args):
         env_var = "HYPHA_" + arg_name.upper().replace("-", "_")
         if env_var in env:
-            setattr(args, arg_name, env[env_var])
+            value = env[env_var]
 
-    return create_application(args)
+            # Handle boolean flags
+            if arg_name in arg_bools:
+                value = value.lower() in ("true", "1", "yes", "y", "on")
+            # Handle other types using the parser's type information
+            elif arg_name in arg_types:
+                try:
+                    # Special handling for lists
+                    if arg_types[arg_name] == str and isinstance(value, str):
+                        if arg_name in arg_lists:
+                            value = value.split()
+                    else:
+                        value = arg_types[arg_name](value)
+                except (ValueError, TypeError) as e:
+                    logger.warning(
+                        f"Failed to convert environment variable {env_var}={value} "
+                        f"to type {arg_types[arg_name]}: {str(e)}"
+                    )
+                    continue
 
+            setattr(args, arg_name, value)
 
-def start_server(args):
-    """Start the server."""
-    import uvicorn
-
-    app = create_application(args)
-    uvicorn.run(app, host=args.host, port=int(args.port))
+    return args
 
 
 def get_argparser(add_help=True):
     """Return the argument parser."""
     parser = argparse.ArgumentParser(add_help=add_help)
+    parser.add_argument(
+        "--from-env",
+        action="store_true",
+        help="load arguments from environment variables, the environment variables should be in the format of HYPHA_<ARG_NAME>_<ARG_NAME_UPPER>",
+    )
     parser.add_argument(
         "--host",
         type=str,
@@ -462,6 +501,11 @@ def get_argparser(add_help=True):
         action="store_true",
         help="enable semantic service search via vector database",
     )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="start an interactive shell with the hypha store",
+    )
     return parser
 
 
@@ -483,4 +527,48 @@ if __name__ == "__main__":
         command.upgrade(alembic_cfg, "head")
 
     app = create_application(opt)
-    uvicorn.run(app, host=opt.host, port=int(opt.port))
+    if opt.interactive:
+        from hypha.interactive import start_interactive_shell
+
+        asyncio.run(start_interactive_shell(app, opt))
+    else:
+        uvicorn.run(app, host=opt.host, port=int(opt.port))
+
+else:
+    # Create the app instance when imported by uvicorn
+    import sys
+
+    # Parse uvicorn command line arguments to get host and port
+    args = sys.argv
+    for i, arg in enumerate(args):
+        if arg == "--host" and i + 1 < len(args):
+            if "HYPHA_HOST" in env and env["HYPHA_HOST"] != args[i + 1]:
+                raise ValueError(
+                    f"HYPHA_HOST ({env['HYPHA_HOST']}) does not match --host argument ({args[i + 1]})"
+                )
+            env["HYPHA_HOST"] = args[i + 1]
+        elif arg.startswith("--host="):
+            host = arg.split("=")[1]
+            if "HYPHA_HOST" in env and env["HYPHA_HOST"] != host:
+                raise ValueError(
+                    f"HYPHA_HOST ({env['HYPHA_HOST']}) does not match --host argument ({host})"
+                )
+            env["HYPHA_HOST"] = host
+        elif arg == "--port" and i + 1 < len(args):
+            if "HYPHA_PORT" in env and env["HYPHA_PORT"] != args[i + 1]:
+                raise ValueError(
+                    f"HYPHA_PORT ({env['HYPHA_PORT']}) does not match --port argument ({args[i + 1]})"
+                )
+            env["HYPHA_PORT"] = args[i + 1]
+        elif arg.startswith("--port="):
+            port = arg.split("=")[1]
+            if "HYPHA_PORT" in env and env["HYPHA_PORT"] != port:
+                raise ValueError(
+                    f"HYPHA_PORT ({env['HYPHA_PORT']}) does not match --port argument ({port})"
+                )
+            env["HYPHA_PORT"] = port
+
+    arg_parser = get_argparser(add_help=False)
+    opt = arg_parser.parse_args(["--from-env"])
+    app = create_application(opt)
+    __all__ = ["app"]

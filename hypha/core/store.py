@@ -86,6 +86,32 @@ class WorkspaceInterfaceContextManager:
         await self._rpc.disconnect()
 
 
+class WorkspaceManagerContextManager:
+    """Context manager for workspace manager operations with automatic context injection."""
+
+    def __init__(self, store, context):
+        self._store = store
+        self._context = context
+        self._interface = None
+
+    async def __aenter__(self):
+        """Create and return a workspace interface with the given context."""
+        user_info = UserInfo.model_validate(self._context["user"])
+        workspace = self._context["ws"]
+        self._interface = self._store.get_workspace_interface(
+            user_info,
+            workspace,
+            client_id=None,  # Use default anonymous client ID
+            silent=True,
+        )
+        return await self._interface.__aenter__()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        """Exit the context manager."""
+        if self._interface:
+            await self._interface.__aexit__(exc_type, exc, tb)
+
+
 class RedisStore:
     """Represent a redis store."""
 
@@ -141,6 +167,7 @@ class RedisStore:
         }
 
         logger.info("Server info: %s", self._server_info)
+        self.loop = None
 
         self._database_uri = database_uri
         if self._database_uri is None:
@@ -286,10 +313,11 @@ class RedisStore:
             # Stop the entire event loop if an error occurs
             asyncio.get_running_loop().stop()
 
-    async def housekeeping(self):
+    async def housekeeping(self, no_wait=False, only_once=False):
         """Perform housekeeping tasks."""
         while True:
-            await asyncio.sleep(60 * 3)
+            if not no_wait:
+                await asyncio.sleep(60 * 3)
             try:
                 logger.info(f"Running housekeeping task at {datetime.datetime.now()}")
                 async with self.get_workspace_interface(
@@ -310,6 +338,8 @@ class RedisStore:
                             )
             except Exception as exp:
                 logger.error(f"Failed to run housekeeping task, error: {exp}")
+            if only_once:
+                break
 
     async def upgrade(self):
         """Upgrade the store."""
@@ -431,6 +461,7 @@ class RedisStore:
 
     async def init(self, reset_redis, startup_functions=None):
         """Setup the store."""
+        self.loop = asyncio.get_running_loop()
         if reset_redis:
             logger.warning("RESETTING ALL REDIS DATA!!!")
             await self._redis.flushall()
@@ -920,3 +951,48 @@ class RedisStore:
 
         await self._event_bus.stop()
         logger.info("Teardown complete")
+
+    @property
+    def wm(self):
+        """Get the workspace manager interface.
+
+        Can be used in three ways:
+        1. As a direct method call: await self.wm.method()
+        2. As a context manager with default context: async with self.wm() as wm:
+        3. As a context manager with custom context: async with self.wm(context) as wm:
+
+        Returns:
+            WorkspaceManagerWrapper: A wrapper that supports both direct usage and context manager.
+        """
+
+        class WorkspaceManagerWrapper:
+            def __init__(self, store):
+                self._store = store
+                self._interface = None
+
+            def __call__(self, context=None):
+                """Support both wm() and wm(context) syntax for context manager."""
+                return WorkspaceManagerContextManager(
+                    self._store,
+                    context
+                    or {"user": self._store._root_user.model_dump(), "ws": "public"},
+                )
+
+            def __getattr__(self, name):
+                """Support direct method access by creating a temporary interface."""
+
+                async def wrapper(*args, **kwargs):
+                    if self._interface is None:
+                        self._interface = self._store.get_workspace_interface(
+                            self._store._root_user,
+                            "public",
+                            client_id=None,
+                            silent=True,
+                        )
+                        interface = await self._interface.__aenter__()
+                    method = getattr(interface, name)
+                    return await method(*args, **kwargs)
+
+                return wrapper
+
+        return WorkspaceManagerWrapper(self)
