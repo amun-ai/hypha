@@ -1,7 +1,7 @@
 import asyncio
 import os
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, List
 import logging
 import sys
 
@@ -19,6 +19,28 @@ class ActivityTracker:
         self._registrations: Dict[str, Dict[str, dict]] = {}
         self._check_interval = check_interval
         self._stop = False
+
+        # Callbacks for entity removal
+        self._entity_removed_callbacks: List[Callable[[str, Optional[str]], None]] = []
+
+    def register_entity_removed_callback(
+        self, callback: Callable[[str, Optional[str]], None]
+    ):
+        """
+        Register a callback to be called when an entity is removed.
+
+        :param callback: A function that takes `entity_id` and `entity_type` as arguments.
+        """
+        self._entity_removed_callbacks.append(callback)
+
+    async def _notify_entity_removed(
+        self, entity_id: str, entity_type: Optional[str] = "default"
+    ):
+        for callback in self._entity_removed_callbacks:
+            try:
+                await callback(entity_id, entity_type)
+            except Exception as e:
+                logger.error(f"Error in entity removed callback for {entity_id}: {e}")
 
     def register(
         self,
@@ -73,7 +95,9 @@ class ActivityTracker:
             ]:  # Remove entity if no registrations left
                 del self._registrations[full_id]
 
-    def remove_entity(self, entity_id: str, entity_type: Optional[str] = "default"):
+    async def remove_entity(
+        self, entity_id: str, entity_type: Optional[str] = "default"
+    ):
         """Remove all registrations for an entity.
 
         :param entity_id: The entity's ID to remove
@@ -82,6 +106,7 @@ class ActivityTracker:
         full_id = f"{entity_type}:{entity_id}"
         if full_id in self._registrations:
             del self._registrations[full_id]
+        await self._notify_entity_removed(entity_id, entity_type)
 
     async def reset_timer(self, entity_id: str, entity_type: Optional[str] = "default"):
         """Reset the activity timer for all registrations of an entity."""

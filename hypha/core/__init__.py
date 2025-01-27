@@ -553,11 +553,13 @@ class RedisRPCConnection:
             self._event_bus.off(f"{self._workspace}/*:msg", self._handle_message)
 
         self._handle_message = None
-        logger.debug(f"Redis Connection Disconnected: {reason}")
+        logger.debug(
+            f"Redis Connection Disconnected: {self._workspace}/{self._client_id}"
+        )
         if self._handle_disconnected:
             await self._handle_disconnected(reason)
 
-        RedisRPCConnection._tracker.remove_entity(
+        await RedisRPCConnection._tracker.remove_entity(
             self._workspace + "/" + self._client_id, "client"
         )
 

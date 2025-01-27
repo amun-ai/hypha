@@ -77,32 +77,7 @@ class WorkspaceInterfaceContextManager:
         await self._store.load_or_create_workspace(self._user_info, self._workspace)
         self._wm = await self._rpc.get_manager_service({"timeout": self._timeout})
         self._wm.rpc = self._rpc
-
-        async def disconnect():
-            try:
-                client_info = self._rpc.get_client_info()
-                client_id = client_info.get("id") if client_info else None
-
-                # First disconnect the RPC
-                await self._rpc.disconnect()
-
-                # Only attempt client removal if we have a valid client_id
-                if client_id:
-                    try:
-                        # Remove client and potentially unload workspace if empty
-                        await self._store.remove_client(
-                            client_id, self._workspace, self._user_info, unload=True
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"Error removing client {client_id} from workspace {self._workspace}: {e}"
-                        )
-            except Exception as e:
-                logger.error(f"Error during disconnect: {e}")
-                # Re-raise to ensure caller knows about the failure
-                raise
-
-        self._wm.disconnect = disconnect
+        self._wm.disconnect = self._rpc.disconnect
         self._wm.register_codec = self._rpc.register_codec
         self._wm.register_service = self._rpc.register_service
         return self._wm
@@ -493,6 +468,7 @@ class RedisStore:
         self._tracker = ActivityTracker(check_interval=self._activity_check_interval)
         self._tracker_task = asyncio.create_task(self._tracker.monitor_entities())
         RedisRPCConnection.set_activity_tracker(self._tracker)
+        self._tracker.register_entity_removed_callback(self._remove_tracker_entity)
 
         await self.setup_root_user()
         await self.check_and_cleanup_servers()
@@ -570,6 +546,15 @@ class RedisStore:
 
         logger.info("Server initialized with server id: %s", self._server_id)
         logger.info("Currently connected hypha servers: %s", servers)
+
+    async def _remove_tracker_entity(self, entity_id, entity_type):
+        """Remove a client."""
+        if entity_type != "client":
+            return
+        workspace, client_id = entity_id.split("/")
+        logger.info(f"Removing client {client_id} from workspace {workspace}")
+        # Remove client and potentially unload workspace if empty
+        await self.remove_client(client_id, workspace, self._root_user, unload=True)
 
     async def _register_root_services(self):
         """Register root services."""
