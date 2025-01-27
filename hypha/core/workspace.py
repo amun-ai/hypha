@@ -1752,14 +1752,21 @@ class WorkspaceManager:
         if unload:
             if await self._redis.hexists("workspaces", cws):
                 if user_info.is_anonymous and cws == user_info.get_workspace():
-                    logger.info(f"Unloading workspace {cws} for anonymous user.")
+                    logger.info(
+                        f"Unloading workspace {cws} for anonymous user (while deleting client {client_id})"
+                    )
                     # unload temporary workspace if the user exits
                     await self.unload(context=context)
                 else:
+                    logger.info(
+                        f"Unloading workspace {cws} for non-anonymous user (while deleting client {client_id})"
+                    )
                     # otherwise delete the workspace if it is empty
                     await self.unload_if_empty(context=context)
             else:
-                logger.warning(f"Workspace {cws} not found.")
+                logger.warning(
+                    f"Workspace {cws} not found (while deleting client {client_id})"
+                )
 
     async def unload_if_empty(self, context=None):
         """Delete the workspace if it is empty."""
