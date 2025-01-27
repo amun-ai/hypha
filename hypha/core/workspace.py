@@ -1421,43 +1421,82 @@ class WorkspaceManager:
     async def load_workspace_info(self, workspace: str, load=True) -> WorkspaceInfo:
         """Load info of the current workspace from the redis store."""
         assert workspace is not None
+
+        # Try to acquire a distributed lock for this workspace
+        lock_key = f"workspace_lock:{workspace}"
+        lock_value = random_id(readable=False)  # Generate unique lock identifier
+        lock_timeout = 30  # 30 seconds timeout
+
+        async def acquire_lock():
+            # Use SET NX with expiry to atomically acquire lock
+            return await self._redis.set(lock_key, lock_value, nx=True, ex=lock_timeout)
+
+        async def release_lock():
+            # Only delete if we still own the lock
+            current_value = await self._redis.get(lock_key)
+            if current_value and current_value.decode() == lock_value:
+                await self._redis.delete(lock_key)
+
         try:
-            workspace_info = await self._redis.hget("workspaces", workspace)
-            if workspace_info is None:
-                raise KeyError(f"Workspace not found: {workspace}")
-            workspace_info = WorkspaceInfo.model_validate(
-                json.loads(workspace_info.decode())
-            )
-            return workspace_info
-        except KeyError:
-            if load and self._s3_controller:
-                workspace_info = await self._s3_controller.load_workspace_info(
-                    workspace, self._root_user
-                )
-                if not workspace_info:
-                    raise KeyError(f"Workspace not found: {workspace}")
-                workspace_info.status = None
-                await self._redis.hset(
-                    "workspaces", workspace_info.id, workspace_info.model_dump_json()
-                )
-                task = asyncio.create_task(self._prepare_workspace(workspace_info))
-                background_tasks.add(task)
-                task.add_done_callback(background_tasks.discard)
-                self._active_ws.inc()
-                await self._s3_controller.setup_workspace(workspace_info)
-                await self._event_bus.emit(
-                    "workspace_loaded", workspace_info.model_dump()
-                )
-                return workspace_info
-            elif load and not self._s3_controller:
-                raise KeyError(
-                    f"Workspace ({workspace}) not found and the workspace loader is not configured (requires s3 enabled)."
-                )
+            # Wait for lock with timeout
+            start_time = time.time()
+            while time.time() - start_time < lock_timeout:
+                if await acquire_lock():
+                    break
+                await asyncio.sleep(0.1)
             else:
+                raise TimeoutError(f"Timeout waiting for workspace lock: {workspace}")
+
+            # Check if workspace exists in Redis
+            try:
+                workspace_info = await self._redis.hget("workspaces", workspace)
+                if workspace_info is not None:
+                    return WorkspaceInfo.model_validate(
+                        json.loads(workspace_info.decode())
+                    )
+            except Exception as e:
+                logger.error(f"Failed to load workspace info from Redis: {e}")
+
+            # If we get here, either workspace doesn't exist or failed to load
+            if not load:
                 raise KeyError(f"Workspace not found: {workspace}")
+
+            if not self._s3_controller:
+                raise KeyError(
+                    f"Workspace ({workspace}) not found and workspace loader not configured (requires s3)."
+                )
+
+            # Try loading from S3
+            workspace_info = await self._s3_controller.load_workspace_info(
+                workspace, self._root_user
+            )
+            if not workspace_info:
+                raise KeyError(f"Workspace not found: {workspace}")
+
+            # Initialize new workspace
+            workspace_info.status = None
+            await self._redis.hset(
+                "workspaces", workspace_info.id, workspace_info.model_dump_json()
+            )
+
+            # Start preparation tasks
+            task = asyncio.create_task(self._prepare_workspace(workspace_info))
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
+
+            self._active_ws.inc()
+            await self._s3_controller.setup_workspace(workspace_info)
+            await self._event_bus.emit("workspace_loaded", workspace_info.model_dump())
+
+            return workspace_info
+
         except Exception as e:
             logger.error(f"Failed to load workspace info: {e}")
             raise e
+
+        finally:
+            # Always release lock when done
+            await release_lock()
 
     @schema_method
     async def get_workspace_info(
@@ -1786,43 +1825,74 @@ class WorkspaceManager:
         """Unload the workspace."""
         self.validate_context(context, permission=UserPermission.admin)
         ws = context["ws"]
-        if not await self._redis.hexists("workspaces", ws):
-            logger.warning(f"Workspace {ws} has already been unloaded.")
-            return
-        winfo = await self.load_workspace_info(ws)
-        # Mark the workspace as not ready
-        winfo.status = None
-        await self._redis.hset("workspaces", winfo.id, winfo.model_dump_json())
-        # list all the clients in the workspace and send a meesage to delete them
-        client_keys = await self._list_client_keys(winfo.id)
-        if len(client_keys) > 0:
-            # if there are too many, log the first 10
-            client_summary = ", ".join(client_keys[:10]) + (
-                "..." if len(client_keys) > 10 else ""
-            )
-            logger.info(
-                f"There are {len(client_keys)} clients in the workspace {ws}: "
-                + client_summary
-            )
-            await self._event_bus.emit(f"unload:{ws}", "Unloading workspace: " + ws)
 
-        if not winfo.persistent:
-            # delete all the items in redis starting with `workspaces_name:`
-            # Including the queue and other associated resources
-            keys = await self._redis.keys(f"{ws}:*")
-            for key in keys:
-                await self._redis.delete(key)
-            if self._s3_controller:
-                await self._s3_controller.cleanup_workspace(winfo)
+        lock_key = f"workspace_lock:{ws}"
+        lock_value = random_id(readable=False)
+        lock_timeout = 30
 
-        self._active_ws.dec()
+        async def acquire_lock():
+            return await self._redis.set(lock_key, lock_value, nx=True, ex=lock_timeout)
+
+        async def release_lock():
+            current_value = await self._redis.get(lock_key)
+            if current_value and current_value.decode() == lock_value:
+                await self._redis.delete(lock_key)
+
         try:
-            self._active_clients.remove(ws)
-            self._active_svc.remove(ws)
-        except KeyError:
-            pass
-        await self._close_workspace(winfo)
-        await self._redis.hdel("workspaces", ws)
+            # Wait for lock with timeout
+            start_time = time.time()
+            while time.time() - start_time < lock_timeout:
+                if await acquire_lock():
+                    break
+                await asyncio.sleep(0.1)
+            else:
+                raise TimeoutError(f"Timeout waiting for workspace lock: {ws}")
+
+            if not await self._redis.hexists("workspaces", ws):
+                logger.warning(f"Workspace {ws} has already been unloaded.")
+                return
+
+            # Rest of the existing unload logic
+            winfo = await self.load_workspace_info(ws, load=False)
+            winfo.status = None
+            await self._redis.hset("workspaces", winfo.id, winfo.model_dump_json())
+
+            # list all the clients in the workspace and send a meesage to delete them
+            client_keys = await self._list_client_keys(winfo.id)
+            if len(client_keys) > 0:
+                # if there are too many, log the first 10
+                client_summary = ", ".join(client_keys[:10]) + (
+                    "..." if len(client_keys) > 10 else ""
+                )
+                logger.info(
+                    f"There are {len(client_keys)} clients in the workspace {ws}: "
+                    + client_summary
+                )
+                await self._event_bus.emit(f"unload:{ws}", "Unloading workspace: " + ws)
+
+            if not winfo.persistent:
+                # delete all the items in redis starting with `workspaces_name:`
+                # Including the queue and other associated resources
+                keys = await self._redis.keys(f"{ws}:*")
+                for key in keys:
+                    await self._redis.delete(key)
+                if self._s3_controller:
+                    await self._s3_controller.cleanup_workspace(winfo)
+            self._active_ws.dec()
+            try:
+                self._active_clients.remove(ws)
+                self._active_svc.remove(ws)
+            except KeyError:
+                pass
+            await self._close_workspace(winfo)
+            await self._redis.hdel("workspaces", ws)
+
+        except Exception as e:
+            logger.error(f"Failed to unload workspace: {e}")
+            raise e
+
+        finally:
+            await release_lock()
 
     async def _prepare_workspace(self, workspace_info: WorkspaceInfo):
         """Prepare the workspace."""
