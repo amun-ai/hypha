@@ -46,3 +46,4 @@ jobs:
         env:
           SANDBOX_ZENODO_TOKEN: ${{ secrets.SANDBOX_ZENODO_TOKEN }}
           GITHUB_ACTIONS: "true"
+          HYPHA_LOGLEVEL: DEBUG

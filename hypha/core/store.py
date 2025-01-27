@@ -284,6 +284,7 @@ class RedisStore:
                 raise PermissionError(
                     f"User {user_info.id} does not have permission to access workspace {workspace}"
                 )
+            logger.debug(f"Creating workspace {workspace} for user {user_info.id}")
             workspace_info = await self.register_workspace(
                 {
                     "id": workspace,
@@ -299,6 +300,7 @@ class RedisStore:
                 raise KeyError(
                     f"Workspace {workspace} does not exist or is not accessible"
                 )
+            logger.debug(f"Workspace {workspace} already exists, skipping creation")
         return workspace_info
 
     def get_root_user(self):
