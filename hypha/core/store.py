@@ -980,6 +980,7 @@ class RedisStore:
             def __init__(self, store):
                 self._store = store
                 self._interface = None
+                self._interface_cm = None
 
             def __call__(self, user_info=None, workspace=None):
                 """Support both wm() and wm(context) syntax for context manager."""
@@ -989,21 +990,46 @@ class RedisStore:
                     workspace or "public",
                 )
 
+            async def _ensure_interface(self):
+                """Ensure we have an active interface, creating one if needed."""
+                if self._interface is None:
+                    self._interface_cm = self._store.get_workspace_interface(
+                        self._store._root_user,
+                        "public",
+                        client_id=None,
+                        silent=True,
+                    )
+                    self._interface = await self._interface_cm.__aenter__()
+                return self._interface
+
+            async def _cleanup_interface(self):
+                """Clean up the interface if it exists."""
+                if self._interface_cm is not None:
+                    await self._interface_cm.__aexit__(None, None, None)
+                    self._interface = None
+                    self._interface_cm = None
+
             def __getattr__(self, name):
                 """Support direct method access by creating a temporary interface."""
 
                 async def wrapper(*args, **kwargs):
-                    if self._interface is None:
-                        self._interface = self._store.get_workspace_interface(
-                            self._store._root_user,
-                            "public",
-                            client_id=None,
-                            silent=True,
-                        )
-                        interface = await self._interface.__aenter__()
-                    method = getattr(interface, name)
-                    return await method(*args, **kwargs)
+                    try:
+                        interface = await self._ensure_interface()
+                        method = getattr(interface, name)
+                        result = await method(*args, **kwargs)
+                        return result
+                    except Exception as e:
+                        await self._cleanup_interface()
+                        raise e
 
                 return wrapper
+
+            async def __aenter__(self):
+                """Support using the wrapper itself as a context manager."""
+                return await self._ensure_interface()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                """Clean up when used as a context manager."""
+                await self._cleanup_interface()
 
         return WorkspaceManagerWrapper(self)

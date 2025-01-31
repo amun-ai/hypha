@@ -10,7 +10,7 @@ from ptpython.repl import PythonRepl
 from fastapi import FastAPI
 import uvicorn
 
-from hypha.server import get_argparser
+from hypha.server import get_argparser, create_application
 
 
 def configure_ptpython(repl: PythonRepl) -> None:
@@ -35,7 +35,7 @@ Available objects:
 
 
 You can run async code directly using top-level await.
-Type 'exit' to quit.
+Type 'exit()' or press Ctrl+D to quit.
 """
     print(welcome_message)
 
@@ -46,21 +46,37 @@ async def start_interactive_shell(app: FastAPI, args: Any) -> None:
     # Get the store from the app state
     store = app.state.store
 
-    # Start the server in the background
-    config = uvicorn.Config(app, host=args.host, port=int(args.port))
-    server = uvicorn.Server(config)
-    # Run the server in a separate task
-    server_task = asyncio.create_task(server.serve())
-    await store.get_event_bus().wait_for_local("startup")
-    print(f"\nServer started at http://{args.host}:{args.port}")
+    server = None
+    server_task = None
+
     print("Initializing interactive shell...\n")
+
+    async def start_server():
+        nonlocal server, server_task
+        config = uvicorn.Config(app, host=args.host, port=int(args.port))
+        server = uvicorn.Server(config)
+        # Run the server in a separate task
+        server_task = asyncio.create_task(server.serve())
+        await store.get_event_bus().wait_for_local("startup")
+        print(f"\nServer started at http://{args.host}:{args.port}")
+
+    if args.interactive_server:
+        # Start the server in the background
+        await start_server()
 
     # Prepare the local namespace
     local_ns = {
         "app": app,
         "store": store,
-        "server": server,
     }
+    if server:
+        local_ns["server"] = server
+    else:
+        args.startup_functions = args.startup_functions or []
+        await store.init(
+            reset_redis=args.reset_redis, startup_functions=args.startup_functions
+        )
+        local_ns["start_server"] = start_server
 
     # Start the interactive shell with stdout patching for better async support
     with patch_stdout():
@@ -73,9 +89,10 @@ async def start_interactive_shell(app: FastAPI, args: Any) -> None:
         )
 
     # Cleanup when shell exits
-    print("\nShutting down server...")
-    server.should_exit = True
-    await server_task
+    if server:
+        print("\nShutting down server...")
+        server.should_exit = True
+        await server_task
 
     if store.is_ready():
         print("Cleaning up store...")
@@ -88,8 +105,11 @@ def main() -> None:
     arg_parser = get_argparser()
     args = arg_parser.parse_args()
 
+    # Create the FastAPI app instance
+    app = create_application(args)
+
     try:
-        asyncio.run(start_interactive_shell(args))
+        asyncio.run(start_interactive_shell(app, args))
     except (KeyboardInterrupt, EOFError):
         print("\nExiting Hypha Interactive Shell...")
     except Exception as e:

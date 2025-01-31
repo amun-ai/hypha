@@ -509,10 +509,24 @@ def get_argparser(add_help=True):
     return parser
 
 
+def add_interactive_arguments(parser):
+    """Add interactive-specific arguments to the parser."""
+    parser.add_argument(
+        "--interactive-server",
+        action="store_true",
+        help="start an interactive server with the hypha store",
+    )
+    return parser
+
+
 if __name__ == "__main__":
     import uvicorn
 
     arg_parser = get_argparser()
+
+    # Only add interactive server argument when running as main script
+    add_interactive_arguments(arg_parser)
+
     opt = arg_parser.parse_args()
 
     # Apply database migrations
@@ -527,7 +541,7 @@ if __name__ == "__main__":
         command.upgrade(alembic_cfg, "head")
 
     app = create_application(opt)
-    if opt.interactive:
+    if opt.interactive or opt.interactive_server:
         from hypha.interactive import start_interactive_shell
 
         asyncio.run(start_interactive_shell(app, opt))
