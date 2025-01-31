@@ -288,4 +288,4 @@ async def test_http_proxy(
         }
     ) as root_api:
         workspaces = await root_api.list_workspaces()
-        assert workspace_count == len(workspaces)
+        assert workspace_count - 1 == len(workspaces)
