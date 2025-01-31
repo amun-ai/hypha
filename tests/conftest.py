@@ -185,9 +185,20 @@ def postgres_server():
         else:
             print("Using existing PostgreSQL container:", existing_container)
     else:
-        # Pull the PostgreSQL image
-        print("Pulling PostgreSQL Docker image...")
-        subprocess.run(["docker", "pull", "postgres:12.21"], check=True)
+        # Check if the PostgreSQL image exists locally
+        image_exists = subprocess.run(
+            ["docker", "images", "-q", "postgres:12.21"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        if not image_exists:
+            # Pull the PostgreSQL image if it does not exist locally
+            print("Pulling PostgreSQL Docker image...")
+            subprocess.run(["docker", "pull", "postgres:12.21"], check=True)
+        else:
+            print("PostgreSQL Docker image already exists locally.")
+
         # Start a new PostgreSQL container
         print("Starting a new PostgreSQL container")
         subprocess.Popen(

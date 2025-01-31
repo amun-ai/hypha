@@ -650,6 +650,7 @@ class ServerAppController:
         # start daemon apps
         for app in apps:
             if app.get("daemon"):
+                logger.info(f"Starting daemon app: {app['id']}")
                 try:
                     await self.start(app["id"], context=context)
                 except Exception as exp:
