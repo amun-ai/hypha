@@ -82,34 +82,39 @@ class WorkspaceInterfaceContextManager:
         self._wm.register_service = self._rpc.register_service
         return self._wm
 
-    async def __aexit__(self, exc_type, exc, tb):
-        await self._rpc.disconnect()
-
 
 class WorkspaceManagerContextManager:
     """Context manager for workspace manager operations with automatic context injection."""
 
-    def __init__(self, store, context):
+    def __init__(self, store, user_info, workspace):
         self._store = store
-        self._context = context
+        self._context = {"user": user_info, "ws": workspace}
         self._interface = None
 
     async def __aenter__(self):
         """Create and return a workspace interface with the given context."""
+        self._interface = self._get_interface()
+        return await self._interface.__aenter__()
+
+    def _get_interface(self):
         user_info = UserInfo.model_validate(self._context["user"])
         workspace = self._context["ws"]
-        self._interface = self._store.get_workspace_interface(
+        _interface = self._store.get_workspace_interface(
             user_info,
             workspace,
             client_id=None,  # Use default anonymous client ID
             silent=True,
         )
-        return await self._interface.__aenter__()
+        return _interface
 
     async def __aexit__(self, exc_type, exc, tb):
         """Exit the context manager."""
         if self._interface:
             await self._interface.__aexit__(exc_type, exc, tb)
+
+    def __await__(self):
+        self._interface = self._get_interface()
+        return self._interface.__aenter__().__await__()
 
 
 class RedisStore:
@@ -214,7 +219,7 @@ class RedisStore:
 
         self._tracker = None
         self._tracker_task = None
-        self._house_keeping_task = None
+        # self._house_keeping_task = None
 
     def set_websocket_server(self, websocket_server):
         """Set the websocket server."""
@@ -279,6 +284,7 @@ class RedisStore:
                 raise PermissionError(
                     f"User {user_info.id} does not have permission to access workspace {workspace}"
                 )
+            logger.debug(f"Creating workspace {workspace} for user {user_info.id}")
             workspace_info = await self.register_workspace(
                 {
                     "id": workspace,
@@ -294,6 +300,7 @@ class RedisStore:
                 raise KeyError(
                     f"Workspace {workspace} does not exist or is not accessible"
                 )
+            logger.debug(f"Workspace {workspace} already exists, skipping creation")
         return workspace_info
 
     def get_root_user(self):
@@ -313,33 +320,27 @@ class RedisStore:
             # Stop the entire event loop if an error occurs
             asyncio.get_running_loop().stop()
 
-    async def housekeeping(self, no_wait=False, only_once=False):
+    async def housekeeping(self):
         """Perform housekeeping tasks."""
-        while True:
-            if not no_wait:
-                await asyncio.sleep(60 * 3)
-            try:
-                logger.info(f"Running housekeeping task at {datetime.datetime.now()}")
-                async with self.get_workspace_interface(
-                    self._root_user, "ws-user-root", client_id="housekeeping"
-                ) as api:
-                    # admin = await api.get_service("admin-utils")
-                    workspaces = await api.list_workspaces()
-                    for workspace in workspaces:
-                        try:
-                            summary = await api.cleanup(workspace.id)
-                            if "removed_clients" in summary:
-                                logger.info(
-                                    f"Removed {len(summary['removed_clients'])} clients from workspace {workspace.id}"
-                                )
-                        except Exception as e:
-                            logger.exception(
-                                f"Error in housekeeping {workspace.id}: {e}"
+        try:
+            logger.info(f"Running housekeeping task at {datetime.datetime.now()}")
+            async with self.get_workspace_interface(
+                self._root_user, "ws-user-root", client_id="housekeeping"
+            ) as api:
+                # admin = await api.get_service("admin-utils")
+                workspaces = await api.list_workspaces()
+                for workspace in workspaces:
+                    try:
+                        logger.info(f"Cleaning up workspace {workspace.id}...")
+                        summary = await api.cleanup(workspace.id)
+                        if "removed_clients" in summary:
+                            logger.info(
+                                f"Removed {len(summary['removed_clients'])} clients from workspace {workspace.id}"
                             )
-            except Exception as exp:
-                logger.error(f"Failed to run housekeeping task, error: {exp}")
-            if only_once:
-                break
+                    except Exception as e:
+                        logger.exception(f"Error in housekeeping {workspace.id}: {e}")
+        except Exception as exp:
+            logger.error(f"Failed to run housekeeping task, error: {exp}")
 
     async def upgrade(self):
         """Upgrade the store."""
@@ -469,6 +470,7 @@ class RedisStore:
         self._tracker = ActivityTracker(check_interval=self._activity_check_interval)
         self._tracker_task = asyncio.create_task(self._tracker.monitor_entities())
         RedisRPCConnection.set_activity_tracker(self._tracker)
+        self._tracker.register_entity_removed_callback(self._remove_tracker_entity)
 
         await self.setup_root_user()
         await self.check_and_cleanup_servers()
@@ -546,6 +548,15 @@ class RedisStore:
 
         logger.info("Server initialized with server id: %s", self._server_id)
         logger.info("Currently connected hypha servers: %s", servers)
+
+    async def _remove_tracker_entity(self, entity_id, entity_type):
+        """Remove a client."""
+        if entity_type != "client":
+            return
+        workspace, client_id = entity_id.split("/")
+        logger.info(f"Removing client {client_id} from workspace {workspace}")
+        # Remove client and potentially unload workspace if empty
+        await self.remove_client(client_id, workspace, self._root_user, unload=True)
 
     async def _register_root_services(self):
         """Register root services."""
@@ -922,12 +933,12 @@ class RedisStore:
         """Teardown the server."""
         self._ready = False
         logger.info("Tearing down the redis store...")
-        if self._house_keeping_task:
-            self._house_keeping_task.cancel()
-            try:
-                await self._house_keeping_task
-            except asyncio.CancelledError:
-                print("Housekeeping task successfully exited.")
+        # if self._house_keeping_task:
+        #     self._house_keeping_task.cancel()
+        #     try:
+        #         await self._house_keeping_task
+        #     except asyncio.CancelledError:
+        #         print("Housekeeping task successfully exited.")
 
         if self._tracker_task:
             self._tracker_task.cancel()
@@ -970,12 +981,12 @@ class RedisStore:
                 self._store = store
                 self._interface = None
 
-            def __call__(self, context=None):
+            def __call__(self, user_info=None, workspace=None):
                 """Support both wm() and wm(context) syntax for context manager."""
                 return WorkspaceManagerContextManager(
                     self._store,
-                    context
-                    or {"user": self._store._root_user.model_dump(), "ws": "public"},
+                    user_info or self._store._root_user.model_dump(),
+                    workspace or "public",
                 )
 
             def __getattr__(self, name):

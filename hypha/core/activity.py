@@ -1,7 +1,7 @@
 import asyncio
 import os
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, List
 import logging
 import sys
 
@@ -20,6 +20,28 @@ class ActivityTracker:
         self._check_interval = check_interval
         self._stop = False
 
+        # Callbacks for entity removal
+        self._entity_removed_callbacks: List[Callable[[str, Optional[str]], None]] = []
+
+    def register_entity_removed_callback(
+        self, callback: Callable[[str, Optional[str]], None]
+    ):
+        """
+        Register a callback to be called when an entity is removed.
+
+        :param callback: A function that takes `entity_id` and `entity_type` as arguments.
+        """
+        self._entity_removed_callbacks.append(callback)
+
+    async def _notify_entity_removed(
+        self, entity_id: str, entity_type: Optional[str] = "default"
+    ):
+        for callback in self._entity_removed_callbacks:
+            try:
+                await callback(entity_id, entity_type)
+            except Exception as e:
+                logger.error(f"Error in entity removed callback for {entity_id}: {e}")
+
     def register(
         self,
         entity_id: str,
@@ -37,21 +59,25 @@ class ActivityTracker:
         :param entity_type: Type of entity being tracked (e.g., client, workspace)
         :return: A unique registration ID
         """
+        if inactive_period < self._check_interval:
+            raise ValueError(
+                f"Inactive period must be greater than the check interval ({self._check_interval} seconds)"
+            )
+
         full_id = f"{entity_type}:{entity_id}"
         if full_id not in self._registrations:
             self._registrations[full_id] = {}
 
         reg_id = f"{full_id}-{len(self._registrations[full_id])}"
-        if inactive_period < self._check_interval:
-            raise ValueError(
-                f"Inactive period must be greater than the check interval ({self._check_interval} seconds)"
-            )
+
+        # Initialize as active with current timestamp
+        now = time.time()
         self._registrations[full_id][reg_id] = {
             "inactive_period": inactive_period,
             "on_active": on_active,
             "on_inactive": on_inactive,
-            "last_activity": None,
-            "is_active": None,
+            "last_activity": now,  # Initialize with current time
+            "is_active": True,  # Start as active
         }
         return reg_id
 
@@ -73,7 +99,9 @@ class ActivityTracker:
             ]:  # Remove entity if no registrations left
                 del self._registrations[full_id]
 
-    def remove_entity(self, entity_id: str, entity_type: Optional[str] = "default"):
+    async def remove_entity(
+        self, entity_id: str, entity_type: Optional[str] = "default"
+    ):
         """Remove all registrations for an entity.
 
         :param entity_id: The entity's ID to remove
@@ -81,15 +109,24 @@ class ActivityTracker:
         """
         full_id = f"{entity_type}:{entity_id}"
         if full_id in self._registrations:
+            # Call on_inactive for all active registrations before removing
+            for reg in self._registrations[full_id].values():
+                if reg["is_active"] and reg["on_inactive"]:
+                    try:
+                        await reg["on_inactive"]()
+                    except Exception as e:
+                        logger.error(
+                            f"Error calling on_inactive during removal for {full_id}: {e}"
+                        )
             del self._registrations[full_id]
+        await self._notify_entity_removed(entity_id, entity_type)
 
     async def reset_timer(self, entity_id: str, entity_type: Optional[str] = "default"):
         """Reset the activity timer for all registrations of an entity."""
         full_id = f"{entity_type}:{entity_id}"
-        # logger.info(f"Resetting timer for {full_id}")
         if full_id in self._registrations:
             now = time.time()
-            for reg in list(self._registrations[full_id].values()):
+            for reg in self._registrations[full_id].values():
                 reg["last_activity"] = now
                 if not reg["is_active"]:
                     reg["is_active"] = True
@@ -103,27 +140,25 @@ class ActivityTracker:
     async def monitor_entities(self):
         """Periodically check the activity of registered entities."""
         while not self._stop:
-            now = time.time()
             try:
-                # logger.info(f"Checking activity at {now}")
+                now = time.time()
                 for full_id in list(self._registrations.keys()):
                     for reg in list(self._registrations[full_id].values()):
-                        if (
-                            reg["last_activity"]
-                            and (now - reg["last_activity"] > reg["inactive_period"])
-                            and reg["is_active"]
-                        ):
-                            # Trigger on_inactive event
-                            reg["is_active"] = False
-                            if reg["on_inactive"]:
-                                try:
-                                    await reg["on_inactive"]()
-                                    logger.info(f"{full_id} becomes inactive")
-                                except Exception as e:
-                                    logger.error(
-                                        f"Error calling on_inactive for {full_id}: {e}"
-                                    )
-                        await asyncio.sleep(0)
+                        if reg["is_active"]:  # Only check active entities
+                            time_since_last_activity = now - reg["last_activity"]
+                            if time_since_last_activity > reg["inactive_period"]:
+                                reg["is_active"] = False
+                                if reg["on_inactive"]:
+                                    try:
+                                        await reg["on_inactive"]()
+                                        logger.info(
+                                            f"{full_id} becomes inactive after {time_since_last_activity:.1f}s"
+                                        )
+                                    except Exception as e:
+                                        logger.error(
+                                            f"Error calling on_inactive for {full_id}: {e}"
+                                        )
+                        await asyncio.sleep(0)  # Allow other tasks to run
             except Exception as e:
                 logger.error(f"Error monitoring activity: {e}")
             await asyncio.sleep(self._check_interval)

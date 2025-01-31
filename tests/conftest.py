@@ -115,6 +115,12 @@ def generate_authenticated_user_5():
     yield from _generate_token("user-5", [])
 
 
+@pytest_asyncio.fixture(name="test_user_token_6", scope="session")
+def generate_authenticated_user_6():
+    """Generate a test user token."""
+    yield from _generate_token("user-6", [])
+
+
 @pytest_asyncio.fixture(name="triton_server", scope="session")
 def triton_server():
     """Start a triton server as test fixture and tear down after test."""
@@ -179,9 +185,20 @@ def postgres_server():
         else:
             print("Using existing PostgreSQL container:", existing_container)
     else:
-        # Pull the PostgreSQL image
-        print("Pulling PostgreSQL Docker image...")
-        subprocess.run(["docker", "pull", "postgres:12.21"], check=True)
+        # Check if the PostgreSQL image exists locally
+        image_exists = subprocess.run(
+            ["docker", "images", "-q", "postgres:12.21"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        if not image_exists:
+            # Pull the PostgreSQL image if it does not exist locally
+            print("Pulling PostgreSQL Docker image...")
+            subprocess.run(["docker", "pull", "postgres:12.21"], check=True)
+        else:
+            print("PostgreSQL Docker image already exists locally.")
+
         # Start a new PostgreSQL container
         print("Starting a new PostgreSQL container")
         subprocess.Popen(

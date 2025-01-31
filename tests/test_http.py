@@ -139,6 +139,7 @@ async def test_http_proxy(
         }
     ) as root_api:
         workspaces = await root_api.list_workspaces()
+        workspace_count = len(workspaces)
         assert workspace in [w.id for w in workspaces]
 
     response = requests.get(
@@ -277,3 +278,16 @@ async def test_http_proxy(
     await controller.stop(app_config.id)
 
     await api.disconnect()
+
+    await asyncio.sleep(1)
+
+    async with connect_to_server(
+        {
+            "name": "root client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": root_user_token,
+        }
+    ) as root_api:
+        workspaces = await root_api.list_workspaces()
+        assert workspace_count >= len(workspaces)

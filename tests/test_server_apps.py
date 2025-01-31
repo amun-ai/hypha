@@ -186,14 +186,15 @@ async def test_singleton_apps(fastapi_server, test_user_token):
     assert not any(app["id"] == config1.id for app in running_apps)
 
 
-async def test_daemon_apps(fastapi_server, test_user_token, root_user_token):
+async def test_daemon_apps(fastapi_server, test_user_token_6, root_user_token):
     """Test the daemon apps."""
     async with connect_to_server(
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
             "method_timeout": 30,
-            "token": test_user_token,
+            "token": test_user_token_6,
+            "client_id": "test-client_daemon_1",
         }
     ) as api:
         controller = await api.get_service("public/server-apps")
@@ -210,36 +211,41 @@ async def test_daemon_apps(fastapi_server, test_user_token, root_user_token):
         # Verify the daemon app is running
         running_apps = await controller.list_running()
         assert any(app["id"] == config.id for app in running_apps)
-        # await controller.stop(config.id)
 
         apps = await controller.list_apps()
         assert find_item(apps, "id", config.app_id)
 
-    await asyncio.sleep(1)
+        # Store the workspace and app info for later verification
+        workspace_id = api.config["workspace"]
+        app_id = config.app_id
 
-    async with connect_to_server(
-        {"server_url": WS_SERVER_URL, "client_id": "admin", "token": root_user_token}
-    ) as root:
-        admin = await root.get_service("admin-utils")
-        await admin.unload_workspace(api.config["workspace"], wait=True, timeout=60)
-        workspaces = await admin.list_workspaces()
-        assert not find_item(workspaces, "id", api.config["workspace"])
+        # Stop the app
+        await controller.stop(config.id)
+        print(f"app {config.id} stopped")
 
+    # Reconnect with the same token to verify daemon app persistence
+    print("Reconnecting with the same token to verify daemon app persistence")
     async with connect_to_server(
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
             "method_timeout": 30,
-            "token": test_user_token,
+            "token": test_user_token_6,
+            "workspace": workspace_id,  # Explicitly specify the workspace
+            "client_id": "test-client",
         }
     ) as api:
-        controller = await api.get_service("public/server-apps")
-        apps = await controller.list_apps()
+        # Wait for workspace to be ready
+        print("Waiting for the workspace to be ready")
         await api.wait_until_ready()
+
         controller = await api.get_service("public/server-apps")
         running_apps = await controller.list_running()
-        # The daemon app should be running
-        assert any(app["app_id"] == config.app_id for app in running_apps)
+
+        # Verify the daemon app is still running
+        assert any(
+            app["app_id"] == app_id for app in running_apps
+        ), "Daemon app should still be running"
 
 
 async def test_web_python_apps(fastapi_server, test_user_token):

@@ -119,6 +119,13 @@ class GetServiceConfig(BaseModel):
     )
 
 
+class WorkspaceStatus:
+    READY = "ready"
+    LOADING = "loading"
+    UNLOADING = "unloading"
+    CLOSED = "closed"
+
+
 class WorkspaceManager:
     def __init__(
         self,
@@ -1129,22 +1136,38 @@ class WorkspaceManager:
         if "/" not in service.id:
             service.id = f"{ws}/{service.id}"
         assert ":" in service.id, "Service id info must contain ':'"
-        # service.type be only * or a string not contain |, :, @ or #
-        assert service.type == "*" or re.match(
-            r"^[^|:@#]*$", service.type
-        ), f"Invalid service type: {service.type}, it must be a letters, optionally with *, hyphens, underscores, and numbers."
-        # assert re.match(r"^[] , service.type), f"Invalid service type: {service.type}, it must be a letters, optionally with *, hyphens, underscores, and numbers."
-        service.app_id = service.app_id or "*"
-        service.type = service.type or "*"
 
         service_name = service.id.split(":")[1]
         service.name = service.name or service_name
         workspace = service.id.split("/")[0]
+
         # Store all the info for client's built-in services
         if service_name == "built-in" and service.type == "built-in":
             service.config.created_by = user_info.model_dump()
         else:
             service.config.created_by = {"id": user_info.id}
+
+        # Check for existing singleton services
+        if service.config.singleton:
+            key = f"services:*|*:{workspace}/*:{service_name}@*"
+            peer_keys = await self._redis.keys(key)
+            if len(peer_keys) > 0:
+                # If it's the same service being re-registered, allow it
+                for peer_key in peer_keys:
+                    peer_service = await self._redis.hgetall(peer_key)
+                    peer_service = ServiceInfo.from_redis_dict(peer_service)
+                    if (
+                        peer_service.config.singleton
+                        and peer_service.id == service.id
+                        and peer_service.app_id == service.app_id
+                    ):
+                        # Same service being re-registered, allow it
+                        await self._redis.delete(peer_key)
+                        break
+                    else:
+                        raise ValueError(
+                            f"A singleton service with the same name ({service_name}) already exists in the workspace ({workspace}), please remove it first or use a different name."
+                        )
 
         key = f"services:*|*:{workspace}/*:{service_name}@*"
         peer_keys = await self._redis.keys(key)
@@ -1421,43 +1444,87 @@ class WorkspaceManager:
     async def load_workspace_info(self, workspace: str, load=True) -> WorkspaceInfo:
         """Load info of the current workspace from the redis store."""
         assert workspace is not None
-        try:
-            workspace_info = await self._redis.hget("workspaces", workspace)
-            if workspace_info is None:
-                raise KeyError(f"Workspace not found: {workspace}")
-            workspace_info = WorkspaceInfo.model_validate(
-                json.loads(workspace_info.decode())
-            )
-            return workspace_info
-        except KeyError:
-            if load and self._s3_controller:
+
+        async with self._workspace_lock(workspace, "load") as prev_status:
+            if prev_status == WorkspaceStatus.UNLOADING:
+                raise RuntimeError(
+                    f"Cannot load workspace {workspace} - unload in progress"
+                )
+
+            try:
+                # Check if workspace exists in Redis
+                try:
+                    workspace_info = await self._redis.hget("workspaces", workspace)
+                    if workspace_info is not None:
+                        workspace_info = WorkspaceInfo.model_validate(
+                            json.loads(workspace_info.decode())
+                        )
+                        # If workspace exists but isn't ready, wait for preparation
+                        status_data = await self._redis.get(
+                            f"workspace_status:{workspace}"
+                        )
+                        if status_data:
+                            status = json.loads(status_data.decode())
+                            if status["status"] == WorkspaceStatus.LOADING:
+                                # Already being prepared, just return
+                                return workspace_info
+
+                        # Set loading status if not already loading
+                        await self._set_workspace_status(
+                            workspace, WorkspaceStatus.LOADING
+                        )
+                        return workspace_info
+                except Exception as e:
+                    logger.error(f"Failed to load workspace info from Redis: {e}")
+
+                if not load:
+                    raise KeyError(f"Workspace not found: {workspace}")
+
+                logger.info(
+                    f"Workspace {workspace} not found in Redis, trying to load from S3"
+                )
+
+                if not self._s3_controller:
+                    raise KeyError(
+                        f"Workspace ({workspace}) not found and workspace loader not configured (requires s3)."
+                    )
+
+                # Try loading from S3
                 workspace_info = await self._s3_controller.load_workspace_info(
                     workspace, self._root_user
                 )
                 if not workspace_info:
                     raise KeyError(f"Workspace not found: {workspace}")
+
+                # Initialize new workspace
                 workspace_info.status = None
                 await self._redis.hset(
                     "workspaces", workspace_info.id, workspace_info.model_dump_json()
                 )
+
+                # Set initial loading status
+                await self._set_workspace_status(workspace, WorkspaceStatus.LOADING)
+
+                # Start preparation tasks
                 task = asyncio.create_task(self._prepare_workspace(workspace_info))
                 background_tasks.add(task)
                 task.add_done_callback(background_tasks.discard)
+
                 self._active_ws.inc()
                 await self._s3_controller.setup_workspace(workspace_info)
                 await self._event_bus.emit(
                     "workspace_loaded", workspace_info.model_dump()
                 )
+
                 return workspace_info
-            elif load and not self._s3_controller:
-                raise KeyError(
-                    f"Workspace ({workspace}) not found and the workspace loader is not configured (requires s3 enabled)."
+
+            except Exception as e:
+                # Make sure we set error status on failure
+                await self._set_workspace_status(
+                    workspace, WorkspaceStatus.CLOSED, error=str(e)
                 )
-            else:
-                raise KeyError(f"Workspace not found: {workspace}")
-        except Exception as e:
-            logger.error(f"Failed to load workspace info: {e}")
-            raise e
+                logger.error(f"Failed to load workspace info: {e}")
+                raise
 
     @schema_method
     async def get_workspace_info(
@@ -1692,7 +1759,7 @@ class WorkspaceManager:
         """Update the workspace config."""
         assert isinstance(workspace, WorkspaceInfo) and isinstance(user_info, UserInfo)
         if not user_info.check_permission(workspace.id, UserPermission.read_write):
-            raise PermissionError(f"Permission denied for workspace {workspace}")
+            raise PermissionError(f"Permission denied for workspace {workspace.id}")
 
         workspace_info = await self._redis.hget("workspaces", workspace.id)
         if not overwrite and workspace_info is None:
@@ -1713,128 +1780,201 @@ class WorkspaceManager:
             await self._s3_controller.save_workspace_config(workspace)
         await self._event_bus.emit("workspace_changed", workspace.model_dump())
 
-    async def delete_client(
-        self,
-        client_id: str,
-        workspace: str,
-        user_info: UserInfo,
-        unload: bool = False,
-        context: Optional[dict] = None,
+    @asynccontextmanager
+    async def _workspace_lock(
+        self, workspace_id: str, operation: str, timeout: float = 30
     ):
-        """Delete all services associated with the given client_id in the specified workspace."""
-        assert context is not None
-        assert isinstance(user_info, UserInfo)
-        self.validate_context(context, permission=UserPermission.admin)
-        cws = workspace
-        validate_key_part(client_id)
-        if "/" in client_id:
-            _cws, client_id = client_id.split("/")
-            assert _cws == cws, f"Client id workspace mismatch, {_cws} != {cws}"
-        # Define a pattern to match all services for the given client_id in the current workspace
-        pattern = f"services:*|*:{cws}/{client_id}:*@*"
+        """Acquire a distributed lock for workspace operations using Redis.
 
-        # Ensure the pattern is secure
-        assert not any(
-            char in pattern for char in "{}"
-        ), "Query pattern contains invalid characters."
+        Args:
+            workspace_id: The workspace ID
+            operation: The operation being performed (e.g. 'load', 'unload')
+            timeout: Lock timeout in seconds
+        """
+        lock_key = f"workspace_lock:{workspace_id}"
+        status_key = f"workspace_status:{workspace_id}"
+        lock_value = f"{self._client_id}:{time.time()}"
 
-        keys = await self._redis.keys(pattern)
-        logger.info(f"Removing {len(keys)} services for client {client_id} in {cws}")
-        for key in keys:
-            await self._redis.delete(key)
-
-        await self._event_bus.emit(
-            "client_disconnected", {"id": client_id, "workspace": cws}
-        )
-        self._active_clients.labels(workspace=cws).dec()
-        self._active_svc.labels(workspace=cws).dec(len(keys) - 1)
-
-        if unload:
-            if await self._redis.hexists("workspaces", cws):
-                if user_info.is_anonymous and cws == user_info.get_workspace():
-                    logger.info(f"Unloading workspace {cws} for anonymous user.")
-                    # unload temporary workspace if the user exits
-                    await self.unload(context=context)
-                else:
-                    # otherwise delete the workspace if it is empty
-                    await self.unload_if_empty(context=context)
-            else:
-                logger.warning(f"Workspace {cws} not found.")
-
-    async def unload_if_empty(self, context=None):
-        """Delete the workspace if it is empty."""
-        self.validate_context(context, permission=UserPermission.admin)
-        client_keys = await self._list_client_keys(context["ws"])
-        if not client_keys:
-            await self.unload(context=context)
-        else:
-            logger.warning(
-                f"Skip unloading workspace {context['ws']} because it is not empty, remaining clients: {client_keys[:10]}..."  # only list the first 10 maximum
-            )
-
-    async def unload(self, context=None):
-        """Unload the workspace."""
-        self.validate_context(context, permission=UserPermission.admin)
-        ws = context["ws"]
-        if not await self._redis.hexists("workspaces", ws):
-            logger.warning(f"Workspace {ws} has already been unloaded.")
-            return
-        winfo = await self.load_workspace_info(ws)
-        # Mark the workspace as not ready
-        winfo.status = None
-        await self._redis.hset("workspaces", winfo.id, winfo.model_dump_json())
-        # list all the clients in the workspace and send a meesage to delete them
-        client_keys = await self._list_client_keys(winfo.id)
-        if len(client_keys) > 0:
-            # if there are too many, log the first 10
-            client_summary = ", ".join(client_keys[:10]) + (
-                "..." if len(client_keys) > 10 else ""
-            )
-            logger.info(
-                f"There are {len(client_keys)} clients in the workspace {ws}: "
-                + client_summary
-            )
-            await self._event_bus.emit(f"unload:{ws}", "Unloading workspace: " + ws)
-
-        if not winfo.persistent:
-            # delete all the items in redis starting with `workspaces_name:`
-            # Including the queue and other associated resources
-            keys = await self._redis.keys(f"{ws}:*")
-            for key in keys:
-                await self._redis.delete(key)
-            if self._s3_controller:
-                await self._s3_controller.cleanup_workspace(winfo)
-
-        self._active_ws.dec()
         try:
-            self._active_clients.remove(ws)
-            self._active_svc.remove(ws)
-        except KeyError:
-            pass
-        await self._close_workspace(winfo)
-        await self._redis.hdel("workspaces", ws)
+            # Check if we already hold the lock
+            current_lock = await self._redis.get(lock_key)
+            if current_lock:
+                current_lock = current_lock.decode()
+                current_owner = current_lock.split(":")[0]
+                if current_owner == self._client_id:
+                    # We already hold the lock, just return current status
+                    status_data = await self._redis.get(status_key)
+                    old_status = status_data.decode() if status_data else None
+                    logger.debug(
+                        f"Reusing existing lock for {operation} on workspace {workspace_id}"
+                    )
+                    yield old_status
+                    return
+
+            # Try to acquire lock with timeout
+            acquired = await self._redis.set(
+                lock_key,
+                lock_value,
+                nx=True,  # Only set if not exists
+                ex=timeout,  # Auto-expire after timeout
+            )
+
+            if not acquired:
+                raise RuntimeError(
+                    f"Could not acquire lock for workspace {workspace_id} - another operation in progress"
+                )
+
+            # Get current status
+            old_status = await self._redis.get(status_key)
+            old_status = old_status.decode() if old_status else None
+
+            logger.info(
+                f"Acquired lock for {operation} on workspace {workspace_id} (previous status: {old_status})"
+            )
+
+            yield old_status
+
+        finally:
+            # Only remove our own lock if we created it
+            current = await self._redis.get(lock_key)
+            if current and current.decode().split(":")[0] == self._client_id:
+                await self._redis.delete(lock_key)
+                logger.info(f"Released lock for workspace {workspace_id}")
+
+    async def _set_workspace_status(
+        self,
+        workspace_id: str,
+        status: str,
+        error: Optional[str] = None,
+        errors: Optional[dict] = None,
+    ):
+        """Set workspace status."""
+        status_data = {
+            "status": status,
+            "timestamp": time.time(),
+            "error": error,
+            "errors": errors,
+        }
+        await self._redis.set(
+            f"workspace_status:{workspace_id}", json.dumps(status_data)
+        )
+        await self._event_bus.emit(
+            "workspace_status_changed", {"id": workspace_id, "status": status_data}
+        )
 
     async def _prepare_workspace(self, workspace_info: WorkspaceInfo):
-        """Prepare the workspace."""
-        errors = {}
-        if workspace_info.persistent:
+        """Prepare the workspace with proper locking."""
+        async with self._workspace_lock(workspace_info.id, "prepare") as prev_status:
+            if prev_status == WorkspaceStatus.UNLOADING:
+                raise RuntimeError(
+                    f"Cannot prepare workspace {workspace_info.id} - unload in progress"
+                )
+
+            await self._set_workspace_status(workspace_info.id, WorkspaceStatus.LOADING)
+
+            errors = {}
             try:
-                if self._artifact_manager:
-                    await self._artifact_manager.prepare_workspace(workspace_info)
+                if workspace_info.persistent:
+                    try:
+                        if self._artifact_manager:
+                            await self._artifact_manager.prepare_workspace(
+                                workspace_info
+                            )
+                    except Exception as e:
+                        errors["artifact_manager"] = traceback.format_exc()
+                    try:
+                        if self._server_app_controller:
+                            await self._server_app_controller.prepare_workspace(
+                                workspace_info
+                            )
+                    except Exception as e:
+                        errors["server_app_controller"] = traceback.format_exc()
+
+                # Update workspace status
+                workspace_info.status = {"ready": True, "errors": errors}
+                await self._redis.hset(
+                    "workspaces", workspace_info.id, workspace_info.model_dump_json()
+                )
+
+                # Set workspace status with errors field
+                await self._set_workspace_status(
+                    workspace_info.id,
+                    WorkspaceStatus.READY,
+                    errors=errors if errors else None,
+                )
+
+                await self._event_bus.emit(
+                    "workspace_ready", workspace_info.model_dump()
+                )
+                logger.info("Workspace %s prepared.", workspace_info.id)
+
             except Exception as e:
-                errors["artifact_manager"] = traceback.format_exc()
+                error_msg = str(e)
+                await self._set_workspace_status(
+                    workspace_info.id, WorkspaceStatus.CLOSED, error=error_msg
+                )
+                raise
+
+    async def unload(self, context=None):
+        """Unload the workspace with proper locking."""
+        self.validate_context(context, permission=UserPermission.admin)
+        ws = context["ws"]
+
+        async with self._workspace_lock(ws, "unload") as prev_status:
+            if prev_status == WorkspaceStatus.LOADING:
+                raise RuntimeError(
+                    f"Cannot unload workspace {ws} - load/prepare in progress"
+                )
+
             try:
-                if self._server_app_controller:
-                    await self._server_app_controller.prepare_workspace(workspace_info)
+                if not await self._redis.hexists("workspaces", ws):
+                    logger.warning(f"Workspace {ws} has already been unloaded.")
+                    return
+
+                await self._set_workspace_status(ws, WorkspaceStatus.UNLOADING)
+
+                # Rest of existing unload logic...
+                winfo = await self.load_workspace_info(ws, load=False)
+                winfo.status = None
+                await self._redis.hset("workspaces", winfo.id, winfo.model_dump_json())
+
+                client_keys = await self._list_client_keys(winfo.id)
+                if client_keys:
+                    client_summary = ", ".join(client_keys[:10]) + (
+                        "..." if len(client_keys) > 10 else ""
+                    )
+                    logger.info(
+                        f"There are {len(client_keys)} clients in workspace {ws}: {client_summary}"
+                    )
+                    await self._event_bus.emit(
+                        f"unload:{ws}", "Unloading workspace: " + ws
+                    )
+
+                if not winfo.persistent:
+                    keys = await self._redis.keys(f"{ws}:*")
+                    for key in keys:
+                        await self._redis.delete(key)
+                    if self._s3_controller:
+                        await self._s3_controller.cleanup_workspace(winfo)
+
+                self._active_ws.dec()
+                try:
+                    self._active_clients.remove(ws)
+                    self._active_svc.remove(ws)
+                except KeyError:
+                    pass
+
+                await self._close_workspace(winfo)
+                await self._redis.hdel("workspaces", ws)
+                await self._set_workspace_status(ws, WorkspaceStatus.CLOSED)
+
             except Exception as e:
-                errors["server_app_controller"] = traceback.format_exc()
-        # Mark the workspace as ready
-        workspace_info.status = {"ready": True, "errors": errors}
-        await self._redis.hset(
-            "workspaces", workspace_info.id, workspace_info.model_dump_json()
-        )
-        await self._event_bus.emit("workspace_ready", workspace_info.model_dump())
-        logger.info("Workspace %s prepared.", workspace_info.id)
+                error_msg = str(e)
+                await self._set_workspace_status(
+                    ws, WorkspaceStatus.CLOSED, error=error_msg
+                )
+                logger.error(f"Failed to unload workspace: {e}")
+                raise
 
     async def _close_workspace(self, workspace_info: WorkspaceInfo):
         """Archive the workspace."""
@@ -1860,20 +2000,59 @@ class WorkspaceManager:
 
     @schema_method
     async def wait_until_ready(self, timeout: Optional[int] = 60, context=None):
-        """Wait for the workspace to be ready."""
-        workspace_info = await self._redis.hget("workspaces", context["ws"])
-        workspace_info = WorkspaceInfo.model_validate(
-            json.loads(workspace_info.decode())
-        )
-        if workspace_info.status:
-            return workspace_info.status
-        try:
-            await self._event_bus.wait_for(
-                "workspace_ready", match={"id": context["ws"]}, timeout=timeout
-            )
-            return workspace_info.status
-        except asyncio.TimeoutError:
-            raise TimeoutError(f"Workspace {context['ws']} is not ready, timeout.")
+        """Wait for the workspace to be ready with status checking."""
+        ws = context["ws"]
+        status_key = f"workspace_status:{ws}"
+
+        async def check_status():
+            status_data = await self._redis.get(status_key)
+            if not status_data:
+                return None
+            return json.loads(status_data.decode())
+
+        start_time = time.time()
+        while True:
+            status_data = await check_status()
+
+            if not status_data:
+                raise RuntimeError(f"Workspace {ws} status not found")
+
+            current_status = status_data["status"]
+
+            if current_status == WorkspaceStatus.READY:
+                # Ensure the status object has an errors field
+                if "errors" not in status_data:
+                    status_data["errors"] = None
+                return {"ready": True, "status": status_data}
+
+            if current_status == WorkspaceStatus.LOADING:
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(f"Workspace {ws} preparation timed out")
+                # Continue waiting
+
+            elif current_status == WorkspaceStatus.CLOSED:
+                # For daemon apps, try to prepare the workspace
+                workspace_info = await self.load_workspace_info(ws)
+                if workspace_info and workspace_info.persistent:
+                    await self._prepare_workspace(workspace_info)
+                    continue
+
+                if status_data.get("error"):
+                    raise RuntimeError(
+                        f"Workspace preparation failed: {status_data['error']}"
+                    )
+                raise RuntimeError(f"Workspace {ws} is closed")
+
+            elif current_status == WorkspaceStatus.UNLOADING:
+                raise RuntimeError(f"Workspace {ws} is being unloaded")
+
+            # Wait for status change event
+            try:
+                await self._event_bus.wait_for(
+                    "workspace_status_changed", match={"id": ws}, timeout=1.0
+                )
+            except asyncio.TimeoutError:
+                continue
 
     @schema_method
     async def cleanup(
@@ -1965,3 +2144,76 @@ class WorkspaceManager:
         }
         interface["config"].update(self._server_info)
         return interface
+
+    async def delete_client(
+        self,
+        client_id: str,
+        workspace: str,
+        user_info: UserInfo,
+        unload: bool = False,
+        context: Optional[dict] = None,
+    ):
+        """Delete all services associated with the given client_id in the specified workspace."""
+        assert context is not None
+        assert isinstance(user_info, UserInfo)
+        self.validate_context(context, permission=UserPermission.admin)
+        cws = workspace
+        validate_key_part(client_id)
+        if "/" in client_id:
+            _cws, client_id = client_id.split("/")
+            assert _cws == cws, f"Client id workspace mismatch, {_cws} != {cws}"
+
+        async with self._workspace_lock(cws, "delete_client") as prev_status:
+            # Define a pattern to match all services for the given client_id in the current workspace
+            pattern = f"services:*|*:{cws}/{client_id}:*@*"
+
+            # Ensure the pattern is secure
+            assert not any(
+                char in pattern for char in "{}"
+            ), "Query pattern contains invalid characters."
+
+            keys = await self._redis.keys(pattern)
+            logger.info(
+                f"Removing {len(keys)} services for client {client_id} in {cws}"
+            )
+            for key in keys:
+                await self._redis.delete(key)
+
+            await self._event_bus.emit(
+                "client_disconnected", {"id": client_id, "workspace": cws}
+            )
+            self._active_clients.labels(workspace=cws).dec()
+            self._active_svc.labels(workspace=cws).dec(len(keys) - 1)
+
+            if unload:
+                if await self._redis.hexists("workspaces", cws):
+                    if user_info.is_anonymous and cws == user_info.get_workspace():
+                        logger.info(
+                            f"Unloading workspace {cws} for anonymous user (while deleting client {client_id})"
+                        )
+                        # unload temporary workspace if the user exits
+                        await self.unload(context=context)
+                    else:
+                        logger.info(
+                            f"Unloading workspace {cws} for non-anonymous user (while deleting client {client_id})"
+                        )
+                        # otherwise delete the workspace if it is empty
+                        await self.unload_if_empty(context=context)
+                else:
+                    logger.warning(
+                        f"Workspace {cws} not found (while deleting client {client_id})"
+                    )
+
+    async def unload_if_empty(self, context=None):
+        """Delete the workspace if it is empty."""
+        self.validate_context(context, permission=UserPermission.admin)
+        workspace = context["ws"]
+        logger.debug(f"Attempting to unload workspace: {workspace}")
+        client_keys = await self._list_client_keys(workspace)
+        if not client_keys:
+            logger.info(f"No active clients in workspace {workspace}. Unloading...")
+            await self.unload(context=context)
+        else:
+            logger.warning(
+                f"Skip unloading workspace {workspace} because it is not empty, remaining clients: {client_keys[:10]}..."
+            )
