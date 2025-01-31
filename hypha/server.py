@@ -506,15 +506,10 @@ def get_argparser(add_help=True):
         action="store_true",
         help="start an interactive shell with the hypha store",
     )
-    return parser
-
-
-def add_interactive_arguments(parser):
-    """Add interactive-specific arguments to the parser."""
     parser.add_argument(
-        "--interactive-server",
+        "--enable-server",
         action="store_true",
-        help="start an interactive server with the hypha store",
+        help="enable server in interactive mode",
     )
     return parser
 
@@ -523,9 +518,6 @@ if __name__ == "__main__":
     import uvicorn
 
     arg_parser = get_argparser()
-
-    # Only add interactive server argument when running as main script
-    add_interactive_arguments(arg_parser)
 
     opt = arg_parser.parse_args()
 
@@ -541,7 +533,7 @@ if __name__ == "__main__":
         command.upgrade(alembic_cfg, "head")
 
     app = create_application(opt)
-    if opt.interactive or opt.interactive_server:
+    if opt.interactive:
         from hypha.interactive import start_interactive_shell
 
         asyncio.run(start_interactive_shell(app, opt))

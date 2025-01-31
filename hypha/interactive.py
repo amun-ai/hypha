@@ -40,6 +40,29 @@ Type 'exit()' or press Ctrl+D to quit.
     print(welcome_message)
 
 
+def is_port_in_use(host: str, port: int) -> bool:
+    """Check if a port is in use on the specified interface by attempting to bind to it.
+
+    Args:
+        host: Interface/host to check (e.g. 'localhost', '0.0.0.0')
+        port: Port number to check
+
+    Returns:
+        bool: True if port is in use, False otherwise
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        # Allow reuse of address to avoid "Address already in use" after testing
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host, port))
+            # Close and unbind the socket by returning False
+            return False
+        except socket.error:
+            return True
+
+
 async def start_interactive_shell(app: FastAPI, args: Any) -> None:
     """Start an interactive shell with the hypha store and server app."""
 
@@ -52,6 +75,11 @@ async def start_interactive_shell(app: FastAPI, args: Any) -> None:
     print("Initializing interactive shell...\n")
 
     async def start_server():
+        if is_port_in_use(args.host, int(args.port)):
+            print(
+                f"\nFailed to start server on port {args.port}. Port is already in use."
+            )
+            sys.exit(1)
         nonlocal server, server_task
         config = uvicorn.Config(app, host=args.host, port=int(args.port))
         server = uvicorn.Server(config)
@@ -60,7 +88,7 @@ async def start_interactive_shell(app: FastAPI, args: Any) -> None:
         await store.get_event_bus().wait_for_local("startup")
         print(f"\nServer started at http://{args.host}:{args.port}")
 
-    if args.interactive_server:
+    if args.enable_server:
         # Start the server in the background
         await start_server()
 

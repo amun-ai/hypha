@@ -16,7 +16,7 @@ def run_interactive_cli():
     opt = arg_parser.parse_args(sys.argv[1:])
 
     # Force interactive server mode
-    if not opt.interactive_server:
+    if not opt.interactive:
         opt.interactive = True
 
     app = create_application(opt)
@@ -25,16 +25,20 @@ def run_interactive_cli():
     asyncio.run(start_interactive_shell(app, opt))
 
 
-if __name__ == "__main__":
+def main():
     # Create the app instance
     arg_parser = get_argparser()
     opt = arg_parser.parse_args()
     app = create_application(opt)
 
-    if opt.interactive or opt.interactive_server:
+    if opt.interactive:
         asyncio.run(start_interactive_shell(app, opt))
     else:
         uvicorn.run(app, host=opt.host, port=int(opt.port))
+
+
+if __name__ == "__main__":
+    main()
 else:
     # Create the app instance when imported by uvicorn
     arg_parser = get_argparser(add_help=False)
