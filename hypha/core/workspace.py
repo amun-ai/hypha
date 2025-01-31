@@ -1136,22 +1136,38 @@ class WorkspaceManager:
         if "/" not in service.id:
             service.id = f"{ws}/{service.id}"
         assert ":" in service.id, "Service id info must contain ':'"
-        # service.type be only * or a string not contain |, :, @ or #
-        assert service.type == "*" or re.match(
-            r"^[^|:@#]*$", service.type
-        ), f"Invalid service type: {service.type}, it must be a letters, optionally with *, hyphens, underscores, and numbers."
-        # assert re.match(r"^[] , service.type), f"Invalid service type: {service.type}, it must be a letters, optionally with *, hyphens, underscores, and numbers."
-        service.app_id = service.app_id or "*"
-        service.type = service.type or "*"
 
         service_name = service.id.split(":")[1]
         service.name = service.name or service_name
         workspace = service.id.split("/")[0]
+
         # Store all the info for client's built-in services
         if service_name == "built-in" and service.type == "built-in":
             service.config.created_by = user_info.model_dump()
         else:
             service.config.created_by = {"id": user_info.id}
+
+        # Check for existing singleton services
+        if service.config.singleton:
+            key = f"services:*|*:{workspace}/*:{service_name}@*"
+            peer_keys = await self._redis.keys(key)
+            if len(peer_keys) > 0:
+                # If it's the same service being re-registered, allow it
+                for peer_key in peer_keys:
+                    peer_service = await self._redis.hgetall(peer_key)
+                    peer_service = ServiceInfo.from_redis_dict(peer_service)
+                    if (
+                        peer_service.config.singleton
+                        and peer_service.id == service.id
+                        and peer_service.app_id == service.app_id
+                    ):
+                        # Same service being re-registered, allow it
+                        await self._redis.delete(peer_key)
+                        break
+                    else:
+                        raise ValueError(
+                            f"A singleton service with the same name ({service_name}) already exists in the workspace ({workspace}), please remove it first or use a different name."
+                        )
 
         key = f"services:*|*:{workspace}/*:{service_name}@*"
         peer_keys = await self._redis.keys(key)
