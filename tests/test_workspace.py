@@ -174,4 +174,4 @@ async def test_workspace_ready(fastapi_server):
         }
     )
     result = await server.wait_until_ready(timeout=1)
-    assert result and result.ready is True and not result.errors
+    assert result and result.ready is True and "errors" not in result
