@@ -221,22 +221,10 @@ async def test_daemon_apps(fastapi_server, test_user_token_6, root_user_token):
 
         # Stop the app
         await controller.stop(config.id)
-        print("app stopped")
-
-    await asyncio.sleep(0.1)
-
-    # Unload the workspace
-    # async with connect_to_server(
-    #     {"server_url": WS_SERVER_URL, "client_id": "admin", "token": root_user_token}
-    # ) as root:
-    #     admin = await root.get_service("admin-utils")
-    #     print("force unloading workspace", workspace_id)
-    #     await admin.unload_workspace(workspace_id, wait=True, timeout=60)
-    #     workspaces = await admin.list_workspaces()
-    #     assert not find_item(workspaces, "id", workspace_id)
+        print(f"app {config.id} stopped")
 
     # Reconnect with the same token to verify daemon app persistence
-    print("reconnecting with the same token to verify daemon app persistence")
+    print("Reconnecting with the same token to verify daemon app persistence")
     async with connect_to_server(
         {
             "name": "test client",

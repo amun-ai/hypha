@@ -1432,6 +1432,7 @@ class WorkspaceManager:
             except Exception as e:
                 logger.error(f"Failed to load workspace info from Redis: {e}")
 
+            logger.info(f"Workspace {workspace} not found in Redis, trying to load from S3")
             # If we get here, either workspace doesn't exist or failed to load
             if not load:
                 raise KeyError(f"Workspace not found: {workspace}")
