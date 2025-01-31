@@ -32,12 +32,18 @@ async def test_singleton_service(fastapi_server, test_user_token):
                 },
             }
         )
-    
+
         # Registering the same service from another client should raise an error
         async with connect_to_server(
-            {"name": "test client 2", "server_url": SERVER_URL, "token": test_user_token}
+            {
+                "name": "test client 2",
+                "server_url": SERVER_URL,
+                "token": test_user_token,
+            }
         ) as api:
-            with pytest.raises(Exception, match=".*A singleton service with the same name.*"):
+            with pytest.raises(
+                Exception, match=".*A singleton service with the same name.*"
+            ):
                 await api.register_service(
                     {
                         "id": "test-service-1",
