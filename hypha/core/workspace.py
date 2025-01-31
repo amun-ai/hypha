@@ -1421,32 +1421,7 @@ class WorkspaceManager:
     async def load_workspace_info(self, workspace: str, load=True) -> WorkspaceInfo:
         """Load info of the current workspace from the redis store."""
         assert workspace is not None
-
-        # Try to acquire a distributed lock for this workspace
-        lock_key = f"workspace_lock:{workspace}"
-        lock_value = random_id(readable=False)  # Generate unique lock identifier
-        lock_timeout = 30  # 30 seconds timeout
-
-        async def acquire_lock():
-            # Use SET NX with expiry to atomically acquire lock
-            return await self._redis.set(lock_key, lock_value, nx=True, ex=lock_timeout)
-
-        async def release_lock():
-            # Only delete if we still own the lock
-            current_value = await self._redis.get(lock_key)
-            if current_value and current_value.decode() == lock_value:
-                await self._redis.delete(lock_key)
-
         try:
-            # Wait for lock with timeout
-            start_time = time.time()
-            while time.time() - start_time < lock_timeout:
-                if await acquire_lock():
-                    break
-                await asyncio.sleep(0.1)
-            else:
-                raise TimeoutError(f"Timeout waiting for workspace lock: {workspace}")
-
             # Check if workspace exists in Redis
             try:
                 workspace_info = await self._redis.hget("workspaces", workspace)
@@ -1493,10 +1468,6 @@ class WorkspaceManager:
         except Exception as e:
             logger.error(f"Failed to load workspace info: {e}")
             raise e
-
-        finally:
-            # Always release lock when done
-            await release_lock()
 
     @schema_method
     async def get_workspace_info(
@@ -1825,29 +1796,7 @@ class WorkspaceManager:
         """Unload the workspace."""
         self.validate_context(context, permission=UserPermission.admin)
         ws = context["ws"]
-
-        lock_key = f"workspace_lock:{ws}"
-        lock_value = random_id(readable=False)
-        lock_timeout = 30
-
-        async def acquire_lock():
-            return await self._redis.set(lock_key, lock_value, nx=True, ex=lock_timeout)
-
-        async def release_lock():
-            current_value = await self._redis.get(lock_key)
-            if current_value and current_value.decode() == lock_value:
-                await self._redis.delete(lock_key)
-
         try:
-            # Wait for lock with timeout
-            start_time = time.time()
-            while time.time() - start_time < lock_timeout:
-                if await acquire_lock():
-                    break
-                await asyncio.sleep(0.1)
-            else:
-                raise TimeoutError(f"Timeout waiting for workspace lock: {ws}")
-
             if not await self._redis.hexists("workspaces", ws):
                 logger.warning(f"Workspace {ws} has already been unloaded.")
                 return
@@ -1890,9 +1839,6 @@ class WorkspaceManager:
         except Exception as e:
             logger.error(f"Failed to unload workspace: {e}")
             raise e
-
-        finally:
-            await release_lock()
 
     async def _prepare_workspace(self, workspace_info: WorkspaceInfo):
         """Prepare the workspace."""

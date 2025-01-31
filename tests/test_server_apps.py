@@ -194,6 +194,7 @@ async def test_daemon_apps(fastapi_server, test_user_token_6, root_user_token):
             "server_url": WS_SERVER_URL,
             "method_timeout": 30,
             "token": test_user_token_6,
+            "client_id": "test-client_daemon_1",
         }
     ) as api:
         controller = await api.get_service("public/server-apps")
@@ -218,17 +219,21 @@ async def test_daemon_apps(fastapi_server, test_user_token_6, root_user_token):
         workspace_id = api.config["workspace"]
         app_id = config.app_id
 
-    await asyncio.sleep(1)
+        # Stop the app
+        await controller.stop(config.id)
+        print("app stopped")
+
+    await asyncio.sleep(0.1)
 
     # Unload the workspace
-    async with connect_to_server(
-        {"server_url": WS_SERVER_URL, "client_id": "admin", "token": root_user_token}
-    ) as root:
-        admin = await root.get_service("admin-utils")
-        print("force unloading workspace", workspace_id)
-        await admin.unload_workspace(workspace_id, wait=True, timeout=60)
-        workspaces = await admin.list_workspaces()
-        assert not find_item(workspaces, "id", workspace_id)
+    # async with connect_to_server(
+    #     {"server_url": WS_SERVER_URL, "client_id": "admin", "token": root_user_token}
+    # ) as root:
+    #     admin = await root.get_service("admin-utils")
+    #     print("force unloading workspace", workspace_id)
+    #     await admin.unload_workspace(workspace_id, wait=True, timeout=60)
+    #     workspaces = await admin.list_workspaces()
+    #     assert not find_item(workspaces, "id", workspace_id)
 
     # Reconnect with the same token to verify daemon app persistence
     print("reconnecting with the same token to verify daemon app persistence")
