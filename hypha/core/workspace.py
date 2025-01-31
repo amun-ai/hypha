@@ -1826,16 +1826,24 @@ class WorkspaceManager:
                 logger.info(f"Released lock for workspace {workspace_id}")
 
     async def _set_workspace_status(
-        self, workspace_id: str, status: str, error: str = None
+        self,
+        workspace_id: str,
+        status: str,
+        error: Optional[str] = None,
+        errors: Optional[dict] = None,
     ):
-        """Set workspace status in Redis."""
-        status_key = f"workspace_status:{workspace_id}"
-        status_data = {"status": status, "timestamp": time.time(), "error": error}
-        await self._redis.set(status_key, json.dumps(status_data))
-        # Emit event for status change
+        """Set workspace status."""
+        status_data = {
+            "status": status,
+            "timestamp": time.time(),
+            "error": error,
+            "errors": errors,
+        }
+        await self._redis.set(
+            f"workspace_status:{workspace_id}", json.dumps(status_data)
+        )
         await self._event_bus.emit(
-            "workspace_status_changed",
-            {"id": workspace_id, "status": status, "error": error},
+            "workspace_status_changed", {"id": workspace_id, "status": status_data}
         )
 
     async def _prepare_workspace(self, workspace_info: WorkspaceInfo):
@@ -1872,9 +1880,13 @@ class WorkspaceManager:
                     "workspaces", workspace_info.id, workspace_info.model_dump_json()
                 )
 
+                # Set workspace status with errors field
                 await self._set_workspace_status(
-                    workspace_info.id, WorkspaceStatus.READY
+                    workspace_info.id,
+                    WorkspaceStatus.READY,
+                    errors=errors if errors else None,
                 )
+
                 await self._event_bus.emit(
                     "workspace_ready", workspace_info.model_dump()
                 )
@@ -1992,6 +2004,9 @@ class WorkspaceManager:
             current_status = status_data["status"]
 
             if current_status == WorkspaceStatus.READY:
+                # Ensure the status object has an errors field
+                if "errors" not in status_data:
+                    status_data["errors"] = None
                 return {"ready": True, "status": status_data}
 
             if current_status == WorkspaceStatus.LOADING:
@@ -2000,6 +2015,12 @@ class WorkspaceManager:
                 # Continue waiting
 
             elif current_status == WorkspaceStatus.CLOSED:
+                # For daemon apps, try to prepare the workspace
+                workspace_info = await self.load_workspace_info(ws)
+                if workspace_info and workspace_info.persistent:
+                    await self._prepare_workspace(workspace_info)
+                    continue
+
                 if status_data.get("error"):
                     raise RuntimeError(
                         f"Workspace preparation failed: {status_data['error']}"
