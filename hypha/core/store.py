@@ -470,7 +470,7 @@ class RedisStore:
         self._tracker = ActivityTracker(check_interval=self._activity_check_interval)
         self._tracker_task = asyncio.create_task(self._tracker.monitor_entities())
         RedisRPCConnection.set_activity_tracker(self._tracker)
-        self._tracker.register_entity_removed_callback(self._remove_tracker_entity)
+        # self._tracker.register_entity_removed_callback(self._remove_tracker_entity)
 
         await self.setup_root_user()
         await self.check_and_cleanup_servers()
