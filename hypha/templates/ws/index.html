@@ -1140,6 +1140,7 @@
             files,
             onShowDetails,
             onInstallApp,
+            setClients,
         }) => {
         
             const [workspaces, setWorkspaces] = React.useState([]);
@@ -1389,6 +1390,26 @@
                                         onClick={() => handleBookmarkWorkspace(currentWorkspaceInfo.id)}
                                     >
                                         <i className="fas fa-bookmark fa-2x"></i>
+                                    </button>
+
+                                    {/* Add cleanup button - new code */}
+                                    <button
+                                        className="absolute top-4 right-16 text-blue-400 hover:text-blue-500 transition duration-300 flex items-center"
+                                        onClick={async () => {
+                                            try {
+                                                await window.remoteServer.cleanup();
+                                                // Refresh clients list after cleanup
+                                                const updatedClients = await ws.listClients();
+                                                setClients(updatedClients);
+                                                alert('Workspace cleanup completed successfully!');
+                                            } catch (error) {
+                                                console.error('Cleanup failed:', error);
+                                                alert('Failed to cleanup workspace: ' + error.message);
+                                            }
+                                        }}
+                                        title="Remove dead clients and cleanup workspace"
+                                    >
+                                        <i className="fas fa-broom fa-2x"></i>
                                     </button>
                                 
                                     {/* Header Section */}
@@ -1882,6 +1903,7 @@
                         files={files}
                         onShowDetails={onShowDetails}
                         onInstallApp={onInstallApp}
+                        setClients={setClients}
                     />
                     {selectedService && <Modal serviceInfo={selectedService} onClose={() => setSelectedService(null)} />}
                 </div>
