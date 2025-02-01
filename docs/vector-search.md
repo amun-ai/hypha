@@ -67,7 +67,7 @@ async def main():
                 },
             },
             {
-                "type": "STRING",
+                "type": "TEXT",
                 "name": "source",
             },
             {
