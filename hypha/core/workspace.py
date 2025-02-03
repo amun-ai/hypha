@@ -1445,6 +1445,39 @@ class WorkspaceManager:
         """Load info of the current workspace from the redis store."""
         assert workspace is not None
 
+        # First try to get workspace info from Redis without lock
+        try:
+            workspace_info = await self._redis.hget("workspaces", workspace)
+            if workspace_info is not None:
+                workspace_info = WorkspaceInfo.model_validate(
+                    json.loads(workspace_info.decode())
+                )
+                # If workspace exists but isn't ready, wait for preparation
+                status_data = await self._redis.get(
+                    f"workspace_status:{workspace}"
+                )
+                if status_data:
+                    status = json.loads(status_data.decode())
+                    if status["status"] == WorkspaceStatus.LOADING:
+                        # Already being prepared, just return
+                        return workspace_info
+
+                # Set loading status if not already loading
+                await self._set_workspace_status(
+                    workspace, WorkspaceStatus.LOADING
+                )
+                return workspace_info
+        except Exception as e:
+            logger.error(f"Failed to load workspace info from Redis: {e}")
+
+        if not load:
+            raise KeyError(f"Workspace not found: {workspace}")
+
+        logger.info(
+            f"Workspace {workspace} not found in Redis, trying to load from S3"
+        )
+
+        # Only use lock when loading from S3
         async with self._workspace_lock(workspace, "load") as prev_status:
             if prev_status == WorkspaceStatus.UNLOADING:
                 raise RuntimeError(
@@ -1452,38 +1485,6 @@ class WorkspaceManager:
                 )
 
             try:
-                # Check if workspace exists in Redis
-                try:
-                    workspace_info = await self._redis.hget("workspaces", workspace)
-                    if workspace_info is not None:
-                        workspace_info = WorkspaceInfo.model_validate(
-                            json.loads(workspace_info.decode())
-                        )
-                        # If workspace exists but isn't ready, wait for preparation
-                        status_data = await self._redis.get(
-                            f"workspace_status:{workspace}"
-                        )
-                        if status_data:
-                            status = json.loads(status_data.decode())
-                            if status["status"] == WorkspaceStatus.LOADING:
-                                # Already being prepared, just return
-                                return workspace_info
-
-                        # Set loading status if not already loading
-                        await self._set_workspace_status(
-                            workspace, WorkspaceStatus.LOADING
-                        )
-                        return workspace_info
-                except Exception as e:
-                    logger.error(f"Failed to load workspace info from Redis: {e}")
-
-                if not load:
-                    raise KeyError(f"Workspace not found: {workspace}")
-
-                logger.info(
-                    f"Workspace {workspace} not found in Redis, trying to load from S3"
-                )
-
                 if not self._s3_controller:
                     raise KeyError(
                         f"Workspace ({workspace}) not found and workspace loader not configured (requires s3)."
@@ -2163,46 +2164,45 @@ class WorkspaceManager:
             _cws, client_id = client_id.split("/")
             assert _cws == cws, f"Client id workspace mismatch, {_cws} != {cws}"
 
-        async with self._workspace_lock(cws, "delete_client") as prev_status:
-            # Define a pattern to match all services for the given client_id in the current workspace
-            pattern = f"services:*|*:{cws}/{client_id}:*@*"
+        # Define a pattern to match all services for the given client_id in the current workspace
+        pattern = f"services:*|*:{cws}/{client_id}:*@*"
 
-            # Ensure the pattern is secure
-            assert not any(
-                char in pattern for char in "{}"
-            ), "Query pattern contains invalid characters."
+        # Ensure the pattern is secure
+        assert not any(
+            char in pattern for char in "{}"
+        ), "Query pattern contains invalid characters."
 
-            keys = await self._redis.keys(pattern)
-            logger.info(
-                f"Removing {len(keys)} services for client {client_id} in {cws}"
-            )
-            for key in keys:
-                await self._redis.delete(key)
+        keys = await self._redis.keys(pattern)
+        logger.info(
+            f"Removing {len(keys)} services for client {client_id} in {cws}"
+        )
+        for key in keys:
+            await self._redis.delete(key)
 
-            await self._event_bus.emit(
-                "client_disconnected", {"id": client_id, "workspace": cws}
-            )
-            self._active_clients.labels(workspace=cws).dec()
-            self._active_svc.labels(workspace=cws).dec(len(keys) - 1)
+        await self._event_bus.emit(
+            "client_disconnected", {"id": client_id, "workspace": cws}
+        )
+        self._active_clients.labels(workspace=cws).dec()
+        self._active_svc.labels(workspace=cws).dec(len(keys) - 1)
 
-            if unload:
-                if await self._redis.hexists("workspaces", cws):
-                    if user_info.is_anonymous and cws == user_info.get_workspace():
-                        logger.info(
-                            f"Unloading workspace {cws} for anonymous user (while deleting client {client_id})"
-                        )
-                        # unload temporary workspace if the user exits
-                        await self.unload(context=context)
-                    else:
-                        logger.info(
-                            f"Unloading workspace {cws} for non-anonymous user (while deleting client {client_id})"
-                        )
-                        # otherwise delete the workspace if it is empty
-                        await self.unload_if_empty(context=context)
-                else:
-                    logger.warning(
-                        f"Workspace {cws} not found (while deleting client {client_id})"
+        if unload:
+            if await self._redis.hexists("workspaces", cws):
+                if user_info.is_anonymous and cws == user_info.get_workspace():
+                    logger.info(
+                        f"Unloading workspace {cws} for anonymous user (while deleting client {client_id})"
                     )
+                    # unload temporary workspace if the user exits
+                    await self.unload(context=context)
+                else:
+                    logger.info(
+                        f"Unloading workspace {cws} for non-anonymous user (while deleting client {client_id})"
+                    )
+                    # otherwise delete the workspace if it is empty
+                    await self.unload_if_empty(context=context)
+            else:
+                logger.warning(
+                    f"Workspace {cws} not found (while deleting client {client_id})"
+                )
 
     async def unload_if_empty(self, context=None):
         """Delete the workspace if it is empty."""
