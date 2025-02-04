@@ -1449,15 +1449,6 @@ class WorkspaceManager:
     async def load_workspace_info(self, workspace: str, load=True) -> WorkspaceInfo:
         """Load info of the current workspace from the redis store."""
         assert workspace is not None
-        if workspace.startswith("ws-anon-"):
-            logger.debug(f"Creating ephemeral anonymous workspace: {workspace}")
-            return WorkspaceInfo(
-                id=workspace,
-                name=workspace,
-                description="Anonymous workspace",
-                read_only=True,
-                persistent=False,
-            )
 
         # First try to get workspace info from Redis without lock
         try:
@@ -1485,6 +1476,20 @@ class WorkspaceManager:
 
         logger.info(f"Workspace {workspace} not found in Redis, trying to load from S3")
 
+        if workspace.startswith("ws-anon-"):
+            logger.debug(f"Creating ephemeral anonymous workspace: {workspace}")
+            workspace_info = WorkspaceInfo(
+                id=workspace,
+                name=workspace,
+                description="Anonymous workspace",
+                read_only=True,
+                persistent=False,
+            )
+            await self._redis.hset(
+                "workspaces", workspace_info.id, workspace_info.model_dump_json()
+            )
+            return workspace_info
+        
         # Only use lock when loading from S3
         async with self._workspace_lock(workspace, "load") as prev_status:
             if prev_status == WorkspaceStatus.UNLOADING:
@@ -1988,26 +1993,6 @@ class WorkspaceManager:
         """Unload the workspace with proper locking."""
         self.validate_context(context, permission=UserPermission.admin)
         ws = context["ws"]
-        if ws.startswith("ws-anon-"):
-            # For anonymous workspaces, we need to be more careful about unloading
-            client_keys = await self._list_client_keys(ws)
-            service_keys = await self._redis.keys(f"services:*|*:{ws}/*:*@*")
-
-            # Only proceed with unload if there are no active clients or services (except built-in)
-            if (
-                len(service_keys) <= 1 and len(client_keys) <= 1
-            ):  # Only built-in service/client remains
-                logger.info(f"Unloading empty anonymous workspace {ws}")
-                # Only delete keys related to the specific client/service being removed
-                keys = await self._redis.keys(f"{ws}:*")
-                for key in keys:
-                    await self._redis.delete(key)
-                return
-            else:
-                logger.info(
-                    f"Keeping anonymous workspace {ws} alive with {len(service_keys)} services and {len(client_keys)} clients"
-                )
-                return
 
         async with self._workspace_lock(ws, "unload") as prev_status:
             if prev_status == WorkspaceStatus.LOADING:
@@ -2098,9 +2083,6 @@ class WorkspaceManager:
     async def wait_until_ready(self, timeout: Optional[int] = 60, context=None):
         """Wait for the workspace to be ready with status checking."""
         ws = context["ws"]
-
-        if ws.startswith("ws-anon-"):
-            return {"ready": True, "status": WorkspaceStatus.READY}
         status_key = f"workspace_status:{ws}"
 
         async def check_status():
@@ -2281,21 +2263,7 @@ class WorkspaceManager:
         current_clients = await self._list_client_keys(cws)
         if len(current_clients) <= 1:  # We're about to remove the last client
             if unload:
-                # Add special handling for anonymous workspaces
-                if cws.startswith("ws-anon-"):
-                    logger.info(f"Checking anonymous workspace {cws} for unloading")
-                    # For anonymous workspaces, only unload if this is truly the last client
-                    # and there are no remaining services
-                    service_keys = await self._redis.keys(f"services:*|*:{cws}/*:*@*")
-                    if len(service_keys) <= 1:  # Only the built-in service remains
-                        logger.info(f"Unloading empty anonymous workspace {cws}")
-                        await self.unload(context=context)
-                    else:
-                        logger.info(
-                            f"Keeping anonymous workspace {cws} alive with {len(service_keys)} services"
-                        )
-
-                elif await self._redis.hexists("workspaces", cws):
+                if await self._redis.hexists("workspaces", cws):
                     if user_info.is_anonymous and cws == user_info.get_workspace():
                         logger.info(
                             f"Unloading workspace {cws} for anonymous user (while deleting client {client_id})"
