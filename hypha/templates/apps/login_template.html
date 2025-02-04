@@ -143,8 +143,8 @@
                 }, 2000);
             }
             catch(e){
-                console.error("Failed to generate token: ", response.status, response.statusText);
-                alert(`Failed to generate token. Please try again later. (${response.status}: ${response.statusText})`);
+                console.error(e);
+                document.getElementById("toast").innerHTML = `Failed to generate token. Please try again later. (${e})`;
             }
         };
 
