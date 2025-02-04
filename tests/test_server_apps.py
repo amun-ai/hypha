@@ -309,7 +309,11 @@ async def test_non_persistent_workspace(fastapi_server, root_user_token):
     )
     workspace = api.config["workspace"]
 
-    # It should exist in the stats
+    # Disconnect the client and wait for workspace cleanup
+    await api.disconnect()
+    await asyncio.sleep(0.5)  # Give time for workspace cleanup
+
+    # Now check if the workspace exists in the stats
     async with connect_to_server(
         {"server_url": WS_SERVER_URL, "client_id": "admin", "token": root_user_token}
     ) as root:

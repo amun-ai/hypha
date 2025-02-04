@@ -1489,7 +1489,7 @@ class WorkspaceManager:
                 "workspaces", workspace_info.id, workspace_info.model_dump_json()
             )
             return workspace_info
-        
+
         # Only use lock when loading from S3
         async with self._workspace_lock(workspace, "load") as prev_status:
             if prev_status == WorkspaceStatus.UNLOADING:
@@ -1860,13 +1860,13 @@ class WorkspaceManager:
                             ex=timeout,
                         )
 
-                        if acquired:
-                            # Successfully acquired lock
-                            break
-                        else:
-                            # Lock is held by someone else - wait for it to expire
-                            await asyncio.sleep(0.1)
-                            continue
+                    if acquired:
+                        # Successfully acquired lock
+                        break
+                    else:
+                        # Lock is held by someone else - wait for it to expire
+                        await asyncio.sleep(0.1)
+                        continue
 
                 # Wait for notification or timeout
                 try:
