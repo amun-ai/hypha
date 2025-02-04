@@ -427,7 +427,7 @@ class WorkspaceManager:
             user_workspace.config["bookmarks"] = []
         if item["bookmark_type"] == "workspace":
             workspace = item["id"]
-            workspace = await self.load_workspace_info(workspace)
+            workspace = await self.load_workspace_info(workspace, load=True)
             user_workspace.config["bookmarks"] = [
                 b for b in user_workspace.config["bookmarks"] if b["id"] != workspace.id
             ]
