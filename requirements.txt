@@ -11,7 +11,7 @@ numpy>=1.21.6
 playwright==1.46.0
 pydantic[email]==2.8.2
 pymultihash==0.8.2
-python-dotenv==0.21.1
+python-dotenv==1.0.1
 python-jose==3.3.0
 python-multipart==0.0.9
 pyyaml==6.0.1
