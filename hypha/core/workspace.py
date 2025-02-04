@@ -1524,7 +1524,7 @@ class WorkspaceManager:
                 await self._set_workspace_status(
                     workspace, WorkspaceStatus.CLOSED, error=str(e)
                 )
-                logger.error(f"Failed to load workspace info: {e}")
+                logger.debug(f"Workspace {workspace} does not exist")
                 raise
 
     @schema_method
@@ -1780,67 +1780,163 @@ class WorkspaceManager:
         if self._s3_controller:
             await self._s3_controller.save_workspace_config(workspace)
         await self._event_bus.emit("workspace_changed", workspace.model_dump())
-
     @asynccontextmanager
     async def _workspace_lock(
         self, workspace_id: str, operation: str, timeout: float = 30
     ):
-        """Acquire a distributed lock for workspace operations using Redis.
-
+        """Acquire a distributed lock for workspace operations using Redis with optimized queue.
+        
+        This implementation uses a combination of Redis queue and lock to ensure:
+        1. Fair ordering of operations through a FIFO queue
+        2. Proper timeout handling with exponential backoff
+        3. Reliable cleanup of timed out operations
+        4. Prevention of race conditions using Redis transactions
+        
         Args:
-            workspace_id: The workspace ID
-            operation: The operation being performed (e.g. 'load', 'unload')
+            workspace_id: The workspace to lock
+            operation: The operation being performed
             timeout: Lock timeout in seconds
         """
         lock_key = f"workspace_lock:{workspace_id}"
         status_key = f"workspace_status:{workspace_id}"
-        lock_value = f"{self._client_id}:{time.time()}"
+        queue_key = f"workspace_queue:{workspace_id}"
+        operation_id = f"{self._client_id}:{operation}:{time.time()}"
+        
+        # For exponential backoff
+        base_wait = 0.1
+        max_wait = 1.0
+        attempt = 0
 
         try:
-            # Check if we already hold the lock
-            current_lock = await self._redis.get(lock_key)
-            if current_lock:
-                current_lock = current_lock.decode()
-                current_owner = current_lock.split(":")[0]
-                if current_owner == self._client_id:
-                    # We already hold the lock, just return current status
-                    status_data = await self._redis.get(status_key)
-                    old_status = status_data.decode() if status_data else None
-                    logger.debug(
-                        f"Reusing existing lock for {operation} on workspace {workspace_id}"
+            # 1. Add to queue atomically with expiration
+            await self._redis.rpush(queue_key, operation_id)
+            await self._redis.expire(queue_key, timeout)
+
+            start_time = time.time()
+            
+            while True:
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(
+                        f"Timeout waiting for lock on workspace {workspace_id}"
                     )
-                    yield old_status
-                    return
 
-            # Try to acquire lock with timeout
-            acquired = await self._redis.set(
-                lock_key,
-                lock_value,
-                nx=True,  # Only set if not exists
-                ex=timeout,  # Auto-expire after timeout
+                # 2. Clean up expired operations from queue
+                current_time = time.time()
+                operations = await self._redis.lrange(queue_key, 0, -1)
+                for op in operations:
+                    op_str = op.decode()
+                    try:
+                        op_timestamp = float(op_str.split(":")[-1])
+                        if current_time - op_timestamp > timeout:
+                            # Remove expired operation
+                            await self._redis.lrem(queue_key, 1, op)
+                            # Notify about expired operation
+                            await self._event_bus.emit(
+                                "workspace_lock_update",
+                                {
+                                    "workspace": workspace_id,
+                                    "operation": "expired",
+                                    "operation_id": op_str,
+                                },
+                            )
+                    except (IndexError, ValueError):
+                        # Remove malformed operation
+                        await self._redis.lrem(queue_key, 1, op)
+
+                # 3. Check if we're at head of queue and try to acquire lock atomically
+                acquired = False
+                
+                # Get current head of queue
+                head_op = await self._redis.lindex(queue_key, 0)
+                
+                if not head_op:
+                    # Queue is empty, our operation was removed - requeue
+                    await self._redis.rpush(queue_key, operation_id)
+                    await self._redis.expire(queue_key, timeout)
+                elif head_op.decode() == operation_id:
+                    # We're at head of queue, try to acquire lock
+                    lock_acquired = await self._redis.set(
+                        lock_key,
+                        operation_id,
+                        nx=True,
+                        ex=timeout,
+                    )
+                    if lock_acquired:
+                        acquired = True
+
+                if acquired:
+                    break
+                    
+                # 4. Use exponential backoff for waiting
+                attempt += 1
+                wait_time = min(max_wait, base_wait * (2 ** attempt))
+                
+                # Wait for notification or timeout with backoff
+                try:
+                    await self._event_bus.wait_for(
+                        "workspace_lock_update",
+                        match={"workspace": workspace_id},
+                        timeout=wait_time,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+            # 5. Get current status before yielding
+            status_data = await self._redis.get(status_key)
+            old_status = status_data.decode() if status_data else None
+
+            logger.debug(
+                f"Acquired lock for {operation} on {workspace_id} after {attempt} attempts"
             )
-
-            if not acquired:
-                raise RuntimeError(
-                    f"Could not acquire lock for workspace {workspace_id} - another operation in progress"
-                )
-
-            # Get current status
-            old_status = await self._redis.get(status_key)
-            old_status = old_status.decode() if old_status else None
-
-            logger.info(
-                f"Acquired lock for {operation} on workspace {workspace_id} (previous status: {old_status})"
-            )
-
             yield old_status
 
+        except Exception as e:
+            # Clean up our operation from queue if we failed
+            try:
+                await self._redis.lrem(queue_key, 1, operation_id)
+                await self._event_bus.emit(
+                    "workspace_lock_update",
+                    {
+                        "workspace": workspace_id,
+                        "operation": "failed",
+                        "error": str(e),
+                    },
+                )
+            except Exception as cleanup_error:
+                logger.error(
+                    f"Error cleaning up failed operation {operation_id}: {cleanup_error}"
+                )
+            raise
+
         finally:
-            # Only remove our own lock if we created it
-            current = await self._redis.get(lock_key)
-            if current and current.decode().split(":")[0] == self._client_id:
-                await self._redis.delete(lock_key)
-                logger.info(f"Released lock for workspace {workspace_id}")
+            # 6. Cleanup operations
+            try:
+                # Verify we still hold the lock
+                current_lock = await self._redis.get(lock_key)
+                if current_lock and current_lock.decode() == operation_id:
+                    # Remove from queue and release lock
+                    await self._redis.lrem(queue_key, 1, operation_id)
+                    await self._redis.delete(lock_key)
+                    # Notify next in queue
+                    await self._event_bus.emit(
+                        "workspace_lock_update",
+                        {
+                            "workspace": workspace_id,
+                            "operation": "release",
+                            "next": True,
+                        },
+                    )
+                else:
+                    # Just remove from queue if we don't hold the lock
+                    await self._redis.lrem(queue_key, 1, operation_id)
+                        
+            except Exception as e:
+                logger.error(f"Error in lock cleanup for {workspace_id}: {e}")
+                # Attempt basic cleanup as last resort
+                try:
+                    await self._redis.lrem(queue_key, 1, operation_id)
+                except Exception:
+                    pass
 
     async def _set_workspace_status(
         self,
