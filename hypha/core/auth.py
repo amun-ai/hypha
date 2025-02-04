@@ -445,7 +445,6 @@ def create_login_service(store):
         assert await redis.exists(
             LOGIN_KEY_PREFIX + key
         ), "Invalid key, key does not exist or expired"
-        # workspace = workspace or ("ws-user-" + user_id)
         kwargs = {
             "token": token,
             "workspace": workspace,

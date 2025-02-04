@@ -181,7 +181,7 @@ async def main():
 
     # Get an existing service
     # NOTE: You need to replace the service id with the actual id you obtained when registering the service
-    svc = await server.get_service("ws-user-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
+    svc = await server.get_service("ws-anon-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
     ret = await svc.hello("John")
     print(ret)
 if __name__ == "__main__":
@@ -199,7 +199,7 @@ def main():
 
     # Get an existing service
     # NOTE: You need to replace the service id with the actual id you obtained when registering the service
-    svc = server.get_service("ws-user-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
+    svc = server.get_service("ws-anon-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
     ret = svc.hello("John")
     print(ret)
 
@@ -235,7 +235,7 @@ Use the following code in JavaScript to connect to the server and access an exis
 async function main(){
     const server = await hyphaWebsocketClient.connectToServer({"server_url": "http://localhost:9527"})
     // NOTE: You need to replace the service id with the actual id you obtained when registering the service
-    const svc = await server.get_service("ws-user-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
+    const svc = await server.get_service("ws-anon-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
     const ret = await svc.hello("John")
     console.log(ret)
 }

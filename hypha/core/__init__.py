@@ -253,7 +253,10 @@ class UserInfo(BaseModel):
     )  # e.g. s3 credential
 
     def get_workspace(self):
-        return f"ws-user-{self.id}"
+        if self.is_anonymous:
+            return f"ws-anon-{self.id}"
+        else:
+            return f"ws-user-{self.id}"
 
     def get_metadata(self, key=None) -> Dict[str, Any]:
         """Return the metadata."""

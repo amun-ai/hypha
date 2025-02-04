@@ -402,6 +402,11 @@ class WorkspaceManager:
             raise ValueError(
                 "Workspace name must contain at least one hyphen (e.g. my-workspace)."
             )
+
+        if name.startswith("ws-anon-"):
+            raise ValueError(
+                "Anonymous workspace name (starting with ws-anon-) are reserved for internal use."
+            )
         # only allow numbers, letters in lower case and hyphens (no underscore)
         # use a regex to validate the workspace name
         pattern = re.compile(r"^[a-z0-9-|]*$")
@@ -1444,6 +1449,15 @@ class WorkspaceManager:
     async def load_workspace_info(self, workspace: str, load=True) -> WorkspaceInfo:
         """Load info of the current workspace from the redis store."""
         assert workspace is not None
+        if workspace.startswith("ws-anon-"):
+            logger.debug(f"Creating ephemeral anonymous workspace: {workspace}")
+            return WorkspaceInfo(
+                id=workspace,
+                name=workspace,
+                description="Anonymous workspace",
+                read_only=True,
+                persistent=False,
+            )
 
         # First try to get workspace info from Redis without lock
         try:
@@ -1453,9 +1467,7 @@ class WorkspaceManager:
                     json.loads(workspace_info.decode())
                 )
                 # If workspace exists but isn't ready, wait for preparation
-                status_data = await self._redis.get(
-                    f"workspace_status:{workspace}"
-                )
+                status_data = await self._redis.get(f"workspace_status:{workspace}")
                 if status_data:
                     status = json.loads(status_data.decode())
                     if status["status"] == WorkspaceStatus.LOADING:
@@ -1463,9 +1475,7 @@ class WorkspaceManager:
                         return workspace_info
 
                 # Set loading status if not already loading
-                await self._set_workspace_status(
-                    workspace, WorkspaceStatus.LOADING
-                )
+                await self._set_workspace_status(workspace, WorkspaceStatus.LOADING)
                 return workspace_info
         except Exception as e:
             logger.error(f"Failed to load workspace info from Redis: {e}")
@@ -1473,9 +1483,7 @@ class WorkspaceManager:
         if not load:
             raise KeyError(f"Workspace not found: {workspace}")
 
-        logger.info(
-            f"Workspace {workspace} not found in Redis, trying to load from S3"
-        )
+        logger.info(f"Workspace {workspace} not found in Redis, trying to load from S3")
 
         # Only use lock when loading from S3
         async with self._workspace_lock(workspace, "load") as prev_status:
@@ -1524,7 +1532,7 @@ class WorkspaceManager:
                 await self._set_workspace_status(
                     workspace, WorkspaceStatus.CLOSED, error=str(e)
                 )
-                logger.error(f"Failed to load workspace info: {e}")
+                logger.debug(f"Workspace {workspace} cannot be loaded: {e}")
                 raise
 
     @schema_method
@@ -1785,62 +1793,71 @@ class WorkspaceManager:
     async def _workspace_lock(
         self, workspace_id: str, operation: str, timeout: float = 30
     ):
-        """Acquire a distributed lock for workspace operations using Redis.
-
-        Args:
-            workspace_id: The workspace ID
-            operation: The operation being performed (e.g. 'load', 'unload')
-            timeout: Lock timeout in seconds
-        """
+        """Acquire a distributed lock for workspace operations using Redis with optimized queue."""
         lock_key = f"workspace_lock:{workspace_id}"
         status_key = f"workspace_status:{workspace_id}"
-        lock_value = f"{self._client_id}:{time.time()}"
+        queue_key = f"workspace_queue:{workspace_id}"
+        operation_id = f"{self._client_id}:{operation}:{time.time()}"
 
         try:
-            # Check if we already hold the lock
-            current_lock = await self._redis.get(lock_key)
-            if current_lock:
-                current_lock = current_lock.decode()
-                current_owner = current_lock.split(":")[0]
-                if current_owner == self._client_id:
-                    # We already hold the lock, just return current status
-                    status_data = await self._redis.get(status_key)
-                    old_status = status_data.decode() if status_data else None
-                    logger.debug(
-                        f"Reusing existing lock for {operation} on workspace {workspace_id}"
-                    )
-                    yield old_status
-                    return
+            # 1. Add to queue atomically
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.rpush(queue_key, operation_id).expire(
+                    queue_key, timeout
+                ).execute()
 
-            # Try to acquire lock with timeout
+            # 2. Wait for our turn using blocking pop
+            while True:
+                # Clean up expired items first
+                expired = time.time() - timeout
+                await self._redis.ltrim(queue_key, 0, 100)  # Keep recent 100 items
+
+                # Get current head
+                head_op = await self._redis.lindex(queue_key, 0)
+                if head_op and head_op.decode() == operation_id:
+                    break
+
+                # Wait for notification or timeout
+                await self._event_bus.wait_for(
+                    "workspace_lock_update",
+                    match={"workspace": workspace_id},
+                    timeout=1.0,
+                )
+
+            # 3. Acquire lock with atomic operation
             acquired = await self._redis.set(
                 lock_key,
-                lock_value,
-                nx=True,  # Only set if not exists
-                ex=timeout,  # Auto-expire after timeout
+                operation_id,
+                nx=True,
+                ex=timeout,
             )
 
             if not acquired:
-                raise RuntimeError(
-                    f"Could not acquire lock for workspace {workspace_id} - another operation in progress"
-                )
+                raise RuntimeError(f"Lock acquisition failed for {workspace_id}")
 
-            # Get current status
-            old_status = await self._redis.get(status_key)
-            old_status = old_status.decode() if old_status else None
+            # 4. Get current status before yielding
+            status_data = await self._redis.get(status_key)
+            old_status = status_data.decode() if status_data else None
 
-            logger.info(
-                f"Acquired lock for {operation} on workspace {workspace_id} (previous status: {old_status})"
-            )
-
+            logger.debug(f"Acquired lock for {operation} on {workspace_id}")
             yield old_status
 
         finally:
-            # Only remove our own lock if we created it
-            current = await self._redis.get(lock_key)
-            if current and current.decode().split(":")[0] == self._client_id:
-                await self._redis.delete(lock_key)
-                logger.info(f"Released lock for workspace {workspace_id}")
+            # 5. Cleanup operations
+            async with self._redis.pipeline(transaction=True) as pipe:
+                # Remove from queue
+                await pipe.lrem(queue_key, 1, operation_id)
+                # Release lock if still ours
+                current_lock = await self._redis.get(lock_key)
+                if current_lock and current_lock.decode() == operation_id:
+                    await pipe.delete(lock_key)
+                await pipe.execute()
+
+            # Notify next in queue
+            await self._event_bus.emit(
+                "workspace_lock_update",
+                {"workspace": workspace_id, "operation": "release"},
+            )
 
     async def _set_workspace_status(
         self,
@@ -1920,6 +1937,21 @@ class WorkspaceManager:
         """Unload the workspace with proper locking."""
         self.validate_context(context, permission=UserPermission.admin)
         ws = context["ws"]
+        if ws.startswith("ws-anon-"):
+            # If the workspace is anonymous, we need to unload all the clients
+            client_keys = await self._list_client_keys(ws)
+            if client_keys:
+                client_summary = ", ".join(client_keys[:10]) + (
+                    "..." if len(client_keys) > 10 else ""
+                )
+                logger.info(
+                    f"There are {len(client_keys)} clients in workspace {ws}: {client_summary}"
+                )
+                await self._event_bus.emit(f"unload:{ws}", "Unloading workspace: " + ws)
+            keys = await self._redis.keys(f"{ws}:*")
+            for key in keys:
+                await self._redis.delete(key)
+            return
 
         async with self._workspace_lock(ws, "unload") as prev_status:
             if prev_status == WorkspaceStatus.LOADING:
@@ -1934,7 +1966,6 @@ class WorkspaceManager:
 
                 await self._set_workspace_status(ws, WorkspaceStatus.UNLOADING)
 
-                # Rest of existing unload logic...
                 winfo = await self.load_workspace_info(ws, load=False)
                 winfo.status = None
                 await self._redis.hset("workspaces", winfo.id, winfo.model_dump_json())
@@ -1968,6 +1999,14 @@ class WorkspaceManager:
                 await self._close_workspace(winfo)
                 await self._redis.hdel("workspaces", ws)
                 await self._set_workspace_status(ws, WorkspaceStatus.CLOSED)
+
+                # Cleanup lock-related keys
+                lock_keys = [
+                    f"workspace_lock:{ws}",
+                    f"workspace_status:{ws}",
+                    f"workspace_queue:{ws}",
+                ]
+                await self._redis.delete(*lock_keys)  # Added cleanup
 
             except Exception as e:
                 error_msg = str(e)
@@ -2006,9 +2045,17 @@ class WorkspaceManager:
         status_key = f"workspace_status:{ws}"
 
         async def check_status():
+            # First check if workspace exists at all
+            if not await self._redis.hexists("workspaces", ws):
+                try:
+                    # Attempt to load workspace which will create status entry
+                    await self.load_workspace_info(ws)
+                except KeyError:
+                    return None
+
             status_data = await self._redis.get(status_key)
             if not status_data:
-                return None
+                return {"status": WorkspaceStatus.LOADING}  # Default status
             return json.loads(status_data.decode())
 
         start_time = time.time()
@@ -2016,14 +2063,11 @@ class WorkspaceManager:
             status_data = await check_status()
 
             if not status_data:
-                raise RuntimeError(f"Workspace {ws} status not found")
+                raise RuntimeError(f"Workspace {ws} not found")
 
-            current_status = status_data["status"]
+            current_status = status_data.get("status", WorkspaceStatus.LOADING)
 
             if current_status == WorkspaceStatus.READY:
-                # Ensure the status object has an errors field
-                if "errors" not in status_data:
-                    status_data["errors"] = None
                 return {"ready": True, "status": status_data}
 
             if current_status == WorkspaceStatus.LOADING:
@@ -2032,20 +2076,11 @@ class WorkspaceManager:
                 # Continue waiting
 
             elif current_status == WorkspaceStatus.CLOSED:
-                # For daemon apps, try to prepare the workspace
-                workspace_info = await self.load_workspace_info(ws)
-                if workspace_info and workspace_info.persistent:
-                    await self._prepare_workspace(workspace_info)
-                    continue
-
                 if status_data.get("error"):
                     raise RuntimeError(
                         f"Workspace preparation failed: {status_data['error']}"
                     )
                 raise RuntimeError(f"Workspace {ws} is closed")
-
-            elif current_status == WorkspaceStatus.UNLOADING:
-                raise RuntimeError(f"Workspace {ws} is being unloaded")
 
             # Wait for status change event
             try:
@@ -2173,9 +2208,7 @@ class WorkspaceManager:
         ), "Query pattern contains invalid characters."
 
         keys = await self._redis.keys(pattern)
-        logger.info(
-            f"Removing {len(keys)} services for client {client_id} in {cws}"
-        )
+        logger.info(f"Removing {len(keys)} services for client {client_id} in {cws}")
         for key in keys:
             await self._redis.delete(key)
 
@@ -2185,24 +2218,32 @@ class WorkspaceManager:
         self._active_clients.labels(workspace=cws).dec()
         self._active_svc.labels(workspace=cws).dec(len(keys) - 1)
 
-        if unload:
-            if await self._redis.hexists("workspaces", cws):
-                if user_info.is_anonymous and cws == user_info.get_workspace():
-                    logger.info(
-                        f"Unloading workspace {cws} for anonymous user (while deleting client {client_id})"
-                    )
-                    # unload temporary workspace if the user exits
+        # Only check for unloading if we're actually removing the last client
+        current_clients = await self._list_client_keys(cws)
+        if len(current_clients) <= 1:  # We're about to remove the last client
+            if unload:
+                # Add special handling for anonymous workspaces
+                if cws.startswith("ws-anon-"):
+                    logger.info(f"Unloading anonymous workspace {cws}")
                     await self.unload(context=context)
-                else:
-                    logger.info(
-                        f"Unloading workspace {cws} for non-anonymous user (while deleting client {client_id})"
-                    )
-                    # otherwise delete the workspace if it is empty
-                    await self.unload_if_empty(context=context)
-            else:
-                logger.warning(
-                    f"Workspace {cws} not found (while deleting client {client_id})"
-                )
+
+                elif await self._redis.hexists("workspaces", cws):
+                    if user_info.is_anonymous and cws == user_info.get_workspace():
+                        logger.info(
+                            f"Unloading workspace {cws} for anonymous user (while deleting client {client_id})"
+                        )
+                        # unload temporary workspace if the user exits
+                        await self.unload(context=context)
+                    else:
+                        logger.info(
+                            f"Unloading workspace {cws} for non-anonymous user (while deleting client {client_id})"
+                        )
+                        # otherwise delete the workspace if it is empty
+                        await self.unload_if_empty(context=context)
+
+        # Add client presence cleanup
+        client_presence_key = f"{workspace}:clients:{client_id}"
+        await self._redis.delete(client_presence_key)
 
     async def unload_if_empty(self, context=None):
         """Delete the workspace if it is empty."""
