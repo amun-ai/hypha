@@ -59,10 +59,10 @@ async def test_singleton_service(fastapi_server, test_user_token):
                 )
 
 
-async def test_typed_service(fastapi_server):
+async def test_typed_service(fastapi_server, test_user_token):
     """Test a typed service."""
     async with connect_to_server(
-        {"name": "test client", "server_url": SERVER_URL}
+        {"name": "test client", "server_url": SERVER_URL, "token": test_user_token}
     ) as api:
 
         @schema_function

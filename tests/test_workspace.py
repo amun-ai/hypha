@@ -165,13 +165,22 @@ async def test_create_workspace_token(fastapi_server, test_user_token):
     print(f"Token generated: {token}")
 
 
-async def test_workspace_ready(fastapi_server):
+async def test_workspace_ready(fastapi_server, test_user_token):
     """Test workspace."""
     server_url = WS_SERVER_URL
-    server = await connect_to_server(
+    async with connect_to_server(
+        {
+            "server_url": server_url,
+            "token": test_user_token,
+        }
+    ) as server:
+        result = await server.wait_until_ready(timeout=1)
+        assert result and result.ready is True and "errors" not in result
+
+    async with connect_to_server(
         {
             "server_url": server_url,
         }
-    )
-    result = await server.wait_until_ready(timeout=1)
-    assert result and result.ready is True and "errors" not in result
+    ) as server:
+        result = await server.wait_until_ready(timeout=1)
+        assert result and result.ready is True and "errors" not in result

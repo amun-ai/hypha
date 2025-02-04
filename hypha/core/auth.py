@@ -445,6 +445,11 @@ def create_login_service(store):
         assert await redis.exists(
             LOGIN_KEY_PREFIX + key
         ), "Invalid key, key does not exist or expired"
+
+        # Parse user info first to get default workspace if needed
+        user_info = parse_token(token)
+        workspace = workspace or user_info.get_workspace()
+
         kwargs = {
             "token": token,
             "workspace": workspace,
@@ -459,9 +464,6 @@ def create_login_service(store):
 
         user_token_info = UserTokenInfo.model_validate(kwargs)
         if workspace:
-            user_info = parse_token(token)
-            # based on the user token, create a scoped token
-            workspace = workspace or user_info.get_workspace()
             # generate scoped token
             workspace_info = await store.load_or_create_workspace(user_info, workspace)
             user_info.scope = update_user_scope(user_info, workspace_info)
@@ -471,6 +473,7 @@ def create_login_service(store):
             token = generate_presigned_token(user_info, int(expires_in or 3600))
             # replace the token
             user_token_info.token = token
+
         await redis.setex(
             LOGIN_KEY_PREFIX + key,
             MAXIMUM_LOGIN_TIME,
