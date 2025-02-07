@@ -575,6 +575,8 @@ class WorkspaceManager:
         if self._s3_controller:
             await self._s3_controller.cleanup_workspace(workspace_info, force=True)
         await self._redis.hdel("workspaces", workspace)
+        # Delete the workspace status key
+        await self._redis.delete(f"workspace_status:{workspace}")
         await self._event_bus.emit("workspace_deleted", workspace_info.model_dump())
         # remove the workspace from the user's bookmarks
         user_workspace = await self.load_workspace_info(user_info.get_workspace())
@@ -1873,12 +1875,27 @@ class WorkspaceManager:
 
             await self._close_workspace(winfo)
             await self._redis.hdel("workspaces", ws)
-            await self._set_workspace_status(ws, WorkspaceStatus.CLOSED)
+            # Delete the workspace status key
+            await self._redis.delete(f"workspace_status:{ws}")
+            # Set final status without storing in Redis
+            await self._event_bus.emit(
+                "workspace_status_changed",
+                {"id": ws, "status": {"status": WorkspaceStatus.CLOSED, "timestamp": time.time()}}
+            )
 
         except Exception as e:
             error_msg = str(e)
-            await self._set_workspace_status(
-                ws, WorkspaceStatus.CLOSED, error=error_msg
+            # Set error status without storing in Redis since we're cleaning up
+            await self._event_bus.emit(
+                "workspace_status_changed",
+                {
+                    "id": ws,
+                    "status": {
+                        "status": WorkspaceStatus.CLOSED,
+                        "error": error_msg,
+                        "timestamp": time.time()
+                    }
+                }
             )
             logger.error(f"Failed to unload workspace: {e}")
             raise
