@@ -1947,7 +1947,10 @@ class WorkspaceManager:
             status_data = await check_status()
 
             if not status_data:
-                raise RuntimeError(f"Workspace {ws} status not found")
+                # It means that the worksce is not prepared yet
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(f"Workspace {ws} preparation timed out")
+                continue
 
             current_status = status_data["status"]
 
