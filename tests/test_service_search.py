@@ -67,6 +67,7 @@ async def test_service_search(fastapi_server_redis_1, test_user_token):
     services = await api.search_services(query=text_query, limit=3)
     assert isinstance(services, list)
     assert len(services) <= 3
+    assert services[0]["id"].count(":") == 1 and services[0]["id"].count("/") == 1
     # The top hit should be the service with "natural language processing" in the `docs` field
     assert "natural language processing" in services[0]["docs"]
     assert services[0]["score"] < services[1]["score"]

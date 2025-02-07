@@ -915,6 +915,8 @@ class WorkspaceManager:
             ServiceInfo.from_redis_dict(doc, in_bytes=False).model_dump()
             for doc in results["items"]
         ]
+        for item in results["items"]:
+            item["id"] = re.sub(r"^[^|]+\|[^:]+:(.+)$", r"\1", item["id"]).split("@")[0]
         if pagination:
             return results
         else:
@@ -1880,7 +1882,13 @@ class WorkspaceManager:
             # Set final status without storing in Redis
             await self._event_bus.emit(
                 "workspace_status_changed",
-                {"id": ws, "status": {"status": WorkspaceStatus.CLOSED, "timestamp": time.time()}}
+                {
+                    "id": ws,
+                    "status": {
+                        "status": WorkspaceStatus.CLOSED,
+                        "timestamp": time.time(),
+                    },
+                },
             )
 
         except Exception as e:
@@ -1893,9 +1901,9 @@ class WorkspaceManager:
                     "status": {
                         "status": WorkspaceStatus.CLOSED,
                         "error": error_msg,
-                        "timestamp": time.time()
-                    }
-                }
+                        "timestamp": time.time(),
+                    },
+                },
             )
             logger.error(f"Failed to unload workspace: {e}")
             raise
