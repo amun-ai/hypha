@@ -1466,6 +1466,10 @@ class WorkspaceManager:
 
                 # Set loading status if not already loading
                 await self._set_workspace_status(workspace, WorkspaceStatus.LOADING)
+                # Start preparation task for existing workspace
+                task = asyncio.create_task(self._prepare_workspace(workspace_info))
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
                 return workspace_info
         except Exception as e:
             logger.error(f"Failed to load workspace info from Redis: {e}")
@@ -1876,6 +1880,7 @@ class WorkspaceManager:
                 pass
 
             await self._close_workspace(winfo)
+            # Make sure to remove the workspace from Redis
             await self._redis.hdel("workspaces", ws)
             # Delete the workspace status key
             await self._redis.delete(f"workspace_status:{ws}")
@@ -1929,6 +1934,9 @@ class WorkspaceManager:
 
         await self._event_bus.emit("workspace_unloaded", workspace_info.model_dump())
         logger.info("Workspace %s unloaded.", workspace_info.id)
+
+        # Clean up the workspace status
+        await self._redis.delete(f"workspace_status:{workspace_info.id}")
 
     @schema_method
     async def wait_until_ready(self, timeout: Optional[int] = 60, context=None):
@@ -2120,7 +2128,15 @@ class WorkspaceManager:
 
         if unload:
             if await self._redis.hexists("workspaces", cws):
-                if user_info.is_anonymous and cws == user_info.get_workspace():
+                workspace_info = await self.load_workspace_info(cws, load=False)
+                # Check if workspace is non-persistent
+                if not workspace_info.persistent:
+                    logger.info(
+                        f"Unloading non-persistent workspace {cws} (while deleting client {client_id})"
+                    )
+                    # Unload non-persistent workspace immediately
+                    await self.unload(context=context)
+                elif user_info.is_anonymous and cws == user_info.get_workspace():
                     logger.info(
                         f"Unloading workspace {cws} for anonymous user (while deleting client {client_id})"
                     )
@@ -2128,7 +2144,7 @@ class WorkspaceManager:
                     await self.unload(context=context)
                 else:
                     logger.info(
-                        f"Unloading workspace {cws} for non-anonymous user (while deleting client {client_id})"
+                        f"Checking if workspace {cws} should be unloaded (while deleting client {client_id})"
                     )
                     # otherwise delete the workspace if it is empty
                     await self.unload_if_empty(context=context)

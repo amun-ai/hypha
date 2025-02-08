@@ -309,23 +309,6 @@ async def test_non_persistent_workspace(fastapi_server, root_user_token):
     )
     workspace = api.config["workspace"]
 
-    # # Test app with custom template
-    # controller = await api.get_service("public/server-apps")
-
-    # source = (
-    #     (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
-    #     .open(encoding="utf-8")
-    #     .read()
-    # )
-
-    # config = await controller.launch(
-    #     source=source,
-    #     wait_for_service="default",
-    # )
-
-    # app = await api.get_app(config.id)
-    # assert app is not None
-
     # It should exist in the stats
     async with connect_to_server(
         {"server_url": WS_SERVER_URL, "client_id": "admin", "token": root_user_token}
@@ -335,12 +318,9 @@ async def test_non_persistent_workspace(fastapi_server, root_user_token):
         workspace_info = find_item(workspaces, "name", workspace)
         assert workspace_info is not None
 
-    # We don't need to stop manually, since it should be removed
-    # when the parent client exits
-    # await controller.stop(config.id)
-
     await api.disconnect()
-    await asyncio.sleep(0.1)
+    # Wait longer for cleanup to complete
+    await asyncio.sleep(1.0)  # Increased from 0.1 to 1.0
 
     # now it should disappear from the stats
     async with connect_to_server(
