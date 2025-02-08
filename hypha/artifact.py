@@ -1531,10 +1531,10 @@ class ArtifactController:
                 config["permissions"] = permissions
 
                 versions = []
-                if version != "stage" and version is not None:
-                    if version == "new":
+                if version != "stage":
+                    if version in [None, "new"]:
                         version = f"v{len(versions)}"
-                    comment = comment or f"Initial version"
+                    comment = comment or "Initial version"
                     versions.append(
                         {
                             "version": version,
@@ -1723,7 +1723,9 @@ class ArtifactController:
                         f"Edited artifact with ID: {artifact_id} (committed), alias: {artifact.alias}, version: {version}"
                     )
                 else:
+                    # Initialize staging list if None
                     artifact.staging = artifact.staging or []
+                    flag_modified(artifact, "staging")  # <-- Add this line
                     logger.info(
                         f"Edited artifact with ID: {artifact_id} (staged), alias: {artifact.alias}"
                     )
@@ -1879,16 +1881,15 @@ class ArtifactController:
                         raise ValueError(f"ValidationError: {str(e)}")
                 assert artifact.manifest, "Artifact must be in staging mode to commit."
 
-                if version is not None:
-                    if version == "new":
-                        version = f"v{len(versions)}"
-                    versions.append(
-                        {
-                            "version": version,
-                            "comment": comment,
-                            "created_at": int(time.time()),
-                        }
-                    )
+                if version in [None, "new"]:
+                    version = f"v{len(versions)}"
+                versions.append(
+                    {
+                        "version": version,
+                        "comment": comment,
+                        "created_at": int(time.time()),
+                    }
+                )
                 artifact.versions = versions
                 flag_modified(artifact, "versions")
                 artifact.staging = None
