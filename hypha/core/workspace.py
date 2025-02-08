@@ -1947,6 +1947,7 @@ class WorkspaceManager:
             status_data = await check_status()
 
             if not status_data:
+                # It means that the workspace is not prepared yet
                 if time.time() - start_time > timeout:
                     raise TimeoutError(f"Workspace {ws} preparation timed out")
                 await asyncio.sleep(0.1)  # Add small delay to prevent tight loop
