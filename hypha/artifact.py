@@ -1881,17 +1881,20 @@ class ArtifactController:
                         raise ValueError(f"ValidationError: {str(e)}")
                 assert artifact.manifest, "Artifact must be in staging mode to commit."
 
-                if version in [None, "new"]:
-                    version = f"v{len(versions)}"
-                versions.append(
-                    {
-                        "version": version,
-                        "comment": comment,
-                        "created_at": int(time.time()),
-                    }
-                )
-                artifact.versions = versions
-                flag_modified(artifact, "versions")
+                # Only create a new version if explicitly specified
+                if version is not None:
+                    if version in [None, "new"]:
+                        version = f"v{len(versions)}"
+                    versions.append(
+                        {
+                            "version": version,
+                            "comment": comment,
+                            "created_at": int(time.time()),
+                        }
+                    )
+                    artifact.versions = versions
+                    flag_modified(artifact, "versions")
+
                 artifact.staging = None
                 artifact.last_modified = int(time.time())
                 flag_modified(artifact, "manifest")
