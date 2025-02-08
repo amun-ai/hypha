@@ -60,6 +60,7 @@ from hypha_rpc.utils import ObjectProxy
 from jsonschema import validate
 from sqlmodel import SQLModel, Field, Relationship, UniqueConstraint
 from typing import Optional, Union, List, Any, Dict
+import asyncio
 
 # Logger setup
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -884,19 +885,41 @@ class ArtifactController:
         """
         query = select(ArtifactModel).where(self._get_artifact_id_cond(artifact_id))
 
-        result = await session.execute(query)
-        artifact = result.scalar_one_or_none()
-        if not artifact:
-            raise KeyError(f"Artifact with ID '{artifact_id}' does not exist.")
-        parent_artifact = None
-        if artifact and artifact.parent_id:
-            parent_query = select(ArtifactModel).where(
-                self._get_artifact_id_cond(artifact.parent_id)
-            )
-            parent_result = await session.execute(parent_query)
-            parent_artifact = parent_result.scalar_one_or_none()
+        try:
+            result = await session.execute(query)
+            artifact = result.scalar_one_or_none()
+            if not artifact:
+                # Add debug logging
+                logger.debug(f"Failed to find artifact with ID '{artifact_id}'")
+                # Try to get the workspace and alias separately for better error message
+                if "/" in artifact_id:
+                    ws, alias = artifact_id.split("/")
+                    query = select(ArtifactModel).where(
+                        and_(
+                            ArtifactModel.workspace == ws,
+                            ArtifactModel.alias == alias,
+                        )
+                    )
+                    result = await session.execute(query)
+                    if result.scalar_one_or_none():
+                        raise KeyError(f"Artifact exists but failed to retrieve with ID '{artifact_id}', this may be a race condition.")
+                raise KeyError(f"Artifact with ID '{artifact_id}' does not exist.")
+            
+            parent_artifact = None
+            if artifact and artifact.parent_id:
+                parent_query = select(ArtifactModel).where(
+                    self._get_artifact_id_cond(artifact.parent_id)
+                )
+                parent_result = await session.execute(parent_query)
+                parent_artifact = parent_result.scalar_one_or_none()
+                if not parent_artifact:
+                    logger.warning(f"Parent artifact {artifact.parent_id} not found for {artifact_id}")
 
-        return artifact, parent_artifact
+            return artifact, parent_artifact
+
+        except Exception as e:
+            logger.error(f"Error retrieving artifact {artifact_id}: {str(e)}")
+            raise
 
     def _generate_artifact_data(self, artifact, parent_artifact=None):
         artifact_data = model_to_dict(artifact)
@@ -2014,33 +2037,45 @@ class ArtifactController:
         """
         user_info = UserInfo.model_validate(context["user"])
         session = await self._get_session()
+        max_retries = 3
+        retry_delay = 0.5  # seconds
+        
         try:
-            async with session.begin():
-                artifact, parent_artifact = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "add_vectors", session
-                )
-                assert (
-                    artifact.type == "vector-collection"
-                ), "Artifact must be a vector collection."
+            for attempt in range(max_retries):
+                try:
+                    async with session.begin():
+                        artifact, parent_artifact = await self._get_artifact_with_permission(
+                            user_info, artifact_id, "add_vectors", session
+                        )
+                        assert (
+                            artifact.type == "vector-collection"
+                        ), "Artifact must be a vector collection."
 
-                assert artifact.manifest, "Artifact must be committed before upserting."
-                s3_config = self._get_s3_config(artifact, parent_artifact)
-                async with self._create_client_async(s3_config) as s3_client:
-                    prefix = safe_join(
-                        s3_config["prefix"],
-                        f"{artifact.id}/v0",
-                    )
-                    await self._vector_engine.add_vectors(
-                        f"{artifact.workspace}/{artifact.alias}",
-                        vectors,
-                        update=update,
-                        embedding_models=embedding_models
-                        or artifact.config.get("embedding_models"),
-                        s3_client=s3_client,
-                        bucket=s3_config["bucket"],
-                        prefix=prefix,
-                    )
-                logger.info(f"Added vectors to artifact with ID: {artifact_id}")
+                        assert artifact.manifest, "Artifact must be committed before upserting."
+                        s3_config = self._get_s3_config(artifact, parent_artifact)
+                        async with self._create_client_async(s3_config) as s3_client:
+                            prefix = safe_join(
+                                s3_config["prefix"],
+                                f"{artifact.id}/v0",
+                            )
+                            await self._vector_engine.add_vectors(
+                                f"{artifact.workspace}/{artifact.alias}",
+                                vectors,
+                                update=update,
+                                embedding_models=embedding_models
+                                or artifact.config.get("embedding_models"),
+                                s3_client=s3_client,
+                                bucket=s3_config["bucket"],
+                                prefix=prefix,
+                            )
+                        logger.info(f"Added vectors to artifact with ID: {artifact_id}")
+                        break
+                except KeyError as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Retrying add_vectors due to error: {str(e)}")
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        raise
         except Exception as e:
             raise e
         finally:
