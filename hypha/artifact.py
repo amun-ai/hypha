@@ -855,16 +855,21 @@ class ArtifactController:
     def _get_artifact_id_cond(self, artifact_id):
         """Get the SQL condition for an artifact ID."""
         if "/" in artifact_id:
-            assert (
-                len(artifact_id.split("/")) == 2
-            ), "Invalid artifact ID format, it should be `workspace/alias`."
-            ws, alias = artifact_id.split("/")
-            return and_(
-                ArtifactModel.workspace == ws,
-                ArtifactModel.alias == alias,
-            )
-        else:
-            return ArtifactModel.id == artifact_id
+            parts = artifact_id.split("/")
+            if len(parts) == 2:
+                ws, alias = parts
+                return and_(
+                    ArtifactModel.workspace == ws,
+                    ArtifactModel.alias == alias,
+                )
+            elif len(parts) > 2:
+                parent = "/".join(parts[:-1])
+                child_alias = parts[-1]
+                return and_(
+                    ArtifactModel.parent_id == parent,
+                    ArtifactModel.alias == child_alias,
+                )
+        return ArtifactModel.id == artifact_id
 
     async def _get_artifact(self, session, artifact_id):
         """
@@ -941,7 +946,7 @@ class ArtifactController:
                 "l": [
                     "list",
                 ],
-                "l+": ["list", "create", "commit"],
+                "l+": ["list", "create", "edit"],
                 "lv": ["list", "list_vectors"],
                 "lv+": [
                     "list",
@@ -969,7 +974,6 @@ class ArtifactController:
                     "search_vectors",
                     "get_vector",
                     "create",
-                    "commit",
                     "add_vectors",
                 ],
                 "rw": [
@@ -1557,6 +1561,10 @@ class ArtifactController:
                 if version != "stage":
                     if version in [None, "new"]:
                         version = f"v{len(versions)}"
+                    if not await self._check_permissions(parent_artifact, user_info, "commit"):
+                        raise PermissionError(
+                            f"User does not have permission to commit an artifact in the collection '{parent_artifact.alias}'."
+                        )
                     comment = comment or "Initial version"
                     versions.append(
                         {
@@ -1686,6 +1694,15 @@ class ArtifactController:
                 artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "edit", session
                 )
+                
+                # Check if artifact is in staging mode
+                if artifact.staging is not None:
+                    if version is not None and version != "stage":
+                        raise ValueError(
+                            "Artifact is in staging mode. You need to commit it before editing to a different version."
+                        )
+                    version = "stage"  # Force version to be "stage" when in staging mode
+
                 artifact.type = type or artifact.type
                 if manifest:
                     if artifact.type == "collection":
@@ -1705,6 +1722,11 @@ class ArtifactController:
                         versions = artifact.versions or []
                         if version == "new":
                             version = f"v{len(versions)}"
+                        
+                        if not await self._check_permissions(parent_artifact, user_info, "commit"):
+                            raise PermissionError(
+                                f"User does not have permission to commit an artifact to collection '{parent_artifact.alias}'."
+                            )
                         versions.append(
                             {
                                 "version": version,
