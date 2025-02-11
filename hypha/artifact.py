@@ -1561,7 +1561,7 @@ class ArtifactController:
                 if version != "stage":
                     if version in [None, "new"]:
                         version = f"v{len(versions)}"
-                    if not await self._check_permissions(parent_artifact, user_info, "commit"):
+                    if parent_artifact and not await self._check_permissions(parent_artifact, user_info, "commit"):
                         raise PermissionError(
                             f"User does not have permission to commit an artifact in the collection '{parent_artifact.alias}'."
                         )
