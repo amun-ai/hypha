@@ -245,9 +245,21 @@ class ASGIRoutingMiddleware:
                         user_info, user_info.scope.current_workspace
                     ) as api:
                         # Call get_service_type_id to check if it's an ASGI service
-                        service_info = await api.get_service_info(
-                            workspace + "/" + service_id, {"mode": _mode}
-                        )
+                        try:
+                            service_info = await api.get_service_info(
+                                f"public/*:{service_id}", {"mode": _mode}
+                            )
+                        except KeyError as e:
+                            if workspace != "public":
+                                try:
+                                    # Fallback to public workspace
+                                    service_info = await api.get_service_info(
+                                        f"public/*:{service_id}", {"mode": _mode}
+                                    )
+                                except KeyError:
+                                    raise e
+                            else:
+                                raise
                         service = await api.get_service(service_info.id)
                         # intercept the request if it's an ASGI service
                         if service_info.type == "asgi" or service_info.type == "ASGI":
@@ -553,7 +565,7 @@ class HTTPProxy:
                     if service_id == "ws":
                         return serialize(api)
                     service_info = await api.get_service_info(
-                        service_id, {"mode": _mode}
+                        f"public/*:{service_id}", {"mode": _mode}
                     )
                 return JSONResponse(
                     status_code=200,
@@ -731,10 +743,22 @@ class HTTPProxy:
                     if service_id == "ws":
                         service = api
                     else:
-                        info = await api.get_service_info(
-                            workspace + "/" + service_id, {"mode": _mode}
-                        )
-                        service = await api.get_service(info.id)
+                        try:
+                            service_info = await api.get_service_info(
+                                f"public/*:{service_id}", {"mode": _mode}
+                            )
+                        except KeyError as e:
+                            if workspace != "public":
+                                try:
+                                    # Fallback to public workspace
+                                    service_info = await api.get_service_info(
+                                        f"public/*:{service_id}", {"mode": _mode}
+                                    )
+                                except KeyError:
+                                    raise e
+                            else:
+                                raise
+                        service = await api.get_service(service_info.id)
                     func = get_value(function_key, service)
                     if not func:
                         return JSONResponse(

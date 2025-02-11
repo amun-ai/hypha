@@ -8,47 +8,56 @@ import httpx
 from fastapi import FastAPI
 from starlette.requests import Request
 from hypha_rpc import connect_to_server
+import asyncio
 
 from . import WS_SERVER_URL, SERVER_URL, find_item
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
 
+app = FastAPI()
+
+
+@app.get("/api")
+async def read_api(request: Request):
+    return {"message": "Hello World"}
+
+
+@app.put("/api")
+async def put_api(request: Request):
+    data = await request.json()
+    return {"message": f"Hello {data['name']}"}
+
+
+@app.post("/api")
+async def post_api(request: Request):
+    data = await request.json()
+    return {"message": f"Hello {data['name']}"}
+
+
+@app.delete("/api")
+async def delete_api(request: Request):
+    return {"message": "Deleted"}
+
+
+@app.patch("/api")
+async def patch_api(request: Request):
+    data = await request.json()
+    return {"message": f"Patched {data['name']}"}
+
+
+@app.options("/api")
+async def options_api(request: Request):
+    return {"message": "Options"}
+
+
+@app.get("/api/{item_id}")
+async def read_item(item_id: int, request: Request):
+    return {"item_id": item_id}
+
 
 async def test_asgi(fastapi_server, test_user_token):
     """Test the ASGI gateway service."""
-    app = FastAPI()
-
-    @app.get("/api")
-    async def read_api(request: Request):
-        return {"message": "Hello World"}
-
-    @app.put("/api")
-    async def put_api(request: Request):
-        data = await request.json()
-        return {"message": f"Hello {data['name']}"}
-
-    @app.post("/api")
-    async def post_api(request: Request):
-        data = await request.json()
-        return {"message": f"Hello {data['name']}"}
-
-    @app.delete("/api")
-    async def delete_api(request: Request):
-        return {"message": "Deleted"}
-
-    @app.patch("/api")
-    async def patch_api(request: Request):
-        data = await request.json()
-        return {"message": f"Patched {data['name']}"}
-
-    @app.options("/api")
-    async def options_api(request: Request):
-        return {"message": "Options"}
-
-    @app.get("/api/{item_id}")
-    async def read_item(item_id: int, request: Request):
-        return {"item_id": item_id}
 
     api = await connect_to_server(
         {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
@@ -194,4 +203,59 @@ async def test_functions(fastapi_server, test_user_token):
     assert response.content == b"Home page"
 
     await controller.stop(config.id)
+    await api.disconnect()
+
+
+async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
+    """Test concurrent requests to ASGI service with workspace cleanup"""
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+
+    # Get initial workspace count
+    initial_workspaces = await api.list_workspaces()
+
+    # Explicitly get the public workspace interface
+    public_api = await api.get_service("public/ws")
+
+    async def serve_fastapi(args):
+        await app(args["scope"], args["receive"], args["send"])
+
+    # Register service in public workspace
+    await public_api.register_service(
+        {
+            "id": "test-asgi",
+            "type": "asgi",
+            "config": {"visibility": "public"},
+            "serve": serve_fastapi,
+        }
+    )
+
+    # Make 10 concurrent requests
+    async with httpx.AsyncClient() as client:
+        tasks = [
+            client.get(f"{SERVER_URL}/public/apps/test-asgi/api") for _ in range(10)
+        ]
+        responses = await asyncio.gather(*tasks)
+
+        for response in responses:
+            assert response.status_code == 200
+            assert response.json()["message"] == "Hello World"
+
+    # Verify no new persistent workspaces created
+    final_workspaces = await api.list_workspaces()
+    assert len(final_workspaces) == len(
+        initial_workspaces
+    ), "No new workspaces should be created for anonymous access"
+
+    # Verify temporary workspaces are cleaned up
+    temp_workspaces = [
+        w
+        for w in final_workspaces
+        if w["id"].startswith("ws-user-") and not w["persistent"]
+    ]
+    assert (
+        len(temp_workspaces) == 0
+    ), "All temporary workspaces should have been cleaned up"
+
     await api.disconnect()

@@ -907,9 +907,11 @@ class ArtifactController:
                     )
                     result = await session.execute(query)
                     if result.scalar_one_or_none():
-                        raise KeyError(f"Artifact exists but failed to retrieve with ID '{artifact_id}', this may be a race condition.")
+                        raise KeyError(
+                            f"Artifact exists but failed to retrieve with ID '{artifact_id}', this may be a race condition."
+                        )
                 raise KeyError(f"Artifact with ID '{artifact_id}' does not exist.")
-            
+
             parent_artifact = None
             if artifact and artifact.parent_id:
                 parent_query = select(ArtifactModel).where(
@@ -918,7 +920,9 @@ class ArtifactController:
                 parent_result = await session.execute(parent_query)
                 parent_artifact = parent_result.scalar_one_or_none()
                 if not parent_artifact:
-                    logger.warning(f"Parent artifact {artifact.parent_id} not found for {artifact_id}")
+                    logger.warning(
+                        f"Parent artifact {artifact.parent_id} not found for {artifact_id}"
+                    )
 
             return artifact, parent_artifact
 
@@ -1561,7 +1565,9 @@ class ArtifactController:
                 if version != "stage":
                     if version in [None, "new"]:
                         version = f"v{len(versions)}"
-                    if parent_artifact and not await self._check_permissions(parent_artifact, user_info, "commit"):
+                    if parent_artifact and not await self._check_permissions(
+                        parent_artifact, user_info, "commit"
+                    ):
                         raise PermissionError(
                             f"User does not have permission to commit an artifact in the collection '{parent_artifact.alias}'."
                         )
@@ -1694,14 +1700,16 @@ class ArtifactController:
                 artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "edit", session
                 )
-                
+
                 # Check if artifact is in staging mode
                 if artifact.staging is not None:
                     if version is not None and version != "stage":
                         raise ValueError(
                             "Artifact is in staging mode. You need to commit it before editing to a different version."
                         )
-                    version = "stage"  # Force version to be "stage" when in staging mode
+                    version = (
+                        "stage"  # Force version to be "stage" when in staging mode
+                    )
 
                 artifact.type = type or artifact.type
                 if manifest:
@@ -1722,8 +1730,10 @@ class ArtifactController:
                         versions = artifact.versions or []
                         if version == "new":
                             version = f"v{len(versions)}"
-                        
-                        if not await self._check_permissions(parent_artifact, user_info, "commit"):
+
+                        if not await self._check_permissions(
+                            parent_artifact, user_info, "commit"
+                        ):
                             raise PermissionError(
                                 f"User does not have permission to commit an artifact to collection '{parent_artifact.alias}'."
                             )
@@ -2061,19 +2071,23 @@ class ArtifactController:
         session = await self._get_session()
         max_retries = 3
         retry_delay = 0.5  # seconds
-        
+
         try:
             for attempt in range(max_retries):
                 try:
                     async with session.begin():
-                        artifact, parent_artifact = await self._get_artifact_with_permission(
-                            user_info, artifact_id, "add_vectors", session
+                        artifact, parent_artifact = (
+                            await self._get_artifact_with_permission(
+                                user_info, artifact_id, "add_vectors", session
+                            )
                         )
                         assert (
                             artifact.type == "vector-collection"
                         ), "Artifact must be a vector collection."
 
-                        assert artifact.manifest, "Artifact must be committed before upserting."
+                        assert (
+                            artifact.manifest
+                        ), "Artifact must be committed before upserting."
                         s3_config = self._get_s3_config(artifact, parent_artifact)
                         async with self._create_client_async(s3_config) as s3_client:
                             prefix = safe_join(
