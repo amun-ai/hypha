@@ -47,7 +47,7 @@ from hypha.startup import run_startup_function
 from hypha.utils import random_id
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
+
 logger = logging.getLogger("redis-store")
 logger.setLevel(LOGLEVEL)
 

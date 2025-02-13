@@ -34,7 +34,7 @@ from hypha.core.store import RedisStore
 from hypha.utils import GzipRoute, safe_join, is_safe_path
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
+
 logger = logging.getLogger("http")
 logger.setLevel(LOGLEVEL)
 
@@ -244,22 +244,23 @@ class ASGIRoutingMiddleware:
                     async with self.store.get_workspace_interface(
                         user_info, user_info.scope.current_workspace
                     ) as api:
-                        # Call get_service_type_id to check if it's an ASGI service
+                        # Try to get service from the requested workspace first
                         try:
                             service_info = await api.get_service_info(
-                                f"public/*:{service_id}", {"mode": _mode}
+                                f"{workspace}/{service_id}", {"mode": _mode}
                             )
                         except KeyError as e:
                             if workspace != "public":
                                 try:
-                                    # Fallback to public workspace
+                                    # Try public workspace with wildcard client ID
                                     service_info = await api.get_service_info(
                                         f"public/*:{service_id}", {"mode": _mode}
                                     )
                                 except KeyError:
                                     raise e
                             else:
-                                raise
+                                raise e
+
                         service = await api.get_service(service_info.id)
                         # intercept the request if it's an ASGI service
                         if service_info.type == "asgi" or service_info.type == "ASGI":
@@ -750,7 +751,7 @@ class HTTPProxy:
                         except KeyError as e:
                             if workspace != "public":
                                 try:
-                                    # Fallback to public workspace
+                                    # Try public workspace with wildcard client ID
                                     service_info = await api.get_service_info(
                                         f"public/*:{service_id}", {"mode": _mode}
                                     )

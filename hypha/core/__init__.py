@@ -30,7 +30,7 @@ from hypha.core.activity import ActivityTracker
 from prometheus_client import Counter, Gauge
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
+
 logger = logging.getLogger("core")
 logger.setLevel(LOGLEVEL)
 

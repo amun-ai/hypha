@@ -42,7 +42,7 @@ from hypha.core.auth import generate_presigned_token, create_scope, valid_token
 from hypha.utils import EventBus, random_id
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
+
 logger = logging.getLogger("workspace")
 logger.setLevel(LOGLEVEL)
 
