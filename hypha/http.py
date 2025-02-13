@@ -249,14 +249,50 @@ class ASGIRoutingMiddleware:
                             service_info = await api.get_service_info(
                                 f"{workspace}/{service_id}", {"mode": _mode}
                             )
-                        except KeyError as e:
-                            if workspace != "public":
+                        except (KeyError, ValueError) as e:
+                            if isinstance(e, ValueError):
+                                await send(
+                                    {
+                                        "type": "http.response.start",
+                                        "status": 400,
+                                        "headers": [
+                                            [b"content-type", b"text/plain"],
+                                        ],
+                                    }
+                                )
+                                await send(
+                                    {
+                                        "type": "http.response.body",
+                                        "body": str(e).encode(),
+                                        "more_body": False,
+                                    }
+                                )
+                                return
+                            elif workspace != "public":
                                 try:
                                     # Try public workspace with wildcard client ID
                                     service_info = await api.get_service_info(
                                         f"public/*:{service_id}", {"mode": _mode}
                                     )
-                                except KeyError:
+                                except (KeyError, ValueError) as e:
+                                    if isinstance(e, ValueError):
+                                        await send(
+                                            {
+                                                "type": "http.response.start",
+                                                "status": 400,
+                                                "headers": [
+                                                    [b"content-type", b"text/plain"],
+                                                ],
+                                            }
+                                        )
+                                        await send(
+                                            {
+                                                "type": "http.response.body",
+                                                "body": str(e).encode(),
+                                                "more_body": False,
+                                            }
+                                        )
+                                        return
                                     raise e
                             else:
                                 raise e

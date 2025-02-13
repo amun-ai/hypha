@@ -242,7 +242,7 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
         responses = await asyncio.gather(*tasks)
 
         for response in responses:
-            assert response.status_code == 200
+            assert response.status_code == 200, response.text
             assert response.json()["message"] == "Hello World"
 
     # Verify no new persistent workspaces created
