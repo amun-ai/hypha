@@ -47,7 +47,7 @@ from hypha.startup import run_startup_function
 from hypha.utils import random_id
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
+
 logger = logging.getLogger("redis-store")
 logger.setLevel(LOGLEVEL)
 
@@ -417,14 +417,37 @@ class RedisStore:
         # Save the database change log
         await self._redis.rpush("change_log", *map(str, database_change_log))
 
-    async def check_and_cleanup_servers(self):
-        """Cleanup and check servers."""
+    async def check_servers(self):
+        """Check if there are any servers with the same ID."""
         server_ids = await self.list_servers()
         logger.info("Connected hypha servers: %s", server_ids)
         if server_ids:
             rpc = self.create_rpc(
                 "root", self._root_user, client_id="server-checker", silent=True
             )
+            for server_id in server_ids:
+                try:
+                    svc = await rpc.get_remote_service(
+                        f"public/{server_id}:built-in", {"timeout": 2}
+                    )
+                    assert await svc.ping("ping") == "pong"
+                    if server_id == self._server_id:
+                        raise RuntimeError(
+                            f"Server with the same id ({server_id}) is already running, please use a different server id by passing `--server-id=new-server-id` to the command line."
+                        )
+                except Exception as e:
+                    logger.warning(f"Server {server_id} is not responding (error: {e})")
+
+    async def cleanup_servers(self):
+        """Cleanup non-responding servers."""
+        for idx in range(10):
+            await asyncio.sleep(idx * 20)
+            logger.info("Checking for non-responding servers...")
+            server_ids = await self.list_servers()
+            if server_ids:
+                rpc = self.create_rpc(
+                    "root", self._root_user, client_id="server-checker", silent=True
+                )
             for server_id in server_ids:
                 try:
                     svc = await rpc.get_remote_service(
@@ -440,11 +463,6 @@ class RedisStore:
                     await self._clear_client_services(
                         self._root_user.get_workspace(), server_id
                     )
-                else:
-                    if server_id == self._server_id:
-                        raise RuntimeError(
-                            f"Server with the same id ({server_id}) is already running, please use a different server id by passing `--server-id=new-server-id` to the command line."
-                        )
 
     async def _clear_client_services(self, workspace: str, client_id: str):
         """Clear a workspace."""
@@ -473,7 +491,7 @@ class RedisStore:
         self._tracker.register_entity_removed_callback(self._remove_tracker_entity)
 
         await self.setup_root_user()
-        await self.check_and_cleanup_servers()
+        await self.check_servers()
         self._workspace_manager = await self.register_workspace_manager()
 
         try:
@@ -541,11 +559,11 @@ class RedisStore:
 
         if startup_functions:
             await self._run_startup_functions(startup_functions)
+        # Schedule the cleanup server task to run in 1 minute
+        self._cleanup_servers_task = asyncio.create_task(self.cleanup_servers())
         self._ready = True
         await self.get_event_bus().emit_local("startup")
         servers = await self.list_servers()
-        # self._house_keeping_task = asyncio.create_task(self.housekeeping())
-
         logger.info("Server initialized with server id: %s", self._server_id)
         logger.info("Currently connected hypha servers: %s", servers)
 
@@ -939,7 +957,12 @@ class RedisStore:
         #         await self._house_keeping_task
         #     except asyncio.CancelledError:
         #         print("Housekeeping task successfully exited.")
-
+        if self._cleanup_servers_task:
+            self._cleanup_servers_task.cancel()
+            try:
+                await self._cleanup_servers_task
+            except asyncio.CancelledError:
+                pass
         if self._tracker_task:
             self._tracker_task.cancel()
             try:

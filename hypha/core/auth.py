@@ -23,7 +23,7 @@ from hypha.utils import random_id
 from hypha import __version__
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
+
 logger = logging.getLogger("auth")
 logger.setLevel(LOGLEVEL)
 

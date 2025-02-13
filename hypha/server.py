@@ -34,7 +34,7 @@ except ImportError:
 
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
+
 logger = logging.getLogger("server")
 logger.setLevel(LOGLEVEL)
 

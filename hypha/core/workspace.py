@@ -42,7 +42,7 @@ from hypha.core.auth import generate_presigned_token, create_scope, valid_token
 from hypha.utils import EventBus, random_id
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
+
 logger = logging.getLogger("workspace")
 logger.setLevel(LOGLEVEL)
 
@@ -1310,9 +1310,11 @@ class WorkspaceManager:
             else:
                 mode = "exact"
         if mode == "exact":
-            assert (
-                len(keys) == 1
-            ), f"Multiple services found for {service_id}, e.g. {keys[:5]}. You can either specify the mode as 'random', 'first' or 'last', or provide the service id in `client_id:service_id` format."
+            if len(keys) > 1:
+                logger.warning(
+                    f"Multiple services found for {service_id}, e.g. {keys[:5]}. You can either specify the mode as 'random', 'first' or 'last', or provide the service id in `client_id:service_id` format."
+                )
+                raise ValueError(f"Multiple services found for {service_id}")
             key = keys[0]
         elif mode == "random":
             key = random.choice(keys)
@@ -1466,6 +1468,10 @@ class WorkspaceManager:
 
                 # Set loading status if not already loading
                 await self._set_workspace_status(workspace, WorkspaceStatus.LOADING)
+                # Start preparation task for existing workspace
+                task = asyncio.create_task(self._prepare_workspace(workspace_info))
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
                 return workspace_info
         except Exception as e:
             logger.error(f"Failed to load workspace info from Redis: {e}")
@@ -1876,6 +1882,7 @@ class WorkspaceManager:
                 pass
 
             await self._close_workspace(winfo)
+            # Make sure to remove the workspace from Redis
             await self._redis.hdel("workspaces", ws)
             # Delete the workspace status key
             await self._redis.delete(f"workspace_status:{ws}")
@@ -1930,6 +1937,9 @@ class WorkspaceManager:
         await self._event_bus.emit("workspace_unloaded", workspace_info.model_dump())
         logger.info("Workspace %s unloaded.", workspace_info.id)
 
+        # Clean up the workspace status
+        await self._redis.delete(f"workspace_status:{workspace_info.id}")
+
     @schema_method
     async def wait_until_ready(self, timeout: Optional[int] = 60, context=None):
         """Wait for the workspace to be ready with status checking."""
@@ -1947,7 +1957,11 @@ class WorkspaceManager:
             status_data = await check_status()
 
             if not status_data:
-                raise RuntimeError(f"Workspace {ws} status not found")
+                # It means that the workspace is not prepared yet
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(f"Workspace {ws} preparation timed out")
+                await asyncio.sleep(0.1)  # Add small delay to prevent tight loop
+                continue
 
             current_status = status_data["status"]
 
@@ -2116,7 +2130,15 @@ class WorkspaceManager:
 
         if unload:
             if await self._redis.hexists("workspaces", cws):
-                if user_info.is_anonymous and cws == user_info.get_workspace():
+                workspace_info = await self.load_workspace_info(cws, load=False)
+                # Check if workspace is non-persistent
+                if not workspace_info.persistent:
+                    logger.info(
+                        f"Unloading non-persistent workspace {cws} (while deleting client {client_id})"
+                    )
+                    # Unload non-persistent workspace immediately
+                    await self.unload(context=context)
+                elif user_info.is_anonymous and cws == user_info.get_workspace():
                     logger.info(
                         f"Unloading workspace {cws} for anonymous user (while deleting client {client_id})"
                     )
@@ -2124,7 +2146,7 @@ class WorkspaceManager:
                     await self.unload(context=context)
                 else:
                     logger.info(
-                        f"Unloading workspace {cws} for non-anonymous user (while deleting client {client_id})"
+                        f"Checking if workspace {cws} should be unloaded (while deleting client {client_id})"
                     )
                     # otherwise delete the workspace if it is empty
                     await self.unload_if_empty(context=context)

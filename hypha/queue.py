@@ -8,7 +8,7 @@ from hypha.core.store import RedisStore
 import logging
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
+
 logger = logging.getLogger("queue")
 logger.setLevel(LOGLEVEL)
 

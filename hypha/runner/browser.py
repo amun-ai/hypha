@@ -11,7 +11,7 @@ from playwright.async_api import Page, async_playwright
 from hypha.core.store import RedisStore
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
+
 logger = logging.getLogger("browser")
 logger.setLevel(LOGLEVEL)
 

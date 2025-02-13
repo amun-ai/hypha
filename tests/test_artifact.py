@@ -38,7 +38,7 @@ async def test_sqlite_create_and_search_artifacts(
     collection = await artifact_manager.create(
         type="collection",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Add multiple datasets to the collection
@@ -167,7 +167,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server, test_user_t
         type="collection",
         alias="public-dataset-gallery",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # list artifact in current workspace
@@ -257,7 +257,7 @@ async def test_http_file_and_directory_endpoint(
     collection = await artifact_manager.create(
         type="collection",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Create a dataset within the collection
@@ -391,7 +391,7 @@ async def test_get_zip_file_content_endpoint(
     collection = await artifact_manager.create(
         type="collection",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Create a dataset within the collection
@@ -525,7 +525,7 @@ async def test_artifact_permissions(
     collection = await artifact_manager.create(
         type="collection",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Verify that anonymous access to the collection works
@@ -789,7 +789,7 @@ async def test_artifact_filtering(
         type="collection",
         manifest=collection_manifest,
         config={
-            "permissions": {"*": "r+"},
+            "permissions": {"*": "rw+"},
         },
     )
 
@@ -894,7 +894,7 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server, test_user_to
     collection = await artifact_manager.create(
         type="collection",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Create a string in yaml with infinite float
@@ -909,7 +909,7 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server, test_user_to
         parent_id=collection.id,
         manifest=dataset_manifest,
         version="stage",
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Add a file to the artifact
@@ -969,7 +969,7 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server, test_user_to
         type="dataset",
         parent_id=collection.id,
         manifest=dataset_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
     # now get the children again
     # due to caching, the new dataset should not be in the response
@@ -1011,7 +1011,7 @@ async def test_edit_existing_artifact(minio_server, fastapi_server, test_user_to
     collection = await artifact_manager.create(
         type="collection",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Create an artifact (dataset) within the collection
@@ -1151,7 +1151,7 @@ async def test_artifact_schema_validation(
         manifest=collection_manifest,
         config={
             "collection_schema": collection_schema,
-            "permissions": {"*": "r", "@": "r+"},
+            "permissions": {"*": "r", "@": "rw+"},
         },
     )
 
@@ -1226,7 +1226,7 @@ async def test_artifact_manager_with_collection(
         type="collection",
         manifest=collection_manifest,
         config={
-            "permissions": {"*": "r", "@": "r+"},
+            "permissions": {"*": "r", "@": "rw+"},
         },
     )
 
@@ -1351,12 +1351,12 @@ async def test_artifact_edge_cases_with_collection(
             type="collection",
             parent_id="non-existent-parent",
             manifest=collection_manifest,
-            config={"permissions": {"*": "r", "@": "r+"}},
+            config={"permissions": {"*": "r", "@": "rw+"}},
         )
 
     # Successfully create the collection with orphan set by default
     collection = await artifact_manager.create(
-        manifest=collection_manifest, config={"permissions": {"*": "r", "@": "r+"}}
+        manifest=collection_manifest, config={"permissions": {"*": "r", "@": "rw+"}}
     )
 
     # Create a dataset artifact within the collection
@@ -1443,7 +1443,7 @@ async def test_artifact_search_in_manifest(
     collection = await artifact_manager.create(
         type="collection",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Create multiple artifacts within the collection for search tests
@@ -1546,7 +1546,7 @@ async def test_artifact_search_with_filters(
     collection = await artifact_manager.create(
         type="collection",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Create multiple artifacts with varied attributes inside the collection
@@ -1637,7 +1637,7 @@ async def test_download_count(minio_server, fastapi_server, test_user_token):
     collection = await artifact_manager.create(
         type="collection",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Create an artifact inside the collection
