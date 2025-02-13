@@ -295,7 +295,7 @@ class ASGIRoutingMiddleware:
                             )
                         return
                 except Exception as exp:
-                    logger.exception(f"Error in ASGI service: {exp}")
+                    logger.error(f"Error in ASGI service: {exp}")
                     await send(
                         {
                             "type": "http.response.start",
@@ -315,6 +315,7 @@ class ASGIRoutingMiddleware:
                     return
 
         await self.app(scope, receive, send)
+        
 
     async def handle_function_service(self, service, path, scope, receive, send):
         """Handle function service."""
@@ -747,6 +748,11 @@ class HTTPProxy:
                         try:
                             service_info = await api.get_service_info(
                                 f"public/*:{service_id}", {"mode": _mode}
+                            )
+                        except ValueError as e:
+                            return JSONResponse(
+                                status_code=400,
+                                content={"success": False, "detail": str(e)},
                             )
                         except KeyError as e:
                             if workspace != "public":

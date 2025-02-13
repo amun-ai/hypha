@@ -215,13 +215,19 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
     # Get initial workspace count
     initial_workspaces = await api.list_workspaces()
 
+    # Create a single FastAPI app instance to handle all requests
+    app = FastAPI()
+    @app.get("/api")
+    async def read_api(request: Request):
+        return {"message": "Hello World"}
+
     async def serve_fastapi(args):
         await app(args["scope"], args["receive"], args["send"])
 
     # Register service in public workspace
     service = await api.register_service(
         {
-            "id": "test-asgi",
+            "id": f"test-asgi",
             "type": "asgi",
             "config": {"visibility": "public"},
             "serve": serve_fastapi,
@@ -231,7 +237,7 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
     # Make 10 concurrent requests
     async with httpx.AsyncClient() as client:
         tasks = [
-            client.get(f"{SERVER_URL}/{api.config.workspace}/apps/{sid}/api") for _ in range(10)
+            client.get(f"{SERVER_URL}/{api.config.workspace}/apps/{sid}/api?_mode=last") for _ in range(10)
         ]
         responses = await asyncio.gather(*tasks)
 
