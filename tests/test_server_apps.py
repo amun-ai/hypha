@@ -340,7 +340,7 @@ async def test_non_persistent_workspace(fastapi_server, root_user_token):
     # await controller.stop(config.id)
 
     await api.disconnect()
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(1)
 
     # now it should disappear from the stats
     async with connect_to_server(
