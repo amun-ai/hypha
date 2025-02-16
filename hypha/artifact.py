@@ -2464,6 +2464,110 @@ class ArtifactController:
         finally:
             await session.close()
 
+    def _build_manifest_condition(self, manifest_key, operator, value, backend):
+        """Helper function to build SQL conditions for manifest fields."""
+        if operator == "$like":
+            # Fuzzy matching
+            if backend == "postgresql":
+                return text(
+                    f"manifest->>'{manifest_key}' ILIKE '{value.replace('*', '%')}'"
+                )
+            else:
+                return text(
+                    f"json_extract(manifest, '$.{manifest_key}') LIKE '{value.replace('*', '%')}'"
+                )
+        elif operator == "$in":
+            # Array containment - any of the values
+            if backend == "postgresql":
+                # Quote each value in the array
+                quoted_values = [f"'{v}'" for v in value]
+                array_str = f"ARRAY[{', '.join(quoted_values)}]"
+                return text(
+                    f"(manifest->'{manifest_key}')::jsonb ?| {array_str}"
+                )
+            else:
+                conditions = []
+                for v in value:
+                    conditions.append(
+                        text(f"json_extract(manifest, '$.{manifest_key}') LIKE '%{v}%'")
+                    )
+                return or_(*conditions)
+        elif operator == "$all":
+            # Array containment - all values
+            if backend == "postgresql":
+                return text(
+                    f"(manifest->'{manifest_key}')::jsonb @> '{json.dumps(value)}'::jsonb"
+                )
+            else:
+                array_str = json.dumps(value)[1:-1]  # Remove [] brackets
+                return text(
+                    f"json_extract(manifest, '$.{manifest_key}') LIKE '%{array_str}%'"
+                )
+        else:  # exact match
+            if isinstance(value, str) and "*" in value:
+                # Handle wildcard in simple string match
+                if backend == "postgresql":
+                    return text(
+                        f"manifest->>'{manifest_key}' ILIKE '{value.replace('*', '%')}'"
+                    )
+                else:
+                    return text(
+                        f"json_extract(manifest, '$.{manifest_key}') LIKE '{value.replace('*', '%')}'"
+                    )
+            else:
+                if backend == "postgresql":
+                    return text(f"manifest->>'{manifest_key}' = '{value}'")
+                else:
+                    return text(f"json_extract(manifest, '$.{manifest_key}') = '{value}'")
+
+    def _process_manifest_filter(self, manifest_filter, backend):
+        """Process manifest filter with logical operators."""
+        if not isinstance(manifest_filter, dict):
+            return None
+
+        conditions = []
+        for key, value in manifest_filter.items():
+            if key == "$and":
+                # Process AND conditions
+                and_conditions = [
+                    self._process_manifest_filter(cond, backend) for cond in value
+                ]
+                conditions.append(and_(*[c for c in and_conditions if c is not None]))
+            elif key == "$or":
+                # Process OR conditions
+                or_conditions = [
+                    self._process_manifest_filter(cond, backend) for cond in value
+                ]
+                conditions.append(or_(*[c for c in or_conditions if c is not None]))
+            elif isinstance(value, dict):
+                # Process operators
+                for op, op_value in value.items():
+                    if op in ["$like", "$in", "$all"]:
+                        conditions.append(
+                            self._build_manifest_condition(key, op, op_value, backend)
+                        )
+            else:
+                # Handle simple formats
+                if isinstance(value, list):
+                    # Array values - use $all operator by default
+                    conditions.append(
+                        self._build_manifest_condition(key, "$all", value, backend)
+                    )
+                elif isinstance(value, str) and "*" in value:
+                    # String with wildcard - use $like operator
+                    conditions.append(
+                        self._build_manifest_condition(key, "$like", value, backend)
+                    )
+                else:
+                    # Simple equality
+                    conditions.append(self._build_manifest_condition(key, "=", value, backend))
+
+        if len(conditions) == 1:
+            return conditions[0]
+        elif len(conditions) > 1:
+            return and_(*conditions)
+        return None
+
     async def list_children(
         self,
         parent_id=None,
@@ -2567,26 +2671,8 @@ class ArtifactController:
                             continue
 
                         if key == "manifest" and isinstance(value, dict):
-                            # Nested search within manifest fields
-                            for manifest_key, manifest_value in value.items():
-                                if "*" in manifest_value:  # Fuzzy matching in manifest
-                                    if backend == "postgresql":
-                                        condition = text(
-                                            f"manifest->>'{manifest_key}' ILIKE '{manifest_value.replace('*', '%')}'"
-                                        )
-                                    else:
-                                        condition = text(
-                                            f"json_extract(manifest, '$.{manifest_key}') LIKE '{manifest_value.replace('*', '%')}'"
-                                        )
-                                else:  # Exact matching in manifest
-                                    if backend == "postgresql":
-                                        condition = text(
-                                            f"manifest->>'{manifest_key}' = '{manifest_value}'"
-                                        )
-                                    else:
-                                        condition = text(
-                                            f"json_extract(manifest, '$.{manifest_key}') = '{manifest_value}'"
-                                        )
+                            condition = self._process_manifest_filter(value, backend)
+                            if condition is not None:
                                 conditions.append(condition)
                             continue
 
