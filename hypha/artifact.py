@@ -2482,9 +2482,7 @@ class ArtifactController:
                 # Quote each value in the array
                 quoted_values = [f"'{v}'" for v in value]
                 array_str = f"ARRAY[{', '.join(quoted_values)}]"
-                return text(
-                    f"(manifest->'{manifest_key}')::jsonb ?| {array_str}"
-                )
+                return text(f"(manifest->'{manifest_key}')::jsonb ?| {array_str}")
             else:
                 conditions = []
                 for v in value:
@@ -2518,7 +2516,9 @@ class ArtifactController:
                 if backend == "postgresql":
                     return text(f"manifest->>'{manifest_key}' = '{value}'")
                 else:
-                    return text(f"json_extract(manifest, '$.{manifest_key}') = '{value}'")
+                    return text(
+                        f"json_extract(manifest, '$.{manifest_key}') = '{value}'"
+                    )
 
     def _process_manifest_filter(self, manifest_filter, backend):
         """Process manifest filter with logical operators."""
@@ -2560,7 +2560,9 @@ class ArtifactController:
                     )
                 else:
                     # Simple equality
-                    conditions.append(self._build_manifest_condition(key, "=", value, backend))
+                    conditions.append(
+                        self._build_manifest_condition(key, "=", value, backend)
+                    )
 
         if len(conditions) == 1:
             return conditions[0]

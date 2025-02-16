@@ -129,7 +129,8 @@ async def test_workspace(fastapi_server, test_user_token):
     ws2 = await api.get_workspace_info("my-new-test-workspace")
     assert ws.id == ws2.id
 
-    await api.disconnect()
+    # Skip disconnect to keep the connection alive so other tests won't be affected
+    # await api.disconnect()
 
 
 async def test_create_workspace_token(fastapi_server, test_user_token):
