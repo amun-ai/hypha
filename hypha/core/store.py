@@ -52,16 +52,58 @@ logger = logging.getLogger("redis-store")
 logger.setLevel(LOGLEVEL)
 
 
+def create_rpc(
+    event_bus,
+    workspace: str,
+    user_info: UserInfo,
+    manager_id: str,
+    client_id: str = None,
+    default_context=None,
+    silent=True,
+    server_base_url=None,
+):
+    """Create a rpc object for a workspace."""
+    client_id = client_id or "anonymous-client-" + random_id(readable=False)
+    assert "/" not in client_id
+    logger.debug("Creating RPC for client %s", client_id)
+    assert user_info is not None, "User info is required"
+    connection = RedisRPCConnection(
+        event_bus,
+        workspace,
+        client_id,
+        user_info,
+        manager_id=manager_id,
+    )
+    rpc = RPC(
+        connection,
+        client_id=client_id,
+        default_context=default_context,
+        workspace=workspace,
+        server_base_url=server_base_url,
+        silent=silent,
+    )
+    rpc.register_codec(
+        {
+            "name": "pydantic-model",
+            "type": BaseModel,
+            "encoder": lambda x: x.model_dump(),
+        }
+    )
+    return rpc
+
+
 class WorkspaceInterfaceContextManager:
     """Workspace interface context manager."""
 
-    def __init__(self, rpc, store, workspace, user_info, timeout=10):
-        self._rpc = rpc
+    def __init__(self, store, workspace, user_info, timeout=10, client_id=None, silent=True):
         self._timeout = timeout
         self._wm = None
         self._store = store
         self._workspace = workspace
         self._user_info = user_info
+        self._client_id = client_id
+        self._silent = silent
+        self._rpc = None
 
     async def __aenter__(self):
         return await self._get_workspace_manager()
@@ -75,6 +117,15 @@ class WorkspaceInterfaceContextManager:
     async def _get_workspace_manager(self):
         # Check if workspace exists
         await self._store.load_or_create_workspace(self._user_info, self._workspace)
+        self._rpc = create_rpc(
+            self._store._event_bus,
+            self._workspace,
+            self._user_info,
+            self._store._manager_id,
+            client_id=self._client_id,
+            server_base_url=self._store.public_base_url,
+            silent=self._silent,
+        )
         self._wm = await self._rpc.get_manager_service({"timeout": self._timeout})
         self._wm.rpc = self._rpc
         self._wm.disconnect = self._rpc.disconnect
@@ -145,6 +196,7 @@ class RedisStore:
         self._codecs = {}
         self._disconnected_plugins = []
         self._public_workspace_interface = None
+        self._anonymous_workspace_interface = None
         self._root_workspace_interface = None
         self.public_base_url = public_base_url
         self.local_base_url = local_base_url
@@ -787,13 +839,17 @@ class RedisStore:
         """Get the interface of a workspace."""
         assert workspace, "Workspace name is required"
         assert user_info and isinstance(user_info, UserInfo), "User info is required"
+
+        # Return the shared anonymous API for anonymous users
+        if user_info.is_anonymous:
+            return self.get_anonymous_api()
+
         # the client will be hidden if client_id is None
         if silent is None:
             silent = client_id is None
         client_id = client_id or "client-" + random_id(readable=False)
-        rpc = self.create_rpc(workspace, user_info, client_id=client_id, silent=silent)
         return WorkspaceInterfaceContextManager(
-            rpc, self, workspace, user_info, timeout=timeout
+            self, workspace, user_info, timeout=timeout, client_id=client_id, silent=silent
         )
 
     @schema_method
@@ -818,33 +874,16 @@ class RedisStore:
         silent=True,
     ):
         """Create a rpc object for a workspace."""
-        client_id = client_id or "anonymous-client-" + random_id(readable=False)
-        assert "/" not in client_id
-        logger.debug("Creating RPC for client %s", client_id)
-        assert user_info is not None, "User info is required"
-        connection = RedisRPCConnection(
+        return create_rpc(
             self._event_bus,
             workspace,
-            client_id,
             user_info,
-            manager_id=self._manager_id,
-        )
-        rpc = RPC(
-            connection,
+            self._manager_id,
             client_id=client_id,
             default_context=default_context,
-            workspace=workspace,
             server_base_url=self.public_base_url,
             silent=silent,
         )
-        rpc.register_codec(
-            {
-                "name": "pydantic-model",
-                "type": BaseModel,
-                "encoder": lambda x: x.model_dump(),
-            }
-        )
-        return rpc
 
     async def get_workspace_info(self, workspace: str, load: bool = False):
         """Return the workspace information."""
@@ -951,12 +990,6 @@ class RedisStore:
         """Teardown the server."""
         self._ready = False
         logger.info("Tearing down the redis store...")
-        # if self._house_keeping_task:
-        #     self._house_keeping_task.cancel()
-        #     try:
-        #         await self._house_keeping_task
-        #     except asyncio.CancelledError:
-        #         print("Housekeeping task successfully exited.")
         if self._cleanup_servers_task:
             self._cleanup_servers_task.cancel()
             try:
@@ -971,6 +1004,10 @@ class RedisStore:
                 print("Activity tracker successfully exited.")
         client_id = self._public_workspace_interface.rpc.get_client_info()["id"]
         await self.remove_client(client_id, "public", self._root_user, unload=True)
+        if self._anonymous_workspace_interface:
+            client_id = self._anonymous_workspace_interface.rpc.get_client_info()["id"]
+            anonymous_user = generate_anonymous_user()
+            await self.remove_client(client_id, anonymous_user.get_workspace(), self._root_user, unload=True)
         client_id = self._root_workspace_interface.rpc.get_client_info()["id"]
         await self.remove_client(
             client_id, self._root_user.get_workspace(), self._root_user, unload=True
@@ -1056,3 +1093,20 @@ class RedisStore:
                 await self._cleanup_interface()
 
         return WorkspaceManagerWrapper(self)
+
+    def get_anonymous_api(self):
+        """Get the anonymous API."""
+        if self._anonymous_workspace_interface is None:
+            anonymous_user = generate_anonymous_user()
+            anonymous_workspace = anonymous_user.get_workspace()
+            anonymous_user.scope = create_scope(
+                f"{anonymous_workspace}#a", current_workspace=anonymous_workspace
+            )
+            self._anonymous_workspace_interface = WorkspaceInterfaceContextManager(
+                self,
+                anonymous_workspace,
+                anonymous_user,
+                client_id=self._server_id,
+                silent=False
+            )
+        return self._anonymous_workspace_interface
