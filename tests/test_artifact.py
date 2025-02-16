@@ -1313,7 +1313,7 @@ async def test_artifact_manager_with_collection(
     # Remove the dataset artifact from the collection
     await artifact_manager.delete(artifact_id=dataset.id)
 
-    # Confirm deletion by checking the collection’s children
+    # Confirm deletion by checking the collection's children
     collection_items = await artifact_manager.list(parent_id=collection.id)
     item = find_item(collection_items, "id", dataset.id)
     assert item is None
@@ -1761,4 +1761,84 @@ async def test_download_count(minio_server, fastapi_server, test_user_token):
         delete_files=True,
         recursive=True,
     )
+    await artifact_manager.delete(artifact_id=collection.id)
+
+
+async def test_staging_mode_version_handling(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test staging mode checks and version handling."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a test artifact in staging mode
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Test Dataset"},
+        version="stage",
+    )
+
+    # Attempt to edit with a different version while in staging mode
+    with pytest.raises(
+        Exception,
+        match=r".*Artifact is in staging mode.*",
+    ):
+        await artifact_manager.edit(
+            artifact_id=artifact.id,
+            manifest={"name": "Updated Name"},
+            version="v1",
+        )
+
+    # Successfully edit in staging mode
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "Updated in Staging"},
+        version="stage",
+    )
+
+    # Verify the edit
+    updated = await artifact_manager.read(artifact_id=artifact.id, version="stage")
+    assert updated["manifest"]["name"] == "Updated in Staging"
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact.id)
+
+
+async def test_collection_commit_permissions(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """Test permission checks for committing artifacts in collections."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection with restricted permissions
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={"name": "Restricted Collection"},
+        config={"permissions": {"*": "l"}},  # Only list permission for others
+    )
+
+    # Connect as a different user
+    api2 = await connect_to_server(
+        {"name": "test-client-2", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
+    artifact_manager2 = await api2.get_service("public/artifact-manager")
+
+    # Attempt to create and commit an artifact in the collection as the second user
+    with pytest.raises(
+        Exception,
+        match=r".*User does not have permission to perform the operation .*",
+    ):
+        await artifact_manager2.create(
+            type="dataset",
+            parent_id=collection.id,
+            manifest={"name": "Test Dataset"},
+            version="v1",  # This should trigger a commit permission check
+        )
+
+    # Clean up
     await artifact_manager.delete(artifact_id=collection.id)

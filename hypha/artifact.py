@@ -855,20 +855,14 @@ class ArtifactController:
     def _get_artifact_id_cond(self, artifact_id):
         """Get the SQL condition for an artifact ID."""
         if "/" in artifact_id:
-            parts = artifact_id.split("/")
-            if len(parts) == 2:
-                ws, alias = parts
-                return and_(
-                    ArtifactModel.workspace == ws,
-                    ArtifactModel.alias == alias,
-                )
-            elif len(parts) > 2:
-                parent = "/".join(parts[:-1])
-                child_alias = parts[-1]
-                return and_(
-                    ArtifactModel.parent_id == parent,
-                    ArtifactModel.alias == child_alias,
-                )
+            assert (
+                len(artifact_id.split("/")) == 2
+            ), "Invalid artifact ID format, it should be `workspace/alias`."
+            ws, alias = artifact_id.split("/")
+            return and_(
+                ArtifactModel.workspace == ws,
+                ArtifactModel.alias == alias,
+            )
         return ArtifactModel.id == artifact_id
 
     async def _get_artifact(self, session, artifact_id):
@@ -927,7 +921,6 @@ class ArtifactController:
             return artifact, parent_artifact
 
         except Exception as e:
-            logger.error(f"Error retrieving artifact {artifact_id}: {str(e)}")
             raise
 
     def _generate_artifact_data(self, artifact, parent_artifact=None):
