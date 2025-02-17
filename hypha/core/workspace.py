@@ -543,8 +543,19 @@ class WorkspaceManager:
             self._active_ws.inc()
         if self._s3_controller:
             await self._s3_controller.setup_workspace(workspace)
+        
+        # Ensure workspace status is set before emitting events
+        await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
+        
         await self._event_bus.emit("workspace_loaded", workspace.model_dump())
         if user_info.get_workspace() != workspace.id:
+            # Verify workspace exists in Redis before bookmarking
+            try:
+                await self.load_workspace_info(workspace.id, load=False)
+            except KeyError:
+                logger.warning(f"Workspace {workspace.id} not found immediately after creation, retrying...")
+                await asyncio.sleep(0.1)  # Brief pause for Redis consistency
+                
             await self.bookmark(
                 {"bookmark_type": "workspace", "id": workspace.id}, context=context
             )
