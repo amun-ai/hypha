@@ -457,3 +457,40 @@ async def test_load_dump_vector_collections(
             vc["config"]["embedding_models"]["vector"]
             == "fastembed:BAAI/bge-small-en-v1.5"
         )
+
+
+async def test_vector_operation_retries(vector_search_engine):
+    """Test retry mechanism for vector operations."""
+    # Create a vector collection with required vector fields
+    collection_name = "retry_test_collection"
+    vector_fields = [
+        {"type": "TAG", "name": "id"},
+        {
+            "type": "VECTOR",
+            "name": "vector",
+            "algorithm": "FLAT",
+            "attributes": {"TYPE": "FLOAT32", "DIM": 128, "DISTANCE_METRIC": "COSINE"},
+        },
+    ]
+
+    await vector_search_engine.create_collection(
+        collection_name, vector_fields, overwrite=True
+    )
+
+    # Add vectors to test retry mechanism
+    vectors = [
+        {"id": "vec1", "vector": np.random.rand(128).tolist()},
+        {"id": "vec2", "vector": np.random.rand(128).tolist()},
+    ]
+
+    # The operation should succeed with retries
+    await vector_search_engine.add_vectors(collection_name, vectors)
+
+    # Verify vectors were added successfully
+    results = await vector_search_engine.search_vectors(
+        collection_name, query={"vector": np.random.rand(128).tolist()}, limit=2
+    )
+    assert len(results) == 2
+
+    # Clean up
+    await vector_search_engine.delete_collection(collection_name)

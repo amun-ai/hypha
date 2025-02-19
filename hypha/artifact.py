@@ -60,6 +60,7 @@ from hypha_rpc.utils import ObjectProxy
 from jsonschema import validate
 from sqlmodel import SQLModel, Field, Relationship, UniqueConstraint
 from typing import Optional, Union, List, Any, Dict
+import asyncio
 
 # Logger setup
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -862,8 +863,7 @@ class ArtifactController:
                 ArtifactModel.workspace == ws,
                 ArtifactModel.alias == alias,
             )
-        else:
-            return ArtifactModel.id == artifact_id
+        return ArtifactModel.id == artifact_id
 
     async def _get_artifact(self, session, artifact_id):
         """
@@ -884,19 +884,44 @@ class ArtifactController:
         """
         query = select(ArtifactModel).where(self._get_artifact_id_cond(artifact_id))
 
-        result = await session.execute(query)
-        artifact = result.scalar_one_or_none()
-        if not artifact:
-            raise KeyError(f"Artifact with ID '{artifact_id}' does not exist.")
-        parent_artifact = None
-        if artifact and artifact.parent_id:
-            parent_query = select(ArtifactModel).where(
-                self._get_artifact_id_cond(artifact.parent_id)
-            )
-            parent_result = await session.execute(parent_query)
-            parent_artifact = parent_result.scalar_one_or_none()
+        try:
+            result = await session.execute(query)
+            artifact = result.scalar_one_or_none()
+            if not artifact:
+                # Add debug logging
+                logger.debug(f"Failed to find artifact with ID '{artifact_id}'")
+                # Try to get the workspace and alias separately for better error message
+                if "/" in artifact_id:
+                    ws, alias = artifact_id.split("/")
+                    query = select(ArtifactModel).where(
+                        and_(
+                            ArtifactModel.workspace == ws,
+                            ArtifactModel.alias == alias,
+                        )
+                    )
+                    result = await session.execute(query)
+                    if result.scalar_one_or_none():
+                        raise KeyError(
+                            f"Artifact exists but failed to retrieve with ID '{artifact_id}', this may be a race condition."
+                        )
+                raise KeyError(f"Artifact with ID '{artifact_id}' does not exist.")
 
-        return artifact, parent_artifact
+            parent_artifact = None
+            if artifact and artifact.parent_id:
+                parent_query = select(ArtifactModel).where(
+                    self._get_artifact_id_cond(artifact.parent_id)
+                )
+                parent_result = await session.execute(parent_query)
+                parent_artifact = parent_result.scalar_one_or_none()
+                if not parent_artifact:
+                    logger.warning(
+                        f"Parent artifact {artifact.parent_id} not found for {artifact_id}"
+                    )
+
+            return artifact, parent_artifact
+
+        except Exception as e:
+            raise
 
     def _generate_artifact_data(self, artifact, parent_artifact=None):
         artifact_data = model_to_dict(artifact)
@@ -918,7 +943,7 @@ class ArtifactController:
                 "l": [
                     "list",
                 ],
-                "l+": ["list", "create", "commit"],
+                "l+": ["list", "create", "edit"],
                 "lv": ["list", "list_vectors"],
                 "lv+": [
                     "list",
@@ -946,7 +971,6 @@ class ArtifactController:
                     "search_vectors",
                     "get_vector",
                     "create",
-                    "commit",
                     "add_vectors",
                 ],
                 "rw": [
@@ -1531,10 +1555,16 @@ class ArtifactController:
                 config["permissions"] = permissions
 
                 versions = []
-                if version != "stage" and version is not None:
-                    if version == "new":
+                if version != "stage":
+                    if version in [None, "new"]:
                         version = f"v{len(versions)}"
-                    comment = comment or f"Initial version"
+                    if parent_artifact and not await self._check_permissions(
+                        parent_artifact, user_info, "commit"
+                    ):
+                        raise PermissionError(
+                            f"User does not have permission to commit an artifact in the collection '{parent_artifact.alias}'."
+                        )
+                    comment = comment or "Initial version"
                     versions.append(
                         {
                             "version": version,
@@ -1663,6 +1693,17 @@ class ArtifactController:
                 artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "edit", session
                 )
+
+                # Check if artifact is in staging mode
+                if artifact.staging is not None:
+                    if version is not None and version != "stage":
+                        raise ValueError(
+                            "Artifact is in staging mode. You need to commit it before editing to a different version."
+                        )
+                    version = (
+                        "stage"  # Force version to be "stage" when in staging mode
+                    )
+
                 artifact.type = type or artifact.type
                 if manifest:
                     if artifact.type == "collection":
@@ -1682,6 +1723,13 @@ class ArtifactController:
                         versions = artifact.versions or []
                         if version == "new":
                             version = f"v{len(versions)}"
+
+                        if not await self._check_permissions(
+                            parent_artifact, user_info, "commit"
+                        ):
+                            raise PermissionError(
+                                f"User does not have permission to commit an artifact to collection '{parent_artifact.alias}'."
+                            )
                         versions.append(
                             {
                                 "version": version,
@@ -1723,7 +1771,9 @@ class ArtifactController:
                         f"Edited artifact with ID: {artifact_id} (committed), alias: {artifact.alias}, version: {version}"
                     )
                 else:
+                    # Initialize staging list if None
                     artifact.staging = artifact.staging or []
+                    flag_modified(artifact, "staging")  # <-- Add this line
                     logger.info(
                         f"Edited artifact with ID: {artifact_id} (staged), alias: {artifact.alias}"
                     )
@@ -1879,8 +1929,9 @@ class ArtifactController:
                         raise ValueError(f"ValidationError: {str(e)}")
                 assert artifact.manifest, "Artifact must be in staging mode to commit."
 
+                # Only create a new version if explicitly specified
                 if version is not None:
-                    if version == "new":
+                    if version in [None, "new"]:
                         version = f"v{len(versions)}"
                     versions.append(
                         {
@@ -1889,8 +1940,9 @@ class ArtifactController:
                             "created_at": int(time.time()),
                         }
                     )
-                artifact.versions = versions
-                flag_modified(artifact, "versions")
+                    artifact.versions = versions
+                    flag_modified(artifact, "versions")
+
                 artifact.staging = None
                 artifact.last_modified = int(time.time())
                 flag_modified(artifact, "manifest")
@@ -2010,33 +2062,49 @@ class ArtifactController:
         """
         user_info = UserInfo.model_validate(context["user"])
         session = await self._get_session()
-        try:
-            async with session.begin():
-                artifact, parent_artifact = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "add_vectors", session
-                )
-                assert (
-                    artifact.type == "vector-collection"
-                ), "Artifact must be a vector collection."
+        max_retries = 3
+        retry_delay = 0.5  # seconds
 
-                assert artifact.manifest, "Artifact must be committed before upserting."
-                s3_config = self._get_s3_config(artifact, parent_artifact)
-                async with self._create_client_async(s3_config) as s3_client:
-                    prefix = safe_join(
-                        s3_config["prefix"],
-                        f"{artifact.id}/v0",
-                    )
-                    await self._vector_engine.add_vectors(
-                        f"{artifact.workspace}/{artifact.alias}",
-                        vectors,
-                        update=update,
-                        embedding_models=embedding_models
-                        or artifact.config.get("embedding_models"),
-                        s3_client=s3_client,
-                        bucket=s3_config["bucket"],
-                        prefix=prefix,
-                    )
-                logger.info(f"Added vectors to artifact with ID: {artifact_id}")
+        try:
+            for attempt in range(max_retries):
+                try:
+                    async with session.begin():
+                        artifact, parent_artifact = (
+                            await self._get_artifact_with_permission(
+                                user_info, artifact_id, "add_vectors", session
+                            )
+                        )
+                        assert (
+                            artifact.type == "vector-collection"
+                        ), "Artifact must be a vector collection."
+
+                        assert (
+                            artifact.manifest
+                        ), "Artifact must be committed before upserting."
+                        s3_config = self._get_s3_config(artifact, parent_artifact)
+                        async with self._create_client_async(s3_config) as s3_client:
+                            prefix = safe_join(
+                                s3_config["prefix"],
+                                f"{artifact.id}/v0",
+                            )
+                            await self._vector_engine.add_vectors(
+                                f"{artifact.workspace}/{artifact.alias}",
+                                vectors,
+                                update=update,
+                                embedding_models=embedding_models
+                                or artifact.config.get("embedding_models"),
+                                s3_client=s3_client,
+                                bucket=s3_config["bucket"],
+                                prefix=prefix,
+                            )
+                        logger.info(f"Added vectors to artifact with ID: {artifact_id}")
+                        break
+                except KeyError as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Retrying add_vectors due to error: {str(e)}")
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        raise
         except Exception as e:
             raise e
         finally:
@@ -2396,6 +2464,112 @@ class ArtifactController:
         finally:
             await session.close()
 
+    def _build_manifest_condition(self, manifest_key, operator, value, backend):
+        """Helper function to build SQL conditions for manifest fields."""
+        if operator == "$like":
+            # Fuzzy matching
+            if backend == "postgresql":
+                return text(
+                    f"manifest->>'{manifest_key}' ILIKE '{value.replace('*', '%')}'"
+                )
+            else:
+                return text(
+                    f"json_extract(manifest, '$.{manifest_key}') LIKE '{value.replace('*', '%')}'"
+                )
+        elif operator == "$in":
+            # Array containment - any of the values
+            if backend == "postgresql":
+                # Quote each value in the array
+                quoted_values = [f"'{v}'" for v in value]
+                array_str = f"ARRAY[{', '.join(quoted_values)}]"
+                return text(f"(manifest->'{manifest_key}')::jsonb ?| {array_str}")
+            else:
+                conditions = []
+                for v in value:
+                    conditions.append(
+                        text(f"json_extract(manifest, '$.{manifest_key}') LIKE '%{v}%'")
+                    )
+                return or_(*conditions)
+        elif operator == "$all":
+            # Array containment - all values
+            if backend == "postgresql":
+                return text(
+                    f"(manifest->'{manifest_key}')::jsonb @> '{json.dumps(value)}'::jsonb"
+                )
+            else:
+                array_str = json.dumps(value)[1:-1]  # Remove [] brackets
+                return text(
+                    f"json_extract(manifest, '$.{manifest_key}') LIKE '%{array_str}%'"
+                )
+        else:  # exact match
+            if isinstance(value, str) and "*" in value:
+                # Handle wildcard in simple string match
+                if backend == "postgresql":
+                    return text(
+                        f"manifest->>'{manifest_key}' ILIKE '{value.replace('*', '%')}'"
+                    )
+                else:
+                    return text(
+                        f"json_extract(manifest, '$.{manifest_key}') LIKE '{value.replace('*', '%')}'"
+                    )
+            else:
+                if backend == "postgresql":
+                    return text(f"manifest->>'{manifest_key}' = '{value}'")
+                else:
+                    return text(
+                        f"json_extract(manifest, '$.{manifest_key}') = '{value}'"
+                    )
+
+    def _process_manifest_filter(self, manifest_filter, backend):
+        """Process manifest filter with logical operators."""
+        if not isinstance(manifest_filter, dict):
+            return None
+
+        conditions = []
+        for key, value in manifest_filter.items():
+            if key == "$and":
+                # Process AND conditions
+                and_conditions = [
+                    self._process_manifest_filter(cond, backend) for cond in value
+                ]
+                conditions.append(and_(*[c for c in and_conditions if c is not None]))
+            elif key == "$or":
+                # Process OR conditions
+                or_conditions = [
+                    self._process_manifest_filter(cond, backend) for cond in value
+                ]
+                conditions.append(or_(*[c for c in or_conditions if c is not None]))
+            elif isinstance(value, dict):
+                # Process operators
+                for op, op_value in value.items():
+                    if op in ["$like", "$in", "$all"]:
+                        conditions.append(
+                            self._build_manifest_condition(key, op, op_value, backend)
+                        )
+            else:
+                # Handle simple formats
+                if isinstance(value, list):
+                    # Array values - use $all operator by default
+                    conditions.append(
+                        self._build_manifest_condition(key, "$all", value, backend)
+                    )
+                elif isinstance(value, str) and "*" in value:
+                    # String with wildcard - use $like operator
+                    conditions.append(
+                        self._build_manifest_condition(key, "$like", value, backend)
+                    )
+                else:
+                    # Simple equality
+                    conditions.append(
+                        self._build_manifest_condition(key, "=", value, backend)
+                    )
+
+        if len(conditions) == 1:
+            return conditions[0]
+        elif len(conditions) > 1:
+            return and_(*conditions)
+        return None
+
     async def list_children(
         self,
         parent_id=None,
@@ -2499,26 +2673,8 @@ class ArtifactController:
                             continue
 
                         if key == "manifest" and isinstance(value, dict):
-                            # Nested search within manifest fields
-                            for manifest_key, manifest_value in value.items():
-                                if "*" in manifest_value:  # Fuzzy matching in manifest
-                                    if backend == "postgresql":
-                                        condition = text(
-                                            f"manifest->>'{manifest_key}' ILIKE '{manifest_value.replace('*', '%')}'"
-                                        )
-                                    else:
-                                        condition = text(
-                                            f"json_extract(manifest, '$.{manifest_key}') LIKE '{manifest_value.replace('*', '%')}'"
-                                        )
-                                else:  # Exact matching in manifest
-                                    if backend == "postgresql":
-                                        condition = text(
-                                            f"manifest->>'{manifest_key}' = '{manifest_value}'"
-                                        )
-                                    else:
-                                        condition = text(
-                                            f"json_extract(manifest, '$.{manifest_key}') = '{manifest_value}'"
-                                        )
+                            condition = self._process_manifest_filter(value, backend)
+                            if condition is not None:
                                 conditions.append(condition)
                             continue
 

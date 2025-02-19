@@ -38,7 +38,7 @@ async def test_sqlite_create_and_search_artifacts(
     collection = await artifact_manager.create(
         type="collection",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Add multiple datasets to the collection
@@ -167,7 +167,7 @@ async def test_serve_artifact_endpoint(minio_server, fastapi_server, test_user_t
         type="collection",
         alias="public-dataset-gallery",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # list artifact in current workspace
@@ -257,7 +257,7 @@ async def test_http_file_and_directory_endpoint(
     collection = await artifact_manager.create(
         type="collection",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Create a dataset within the collection
@@ -391,7 +391,7 @@ async def test_get_zip_file_content_endpoint(
     collection = await artifact_manager.create(
         type="collection",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Create a dataset within the collection
@@ -525,7 +525,7 @@ async def test_artifact_permissions(
     collection = await artifact_manager.create(
         type="collection",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Verify that anonymous access to the collection works
@@ -789,7 +789,7 @@ async def test_artifact_filtering(
         type="collection",
         manifest=collection_manifest,
         config={
-            "permissions": {"*": "r+"},
+            "permissions": {"*": "rw+"},
         },
     )
 
@@ -894,7 +894,7 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server, test_user_to
     collection = await artifact_manager.create(
         type="collection",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Create a string in yaml with infinite float
@@ -909,7 +909,7 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server, test_user_to
         parent_id=collection.id,
         manifest=dataset_manifest,
         version="stage",
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Add a file to the artifact
@@ -969,7 +969,7 @@ async def test_http_artifact_endpoint(minio_server, fastapi_server, test_user_to
         type="dataset",
         parent_id=collection.id,
         manifest=dataset_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
     # now get the children again
     # due to caching, the new dataset should not be in the response
@@ -1011,7 +1011,7 @@ async def test_edit_existing_artifact(minio_server, fastapi_server, test_user_to
     collection = await artifact_manager.create(
         type="collection",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Create an artifact (dataset) within the collection
@@ -1151,7 +1151,7 @@ async def test_artifact_schema_validation(
         manifest=collection_manifest,
         config={
             "collection_schema": collection_schema,
-            "permissions": {"*": "r", "@": "r+"},
+            "permissions": {"*": "r", "@": "rw+"},
         },
     )
 
@@ -1226,7 +1226,7 @@ async def test_artifact_manager_with_collection(
         type="collection",
         manifest=collection_manifest,
         config={
-            "permissions": {"*": "r", "@": "r+"},
+            "permissions": {"*": "r", "@": "rw+"},
         },
     )
 
@@ -1313,7 +1313,7 @@ async def test_artifact_manager_with_collection(
     # Remove the dataset artifact from the collection
     await artifact_manager.delete(artifact_id=dataset.id)
 
-    # Confirm deletion by checking the collection’s children
+    # Confirm deletion by checking the collection's children
     collection_items = await artifact_manager.list(parent_id=collection.id)
     item = find_item(collection_items, "id", dataset.id)
     assert item is None
@@ -1351,12 +1351,12 @@ async def test_artifact_edge_cases_with_collection(
             type="collection",
             parent_id="non-existent-parent",
             manifest=collection_manifest,
-            config={"permissions": {"*": "r", "@": "r+"}},
+            config={"permissions": {"*": "r", "@": "rw+"}},
         )
 
     # Successfully create the collection with orphan set by default
     collection = await artifact_manager.create(
-        manifest=collection_manifest, config={"permissions": {"*": "r", "@": "r+"}}
+        manifest=collection_manifest, config={"permissions": {"*": "r", "@": "rw+"}}
     )
 
     # Create a dataset artifact within the collection
@@ -1443,7 +1443,7 @@ async def test_artifact_search_in_manifest(
     collection = await artifact_manager.create(
         type="collection",
         manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
     # Create multiple artifacts within the collection for search tests
@@ -1513,13 +1513,42 @@ async def test_artifact_search_in_manifest(
     search_results = await artifact_manager.list(
         parent_id=collection.id,
         filters={
-            "manifest": {"name": "Test Dataset 3", "description": "A test dataset 1"}
+            "manifest": {
+                "$or": [
+                    {"name": "Test Dataset 3"},
+                    {"description": "A test dataset 1"},
+                ]
+            }
         },
-        mode="OR",
     )
-    assert (
-        len(search_results) == 2
-    )  # Matches for either dataset 1 or 3 based on OR filter
+    assert len(search_results) == 2  # Matches for either dataset 1 or 3
+
+    # Test search with multiple filters in AND mode (implicit)
+    search_results = await artifact_manager.list(
+        parent_id=collection.id,
+        filters={
+            "manifest": {
+                "name": "Test Dataset 3",
+                "description": "A test dataset 3",
+            }
+        },
+    )
+    assert len(search_results) == 1
+    assert search_results[0]["manifest"]["name"] == "Test Dataset 3"
+
+    # Test fuzzy search using wildcards
+    search_results = await artifact_manager.list(
+        parent_id=collection.id,
+        filters={"manifest": {"name": "Test*"}},
+    )
+    assert len(search_results) == 5  # All datasets match "Test*" in the name
+
+    # Test fuzzy search with multiple wildcards
+    search_results = await artifact_manager.list(
+        parent_id=collection.id,
+        filters={"manifest": {"name": "*Dataset*"}},
+    )
+    assert len(search_results) == 5  # All datasets match "*Dataset*"
 
     # Clean up by deleting all artifacts and the collection
     for i in range(5):
@@ -1527,238 +1556,183 @@ async def test_artifact_search_in_manifest(
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_artifact_search_with_filters(
+async def test_artifact_search_with_array_filters(
     minio_server, fastapi_server, test_user_token
 ):
-    """Test search functionality with specific key-value filters in the manifest, supporting multiple filters and AND/OR modes."""
-
-    # Connect to the server and initialize the artifact manager
+    """Test search functionality with array filters in the manifest."""
     api = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
-    # Create a collection for testing filter-based search
-    collection_manifest = {
-        "name": "Filter Test Collection",
-        "description": "A collection to test filter functionality",
-    }
+    # Create a collection for testing array filters
     collection = await artifact_manager.create(
         type="collection",
-        manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        manifest={
+            "name": "Array Filter Test Collection",
+            "description": "A collection to test array filter functionality",
+        },
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
-    # Create multiple artifacts with varied attributes inside the collection
-    for i in range(5):
-        dataset_manifest = {
-            "name": f"Dataset {i}",
-            "description": f"Description for dataset {i}",
-        }
-        await artifact_manager.create(
-            type="dataset" if i % 2 == 0 else "application",
-            alias=f"dataset-{i}",
+    # Create multiple artifacts with array fields in manifest
+    artifacts = []
+    test_data = [
+        {
+            "name": "Dataset 1",
+            "tags": ["tag1", "tag2", "tag3"],
+            "categories": ["cat1", "cat2"],
+        },
+        {
+            "name": "Dataset 2",
+            "tags": ["tag2", "tag3", "tag4"],
+            "categories": ["cat2", "cat3"],
+        },
+        {
+            "name": "Dataset 3",
+            "tags": ["tag1", "tag4", "tag5"],
+            "categories": ["cat1", "cat3"],
+        },
+    ]
+
+    for data in test_data:
+        artifact = await artifact_manager.create(
+            type="dataset",
             parent_id=collection.id,
-            manifest=dataset_manifest,
+            manifest=data,
         )
+        artifacts.append(artifact)
 
-    # Filter by type to return only datasets
-    search_results = await artifact_manager.list(
-        parent_id=collection.id, filters={"type": "dataset"}, mode="AND"
-    )
-    assert len(search_results) == 3
-    for result in search_results:
-        assert result["type"] == "dataset"
-
-    # Filter by a field in the manifest: exact name match
-    search_results = await artifact_manager.list(
-        parent_id=collection.id, filters={"manifest": {"name": "Dataset 3"}}, mode="AND"
-    )
-    assert len(search_results) == 1
-    assert search_results[0]["manifest"]["name"] == "Dataset 3"
-
-    # Filter by multiple fields in the manifest using OR mode
-    search_results = await artifact_manager.list(
+    # Test filtering by single tag
+    results = await artifact_manager.list(
         parent_id=collection.id,
-        filters={
-            "manifest": {
-                "name": "Dataset 3",
-                "description": "Description for dataset 1",
-            }
-        },
-        mode="OR",
+        filters={"manifest": {"tags": ["tag1"]}},
     )
-    assert (
-        len(search_results) == 2
-    )  # Matches for either dataset 1 or 3 based on OR filter
+    assert len(results) == 2  # Should match Dataset 1 and 3
+    assert set(r["manifest"]["name"] for r in results) == {"Dataset 1", "Dataset 3"}
 
-    # Filter by multiple fields in the manifest using AND mode
-    search_results = await artifact_manager.list(
+    # Test filtering by multiple tags
+    results = await artifact_manager.list(
         parent_id=collection.id,
-        filters={
-            "manifest": {
-                "name": "Dataset 3",
-                "description": "Description for dataset 3",
-            }
-        },
-        mode="AND",
+        filters={"manifest": {"tags": ["tag2", "tag3"]}},
     )
-    assert len(search_results) == 1
-    assert search_results[0]["manifest"]["name"] == "Dataset 3"
+    assert len(results) == 2  # Should match Dataset 1 and 2
+    assert set(r["manifest"]["name"] for r in results) == {"Dataset 1", "Dataset 2"}
 
-    # Filter with a fuzzy match in the description
-    search_results = await artifact_manager.list(
+    # Test filtering by multiple array fields
+    results = await artifact_manager.list(
         parent_id=collection.id,
-        filters={"manifest": {"description": "Description for dataset*"}},
-        mode="AND",
+        filters={"manifest": {"tags": ["tag1"], "categories": ["cat1"]}},
     )
-    assert (
-        len(search_results) == 5
-    )  # All items match since the description pattern is common
+    assert len(results) == 2  # Should match artifacts with both tag1 and cat1
+    assert set(r["manifest"]["name"] for r in results) == {"Dataset 1", "Dataset 3"}
 
-    # Clean up by deleting the datasets and the collection
-    for i in range(5):
-        await artifact_manager.delete(artifact_id=f"dataset-{i}")
+    # Clean up
+    for artifact in artifacts:
+        await artifact_manager.delete(artifact_id=artifact.id)
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_download_count(minio_server, fastapi_server, test_user_token):
-    """Test the download count functionality for artifacts."""
+async def test_artifact_search_with_advanced_filters(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test search functionality with advanced filter operators."""
     api = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
-    # Create a collection for testing download count
-    collection_manifest = {
-        "name": "Download Test Collection",
-        "description": "A collection to test download count functionality",
-    }
+    # Create a collection for testing
     collection = await artifact_manager.create(
         type="collection",
-        manifest=collection_manifest,
-        config={"permissions": {"*": "r", "@": "r+"}},
+        manifest={
+            "name": "Advanced Filter Test Collection",
+            "description": "Testing advanced filter functionality",
+        },
+        config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
-    # Create an artifact inside the collection
-    dataset_manifest = {
-        "name": "Download Test Dataset",
-        "description": "A test dataset for download count",
-    }
-    artifact = await artifact_manager.create(
-        type="dataset",
+    # Create test artifacts
+    test_data = [
+        {
+            "name": "Dataset 1",
+            "tags": ["tag1", "tag2", "tag3"],
+            "categories": ["cat1", "cat2"],
+            "version": "1.0.0",
+        },
+        {
+            "name": "Dataset 2",
+            "tags": ["tag2", "tag3", "tag4"],
+            "categories": ["cat2", "cat3"],
+            "version": "2.0.0",
+        },
+        {
+            "name": "Dataset 3",
+            "tags": ["tag1", "tag4", "tag5"],
+            "categories": ["cat1", "cat3"],
+            "version": "1.5.0",
+        },
+    ]
+
+    artifacts = []
+    for data in test_data:
+        artifact = await artifact_manager.create(
+            type="dataset",
+            parent_id=collection.id,
+            manifest=data,
+        )
+        artifacts.append(artifact)
+
+    # Test AND condition with array containment and exact match
+    results = await artifact_manager.list(
         parent_id=collection.id,
-        manifest=dataset_manifest,
-        version="stage",
+        filters={
+            "manifest": {
+                "$and": [
+                    {"tags": {"$all": ["tag1", "tag2"]}},
+                    {"categories": {"$in": ["cat1"]}},
+                ]
+            }
+        },
     )
+    assert len(results) == 1
+    assert results[0]["manifest"]["name"] == "Dataset 1"
 
-    # Put a primary file in the artifact
-    put_url = await artifact_manager.put_file(
-        artifact_id=artifact.id,
-        file_path="example.txt",
-        download_weight=0.5,  # Set as primary for download count
+    # Test OR condition with fuzzy matching
+    results = await artifact_manager.list(
+        parent_id=collection.id,
+        filters={
+            "manifest": {
+                "$or": [
+                    {"version": {"$like": "1.*"}},
+                    {"tags": {"$in": ["tag4"]}},
+                ]
+            }
+        },
     )
-    source = "file contents of example.txt"
-    response = requests.put(put_url, data=source)
-    assert response.ok
+    assert len(results) == 3  # Should match all datasets
 
-    # Put another non-primary file in the artifact
-    put_url = await artifact_manager.put_file(
-        artifact_id=artifact.id, file_path="example2.txt"
+    # Test complex nested conditions
+    results = await artifact_manager.list(
+        parent_id=collection.id,
+        filters={
+            "manifest": {
+                "$and": [
+                    {
+                        "$or": [
+                            {"tags": {"$in": ["tag4"]}},
+                            {"categories": {"$in": ["cat3"]}},
+                        ]
+                    },
+                    {"version": {"$like": "1.*"}},
+                ]
+            }
+        },
     )
-    response = requests.put(put_url, data="file contents of example2.txt")
-    assert response.ok
+    assert len(results) == 1
+    assert results[0]["manifest"]["name"] == "Dataset 3"
 
-    # Commit the artifact
-    await artifact_manager.commit(artifact_id=artifact.id)
-
-    # Ensure that the download count is initially zero
-    artifact = await artifact_manager.read(
-        artifact_id=artifact.id,
-    )
-    assert artifact["download_count"] == 0
-
-    # Increment the download count of the artifact by download the primary file
-    get_url = await artifact_manager.get_file(
-        artifact_id=artifact.id,
-        file_path="example.txt",
-    )
-    response = requests.get(get_url)
-    assert response.ok
-
-    # Ensure that the download count is incremented
-    artifact = await artifact_manager.read(
-        artifact_id=artifact.id,
-        silent=True,
-    )
-    assert artifact["download_count"] == 0.5
-
-    # download twice will increment the download count by 1
-    get_url = await artifact_manager.get_file(
-        artifact_id=artifact.id,
-        file_path="example.txt",
-    )
-    response = requests.get(get_url)
-    assert response.ok
-
-    # Ensure that the download count is incremented
-    artifact = await artifact_manager.read(
-        artifact_id=artifact.id,
-        silent=True,
-    )
-    assert artifact["download_count"] == 1
-
-    # If we get the example file in silent mode, the download count won't increment
-    get_url = await artifact_manager.get_file(
-        artifact_id=artifact.id,
-        file_path="example.txt",
-        silent=True,
-    )
-    response = requests.get(get_url)
-    assert response.ok
-    get_url = await artifact_manager.get_file(
-        artifact_id=artifact.id,
-        file_path="example.txt",
-        silent=True,
-    )
-    response = requests.get(get_url)
-    assert response.ok
-
-    # Ensure that the download count is not incremented
-    artifact = await artifact_manager.read(
-        artifact_id=artifact.id,
-    )
-    assert artifact["download_count"] == 1
-
-    # download example 2 won't increment the download count
-    get_url = await artifact_manager.get_file(
-        artifact_id=artifact.id,
-        file_path="example2.txt",
-    )
-    response = requests.get(get_url)
-    assert response.ok
-
-    # Ensure that the download count is incremented
-    artifact = await artifact_manager.read(
-        artifact_id=artifact.id,
-    )
-    assert artifact["download_count"] == 1
-
-    # Let's call reset_stats to reset the download count
-    await artifact_manager.reset_stats(
-        artifact_id=artifact.id,
-    )
-
-    # Ensure that the download count is reset
-    artifact = await artifact_manager.read(
-        artifact_id=artifact.id,
-    )
-    assert artifact["download_count"] == 0
-
-    # Clean up by deleting the dataset and the collection
-    await artifact_manager.delete(
-        artifact_id=artifact.id,
-        delete_files=True,
-        recursive=True,
-    )
+    # Clean up
+    for artifact in artifacts:
+        await artifact_manager.delete(artifact_id=artifact.id)
     await artifact_manager.delete(artifact_id=collection.id)

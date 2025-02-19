@@ -112,8 +112,10 @@ class WebsocketServer:
                 assert workspace_info and workspace and client_id, (
                     "Failed to authenticate user to workspace: %s" % workspace_info.id
                 )
-                # We operate as the root user to remove and add clients
-                await self.check_client(client_id, workspace_info.id, user_info)
+                # If the client is not reconnecting, check if it exists
+                if not reconnection_token:
+                    # We operate as the root user to remove and add clients
+                    await self.check_client(client_id, workspace_info.id, user_info)
             except Exception as e:
                 reason = f"Failed to establish connection: {str(e)}"
                 await self.disconnect(
