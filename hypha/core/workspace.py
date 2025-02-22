@@ -1465,16 +1465,6 @@ class WorkspaceManager:
                 workspace_info = WorkspaceInfo.model_validate(
                     json.loads(workspace_info.decode())
                 )
-                # If workspace exists but isn't ready, wait for preparation
-                status_data = await self._redis.get(f"workspace_status:{workspace}")
-                if status_data:
-                    status = json.loads(status_data.decode())
-                    if status["status"] == WorkspaceStatus.LOADING:
-                        # Already being prepared, just return
-                        return workspace_info
-
-                # Set loading status if not already loading
-                await self._set_workspace_status(workspace, WorkspaceStatus.LOADING)
                 return workspace_info
         except Exception as e:
             logger.error(f"Failed to load workspace info from Redis: {e}")
@@ -1503,9 +1493,6 @@ class WorkspaceManager:
                 "workspaces", workspace_info.id, workspace_info.model_dump_json()
             )
 
-            # Set initial loading status
-            await self._set_workspace_status(workspace, WorkspaceStatus.LOADING)
-
             # Start preparation tasks
             task = asyncio.create_task(self._prepare_workspace(workspace_info))
             background_tasks.add(task)
@@ -1518,10 +1505,6 @@ class WorkspaceManager:
             return workspace_info
 
         except Exception as e:
-            # Make sure we set error status on failure
-            await self._set_workspace_status(
-                workspace, WorkspaceStatus.CLOSED, error=str(e)
-            )
             logger.debug(f"Workspace {workspace} does not exist")
             raise
 
@@ -1779,31 +1762,8 @@ class WorkspaceManager:
             await self._s3_controller.save_workspace_config(workspace)
         await self._event_bus.emit("workspace_changed", workspace.model_dump())
 
-    async def _set_workspace_status(
-        self,
-        workspace_id: str,
-        status: str,
-        error: Optional[str] = None,
-        errors: Optional[dict] = None,
-    ):
-        """Set workspace status."""
-        status_data = {
-            "status": status,
-            "timestamp": time.time(),
-            "error": error,
-            "errors": errors,
-        }
-        await self._redis.set(
-            f"workspace_status:{workspace_id}", json.dumps(status_data)
-        )
-        await self._event_bus.emit(
-            "workspace_status_changed", {"id": workspace_id, "status": status_data}
-        )
-
     async def _prepare_workspace(self, workspace_info: WorkspaceInfo):
         """Prepare the workspace."""
-        await self._set_workspace_status(workspace_info.id, WorkspaceStatus.LOADING)
-
         errors = {}
         try:
             if workspace_info.persistent:
@@ -1814,9 +1774,7 @@ class WorkspaceManager:
                     errors["artifact_manager"] = traceback.format_exc()
                 try:
                     if self._server_app_controller:
-                        await self._server_app_controller.prepare_workspace(
-                            workspace_info
-                        )
+                        await self._server_app_controller.prepare_workspace(workspace_info)
                 except Exception as e:
                     errors["server_app_controller"] = traceback.format_exc()
 
@@ -1826,20 +1784,13 @@ class WorkspaceManager:
                 "workspaces", workspace_info.id, workspace_info.model_dump_json()
             )
 
-            # Set workspace status with errors field
-            await self._set_workspace_status(
-                workspace_info.id,
-                WorkspaceStatus.READY,
-                errors=errors if errors else None,
-            )
-
             await self._event_bus.emit("workspace_ready", workspace_info.model_dump())
             logger.info("Workspace %s prepared.", workspace_info.id)
 
         except Exception as e:
-            error_msg = str(e)
-            await self._set_workspace_status(
-                workspace_info.id, WorkspaceStatus.CLOSED, error=error_msg
+            workspace_info.status = {"ready": False, "error": str(e)}
+            await self._redis.hset(
+                "workspaces", workspace_info.id, workspace_info.model_dump_json()
             )
             raise
 
@@ -1853,8 +1804,6 @@ class WorkspaceManager:
             if not await self._redis.hexists("workspaces", ws):
                 logger.warning(f"Workspace {ws} has already been unloaded.")
                 return
-
-            await self._set_workspace_status(ws, WorkspaceStatus.UNLOADING)
 
             winfo = await self.load_workspace_info(ws, load=False)
             winfo.status = None
@@ -1886,21 +1835,13 @@ class WorkspaceManager:
 
             await self._close_workspace(winfo)
             await self._redis.hdel("workspaces", ws)
-            await self._set_workspace_status(ws, WorkspaceStatus.CLOSED)
 
         except Exception as e:
-            error_msg = str(e)
-            await self._set_workspace_status(
-                ws, WorkspaceStatus.CLOSED, error=error_msg
-            )
             logger.error(f"Failed to unload workspace: {e}")
             raise
 
     async def _close_workspace(self, workspace_info: WorkspaceInfo):
         """Archive the workspace."""
-        assert (
-            workspace_info.status is None
-        ), "Workspace must be unloaded before archiving."
         if workspace_info.persistent:
             if self._artifact_manager:
                 try:
@@ -1919,60 +1860,37 @@ class WorkspaceManager:
         logger.info("Workspace %s unloaded.", workspace_info.id)
 
     @schema_method
-    async def wait_until_ready(self, timeout: Optional[int] = 60, context=None):
-        """Wait for the workspace to be ready with status checking."""
+    async def check_status(
+        self,
+        context=None
+    ) -> dict:
+        """Check the status of the workspace."""
+        assert context is not None, "Context cannot be None"
         ws = context["ws"]
-        status_key = f"workspace_status:{ws}"
+        
+        # Check if workspace exists
+        try:
+            workspace_info = await self.load_workspace_info(ws, load=False)
+        except KeyError:
+            return {"status": "not_found", "error": f"Workspace {ws} not found"}
 
-        async def check_status():
-            status_data = await self._redis.get(status_key)
-            if not status_data:
-                return None
-            return json.loads(status_data.decode())
-
-        start_time = time.time()
-        while True:
-            status_data = await check_status()
-
-            if not status_data:
-                raise RuntimeError(f"Workspace {ws} status not found")
-
-            current_status = status_data["status"]
-
-            if current_status == WorkspaceStatus.READY:
-                # Ensure the status object has an errors field
-                if "errors" not in status_data:
-                    status_data["errors"] = None
-                return {"ready": True, "status": status_data}
-
-            if current_status == WorkspaceStatus.LOADING:
-                if time.time() - start_time > timeout:
-                    raise TimeoutError(f"Workspace {ws} preparation timed out")
-                # Continue waiting
-
-            elif current_status == WorkspaceStatus.CLOSED:
-                # For daemon apps, try to prepare the workspace
-                workspace_info = await self.load_workspace_info(ws)
-                if workspace_info and workspace_info.persistent:
-                    await self._prepare_workspace(workspace_info)
-                    continue
-
-                if status_data.get("error"):
-                    raise RuntimeError(
-                        f"Workspace preparation failed: {status_data['error']}"
-                    )
-                raise RuntimeError(f"Workspace {ws} is closed")
-
-            elif current_status == WorkspaceStatus.UNLOADING:
-                raise RuntimeError(f"Workspace {ws} is being unloaded")
-
-            # Wait for status change event
-            try:
-                await self._event_bus.wait_for(
-                    "workspace_status_changed", match={"id": ws}, timeout=1.0
-                )
-            except asyncio.TimeoutError:
-                continue
+        # Check workspace status
+        if not workspace_info.status:
+            return {"status": "loading"}
+        
+        if workspace_info.status.get("ready"):
+            errors = workspace_info.status.get("errors", {})
+            return {
+                "status": "ready",
+                "errors": errors if errors else None
+            }
+        elif workspace_info.status.get("error"):
+            return {
+                "status": "error", 
+                "error": workspace_info.status["error"]
+            }
+        else:
+            return {"status": "loading"}
 
     @schema_method
     async def cleanup(
@@ -2060,7 +1978,7 @@ class WorkspaceManager:
             "get_summary": self.get_summary,
             "ping": self.ping_client,
             "cleanup": self.cleanup,
-            "wait_until_ready": self.wait_until_ready,
+            "check_status": self.check_status,
         }
         interface["config"].update(self._server_info)
         return interface
@@ -2134,3 +2052,19 @@ class WorkspaceManager:
             logger.warning(
                 f"Skip unloading workspace {workspace} because it is not empty, remaining clients: {client_keys[:10]}..."
             )
+
+    async def _set_workspace_status(self, workspace_id: str, status: str):
+        """Set the status of a workspace."""
+        try:
+            workspace_info = await self.load_workspace_info(workspace_id, load=False)
+            workspace_info.status = {"status": status}
+            await self._redis.hset(
+                "workspaces", workspace_id, workspace_info.model_dump_json()
+            )
+            await self._event_bus.emit("workspace_status_changed", {
+                "workspace": workspace_id,
+                "status": status
+            })
+        except Exception as e:
+            logger.error(f"Failed to set workspace status: {e}")
+            raise

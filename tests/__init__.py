@@ -1,6 +1,8 @@
 """Test the hypha module."""
 
 import uuid
+import time
+import asyncio
 
 SIO_PORT = 38283
 SIO_PORT2 = 38223
@@ -40,3 +42,15 @@ def find_item(items, key, value):
         return None
 
     return filtered[0]
+
+async def wait_for_workspace_ready(api, timeout=30):
+    """Wait for workspace to be ready."""
+    start_time = time.time()
+    while True:
+        status = await api.check_status()
+        if status["status"] == "ready":
+            break
+        if time.time() - start_time > timeout:
+            raise TimeoutError("Workspace failed to become ready")
+        await asyncio.sleep(0.1)
+    return status
