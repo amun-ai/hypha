@@ -1736,3 +1736,119 @@ async def test_artifact_search_with_advanced_filters(
     for artifact in artifacts:
         await artifact_manager.delete(artifact_id=artifact.id)
     await artifact_manager.delete(artifact_id=collection.id)
+
+
+async def test_artifact_version_management(minio_server, fastapi_server, test_user_token):
+    """Test version management functionality for artifacts."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection for testing
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={
+            "name": "Version Test Collection",
+            "description": "A collection for testing version management",
+        },
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    # Create an artifact with initial version (should be created automatically)
+    initial_manifest = {
+        "name": "Version Test Dataset",
+        "description": "Initial version",
+    }
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest=initial_manifest,
+        version="v0",  # Explicitly set initial version
+    )
+
+    # Verify initial version exists
+    assert len(dataset["versions"]) == 1
+    assert dataset["versions"][0]["version"] == "v0"
+
+    # Create a new version in staging mode
+    await artifact_manager.edit(
+        artifact_id=dataset.id,
+        manifest=initial_manifest,
+        version="stage",
+    )
+
+    # Add a file to the staged version
+    file_content = "Content for version 1"
+    put_url = await artifact_manager.put_file(
+        artifact_id=dataset.id,
+        file_path="test.txt",
+    )
+    response = requests.put(put_url, data=file_content)
+    assert response.ok
+
+    # Commit the file to create version 1
+    await artifact_manager.commit(artifact_id=dataset.id, version="v1", comment="Added test.txt")
+
+    # Verify version 1 exists
+    dataset = await artifact_manager.read(artifact_id=dataset.id)
+    assert len(dataset["versions"]) == 2
+    assert dataset["versions"][1]["version"] == "v1"
+    assert dataset["versions"][1]["comment"] == "Added test.txt"
+
+    # Read file from version 1
+    get_url = await artifact_manager.get_file(
+        artifact_id=dataset.id,
+        file_path="test.txt",
+        version="v1",
+    )
+    response = requests.get(get_url)
+    assert response.ok
+    assert response.text == file_content
+
+    # Create another version in staging mode
+    await artifact_manager.edit(
+        artifact_id=dataset.id,
+        manifest=initial_manifest,
+        version="stage",
+    )
+
+    # Add another file for version 2
+    file_content2 = "Content for version 2"
+    put_url = await artifact_manager.put_file(
+        artifact_id=dataset.id,
+        file_path="test2.txt",
+    )
+    response = requests.put(put_url, data=file_content2)
+    assert response.ok
+
+    # Commit to create version 2
+    await artifact_manager.commit(artifact_id=dataset.id, version="v2", comment="Added test2.txt")
+
+    # Verify version 2 exists
+    dataset = await artifact_manager.read(artifact_id=dataset.id)
+    assert len(dataset["versions"]) == 3
+    assert dataset["versions"][2]["version"] == "v2"
+    assert dataset["versions"][2]["comment"] == "Added test2.txt"
+
+    # List files for each version
+    files_v1 = await artifact_manager.list_files(artifact_id=dataset.id, version="v1")
+    assert len(files_v1) == 1
+    assert files_v1[0]["name"] == "test.txt"
+
+    files_v2 = await artifact_manager.list_files(artifact_id=dataset.id, version="v2")
+    assert len(files_v2) == 2
+    assert {f["name"] for f in files_v2} == {"test.txt", "test2.txt"}
+
+    # Delete version 1
+    await artifact_manager.delete(artifact_id=dataset.id, version="v1")
+
+    # Verify version 1 is removed
+    dataset = await artifact_manager.read(artifact_id=dataset.id)
+    assert len(dataset["versions"]) == 2
+    assert dataset["versions"][0]["version"] == "v0"
+    assert dataset["versions"][1]["version"] == "v2"
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=dataset.id)
+    await artifact_manager.delete(artifact_id=collection.id)
