@@ -1835,7 +1835,6 @@ class WorkspaceManager:
 
             await self._close_workspace(winfo)
             await self._redis.hdel("workspaces", ws)
-
         except Exception as e:
             logger.error(f"Failed to unload workspace: {e}")
             raise
