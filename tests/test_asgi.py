@@ -1,6 +1,7 @@
 """Test ASGI services."""
 
 from pathlib import Path
+import asyncio
 
 import pytest
 import requests
@@ -195,3 +196,62 @@ async def test_functions(fastapi_server, test_user_token):
 
     await controller.stop(config.id)
     await api.disconnect()
+
+
+async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
+    """Test concurrent requests to ASGI service with workspace cleanup"""
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+
+    # Get initial workspace count
+    initial_workspaces = await api.list_workspaces()
+
+    # Create a single FastAPI app instance to handle all requests
+    app = FastAPI()
+    @app.get("/api")
+    async def read_api(request: Request):
+        return {"message": "Hello World"}
+
+    async def serve_fastapi(args):
+        await app(args["scope"], args["receive"], args["send"])
+
+    # Register service in public workspace
+    service = await api.register_service(
+        {
+            "id": f"test-asgi",
+            "type": "asgi",
+            "config": {"visibility": "public"},
+            "serve": serve_fastapi,
+        }
+    )
+    sid = service["id"].split(":")[1]
+    # Make 10 concurrent requests
+    async with httpx.AsyncClient() as client:
+        tasks = [
+            client.get(f"{SERVER_URL}/{api.config.workspace}/apps/{sid}/api?_mode=last") for _ in range(10)
+        ]
+        responses = await asyncio.gather(*tasks)
+
+        for response in responses:
+            assert response.status_code == 200, response.text
+            assert response.json()["message"] == "Hello World"
+
+    # Verify no new persistent workspaces created
+    final_workspaces = await api.list_workspaces()
+    assert len(final_workspaces) == len(
+        initial_workspaces
+    ), "No new workspaces should be created for anonymous access"
+
+    # Verify temporary workspaces are cleaned up
+    temp_workspaces = [
+        w
+        for w in final_workspaces
+        if w["id"].startswith("ws-user-") and not w["persistent"]
+    ]
+    assert (
+        len(temp_workspaces) == 0
+    ), "All temporary workspaces should have been cleaned up"
+
+    await api.disconnect()
+
