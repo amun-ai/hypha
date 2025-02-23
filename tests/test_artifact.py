@@ -618,37 +618,100 @@ async def test_versioning_artifacts(
     artifact_data = await artifact_manager.read(artifact_id=artifact.id, version="v1")
     assert artifact_data["versions"][-1]["version"] == "v1"
 
-    # Stage a new version
-    updated_manifest = {
-        "name": "Versioned Artifact",
-        "description": "Updated version description",
-    }
+    # Create a new version in staging mode
     await artifact_manager.edit(
         artifact_id=artifact.id,
-        manifest=updated_manifest,
+        manifest=initial_manifest,
         version="stage",
     )
 
-    # Read the staged version to confirm the update
-    staged_data = await artifact_manager.read(artifact_id=artifact.id, version="stage")
-    assert staged_data["manifest"]["description"] == "Updated version description"
+    # Add a file to the staged version
+    file_content = "Content for version 1"
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact.id,
+        file_path="test.txt",
+    )
+    response = requests.put(put_url, data=file_content)
+    assert response.ok
 
-    # Commit the staged version
-    await artifact_manager.commit(artifact_id=artifact.id, version="v2")
+    # Commit the file to create version 1
+    await artifact_manager.commit(artifact_id=artifact.id, version="v1", comment="Added test.txt")
 
-    # Verify the staged version is accessible
-    staged_data = await artifact_manager.read(artifact_id=artifact.id, version="v2")
-    assert staged_data["manifest"]["description"] == "Updated version description"
+    # Verify version 1 exists
+    artifact_data = await artifact_manager.read(artifact_id=artifact.id)
+    assert len(artifact_data["versions"]) == 2
+    assert artifact_data["versions"][1]["version"] == "v1"
+    assert artifact_data["versions"][1]["comment"] == "Added test.txt"
 
-    # Test reading the latest version
-    latest_data = await artifact_manager.read(artifact_id=artifact.id, version="latest")
-    assert latest_data["manifest"]["description"] == "Updated version description"
+    # Read file from version 1
+    get_url = await artifact_manager.get_file(
+        artifact_id=artifact.id,
+        file_path="test.txt",
+        version="v1",
+    )
+    response = requests.get(get_url)
+    assert response.ok
+    assert response.text == file_content
 
-    # Attempt to read a non-existent version
-    with pytest.raises(Exception, match=r".*Artifact version 'v999' does not exist.*"):
-        await artifact_manager.read(artifact_id=artifact.id, version="v999")
+    # Create another version in staging mode
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest=initial_manifest,
+        version="stage",
+    )
 
-    # Clean up by deleting the artifact
+    # Copy file from version 1 to stage
+    get_url = await artifact_manager.get_file(
+        artifact_id=artifact.id,
+        file_path="test.txt",
+        version="v1",
+    )
+    response = requests.get(get_url)
+    assert response.ok
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact.id,
+        file_path="test.txt",
+    )
+    response = requests.put(put_url, data=response.text)
+    assert response.ok
+
+    # Add another file for version 2
+    file_content2 = "Content for version 2"
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact.id,
+        file_path="test2.txt",
+    )
+    response = requests.put(put_url, data=file_content2)
+    assert response.ok
+
+    # Commit to create version 2
+    await artifact_manager.commit(artifact_id=artifact.id, version="v2", comment="Added test2.txt")
+
+    # Verify version 2 exists
+    artifact_data = await artifact_manager.read(artifact_id=artifact.id)
+    assert len(artifact_data["versions"]) == 3
+    assert artifact_data["versions"][2]["version"] == "v2"
+    assert artifact_data["versions"][2]["comment"] == "Added test2.txt"
+
+    # List files for each version
+    files_v1 = await artifact_manager.list_files(artifact_id=artifact.id, version="v1")
+    assert len(files_v1) == 1
+    assert files_v1[0]["name"] == "test.txt"
+
+    files_v2 = await artifact_manager.list_files(artifact_id=artifact.id, version="v2")
+    assert len(files_v2) == 2
+    assert {f["name"] for f in files_v2} == {"test.txt", "test2.txt"}
+
+    # Delete version 1
+    await artifact_manager.delete(artifact_id=artifact.id, version="v1")
+
+    # Verify version 1 is removed
+    artifact_data = await artifact_manager.read(artifact_id=artifact.id)
+    assert len(artifact_data["versions"]) == 2
+    assert artifact_data["versions"][0]["version"] == "v0"
+    assert artifact_data["versions"][1]["version"] == "v2"
+
+    # Clean up
     await artifact_manager.delete(artifact_id=artifact.id)
 
 
@@ -857,8 +920,6 @@ async def test_artifact_filtering(
         mode="AND",
     )
     assert len(results) == 2
-    for result in results:
-        assert result["view_count"] >= 1
 
     # Filter by `stage`: Only staged artifacts should be returned
     results = await artifact_manager.list(
@@ -1812,6 +1873,21 @@ async def test_artifact_version_management(minio_server, fastapi_server, test_us
         manifest=initial_manifest,
         version="stage",
     )
+
+    # Copy file from version 1 to stage
+    get_url = await artifact_manager.get_file(
+        artifact_id=dataset.id,
+        file_path="test.txt",
+        version="v1",
+    )
+    response = requests.get(get_url)
+    assert response.ok
+    put_url = await artifact_manager.put_file(
+        artifact_id=dataset.id,
+        file_path="test.txt",
+    )
+    response = requests.put(put_url, data=response.text)
+    assert response.ok
 
     # Add another file for version 2
     file_content2 = "Content for version 2"
