@@ -2,10 +2,13 @@
 
 import pytest
 from hypha_rpc import connect_to_server
+import time
+import asyncio
 
 from . import (
     WS_SERVER_URL,
     find_item,
+    wait_for_workspace_ready,
 )
 
 # All test coroutines will be treated as marked.
@@ -145,6 +148,7 @@ async def test_create_workspace_token(fastapi_server, test_user_token):
 
     workspace = await user.create_workspace(
         {
+            "id": "my-new-test-workspace",
             "name": "my-new-test-workspace",
             "description": "This is a test workspace",
             "visibility": "public",  # public/protected
@@ -152,6 +156,11 @@ async def test_create_workspace_token(fastapi_server, test_user_token):
         },
         overwrite=True,
     )
+
+    # Wait for the workspace to be ready
+    status = await wait_for_workspace_ready(user, timeout=5)
+    assert status["status"] == "ready"
+    assert "errors" not in status or status["errors"] is None
 
     print(f"Workspace created: {workspace['name']}")
 
@@ -174,5 +183,7 @@ async def test_workspace_ready(fastapi_server):
             "server_url": server_url,
         }
     )
-    result = await server.wait_until_ready(timeout=1)
-    assert result and result.ready is True and "errors" not in result
+    
+    status = await wait_for_workspace_ready(server, timeout=1)
+    assert status["status"] == "ready"
+    assert "errors" not in status or status["errors"] is None

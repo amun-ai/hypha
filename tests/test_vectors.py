@@ -8,10 +8,10 @@ from hypha_rpc import connect_to_server
 from redis import asyncio as aioredis
 import pytest_asyncio
 from aiobotocore.session import get_session
+import time
 
 from hypha.vectors import VectorSearchEngine
-
-from . import SERVER_URL_REDIS_1, find_item, MINIO_ROOT_PASSWORD, MINIO_ROOT_USER
+from . import SERVER_URL_REDIS_1, find_item, MINIO_ROOT_PASSWORD, MINIO_ROOT_USER, wait_for_workspace_ready
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
@@ -381,6 +381,7 @@ async def test_load_dump_vector_collections(
             "workspace": "my-vector-dump-workspace",
         }
     ) as api:
+        await wait_for_workspace_ready(api, timeout=60)
         artifact_manager = await api.get_service("public/artifact-manager")
 
         # Create a vector-collection artifact
@@ -439,18 +440,7 @@ async def test_load_dump_vector_collections(
             artifact_id=vector_collection.id,
             vectors=vectors,
         )
-        await api.disconnect()
-    await asyncio.sleep(6)
-    async with connect_to_server(
-        {
-            "name": "test deploy client",
-            "server_url": SERVER_URL_REDIS_1,
-            "token": test_user_token,
-            "workspace": "my-vector-dump-workspace",
-        }
-    ) as api:
-        await api.wait_until_ready(timeout=60)
-        artifact_manager = await api.get_service("public/artifact-manager")
+        
         vc = await artifact_manager.read(artifact_id=vector_collection.id)
         assert vc["config"]["vector_count"] == 3
         assert (

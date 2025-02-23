@@ -3,11 +3,12 @@
 from pathlib import Path
 import asyncio
 import requests
+import time
 
 import pytest
 from hypha_rpc import connect_to_server
 
-from . import WS_SERVER_URL, SERVER_URL, find_item
+from . import WS_SERVER_URL, SERVER_URL, find_item, wait_for_workspace_ready
 
 # pylint: disable=too-many-statements
 
@@ -188,12 +189,32 @@ async def test_singleton_apps(fastapi_server, test_user_token):
 
 async def test_daemon_apps(fastapi_server, test_user_token_6, root_user_token):
     """Test the daemon apps."""
+    # First create a persistent workspace
+    async with connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token_6,
+        }
+    ) as api:
+        workspace = await api.create_workspace(
+            {
+                "name": "ws-user-user-6",
+                "description": "Test workspace for daemon apps",
+                "persistent": True,
+            },
+            overwrite=True,
+        )
+        workspace_id = workspace["id"]
+
+    # Now test the daemon app
     async with connect_to_server(
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
             "method_timeout": 30,
             "token": test_user_token_6,
+            "workspace": workspace_id,
             "client_id": "test-client_daemon_1",
         }
     ) as api:
@@ -216,12 +237,14 @@ async def test_daemon_apps(fastapi_server, test_user_token_6, root_user_token):
         assert find_item(apps, "id", config.app_id)
 
         # Store the workspace and app info for later verification
-        workspace_id = api.config["workspace"]
         app_id = config.app_id
 
         # Stop the app
         await controller.stop(config.id)
         print(f"app {config.id} stopped")
+
+    # Add a small delay to allow workspace to fully initialize
+    await asyncio.sleep(1)
 
     # Reconnect with the same token to verify daemon app persistence
     print("Reconnecting with the same token to verify daemon app persistence")
@@ -231,14 +254,12 @@ async def test_daemon_apps(fastapi_server, test_user_token_6, root_user_token):
             "server_url": WS_SERVER_URL,
             "method_timeout": 30,
             "token": test_user_token_6,
-            "workspace": workspace_id,  # Explicitly specify the workspace
+            "workspace": workspace_id,
             "client_id": "test-client",
         }
     ) as api:
-        # Wait for workspace to be ready
         print("Waiting for the workspace to be ready")
-        await api.wait_until_ready()
-
+        await wait_for_workspace_ready(api, timeout=30)
         controller = await api.get_service("public/server-apps")
         running_apps = await controller.list_running()
 

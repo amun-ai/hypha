@@ -1,6 +1,7 @@
 """Test ASGI services."""
 
 from pathlib import Path
+import asyncio
 
 import pytest
 import requests
@@ -195,3 +196,92 @@ async def test_functions(fastapi_server, test_user_token):
 
     await controller.stop(config.id)
     await api.disconnect()
+
+
+async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
+    """Test concurrent requests to ASGI service with workspace cleanup"""
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+
+    # Get initial workspace count
+    initial_workspaces = await api.list_workspaces()
+
+    # Create a single FastAPI app instance to handle all requests
+    app = FastAPI()
+    @app.get("/api")
+    async def read_api(request: Request):
+        return {"message": "Hello World"}
+
+    async def serve_fastapi(args):
+        await app(args["scope"], args["receive"], args["send"])
+
+    # Register service in public workspace
+    service = await api.register_service(
+        {
+            "id": f"test-asgi",
+            "type": "asgi",
+            "config": {"visibility": "public"},
+            "serve": serve_fastapi,
+        }
+    )
+    sid = service["id"].split(":")[1]
+
+    # Add a small delay to ensure service is ready
+    await asyncio.sleep(1)
+
+    # Make concurrent requests with timeout and retries
+    max_retries = 3
+    timeout = httpx.Timeout(30.0, connect=10.0)
+    
+    async def make_request_with_retry(client, url, retry_count=0):
+        try:
+            return await client.get(url, timeout=timeout)
+        except httpx.ReadTimeout:
+            if retry_count < max_retries:
+                await asyncio.sleep(1)  # Add delay between retries
+                return await make_request_with_retry(client, url, retry_count + 1)
+            raise
+
+    # Make requests in smaller batches to reduce load
+    batch_size = 5
+    all_responses = []
+    
+    async with httpx.AsyncClient() as client:
+        for i in range(0, 10, batch_size):
+            tasks = [
+                make_request_with_retry(
+                    client,
+                    f"{SERVER_URL}/{api.config.workspace}/apps/{sid}/api?_mode=last"
+                )
+                for _ in range(batch_size)
+            ]
+            batch_responses = await asyncio.gather(*tasks, return_exceptions=True)
+            all_responses.extend(batch_responses)
+            await asyncio.sleep(0.5)  # Add delay between batches
+
+    # Verify responses
+    for response in all_responses:
+        if isinstance(response, Exception):
+            raise response
+        assert response.status_code == 200, response.text
+        assert response.json()["message"] == "Hello World"
+
+    # Verify no new persistent workspaces created
+    final_workspaces = await api.list_workspaces()
+    assert len(final_workspaces) == len(
+        initial_workspaces
+    ), "No new workspaces should be created for anonymous access"
+
+    # Verify temporary workspaces are cleaned up
+    temp_workspaces = [
+        w
+        for w in final_workspaces
+        if w["id"].startswith("ws-user-") and not w["persistent"]
+    ]
+    assert (
+        len(temp_workspaces) == 0
+    ), "All temporary workspaces should have been cleaned up"
+
+    await api.disconnect()
+
