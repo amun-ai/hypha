@@ -241,7 +241,7 @@ async def rag_pipeline_image(artifact_manager, vector_collection_id, query_image
 
 ### Tips for Implementing Vector Collections and RAG Systems
 
-When using vector collections in the `Artifact Manager`, it’s important to consider the following best practices and tips to optimize memory usage and performance:
+When using vector collections in the `Artifact Manager`, it's important to consider the following best practices and tips to optimize memory usage and performance:
 
 #### 1. **Design Efficient Vector Collections**
 
@@ -262,9 +262,18 @@ When using vector collections in the `Artifact Manager`, it’s important to con
      - To save memory, the `Artifact Manager` dumps all vector data into S3 when a workspace becomes inactive. 
      - If the workspace is reactivated, the vector data will be reloaded into the vector engine (Redis). This process may take time.
    - **Wait for Readiness**:
-     - Ensure that all vector collections are fully loaded before interacting with them by using:
+     - Ensure that all vector collections are fully loaded before interacting with them by implementing a wait loop:
        ```python
-       await server.wait_until_ready()
+       # Wait for workspace to be ready
+       timeout = 30
+       start_time = time.time()
+       while True:
+           status = await server.check_status()
+           if status["status"] == "ready":
+               break
+           if time.time() - start_time > timeout:
+               raise TimeoutError("Workspace failed to become ready")
+           await asyncio.sleep(1)
        ```
 
 #### 4. **Search Tips**
