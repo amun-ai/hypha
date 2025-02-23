@@ -1816,6 +1816,7 @@ async def test_artifact_version_management(minio_server, fastapi_server, test_us
         config={"permissions": {"*": "r", "@": "rw+"}},
     )
 
+
     # Create an artifact with initial version (should be created automatically)
     initial_manifest = {
         "name": "Version Test Dataset",
