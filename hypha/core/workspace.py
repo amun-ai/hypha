@@ -4,6 +4,7 @@ import asyncio
 import logging
 import traceback
 import time
+import inspect
 import os
 import sys
 from typing import Optional, Union, List, Any, Dict
@@ -507,7 +508,7 @@ class WorkspaceManager:
             raise Exception("Only registered user can create workspace.")
 
         try:
-            await self.load_workspace_info(config["id"])
+            await self.load_workspace_info(config["id"], increment_counter=False)
             if not overwrite:
                 raise RuntimeError(f"Workspace already exists: {config['id']}")
             exists = True
@@ -551,7 +552,7 @@ class WorkspaceManager:
         if user_info.get_workspace() != workspace.id:
             # Verify workspace exists in Redis before bookmarking
             try:
-                await self.load_workspace_info(workspace.id, load=False)
+                await self.load_workspace_info(workspace.id, load=False, increment_counter=False)
             except KeyError:
                 logger.warning(f"Workspace {workspace.id} not found immediately after creation, retrying...")
                 await asyncio.sleep(0.1)  # Brief pause for Redis consistency
@@ -1454,8 +1455,14 @@ class WorkspaceManager:
         """Log a app message."""
         await self.log_event("log", msg, context=context)
 
-    async def load_workspace_info(self, workspace: str, load=True) -> WorkspaceInfo:
-        """Load info of the current workspace from the redis store."""
+    async def load_workspace_info(self, workspace: str, load=True, increment_counter=True) -> WorkspaceInfo:
+        """Load info of the current workspace from the redis store.
+        
+        Args:
+            workspace: The workspace ID to load
+            load: Whether to attempt loading from S3 if not found in Redis
+            increment_counter: Whether to increment the active_workspaces counter when loading from S3
+        """
         assert workspace is not None
 
         # First try to get workspace info from Redis
@@ -1498,7 +1505,9 @@ class WorkspaceManager:
             background_tasks.add(task)
             task.add_done_callback(background_tasks.discard)
 
-            self._active_ws.inc()
+            if increment_counter:
+                self._active_ws.inc()
+            
             await self._s3_controller.setup_workspace(workspace_info)
             await self._event_bus.emit("workspace_loaded", workspace_info.model_dump())
 
