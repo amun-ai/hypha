@@ -1172,6 +1172,42 @@ async def test_edit_existing_artifact(minio_server, fastapi_server, test_user_to
     assert dataset["versions"] is not None
     assert len(dataset["versions"]) == 2  # Should have created a new version
 
+
+    # Verify the committed manifest reflects the edited data
+    committed_artifact = await artifact_manager.read(artifact_id=dataset.id)
+    committed_manifest = committed_artifact["manifest"]
+    assert (
+        committed_manifest["description"] == "Updated description of the test dataset"
+    )
+    assert committed_manifest["custom_key"] == 19222
+    versions = committed_artifact["versions"]
+
+    # Retrieve and verify the uploaded file
+    get_url = await artifact_manager.get_file(
+        artifact_id=dataset.id, file_path="example.txt"
+    )
+    response = requests.get(get_url)
+    assert response.status_code == 200
+    assert response.text == file_content
+
+    # Edit it directly
+    await artifact_manager.edit(
+        type="dataset",
+        artifact_id=dataset.id,
+        manifest={"name": "Edit Test Dataset"},
+        version="new",  # auto will create a new version
+    )
+
+    # Verify the manifest updates are committed
+    committed_artifact = await artifact_manager.read(artifact_id=dataset.id)
+    committed_manifest = committed_artifact["manifest"]
+    assert committed_manifest["name"] == "Edit Test Dataset"
+    assert len(versions) + 1 == len(committed_artifact["versions"])
+
+    # Check list of artifacts
+    items = await artifact_manager.list(parent_id=collection.id)
+    item = find_item(items, "id", committed_artifact.id)
+
     # Clean up
     await artifact_manager.delete(artifact_id=dataset.id)
     await artifact_manager.delete(artifact_id=collection.id)
