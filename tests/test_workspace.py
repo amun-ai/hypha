@@ -148,6 +148,7 @@ async def test_create_workspace_token(fastapi_server, test_user_token):
 
     workspace = await user.create_workspace(
         {
+            "id": "my-new-test-workspace",
             "name": "my-new-test-workspace",
             "description": "This is a test workspace",
             "visibility": "public",  # public/protected
@@ -155,6 +156,11 @@ async def test_create_workspace_token(fastapi_server, test_user_token):
         },
         overwrite=True,
     )
+
+    # Wait for the workspace to be ready
+    status = await wait_for_workspace_ready(user, timeout=5)
+    assert status["status"] == "ready"
+    assert "errors" not in status or status["errors"] is None
 
     print(f"Workspace created: {workspace['name']}")
 
