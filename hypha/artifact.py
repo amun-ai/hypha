@@ -1680,7 +1680,6 @@ class ArtifactController:
         secrets: dict = None,
         version: str = None,
         comment: str = None,
-        copy_files: bool = None,
         context: dict = None,
     ):
         """Edit the artifact's manifest and save it in the database."""
@@ -1691,8 +1690,6 @@ class ArtifactController:
         session = await self._get_session()
         manifest = manifest and make_json_safe(manifest)
         config = config and make_json_safe(config)
-        if copy_files is not None and version != "stage":
-            raise ValueError("The copy_files parameter is only used when creating a new version (version='stage').")
 
         try:
             async with session.begin():
@@ -1749,46 +1746,7 @@ class ArtifactController:
                         # Copy files from the previous version if we're creating a new staged version
                         if artifact.staging is None:
                             artifact.staging = []
-                            if copy_files is True:
-                                s3_config = self._get_s3_config(artifact, parent_artifact)
-                                async with self._create_client_async(s3_config) as s3_client:
-                                    # List files from the previous version
-                                    prev_version_index = max(0, len(artifact.versions) - 1)
-                                    prev_version_prefix = safe_join(
-                                        s3_config["prefix"],
-                                        f"{artifact.id}/v{prev_version_index}",
-                                    )
-                                    try:
-                                        files = await list_objects_async(
-                                            s3_client,
-                                            s3_config["bucket"],
-                                            prev_version_prefix + "/",
-                                        )
-                                        # Copy each file to the new version
-                                        for file_info in files:
-                                            if file_info["type"] == "file":
-                                                src_key = safe_join(prev_version_prefix, file_info["name"])
-                                                dst_key = safe_join(
-                                                    s3_config["prefix"],
-                                                    f"{artifact.id}/v{version_index}",
-                                                    file_info["name"],
-                                                )
-                                                copy_source = {
-                                                    "Bucket": s3_config["bucket"],
-                                                    "Key": src_key,
-                                                }
-                                                await s3_client.copy_object(
-                                                    CopySource=copy_source,
-                                                    Bucket=s3_config["bucket"],
-                                                    Key=dst_key,
-                                                )
-                                                artifact.staging.append({
-                                                    "path": file_info["name"],
-                                                    "download_weight": artifact.config.get("download_weights", {}).get(file_info["name"], 0),
-                                                })
-                                    except Exception as e:
-                                        logger.warning(f"Failed to copy files from previous version: {str(e)}")
-                                        artifact.staging = []
+                            flag_modified(artifact, "staging")
                 else:
                     version_index = self._get_version_index(artifact, None)
 
