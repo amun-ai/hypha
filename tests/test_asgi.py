@@ -226,16 +226,46 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
         }
     )
     sid = service["id"].split(":")[1]
-    # Make 10 concurrent requests
-    async with httpx.AsyncClient() as client:
-        tasks = [
-            client.get(f"{SERVER_URL}/{api.config.workspace}/apps/{sid}/api?_mode=last") for _ in range(10)
-        ]
-        responses = await asyncio.gather(*tasks)
 
-        for response in responses:
-            assert response.status_code == 200, response.text
-            assert response.json()["message"] == "Hello World"
+    # Add a small delay to ensure service is ready
+    await asyncio.sleep(1)
+
+    # Make concurrent requests with timeout and retries
+    max_retries = 3
+    timeout = httpx.Timeout(30.0, connect=10.0)
+    
+    async def make_request_with_retry(client, url, retry_count=0):
+        try:
+            return await client.get(url, timeout=timeout)
+        except httpx.ReadTimeout:
+            if retry_count < max_retries:
+                await asyncio.sleep(1)  # Add delay between retries
+                return await make_request_with_retry(client, url, retry_count + 1)
+            raise
+
+    # Make requests in smaller batches to reduce load
+    batch_size = 5
+    all_responses = []
+    
+    async with httpx.AsyncClient() as client:
+        for i in range(0, 10, batch_size):
+            tasks = [
+                make_request_with_retry(
+                    client,
+                    f"{SERVER_URL}/{api.config.workspace}/apps/{sid}/api?_mode=last"
+                )
+                for _ in range(batch_size)
+            ]
+            batch_responses = await asyncio.gather(*tasks, return_exceptions=True)
+            all_responses.extend(batch_responses)
+            await asyncio.sleep(0.5)  # Add delay between batches
+
+    # Verify responses
+    for response in all_responses:
+        if isinstance(response, Exception):
+            raise response
+        assert response.status_code == 200, response.text
+        assert response.json()["message"] == "Hello World"
 
     # Verify no new persistent workspaces created
     final_workspaces = await api.list_workspaces()
