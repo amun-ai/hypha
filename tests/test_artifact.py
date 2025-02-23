@@ -512,7 +512,7 @@ async def test_artifact_permissions(
             "name": "test-client",
             "server_url": SERVER_URL,
             "token": test_user_token,
-            "token": test_user_token,
+            "token": test_user_token_2,
         }
     )
     artifact_manager = await api.get_service("public/artifact-manager")
@@ -611,12 +611,12 @@ async def test_versioning_artifacts(
     artifact = await artifact_manager.create(
         type="dataset",
         manifest=initial_manifest,
-        version="v1",
+        version="v0",
     )
 
     # Verify the initial version
-    artifact_data = await artifact_manager.read(artifact_id=artifact.id, version="v1")
-    assert artifact_data["versions"][-1]["version"] == "v1"
+    artifact_data = await artifact_manager.read(artifact_id=artifact.id, version="v0")
+    assert artifact_data["versions"][-1]["version"] == "v0"
 
     # Create a new version in staging mode
     await artifact_manager.edit(
@@ -634,6 +634,11 @@ async def test_versioning_artifacts(
     response = requests.put(put_url, data=file_content)
     assert response.ok
 
+    # List files in staged version to verify
+    staged_files = await artifact_manager.list_files(artifact_id=artifact.id, version="stage")
+    assert len(staged_files) == 1
+    assert staged_files[0]["name"] == "test.txt"
+
     # Commit the file to create version 1
     await artifact_manager.commit(artifact_id=artifact.id, version="v1", comment="Added test.txt")
 
@@ -642,6 +647,11 @@ async def test_versioning_artifacts(
     assert len(artifact_data["versions"]) == 2
     assert artifact_data["versions"][1]["version"] == "v1"
     assert artifact_data["versions"][1]["comment"] == "Added test.txt"
+
+    # List files in version 1 to verify
+    files_v1 = await artifact_manager.list_files(artifact_id=artifact.id, version="v1")
+    assert len(files_v1) == 1
+    assert files_v1[0]["name"] == "test.txt"
 
     # Read file from version 1
     get_url = await artifact_manager.get_file(
@@ -1849,6 +1859,11 @@ async def test_artifact_version_management(minio_server, fastapi_server, test_us
     response = requests.put(put_url, data=file_content)
     assert response.ok
 
+    # List files in staged version to verify
+    staged_files = await artifact_manager.list_files(artifact_id=dataset.id, version="stage")
+    assert len(staged_files) == 1
+    assert staged_files[0]["name"] == "test.txt"
+
     # Commit the file to create version 1
     await artifact_manager.commit(artifact_id=dataset.id, version="v1", comment="Added test.txt")
 
@@ -1857,6 +1872,11 @@ async def test_artifact_version_management(minio_server, fastapi_server, test_us
     assert len(dataset["versions"]) == 2
     assert dataset["versions"][1]["version"] == "v1"
     assert dataset["versions"][1]["comment"] == "Added test.txt"
+
+    # List files in version 1 to verify
+    files_v1 = await artifact_manager.list_files(artifact_id=dataset.id, version="v1")
+    assert len(files_v1) == 1
+    assert files_v1[0]["name"] == "test.txt"
 
     # Read file from version 1
     get_url = await artifact_manager.get_file(
