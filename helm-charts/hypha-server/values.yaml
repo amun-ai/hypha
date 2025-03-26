@@ -120,8 +120,6 @@ startupCommand:
     - "--host=$(HYPHA_HOST)"
     - "--port=$(HYPHA_PORT)"
     - "--workers=1"
-    - "--loop=uvloop"
-    - "--http=httptools"
 
 # Persistence Configuration
 persistence:
