@@ -6,17 +6,17 @@ services:
     ports:
       - "${HYPHA_PORT:-9527}:9527"
     environment:
-      - JWT_SECRET=${JWT_SECRET}
+      - HYPHA_JWT_SECRET=${HYPHA_JWT_SECRET}
       - HYPHA_HOST=${HYPHA_HOST:-0.0.0.0}
       - HYPHA_PORT=${HYPHA_PORT:-9527}
       - HYPHA_PUBLIC_BASE_URL=${HYPHA_PUBLIC_BASE_URL:-http://localhost:9527}
       - HYPHA_DATABASE_URI=sqlite+aiosqlite:////data/hypha-app-database.db
       # S3 Configuration using MinIO
       - HYPHA_ENABLE_S3=true
-      - HYPHA_S3_ACCESS_KEY=${S3_ACCESS_KEY:-minioadmin}
-      - HYPHA_S3_SECRET_KEY=${S3_SECRET_KEY:-minioadmin}
-      - HYPHA_S3_ENDPOINT_URL=http://minio:9000
-      - HYPHA_S3_ENDPOINT_URL_PUBLIC=${S3_ENDPOINT_URL_PUBLIC:-http://localhost:9000}
+      - HYPHA_ACCESS_KEY_ID=${HYPHA_ACCESS_KEY_ID:-minioadmin}
+      - HYPHA_SECRET_ACCESS_KEY=${HYPHA_SECRET_ACCESS_KEY:-minioadmin}
+      - HYPHA_ENDPOINT_URL=http://minio:9000
+      - HYPHA_ENDPOINT_URL_PUBLIC=${HYPHA_ENDPOINT_URL_PUBLIC:-http://localhost:9000}
     volumes:
       - ${HYPHA_DATA_DIR:-./data/hypha}:/data
     depends_on:
@@ -35,8 +35,8 @@ services:
       - "${MINIO_PORT:-9000}:9000"
       - "${MINIO_CONSOLE_PORT:-9001}:9001"
     environment:
-      - MINIO_ROOT_USER=${S3_ACCESS_KEY:-minioadmin}
-      - MINIO_ROOT_PASSWORD=${S3_SECRET_KEY:-minioadmin}
+      - MINIO_ROOT_USER=${HYPHA_ACCESS_KEY_ID:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${HYPHA_SECRET_ACCESS_KEY:-minioadmin}
     volumes:
       - ${MINIO_DATA_DIR:-./data/minio}:/data
     command: server --console-address ":9001" /data

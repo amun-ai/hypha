@@ -21,9 +21,9 @@ This directory contains a Docker Compose setup for running Hypha Server with Min
    ```
    
    Open the `.env` file and modify the values as needed:
-   - `JWT_SECRET`: Change to a secure random string
-   - `S3_ACCESS_KEY`: MinIO access key (default: minioadmin)
-   - `S3_SECRET_KEY`: MinIO secret key (default: minioadmin)
+   - `HYPHA_JWT_SECRET`: Change to a secure random string
+   - `HYPHA_ACCESS_KEY_ID`: MinIO access key (default: minioadmin)
+   - `HYPHA_SECRET_ACCESS_KEY`: MinIO secret key (default: minioadmin)
 
 3. Create data directories:
    ```bash
@@ -37,7 +37,7 @@ This directory contains a Docker Compose setup for running Hypha Server with Min
 
 5. Access the services:
    - Hypha Server: http://localhost:9520
-   - MinIO Console: http://localhost:9001 (login with S3_ACCESS_KEY/S3_SECRET_KEY)
+   - MinIO Console: http://localhost:9001 (login with HYPHA_ACCESS_KEY_ID/HYPHA_SECRET_ACCESS_KEY)
 
 ## Services
 
@@ -65,10 +65,10 @@ MinIO provides S3-compatible object storage for Hypha.
 
 The Hypha Server is configured to use MinIO as the S3 backend. The following environment variables are set:
 
-- `S3_ACCESS_KEY`: The access key for MinIO
-- `S3_SECRET_KEY`: The secret key for MinIO
-- `S3_ENDPOINT_URL`: The URL of the MinIO server (http://minio:9000)
-- `S3_ENDPOINT_URL_PUBLIC`: The publicly accessible URL of the MinIO server (http://localhost:9000)
+- `HYPHA_ACCESS_KEY_ID`: The access key for MinIO
+- `HYPHA_SECRET_ACCESS_KEY`: The secret key for MinIO
+- `ENDPOINT_URL`: The URL of the MinIO server (http://minio:9000)
+- `HYPHA_ENDPOINT_URL_PUBLIC`: The publicly accessible URL of the MinIO server (http://localhost:9000)
 
 ### Data Storage
 
