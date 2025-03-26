@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   hypha-server:
-    image: ghcr.io/amun-ai/hypha:0.20.47.post5
+    image: ghcr.io/amun-ai/hypha:0.20.47.post14
     ports:
       - "${HYPHA_PORT:-9527}:9527"
     environment:
@@ -12,15 +12,16 @@ services:
       - HYPHA_PUBLIC_BASE_URL=${HYPHA_PUBLIC_BASE_URL:-http://localhost:9527}
       - HYPHA_DATABASE_URI=sqlite+aiosqlite:////data/hypha-app-database.db
       # S3 Configuration using MinIO
-      - S3_ACCESS_KEY=${S3_ACCESS_KEY:-minioadmin}
-      - S3_SECRET_KEY=${S3_SECRET_KEY:-minioadmin}
-      - S3_ENDPOINT_URL=http://minio:9000
-      - S3_ENDPOINT_URL_PUBLIC=${S3_ENDPOINT_URL_PUBLIC:-http://localhost:9000}
+      - HYPHA_ENABLE_S3=true
+      - HYPHA_S3_ACCESS_KEY=${S3_ACCESS_KEY:-minioadmin}
+      - HYPHA_S3_SECRET_KEY=${S3_SECRET_KEY:-minioadmin}
+      - HYPHA_S3_ENDPOINT_URL=http://minio:9000
+      - HYPHA_S3_ENDPOINT_URL_PUBLIC=${S3_ENDPOINT_URL_PUBLIC:-http://localhost:9000}
     volumes:
       - ${HYPHA_DATA_DIR:-./data/hypha}:/data
     depends_on:
       - minio
-    command: python -m uvicorn hypha.server:app --host=0.0.0.0 --port=9527 --workers=1 --loop=uvloop --http=httptools
+    command: python -m uvicorn hypha.server:app --host=0.0.0.0 --port=9527 --workers=1
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9527/health/liveness"]
