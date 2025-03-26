@@ -95,11 +95,11 @@ affinity: {}
 
 # Define environment variables here
 env:
-  - name: JWT_SECRET
+  - name: HYPHA_JWT_SECRET
     valueFrom:
       secretKeyRef:
         name: hypha-secrets
-        key: JWT_SECRET
+        key: HYPHA_JWT_SECRET
   - name: HYPHA_HOST
     value: "0.0.0.0"
   - name: HYPHA_PORT

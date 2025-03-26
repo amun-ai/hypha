@@ -119,12 +119,12 @@ kubectl create namespace hypha
 
 #### Step 3: Create Secrets for Hypha
 
-Generate a `JWT_SECRET` and store it as a Kubernetes secret. Change the secret to your own:
+Generate a `HYPHA_JWT_SECRET` and store it as a Kubernetes secret. Change the secret to your own:
 
 ```bash
-export JWT_SECRET=abcde123 # change this to your own secret
+export HYPHA_JWT_SECRET=abcde123 # change this to your own secret
 kubectl create secret generic hypha-secrets \
-  --from-literal=JWT_SECRET=$JWT_SECRET \
+  --from-literal=HYPHA_JWT_SECRET=$HYPHA_JWT_SECRET \
   --dry-run=client -o yaml | kubectl apply --namespace=hypha -f -
 ```
 
@@ -189,11 +189,11 @@ autoscaling:
   targetCPUUtilizationPercentage: 80
 
 env:
-  - name: JWT_SECRET
+  - name: HYPHA_JWT_SECRET
     valueFrom:
       secretKeyRef:
         name: hypha-secrets
-        key: JWT_SECRET
+        key: HYPHA_JWT_SECRET
   - name: PUBLIC_BASE_URL
     value: "https://hypha.my-company.com"
 
