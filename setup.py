@@ -13,7 +13,7 @@ DESCRIPTION = (
 REQUIREMENTS = [
     "aiofiles",
     "fastapi>=0.70.0,<=0.106.0",
-    "hypha-rpc>=0.20.47",
+    "hypha-rpc>=0.20.49",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=2.6.1",

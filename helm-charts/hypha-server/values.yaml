@@ -8,7 +8,7 @@ image:
   repository: ghcr.io/amun-ai/hypha
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "0.20.47.post5"
+  tag: "0.20.49"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -119,7 +119,6 @@ startupCommand:
     - "hypha.server:app"
     - "--host=$(HYPHA_HOST)"
     - "--port=$(HYPHA_PORT)"
-    - "--workers=1"
 
 # Persistence Configuration
 persistence:

@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   hypha-server:
-    image: ghcr.io/amun-ai/hypha:0.20.47.post14
+    image: ghcr.io/amun-ai/hypha:0.20.49
     ports:
       - "${HYPHA_PORT:-9527}:9527"
     environment:
@@ -21,7 +21,7 @@ services:
       - ${HYPHA_DATA_DIR:-./data/hypha}:/data
     depends_on:
       - minio
-    command: python -m uvicorn hypha.server:app --host=0.0.0.0 --port=9527 --workers=1
+    command: python -m uvicorn hypha.server:app --host=0.0.0.0 --port=9527
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9527/health/liveness"]
