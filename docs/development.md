@@ -1,5 +1,7 @@
 # Development
 
+![Hypha Architecture Diagram](diagram.png)
+
 - We use [`black`](https://github.com/ambv/black) for code formatting.
 
 ```

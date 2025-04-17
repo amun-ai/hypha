@@ -120,7 +120,6 @@ def start_builtin_services(
             store,
             port=args.port,
             in_docker=args.in_docker,
-            workspace_bucket=args.workspace_bucket,
             artifact_manager=artifact_manager,
         )
 
