@@ -365,7 +365,7 @@ The following list shows how permission expansions work:
 
 ---
 
-### `edit(artifact_id: str, manifest: dict = None, type: str = None,  permissions: dict = None, config: dict = None, secrets: dict = None, version: str = None, comment: str = None, copy_files: bool = None) -> None`
+### `edit(artifact_id: str, manifest: dict = None, type: str = None,  permissions: dict = None, config: dict = None, secrets: dict = None, version: str = None, comment: str = None) -> None`
 
 Edits an existing artifact's manifest. The new manifest is staged until committed.
 
@@ -379,7 +379,6 @@ Edits an existing artifact's manifest. The new manifest is staged until committe
 - `config`: Optional. A dictionary containing additional configuration options for the artifact.
 - `version`: Optional. The version of the artifact to edit. By default, it set to None, the version will stay the same. If you want to create a staged version, you can set it to `"stage"`. You can set it to any version in text, e.g. `0.1.0` or `v1`. If you set it to `new`, it will generate a version similar to `v0`, `v1`, etc.
 - `comment`: Optional. A comment to describe the changes made to the artifact.
-- `copy_files`: Optional. A boolean flag indicating whether to copy files from the previous version when creating a new staged version. Default is None. Set to `True` to copy files from the previous version.
 
 **Example:**
 
@@ -389,16 +388,8 @@ await artifact_manager.edit(
     artifact_id="example-dataset",
     manifest=updated_manifest,
     version="stage",
-    copy_files=True  # This is the default behavior
 )
 
-# Create a new version without copying files (orphan branch)
-await artifact_manager.edit(
-    artifact_id="example-dataset",
-    manifest=updated_manifest,
-    version="stage",
-    copy_files=False
-)
 ```
 
 ---
