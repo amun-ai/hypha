@@ -1,4 +1,5 @@
  * [Getting Started](/getting-started)
+ * [Quick Guide](/quick-guide)
  * [Hypha RPC](/hypha-rpc)
  * [Migration Guide](/migration-guide)
  * [Service Type Annotation](/service-type-annotation)

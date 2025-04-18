@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import asyncio
+import time
 
 import pytest
 import requests
@@ -200,9 +201,13 @@ async def test_functions(fastapi_server, test_user_token):
 
 async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
     """Test concurrent requests to ASGI service with workspace cleanup"""
+    start_time = time.time()
+    
     api = await connect_to_server(
         {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
     )
+    setup_time = time.time() - start_time
+    print(f"\nSetup time: {setup_time:.2f} seconds")
 
     # Get initial workspace count
     initial_workspaces = await api.list_workspaces()
@@ -217,6 +222,7 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
         await app(args["scope"], args["receive"], args["send"])
 
     # Register service in public workspace
+    service_start = time.time()
     service = await api.register_service(
         {
             "id": f"test-asgi",
@@ -225,6 +231,9 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
             "serve": serve_fastapi,
         }
     )
+    service_time = time.time() - service_start
+    print(f"Service registration time: {service_time:.2f} seconds")
+    
     sid = service["id"].split(":")[1]
 
     # Add a small delay to ensure service is ready
@@ -235,8 +244,11 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
     timeout = httpx.Timeout(30.0, connect=10.0)
     
     async def make_request_with_retry(client, url, retry_count=0):
+        req_start = time.time()
         try:
-            return await client.get(url, timeout=timeout)
+            response = await client.get(url, timeout=timeout)
+            req_time = time.time() - req_start
+            return response, req_time
         except httpx.ReadTimeout:
             if retry_count < max_retries:
                 await asyncio.sleep(1)  # Add delay between retries
@@ -244,11 +256,15 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
             raise
 
     # Make requests in smaller batches to reduce load
-    batch_size = 5
+    batch_size = 10
+    total_requests = 50
     all_responses = []
+    request_times = []
     
+    requests_start = time.time()
     async with httpx.AsyncClient() as client:
-        for i in range(0, 10, batch_size):
+        for i in range(0, total_requests, batch_size):
+            batch_start = time.time()
             tasks = [
                 make_request_with_retry(
                     client,
@@ -257,8 +273,23 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
                 for _ in range(batch_size)
             ]
             batch_responses = await asyncio.gather(*tasks, return_exceptions=True)
-            all_responses.extend(batch_responses)
-            await asyncio.sleep(0.5)  # Add delay between batches
+            batch_time = time.time() - batch_start
+            print(f"Batch {i//batch_size + 1} time: {batch_time:.2f} seconds")
+            
+            for response in batch_responses:
+                if isinstance(response, tuple):
+                    all_responses.append(response[0])
+                    request_times.append(response[1])
+                else:
+                    all_responses.append(response)
+            
+            await asyncio.sleep(0.1)  # Reduced delay between batches for faster testing
+
+    total_request_time = time.time() - requests_start
+    print(f"\nTotal request time: {total_request_time:.2f} seconds")
+    print(f"Average request time: {sum(request_times)/len(request_times):.2f} seconds")
+    print(f"Min request time: {min(request_times):.2f} seconds")
+    print(f"Max request time: {max(request_times):.2f} seconds")
 
     # Verify responses
     for response in all_responses:
@@ -267,6 +298,7 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
         assert response.status_code == 200, response.text
         assert response.json()["message"] == "Hello World"
 
+    cleanup_start = time.time()
     # Verify no new persistent workspaces created
     final_workspaces = await api.list_workspaces()
     assert len(final_workspaces) == len(
@@ -282,6 +314,12 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
     assert (
         len(temp_workspaces) == 0
     ), "All temporary workspaces should have been cleaned up"
+
+    cleanup_time = time.time() - cleanup_start
+    print(f"Cleanup time: {cleanup_time:.2f} seconds")
+
+    total_time = time.time() - start_time
+    print(f"Total test time: {total_time:.2f} seconds")
 
     await api.disconnect()
 

@@ -352,6 +352,12 @@ async def test_http_file_and_directory_endpoint(
         assert zip_file.read("example.txt").decode() == "file contents of example.txt"
         assert zip_file.read("nested/example2.txt").decode() == file_contents2
 
+    # Check download count
+    artifact = await artifact_manager.read(
+        artifact_id=dataset.id,
+    )
+    assert artifact["download_count"] == 4
+    
     # Get the zip file with all files
     async with httpx.AsyncClient(timeout=200) as client:
         response = await client.get(
@@ -369,7 +375,7 @@ async def test_http_file_and_directory_endpoint(
     artifact = await artifact_manager.read(
         artifact_id=dataset.id,
     )
-    assert artifact["download_count"] == 8
+    assert artifact["download_count"] == 6
 
 
 async def test_get_zip_file_content_endpoint(
@@ -621,36 +627,28 @@ async def test_versioning_artifacts(
     assert len(artifact_data["versions"]) == 1
     assert artifact_data["versions"][-1]["version"] == "v0"
 
-    # Create a new version in staging mode
-    await artifact_manager.edit(
-        artifact_id=artifact.id,
-        manifest=initial_manifest,
-        version="stage",
+    # Test creating with both version and stage=True
+    staged_manifest = {
+        "name": "Staged Artifact",
+        "description": "Testing version and stage parameters",
+    }
+    staged_artifact = await artifact_manager.create(
+        type="dataset",
+        manifest=staged_manifest,
+        version="my_version",  # This should be ignored since stage=True
+        stage=True,
+        config={"permissions": {"*": "rw+"}},
     )
 
-    # Verify staging mode doesn't affect versions
-    staged_data = await artifact_manager.read(artifact_id=artifact.id, version="stage")
-    assert staged_data["versions"] is not None
-    assert len(staged_data["versions"]) == 1  # Should still have original version
+    # Verify it's in staging mode with no versions
+    assert staged_artifact["versions"] == []
+    assert staged_artifact["staging"] is not None
 
-    # Add a file to the staged version
-    file_content = "Content for version 1"
-    put_url = await artifact_manager.put_file(
-        artifact_id=artifact.id,
-        file_path="test.txt",
-    )
-    response = requests.put(put_url, data=file_content)
-    assert response.ok
-
-    # List files in staged version to verify
-    staged_files = await artifact_manager.list_files(artifact_id=artifact.id, version="stage")
-    assert len(staged_files) == 1
-    assert staged_files[0]["name"] == "test.txt"
-
-    # Commit without specifying version (should still create a new version)
-    committed = await artifact_manager.commit(artifact_id=artifact.id)
+    # Commit the staged artifact
+    committed = await artifact_manager.commit(artifact_id=staged_artifact.id)
     assert committed["versions"] is not None
-    assert len(committed["versions"]) == 2  # Should have created a new version
+    assert len(committed["versions"]) == 1
+    assert committed["versions"][0]["version"] == "v0"  # Should get v0 regardless of my_version
 
     # Create another artifact with no explicit version
     another_manifest = {
@@ -667,21 +665,29 @@ async def test_versioning_artifacts(
     assert len(another_artifact["versions"]) == 1
     assert another_artifact["versions"][0]["version"] == "v0"
 
-    # Test direct edit with new version
+    # Test edit with both version and stage=True
     edited = await artifact_manager.edit(
-        artifact_id=another_artifact["id"],
-        manifest={"name": "Updated Name", "description": "Testing version creation on edit"},
-        version="new",
+        artifact_id=another_artifact.id,
+        manifest={"name": "Updated Name", "description": "Testing version and stage parameters"},
+        version="custom_version",  # This should be ignored since stage=True
+        stage=True,
     )
-    assert edited["versions"] is not None
-    assert len(edited["versions"]) == 2  # Should have created a new version
+    assert edited["staging"] is not None
+    assert len(edited["versions"]) == 1  # Should still have only initial version
+
+    # Commit the staged edit
+    committed = await artifact_manager.commit(artifact_id=another_artifact.id)
+    assert committed["versions"] is not None
+    assert len(committed["versions"]) == 2  # Should have created a new version
+    assert committed["versions"][-1]["version"] == "v1"  # Should get v1 regardless of custom_version
 
     # Clean up
     await artifact_manager.delete(artifact_id=artifact.id)
-    await artifact_manager.delete(artifact_id=another_artifact["id"])
+    await artifact_manager.delete(artifact_id=staged_artifact.id)
+    await artifact_manager.delete(artifact_id=another_artifact.id)
 
 
-async def test_commit_always_creates_version(
+async def test_commit_version_handling(
     minio_server, fastapi_server_sqlite, test_user_token
 ):
     """Test that commit always creates a version even when not explicitly specified."""
@@ -694,7 +700,7 @@ async def test_commit_always_creates_version(
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
-    # Create an artifact in staging mode
+    # Create an artifact with both version and stage=True
     manifest = {
         "name": "Test Artifact",
         "description": "Testing version creation on commit",
@@ -702,39 +708,80 @@ async def test_commit_always_creates_version(
     artifact = await artifact_manager.create(
         type="dataset",
         manifest=manifest,
-        version="stage",  # Start in staging mode
+        version="my_version",  # This should be ignored since stage=True
+        stage=True,
     )
 
     # Verify no versions in staging
     assert artifact["versions"] == []
     assert artifact["staging"] is not None
 
-    # Commit without specifying version
+    # Commit without specifying version - should create v0
     committed = await artifact_manager.commit(artifact_id=artifact.id)
     
     # Verify a version was created
     assert committed["versions"] is not None
     assert len(committed["versions"]) == 1
+    assert committed["versions"][0]["version"] == "v0"  # Should get v0 regardless of my_version
     assert committed["staging"] is None
 
-    # Create another staged version
+    # Create another staged version with both version and stage=True
     await artifact_manager.edit(
         artifact_id=artifact.id,
         manifest=manifest,
-        version="stage",
+        version="custom_version",  # This should be ignored since stage=True
+        stage=True,
     )
 
-    # Commit with explicit version
+    # Add a file to the staged version
+    file_content = "Test content"
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact.id,
+        file_path="test.txt",
+    )
+    response = requests.put(put_url, data=file_content)
+    assert response.ok
+
+    # Commit with explicit version - version parameter should be ignored
+    # and a new version (v1) should be created
     committed = await artifact_manager.commit(
         artifact_id=artifact.id,
-        version="v1",
+        version="v5",  # This should be ignored
         comment="Second version"
     )
 
     # Verify new version was added
     assert len(committed["versions"]) == 2
-    assert committed["versions"][-1]["version"] == "v1"
+    assert committed["versions"][-1]["version"] == "v1"  # Should get v1 regardless of v5
     assert committed["versions"][-1]["comment"] == "Second version"
+
+    # Create another staged version with both version and stage=True
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest=manifest,
+        version="another_version",  # This should be ignored since stage=True
+        stage=True,
+    )
+
+    # Add another file
+    file_content = "More test content"
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact.id,
+        file_path="test2.txt",
+    )
+    response = requests.put(put_url, data=file_content)
+    assert response.ok
+
+    # Commit again without version - should create v2
+    committed = await artifact_manager.commit(
+        artifact_id=artifact.id,
+        comment="Third version"
+    )
+
+    # Verify another version was added
+    assert len(committed["versions"]) == 3
+    assert committed["versions"][-1]["version"] == "v2"  # Should get v2 regardless of another_version
+    assert committed["versions"][-1]["comment"] == "Third version"
 
     # Clean up
     await artifact_manager.delete(artifact_id=artifact.id)
@@ -1184,7 +1231,9 @@ async def test_edit_existing_artifact(minio_server, fastapi_server, test_user_to
 
     # Retrieve and verify the uploaded file
     get_url = await artifact_manager.get_file(
-        artifact_id=dataset.id, file_path="example.txt"
+        artifact_id=dataset.id,
+        file_path="example.txt",
+        version="v1",
     )
     response = requests.get(get_url)
     assert response.status_code == 200
@@ -1980,3 +2029,226 @@ async def test_artifact_version_management(minio_server, fastapi_server, test_us
     # Clean up
     await artifact_manager.delete(artifact_id=dataset.id)
     await artifact_manager.delete(artifact_id=collection.id)
+
+
+async def test_default_version_handling(minio_server, fastapi_server, test_user_token):
+    """Test version handling when version and stage parameters are not specified."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create an artifact without specifying version or stage
+    initial_manifest = {
+        "name": "Default Version Test",
+        "description": "Testing default version handling",
+    }
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest=initial_manifest,
+        # No version or stage specified - should create v0
+    )
+
+    # Verify initial version was created
+    assert len(artifact["versions"]) == 1
+    assert artifact["versions"][0]["version"] == "v0"
+    assert artifact["staging"] is None
+
+    # Edit without specifying version or stage - should update latest version
+    updated_manifest = {
+        "name": "Default Version Test",
+        "description": "Updated description",
+    }
+    edited = await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest=updated_manifest,
+        # No version or stage specified - should update v0
+    )
+
+    # Verify the edit updated the latest version
+    assert len(edited["versions"]) == 1
+    assert edited["versions"][0]["version"] == "v0"
+    assert edited["staging"] is None
+
+    # Put artifact in staging mode to add files
+    staged = await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest=updated_manifest,
+        stage=True,
+    )
+    assert staged["staging"] is not None
+
+    # Add a file to test file handling
+    file_content = "Test content"
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact.id,
+        file_path="test.txt",
+    )
+    response = requests.put(put_url, data=file_content)
+    assert response.ok
+
+    # Commit without specifying version - should create v1 since we're committing from staging
+    committed = await artifact_manager.commit(
+        artifact_id=artifact.id,
+    )
+
+    # Verify file is associated with the latest version and a new version was created
+    files = await artifact_manager.list_files(artifact_id=artifact.id)
+    assert len(files) == 1
+    assert files[0]["name"] == "test.txt"
+    assert len(committed["versions"]) == 2  # Now we expect 2 versions
+    assert committed["versions"][0]["version"] == "v0"  # Original version
+    assert committed["versions"][1]["version"] == "v1"  # New version from staging
+    assert committed["staging"] is None
+
+    # Files should only exist in version 1, not in version 0
+    files_v0 = await artifact_manager.list_files(artifact_id=artifact.id, version="v0")
+    assert len(files_v0) == 0  # No files in v0
+
+    files_v1 = await artifact_manager.list_files(artifact_id=artifact.id, version="v1")
+    assert len(files_v1) == 1  # File exists in v1
+    assert files_v1[0]["name"] == "test.txt"
+
+    # Create another artifact with no versions initially
+    another_manifest = {
+        "name": "Another Test",
+        "description": "Testing version creation",
+    }
+    another = await artifact_manager.create(
+        type="dataset",
+        manifest=another_manifest,
+        stage=True,  # Start with no versions
+    )
+
+    # Verify no versions exist initially
+    assert len(another["versions"]) == 0
+    assert another["staging"] is not None
+
+    # Add a file to test file handling
+    file_content = "Another test content"
+    put_url = await artifact_manager.put_file(
+        artifact_id=another.id,
+        file_path="test.txt",
+    )
+    response = requests.put(put_url, data=file_content)
+    assert response.ok
+
+    # Commit the staged artifact to create v0
+    committed = await artifact_manager.commit(
+        artifact_id=another.id,
+    )
+
+    # Verify v0 was created and file exists in v0
+    assert len(committed["versions"]) == 1
+    assert committed["versions"][0]["version"] == "v0"
+    assert committed["staging"] is None
+
+    files = await artifact_manager.list_files(artifact_id=another.id, version="v0")
+    assert len(files) == 1
+    assert files[0]["name"] == "test.txt"
+
+    # Edit without specifying version or stage - should update v0
+    edited = await artifact_manager.edit(
+        artifact_id=another.id,
+        manifest=another_manifest,
+        # No version or stage specified - should update v0
+    )
+
+    # Verify the edit updated v0
+    assert len(edited["versions"]) == 1
+    assert edited["versions"][0]["version"] == "v0"
+    assert edited["staging"] is None
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact.id)
+    await artifact_manager.delete(artifact_id=another.id)
+
+
+async def test_version_handling_rules(minio_server, fastapi_server, test_user_token):
+    """Test version handling rules for create, edit and commit operations."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Test Case 1: Create with stage=True should ignore version parameter
+    manifest = {
+        "name": "Version Rules Test",
+        "description": "Testing version handling rules",
+    }
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest=manifest,
+        stage=True,
+        version="v5",  # This should be ignored since stage=True
+    )
+    assert len(artifact["versions"]) == 0
+    assert artifact["staging"] is not None
+
+    # Commit should create v0 regardless of the version specified in create
+    committed = await artifact_manager.commit(artifact_id=artifact.id)
+    assert len(committed["versions"]) == 1
+    assert committed["versions"][0]["version"] == "v0"
+
+    # Test Case 2: version="stage" is equivalent to stage=True
+    artifact2 = await artifact_manager.create(
+        type="dataset",
+        manifest=manifest,
+        version="stage",  # Equivalent to stage=True
+    )
+    assert len(artifact2["versions"]) == 0
+    assert artifact2["staging"] is not None
+
+    # Test Case 3: Edit with stage=True should ignore version parameter
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest=manifest,
+        stage=True,
+        version="v10",  # This should be ignored since stage=True
+    )
+    edited = await artifact_manager.read(artifact_id=artifact.id, version="stage")
+    assert edited["staging"] is not None
+    assert len(edited["versions"]) == 1  # Still has v0
+
+    # Test Case 4: Edit with version="stage" is equivalent to stage=True
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest=manifest,
+        version="stage",  # Equivalent to stage=True
+    )
+    edited = await artifact_manager.read(artifact_id=artifact.id, version="stage")
+    assert edited["staging"] is not None
+    assert len(edited["versions"]) == 1  # Still has v0
+
+    # Test Case 5: Commit cannot change whether we're editing current or creating new
+    # Add a file to make sure we're creating a new version
+    file_content = "Test content"
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact.id,
+        file_path="test.txt",
+    )
+    response = requests.put(put_url, data=file_content)
+    assert response.ok
+
+    # Commit with a specific version number - should create v1 since we were in staging
+    committed = await artifact_manager.commit(
+        artifact_id=artifact.id,
+        version="v5",  # This should only affect the version number
+    )
+    assert len(committed["versions"]) == 2
+    assert committed["versions"][-1]["version"] == "v1"  # Should be v1 since we're creating new
+    assert committed["staging"] is None
+
+    # Test Case 6: Direct edit without stage should update current version
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "Updated Name"},
+    )
+    edited = await artifact_manager.read(artifact_id=artifact.id)
+    assert edited["manifest"]["name"] == "Updated Name"
+    assert len(edited["versions"]) == 2  # No new version created
+    assert edited["staging"] is None
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact.id)
+    await artifact_manager.delete(artifact_id=artifact2.id)

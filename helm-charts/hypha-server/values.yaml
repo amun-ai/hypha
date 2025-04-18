@@ -8,7 +8,7 @@ image:
   repository: ghcr.io/amun-ai/hypha
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "0.20.47.post5"
+  tag: "0.20.50"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -95,11 +95,11 @@ affinity: {}
 
 # Define environment variables here
 env:
-  - name: JWT_SECRET
+  - name: HYPHA_JWT_SECRET
     valueFrom:
       secretKeyRef:
         name: hypha-secrets
-        key: JWT_SECRET
+        key: HYPHA_JWT_SECRET
   - name: HYPHA_HOST
     value: "0.0.0.0"
   - name: HYPHA_PORT
@@ -119,9 +119,6 @@ startupCommand:
     - "hypha.server:app"
     - "--host=$(HYPHA_HOST)"
     - "--port=$(HYPHA_PORT)"
-    - "--workers=1"
-    - "--loop=uvloop"
-    - "--http=httptools"
 
 # Persistence Configuration
 persistence:

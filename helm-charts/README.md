@@ -21,11 +21,11 @@ Now you need to create a namespace for Hypha:
 kubectl create namespace hypha
 ```
 
-Then, run the bash command to create a `JWT_SECRET` apply these secrets to the cluster:
+Then, run the bash command to create a `HYPHA_JWT_SECRET` apply these secrets to the cluster:
 ```bash
-export JWT_SECRET=abcde123 # change this to your own secret
+export HYPHA_JWT_SECRET=abcde123 # change this to your own secret
 kubectl create secret generic hypha-secrets \
-  --from-literal=JWT_SECRET=$JWT_SECRET \
+  --from-literal=HYPHA_JWT_SECRET=$HYPHA_JWT_SECRET \
   --dry-run=client -o yaml | kubectl apply --namespace=hypha -f -
 ```
 

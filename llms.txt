@@ -1,0 +1,23 @@
+# Hypha
+
+> Hypha is a framework for developing distributed and collaborative applications. It provides a Remote Procedure Call (RPC) system that allows seamless communication between Python and JavaScript, supports serverless functions, ASGI web applications, file operations, artifact management, and vector search capabilities.
+
+Hypha enables building distributed applications with Python and JavaScript. It features a robust RPC system for cross-language communication, supports running serverless functions, hosting ASGI web applications, and provides tools for file operations, artifact management, and vector search.
+
+## Core Documentation
+- [Getting Started](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/getting-started.md): Installation, server setup, and basic client-server communication
+- [Migration Guide](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/migration-guide.md): Guide for migrating between different versions of Hypha
+- [Service Type Annotation](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/service-type-annotation.md): How to add type annotations to Hypha services
+- [Serverless Functions](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/serverless-functions.md): How to define and use serverless functions in Hypha
+- [ASGI Web Apps](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/asgi-apps.md): Using Hypha to serve ASGI web applications
+
+## Features
+- [Launch Service](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/launch-service.md): How to launch services in Hypha
+- [Operate Files](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/operate-files.md): File operations in Hypha
+- [Artifact Manager](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/artifact-manager.md): Managing artifacts with Hypha
+- [Vector Search](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/vector-search.md): Using vector search capabilities in Hypha
+
+## Optional
+- [Development](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/development.md): Guide for developing Hypha
+- [Setup Authentication](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/setup-authentication.md): How to set up authentication in Hypha
+- [Hypha in Pyodide](https://raw.githubusercontent.com/amun-ai/hypha/refs/heads/main/docs/hypha-in-pyodide.md): Using Hypha with Pyodide for browser-based Python 
