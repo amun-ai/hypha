@@ -1662,12 +1662,12 @@ class WorkspaceManager:
                 svc_info.id,
                 {"timeout": config.timeout, "case_conversion": config.case_conversion},
             )
-            assert service_api, f"Failed to get service: {service_id}"
-            workspace = service_id.split("/")[0]
+            assert service_api, f"Failed to get service: {svc_info.id}"
+            workspace = svc_info.id.split("/")[0]
             service_api["config"]["workspace"] = workspace
             service_api["config"][
                 "url"
-            ] = f"{self._server_info['public_base_url']}/{workspace}/services/{service_id.split('/')[1]}"
+            ] = f"{self._server_info['public_base_url']}/{workspace}/services/{svc_info.id}"
             return service_api
         except KeyError as exp:
             if "@" in service_id:
