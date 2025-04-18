@@ -979,11 +979,11 @@ async def test_artifact_filtering(
             await artifact_manager2.commit(artifact_id=artifact.id)
         created_artifacts.append(artifact)
 
-    # Filter by `type`: Only datasets should be returned
+    # Filter by `type`: Only datasets should be returned, staged and committed
     results = await artifact_manager.list(
         parent_id=collection.id, filters={"type": "dataset"}, mode="AND"
     )
-    assert len(results) == 2
+    assert len(results) == 5
     for result in results:
         assert result["type"] == "dataset"
 
@@ -993,7 +993,7 @@ async def test_artifact_filtering(
         filters={"created_by": user_id1},
         mode="AND",
     )
-    assert len(results) == 2
+    assert len(results) == 5
     for result in results:
         assert result["created_by"] == user_id1
 
@@ -1003,8 +1003,9 @@ async def test_artifact_filtering(
         filters={"view_count": [1, None]},  # Filter for any view count >= 1
         mode="AND",
     )
-    assert len(results) == 2
+    assert len(results) == 5
 
+    # Backwards compatibility with version filter
     # Filter by `stage`: Only staged artifacts should be returned
     results = await artifact_manager.list(
         parent_id=collection.id, filters={"version": "stage"}, mode="AND"
