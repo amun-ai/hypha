@@ -39,14 +39,12 @@ class ServerAppController:
         in_docker,
         port: int,
         artifact_manager,
-        workspace_bucket="hypha-workspaces",
     ):
         """Initialize the controller."""
         self.port = int(port)
         self.store = store
         self.in_docker = in_docker
         self.artifact_manager = artifact_manager
-        self.workspace_bucket = workspace_bucket
         self._sessions = {}  # Track running sessions
         self.event_bus = store.get_event_bus()
         self.local_base_url = store.local_base_url

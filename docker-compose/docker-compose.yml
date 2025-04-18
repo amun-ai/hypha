@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  hypha-server:
+    image: ghcr.io/amun-ai/hypha:0.20.50
+    ports:
+      - "${HYPHA_PORT:-9527}:9527"
+    environment:
+      - HYPHA_JWT_SECRET=${HYPHA_JWT_SECRET}
+      - HYPHA_HOST=${HYPHA_HOST:-0.0.0.0}
+      - HYPHA_PORT=${HYPHA_PORT:-9527}
+      - HYPHA_PUBLIC_BASE_URL=${HYPHA_PUBLIC_BASE_URL:-http://localhost:9527}
+      - HYPHA_DATABASE_URI=sqlite+aiosqlite:////data/hypha-app-database.db
+      # S3 Configuration using MinIO
+      - HYPHA_ENABLE_S3=true
+      - HYPHA_ACCESS_KEY_ID=${HYPHA_ACCESS_KEY_ID:-minioadmin}
+      - HYPHA_SECRET_ACCESS_KEY=${HYPHA_SECRET_ACCESS_KEY:-minioadmin}
+      - HYPHA_ENDPOINT_URL=http://minio:9000
+      - HYPHA_ENDPOINT_URL_PUBLIC=${HYPHA_ENDPOINT_URL_PUBLIC:-http://localhost:9000}
+    volumes:
+      - ${HYPHA_DATA_DIR:-./data/hypha}:/data
+    depends_on:
+      - minio
+    command: python -m uvicorn hypha.server:app --host=0.0.0.0 --port=9527
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9527/health/liveness"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  minio:
+    image: minio/minio:RELEASE.2025-03-12T18-04-18Z-cpuv1
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      - MINIO_ROOT_USER=${HYPHA_ACCESS_KEY_ID:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${HYPHA_SECRET_ACCESS_KEY:-minioadmin}
+    volumes:
+      - ${MINIO_DATA_DIR:-./data/minio}:/data
+    command: server --console-address ":9001" /data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3 

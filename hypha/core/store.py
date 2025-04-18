@@ -159,6 +159,17 @@ class RedisStore:
         self.reconnection_token_life_time = reconnection_token_life_time
         self._enable_service_search = enable_service_search
         self._activity_check_interval = activity_check_interval
+        # Create a fixed HTTP anonymous user
+        self._http_anonymous_user = UserInfo(
+            id="http-anonymous",
+            is_anonymous=True,
+            email=None,
+            parent=None,
+            roles=["anonymous"],
+            scope=create_scope("public#r", current_workspace="public"),
+            expires_at=None,
+        )
+        self._anonymous_workspace_info = None
         self._server_info = {
             "server_id": self._server_id,
             "hypha_version": __version__,
@@ -221,6 +232,8 @@ class RedisStore:
         self._tracker_task = None
         # self._house_keeping_task = None
 
+        self._shared_anonymous_user = None
+
     def set_websocket_server(self, websocket_server):
         """Set the websocket server."""
         assert self._websocket_server is None, "Websocket server already set"
@@ -274,6 +287,10 @@ class RedisStore:
             workspace = user_info.get_workspace()
 
         assert workspace != "*", "Dynamic workspace is not allowed for this endpoint"
+
+        # Fast path for anonymous workspace
+        if workspace == "ws-anonymous" and self._anonymous_workspace_info:
+            return self._anonymous_workspace_info
 
         # Ensure calls to store for workspace existence and permissions check
         workspace_info = await self.get_workspace_info(workspace, load=True)
@@ -510,6 +527,25 @@ class RedisStore:
         except RuntimeError:
             logger.warning("Public workspace already exists.")
 
+        # Setup the anonymous workspace
+        try:
+            self._anonymous_workspace_info = await self.register_workspace(
+                WorkspaceInfo.model_validate(
+                    {
+                        "id": "ws-anonymous",
+                        "name": "Anonymous Workspace",
+                        "description": "Shared workspace for anonymous users",
+                        "persistent": True,
+                        "owners": ["root"],
+                        "read_only": True,
+                    }
+                ),
+                overwrite=False,
+            )
+        except RuntimeError:
+            # Workspace already exists
+            self._anonymous_workspace_info = await self.get_workspace_info("ws-anonymous")
+
         await self.upgrade()
 
         if self._artifact_manager:
@@ -673,10 +709,10 @@ class RedisStore:
         authorization: str = Header(None),
         access_token: str = Cookie(None),
     ):
-        """Return user info or create an anonymouse user.
+        """Return user info or create an anonymous user.
 
         If authorization code is valid the user info is returned,
-        If the code is invalid an an anonymouse user is created.
+        If the code is invalid an anonymous user is created.
         """
         token = authorization or access_token
         if token:
@@ -685,12 +721,18 @@ class RedisStore:
                 user_info.scope.current_workspace = user_info.get_workspace()
             return user_info
         else:
-            user_info = generate_anonymous_user()
-            user_workspace = user_info.get_workspace()
-            user_info.scope = create_scope(
-                f"{user_workspace}#a", current_workspace=user_workspace
-            )
-            return user_info
+            # Use a fixed anonymous user
+            if not hasattr(self, '_http_anonymous_user'):
+                self._http_anonymous_user = UserInfo(
+                    id="http-anonymous",
+                    is_anonymous=True,
+                    email=None,
+                    parent=None,
+                    roles=["anonymous"],
+                    scope=create_scope("public#r", current_workspace="public"),
+                    expires_at=None,
+                )
+            return self._http_anonymous_user
 
     async def get_all_workspace(self):
         """Get all workspaces."""
