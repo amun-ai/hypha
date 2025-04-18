@@ -2252,3 +2252,88 @@ async def test_version_handling_rules(minio_server, fastapi_server, test_user_to
     # Clean up
     await artifact_manager.delete(artifact_id=artifact.id)
     await artifact_manager.delete(artifact_id=artifact2.id)
+
+
+async def test_list_stage_parameter(minio_server, fastapi_server, test_user_token):
+    """Test the stage parameter in list() function."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection for testing
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={
+            "name": "Stage Test Collection",
+            "description": "A collection for testing stage parameter",
+        },
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    # Create artifacts in different states
+    # 1. Committed artifact
+    committed = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Committed Artifact"},
+        version="v0",  # This will create a committed artifact
+    )
+
+    # 2. Staged artifact
+    staged = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Staged Artifact"},
+        stage=True,  # This will create a staged artifact
+    )
+
+    # 3. Another committed artifact
+    committed2 = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Another Committed"},
+        version="v0",
+    )
+
+    # 4. Another staged artifact
+    staged2 = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Another Staged"},
+        stage=True,
+    )
+
+    # Test 1: Default behavior (stage=None) should show all artifacts
+    results = await artifact_manager.list(parent_id=collection.id)
+    assert len(results) == 4
+    names = {r["manifest"]["name"] for r in results}
+    assert names == {"Committed Artifact", "Staged Artifact", "Another Committed", "Another Staged"}
+
+    # Test 2: stage=False should show only committed artifacts
+    results = await artifact_manager.list(parent_id=collection.id, stage=False)
+    assert len(results) == 2
+    names = {r["manifest"]["name"] for r in results}
+    assert names == {"Committed Artifact", "Another Committed"}
+
+    # Test 2: stage=True should show only staged artifacts
+    results = await artifact_manager.list(parent_id=collection.id, stage=True)
+    assert len(results) == 2
+    names = {r["manifest"]["name"] for r in results}
+    assert names == {"Staged Artifact", "Another Staged"}
+
+    # Test 4: Backward compatibility with filters={"version": "stage"}
+    results = await artifact_manager.list(
+        parent_id=collection.id,
+        filters={"version": "stage"}
+    )
+    assert len(results) == 2
+    names = {r["manifest"]["name"] for r in results}
+    assert names == {"Staged Artifact", "Another Staged"}
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=committed.id)
+    await artifact_manager.delete(artifact_id=committed2.id)
+    await artifact_manager.delete(artifact_id=staged.id)
+    await artifact_manager.delete(artifact_id=staged2.id)
+    await artifact_manager.delete(artifact_id=collection.id)

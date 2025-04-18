@@ -2625,6 +2625,7 @@ class ArtifactController:
         order_by: str = None,
         silent: bool = False,
         pagination: bool = False,
+        stage: bool = None,
         context: dict = None,
     ):
         """
@@ -2637,7 +2638,6 @@ class ArtifactController:
         user_info = UserInfo.model_validate(context.get("user"))
 
         session = await self._get_session(read_only=True)
-        stage = False
 
         try:
             async with session.begin():
@@ -2709,11 +2709,16 @@ class ArtifactController:
                                 "*",
                             ], "Invalid version value, it should be 'stage' or 'latest'."
                             if value == "stage":
+                                assert stage is None, "Stage parameter cannot be used with version filter."
                                 stage = True
-                            elif value == "latest":
+                            elif value == "committed":
+                                assert stage is None, "Stage parameter cannot be used with version filter."
                                 stage = False
-                            else:
+                            elif value == "*":
+                                assert stage is None, "Stage parameter cannot be used with version filter."
                                 stage = None
+                            else:
+                                raise ValueError(f"Invalid version value: {value}")
                             continue
 
                         if key == "manifest" and isinstance(value, dict):
