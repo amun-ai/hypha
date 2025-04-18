@@ -1829,11 +1829,23 @@ class WorkspaceManager:
                 await self._event_bus.emit(f"unload:{ws}", "Unloading workspace: " + ws)
 
             if not winfo.persistent:
+                # For non-persistent workspaces, always clean up Redis and S3
                 keys = await self._redis.keys(f"{ws}:*")
                 for key in keys:
                     await self._redis.delete(key)
                 if self._s3_controller:
                     await self._s3_controller.cleanup_workspace(winfo)
+                await self._redis.hdel("workspaces", ws)
+            else:
+                # For persistent workspaces, only clean up if S3 controller is available
+                if self._s3_controller:
+                    keys = await self._redis.keys(f"{ws}:*")
+                    for key in keys:
+                        await self._redis.delete(key)
+                    await self._s3_controller.cleanup_workspace(winfo)
+                    await self._redis.hdel("workspaces", ws)
+                else:
+                    logger.warning(f"Skipping cleanup of persistent workspace {ws} because S3 controller is not available")
 
             self._active_ws.dec()
             try:
@@ -1843,7 +1855,6 @@ class WorkspaceManager:
                 pass
 
             await self._close_workspace(winfo)
-            await self._redis.hdel("workspaces", ws)
         except Exception as e:
             logger.error(f"Failed to unload workspace: {e}")
             raise

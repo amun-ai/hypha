@@ -45,7 +45,7 @@ This directory contains a Docker Compose setup for running Hypha Server with Min
 
 The Hypha Server provides the backend API for the Hypha application.
 
-- Image: `ghcr.io/amun-ai/hypha:0.20.49`
+- Image: `ghcr.io/amun-ai/hypha:0.20.50`
 - Port: 9520
 - Data: Stored in the local directory `./data/hypha`
 
