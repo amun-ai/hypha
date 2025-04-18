@@ -202,7 +202,7 @@ async def test_functions(fastapi_server, test_user_token):
 async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
     """Test concurrent requests to ASGI service with workspace cleanup"""
     start_time = time.time()
-    
+
     api = await connect_to_server(
         {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
     )
@@ -214,6 +214,7 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
 
     # Create a single FastAPI app instance to handle all requests
     app = FastAPI()
+
     @app.get("/api")
     async def read_api(request: Request):
         return {"message": "Hello World"}
@@ -233,7 +234,7 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
     )
     service_time = time.time() - service_start
     print(f"Service registration time: {service_time:.2f} seconds")
-    
+
     sid = service["id"].split(":")[1]
 
     # Add a small delay to ensure service is ready
@@ -242,7 +243,7 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
     # Make concurrent requests with timeout and retries
     max_retries = 3
     timeout = httpx.Timeout(30.0, connect=10.0)
-    
+
     async def make_request_with_retry(client, url, retry_count=0):
         req_start = time.time()
         try:
@@ -260,7 +261,7 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
     total_requests = 50
     all_responses = []
     request_times = []
-    
+
     requests_start = time.time()
     async with httpx.AsyncClient() as client:
         for i in range(0, total_requests, batch_size):
@@ -268,21 +269,21 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
             tasks = [
                 make_request_with_retry(
                     client,
-                    f"{SERVER_URL}/{api.config.workspace}/apps/{sid}/api?_mode=last"
+                    f"{SERVER_URL}/{api.config.workspace}/apps/{sid}/api?_mode=last",
                 )
                 for _ in range(batch_size)
             ]
             batch_responses = await asyncio.gather(*tasks, return_exceptions=True)
             batch_time = time.time() - batch_start
             print(f"Batch {i//batch_size + 1} time: {batch_time:.2f} seconds")
-            
+
             for response in batch_responses:
                 if isinstance(response, tuple):
                     all_responses.append(response[0])
                     request_times.append(response[1])
                 else:
                     all_responses.append(response)
-            
+
             await asyncio.sleep(0.1)  # Reduced delay between batches for faster testing
 
     total_request_time = time.time() - requests_start
@@ -322,4 +323,3 @@ async def test_asgi_concurrent_requests(fastapi_server, test_user_token):
     print(f"Total test time: {total_time:.2f} seconds")
 
     await api.disconnect()
-

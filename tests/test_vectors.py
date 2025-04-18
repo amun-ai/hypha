@@ -11,7 +11,13 @@ from aiobotocore.session import get_session
 import time
 
 from hypha.vectors import VectorSearchEngine
-from . import SERVER_URL_REDIS_1, find_item, MINIO_ROOT_PASSWORD, MINIO_ROOT_USER, wait_for_workspace_ready
+from . import (
+    SERVER_URL_REDIS_1,
+    find_item,
+    MINIO_ROOT_PASSWORD,
+    MINIO_ROOT_USER,
+    wait_for_workspace_ready,
+)
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
@@ -440,7 +446,7 @@ async def test_load_dump_vector_collections(
             artifact_id=vector_collection.id,
             vectors=vectors,
         )
-        
+
         vc = await artifact_manager.read(artifact_id=vector_collection.id)
         assert vc["config"]["vector_count"] == 3
         assert (

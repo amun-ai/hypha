@@ -359,12 +359,14 @@ class ArtifactController:
                             except Exception as e:
                                 logger.error(f"Error listing files: {str(e)}")
                                 raise HTTPException(
-                                    status_code=500, detail=f"Error listing files: {str(e)}"
+                                    status_code=500,
+                                    detail=f"Error listing files: {str(e)}",
                                 )
 
                         # Convert async generator to list to ensure all files are listed before streaming
                         files = [path async for path in list_all_files()]
                     else:
+
                         async def validate_files(files):
                             for file in files:
                                 yield file
@@ -418,7 +420,7 @@ class ArtifactController:
                                 file_list = files
                             else:
                                 file_list = [path async for path in files]
-                            
+
                             for path in file_list:
                                 file_key = safe_join(
                                     s3_config["prefix"],
@@ -427,16 +429,20 @@ class ArtifactController:
                                 )
                                 logger.info(f"Adding file to ZIP: {file_key}")
                                 try:
-                                    presigned_url = await s3_client.generate_presigned_url(
-                                        "get_object",
-                                        Params={
-                                            "Bucket": s3_config["bucket"],
-                                            "Key": file_key,
-                                        },
+                                    presigned_url = (
+                                        await s3_client.generate_presigned_url(
+                                            "get_object",
+                                            Params={
+                                                "Bucket": s3_config["bucket"],
+                                                "Key": file_key,
+                                            },
+                                        )
                                     )
                                     # Add to total weight unless silent
                                     if not silent:
-                                        download_weight = download_weights.get(path) or 1  # Default to 1 if no weight specified
+                                        download_weight = (
+                                            download_weights.get(path) or 1
+                                        )  # Default to 1 if no weight specified
                                         total_weight += download_weight
 
                                     yield (
@@ -447,7 +453,9 @@ class ArtifactController:
                                         file_stream_generator(presigned_url),
                                     )
                                 except Exception as e:
-                                    logger.error(f"Error processing file {path}: {str(e)}")
+                                    logger.error(
+                                        f"Error processing file {path}: {str(e)}"
+                                    )
                                     raise HTTPException(
                                         status_code=500,
                                         detail=f"Error processing file: {path}",
@@ -1569,7 +1577,11 @@ class ArtifactController:
                 is_staging = stage or (version == "stage")
                 versions = []
                 if not is_staging:  # Only create initial version if not in staging mode
-                    if version in [None, "new", "stage"]:  # Treat 'stage' as None if stage=False
+                    if version in [
+                        None,
+                        "new",
+                        "stage",
+                    ]:  # Treat 'stage' as None if stage=False
                         version = "v0"  # Always start with v0 for new artifacts
                     if parent_artifact and not await self._check_permissions(
                         parent_artifact, user_info, "commit"
@@ -1592,7 +1604,9 @@ class ArtifactController:
                     workspace=workspace,
                     parent_id=parent_id,
                     alias=alias,
-                    staging=[] if is_staging else None,  # Set staging based on is_staging
+                    staging=(
+                        [] if is_staging else None
+                    ),  # Set staging based on is_staging
                     manifest=manifest,
                     created_by=user_info.id,
                     created_at=created_at,
@@ -1603,7 +1617,9 @@ class ArtifactController:
                     type=type,
                 )
 
-                version_index = len(versions) if is_staging else 0  # Use appropriate version index
+                version_index = (
+                    len(versions) if is_staging else 0
+                )  # Use appropriate version index
                 if overwrite:
                     await session.merge(new_artifact)
                 else:
@@ -1709,7 +1725,9 @@ class ArtifactController:
         manifest = manifest and make_json_safe(manifest)
         config = config and make_json_safe(config)
 
-        logger.info(f"Editing artifact {artifact_id} with version={version}, stage={stage}")
+        logger.info(
+            f"Editing artifact {artifact_id} with version={version}, stage={stage}"
+        )
 
         try:
             async with session.begin():
@@ -1721,7 +1739,9 @@ class ArtifactController:
                 is_staging = artifact.staging is not None or stage
                 if is_staging:
                     logger.info(f"Artifact {artifact_id} is in staging mode")
-                    version = "stage"  # Force version to be "stage" when in staging mode
+                    version = (
+                        "stage"  # Force version to be "stage" when in staging mode
+                    )
 
                 artifact.type = type or artifact.type
                 if manifest:
@@ -1765,11 +1785,19 @@ class ArtifactController:
                     )
                     artifact.versions = versions
                     flag_modified(artifact, "versions")
-                    version_index = self._get_version_index(artifact, "latest") # Index of the newly added version
-                    logger.info(f"Created new version {target_version} with index {version_index}")
+                    version_index = self._get_version_index(
+                        artifact, "latest"
+                    )  # Index of the newly added version
+                    logger.info(
+                        f"Created new version {target_version} with index {version_index}"
+                    )
                 else:  # target_version is None (default: edit latest committed)
-                    version_index = self._get_version_index(artifact, None) # Index of the latest committed version
-                    logger.info(f"Using latest committed version index: {version_index}")
+                    version_index = self._get_version_index(
+                        artifact, None
+                    )  # Index of the latest committed version
+                    logger.info(
+                        f"Using latest committed version index: {version_index}"
+                    )
 
                 if config is not None:
                     if parent_artifact:
@@ -1788,7 +1816,7 @@ class ArtifactController:
                     artifact.secrets = secrets
                     flag_modified(artifact, "secrets")
                 artifact.last_modified = int(time.time())
-                
+
                 # Commit to DB if not staging
                 if target_version != "stage":
                     artifact.staging = None
@@ -1796,7 +1824,7 @@ class ArtifactController:
                     session.add(artifact)
                     await session.commit()
                     logger.info(
-                        f"Edited artifact with ID: {artifact_id} (committed), alias: {artifact.alias}, version: {target_version or 'latest'}" # Log the target version
+                        f"Edited artifact with ID: {artifact_id} (committed), alias: {artifact.alias}, version: {target_version or 'latest'}"  # Log the target version
                     )
                 else:
                     logger.info(
@@ -1805,7 +1833,7 @@ class ArtifactController:
 
                 # Always save the current state (staged or committed) to S3
                 await self._save_version_to_s3(
-                    version_index, # Use the calculated version_index
+                    version_index,  # Use the calculated version_index
                     artifact,
                     self._get_s3_config(artifact, parent_artifact),
                 )
@@ -1893,8 +1921,10 @@ class ArtifactController:
                 )
                 # the staging version index
                 staging_version_index = self._get_version_index(artifact, "stage")
-                logger.info(f"Committing from staging version index: {staging_version_index}")
-                
+                logger.info(
+                    f"Committing from staging version index: {staging_version_index}"
+                )
+
                 # Load the staged version
                 s3_config = self._get_s3_config(artifact, parent_artifact)
                 artifact_data = await self._load_version_from_s3(
@@ -1967,13 +1997,15 @@ class ArtifactController:
                 assigned_version = f"v{len(versions)}"
                 versions.append(
                     {
-                        "version": assigned_version, # Use the calculated sequential version
+                        "version": assigned_version,  # Use the calculated sequential version
                         "comment": comment,
                         "created_at": int(time.time()),
                     }
                 )
 
-                logger.info(f"Creating new version {assigned_version} for artifact {artifact_id}")
+                logger.info(
+                    f"Creating new version {assigned_version} for artifact {artifact_id}"
+                )
 
                 artifact.versions = versions
                 flag_modified(artifact, "versions")
@@ -2308,7 +2340,9 @@ class ArtifactController:
 
                 # Calculate target version index - this is where files will actually be stored
                 target_version_index = len(artifact.versions or [])
-                logger.info(f"Uploading file '{file_path}' to version {target_version_index}")
+                logger.info(
+                    f"Uploading file '{file_path}' to version {target_version_index}"
+                )
 
                 s3_config = self._get_s3_config(artifact, parent_artifact)
                 async with self._create_client_async(
@@ -2709,13 +2743,19 @@ class ArtifactController:
                                 "*",
                             ], "Invalid version value, it should be 'stage' or 'latest'."
                             if value == "stage":
-                                assert stage is None, "Stage parameter cannot be used with version filter."
+                                assert (
+                                    stage is None
+                                ), "Stage parameter cannot be used with version filter."
                                 stage = True
                             elif value == "committed":
-                                assert stage is None, "Stage parameter cannot be used with version filter."
+                                assert (
+                                    stage is None
+                                ), "Stage parameter cannot be used with version filter."
                                 stage = False
                             elif value == "*":
-                                assert stage is None, "Stage parameter cannot be used with version filter."
+                                assert (
+                                    stage is None
+                                ), "Stage parameter cannot be used with version filter."
                                 stage = None
                             else:
                                 raise ValueError(f"Invalid version value: {value}")

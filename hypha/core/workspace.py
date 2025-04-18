@@ -544,17 +544,21 @@ class WorkspaceManager:
             self._active_ws.inc()
         if self._s3_controller:
             await self._s3_controller.setup_workspace(workspace)
-        
+
         # Verify workspace exists in Redis before setting status
         try:
-            await self.load_workspace_info(workspace.id, load=False, increment_counter=False)
+            await self.load_workspace_info(
+                workspace.id, load=False, increment_counter=False
+            )
             # Only set status after confirming workspace exists
             await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
         except KeyError:
-            logger.warning(f"Workspace {workspace.id} not found immediately after creation, retrying...")
+            logger.warning(
+                f"Workspace {workspace.id} not found immediately after creation, retrying..."
+            )
             await asyncio.sleep(0.1)  # Brief pause for Redis consistency
             await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
-        
+
         await self._event_bus.emit("workspace_loaded", workspace.model_dump())
         if user_info.get_workspace() != workspace.id:
             await self.bookmark(
@@ -1455,9 +1459,11 @@ class WorkspaceManager:
         """Log a app message."""
         await self.log_event("log", msg, context=context)
 
-    async def load_workspace_info(self, workspace: str, load=True, increment_counter=True) -> WorkspaceInfo:
+    async def load_workspace_info(
+        self, workspace: str, load=True, increment_counter=True
+    ) -> WorkspaceInfo:
         """Load info of the current workspace from the redis store.
-        
+
         Args:
             workspace: The workspace ID to load
             load: Whether to attempt loading from S3 if not found in Redis
@@ -1507,7 +1513,7 @@ class WorkspaceManager:
 
             if increment_counter:
                 self._active_ws.inc()
-            
+
             await self._s3_controller.setup_workspace(workspace_info)
             await self._event_bus.emit("workspace_loaded", workspace_info.model_dump())
 
@@ -1783,7 +1789,9 @@ class WorkspaceManager:
                     errors["artifact_manager"] = traceback.format_exc()
                 try:
                     if self._server_app_controller:
-                        await self._server_app_controller.prepare_workspace(workspace_info)
+                        await self._server_app_controller.prepare_workspace(
+                            workspace_info
+                        )
                 except Exception as e:
                     errors["server_app_controller"] = traceback.format_exc()
 
@@ -1845,7 +1853,9 @@ class WorkspaceManager:
                     await self._s3_controller.cleanup_workspace(winfo)
                     await self._redis.hdel("workspaces", ws)
                 else:
-                    logger.warning(f"Skipping cleanup of persistent workspace {ws} because S3 controller is not available")
+                    logger.warning(
+                        f"Skipping cleanup of persistent workspace {ws} because S3 controller is not available"
+                    )
 
             self._active_ws.dec()
             try:
@@ -1879,14 +1889,11 @@ class WorkspaceManager:
         logger.info("Workspace %s unloaded.", workspace_info.id)
 
     @schema_method
-    async def check_status(
-        self,
-        context=None
-    ) -> dict:
+    async def check_status(self, context=None) -> dict:
         """Check the status of the workspace."""
         assert context is not None, "Context cannot be None"
         ws = context["ws"]
-        
+
         # Check if workspace exists
         try:
             workspace_info = await self.load_workspace_info(ws, load=False)
@@ -1896,18 +1903,12 @@ class WorkspaceManager:
         # Check workspace status
         if not workspace_info.status:
             return {"status": "loading"}
-        
+
         if workspace_info.status.get("ready"):
             errors = workspace_info.status.get("errors", {})
-            return {
-                "status": "ready",
-                "errors": errors if errors else None
-            }
+            return {"status": "ready", "errors": errors if errors else None}
         elif workspace_info.status.get("error"):
-            return {
-                "status": "error", 
-                "error": workspace_info.status["error"]
-            }
+            return {"status": "error", "error": workspace_info.status["error"]}
         else:
             return {"status": "loading"}
 
@@ -2080,10 +2081,10 @@ class WorkspaceManager:
             await self._redis.hset(
                 "workspaces", workspace_id, workspace_info.model_dump_json()
             )
-            await self._event_bus.emit("workspace_status_changed", {
-                "workspace": workspace_id,
-                "status": status
-            })
+            await self._event_bus.emit(
+                "workspace_status_changed",
+                {"workspace": workspace_id, "status": status},
+            )
         except Exception as e:
             logger.error(f"Failed to set workspace status: {e}")
             raise

@@ -43,6 +43,7 @@ def find_item(items, key, value):
 
     return filtered[0]
 
+
 async def wait_for_workspace_ready(api, timeout=30):
     """Wait for workspace to be ready."""
     start_time = time.time()

@@ -357,7 +357,7 @@ async def test_http_file_and_directory_endpoint(
         artifact_id=dataset.id,
     )
     assert artifact["download_count"] == 4
-    
+
     # Get the zip file with all files
     async with httpx.AsyncClient(timeout=200) as client:
         response = await client.get(
@@ -648,7 +648,9 @@ async def test_versioning_artifacts(
     committed = await artifact_manager.commit(artifact_id=staged_artifact.id)
     assert committed["versions"] is not None
     assert len(committed["versions"]) == 1
-    assert committed["versions"][0]["version"] == "v0"  # Should get v0 regardless of my_version
+    assert (
+        committed["versions"][0]["version"] == "v0"
+    )  # Should get v0 regardless of my_version
 
     # Create another artifact with no explicit version
     another_manifest = {
@@ -668,7 +670,10 @@ async def test_versioning_artifacts(
     # Test edit with both version and stage=True
     edited = await artifact_manager.edit(
         artifact_id=another_artifact.id,
-        manifest={"name": "Updated Name", "description": "Testing version and stage parameters"},
+        manifest={
+            "name": "Updated Name",
+            "description": "Testing version and stage parameters",
+        },
         version="custom_version",  # This should be ignored since stage=True
         stage=True,
     )
@@ -679,7 +684,9 @@ async def test_versioning_artifacts(
     committed = await artifact_manager.commit(artifact_id=another_artifact.id)
     assert committed["versions"] is not None
     assert len(committed["versions"]) == 2  # Should have created a new version
-    assert committed["versions"][-1]["version"] == "v1"  # Should get v1 regardless of custom_version
+    assert (
+        committed["versions"][-1]["version"] == "v1"
+    )  # Should get v1 regardless of custom_version
 
     # Clean up
     await artifact_manager.delete(artifact_id=artifact.id)
@@ -718,11 +725,13 @@ async def test_commit_version_handling(
 
     # Commit without specifying version - should create v0
     committed = await artifact_manager.commit(artifact_id=artifact.id)
-    
+
     # Verify a version was created
     assert committed["versions"] is not None
     assert len(committed["versions"]) == 1
-    assert committed["versions"][0]["version"] == "v0"  # Should get v0 regardless of my_version
+    assert (
+        committed["versions"][0]["version"] == "v0"
+    )  # Should get v0 regardless of my_version
     assert committed["staging"] is None
 
     # Create another staged version with both version and stage=True
@@ -747,12 +756,14 @@ async def test_commit_version_handling(
     committed = await artifact_manager.commit(
         artifact_id=artifact.id,
         version="v5",  # This should be ignored
-        comment="Second version"
+        comment="Second version",
     )
 
     # Verify new version was added
     assert len(committed["versions"]) == 2
-    assert committed["versions"][-1]["version"] == "v1"  # Should get v1 regardless of v5
+    assert (
+        committed["versions"][-1]["version"] == "v1"
+    )  # Should get v1 regardless of v5
     assert committed["versions"][-1]["comment"] == "Second version"
 
     # Create another staged version with both version and stage=True
@@ -774,13 +785,14 @@ async def test_commit_version_handling(
 
     # Commit again without version - should create v2
     committed = await artifact_manager.commit(
-        artifact_id=artifact.id,
-        comment="Third version"
+        artifact_id=artifact.id, comment="Third version"
     )
 
     # Verify another version was added
     assert len(committed["versions"]) == 3
-    assert committed["versions"][-1]["version"] == "v2"  # Should get v2 regardless of another_version
+    assert (
+        committed["versions"][-1]["version"] == "v2"
+    )  # Should get v2 regardless of another_version
     assert committed["versions"][-1]["comment"] == "Third version"
 
     # Clean up
@@ -1218,7 +1230,6 @@ async def test_edit_existing_artifact(minio_server, fastapi_server, test_user_to
     dataset = await artifact_manager.commit(artifact_id=dataset.id)
     assert dataset["versions"] is not None
     assert len(dataset["versions"]) == 2  # Should have created a new version
-
 
     # Verify the committed manifest reflects the edited data
     committed_artifact = await artifact_manager.read(artifact_id=dataset.id)
@@ -1888,7 +1899,9 @@ async def test_artifact_search_with_advanced_filters(
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_artifact_version_management(minio_server, fastapi_server, test_user_token):
+async def test_artifact_version_management(
+    minio_server, fastapi_server, test_user_token
+):
     """Test version management functionality for artifacts."""
     api = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
@@ -1940,12 +1953,16 @@ async def test_artifact_version_management(minio_server, fastapi_server, test_us
     assert response.ok
 
     # List files in staged version to verify
-    staged_files = await artifact_manager.list_files(artifact_id=dataset.id, version="stage")
+    staged_files = await artifact_manager.list_files(
+        artifact_id=dataset.id, version="stage"
+    )
     assert len(staged_files) == 1
     assert staged_files[0]["name"] == "test.txt"
 
     # Commit the file to create version 1
-    await artifact_manager.commit(artifact_id=dataset.id, version="v1", comment="Added test.txt")
+    await artifact_manager.commit(
+        artifact_id=dataset.id, version="v1", comment="Added test.txt"
+    )
 
     # Verify version 1 exists
     dataset = await artifact_manager.read(artifact_id=dataset.id)
@@ -2000,7 +2017,9 @@ async def test_artifact_version_management(minio_server, fastapi_server, test_us
     assert response.ok
 
     # Commit to create version 2
-    await artifact_manager.commit(artifact_id=dataset.id, version="v2", comment="Added test2.txt")
+    await artifact_manager.commit(
+        artifact_id=dataset.id, version="v2", comment="Added test2.txt"
+    )
 
     # Verify version 2 exists
     dataset = await artifact_manager.read(artifact_id=dataset.id)
@@ -2236,7 +2255,9 @@ async def test_version_handling_rules(minio_server, fastapi_server, test_user_to
         version="v5",  # This should only affect the version number
     )
     assert len(committed["versions"]) == 2
-    assert committed["versions"][-1]["version"] == "v1"  # Should be v1 since we're creating new
+    assert (
+        committed["versions"][-1]["version"] == "v1"
+    )  # Should be v1 since we're creating new
     assert committed["staging"] is None
 
     # Test Case 6: Direct edit without stage should update current version
@@ -2308,7 +2329,12 @@ async def test_list_stage_parameter(minio_server, fastapi_server, test_user_toke
     results = await artifact_manager.list(parent_id=collection.id)
     assert len(results) == 4
     names = {r["manifest"]["name"] for r in results}
-    assert names == {"Committed Artifact", "Staged Artifact", "Another Committed", "Another Staged"}
+    assert names == {
+        "Committed Artifact",
+        "Staged Artifact",
+        "Another Committed",
+        "Another Staged",
+    }
 
     # Test 2: stage=False should show only committed artifacts
     results = await artifact_manager.list(parent_id=collection.id, stage=False)
@@ -2324,8 +2350,7 @@ async def test_list_stage_parameter(minio_server, fastapi_server, test_user_toke
 
     # Test 4: Backward compatibility with filters={"version": "stage"}
     results = await artifact_manager.list(
-        parent_id=collection.id,
-        filters={"version": "stage"}
+        parent_id=collection.id, filters={"version": "stage"}
     )
     assert len(results) == 2
     names = {r["manifest"]["name"] for r in results}

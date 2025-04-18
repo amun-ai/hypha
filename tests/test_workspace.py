@@ -183,7 +183,7 @@ async def test_workspace_ready(fastapi_server):
             "server_url": server_url,
         }
     )
-    
+
     status = await wait_for_workspace_ready(server, timeout=1)
     assert status["status"] == "ready"
     assert "errors" not in status or status["errors"] is None

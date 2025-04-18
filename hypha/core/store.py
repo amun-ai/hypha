@@ -544,7 +544,9 @@ class RedisStore:
             )
         except RuntimeError:
             # Workspace already exists
-            self._anonymous_workspace_info = await self.get_workspace_info("ws-anonymous")
+            self._anonymous_workspace_info = await self.get_workspace_info(
+                "ws-anonymous"
+            )
 
         await self.upgrade()
 
@@ -722,7 +724,7 @@ class RedisStore:
             return user_info
         else:
             # Use a fixed anonymous user
-            if not hasattr(self, '_http_anonymous_user'):
+            if not hasattr(self, "_http_anonymous_user"):
                 self._http_anonymous_user = UserInfo(
                     id="http-anonymous",
                     is_anonymous=True,
