@@ -23,20 +23,38 @@ def setup_minio_executables(executable_path):
     """Download and install the minio client and server binary files."""
     if executable_path and not os.path.exists(executable_path):
         os.makedirs(executable_path, exist_ok=True)
+
+    # Pin the specific server version
+    minio_version = "RELEASE.2024-07-16T23-46-41Z"
+    # Pin the specific client version (determined by checking latest download)
+    mc_version = "RELEASE.2025-04-08T15-39-49Z"
+
+    # Define executable names based on platform
+    mc_executable = "mc"
+    minio_executable = "minio"
+    if sys.platform == "win32":
+        mc_executable += ".exe"
+        minio_executable += ".exe"
+
+    mc_path = os.path.join(executable_path, mc_executable)
+    minio_path = os.path.join(executable_path, minio_executable)
+
     if sys.platform == "darwin":
-        minio_url = "https://dl.min.io/server/minio/release/darwin-amd64/minio"
-        mc_url = "https://dl.min.io/client/mc/release/darwin-amd64/mc"
+        minio_url = f"https://dl.min.io/server/minio/release/darwin-amd64/archive/minio.{minio_version}"
+        mc_url = f"https://dl.min.io/client/mc/release/darwin-amd64/archive/mc.{mc_version}"
     elif sys.platform == "linux":
-        minio_url = "https://dl.min.io/server/minio/release/linux-amd64/minio"
-        mc_url = "https://dl.min.io/client/mc/release/linux-amd64/mc"
+        minio_url = f"https://dl.min.io/server/minio/release/linux-amd64/archive/minio.{minio_version}"
+        mc_url = f"https://dl.min.io/client/mc/release/linux-amd64/archive/mc.{mc_version}"
+    elif sys.platform == "win32":
+        minio_url = f"https://dl.min.io/server/minio/release/windows-amd64/archive/minio.{minio_version}"
+        mc_url = f"https://dl.min.io/client/mc/release/windows-amd64/archive/mc.{mc_version}"
     else:
         raise NotImplementedError(
             "Manual setup required to, please download minio and minio client \
     from https://min.io/ and place them under "
             + executable_path
         )
-    mc_path = os.path.join(executable_path, "mc")
-    minio_path = os.path.join(executable_path, "minio")
+
     if not os.path.exists(minio_path):
         print("Minio server executable not found, downloading... ")
         urllib.request.urlretrieve(minio_url, minio_path)
@@ -45,12 +63,14 @@ def setup_minio_executables(executable_path):
         print("Minio client executable not found, downloading... ")
         urllib.request.urlretrieve(mc_url, mc_path)
 
-    stat_result = os.stat(minio_path)
-    if not bool(stat_result.st_mode & stat.S_IEXEC):
-        os.chmod(minio_path, stat_result.st_mode | stat.S_IEXEC)
-    stat_result = os.stat(mc_path)
-    if not bool(stat_result.st_mode & stat.S_IEXEC):
-        os.chmod(mc_path, stat_result.st_mode | stat.S_IEXEC)
+    # Skip chmod operations on Windows as they're not needed
+    if sys.platform != "win32":
+        stat_result = os.stat(minio_path)
+        if not bool(stat_result.st_mode & stat.S_IEXEC):
+            os.chmod(minio_path, stat_result.st_mode | stat.S_IEXEC)
+        stat_result = os.stat(mc_path)
+        if not bool(stat_result.st_mode & stat.S_IEXEC):
+            os.chmod(mc_path, stat_result.st_mode | stat.S_IEXEC)
 
     print("MinIO executables are ready.")
 
@@ -110,10 +130,18 @@ def execute_command_sync(cmd_template, mc_executable, **kwargs):
     command_string = generate_command(cmd_template, json=True, **kwargs)
     command_string = mc_executable + command_string.lstrip("mc")
     try:
-        _output = subprocess.check_output(
-            command_string.split(),
-            stderr=subprocess.STDOUT,
-        )
+        # Use shell=True on Windows to handle paths with spaces correctly
+        if sys.platform == "win32":
+            _output = subprocess.check_output(
+                command_string,
+                stderr=subprocess.STDOUT,
+                shell=True,
+            )
+        else:
+            _output = subprocess.check_output(
+                command_string.split(),
+                stderr=subprocess.STDOUT,
+            )
         success, output = True, _output.decode("utf-8")
     except subprocess.CalledProcessError as err:
         success, output = False, err.output.decode("utf-8")
@@ -128,10 +156,18 @@ async def execute_command(cmd_template, mc_executable, **kwargs):
 
     def subprocess_call():
         try:
-            _output = subprocess.check_output(
-                command_string.split(),
-                stderr=subprocess.STDOUT,
-            )
+            # Use shell=True on Windows to handle paths with spaces correctly
+            if sys.platform == "win32":
+                _output = subprocess.check_output(
+                    command_string,
+                    stderr=subprocess.STDOUT,
+                    shell=True,
+                )
+            else:
+                _output = subprocess.check_output(
+                    command_string.split(),
+                    stderr=subprocess.STDOUT,
+                )
         except subprocess.CalledProcessError as err:
             return (False, err.output.decode("utf-8"))
         return (True, _output.decode("utf-8"))
@@ -206,7 +242,9 @@ class MinioClient:
         """Initialize the client."""
         setup_minio_executables(executable_path)
         self.alias = alias
-        self.mc_executable = os.path.join(executable_path, "mc")
+        # Use platform-specific executable name
+        mc_executable = "mc.exe" if sys.platform == "win32" else "mc"
+        self.mc_executable = os.path.join(executable_path, mc_executable)
         self.endpoint_url = endpoint_url
         self.access_key_id = access_key_id
         self.secret_access_key = secret_access_key
