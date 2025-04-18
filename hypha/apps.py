@@ -214,7 +214,7 @@ class ServerAppController:
             source = temp.render(
                 hypha_main_version=main_version,
                 hypha_rpc_websocket_mjs=self.public_base_url
-                + "//assets/hypha-rpc-websocket.mjs",
+                + "/assets/hypha-rpc-websocket.mjs",
                 script=source,
                 source_hash=mhash,
                 config=config,
