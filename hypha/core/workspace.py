@@ -539,7 +539,13 @@ class WorkspaceManager:
                     "description": workspace.description,
                 }
             ]
+
+        # Set initial status as loading
+        workspace.status = {"status": WorkspaceStatus.LOADING}
+        
+        # Write to Redis
         await self._redis.hset("workspaces", workspace.id, workspace.model_dump_json())
+        
         if not exists:
             self._active_ws.inc()
 
@@ -547,19 +553,22 @@ class WorkspaceManager:
         if not workspace.id.startswith("anonymouz-") and self._s3_controller:
             await self._s3_controller.setup_workspace(workspace)
 
-        # Verify workspace exists in Redis before setting status
-        try:
-            await self.load_workspace_info(
-                workspace.id, load=False, increment_counter=False
-            )
-            # Only set status after confirming workspace exists
-            await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
-        except KeyError:
-            logger.warning(
-                f"Workspace {workspace.id} not found immediately after creation, retrying..."
-            )
-            await asyncio.sleep(0.1)  # Brief pause for Redis consistency
-            await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
+        # Verify workspace exists in Redis with retries
+        max_retries = 3
+        retry_delay = 0.1  # seconds
+        for attempt in range(max_retries):
+            try:
+                # Verify workspace exists
+                workspace_info = await self.load_workspace_info(workspace.id, load=False, increment_counter=False)
+                # If we get here, the workspace exists
+                await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
+                break
+            except KeyError:
+                if attempt == max_retries - 1:
+                    logger.error(f"Failed to verify workspace creation after {max_retries} attempts")
+                    raise
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
 
         await self._event_bus.emit("workspace_loaded", workspace.model_dump())
         if user_info.get_workspace() != workspace.id:
