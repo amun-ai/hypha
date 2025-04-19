@@ -1,8 +1,8 @@
 """A module for minio client operations."""
 
 import asyncio
+import hashlib
 import json
-import uuid
 import logging
 import os
 import re
@@ -352,8 +352,10 @@ class MinioClient:
     ):
         """Initialize the client."""
         setup_minio_executables(executable_path)
-        # random alias
-        self.alias = "s3-" + str(uuid.uuid4())
+        # generate alias by hash of endpoint_url, access_key_id, and secret_access_key
+        self.alias = hashlib.sha256(
+            (endpoint_url + access_key_id + secret_access_key).encode("utf-8")
+        ).hexdigest()[:10]
         # Use platform-specific executable name
         mc_executable = "mc.exe" if sys.platform == "win32" else "mc"
         self.mc_executable = os.path.join(executable_path, mc_executable)
