@@ -284,7 +284,7 @@ def test_built_in_minio_server():
     # Create a temporary directory for Minio data
     temp_dir = tempfile.mkdtemp()
     port = 9999  # Use a different port to avoid conflicts
-
+    env = os.environ.copy()
     try:
         # Start the Hypha server with built-in Minio
         process = subprocess.Popen(
@@ -299,7 +299,8 @@ def test_built_in_minio_server():
                 "--minio-root-password=testpassword",
                 "--enable-s3",
                 "--port=9555",  # Different port for Hypha
-            ]
+            ],
+            env=env,
         )
 
         # Wait for the server to start
@@ -330,18 +331,15 @@ def test_built_in_minio_server():
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
-            process.wait()  # Wait for the process to be fully killed
 
-        # Add a small delay to ensure the port is released
-        time.sleep(1)
-        
-        # Clean up the temporary directory
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 # Test that trying to use both flags raises an error
 def test_minio_server_with_s3_settings():
     """Test that using both built-in Minio and S3 settings raises an error."""
+    # copy the env
+    env = os.environ.copy()
     with tempfile.TemporaryDirectory() as temp_dir:
         # Try to start with conflicting settings
         process = subprocess.Popen(
@@ -355,6 +353,7 @@ def test_minio_server_with_s3_settings():
                 "--port=9666",
             ],
             stderr=subprocess.PIPE,
+            env=env,
         )
 
         # The process should exit with an error
