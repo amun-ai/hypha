@@ -542,7 +542,9 @@ class WorkspaceManager:
         await self._redis.hset("workspaces", workspace.id, workspace.model_dump_json())
         if not exists:
             self._active_ws.inc()
-        if self._s3_controller:
+
+        # Skip S3 setup for anonymous users
+        if not workspace.id.startswith("anonymouz-") and self._s3_controller:
             await self._s3_controller.setup_workspace(workspace)
 
         # Verify workspace exists in Redis before setting status
@@ -565,10 +567,13 @@ class WorkspaceManager:
                 {"bookmark_type": "workspace", "id": workspace.id}, context=context
             )
         logger.info("Created workspace %s", workspace.id)
-        # preare the workspace for the user
-        task = asyncio.create_task(self._prepare_workspace(workspace))
-        background_tasks.add(task)
-        task.add_done_callback(background_tasks.discard)
+        # prepare the workspace for the user
+        if not workspace.id.startswith(
+            "anonymouz-"
+        ):  # Skip preparation for anonymous workspaces
+            task = asyncio.create_task(self._prepare_workspace(workspace))
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
         return workspace.model_dump()
 
     @schema_method
@@ -1485,6 +1490,25 @@ class WorkspaceManager:
         if not load:
             raise KeyError(f"Workspace not found: {workspace}")
 
+        # Skip S3 loading for anonymous workspaces
+        if workspace.startswith("anonymouz-"):
+            logger.debug(f"Anonymous workspace {workspace}, skipping S3 loading")
+            workspace_info = WorkspaceInfo(
+                id=workspace,
+                name=workspace,
+                description="Anonymous workspace",
+                owners=[workspace],
+                persistent=False,
+                read_only=False,
+                status={"ready": True},
+            )
+            await self._redis.hset(
+                "workspaces", workspace_info.id, workspace_info.model_dump_json()
+            )
+            if increment_counter:
+                self._active_ws.inc()
+            return workspace_info
+
         logger.info(f"Workspace {workspace} not found in Redis, trying to load from S3")
 
         try:
@@ -1781,19 +1805,23 @@ class WorkspaceManager:
         """Prepare the workspace."""
         errors = {}
         try:
-            if workspace_info.persistent:
-                try:
-                    if self._artifact_manager:
-                        await self._artifact_manager.prepare_workspace(workspace_info)
-                except Exception as e:
-                    errors["artifact_manager"] = traceback.format_exc()
-                try:
-                    if self._server_app_controller:
-                        await self._server_app_controller.prepare_workspace(
-                            workspace_info
-                        )
-                except Exception as e:
-                    errors["server_app_controller"] = traceback.format_exc()
+            # Skip preparation for anonymous workspaces
+            if not workspace_info.id.startswith("anonymouz-"):
+                if workspace_info.persistent:
+                    try:
+                        if self._artifact_manager:
+                            await self._artifact_manager.prepare_workspace(
+                                workspace_info
+                            )
+                    except Exception as e:
+                        errors["artifact_manager"] = traceback.format_exc()
+                    try:
+                        if self._server_app_controller:
+                            await self._server_app_controller.prepare_workspace(
+                                workspace_info
+                            )
+                    except Exception as e:
+                        errors["server_app_controller"] = traceback.format_exc()
 
             # Update workspace status
             workspace_info.status = {"ready": True, "errors": errors}

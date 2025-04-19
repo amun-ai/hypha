@@ -348,7 +348,7 @@ def test_minio_server_with_s3_settings():
                 "--endpoint-url=http://example.com",  # This should cause a conflict
                 "--port=9666",
             ],
-            stderr=subprocess.PIPE
+            stderr=subprocess.PIPE,
         )
 
         # The process should exit with an error

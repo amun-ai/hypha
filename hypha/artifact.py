@@ -944,7 +944,9 @@ class ArtifactController:
 
         try:
             result = await self._execute_with_retry(
-                session, query, description=f"_get_artifact_with_parent for '{artifact_id}'"
+                session,
+                query,
+                description=f"_get_artifact_with_parent for '{artifact_id}'",
             )
             artifact = result.scalar_one_or_none()
             if not artifact:
@@ -960,7 +962,9 @@ class ArtifactController:
                         )
                     )
                     result = await self._execute_with_retry(
-                        session, query, description=f"_get_artifact_with_parent existence check for '{artifact_id}'"
+                        session,
+                        query,
+                        description=f"_get_artifact_with_parent existence check for '{artifact_id}'",
                     )
                     if result.scalar_one_or_none():
                         raise KeyError(
@@ -974,7 +978,9 @@ class ArtifactController:
                     self._get_artifact_id_cond(artifact.parent_id)
                 )
                 parent_result = await self._execute_with_retry(
-                    session, parent_query, description=f"_get_artifact_with_parent parent query for '{artifact.parent_id}'"
+                    session,
+                    parent_query,
+                    description=f"_get_artifact_with_parent parent query for '{artifact.parent_id}'",
                 )
                 parent_artifact = parent_result.scalar_one_or_none()
                 if not parent_artifact:
@@ -1340,7 +1346,9 @@ class ArtifactController:
             ArtifactModel.alias.in_(aliases),
         )
         result = await self._execute_with_retry(
-            session, query, description=f"_batch_alias_exists for workspace '{workspace}'"
+            session,
+            query,
+            description=f"_batch_alias_exists for workspace '{workspace}'",
         )
         existing_aliases = set(row[0] for row in result.fetchall())
         return existing_aliases
@@ -1931,7 +1939,9 @@ class ArtifactController:
                         ArtifactModel.parent_id == artifact.id
                     )
                     result = await self._execute_with_retry(
-                        session, count_q, description=f"read count query for '{artifact_id}'"
+                        session,
+                        count_q,
+                        description=f"read count query for '{artifact_id}'",
                     )
                     child_count = result.scalar()
                     artifact_data["config"] = artifact_data.get("config", {})
@@ -2921,7 +2931,9 @@ class ArtifactController:
                 if pagination:
                     # Execute the count query
                     result = await self._execute_with_retry(
-                        session, count_query, description=f"list_children count query for '{parent_id or context['ws']}'"
+                        session,
+                        count_query,
+                        description=f"list_children count query for '{parent_id or context['ws']}'",
                     )
                     total_count = result.scalar()
                 else:
@@ -2950,7 +2962,9 @@ class ArtifactController:
 
                 # Execute the query
                 result = await self._execute_with_retry(
-                    session, query, description=f"list_children main query for '{parent_id or context['ws']}'"
+                    session,
+                    query,
+                    description=f"list_children main query for '{parent_id or context['ws']}'",
                 )
                 artifacts = result.scalars().all()
 
@@ -3066,7 +3080,9 @@ class ArtifactController:
                     ArtifactModel.workspace == workspace_info.id
                 )
                 result = await self._execute_with_retry(
-                    session, query, description=f"prepare_workspace query for '{workspace_info.id}'"
+                    session,
+                    query,
+                    description=f"prepare_workspace query for '{workspace_info.id}'",
                 )
                 artifacts = result.scalars().all()
                 for artifact in artifacts:
@@ -3107,7 +3123,9 @@ class ArtifactController:
                     ArtifactModel.workspace == workspace_info.id
                 )
                 result = await self._execute_with_retry(
-                    session, query, description=f"close_workspace query for '{workspace_info.id}'"
+                    session,
+                    query,
+                    description=f"close_workspace query for '{workspace_info.id}'",
                 )
                 artifacts = result.scalars().all()
                 for artifact in artifacts:

@@ -152,7 +152,9 @@ def valid_token(authorization: str):
 def generate_anonymous_user(scope=None) -> UserInfo:
     """Generate user info for an anonymous user."""
     current_time = datetime.datetime.now(datetime.timezone.utc)
-    user_id = random_id(readable=True)
+    user_id = "anonymouz-" + random_id(
+        readable=True
+    )  # Use hyphen instead of underscore
     expires_at = current_time + datetime.timedelta(seconds=600)
     expires_at = timegm(expires_at.utctimetuple())
     return UserInfo(
