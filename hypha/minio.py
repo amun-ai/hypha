@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import uuid
 import logging
 import os
 import re
@@ -346,13 +347,13 @@ class MinioClient:
         endpoint_url,
         access_key_id,
         secret_access_key,
-        alias="s3",
         executable_path="bin",
         **kwargs,
     ):
         """Initialize the client."""
         setup_minio_executables(executable_path)
-        self.alias = alias
+        # random alias
+        self.alias = "s3-" + str(uuid.uuid4())
         # Use platform-specific executable name
         mc_executable = "mc.exe" if sys.platform == "win32" else "mc"
         self.mc_executable = os.path.join(executable_path, mc_executable)
