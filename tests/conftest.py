@@ -531,5 +531,16 @@ def minio_server_fixture():
         print("\nMinio server started.")
         yield MINIO_SERVER_URL
 
+        # Ensure proper cleanup
         proc.terminate()
-        # shutil.rmtree(dirpath, ignore_errors=True)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()  # Wait for the process to be fully killed
+
+        # Add a small delay to ensure the port is released
+        time.sleep(1)
+        
+        # Clean up the temporary directory
+        shutil.rmtree(dirpath, ignore_errors=True)

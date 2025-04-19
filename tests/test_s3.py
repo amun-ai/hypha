@@ -330,7 +330,12 @@ def test_built_in_minio_server():
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
+            process.wait()  # Wait for the process to be fully killed
 
+        # Add a small delay to ensure the port is released
+        time.sleep(1)
+        
+        # Clean up the temporary directory
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
