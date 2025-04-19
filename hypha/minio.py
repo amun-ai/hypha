@@ -9,7 +9,11 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
+from pathlib import Path
+import requests
+from requests.exceptions import RequestException
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -41,13 +45,19 @@ def setup_minio_executables(executable_path):
 
     if sys.platform == "darwin":
         minio_url = f"https://dl.min.io/server/minio/release/darwin-amd64/archive/minio.{minio_version}"
-        mc_url = f"https://dl.min.io/client/mc/release/darwin-amd64/archive/mc.{mc_version}"
+        mc_url = (
+            f"https://dl.min.io/client/mc/release/darwin-amd64/archive/mc.{mc_version}"
+        )
     elif sys.platform == "linux":
         minio_url = f"https://dl.min.io/server/minio/release/linux-amd64/archive/minio.{minio_version}"
-        mc_url = f"https://dl.min.io/client/mc/release/linux-amd64/archive/mc.{mc_version}"
+        mc_url = (
+            f"https://dl.min.io/client/mc/release/linux-amd64/archive/mc.{mc_version}"
+        )
     elif sys.platform == "win32":
         minio_url = f"https://dl.min.io/server/minio/release/windows-amd64/archive/minio.{minio_version}"
-        mc_url = f"https://dl.min.io/client/mc/release/windows-amd64/archive/mc.{mc_version}"
+        mc_url = (
+            f"https://dl.min.io/client/mc/release/windows-amd64/archive/mc.{mc_version}"
+        )
     else:
         raise NotImplementedError(
             "Manual setup required to, please download minio and minio client \
@@ -73,6 +83,107 @@ def setup_minio_executables(executable_path):
             os.chmod(mc_path, stat_result.st_mode | stat.S_IEXEC)
 
     print("MinIO executables are ready.")
+
+
+def start_minio_server(
+    executable_path=None,
+    workdir=None,
+    port=9000,
+    console_port=None,
+    root_user="minioadmin",
+    root_password="minioadmin",
+    timeout=10,
+):
+    """Start a local Minio server instance.
+
+    Args:
+        executable_path: Path where minio executable is or will be installed
+        workdir: Working directory for Minio data (created as temp dir if None)
+        port: Port for the Minio server
+        console_port: Port for the Minio console (defaults to port+1)
+        root_user: Root user for Minio
+        root_password: Root password for Minio
+        timeout: Timeout in seconds to wait for Minio to start
+
+    Returns:
+        A tuple containing (process, server_url, workdir)
+        where process is the subprocess.Popen object,
+        server_url is the URL to connect to the server,
+        and workdir is the path to the working directory.
+    """
+    if executable_path is None:
+        executable_path = "./bin"
+
+    setup_minio_executables(executable_path)
+
+    # Create temp directory if workdir not provided
+    temp_dir_created = False
+    if workdir is None:
+        workdir = tempfile.mkdtemp()
+        temp_dir_created = True
+    else:
+        workdir = Path(workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+        workdir = str(workdir)
+
+    # Default console port if not provided
+    if console_port is None:
+        console_port = port + 1
+
+    logger.info(f"Minio data directory: {workdir}")
+
+    # Setup environment
+    my_env = os.environ.copy()
+    my_env["MINIO_ROOT_USER"] = root_user
+    my_env["MINIO_ROOT_PASSWORD"] = root_password
+
+    # Platform-specific executable
+    minio_executable = "minio.exe" if sys.platform == "win32" else "minio"
+    minio_path = os.path.join(executable_path, minio_executable)
+
+    # Start server
+    server_url = f"http://127.0.0.1:{port}"
+    cmd = [
+        minio_path,
+        "server",
+        f"--address=:{port}",
+        f"--console-address=:{console_port}",
+        workdir,
+    ]
+
+    try:
+        proc = subprocess.Popen(cmd, env=my_env)
+
+        # Wait for server to be available
+        start_time = time.time()
+        logger.info(f"Starting Minio server at {server_url}...")
+
+        while time.time() - start_time < timeout:
+            try:
+                response = requests.get(f"{server_url}/minio/health/live")
+                if response.ok:
+                    logger.info("Minio server started successfully.")
+                    return proc, server_url, workdir
+            except RequestException:
+                pass
+            time.sleep(0.2)
+
+        # If we reach here, the server didn't start in time
+        logger.error("Timed out waiting for Minio server to start")
+        proc.terminate()
+        if temp_dir_created:
+            import shutil
+
+            shutil.rmtree(workdir, ignore_errors=True)
+        return None, None, None
+
+    except Exception as e:
+        logger.error(f"Failed to start Minio server: {e}")
+        if temp_dir_created:
+            import shutil
+
+            shutil.rmtree(workdir, ignore_errors=True)
+        return None, None, None
 
 
 def kwarg_to_flag(**kwargs):

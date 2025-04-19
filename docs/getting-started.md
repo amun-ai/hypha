@@ -23,10 +23,56 @@ To start the Hypha server, use the following command:
 python3 -m hypha.server --host=0.0.0.0 --port=9527
 ```
 
-If you want to enable server apps (browsers running on the server side), run the following command:
+### Starting with Built-in S3 (Minio) Server
+
+For features requiring S3 object storage (like Server Apps or Artifact Management), Hypha provides a convenient built-in Minio server. To start the Hypha server along with this built-in S3 server, use the `--start-minio-server` flag:
 
 ```bash
-python -m hypha.server --host=0.0.0.0 --port=9527 --enable-server-apps
+python3 -m hypha.server --host=0.0.0.0 --port=9527 --start-minio-server
+```
+
+This automatically:
+- Starts a Minio server process.
+- Enables S3 support (`--enable-s3`).
+- Configures the necessary S3 connection details (`--endpoint-url`, `--access-key-id`, `--secret-access-key`).
+
+**Note:** You cannot use `--start-minio-server` if you are also manually providing S3 connection details (e.g., `--endpoint-url`). Choose one method or the other.
+
+You can customize the built-in Minio server using these options:
+- `--minio-workdir`: Specify a directory for Minio data (defaults to a temporary directory).
+- `--minio-port`: Set the port for the Minio server (defaults to 9000).
+- `--minio-root-user`: Set the root user (defaults to `minioadmin`).
+- `--minio-root-password`: Set the root password (defaults to `minioadmin`).
+
+Example with custom Minio settings:
+```bash
+python3 -m hypha.server --host=0.0.0.0 --port=9527 \
+    --start-minio-server \
+    --minio-workdir=./minio_data \
+    --minio-port=9001 \
+    --minio-root-user=myuser \
+    --minio-root-password=mypassword
+```
+
+### Starting with Server Apps
+
+If you want to enable server apps (browsers running on the server side), you need to enable S3 storage first. You can either configure an external S3 provider or use the built-in Minio server as described above. 
+
+To start with server apps enabled, use the `--enable-server-apps` flag along with your S3 configuration method:
+
+Using built-in Minio:
+```bash
+python -m hypha.server --host=0.0.0.0 --port=9527 --start-minio-server --enable-server-apps
+```
+
+Using external S3 (example):
+```bash
+python -m hypha.server --host=0.0.0.0 --port=9527 \
+    --enable-s3 \
+    --endpoint-url=<your-s3-endpoint> \
+    --access-key-id=<your-key-id> \
+    --secret-access-key=<your-secret> \
+    --enable-server-apps
 ```
 
 You can test if the server is running by visiting [http://localhost:9527](http://localhost:9527) and checking the Hypha server version.
