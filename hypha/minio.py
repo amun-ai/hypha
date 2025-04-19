@@ -353,9 +353,12 @@ class MinioClient:
         """Initialize the client."""
         setup_minio_executables(executable_path)
         # generate alias by hash of endpoint_url, access_key_id, and secret_access_key
-        self.alias = hashlib.sha256(
+        # Ensure alias starts with a letter (a-z) and contains only alphanumeric characters
+        hash_str = hashlib.sha256(
             (endpoint_url + access_key_id + secret_access_key).encode("utf-8")
-        ).hexdigest()[:10]
+        ).hexdigest()
+        # Use 'mc' prefix followed by first 8 chars of hash
+        self.alias = f"mc{hash_str[:8]}"
         # Use platform-specific executable name
         mc_executable = "mc.exe" if sys.platform == "win32" else "mc"
         self.mc_executable = os.path.join(executable_path, mc_executable)

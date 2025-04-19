@@ -22,7 +22,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.sql import func
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, OperationalError
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
@@ -845,6 +845,46 @@ class ArtifactController:
         self.store.set_artifact_manager(self)
         self.store.register_router(router)
 
+    async def _execute_with_retry(
+        self,
+        session: AsyncSession,
+        query,
+        description: str,
+        max_retries: int = 3,
+        base_delay: float = 0.05,
+        max_delay: float = 1.0,
+    ):
+        """Execute an SQLAlchemy query with retry logic for database lock errors."""
+        for attempt in range(max_retries):
+            try:
+                result = await session.execute(query)
+                return result  # Success
+            except OperationalError as e:
+                if "database is locked" in str(e).lower():
+                    if attempt < max_retries - 1:
+                        delay = min(
+                            base_delay * (2**attempt) + random.uniform(0, base_delay),
+                            max_delay,
+                        )
+                        logger.warning(
+                            f"Database locked during {description} (attempt {attempt + 1}/{max_retries}). Retrying in {delay:.2f} seconds..."
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(
+                            f"Database locked after {max_retries} attempts during {description}. Giving up."
+                        )
+                        raise e  # Re-raise the final lock error
+                else:
+                    raise e  # Re-raise other OperationalErrors
+            except Exception as e:
+                raise e  # Re-raise any other exceptions
+
+        # Should not be reached if logic is correct, but as a safeguard:
+        raise RuntimeError(
+            f"Failed to execute query for '{description}' after {max_retries} retries."
+        )
+
     async def init_db(self):
         """Initialize the database and create tables."""
         async with self.engine.begin() as conn:
@@ -888,7 +928,9 @@ class ArtifactController:
         query = select(ArtifactModel).where(
             self._get_artifact_id_cond(artifact_id),
         )
-        result = await session.execute(query)
+        result = await self._execute_with_retry(
+            session, query, description=f"_get_artifact for '{artifact_id}'"
+        )
         artifact = result.scalar_one_or_none()
         if not artifact:
             raise KeyError(f"Artifact with ID '{artifact_id}' does not exist.")
@@ -901,7 +943,9 @@ class ArtifactController:
         query = select(ArtifactModel).where(self._get_artifact_id_cond(artifact_id))
 
         try:
-            result = await session.execute(query)
+            result = await self._execute_with_retry(
+                session, query, description=f"_get_artifact_with_parent for '{artifact_id}'"
+            )
             artifact = result.scalar_one_or_none()
             if not artifact:
                 # Add debug logging
@@ -915,7 +959,9 @@ class ArtifactController:
                             ArtifactModel.alias == alias,
                         )
                     )
-                    result = await session.execute(query)
+                    result = await self._execute_with_retry(
+                        session, query, description=f"_get_artifact_with_parent existence check for '{artifact_id}'"
+                    )
                     if result.scalar_one_or_none():
                         raise KeyError(
                             f"Artifact exists but failed to retrieve with ID '{artifact_id}', this may be a race condition."
@@ -927,7 +973,9 @@ class ArtifactController:
                 parent_query = select(ArtifactModel).where(
                     self._get_artifact_id_cond(artifact.parent_id)
                 )
-                parent_result = await session.execute(parent_query)
+                parent_result = await self._execute_with_retry(
+                    session, parent_query, description=f"_get_artifact_with_parent parent query for '{artifact.parent_id}'"
+                )
                 parent_artifact = parent_result.scalar_one_or_none()
                 if not parent_artifact:
                     logger.warning(
@@ -1291,7 +1339,9 @@ class ArtifactController:
             ArtifactModel.workspace == workspace,
             ArtifactModel.alias.in_(aliases),
         )
-        result = await session.execute(query)
+        result = await self._execute_with_retry(
+            session, query, description=f"_batch_alias_exists for workspace '{workspace}'"
+        )
         existing_aliases = set(row[0] for row in result.fetchall())
         return existing_aliases
 
@@ -1880,7 +1930,9 @@ class ArtifactController:
                     count_q = select(func.count()).where(
                         ArtifactModel.parent_id == artifact.id
                     )
-                    result = await session.execute(count_q)
+                    result = await self._execute_with_retry(
+                        session, count_q, description=f"read count query for '{artifact_id}'"
+                    )
                     child_count = result.scalar()
                     artifact_data["config"] = artifact_data.get("config", {})
                     artifact_data["config"]["child_count"] = child_count
@@ -2868,7 +2920,9 @@ class ArtifactController:
 
                 if pagination:
                     # Execute the count query
-                    result = await session.execute(count_query)
+                    result = await self._execute_with_retry(
+                        session, count_query, description=f"list_children count query for '{parent_id or context['ws']}'"
+                    )
                     total_count = result.scalar()
                 else:
                     total_count = None
@@ -2895,7 +2949,9 @@ class ArtifactController:
                 )
 
                 # Execute the query
-                result = await session.execute(query)
+                result = await self._execute_with_retry(
+                    session, query, description=f"list_children main query for '{parent_id or context['ws']}'"
+                )
                 artifacts = result.scalars().all()
 
                 # Compile summary results for each artifact
@@ -3009,7 +3065,9 @@ class ArtifactController:
                 query = select(ArtifactModel).where(
                     ArtifactModel.workspace == workspace_info.id
                 )
-                result = await session.execute(query)
+                result = await self._execute_with_retry(
+                    session, query, description=f"prepare_workspace query for '{workspace_info.id}'"
+                )
                 artifacts = result.scalars().all()
                 for artifact in artifacts:
                     if artifact.type == "vector-collection":
@@ -3048,7 +3106,9 @@ class ArtifactController:
                 query = select(ArtifactModel).where(
                     ArtifactModel.workspace == workspace_info.id
                 )
-                result = await session.execute(query)
+                result = await self._execute_with_retry(
+                    session, query, description=f"close_workspace query for '{workspace_info.id}'"
+                )
                 artifacts = result.scalars().all()
                 for artifact in artifacts:
                     if artifact.type == "vector-collection":
