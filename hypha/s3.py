@@ -564,7 +564,7 @@ class S3Controller:
                     "Statement": [
                         {
                             "Sid": "AllowUserToSeeTheBucketInTheConsole",
-                            "Action": ["s3:ListAllMyBuckets", "s3:GetBucketLocation"],
+                            "Action": ["s3:GetBucketLocation"],
                             "Effect": "Allow",
                             "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
                         },
@@ -575,7 +575,7 @@ class S3Controller:
                             "Resource": [f"arn:aws:s3:::{self.workspace_bucket}"],
                             "Condition": {
                                 "StringEquals": {
-                                    "s3:prefix": ["", f"{workspace.id}/"],
+                                    "s3:prefix": [f"{workspace.id}/"],
                                     "s3:delimiter": ["/"],
                                 }
                             },
@@ -594,6 +594,7 @@ class S3Controller:
                             "Action": ["s3:*"],
                             "Effect": "Allow",
                             "Resource": [
+                                f"arn:aws:s3:::{self.workspace_bucket}/{workspace.id}",
                                 f"arn:aws:s3:::{self.workspace_bucket}/{workspace.id}/*"
                             ],
                         },
