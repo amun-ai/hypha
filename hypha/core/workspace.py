@@ -507,13 +507,19 @@ class WorkspaceManager:
         if user_info.is_anonymous:
             raise Exception("Only registered user can create workspace.")
 
-        try:
-            await self.load_workspace_info(config["id"], increment_counter=False)
-            if not overwrite:
+        # Check if workspace exists (only if overwrite=True)
+        exists = False
+        if overwrite:
+            try:
+                await self.load_workspace_info(config["id"], increment_counter=False)
+                exists = True
+            except KeyError:
+                pass
+        else:
+            # If not overwriting, check if workspace exists and raise error if it does
+            workspace_info = await self._redis.hget("workspaces", config["id"])
+            if workspace_info is not None:
                 raise RuntimeError(f"Workspace already exists: {config['id']}")
-            exists = True
-        except KeyError:
-            exists = False
 
         config["persistent"] = config.get("persistent") or False
         if user_info.is_anonymous and config["persistent"]:
@@ -558,17 +564,25 @@ class WorkspaceManager:
         retry_delay = 0.1  # seconds
         for attempt in range(max_retries):
             try:
-                # Verify workspace exists
-                workspace_info = await self.load_workspace_info(workspace.id, load=False, increment_counter=False)
-                # If we get here, the workspace exists
+                # Verify workspace exists in Redis
+                workspace_info = await self._redis.hget("workspaces", workspace.id)
+                if workspace_info is None:
+                    if attempt == max_retries - 1:
+                        logger.error(f"Failed to verify workspace creation after {max_retries} attempts")
+                        raise KeyError(f"Failed to create workspace: {workspace.id}")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                
+                # Update status to ready
                 await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
                 break
-            except KeyError:
+            except Exception as e:
                 if attempt == max_retries - 1:
-                    logger.error(f"Failed to verify workspace creation after {max_retries} attempts")
+                    logger.error(f"Failed to verify workspace creation: {str(e)}")
                     raise
                 await asyncio.sleep(retry_delay)
-                retry_delay *= 2  # Exponential backoff
+                retry_delay *= 2
 
         await self._event_bus.emit("workspace_loaded", workspace.model_dump())
         if user_info.get_workspace() != workspace.id:
