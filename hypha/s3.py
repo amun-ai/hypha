@@ -595,7 +595,7 @@ class S3Controller:
                             "Effect": "Allow",
                             "Resource": [
                                 f"arn:aws:s3:::{self.workspace_bucket}/{workspace.id}",
-                                f"arn:aws:s3:::{self.workspace_bucket}/{workspace.id}/*"
+                                f"arn:aws:s3:::{self.workspace_bucket}/{workspace.id}/*",
                             ],
                         },
                     ],

@@ -547,11 +547,11 @@ class WorkspaceManager:
             ]
 
         # Set initial status as loading
-        workspace.status = {"status": WorkspaceStatus.LOADING}
-        
+        workspace.status = {"ready": False, "status": WorkspaceStatus.LOADING}
+
         # Write to Redis
         await self._redis.hset("workspaces", workspace.id, workspace.model_dump_json())
-        
+
         if not exists:
             self._active_ws.inc()
 
@@ -568,12 +568,14 @@ class WorkspaceManager:
                 workspace_info = await self._redis.hget("workspaces", workspace.id)
                 if workspace_info is None:
                     if attempt == max_retries - 1:
-                        logger.error(f"Failed to verify workspace creation after {max_retries} attempts")
+                        logger.error(
+                            f"Failed to verify workspace creation after {max_retries} attempts"
+                        )
                         raise KeyError(f"Failed to create workspace: {workspace.id}")
                     await asyncio.sleep(retry_delay)
                     retry_delay *= 2  # Exponential backoff
                     continue
-                
+
                 # Update status to ready
                 await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
                 break
@@ -1847,10 +1849,15 @@ class WorkspaceManager:
                         errors["server_app_controller"] = traceback.format_exc()
 
             # Update workspace status
-            workspace_info.status = {"ready": True, "errors": errors}
-            await self._redis.hset(
-                "workspaces", workspace_info.id, workspace_info.model_dump_json()
-            )
+            if errors:
+                workspace_info.status = {"ready": True, "errors": errors}
+                await self._redis.hset(
+                    "workspaces", workspace_info.id, workspace_info.model_dump_json()
+                )
+            else:
+                await self._set_workspace_status(
+                    workspace_info.id, WorkspaceStatus.READY
+                )
 
             await self._event_bus.emit("workspace_ready", workspace_info.model_dump())
             logger.info("Workspace %s prepared.", workspace_info.id)
@@ -2127,8 +2134,28 @@ class WorkspaceManager:
     async def _set_workspace_status(self, workspace_id: str, status: str):
         """Set the status of a workspace."""
         try:
-            workspace_info = await self.load_workspace_info(workspace_id, load=False)
-            workspace_info.status = {"status": status}
+            # Try to get workspace info from Redis first
+            workspace_info_data = await self._redis.hget("workspaces", workspace_id)
+            if workspace_info_data is None:
+                raise KeyError(f"Workspace {workspace_id} not found in Redis")
+
+            workspace_info = WorkspaceInfo.model_validate(
+                json.loads(workspace_info_data.decode())
+            )
+
+            # Update status based on the status type
+            if status == WorkspaceStatus.READY:
+                workspace_info.status = {"ready": True, "errors": None}
+            elif status == WorkspaceStatus.LOADING:
+                workspace_info.status = {"ready": False, "status": "loading"}
+            elif status == WorkspaceStatus.UNLOADING:
+                workspace_info.status = {"ready": False, "status": "unloading"}
+            elif status == WorkspaceStatus.CLOSED:
+                workspace_info.status = {"ready": False, "status": "closed"}
+            else:
+                workspace_info.status = {"ready": False, "status": status}
+
+            # Save back to Redis
             await self._redis.hset(
                 "workspaces", workspace_id, workspace_info.model_dump_json()
             )
