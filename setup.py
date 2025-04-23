@@ -81,7 +81,7 @@ setup(
             "aiobotocore>=2.1.0",
             "aiortc>=1.9.0",
             "requests>=2.26.0",
-            "playwright>=1.18.1",
+            "playwright>=1.51.0",
             "base58>=2.1.0",
             "pymultihash>=0.8.2",
         ],

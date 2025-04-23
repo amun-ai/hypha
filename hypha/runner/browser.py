@@ -6,7 +6,7 @@ import logging
 import sys
 from typing import Any, Dict, List, Optional, Union
 
-from playwright.async_api import Page, async_playwright
+from playwright.async_api import Page, async_playwright, Browser, BrowserContext
 
 from hypha.core.store import RedisStore
 
@@ -55,17 +55,18 @@ class BrowserAppRunner:
         in_docker: bool = False,
     ):
         """Initialize the class."""
-        self.browser = None
-        self._browser_sessions = {}
+        self.browser: Optional[Browser] = None
+        self._browser_sessions: Dict[str, Dict[str, Any]] = {}
         self.controller_id = str(BrowserAppRunner.instance_counter)
         BrowserAppRunner.instance_counter += 1
         store.register_public_service(self.get_service())
         self.in_docker = in_docker
         self._initialized = False
+        self._playwright = None
 
-    async def initialize(self) -> None:
+    async def initialize(self) -> Browser:
         """Initialize the app controller."""
-        playwright = await async_playwright().start()
+        self._playwright = await async_playwright().start()
         args = [
             "--site-per-process",
             "--enable-unsafe-webgpu",
@@ -75,15 +76,36 @@ class BrowserAppRunner:
         # so it works in the docker image
         if self.in_docker:
             args.append("--no-sandbox")
-        self.browser = await playwright.chromium.launch(args=args)
+        
+        self.browser = await self._playwright.chromium.launch(
+            args=args,
+            handle_sigint=True,
+            handle_sigterm=True,
+            handle_sighup=True
+        )
+        self._initialized = True
         return self.browser
 
     async def shutdown(self) -> None:
         """Close the app controller."""
         logger.info("Closing the browser app controller...")
-        if self.browser:
-            await self.browser.close()
-        logger.info("Browser app controller closed.")
+        try:
+            # Close all active sessions first
+            session_ids = list(self._browser_sessions.keys())
+            for session_id in session_ids:
+                await self.stop(session_id)
+            
+            if self.browser:
+                await self.browser.close()
+            
+            if self._playwright:
+                await self._playwright.stop()
+                
+            self._initialized = False
+            logger.info("Browser app controller closed successfully.")
+        except Exception as e:
+            logger.error("Error during browser shutdown: %s", str(e))
+            raise
 
     async def start(
         self,
@@ -94,53 +116,84 @@ class BrowserAppRunner:
         """Start a browser app instance."""
         if session_id is None:
             session_id = str(uuid.uuid4())
+            
         if not self.browser:
             await self.initialize()
-        # context = await self.browser.createIncognitoBrowserContext()
-        page = await self.browser.new_page()
-        logs = {}
-        self._browser_sessions[session_id] = {
-            "url": url,
-            "status": "connecting",
-            "page": page,
-            "logs": logs,
-            "metadata": metadata,
-        }
-
-        _capture_logs_from_browser_tabs(page, logs)
-        # TODO: dispose await context.close()
-
+            
         try:
-            logger.info("Loading browser app: %s", url)
-            response = await page.goto(url, timeout=0, wait_until="load")
-            assert response.status == 200, (
-                "Failed to start browser app instance, "
-                f"status: {response.status}, url: {url}"
+            # Create a new context for isolation
+            context = await self.browser.new_context(
+                viewport={'width': 1280, 'height': 720},
+                accept_downloads=True
             )
-            logger.info("Browser app loaded: %s", url)
-        except Exception:
-            await page.close()
-            del self._browser_sessions[session_id]
+            
+            # Create a new page in the context
+            page = await context.new_page()
+            
+            logs = {}
+            self._browser_sessions[session_id] = {
+                "url": url,
+                "status": "connecting",
+                "page": page,
+                "context": context,
+                "logs": logs,
+                "metadata": metadata,
+            }
+
+            _capture_logs_from_browser_tabs(page, logs)
+
+            logger.info("Loading browser app: %s", url)
+            response = await page.goto(url, timeout=60000, wait_until="load")
+            
+            if not response:
+                raise Exception(f"Failed to load URL: {url}")
+                
+            if response.status != 200:
+                raise Exception(
+                    f"Failed to start browser app instance, "
+                    f"status: {response.status}, url: {url}"
+                )
+                
+            logger.info("Browser app loaded successfully: %s", url)
+            self._browser_sessions[session_id]["status"] = "connected"
+            
+            return {
+                "session_id": session_id,
+                "status": "connected",
+                "url": url,
+            }
+            
+        except Exception as e:
+            logger.error("Error starting browser session: %s", str(e))
+            if session_id in self._browser_sessions:
+                await self.stop(session_id)
             raise
-        return {
-            "session_id": session_id,
-            "status": "connected",
-            "url": url,
-        }
 
     async def stop(self, session_id: str) -> None:
         """Stop a browser app instance."""
-        if session_id in self._browser_sessions:
-            await self._browser_sessions[session_id]["page"].close()
-            if session_id in self._browser_sessions:
-                del self._browser_sessions[session_id]
-        else:
-            raise Exception(f"browser app instance not found: {session_id}")
+        if session_id not in self._browser_sessions:
+            logger.warning(f"Browser app instance not found: {session_id}")
+            return
 
-    async def list(self, workspace) -> List[str]:
+        try:
+            session = self._browser_sessions[session_id]
+            if "page" in session:
+                await session["page"].close()
+            if "context" in session:
+                await session["context"].close()
+            del self._browser_sessions[session_id]
+            logger.info(f"Successfully stopped browser session: {session_id}")
+        except Exception as e:
+            logger.error(f"Error stopping browser session {session_id}: {str(e)}")
+            raise
+
+    async def list(self, workspace) -> List[Dict[str, Any]]:
         """List the browser apps for the current user."""
         sessions = [
-            {k: v for k, v in page_info.items() if k != "page"}
+            {
+                k: v for k, v in page_info.items() 
+                if k not in ["page", "context"]
+            }
             for session_id, page_info in self._browser_sessions.items()
             if session_id.startswith(workspace + "/")
         ]
@@ -154,21 +207,30 @@ class BrowserAppRunner:
         limit: Optional[int] = None,
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get the logs for a browser app instance."""
-        if session_id in self._browser_sessions:
-            if type is None:
-                return self._browser_sessions[session_id]["logs"]
-            if limit is None:
-                limit = MAXIMUM_LOG_ENTRIES
-            return self._browser_sessions[session_id]["logs"][type][
-                offset : offset + limit
-            ]
-        raise Exception(f"browser app instance not found: {session_id}")
+        if session_id not in self._browser_sessions:
+            raise Exception(f"Browser app instance not found: {session_id}")
+            
+        if type is None:
+            return self._browser_sessions[session_id]["logs"]
+            
+        if type not in self._browser_sessions[session_id]["logs"]:
+            return []
+            
+        if limit is None:
+            limit = MAXIMUM_LOG_ENTRIES
+            
+        return self._browser_sessions[session_id]["logs"][type][
+            offset : offset + limit
+        ]
 
     async def close_workspace(self, workspace: str) -> None:
         """Close all browser app instances for a workspace."""
-        for session_id in list(self._browser_sessions.keys()):
-            if session_id.startswith(workspace + "/"):
-                await self.stop(session_id)
+        session_ids = [
+            session_id for session_id in self._browser_sessions.keys()
+            if session_id.startswith(workspace + "/")
+        ]
+        for session_id in session_ids:
+            await self.stop(session_id)
 
     def get_service(self):
         """Get the service."""
