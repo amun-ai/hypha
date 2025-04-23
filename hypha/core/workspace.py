@@ -39,7 +39,7 @@ from hypha.core import (
     VisibilityEnum,
 )
 from hypha.vectors import VectorSearchEngine
-from hypha.core.auth import generate_presigned_token, create_scope, valid_token
+from hypha.core.auth import generate_presigned_token, create_scope, parse_token
 from hypha.utils import EventBus, random_id
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -667,10 +667,10 @@ class WorkspaceManager:
         """Revoke a token by storing it in Redis with a prefix and expiration time."""
         self.validate_context(context, UserPermission.admin)
         try:
-            payload = valid_token(token)
+            user_info = parse_token(token)
         except Exception as e:
             raise ValueError(f"Invalid token: {e}")
-        expiration = int(payload.get("exp") - time.time())
+        expiration = int(user_info.expires_at - time.time())
         if expiration > 0:
             await self._redis.setex("revoked_token:" + token, expiration, "revoked")
         else:
