@@ -61,12 +61,12 @@ dataset = await artifact_manager.create(
     parent_id=collection.id,
     alias="example-dataset",
     manifest=dataset_manifest,
-    version="stage"
+    stage=True
 )
 print("Dataset added to the gallery.")
 ```
 
-**Tips: The `version="stage"` parameter stages the dataset for review and commit. You can edit the dataset before committing it to the collection.**
+**Tips: The `stage=True` parameter stages the dataset for review and commit. You can edit the dataset before committing it to the collection.**
 
 ### Step 4: Uploading Files to the Dataset with Download Statistics
 
@@ -146,7 +146,7 @@ async def main():
         parent_id=collection.id,
         alias="example-dataset",
         manifest=dataset_manifest,
-        version="stage"
+        stage=True
     )
     print("Dataset added to the gallery.")
 
@@ -220,7 +220,7 @@ dataset = await artifact_manager.create(
     parent_id=collection.id,
     alias="valid-dataset",
     manifest=valid_dataset_manifest,
-    version="stage"
+    stage=True
 )
 print("Valid dataset created.")
 
@@ -274,13 +274,13 @@ Creates a new artifact or collection with the specified manifest. The artifact i
 - `overwrite`: Optional. A boolean flag to overwrite the existing artifact with the same alias. Default is `False`.
 
 
-**Note 1: If you set `version="stage"`, you must call `commit()` to finalize the artifact.**
+**Note 1: If you set `stage=True`, you must call `commit()` to finalize the artifact.**
 
 **Example:**
 
 ```python
 # Assuming we have already created a dataset-gallery collection, we can add a new dataset to it
-await artifact_manager.create(artifact_id="dataset-gallery", alias="example-dataset", manifest=dataset_manifest, version="stage")
+await artifact_manager.create(artifact_id="dataset-gallery", alias="example-dataset", manifest=dataset_manifest, stage=True)
 ```
 
 ### Permissions
@@ -389,7 +389,7 @@ Edits an existing artifact's manifest. The new manifest is staged until committe
 await artifact_manager.edit(
     artifact_id="example-dataset",
     manifest=updated_manifest,
-    version="stage",
+    stage=True,
 )
 
 ```
@@ -810,7 +810,7 @@ dataset_manifest = {
     "description": "A dataset with example data",
     "type": "dataset",
 }
-dataset = await artifact_manager.create(parent_id=collection.id, alias="example-dataset" manifest=dataset_manifest, version="stage")
+dataset = await artifact_manager.create(parent_id=collection.id, alias="example-dataset" manifest=dataset_manifest, stage=True)
 
 # Step 4: Upload a file to the dataset
 put_url = await artifact_manager.put_file(dataset.id, file_path="data.csv")
@@ -1058,13 +1058,13 @@ The Artifact Manager follows specific rules for version handling during `create`
 1. **Version Determination at Creation Time**
    - When creating an artifact, the version handling must be determined at creation time
    - If `stage=True` is specified, any version parameter is ignored and the artifact starts in staging mode
-   - Using `version="stage"` is equivalent to `stage=True` for backward compatibility
+   - Using `stage=True` is equivalent to `version="stage"`(not recommended) for backward compatibility
    - When committing a staged artifact, it will create version "v0" regardless of any version specified during creation
 
 2. **Version Determination at Edit Time**
    - When editing an artifact, the version handling must be determined at edit time
    - If `stage=True` is specified, any version parameter is ignored and the artifact goes into staging mode
-   - Using `version="stage"` is equivalent to `stage=True` for backward compatibility
+   - Using `stage=True` is equivalent to `version="stage"`(not recommended) for backward compatibility
    - Direct edits without staging will update the current version without creating a new one
 
 3. **Version Handling During Commit**
@@ -1086,11 +1086,11 @@ artifact = await artifact_manager.create(
     version="v5"  # This is ignored since stage=True is specified
 )
 
-# Alternative approach using version="stage"
+# Alternative approach using stage=True
 artifact = await artifact_manager.create(
     type="dataset",
     manifest=manifest,
-    version="stage"  # Equivalent to stage=True
+    stage=True  # Equivalent to stage=True
 )
 
 # Edit an artifact in staging mode
