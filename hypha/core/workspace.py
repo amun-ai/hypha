@@ -507,13 +507,19 @@ class WorkspaceManager:
         if user_info.is_anonymous:
             raise Exception("Only registered user can create workspace.")
 
-        try:
-            await self.load_workspace_info(config["id"], increment_counter=False)
-            if not overwrite:
+        # Check if workspace exists (only if overwrite=True)
+        exists = False
+        if overwrite:
+            try:
+                await self.load_workspace_info(config["id"], increment_counter=False)
+                exists = True
+            except KeyError:
+                pass
+        else:
+            # If not overwriting, check if workspace exists and raise error if it does
+            workspace_info = await self._redis.hget("workspaces", config["id"])
+            if workspace_info is not None:
                 raise RuntimeError(f"Workspace already exists: {config['id']}")
-            exists = True
-        except KeyError:
-            exists = False
 
         config["persistent"] = config.get("persistent") or False
         if user_info.is_anonymous and config["persistent"]:
@@ -539,25 +545,46 @@ class WorkspaceManager:
                     "description": workspace.description,
                 }
             ]
+
+        # Set initial status as loading
+        workspace.status = {"ready": False, "status": WorkspaceStatus.LOADING}
+
+        # Write to Redis
         await self._redis.hset("workspaces", workspace.id, workspace.model_dump_json())
+
         if not exists:
             self._active_ws.inc()
-        if self._s3_controller:
+
+        # Skip S3 setup for anonymous users
+        if not workspace.id.startswith("anonymouz-") and self._s3_controller:
             await self._s3_controller.setup_workspace(workspace)
 
-        # Verify workspace exists in Redis before setting status
-        try:
-            await self.load_workspace_info(
-                workspace.id, load=False, increment_counter=False
-            )
-            # Only set status after confirming workspace exists
-            await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
-        except KeyError:
-            logger.warning(
-                f"Workspace {workspace.id} not found immediately after creation, retrying..."
-            )
-            await asyncio.sleep(0.1)  # Brief pause for Redis consistency
-            await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
+        # Verify workspace exists in Redis with retries
+        max_retries = 3
+        retry_delay = 0.1  # seconds
+        for attempt in range(max_retries):
+            try:
+                # Verify workspace exists in Redis
+                workspace_info = await self._redis.hget("workspaces", workspace.id)
+                if workspace_info is None:
+                    if attempt == max_retries - 1:
+                        logger.error(
+                            f"Failed to verify workspace creation after {max_retries} attempts"
+                        )
+                        raise KeyError(f"Failed to create workspace: {workspace.id}")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+
+                # Update status to ready
+                await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
+                break
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"Failed to verify workspace creation: {str(e)}")
+                    raise
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
 
         await self._event_bus.emit("workspace_loaded", workspace.model_dump())
         if user_info.get_workspace() != workspace.id:
@@ -565,10 +592,13 @@ class WorkspaceManager:
                 {"bookmark_type": "workspace", "id": workspace.id}, context=context
             )
         logger.info("Created workspace %s", workspace.id)
-        # preare the workspace for the user
-        task = asyncio.create_task(self._prepare_workspace(workspace))
-        background_tasks.add(task)
-        task.add_done_callback(background_tasks.discard)
+        # prepare the workspace for the user
+        if not workspace.id.startswith(
+            "anonymouz-"
+        ):  # Skip preparation for anonymous workspaces
+            task = asyncio.create_task(self._prepare_workspace(workspace))
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
         return workspace.model_dump()
 
     @schema_method
@@ -1485,6 +1515,25 @@ class WorkspaceManager:
         if not load:
             raise KeyError(f"Workspace not found: {workspace}")
 
+        # Skip S3 loading for anonymous workspaces
+        if workspace.startswith("anonymouz-"):
+            logger.debug(f"Anonymous workspace {workspace}, skipping S3 loading")
+            workspace_info = WorkspaceInfo(
+                id=workspace,
+                name=workspace,
+                description="Anonymous workspace",
+                owners=[workspace],
+                persistent=False,
+                read_only=False,
+                status={"ready": True},
+            )
+            await self._redis.hset(
+                "workspaces", workspace_info.id, workspace_info.model_dump_json()
+            )
+            if increment_counter:
+                self._active_ws.inc()
+            return workspace_info
+
         logger.info(f"Workspace {workspace} not found in Redis, trying to load from S3")
 
         try:
@@ -1781,25 +1830,34 @@ class WorkspaceManager:
         """Prepare the workspace."""
         errors = {}
         try:
-            if workspace_info.persistent:
-                try:
-                    if self._artifact_manager:
-                        await self._artifact_manager.prepare_workspace(workspace_info)
-                except Exception as e:
-                    errors["artifact_manager"] = traceback.format_exc()
-                try:
-                    if self._server_app_controller:
-                        await self._server_app_controller.prepare_workspace(
-                            workspace_info
-                        )
-                except Exception as e:
-                    errors["server_app_controller"] = traceback.format_exc()
+            # Skip preparation for anonymous workspaces
+            if not workspace_info.id.startswith("anonymouz-"):
+                if workspace_info.persistent:
+                    try:
+                        if self._artifact_manager:
+                            await self._artifact_manager.prepare_workspace(
+                                workspace_info
+                            )
+                    except Exception as e:
+                        errors["artifact_manager"] = traceback.format_exc()
+                    try:
+                        if self._server_app_controller:
+                            await self._server_app_controller.prepare_workspace(
+                                workspace_info
+                            )
+                    except Exception as e:
+                        errors["server_app_controller"] = traceback.format_exc()
 
             # Update workspace status
-            workspace_info.status = {"ready": True, "errors": errors}
-            await self._redis.hset(
-                "workspaces", workspace_info.id, workspace_info.model_dump_json()
-            )
+            if errors:
+                workspace_info.status = {"ready": True, "errors": errors}
+                await self._redis.hset(
+                    "workspaces", workspace_info.id, workspace_info.model_dump_json()
+                )
+            else:
+                await self._set_workspace_status(
+                    workspace_info.id, WorkspaceStatus.READY
+                )
 
             await self._event_bus.emit("workspace_ready", workspace_info.model_dump())
             logger.info("Workspace %s prepared.", workspace_info.id)
@@ -2076,8 +2134,28 @@ class WorkspaceManager:
     async def _set_workspace_status(self, workspace_id: str, status: str):
         """Set the status of a workspace."""
         try:
-            workspace_info = await self.load_workspace_info(workspace_id, load=False)
-            workspace_info.status = {"status": status}
+            # Try to get workspace info from Redis first
+            workspace_info_data = await self._redis.hget("workspaces", workspace_id)
+            if workspace_info_data is None:
+                raise KeyError(f"Workspace {workspace_id} not found in Redis")
+
+            workspace_info = WorkspaceInfo.model_validate(
+                json.loads(workspace_info_data.decode())
+            )
+
+            # Update status based on the status type
+            if status == WorkspaceStatus.READY:
+                workspace_info.status = {"ready": True, "errors": None}
+            elif status == WorkspaceStatus.LOADING:
+                workspace_info.status = {"ready": False, "status": "loading"}
+            elif status == WorkspaceStatus.UNLOADING:
+                workspace_info.status = {"ready": False, "status": "unloading"}
+            elif status == WorkspaceStatus.CLOSED:
+                workspace_info.status = {"ready": False, "status": "closed"}
+            else:
+                workspace_info.status = {"ready": False, "status": status}
+
+            # Save back to Redis
             await self._redis.hset(
                 "workspaces", workspace_id, workspace_info.model_dump_json()
             )

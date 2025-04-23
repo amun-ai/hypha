@@ -21,6 +21,7 @@ from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
 from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
 from hypha.websocket import WebsocketServer
+from hypha.minio import start_minio_server
 from contextlib import asynccontextmanager
 
 try:
@@ -177,6 +178,38 @@ def create_application(args):
         for key, value in _args.__dict__.items():
             setattr(args, key, value)
 
+    # Handle Minio server if requested
+    minio_proc = None
+    if args.start_minio_server:
+        # Check if S3 settings are already configured
+        if args.endpoint_url or args.access_key_id or args.secret_access_key:
+            raise ValueError(
+                "Cannot use --start-minio-server with S3 settings (--endpoint-url, --access-key-id, --secret-access-key)."
+                " Please use either built-in Minio server or external S3 configuration."
+            )
+
+        # Start Minio server
+        minio_proc, server_url, workdir = start_minio_server(
+            executable_path=args.cache_dir or args.executable_path,
+            workdir=args.minio_workdir,
+            port=args.minio_port,
+            root_user=args.minio_root_user,
+            root_password=args.minio_root_password,
+        )
+
+        if not minio_proc:
+            raise RuntimeError("Failed to start Minio server")
+
+        # Set S3 settings automatically
+        args.endpoint_url = server_url
+        args.endpoint_url_public = server_url
+        args.access_key_id = args.minio_root_user
+        args.secret_access_key = args.minio_root_password
+        args.enable_s3 = True
+        args.s3_admin_type = "minio"
+
+        logger.info(f"Started built-in Minio server at {server_url}")
+
     if args.allow_origins and isinstance(args.allow_origins, str):
         args.allow_origins = args.allow_origins.split(",")
     else:
@@ -193,6 +226,11 @@ def create_application(args):
         await store.teardown()
         await asyncio.sleep(0.1)
         await websocket_server.stop()
+
+        # Terminate Minio if we started it
+        if minio_proc:
+            logger.info("Shutting down built-in Minio server")
+            minio_proc.terminate()
 
     application = FastAPI(
         title="Hypha",
@@ -509,6 +547,35 @@ def get_argparser(add_help=True):
         "--enable-server",
         action="store_true",
         help="enable server in interactive mode",
+    )
+    parser.add_argument(
+        "--start-minio-server",
+        action="store_true",
+        help="start a built-in Minio server for S3 storage",
+    )
+    parser.add_argument(
+        "--minio-workdir",
+        type=str,
+        default=None,
+        help="working directory for the built-in Minio server data",
+    )
+    parser.add_argument(
+        "--minio-port",
+        type=int,
+        default=9000,
+        help="port for the built-in Minio server",
+    )
+    parser.add_argument(
+        "--minio-root-user",
+        type=str,
+        default="minioadmin",
+        help="root user for the built-in Minio server",
+    )
+    parser.add_argument(
+        "--minio-root-password",
+        type=str,
+        default="minioadmin",
+        help="root password for the built-in Minio server",
     )
     return parser
 

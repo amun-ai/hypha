@@ -1,6 +1,10 @@
 """Test S3 services."""
 
 import os
+import subprocess
+import sys
+import tempfile
+import time
 
 import asyncio
 import aioboto3
@@ -8,7 +12,14 @@ import pytest
 import io
 import zipfile
 import requests
+import shutil
 from hypha_rpc import connect_to_server
+from hypha.core.auth import (
+    generate_presigned_token,
+    create_scope,
+    UserInfo,
+    UserPermission,
+)
 
 from . import WS_SERVER_URL, SERVER_URL, find_item
 
@@ -266,3 +277,86 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
             assert await obj.content_length
 
     await api.disconnect()
+
+
+# def test_built_in_minio_server():
+#     """Test built-in Minio server functionality."""
+#     # Create a temporary directory for Minio data
+#     temp_dir = tempfile.mkdtemp()
+#     port = 9999  # Use a different port to avoid conflicts
+#     try:
+#         # Start the Hypha server with built-in Minio
+#         process = subprocess.Popen(
+#             [
+#                 sys.executable,
+#                 "-m",
+#                 "hypha.server",
+#                 "--start-minio-server",
+#                 f"--minio-workdir={temp_dir}",
+#                 f"--minio-port={port}",
+#                 "--minio-root-user=testuser",
+#                 "--minio-root-password=testpassword",
+#                 "--enable-s3",
+#                 "--port=9555",  # Different port for Hypha
+#             ]
+#         )
+
+#         # Wait for the server to start
+#         server_url = "http://127.0.0.1:9555"
+#         timeout = 20  # Longer timeout as both Hypha and Minio need to start
+
+#         while timeout > 0:
+#             try:
+#                 response = requests.get(f"{server_url}/health/readiness")
+#                 if response.ok:
+#                     break
+#             except requests.RequestException:
+#                 pass
+#             timeout -= 0.5
+#             time.sleep(0.5)
+
+#         if timeout <= 0:
+#             raise TimeoutError("Server did not start in time")
+
+#         # Verify the Minio port is being used
+#         minio_response = requests.get(f"http://127.0.0.1:{port}/minio/health/live")
+#         assert minio_response.ok, "Minio server is not running on the expected port"
+
+#     finally:
+#         # Clean up
+#         process.terminate()
+#         try:
+#             process.wait(timeout=5)
+#         except subprocess.TimeoutExpired:
+#             process.kill()
+
+#         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+# # Test that trying to use both flags raises an error
+# def test_minio_server_with_s3_settings():
+#     """Test that using both built-in Minio and S3 settings raises an error."""
+#     with tempfile.TemporaryDirectory() as temp_dir:
+#         # Try to start with conflicting settings
+#         process = subprocess.Popen(
+#             [
+#                 sys.executable,
+#                 "-m",
+#                 "hypha.server",
+#                 "--start-minio-server",
+#                 f"--minio-workdir={temp_dir}",
+#                 "--endpoint-url=http://example.com",  # This should cause a conflict
+#                 "--port=9666",
+#             ],
+#             stderr=subprocess.PIPE,
+#         )
+
+#         # The process should exit with an error
+#         _, stderr = process.communicate(timeout=5)
+#         stderr_text = stderr.decode()
+
+#         # Check that the process exited with an error
+#         assert process.returncode != 0
+
+#         # Check that the error message is as expected
+#         assert "Cannot use --start-minio-server with S3 settings" in stderr_text
