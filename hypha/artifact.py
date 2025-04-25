@@ -266,7 +266,9 @@ class ArtifactController:
                     keywords = keywords.split(",")
                 if filters:
                     filters = json.loads(filters)
-
+                
+                # stage: true/false -> bool; otherwise -> None
+                stage = stage == 'true' if stage else None
                 results = await self.list_children(
                     parent_id=parent_id,
                     offset=offset,
