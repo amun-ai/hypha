@@ -249,6 +249,7 @@ class ArtifactController:
             order_by: str = None,
             pagination: bool = False,
             silent: bool = False,
+            stage: str = None,
             no_cache: bool = False,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
@@ -276,6 +277,7 @@ class ArtifactController:
                     mode=mode,
                     pagination=pagination,
                     silent=silent,
+                    stage=stage,
                     context={"user": user_info.model_dump(), "ws": workspace},
                 )
                 await self._cache.set(cache_key, results, ttl=60)
