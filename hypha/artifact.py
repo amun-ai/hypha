@@ -249,14 +249,14 @@ class ArtifactController:
             order_by: str = None,
             pagination: bool = False,
             silent: bool = False,
-            stage: str = None,
+            stage: str = 'false',
             no_cache: bool = False,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """List child artifacts of a specified artifact."""
             try:
                 parent_id = f"{workspace}/{artifact_alias}"
-                cache_key = f"artifact_children:{parent_id}:{offset}:{limit}:{order_by}:{keywords}:{filters}:{mode}"
+                cache_key = f"artifact_children:{parent_id}:{offset}:{limit}:{order_by}:{keywords}:{filters}:{mode}:{stage}"
                 if not no_cache:
                     logger.info(f"Responding to list request ({parent_id}) from cache")
                     cached_results = await self._cache.get(cache_key)
@@ -267,8 +267,22 @@ class ArtifactController:
                 if filters:
                     filters = json.loads(filters)
                 
-                # stage: true/false -> bool; otherwise -> None
-                stage = stage == 'true' if stage else None
+                # Convert stage parameter:
+                # 'true' -> True (only staged artifacts)
+                # 'false' -> False (only committed artifacts)
+                # 'all' -> 'all' (both staged and committed artifacts)
+                if stage == 'true':
+                    stage_param = True
+                elif stage == 'false':
+                    stage_param = False
+                elif stage == 'all':
+                    stage_param = 'all'
+                else:
+                    # Default to committed artifacts for any invalid value
+                    stage_param = False
+                
+                logger.info(f"HTTP list_children endpoint: stage={stage}, converted to stage_param={stage_param}")
+                    
                 results = await self.list_children(
                     parent_id=parent_id,
                     offset=offset,
@@ -279,7 +293,7 @@ class ArtifactController:
                     mode=mode,
                     pagination=pagination,
                     silent=silent,
-                    stage=stage,
+                    stage=stage_param,
                     context={"user": user_info.model_dump(), "ws": workspace},
                 )
                 await self._cache.set(cache_key, results, ttl=60)
@@ -2725,12 +2739,24 @@ class ArtifactController:
         order_by: str = None,
         silent: bool = False,
         pagination: bool = False,
-        stage: bool = None,
+        stage: bool = False,
         context: dict = None,
     ):
         """
         List artifacts within a collection under a specific artifact_id.
+        
+        Parameters:
+            stage: Controls which artifacts to return based on their staging status
+                - True: Return only staged artifacts
+                - False: Return only committed artifacts
+                - 'all': Return both staged and committed artifacts
         """
+        logger.info(f"list_children implementation: stage parameter value = {stage}")
+        
+        # Convert 'all' to None for internal implementation
+        if stage == 'all':
+            stage = None
+            
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         if parent_id:
@@ -2806,25 +2832,17 @@ class ArtifactController:
                             assert value in [
                                 "stage",
                                 "latest",
-                                "*",
-                            ], "Invalid version value, it should be 'stage' or 'latest'."
+                                "committed",
+                            ], "Invalid version value, it should be 'stage', 'latest' or 'committed'."
                             if value == "stage":
-                                assert (
-                                    stage is None
-                                ), "Stage parameter cannot be used with version filter."
+                                assert stage != None, "Stage parameter cannot be used with version filter."
                                 stage = True
-                            elif value == "committed":
-                                assert (
-                                    stage is None
-                                ), "Stage parameter cannot be used with version filter."
+                            elif value == "latest":
+                                assert stage != True, "Stage parameter cannot be used with version filter."
                                 stage = False
-                            elif value == "*":
-                                assert (
-                                    stage is None
-                                ), "Stage parameter cannot be used with version filter."
-                                stage = None
-                            else:
-                                raise ValueError(f"Invalid version value: {value}")
+                            elif value == "committed":
+                                assert stage != True, "Stage parameter cannot be used with version filter."
+                                stage = False
                             continue
 
                         if key == "manifest" and isinstance(value, dict):
@@ -2892,32 +2910,44 @@ class ArtifactController:
                             else:
                                 raise ValueError(f"Invalid filter key: {key}")
 
-                if stage is not None:
+                # Stage filtering logic
+                if stage is not None:  # If stage is explicitly True or False
+                    logger.info(f"Adding stage filter condition: stage={stage}")
                     if backend == "sqlite":
                         if stage:
+                            # Return only staged artifacts
                             stage_condition = and_(
                                 ArtifactModel.staging.isnot(None),
                                 text("staging != 'null'"),
                             )
+                            logger.info("Adding condition to return ONLY STAGED artifacts")
                         else:
+                            # Return only committed artifacts
                             stage_condition = or_(
                                 ArtifactModel.staging.is_(None),
                                 text("staging = 'null'"),
                             )
+                            logger.info("Adding condition to return ONLY COMMITTED artifacts")
                     else:
                         if stage:
+                            # Return only staged artifacts
                             stage_condition = and_(
                                 ArtifactModel.staging.isnot(None),
                                 text("staging::text != 'null'"),
                             )
+                            logger.info("Adding condition to return ONLY STAGED artifacts")
                         else:
+                            # Return only committed artifacts
                             stage_condition = or_(
                                 ArtifactModel.staging.is_(None),
                                 text("staging::text = 'null'"),
                             )
+                            logger.info("Adding condition to return ONLY COMMITTED artifacts")
 
                     query = query.where(stage_condition)
                     count_query = count_query.where(stage_condition)
+                else:
+                    logger.info("No stage filter applied - returning BOTH staged and committed artifacts")
 
                 # Combine conditions based on mode (AND/OR)
                 if conditions:

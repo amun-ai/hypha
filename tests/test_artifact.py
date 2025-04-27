@@ -8,6 +8,7 @@ from io import BytesIO
 from zipfile import ZipFile
 import httpx
 import yaml
+import json
 
 from . import SERVER_URL, SERVER_URL_SQLITE, find_item
 
@@ -979,11 +980,11 @@ async def test_artifact_filtering(
             await artifact_manager2.commit(artifact_id=artifact.id)
         created_artifacts.append(artifact)
 
-    # Filter by `type`: Only datasets should be returned, staged and committed
+    # Filter by `type`: Only datasets should be returned, only committed
     results = await artifact_manager.list(
         parent_id=collection.id, filters={"type": "dataset"}, mode="AND"
     )
-    assert len(results) == 5
+    assert len(results) == 2
     for result in results:
         assert result["type"] == "dataset"
 
@@ -993,7 +994,7 @@ async def test_artifact_filtering(
         filters={"created_by": user_id1},
         mode="AND",
     )
-    assert len(results) == 5
+    assert len(results) == 2
     for result in results:
         assert result["created_by"] == user_id1
 
@@ -1003,9 +1004,9 @@ async def test_artifact_filtering(
         filters={"view_count": [1, None]},  # Filter for any view count >= 1
         mode="AND",
     )
-    assert len(results) == 5
+    assert len(results) == 2
 
-    # Backwards compatibility with version filter
+     # Backwards compatibility with version filter
     # Filter by `stage`: Only staged artifacts should be returned
     results = await artifact_manager.list(
         parent_id=collection.id, filters={"version": "stage"}, mode="AND"
@@ -2326,16 +2327,11 @@ async def test_list_stage_parameter(minio_server, fastapi_server, test_user_toke
         stage=True,
     )
 
-    # Test 1: Default behavior (stage=None) should show all artifacts
+    # Test 1: Default behavior (stage=False) should list only committed artifacts
     results = await artifact_manager.list(parent_id=collection.id)
-    assert len(results) == 4
+    assert len(results) == 2
     names = {r["manifest"]["name"] for r in results}
-    assert names == {
-        "Committed Artifact",
-        "Staged Artifact",
-        "Another Committed",
-        "Another Staged",
-    }
+    assert names == {"Committed Artifact", "Another Committed"}
 
     # Test 2: stage=False should show only committed artifacts
     results = await artifact_manager.list(parent_id=collection.id, stage=False)
@@ -2343,13 +2339,19 @@ async def test_list_stage_parameter(minio_server, fastapi_server, test_user_toke
     names = {r["manifest"]["name"] for r in results}
     assert names == {"Committed Artifact", "Another Committed"}
 
-    # Test 2: stage=True should show only staged artifacts
+    # Test 3: stage=True should show only staged artifacts
     results = await artifact_manager.list(parent_id=collection.id, stage=True)
     assert len(results) == 2
     names = {r["manifest"]["name"] for r in results}
     assert names == {"Staged Artifact", "Another Staged"}
 
-    # Test 4: Backward compatibility with filters={"version": "stage"}
+    # Test 4: stage='all' should show both staged and committed artifacts
+    results = await artifact_manager.list(parent_id=collection.id, stage='all')
+    assert len(results) == 4
+    names = {r["manifest"]["name"] for r in results}
+    assert names == {"Committed Artifact", "Another Committed", "Staged Artifact", "Another Staged"}
+
+    # Test 5: Backward compatibility with filters={"version": "stage"}
     results = await artifact_manager.list(
         parent_id=collection.id, filters={"version": "stage"}
     )
@@ -2361,5 +2363,276 @@ async def test_list_stage_parameter(minio_server, fastapi_server, test_user_toke
     await artifact_manager.delete(artifact_id=committed.id)
     await artifact_manager.delete(artifact_id=committed2.id)
     await artifact_manager.delete(artifact_id=staged.id)
+    await artifact_manager.delete(artifact_id=staged2.id)
+    await artifact_manager.delete(artifact_id=collection.id)
+
+
+async def test_http_children_endpoint(minio_server, fastapi_server, test_user_token):
+    """Test the HTTP endpoint for listing child artifacts with various parameters."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection for testing
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={
+            "name": "Children Test Collection",
+            "description": "A collection for testing children endpoint",
+        },
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    # Create multiple child artifacts with various properties
+    child1 = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={
+            "name": "Child Artifact 1",
+            "description": "First child artifact",
+            "tags": ["test", "one"],
+            "metadata": {"priority": "high"},
+        },
+    )
+
+    child2 = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={
+            "name": "Child Artifact 2",
+            "description": "Second child artifact",
+            "tags": ["test", "two"],
+            "metadata": {"priority": "medium"},
+        },
+    )
+
+    child3 = await artifact_manager.create(
+        type="model",
+        parent_id=collection.id,
+        manifest={
+            "name": "Child Artifact 3",
+            "description": "Third child artifact",
+            "tags": ["test", "three"],
+            "metadata": {"priority": "low"},
+        },
+    )
+
+    # Create a staged artifact
+    staged_artifact = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={
+            "name": "Staged Artifact",
+            "description": "A staged artifact",
+        },
+        stage=True,
+    )
+
+    # Test basic endpoint functionality (default stage=false)
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children"
+    )
+    assert response.status_code == 200
+    results = response.json()
+    # Should only return committed artifacts (not staged)
+    assert len(results) == 3
+    names = {r["manifest"]["name"] for r in results}
+    assert "Staged Artifact" not in names
+    
+    # Test keyword search
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children?keywords=two"
+    )
+    assert response.status_code == 200
+    results = response.json()
+    assert len(results) == 1
+    assert results[0]["manifest"]["name"] == "Child Artifact 2"
+
+    # Test filtering by type
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children?filters={json.dumps({'type': 'model'})}"
+    )
+    assert response.status_code == 200
+    results = response.json()
+    assert len(results) == 1
+    assert results[0]["manifest"]["name"] == "Child Artifact 3"
+
+    # Test filtering by manifest field (in nested format)
+    filters = {
+        "manifest": {
+            "name": "Child Artifact 1"
+        }
+    }
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children?filters={json.dumps(filters)}"
+    )
+    assert response.status_code == 200
+    results = response.json()
+    assert len(results) == 1
+    assert results[0]["manifest"]["name"] == "Child Artifact 1"
+
+    # Test pagination
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children?offset=1&limit=1&pagination=true"
+    )
+    assert response.status_code == 200
+    results = response.json()
+    assert "items" in results
+    assert "total" in results
+    assert results["total"] == 3
+    assert len(results["items"]) == 1
+
+    # Test ordering
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children?order_by=created_at"
+    )
+    assert response.status_code == 200
+    results_asc = response.json()
+    
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children?order_by=created_at<"
+    )
+    assert response.status_code == 200
+    results_desc = response.json()
+    
+    # Verify that both queries return the same set of results
+    asc_ids = [item["_id"] for item in results_asc]
+    desc_ids = [item["_id"] for item in results_desc]
+    assert set(asc_ids) == set(desc_ids), "Results should contain the same items"
+
+    # Skip checking order difference since artifacts might be created at the same timestamp
+    
+    # Test no_cache parameter
+    # First create a new artifact
+    new_child = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={
+            "name": "New Child",
+            "description": "Newly created artifact for testing no_cache",
+        },
+    )
+    
+    # Then immediately request with no_cache to ensure it's included
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children?no_cache=true"
+    )
+    assert response.status_code == 200
+    results = response.json()
+    assert len(results) == 4  # Should include the new artifact (3 original + 1 new)
+    
+    # Clean up
+    await artifact_manager.delete(artifact_id=child1.id)
+    await artifact_manager.delete(artifact_id=child2.id)
+    await artifact_manager.delete(artifact_id=child3.id)
+    await artifact_manager.delete(artifact_id=staged_artifact.id)
+    await artifact_manager.delete(artifact_id=new_child.id)
+    await artifact_manager.delete(artifact_id=collection.id)
+
+
+async def test_http_children_endpoint_stage_parameter(minio_server, fastapi_server, test_user_token):
+    """Test the stage parameter functionality in HTTP endpoint for listing child artifacts."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection for testing
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={
+            "name": "Stage Parameter Test Collection",
+            "description": "A collection for testing stage parameter",
+        },
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    # Create committed artifacts
+    committed1 = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Committed Artifact 1"},
+        version="v0",  # This will create a committed artifact
+    )
+
+    committed2 = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Committed Artifact 2"},
+        version="v0",
+    )
+
+    # Create staged artifacts
+    staged1 = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Staged Artifact 1"},
+        stage=True,  # This will create a staged artifact
+    )
+
+    staged2 = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Staged Artifact 2"},
+        stage=True,
+    )
+
+    # Test default behavior (stage=false) - should only return committed artifacts
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children"
+    )
+    assert response.status_code == 200
+    results = response.json()
+    assert len(results) == 2
+    names = {r["manifest"]["name"] for r in results}
+    assert "Staged Artifact 1" not in names
+    assert "Staged Artifact 2" not in names
+    assert "Committed Artifact 1" in names
+    assert "Committed Artifact 2" in names
+
+    # Test stage=true parameter to get only staged artifacts
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children?stage=true"
+    )
+    assert response.status_code == 200
+    results = response.json()
+    assert len(results) == 2
+    names = {r["manifest"]["name"] for r in results}
+    assert "Staged Artifact 1" in names
+    assert "Staged Artifact 2" in names
+    assert "Committed Artifact 1" not in names
+    assert "Committed Artifact 2" not in names
+
+    # Test stage=all parameter to get both staged and committed artifacts
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children?stage=all"
+    )
+    assert response.status_code == 200
+    results = response.json()
+    assert len(results) == 4  # All 4 artifacts
+    names = {r["manifest"]["name"] for r in results}
+    assert "Staged Artifact 1" in names
+    assert "Staged Artifact 2" in names
+    assert "Committed Artifact 1" in names
+    assert "Committed Artifact 2" in names
+
+    # Test stage=false parameter explicitly
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children?stage=false"
+    )
+    assert response.status_code == 200
+    results = response.json()
+    assert len(results) == 2
+    names = {r["manifest"]["name"] for r in results}
+    assert "Staged Artifact 1" not in names
+    assert "Staged Artifact 2" not in names
+    assert "Committed Artifact 1" in names
+    assert "Committed Artifact 2" in names
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=committed1.id)
+    await artifact_manager.delete(artifact_id=committed2.id)
+    await artifact_manager.delete(artifact_id=staged1.id)
     await artifact_manager.delete(artifact_id=staged2.id)
     await artifact_manager.delete(artifact_id=collection.id)
