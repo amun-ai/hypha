@@ -17,7 +17,7 @@ from sqlalchemy import create_engine
 
 from hypha.core import UserInfo, auth, UserPermission
 from hypha.core.auth import generate_presigned_token, create_scope
-from hypha.minio import setup_minio_executables
+from hypha.minio import start_minio_server
 from redis import Redis
 
 from . import (
@@ -497,39 +497,35 @@ def fastapi_subpath_server_fixture(minio_server):
 @pytest_asyncio.fixture(name="minio_server", scope="session")
 def minio_server_fixture():
     """Start minio server as test fixture and tear down after test."""
-    setup_minio_executables("./bin")
-    dirpath = tempfile.mkdtemp()
-    print(f"Minio data directory: {dirpath}")
-    my_env = os.environ.copy()
-    my_env["MINIO_ROOT_USER"] = MINIO_ROOT_USER
-    my_env["MINIO_ROOT_PASSWORD"] = MINIO_ROOT_PASSWORD
-    with subprocess.Popen(
-        [
-            "./bin/minio",
-            "server",
-            f"--address=:{MINIO_PORT}",
-            f"--console-address=:{MINIO_PORT+1}",
-            f"{dirpath}",
-        ],
-        env=my_env,
-    ) as proc:
-        timeout = 10
-        print(
-            "Trying to connect to the minio server...",
-            f"{MINIO_SERVER_URL}/minio/health/live",
-        )
-        while timeout > 0:
-            try:
-                print(".", end="")
-                response = requests.get(f"{MINIO_SERVER_URL}/minio/health/live")
-                if response.ok:
-                    break
-            except RequestException:
-                pass
-            timeout -= 0.1
-            time.sleep(0.1)
-        print("\nMinio server started.")
-        yield MINIO_SERVER_URL
+    proc, server_url, workdir = start_minio_server(
+        executable_path="./bin",
+        port=MINIO_PORT,
+        console_port=MINIO_PORT + 1,
+        root_user=MINIO_ROOT_USER,
+        root_password=MINIO_ROOT_PASSWORD,
+        timeout=10,
+    )
 
-        proc.terminate()
-        # shutil.rmtree(dirpath, ignore_errors=True)
+    if proc is None:
+        raise RuntimeError("Failed to start Minio server.")
+
+    print(f"Minio server started at {server_url} with data directory {workdir}")
+
+    yield server_url
+
+    print(f"Terminating Minio server (PID: {proc.pid})...")
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)  # Wait for the process to terminate
+    except subprocess.TimeoutExpired:
+        print(f"Minio server (PID: {proc.pid}) did not terminate gracefully, killing.")
+        proc.kill()
+    print("Minio server terminated.")
+    
+    # Optionally clean up the workdir if it was temporary and start_minio_server didn't
+    # The start_minio_server function currently removes the temp dir on failure,
+    # but not on successful termination. We might want to add cleanup here or modify start_minio_server.
+    # For now, let's leave the directory for inspection if needed.
+    # if workdir and "tmp" in workdir: # Basic check if it looks like a temp dir
+    #    print(f"Cleaning up Minio work directory: {workdir}")
+    #    shutil.rmtree(workdir, ignore_errors=True)
