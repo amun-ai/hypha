@@ -24,22 +24,39 @@ logger.setLevel(LOGLEVEL)
 MATH_PATTERN = re.compile("{(.+?)}")
 
 
-def setup_minio_executables(executable_path):
+def setup_minio_executables(executable_path, minio_version=None, mc_version=None, file_system_mode=False):
     """Download and install the minio client and server binary files."""
     if executable_path and not os.path.exists(executable_path):
         os.makedirs(executable_path, exist_ok=True)
 
-    # Pin the specific server version
-    minio_version = "RELEASE.2024-07-16T23-46-41Z"
-    # Pin the specific client version (determined by checking latest download)
-    mc_version = "RELEASE.2025-04-08T15-39-49Z"
+    # Default versions if not specified
+    default_minio_version = "RELEASE.2024-07-16T23-46-41Z"
+    default_mc_version = "RELEASE.2025-04-08T15-39-49Z"
+    
+    # Use specific versions if file system mode is enabled
+    if file_system_mode:
+        minio_version = "RELEASE.2022-10-24T18-35-07Z"
+        mc_version = "RELEASE.2022-10-29T10-09-23Z"
+        logger.info("Using Minio file system mode with fixed versions: "
+                   f"minio={minio_version}, mc={mc_version}")
+    else:
+        # Use provided versions or defaults
+        minio_version = minio_version or default_minio_version
+        mc_version = mc_version or default_mc_version
 
-    # Define executable names based on platform
-    mc_executable = "mc"
-    minio_executable = "minio"
+    # Define executable base names
+    mc_base = "mc"
+    minio_base = "minio"
     if sys.platform == "win32":
-        mc_executable += ".exe"
-        minio_executable += ".exe"
+        mc_base += ".exe"
+        minio_base += ".exe"
+    
+    # Create versioned executable names
+    minio_version_short = minio_version.replace("RELEASE.", "").replace("-", "").replace(":", "")
+    mc_version_short = mc_version.replace("RELEASE.", "").replace("-", "").replace(":", "")
+    
+    mc_executable = f"{mc_base}.{mc_version_short}"
+    minio_executable = f"{minio_base}.{minio_version_short}"
 
     mc_path = os.path.join(executable_path, mc_executable)
     minio_path = os.path.join(executable_path, minio_executable)
@@ -66,24 +83,46 @@ def setup_minio_executables(executable_path):
             + executable_path
         )
 
+    download_success = True
+    
     if not os.path.exists(minio_path):
-        print("Minio server executable not found, downloading... ")
-        urllib.request.urlretrieve(minio_url, minio_path)
+        try:
+            print(f"Minio server executable {minio_version} not found, downloading... ")
+            urllib.request.urlretrieve(minio_url, minio_path)
+            print(f"Successfully downloaded Minio server {minio_version}")
+        except Exception as e:
+            print(f"Failed to download Minio server: {str(e)}")
+            download_success = False
 
     if not os.path.exists(mc_path):
-        print("Minio client executable not found, downloading... ")
-        urllib.request.urlretrieve(mc_url, mc_path)
+        try:
+            print(f"Minio client executable {mc_version} not found, downloading... ")
+            urllib.request.urlretrieve(mc_url, mc_path)
+            print(f"Successfully downloaded Minio client {mc_version}")
+        except Exception as e:
+            print(f"Failed to download Minio client: {str(e)}")
+            download_success = False
+
+    if not download_success:
+        return minio_version, mc_version, minio_path, mc_path
 
     # Skip chmod operations on Windows as they're not needed
     if sys.platform != "win32":
-        stat_result = os.stat(minio_path)
-        if not bool(stat_result.st_mode & stat.S_IEXEC):
-            os.chmod(minio_path, stat_result.st_mode | stat.S_IEXEC)
-        stat_result = os.stat(mc_path)
-        if not bool(stat_result.st_mode & stat.S_IEXEC):
-            os.chmod(mc_path, stat_result.st_mode | stat.S_IEXEC)
+        try:
+            if os.path.exists(minio_path):
+                stat_result = os.stat(minio_path)
+                if not bool(stat_result.st_mode & stat.S_IEXEC):
+                    os.chmod(minio_path, stat_result.st_mode | stat.S_IEXEC)
+            
+            if os.path.exists(mc_path):
+                stat_result = os.stat(mc_path)
+                if not bool(stat_result.st_mode & stat.S_IEXEC):
+                    os.chmod(mc_path, stat_result.st_mode | stat.S_IEXEC)
+        except Exception as e:
+            print(f"Failed to set executable permissions: {str(e)}")
 
-    print("MinIO executables are ready.")
+    print(f"MinIO executables are ready. Using minio={minio_version}, mc={mc_version}")
+    return minio_version, mc_version, minio_path, mc_path
 
 
 def start_minio_server(
@@ -94,6 +133,9 @@ def start_minio_server(
     root_user="minioadmin",
     root_password="minioadmin",
     timeout=10,
+    minio_version=None,
+    mc_version=None,
+    file_system_mode=False,
 ):
     """Start a local Minio server instance.
 
@@ -105,6 +147,9 @@ def start_minio_server(
         root_user: Root user for Minio
         root_password: Root password for Minio
         timeout: Timeout in seconds to wait for Minio to start
+        minio_version: Specific version of Minio server to use
+        mc_version: Specific version of Minio client to use
+        file_system_mode: If True, use specific versions compatible with file system mode
 
     Returns:
         A tuple containing (process, server_url, workdir)
@@ -115,7 +160,13 @@ def start_minio_server(
     if executable_path is None:
         executable_path = "./bin"
 
-    setup_minio_executables(executable_path)
+    # Setup the minio executables with specified versions
+    minio_version, mc_version, minio_path, mc_path = setup_minio_executables(
+        executable_path, 
+        minio_version, 
+        mc_version, 
+        file_system_mode
+    )
 
     # Create temp directory if workdir not provided
     temp_dir_created = False
@@ -123,9 +174,31 @@ def start_minio_server(
         workdir = tempfile.mkdtemp()
         temp_dir_created = True
     else:
-        workdir = Path(workdir)
-        workdir.mkdir(parents=True, exist_ok=True)
-        workdir = str(workdir)
+        workdir_path = Path(workdir)
+        workdir_path.mkdir(parents=True, exist_ok=True)
+        
+        # When using file system mode, create the format.json file
+        if file_system_mode:
+            minio_sys_dir = workdir_path / ".minio.sys"
+            # Ensure the .minio.sys directory exists
+            minio_sys_dir.mkdir(exist_ok=True)
+            
+            format_file_path = minio_sys_dir / "format.json"
+            format_content = {
+                "version": "1",
+                "format": "fs",
+                "id": "avoid-going-into-snsd-mode-legacy-is-fine-with-me",
+                "fs": {"version": "2"}
+            }
+            
+            try:
+                with open(format_file_path, 'w', encoding='utf-8') as f:
+                    json.dump(format_content, f, ensure_ascii=False, indent=4)
+                logger.info(f"Created format.json for legacy FS mode in {minio_sys_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to create format.json for legacy FS mode: {e}")
+        
+        workdir = str(workdir_path)
 
     # Default console port if not provided
     if console_port is None:
@@ -137,10 +210,22 @@ def start_minio_server(
     my_env = os.environ.copy()
     my_env["MINIO_ROOT_USER"] = root_user
     my_env["MINIO_ROOT_PASSWORD"] = root_password
-
-    # Platform-specific executable
-    minio_executable = "minio.exe" if sys.platform == "win32" else "minio"
-    minio_path = os.path.join(executable_path, minio_executable)
+    
+    # In file system mode, set additional environment variables
+    # Note: Some of these might be redundant or conflicting with the format.json approach,
+    # but keeping them for now based on previous attempts.
+    if file_system_mode:
+        my_env["MINIO_STORAGE_CLASS_STANDARD"] = "EC:0"
+        my_env["MINIO_DOMAIN"] = "localhost"
+        my_env["MINIO_BROWSER"] = "on"
+        my_env["MINIO_VOLUMES"] = workdir
+        my_env["MINIO_CACHE"] = "on"
+        my_env["MINIO_CACHE_DRIVES"] = workdir
+        my_env["MINIO_CACHE_EXCLUDE"] = ""
+        my_env["MINIO_CACHE_QUOTA"] = "80"
+        my_env["MINIO_CACHE_AFTER"] = "0"
+        my_env["MINIO_CACHE_WATERMARK_LOW"] = "70"
+        my_env["MINIO_CACHE_WATERMARK_HIGH"] = "90"
 
     # Start server
     server_url = f"http://127.0.0.1:{port}"
@@ -149,8 +234,14 @@ def start_minio_server(
         "server",
         f"--address=:{port}",
         f"--console-address=:{console_port}",
-        workdir,
     ]
+    
+    # Add filesystem mode specific arguments
+    if file_system_mode:
+        cmd.append("--quiet")  # Run in quiet mode for file system usage
+    
+    # Add the data directory as the last argument
+    cmd.append(workdir)
 
     try:
         proc = subprocess.Popen(cmd, env=my_env)
@@ -348,10 +439,20 @@ class MinioClient:
         access_key_id,
         secret_access_key,
         executable_path="bin",
+        minio_version=None,
+        mc_version=None,
+        file_system_mode=False,
         **kwargs,
     ):
         """Initialize the client."""
-        setup_minio_executables(executable_path)
+        # setup minio executables with specified versions
+        _, _, _, mc_path = setup_minio_executables(
+            executable_path, 
+            minio_version, 
+            mc_version, 
+            file_system_mode
+        )
+        
         # generate alias by hash of endpoint_url, access_key_id, and secret_access_key
         # Ensure alias starts with a letter (a-z) and contains only alphanumeric characters
         hash_str = hashlib.sha256(
@@ -359,9 +460,10 @@ class MinioClient:
         ).hexdigest()
         # Use 'mc' prefix followed by first 8 chars of hash
         self.alias = f"mc{hash_str[:8]}"
-        # Use platform-specific executable name
-        mc_executable = "mc.exe" if sys.platform == "win32" else "mc"
-        self.mc_executable = os.path.join(executable_path, mc_executable)
+        
+        # Use the versioned executable path
+        self.mc_executable = mc_path
+        
         self.endpoint_url = endpoint_url
         self.access_key_id = access_key_id
         self.secret_access_key = secret_access_key

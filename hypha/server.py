@@ -7,6 +7,7 @@ import os
 from os import environ as env
 from pathlib import Path
 import asyncio
+import subprocess
 
 from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI
@@ -23,6 +24,9 @@ from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
 from hypha.websocket import WebsocketServer
 from hypha.minio import start_minio_server
 from contextlib import asynccontextmanager
+
+# Global variable to track the Minio server process
+minio_proc = None
 
 try:
     # For pyodide, we need to patch http
@@ -171,6 +175,8 @@ def norm_url(base_path, url):
 
 def create_application(args):
     """Create a hypha application."""
+    global minio_proc
+    
     if args.from_env:
         logger.info("Loading arguments from environment variables")
         _args = get_args_from_env()
@@ -195,6 +201,9 @@ def create_application(args):
             port=args.minio_port,
             root_user=args.minio_root_user,
             root_password=args.minio_root_password,
+            minio_version=args.minio_version,
+            mc_version=args.mc_version,
+            file_system_mode=args.minio_file_system_mode,
         )
 
         if not minio_proc:
@@ -231,6 +240,13 @@ def create_application(args):
         if minio_proc:
             logger.info("Shutting down built-in Minio server")
             minio_proc.terminate()
+            try:
+                # Wait for the process to terminate with a timeout
+                minio_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # Force kill if it doesn't terminate gracefully
+                logger.warning("Minio server did not terminate gracefully, forcing termination")
+                minio_proc.kill()
 
     application = FastAPI(
         title="Hypha",
@@ -576,6 +592,23 @@ def get_argparser(add_help=True):
         type=str,
         default="minioadmin",
         help="root password for the built-in Minio server",
+    )
+    parser.add_argument(
+        "--minio-version",
+        type=str,
+        default=None,
+        help="specify the Minio server version to use",
+    )
+    parser.add_argument(
+        "--mc-version",
+        type=str,
+        default=None,
+        help="specify the Minio client (mc) version to use",
+    )
+    parser.add_argument(
+        "--minio-file-system-mode",
+        action="store_true",
+        help="enable file system mode for Minio, which uses specific compatible versions",
     )
     return parser
 

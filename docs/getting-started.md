@@ -43,6 +43,9 @@ You can customize the built-in Minio server using these options:
 - `--minio-port`: Set the port for the Minio server (defaults to 9000).
 - `--minio-root-user`: Set the root user (defaults to `minioadmin`).
 - `--minio-root-password`: Set the root password (defaults to `minioadmin`).
+- `--minio-version`: Specify a specific version of the Minio server to use.
+- `--mc-version`: Specify a specific version of the Minio client to use.
+- `--minio-file-system-mode`: Enable file system mode with specific compatible versions.
 
 Example with custom Minio settings:
 ```bash
@@ -53,6 +56,29 @@ python3 -m hypha.server --host=0.0.0.0 --port=9527 \
     --minio-root-user=myuser \
     --minio-root-password=mypassword
 ```
+
+#### Minio File System Mode
+
+For better filesystem-like behavior, you can enable file system mode with the `--minio-file-system-mode` flag:
+
+```bash
+python3 -m hypha.server --host=0.0.0.0 --port=9527 \
+    --start-minio-server \
+    --minio-file-system-mode
+```
+
+When file system mode is enabled, Hypha uses specific versions of Minio that are compatible with file system operations:
+- Minio server: `RELEASE.2022-10-24T18-35-07Z`
+- Minio client: `RELEASE.2022-10-29T10-09-23Z`
+
+This mode optimizes Minio for use as a direct file system, which means:
+1. Files are stored in their raw format, allowing direct access from the file system
+2. The .minio.sys directory is automatically cleaned up to avoid version conflicts
+3. The Minio server process is properly terminated when the application shuts down
+
+File system mode is particularly useful for development environments and when you need to access the stored files directly without using S3 API calls.
+
+**Note:** In file system mode, some advanced S3 features like versioning may not be available, but basic operations like storing and retrieving files will work consistently.
 
 #### Running with Built-in S3 (Minio) in Docker
 
