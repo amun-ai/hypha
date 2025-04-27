@@ -54,6 +54,42 @@ python3 -m hypha.server --host=0.0.0.0 --port=9527 \
     --minio-root-password=mypassword
 ```
 
+#### Running with Built-in S3 (Minio) in Docker
+
+When running Hypha with the built-in Minio server inside a Docker container, additional considerations are necessary:
+
+1. **Volume Mounting**: For data persistence, mount a volume for the Minio data directory:
+   ```bash
+   docker run -v /host/path/to/minio_data:/app/minio_data your-hypha-image \
+     python -m hypha.server --host=0.0.0.0 --port=9527 \
+     --start-minio-server \
+     --minio-workdir=/app/minio_data
+   ```
+
+2. **Executable Path**: You may need to specify the Minio executable path with `--executable-path`:
+   ```bash
+   docker run your-hypha-image \
+     python -m hypha.server --host=0.0.0.0 --port=9527 \
+     --start-minio-server \
+     --executable-path=/path/to/minio
+   ```
+
+3. **Permissions**: Ensure the Minio working directory is writable by the container user:
+   ```bash
+   docker run -v /host/path/to/minio_data:/app/minio_data your-hypha-image \
+     chown -R container_user:container_user /app/minio_data && \
+     python -m hypha.server --host=0.0.0.0 --port=9527 \
+     --start-minio-server \
+     --minio-workdir=/app/minio_data
+   ```
+
+4. **Port Exposure**: Remember to expose both the Hypha port and Minio port:
+   ```bash
+   docker run -p 9527:9527 -p 9000:9000 -v /host/path/to/minio_data:/app/minio_data your-hypha-image \
+     python -m hypha.server --host=0.0.0.0 --port=9527 \
+     --start-minio-server
+   ```
+
 ### Starting with Server Apps
 
 If you want to enable server apps (browsers running on the server side), you need to enable S3 storage first. You can either configure an external S3 provider or use the built-in Minio server as described above. 

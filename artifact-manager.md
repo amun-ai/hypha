@@ -689,7 +689,7 @@ manifest = await artifact_manager.read(artifact_id="other_workspace/example-data
 
 ---
 
-### `list(artifact_id: str=None, keywords: List[str] = None, filters: dict = None, mode: str = "AND", offset: int = 0, limit: int = 100, order_by: str = None, silent: bool = False, stage: bool = None) -> list`
+### `list(artifact_id: str=None, keywords: List[str] = None, filters: dict = None, mode: str = "AND", offset: int = 0, limit: int = 100, order_by: str = None, silent: bool = False, stage: bool = False) -> list`
 
 Retrieve a list of child artifacts within a specified collection, supporting keyword-based fuzzy search, field-specific filters, and flexible ordering. This function allows detailed control over the search and pagination of artifacts in a collection, including staged artifacts if specified.
 
@@ -720,7 +720,11 @@ Retrieve a list of child artifacts within a specified collection, supporting key
 
 - `silent` (bool, optional): If `True`, prevents incrementing the view count for the parent artifact when listing children. Default is `False`.
 
-- `stage` (bool, optional): If `True`, only show staged artifacts. If `False`, only show committed artifacts. If `None`, show all artifacts. Default is `None`.
+- `stage`: Controls which artifacts to return based on their staging status:
+  - `True`: Return only staged artifacts
+  - `False`: Return only committed artifacts (default)
+  - `'all'`: Return both staged and committed artifacts
+
 **Returns:**
 A list of artifacts that match the search criteria, each represented by a dictionary containing all the fields.
 
@@ -737,6 +741,15 @@ results = await artifact_manager.list(
     mode="AND",
     offset=0,
     limit=50
+)
+```
+
+**Example: Return both staged and committed artifacts:**
+```python
+# Retrieve all artifacts regardless of staging status
+all_artifacts = await artifact_manager.list(
+    artifact_id=collection.id,
+    stage='all'  # This returns both staged and committed artifacts
 )
 ```
 
@@ -837,6 +850,19 @@ The `Artifact Manager` provides an HTTP API for retrieving artifact manifests, d
 
 - `/{workspace}/artifacts/{artifact_alias}`: Fetch the artifact manifest.
 - `/{workspace}/artifacts/{artifact_alias}/children`: List all artifacts in a collection.
+  - **Query Parameters**:
+    - `keywords`: (Optional) Comma-separated search terms
+    - `filters`: (Optional) JSON-encoded filter conditions
+    - `offset`: (Optional) Number of results to skip
+    - `limit`: (Optional) Maximum number of results to return
+    - `order_by`: (Optional) Field to sort results by
+    - `mode`: (Optional) How to combine conditions ("AND" or "OR")
+    - `pagination`: (Optional) Whether to include pagination metadata
+    - `silent`: (Optional) Whether to suppress view count increment
+    - `stage`: (Optional) Filter by staging status:
+      - `true`: Return only staged artifacts
+      - `false`: Return only committed artifacts (default)
+      - `all`: Return both staged and committed artifacts
 - `/{workspace}/artifacts/{artifact_alias}/files`: List all files in the artifact.
 - `/{workspace}/artifacts/{artifact_alias}/files/{file_path:path}`: Download a file from the artifact (redirects to a pre-signed URL).
 
