@@ -54,7 +54,7 @@ Ensure that `hypha_rpc` is installed and available in your environment.
 
 ### Basic Example
 
-Here’s a simple example of how to serve a FastAPI application using the `hypha_rpc.utils.serve` utility.
+Here's a simple example of how to serve a FastAPI application using the `hypha_rpc.utils.serve` utility.
 
 ### Step 1: Create a FastAPI App
 
@@ -99,7 +99,7 @@ python -m hypha_rpc.utils.serve myapp:app --id=cat --name=Cat --server-url=https
 
 ### Using the `--login` Option
 
-If you don’t have a token or prefer to log in interactively, you can use the `--login` option:
+If you don't have a token or prefer to log in interactively, you can use the `--login` option:
 
 ```bash
 python -m hypha_rpc.utils.serve myapp:app --id=cat --name=Cat --server-url=https://hypha.aicell.io --workspace=my-workspace --login
@@ -145,7 +145,7 @@ For users who prefer more flexibility and control, Hypha also allows you to regi
 
 ### Example of Direct Registration
 
-Here’s an example of how you can directly register a FastAPI service with Hypha:
+Here's an example of how you can directly register a FastAPI service with Hypha:
 
 ```python
 import asyncio
@@ -193,6 +193,53 @@ async def main():
 asyncio.run(main())
 ```
 
+## Streaming Responses
+
+Hypha fully supports streaming responses from ASGI applications like FastAPI. When you serve an ASGI app through Hypha, the ASGIRoutingMiddleware preserves the ASGI protocol's streaming capabilities, allowing your application to send chunked responses to clients.
+
+### Example: Creating a Streaming Endpoint
+
+Here's an example of how to create a streaming endpoint with FastAPI served through Hypha:
+
+```python
+from fastapi import FastAPI
+from starlette.responses import StreamingResponse
+import asyncio
+
+app = FastAPI()
+
+@app.get("/stream")
+async def stream_response():
+    async def stream_generator():
+        for i in range(10):
+            yield f"Chunk {i}\n".encode()
+            await asyncio.sleep(0.5)  # Simulate processing time
+    
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/plain"
+    )
+```
+
+### How Streaming Works with Hypha
+
+When your ASGI application sends streaming responses:
+
+1. **Protocol Preservation**: Hypha's ASGIRoutingMiddleware preserves the ASGI protocol by passing the original `scope`, `receive`, and `send` callables to your application.
+
+2. **Chunked Transfer**: The middleware allows your app to call the `send` function multiple times with `"more_body": True` for each chunk, followed by a final chunk with `"more_body": False`.
+
+3. **No Buffering**: Responses are streamed directly to the client without being fully buffered by Hypha, making it suitable for large responses or real-time data.
+
+### Common Use Cases for Streaming
+
+- **Large Dataset Processing**: Stream large results without loading everything into memory.
+- **Real-time Updates**: Send real-time updates to clients as they become available.
+- **Long-running Tasks**: Provide progress updates during long-running tasks.
+- **Event Streams**: Implement server-sent events (SSE) for push notifications.
+
+Streaming is particularly useful when working with large files, generating content incrementally, or providing real-time feedback to users while processing complex tasks.
+
 ## Running FastAPI in the Browser with Pyodide
 
 Hypha also supports running FastAPI applications directly in the browser using Pyodide. This feature is particularly useful when you want to create a lightweight, client-side application that can be served without any server infrastructure.
@@ -215,7 +262,7 @@ The FastAPI app remains largely the same, but you should be aware of a few key d
 
 ### Example Code for Pyodide
 
-Here’s an example of how to create and serve a FastAPI app in the browser using Pyodide:
+Here's an example of how to create and serve a FastAPI app in the browser using Pyodide:
 
 ```python
 import asyncio
@@ -418,6 +465,84 @@ app = create_openai_chat_server(model_registry)
 ```
 
 In this case, you can interact with either `cat-chat-model` or `basic-chat-model` by specifying the `model_id` in the API requests.
+
+### Streaming Responses with OpenAI Chat Server
+
+Hypha's OpenAI Chat Server fully supports streaming responses, which is particularly useful for LLM applications where you want to display partial results as they're generated. The implementation automatically translates the generator function's yielded responses into the proper streaming format expected by OpenAI clients.
+
+#### Example: Creating a Streaming Chat Response
+
+Here's an example of how to create a streaming LLM-like generator that works with OpenAI clients:
+
+```python
+import asyncio
+import random
+from hypha_rpc.utils.serve import create_openai_chat_server
+
+# Streaming text generator that simulates an LLM typing response
+async def streaming_text_generator(request):
+    # Get the user's message from the request
+    messages = request.get("messages", [])
+    user_message = messages[-1]["content"] if messages else "Hello"
+    
+    # Simulate a thinking delay
+    await asyncio.sleep(0.5)
+    
+    # Define a response text
+    response_text = f"I received your message: '{user_message}'. Here's my detailed response:\n\n"
+    response_text += "1. First, I want to acknowledge your question.\n"
+    response_text += "2. Let me think about this carefully...\n"
+    response_text += "3. Based on my analysis, here's what I think...\n"
+    
+    # Stream the response word by word
+    words = response_text.split()
+    for word in words:
+        # Yield one word at a time
+        yield word + " "
+        # Add a small random delay to simulate typing
+        await asyncio.sleep(random.uniform(0.05, 0.2))
+
+# Register the streaming model
+app = create_openai_chat_server({"streaming-model": streaming_text_generator})
+```
+
+#### Using the Streaming Model with OpenAI Python Client
+
+You can use the streaming model with the OpenAI Python client like this:
+
+```python
+import openai
+import sys
+
+# Use the custom OpenAI server endpoint
+openai.api_base = f"{SERVER_URL}/{workspace}/apps/openai-chat/v1"
+openai.api_key = token
+
+# Create a streaming completion
+response = openai.ChatCompletion.create(
+    model="streaming-model",
+    messages=[{"role": "user", "content": "Tell me about streaming responses"}],
+    stream=True  # Enable streaming
+)
+
+# Process the streaming response
+for chunk in response:
+    # Extract the content delta
+    content = chunk.choices[0].delta.get("content", "")
+    if content:
+        # Print without newline and flush to show realtime updates
+        sys.stdout.write(content)
+        sys.stdout.flush()
+```
+
+#### Benefits of Streaming in Chat Applications
+
+- **Improved User Experience**: Users see the response being generated in real-time, creating a more engaging experience.
+- **Faster Perceived Response Time**: Users see the beginning of the response immediately instead of waiting for the complete message.
+- **Progress Visibility**: For longer responses, users can start reading while the rest is being generated.
+- **Connection Confirmation**: Users receive immediate feedback that the system is working on their request.
+
+The streaming capability is particularly valuable for AI chat interfaces where responses might take several seconds to generate completely.
 
 ## Conclusion
 
