@@ -1652,6 +1652,7 @@ class WorkspaceManager:
             app_id,
             timeout=timeout * 5,
             wait_for_service=service_id,
+            stop_after_inactive=timeout * 10,
             context=context,
         )
         return await self.get_service(

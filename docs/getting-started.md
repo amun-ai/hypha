@@ -212,7 +212,7 @@ async def start_server(server_url):
 
     print(f'You can use this service using the service id: {svc.id}')
 
-    print(f"You can also test the service via the HTTP proxy: {server_url}/{server.config.workspace}/services/{svc.id}/hello?name=John")
+    print(f"You can also test the service via the HTTP proxy: {server_url}/{server.config.workspace}/services/{svc.id.split('/')[1]}/hello?name=John")
 
     # Keep the server running
     await server.serve()
@@ -252,6 +252,41 @@ def start_server(server_url):
 if __name__ == "__main__":
     server_url = "http://localhost:9527"
     start_server(server_url)
+```
+
+#### ** JavaScript Worker **
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.51/dist/hypha-rpc-websocket.min.js"></script>
+<script>
+async function start_server(server_url) {
+    const server = await hyphaWebsocketClient.connectToServer({
+        server_url: server_url
+    });
+    
+    function hello(name) {
+        console.log("Hello " + name);
+        return "Hello " + name;
+    }
+    
+    const svc = await server.registerService({
+        name: "Hello World",
+        id: "hello-world",
+        config: {
+            visibility: "public"
+        },
+        hello: hello
+    });
+    
+    console.log(`Hello world service registered at workspace: ${server.config.workspace}, id: ${svc.id}`);
+    console.log(`You can use this service using the service id: ${svc.id}`);
+    console.log(`You can also test the service via the HTTP proxy: ${server_url}/${server.config.workspace}/services/${svc.id.split('/')[1]}/hello?name=John`);
+    
+}
+
+// Call the function to register your service
+start_server("http://localhost:9527").catch(console.error);
+</script>
 ```
 <!-- tabs:end -->
 
