@@ -2636,3 +2636,96 @@ async def test_http_children_endpoint_stage_parameter(minio_server, fastapi_serv
     await artifact_manager.delete(artifact_id=staged1.id)
     await artifact_manager.delete(artifact_id=staged2.id)
     await artifact_manager.delete(artifact_id=collection.id)
+
+
+async def test_large_zip_central_directory(minio_server, fastapi_server, test_user_token):
+    """Test retrieving content from a ZIP file with a large central directory."""
+    
+    # Connect to the server and get the artifact manager service
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={
+            "name": "Large ZIP Test Collection",
+            "description": "Testing ZIP files with large central directories",
+        },
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    # Create a dataset for testing
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={
+            "name": "Large ZIP Test Dataset",
+            "description": "Dataset containing a ZIP with large central directory",
+        },
+        version="stage",
+    )
+
+    # Create a large ZIP file with many entries to force a large central directory
+    zip_buffer = BytesIO()
+    with ZipFile(zip_buffer, "w") as zip_file:
+        # Create many small files to make the central directory large
+        # The contents don't need to be large, just need many entries
+        for i in range(5000):  # 5000 entries should exceed the 64KB central directory limit
+            zip_file.writestr(f"file_{i}.txt", f"Contents of file {i}")
+        
+        # Add a test file we'll try to access
+        zip_file.writestr("test_file.txt", "This is the test file we want to access")
+    
+    zip_buffer.seek(0)
+
+    # Upload the ZIP file to the artifact
+    zip_file_path = "large_test"
+    put_url = await artifact_manager.put_file(
+        artifact_id=dataset.id,
+        file_path=f"{zip_file_path}.zip",
+    )
+    async with httpx.AsyncClient(timeout=60) as client:  # Increased timeout for large file
+        response = await client.put(put_url, data=zip_buffer.read())
+        assert response.status_code == 200
+
+    # Commit the dataset
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # First, try to list the contents of the ZIP to verify we can read the central directory
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip"
+        )
+        assert response.status_code == 200, f"Failed to list ZIP contents: {response.text}"
+        contents = response.json()
+        print("\nZIP contents:")
+        print(json.dumps(contents, indent=2))
+        
+        # Verify test_file.txt is in the listing
+        test_file = next((f for f in contents if f["name"] == "test_file.txt"), None)
+        assert test_file is not None, "test_file.txt not found in ZIP listing"
+        print(f"\nFound test_file.txt: {test_file}")
+
+    # Now try to read the test file
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip?path=test_file.txt"
+        )
+        assert response.status_code == 200, f"Failed to get file: {response.text}"
+        
+        print("\nResponse headers:")
+        print(json.dumps(dict(response.headers), indent=2))
+        print("\nResponse content (hex):")
+        print(response.content.hex())
+        print("\nResponse content (text):")
+        print(response.text)
+        
+        # Check if it worked
+        assert response.text == "This is the test file we want to access"
+            
+    # Clean up
+    await artifact_manager.delete(artifact_id=dataset.id)
+    await artifact_manager.delete(artifact_id=collection.id)
