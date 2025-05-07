@@ -41,6 +41,10 @@ from hypha.core import WorkspaceInfo
 from botocore.exceptions import ClientError
 from hypha.s3 import FSFileResponse
 from aiobotocore.session import get_session
+from botocore.config import Config
+from zipfile import ZipFile
+import zlib
+from hypha.utils import zip_utils
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import (
@@ -61,6 +65,7 @@ from jsonschema import validate
 from sqlmodel import SQLModel, Field, Relationship, UniqueConstraint
 from typing import Optional, Union, List, Any, Dict
 import asyncio
+import struct
 
 # Logger setup
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -158,22 +163,6 @@ def set_nested_value(dictionary, field, value):
     for key in keys[:-1]:
         dictionary = dictionary.setdefault(key, {})
     dictionary[keys[-1]] = value
-
-
-async def fetch_zip_tail(s3_client, workspace_bucket, s3_key, content_length):
-    """
-    Fetch the tail part of the zip file that contains the central directory.
-    This result is cached to avoid re-fetching the central directory multiple times.
-    """
-    central_directory_offset = max(content_length - 65536, 0)
-    range_header = f"bytes={central_directory_offset}-{content_length}"
-
-    # Fetch the last part of the ZIP file that contains the central directory
-    response = await s3_client.get_object(
-        Bucket=workspace_bucket, Key=s3_key, Range=range_header
-    )
-    zip_tail = await response["Body"].read()
-    return zip_tail
 
 
 class ArtifactController:
@@ -607,133 +596,20 @@ class ArtifactController:
                         cache_key = f"zip_tail:{self.workspace_bucket}:{s3_key}:{content_length}"
                         zip_tail = await self._cache.get(cache_key)
                         if zip_tail is None:
-                            zip_tail = await fetch_zip_tail(
+                            zip_tail = await zip_utils.fetch_zip_tail(
                                 s3_client, self.workspace_bucket, s3_key, content_length
                             )
                             await self._cache.set(cache_key, zip_tail, ttl=60)
 
-                        # Open the in-memory ZIP tail and parse it
-                        with zipfile.ZipFile(BytesIO(zip_tail)) as zip_file:
-                            # If `file_path` ends with "/", treat it as a directory
-                            if not path or path.endswith("/"):
-                                # If `file_path` is empty, treat it as the root directory.
-                                directory_contents = []
-                                for zip_info in zip_file.infolist():
-                                    # Handle root directory or subdirectory files
-                                    if not path:
-                                        # If `file_path` is empty, treat it as the root directory.
-                                        # Extract immediate children of the root directory
-                                        relative_path = zip_info.filename.strip("/")
-                                        if "/" not in relative_path:
-                                            # Top-level file
-                                            directory_contents.append(
-                                                {
-                                                    "type": (
-                                                        "file"
-                                                        if not zip_info.is_dir()
-                                                        else "directory"
-                                                    ),
-                                                    "name": relative_path,
-                                                    "size": (
-                                                        zip_info.file_size
-                                                        if not zip_info.is_dir()
-                                                        else None
-                                                    ),
-                                                    "last_modified": datetime(
-                                                        *zip_info.date_time
-                                                    ).timestamp(),
-                                                }
-                                            )
-                                        else:
-                                            # Top-level directory
-                                            top_level_dir = relative_path.split("/")[0]
-                                            if not any(
-                                                d["name"] == top_level_dir
-                                                and d["type"] == "directory"
-                                                for d in directory_contents
-                                            ):
-                                                directory_contents.append(
-                                                    {
-                                                        "type": "directory",
-                                                        "name": top_level_dir,
-                                                    }
-                                                )
-                                    else:
-                                        # Subdirectory: Include only immediate children
-                                        if (
-                                            zip_info.filename.startswith(path)
-                                            and zip_info.filename != path
-                                        ):
-                                            relative_path = zip_info.filename[
-                                                len(path) :
-                                            ].strip("/")
-                                            if "/" in relative_path:
-                                                # Subdirectory case
-                                                child_name = relative_path.split("/")[0]
-                                                if not any(
-                                                    d["name"] == child_name
-                                                    and d["type"] == "directory"
-                                                    for d in directory_contents
-                                                ):
-                                                    directory_contents.append(
-                                                        {
-                                                            "type": "directory",
-                                                            "name": child_name,
-                                                        }
-                                                    )
-                                            else:
-                                                # File case
-                                                directory_contents.append(
-                                                    {
-                                                        "type": "file",
-                                                        "name": relative_path,
-                                                        "size": zip_info.file_size,
-                                                        "last_modified": datetime(
-                                                            *zip_info.date_time
-                                                        ).timestamp(),
-                                                    }
-                                                )
-                                return JSONResponse(
-                                    status_code=200,
-                                    content=directory_contents,
-                                )
-
-                            # Otherwise, find the file inside the ZIP
-                            try:
-                                zip_info = zip_file.getinfo(path)
-                            except KeyError:
-                                return JSONResponse(
-                                    status_code=404,
-                                    content={
-                                        "success": False,
-                                        "detail": f"File not found inside ZIP: {path}",
-                                    },
-                                )
-
-                            # Get the byte range of the file in the ZIP
-                            file_offset = zip_info.header_offset + len(
-                                zip_info.FileHeader()
-                            )
-                            file_length = zip_info.file_size
-                            range_header = (
-                                f"bytes={file_offset}-{file_offset + file_length - 1}"
-                            )
-
-                            # Fetch the file content from S3 using the calculated byte range
-                            response = await s3_client.get_object(
-                                Bucket=self.workspace_bucket,
-                                Key=s3_key,
-                                Range=range_header,
-                            )
-
-                            # Stream the content back to the user
-                            return StreamingResponse(
-                                response["Body"],
-                                media_type="application/octet-stream",
-                                headers={
-                                    "Content-Disposition": f'attachment; filename="{zip_info.filename}"'
-                                },
-                            )
+                        # Process zip file using the utility function
+                        return await zip_utils.get_zip_file_content(
+                            s3_client,
+                            self.workspace_bucket,
+                            s3_key,
+                            path=path,
+                            zip_tail=zip_tail,
+                            cache_instance=self._cache
+                        )
 
             except KeyError:
                 raise HTTPException(status_code=404, detail="Artifact not found")
@@ -1300,6 +1176,7 @@ class ArtifactController:
             aws_access_key_id=access_key_id,
             aws_secret_access_key=secret_access_key,
             region_name=region_name,
+            config=Config(connect_timeout=60, read_timeout=300),
         )
 
     async def _count_files_in_prefix(self, s3_client, bucket_name, prefix):

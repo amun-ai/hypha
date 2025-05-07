@@ -9,6 +9,7 @@ from zipfile import ZipFile
 import httpx
 import yaml
 import json
+import zipfile
 
 from . import SERVER_URL, SERVER_URL_SQLITE, find_item
 
@@ -2635,4 +2636,140 @@ async def test_http_children_endpoint_stage_parameter(minio_server, fastapi_serv
     await artifact_manager.delete(artifact_id=committed2.id)
     await artifact_manager.delete(artifact_id=staged1.id)
     await artifact_manager.delete(artifact_id=staged2.id)
+    await artifact_manager.delete(artifact_id=collection.id)
+
+
+async def test_get_zip_file_content_endpoint_large_scale(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test retrieving content and listing directories from a ZIP file with 2000 files stored in S3."""
+
+    # Connect and get the artifact manager service
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection for testing
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={
+            "name": "Large Scale Test Collection",
+            "description": "A collection for testing large-scale zip file handling",
+        },
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    # Create a dataset within the collection
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={
+            "name": "Large Scale Test Dataset",
+            "description": "A dataset with 2000 files for testing",
+        },
+        version="stage",
+    )
+
+    # Create a ZIP file in memory with 2000 files in various directories
+    zip_buffer = BytesIO()
+    with ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as zip_file:
+        # Create files in root directory
+        for i in range(100):
+            zip_file.writestr(f"root_file_{i}.txt", f"Content of root file {i}")
+
+        # Create files in nested directories (10 directories, 190 files each)
+        for dir_num in range(10):
+            # Regular small files
+            for file_num in range(180):
+                file_path = f"dir_{dir_num}/file_{file_num}.txt"
+                zip_file.writestr(file_path, f"Content of {file_path}")
+
+            # Add some larger files (10 per directory)
+            for large_file_num in range(10):
+                file_path = f"dir_{dir_num}/large_file_{large_file_num}.txt"
+                content = f"Large content repeated many times {large_file_num}" * 100  # Reduced content size
+                zip_file.writestr(file_path, content)
+
+    zip_buffer.seek(0)
+    zip_content = zip_buffer.getvalue()
+
+    # Upload the ZIP file to the artifact
+    zip_file_path = "large-test-files"
+    put_url = await artifact_manager.put_file(
+        artifact_id=dataset.id,
+        file_path=f"{zip_file_path}.zip",
+        download_weight=1,
+    )
+    
+    # Upload in multiple chunks to ensure that the S3 implementation handles it properly
+    chunk_size = 1024 * 1024  # 1MB chunks
+    async with httpx.AsyncClient(timeout=300) as client:
+        # For a chunked upload we would use S3's multipart upload API, but for this test
+        # a simple PUT is sufficient
+        response = await client.put(put_url, data=zip_content)
+        assert response.status_code == 200, response.text
+
+    # Commit the dataset artifact
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Test listing the root directory of the ZIP
+    async with httpx.AsyncClient(timeout=300) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip"
+        )
+        assert response.status_code == 200, response.text
+        items = response.json()
+        root_files = [item for item in items if item["type"] == "file"]
+        root_dirs = [item for item in items if item["type"] == "directory"]
+        assert len(root_files) == 100  # 100 files in root
+        assert len(root_dirs) == 10    # 10 directories
+
+    # Test listing a specific directory
+    async with httpx.AsyncClient(timeout=300) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip?path=dir_0/"
+        )
+        assert response.status_code == 200, response.text
+        items = response.json()
+        dir_files = [item for item in items if item["type"] == "file"]
+        assert len(dir_files) == 190  # 180 regular + 10 large files
+
+    # Test retrieving a regular file
+    async with httpx.AsyncClient(timeout=300) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip?path=root_file_0.txt"
+        )
+        assert response.status_code == 200, response.text
+        assert response.text == "Content of root file 0"
+
+    # Test retrieving a large file
+    async with httpx.AsyncClient(timeout=300) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip?path=dir_0/large_file_0.txt"
+        )
+        assert response.status_code == 200, response.text
+        assert "Large content repeated many times 0" in response.text
+        assert len(response.text) > 3000  # Verify it's actually a large file
+
+    # Test retrieving a file using the tilde syntax
+    async with httpx.AsyncClient(timeout=300) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip/~/dir_0/file_0.txt"
+        )
+        assert response.status_code == 200, response.text
+        assert response.text == "Content of dir_0/file_0.txt"
+
+    # Test listing a directory using the tilde syntax
+    async with httpx.AsyncClient(timeout=300) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/zip-files/{zip_file_path}.zip/~/dir_0/"
+        )
+        assert response.status_code == 200, response.text
+        items = response.json()
+        dir_files = [item for item in items if item["type"] == "file"]
+        assert len(dir_files) == 190  # 180 regular + 10 large files
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=dataset.id)
     await artifact_manager.delete(artifact_id=collection.id)
