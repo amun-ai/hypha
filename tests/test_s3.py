@@ -94,7 +94,7 @@ async def test_s3_proxy(minio_server, fastapi_server, test_user_token):
 
 
 # pylint: disable=too-many-statements
-async def test_s3(minio_server, fastapi_server, test_user_token):
+async def test_s3(minio_server, fastapi_server, test_user_token_8):
     """Test s3 service."""
     api = await connect_to_server(
         {"name": "anonymous client", "server_url": WS_SERVER_URL}
@@ -120,7 +120,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
     assert response.status_code == 403
 
     api = await connect_to_server(
-        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token_8}
     )
     workspace = api.config["workspace"]
     token = await api.generate_token()
