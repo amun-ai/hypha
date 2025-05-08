@@ -231,6 +231,7 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
             fil.write("hello")
         await obj.upload_file("/tmp/hello.txt")
 
+        obj = await s3_client.Object(info["bucket"], info["prefix"] + "hello2.txt")
         with open("/tmp/hello2.txt", "w", encoding="utf-8") as fil:
             fil.write("hello")
         await obj.upload_file("/tmp/hello2.txt")
@@ -257,7 +258,6 @@ async def test_s3(minio_server, fastapi_server, test_user_token):
         # assert len(items) == 3 # 2 files and 1 folder (applications)
         assert find_item(items, "name", "my-data-small.txt")
         assert find_item(items, "name", "hello.txt")
-
         # Upload without the prefix should fail
         obj = await s3_client.Object(info["bucket"], "hello.txt")
         with pytest.raises(Exception, match=r".*An error occurred (AccessDenied)*"):
