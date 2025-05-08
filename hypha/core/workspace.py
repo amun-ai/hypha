@@ -48,6 +48,7 @@ logger = logging.getLogger("workspace")
 logger.setLevel(LOGLEVEL)
 
 SERVICE_SUMMARY_FIELD = ["id", "name", "type", "description", "config"]
+ANONYMOUS_USER_WS_PREFIX = "ws-user-anonymouz-"
 
 # Ensure the client_id is safe
 _allowed_characters = re.compile(r"^[a-zA-Z0-9-_/|*]*$")
@@ -556,35 +557,22 @@ class WorkspaceManager:
             self._active_ws.inc()
 
         # Skip S3 setup for anonymous users
-        if not workspace.id.startswith("anonymouz-") and self._s3_controller:
+        if not workspace.id.startswith(ANONYMOUS_USER_WS_PREFIX) and self._s3_controller:
             await self._s3_controller.setup_workspace(workspace)
 
-        # Verify workspace exists in Redis with retries
-        max_retries = 3
-        retry_delay = 0.1  # seconds
-        for attempt in range(max_retries):
-            try:
-                # Verify workspace exists in Redis
-                workspace_info = await self._redis.hget("workspaces", workspace.id)
-                if workspace_info is None:
-                    if attempt == max_retries - 1:
-                        logger.error(
-                            f"Failed to verify workspace creation after {max_retries} attempts"
-                        )
-                        raise KeyError(f"Failed to create workspace: {workspace.id}")
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                    continue
+        # Verify workspace exists in Redis
+        try:
+            workspace_info = await self._redis.hget("workspaces", workspace.id)
+            if workspace_info is None:
+                logger.error("Failed to verify workspace creation")
+                raise KeyError(f"Failed to create workspace: {workspace.id}")
 
-                # Update status to ready
-                await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
-                break
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    logger.error(f"Failed to verify workspace creation: {str(e)}")
-                    raise
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2
+            # Update status to ready
+            await self._set_workspace_status(workspace.id, WorkspaceStatus.READY)
+
+        except Exception as e:
+            logger.error(f"Failed to verify workspace creation: {str(e)}")
+            raise
 
         await self._event_bus.emit("workspace_loaded", workspace.model_dump())
         if user_info.get_workspace() != workspace.id:
@@ -594,7 +582,7 @@ class WorkspaceManager:
         logger.info("Created workspace %s", workspace.id)
         # prepare the workspace for the user
         if not workspace.id.startswith(
-            "anonymouz-"
+            ANONYMOUS_USER_WS_PREFIX
         ):  # Skip preparation for anonymous workspaces
             task = asyncio.create_task(self._prepare_workspace(workspace))
             background_tasks.add(task)
@@ -1516,7 +1504,7 @@ class WorkspaceManager:
             raise KeyError(f"Workspace not found: {workspace}")
 
         # Skip S3 loading for anonymous workspaces
-        if workspace.startswith("anonymouz-"):
+        if workspace.startswith(ANONYMOUS_USER_WS_PREFIX):
             logger.debug(f"Anonymous workspace {workspace}, skipping S3 loading")
             workspace_info = WorkspaceInfo(
                 id=workspace,
@@ -1831,7 +1819,7 @@ class WorkspaceManager:
         errors = {}
         try:
             # Skip preparation for anonymous workspaces
-            if not workspace_info.id.startswith("anonymouz-"):
+            if not workspace_info.id.startswith(ANONYMOUS_USER_WS_PREFIX):
                 if workspace_info.persistent:
                     try:
                         if self._artifact_manager:
