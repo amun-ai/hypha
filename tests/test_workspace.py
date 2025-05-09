@@ -148,8 +148,8 @@ async def test_create_workspace_token(fastapi_server, test_user_token):
 
     workspace = await user.create_workspace(
         {
-            "id": "my-new-test-workspace",
-            "name": "my-new-test-workspace",
+            "id": "my-new-test-workspace-3",
+            "name": "my-new-test-workspace-3",
             "description": "This is a test workspace",
             "visibility": "public",  # public/protected
             "persistent": True,  # keeps the workspace alive even after a server restart
@@ -164,10 +164,11 @@ async def test_create_workspace_token(fastapi_server, test_user_token):
 
     print(f"Workspace created: {workspace['name']}")
 
+
     # Generate a workspace token
     token = await user.generate_token(
         {
-            "workspace": "my-new-test-workspace",
+            "workspace": "my-new-test-workspace-3",
             "expires_in": 60 * 60 * 24 * 30,  # 30 days
             "permission": "read_write",
         }
