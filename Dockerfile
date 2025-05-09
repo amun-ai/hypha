@@ -47,7 +47,9 @@ RUN apt-get update && \
     libxshmfence1 \
     ca-certificates \
     libcurl4 \
-    libx11-xcb-dev && \
+    libx11-xcb-dev \
+    libxml2-dev \
+    libxslt1-dev && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
