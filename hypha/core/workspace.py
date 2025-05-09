@@ -1512,7 +1512,7 @@ class WorkspaceManager:
                 description="Anonymous workspace",
                 owners=[workspace],
                 persistent=False,
-                read_only=False,
+                read_only=True,
                 status={"ready": True},
             )
             await self._redis.hset(
