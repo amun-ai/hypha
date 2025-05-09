@@ -49,9 +49,15 @@ RUN apt-get update && \
     libcurl4 \
     libx11-xcb-dev \
     libxml2-dev \
-    libxslt1-dev && \
+    libxslt1-dev \
+    curl \
+    build-essential && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Update conda and install dependencies
 RUN conda update -n base -c defaults conda -y && \
