@@ -1,4 +1,4 @@
-FROM continuumio/miniconda3
+FROM continuumio/miniconda3:25.1.1-2
 
 # Set working directory
 WORKDIR /home
