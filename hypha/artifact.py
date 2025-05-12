@@ -887,7 +887,7 @@ class ArtifactController:
         except Exception as e:
             raise
 
-    def _generate_artifact_data(self, artifact, parent_artifact=None):
+    def _generate_artifact_data(self, artifact: ArtifactModel, parent_artifact: ArtifactModel = None):
         artifact_data = model_to_dict(artifact)
         if parent_artifact:
             artifact_data["parent_id"] = (
@@ -1114,16 +1114,43 @@ class ArtifactController:
 
         return zenodo_client
 
-    def _get_s3_config(self, artifact, parent_artifact):
+    def _get_s3_config(self, artifact=None, parent_artifact=None, workspace=None):
         """
         Get S3 configuration using credentials from the artifact's or parent artifact's secrets.
+        If artifact and parent_artifact are None, returns the default S3 configuration.
+        When both artifact and parent_artifact are None, workspace must be provided.
+        
+        Args:
+            artifact: The artifact to get S3 config for
+            parent_artifact: The parent artifact to inherit S3 config from
+            workspace: The workspace to use for default config when artifact is None
+            
+        Returns:
+            Dictionary with S3 configuration
         """
+        # If artifact is None, use default config
+        if artifact is None:
+            assert workspace is not None, "Workspace must be provided when artifact is None"
+            default_config = {
+                "endpoint_url": self.s3_controller.endpoint_url,
+                "access_key_id": self.s3_controller.access_key_id,
+                "secret_access_key": self.s3_controller.secret_access_key,
+                "region_name": self.s3_controller.region_name,
+                "bucket": self.workspace_bucket,
+                "prefix": safe_join(workspace, self._artifacts_dir),
+                "public_endpoint_url": None,
+            }
+            if self.s3_controller.enable_s3_proxy:
+                default_config["public_endpoint_url"] = f"{self.store.public_base_url}/s3"
+            return default_config
+            
         # merge secrets from parent and artifact
         if parent_artifact and parent_artifact.secrets:
             secrets = parent_artifact.secrets.copy()
         else:
             secrets = {}
-        secrets.update(artifact.secrets or {})
+        if artifact.secrets:
+            secrets.update(artifact.secrets)
 
         endpoint_url = secrets.get("S3_ENDPOINT_URL")
         access_key_id = secrets.get("S3_ACCESS_KEY_ID")
@@ -1290,6 +1317,33 @@ class ArtifactController:
                 Key=version_key,
                 Body=json.dumps(model_to_dict(artifact)),
             )
+            
+        # Check if we're using a custom S3 config (not the default one)
+        # and create a backup in the default S3 bucket
+        is_default_s3 = (
+            s3_config["bucket"] == self.workspace_bucket and
+            s3_config["endpoint_url"] == self.s3_controller.endpoint_url and
+            s3_config["access_key_id"] == self.s3_controller.access_key_id
+        )
+        
+        if not is_default_s3:
+            # Get default S3 config using the workspace from the artifact
+            default_s3_config = self._get_s3_config(workspace=artifact.workspace)
+                
+            # Save backup to default S3
+            async with self._create_client_async(default_s3_config) as backup_s3_client:
+                backup_version_key = safe_join(
+                    default_s3_config["prefix"],
+                    artifact.id,
+                    f"v{version_index}.json",
+                )
+                
+                # Just save the full artifact data as-is
+                await backup_s3_client.put_object(
+                    Bucket=default_s3_config["bucket"],
+                    Key=backup_version_key,
+                    Body=json.dumps(model_to_dict(artifact)),
+                )
 
     async def _load_version_from_s3(
         self,
@@ -1827,6 +1881,7 @@ class ArtifactController:
                     artifact_data = await self._load_version_from_s3(
                         artifact, parent_artifact, version_index, s3_config
                     )
+                    artifact_data = self._generate_artifact_data(ArtifactModel(**artifact_data), parent_artifact)
 
                 if artifact.type == "collection":
                     # Use with_only_columns to optimize the count query
@@ -2800,11 +2855,8 @@ class ArtifactController:
                             logger.info("Adding condition to return ONLY STAGED artifacts")
                         else:
                             # Return only committed artifacts
-                            stage_condition = or_(
-                                ArtifactModel.staging.is_(None),
-                                text("staging = 'null'"),
-                            )
-                            logger.info("Adding condition to return ONLY COMMITTED artifacts")
+                            stage_condition = text("json_array_length(versions) > 0")
+                            logger.info("Adding condition to return ONLY COMMITTED artifacts (with at least 1 version)")
                     else:
                         if stage:
                             # Return only staged artifacts
@@ -2815,11 +2867,8 @@ class ArtifactController:
                             logger.info("Adding condition to return ONLY STAGED artifacts")
                         else:
                             # Return only committed artifacts
-                            stage_condition = or_(
-                                ArtifactModel.staging.is_(None),
-                                text("staging::text = 'null'"),
-                            )
-                            logger.info("Adding condition to return ONLY COMMITTED artifacts")
+                            stage_condition = func.json_array_length(ArtifactModel.versions) > 0
+                            logger.info("Adding condition to return ONLY COMMITTED artifacts (with at least 1 version)")
 
                     query = query.where(stage_condition)
                     count_query = count_query.where(stage_condition)
