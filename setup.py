@@ -77,7 +77,7 @@ setup(
             "aiobotocore>=2.1.0",
         ],
         "server-apps": [
-            "redis>=5.2.0,<=5.3.0",
+            "redis==5.2.0",
             "aiobotocore>=2.1.0",
             "aiortc>=1.9.0",
             "requests>=2.26.0",
