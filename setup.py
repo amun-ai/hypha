@@ -13,7 +13,7 @@ DESCRIPTION = (
 REQUIREMENTS = [
     "aiofiles",
     "fastapi>=0.70.0,<=0.106.0",
-    "hypha-rpc>=0.20.51",
+    "hypha-rpc>=0.20.53",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=2.6.1",
@@ -77,7 +77,7 @@ setup(
             "aiobotocore>=2.1.0",
         ],
         "server-apps": [
-            "redis>=5.2.0",
+            "redis==5.2.0",
             "aiobotocore>=2.1.0",
             "aiortc>=1.9.0",
             "requests>=2.26.0",
