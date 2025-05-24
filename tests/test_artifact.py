@@ -1007,7 +1007,7 @@ async def test_artifact_filtering(
     )
     assert len(results) == 2
 
-     # Backwards compatibility with version filter
+    # Backwards compatibility with version filter
     # Filter by `stage`: Only staged artifacts should be returned
     results = await artifact_manager.list(
         parent_id=collection.id, filters={"version": "stage"}, mode="AND"
@@ -2347,10 +2347,15 @@ async def test_list_stage_parameter(minio_server, fastapi_server, test_user_toke
     assert names == {"Staged Artifact", "Another Staged"}
 
     # Test 4: stage='all' should show both staged and committed artifacts
-    results = await artifact_manager.list(parent_id=collection.id, stage='all')
+    results = await artifact_manager.list(parent_id=collection.id, stage="all")
     assert len(results) == 4
     names = {r["manifest"]["name"] for r in results}
-    assert names == {"Committed Artifact", "Another Committed", "Staged Artifact", "Another Staged"}
+    assert names == {
+        "Committed Artifact",
+        "Another Committed",
+        "Staged Artifact",
+        "Another Staged",
+    }
 
     # Test 5: Backward compatibility with filters={"version": "stage"}
     results = await artifact_manager.list(
@@ -2440,7 +2445,7 @@ async def test_http_children_endpoint(minio_server, fastapi_server, test_user_to
     assert len(results) == 3
     names = {r["manifest"]["name"] for r in results}
     assert "Staged Artifact" not in names
-    
+
     # Test keyword search
     response = requests.get(
         f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children?keywords=two"
@@ -2460,11 +2465,7 @@ async def test_http_children_endpoint(minio_server, fastapi_server, test_user_to
     assert results[0]["manifest"]["name"] == "Child Artifact 3"
 
     # Test filtering by manifest field (in nested format)
-    filters = {
-        "manifest": {
-            "name": "Child Artifact 1"
-        }
-    }
+    filters = {"manifest": {"name": "Child Artifact 1"}}
     response = requests.get(
         f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children?filters={json.dumps(filters)}"
     )
@@ -2490,20 +2491,20 @@ async def test_http_children_endpoint(minio_server, fastapi_server, test_user_to
     )
     assert response.status_code == 200
     results_asc = response.json()
-    
+
     response = requests.get(
         f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children?order_by=created_at<"
     )
     assert response.status_code == 200
     results_desc = response.json()
-    
+
     # Verify that both queries return the same set of results
     asc_ids = [item["_id"] for item in results_asc]
     desc_ids = [item["_id"] for item in results_desc]
     assert set(asc_ids) == set(desc_ids), "Results should contain the same items"
 
     # Skip checking order difference since artifacts might be created at the same timestamp
-    
+
     # Test no_cache parameter
     # First create a new artifact
     new_child = await artifact_manager.create(
@@ -2514,7 +2515,7 @@ async def test_http_children_endpoint(minio_server, fastapi_server, test_user_to
             "description": "Newly created artifact for testing no_cache",
         },
     )
-    
+
     # Then immediately request with no_cache to ensure it's included
     response = requests.get(
         f"{SERVER_URL}/{api.config.workspace}/artifacts/{collection.alias}/children?no_cache=true"
@@ -2522,7 +2523,7 @@ async def test_http_children_endpoint(minio_server, fastapi_server, test_user_to
     assert response.status_code == 200
     results = response.json()
     assert len(results) == 4  # Should include the new artifact (3 original + 1 new)
-    
+
     # Clean up
     await artifact_manager.delete(artifact_id=child1.id)
     await artifact_manager.delete(artifact_id=child2.id)
@@ -2532,7 +2533,9 @@ async def test_http_children_endpoint(minio_server, fastapi_server, test_user_to
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_http_children_endpoint_stage_parameter(minio_server, fastapi_server, test_user_token):
+async def test_http_children_endpoint_stage_parameter(
+    minio_server, fastapi_server, test_user_token
+):
     """Test the stage parameter functionality in HTTP endpoint for listing child artifacts."""
     api = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
@@ -2673,7 +2676,9 @@ async def test_get_zip_file_content_endpoint_large_scale(
 
     # Create a ZIP file in memory with 2000 files in various directories
     zip_buffer = BytesIO()
-    with ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as zip_file:
+    with ZipFile(
+        zip_buffer, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1
+    ) as zip_file:
         # Create files in root directory
         for i in range(100):
             zip_file.writestr(f"root_file_{i}.txt", f"Content of root file {i}")
@@ -2688,7 +2693,9 @@ async def test_get_zip_file_content_endpoint_large_scale(
             # Add some larger files (10 per directory)
             for large_file_num in range(10):
                 file_path = f"dir_{dir_num}/large_file_{large_file_num}.txt"
-                content = f"Large content repeated many times {large_file_num}" * 100  # Reduced content size
+                content = (
+                    f"Large content repeated many times {large_file_num}" * 100
+                )  # Reduced content size
                 zip_file.writestr(file_path, content)
 
     zip_buffer.seek(0)
@@ -2701,7 +2708,7 @@ async def test_get_zip_file_content_endpoint_large_scale(
         file_path=f"{zip_file_path}.zip",
         download_weight=1,
     )
-    
+
     # Upload in multiple chunks to ensure that the S3 implementation handles it properly
     chunk_size = 1024 * 1024  # 1MB chunks
     async with httpx.AsyncClient(timeout=300) as client:
@@ -2723,7 +2730,7 @@ async def test_get_zip_file_content_endpoint_large_scale(
         root_files = [item for item in items if item["type"] == "file"]
         root_dirs = [item for item in items if item["type"] == "directory"]
         assert len(root_files) == 100  # 100 files in root
-        assert len(root_dirs) == 10    # 10 directories
+        assert len(root_dirs) == 10  # 10 directories
 
     # Test listing a specific directory
     async with httpx.AsyncClient(timeout=300) as client:

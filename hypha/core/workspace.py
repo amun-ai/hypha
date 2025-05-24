@@ -557,7 +557,10 @@ class WorkspaceManager:
             self._active_ws.inc()
 
         # Skip S3 setup for anonymous users
-        if not workspace.id.startswith(ANONYMOUS_USER_WS_PREFIX) and self._s3_controller:
+        if (
+            not workspace.id.startswith(ANONYMOUS_USER_WS_PREFIX)
+            and self._s3_controller
+        ):
             await self._s3_controller.setup_workspace(workspace)
 
         # Verify workspace exists in Redis

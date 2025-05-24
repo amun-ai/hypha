@@ -39,10 +39,11 @@ logger = logging.getLogger("s3")
 logger.setLevel(LOGLEVEL)
 
 # Note: We use a simple ClientSession without advanced TCPConnector configuration
-# because aiohttp's timeout-related features cause "Timeout context manager 
+# because aiohttp's timeout-related features cause "Timeout context manager
 # should be used inside a task" errors in FastAPI endpoints.
 # For production use with high load, consider moving to a background task
 # or using a different proxy implementation.
+
 
 class FSFileResponse(FileResponse):
     """Represent an FS File Response."""
@@ -257,12 +258,14 @@ class S3Controller:
             # Custom S3 proxy implementation with proper connection management
             # Create custom router for S3 proxy
             s3_router = APIRouter()
-            
-            @s3_router.api_route("/s3/{path:path}", methods=["GET", "HEAD", "PUT", "POST", "DELETE"])
+
+            @s3_router.api_route(
+                "/s3/{path:path}", methods=["GET", "HEAD", "PUT", "POST", "DELETE"]
+            )
             async def s3_proxy_route(path: str, request: Request):
                 """Route handler for S3 proxy."""
                 return await self.s3_proxy_handler(request)
-            
+
             # Register the router
             store.register_router(s3_router)
 
@@ -746,28 +749,28 @@ class S3Controller:
             path_with_query = str(request.url.path)
             if request.url.query:
                 path_with_query += "?" + request.url.query
-            path = path_with_query.replace('/s3/', '', 1)
+            path = path_with_query.replace("/s3/", "", 1)
             upstream_url = f"{self.endpoint_url.rstrip('/')}/{path}"
-            
+
             # Create simple session
             session = ClientSession()
-            
+
             try:
                 # Prepare headers (exclude host and other proxy-specific headers)
                 headers = dict(request.headers)
-                headers.pop('host', None)
-                headers.pop('x-forwarded-for', None)
-                headers.pop('x-real-ip', None)
-                
+                headers.pop("host", None)
+                headers.pop("x-forwarded-for", None)
+                headers.pop("x-real-ip", None)
+
                 # Set proper host header for S3
                 parsed_endpoint = urlparse(self.endpoint_url)
-                headers['host'] = parsed_endpoint.netloc
-                
+                headers["host"] = parsed_endpoint.netloc
+
                 # Get request body for PUT/POST requests
                 body = None
                 if request.method in ["PUT", "POST", "PATCH"]:
                     body = await request.body()
-                
+
                 # Make the proxied request with asyncio timeout
                 async def make_request():
                     return await session.request(
@@ -778,17 +781,17 @@ class S3Controller:
                         data=body,
                         allow_redirects=False,
                     )
-                
+
                 # Use asyncio.wait_for for timeout (60 seconds)
                 resp = await asyncio.wait_for(make_request(), timeout=60.0)
-                
+
                 # Prepare response headers
                 response_headers = dict(resp.headers)
                 # Remove headers that shouldn't be forwarded
-                response_headers.pop('connection', None)
-                response_headers.pop('transfer-encoding', None)
-                response_headers.pop('content-encoding', None)
-                
+                response_headers.pop("connection", None)
+                response_headers.pop("transfer-encoding", None)
+                response_headers.pop("content-encoding", None)
+
                 # For streaming response, we need to create an async generator
                 async def stream_response():
                     try:
@@ -801,41 +804,47 @@ class S3Controller:
                         raise
                     finally:
                         resp.close()
-                
+
                 # Return streaming response
                 from fastapi.responses import StreamingResponse
+
                 return StreamingResponse(
                     stream_response(),
                     status_code=resp.status,
                     headers=response_headers,
-                    media_type=response_headers.get('content-type', 'application/octet-stream')
+                    media_type=response_headers.get(
+                        "content-type", "application/octet-stream"
+                    ),
                 )
             finally:
                 await session.close()
-                
+
         except asyncio.TimeoutError:
             logger.error(f"S3 proxy timeout for {request.url.path}")
             from fastapi.responses import Response
+
             return Response(
                 content="Gateway Timeout",
                 status_code=504,
-                headers={'Content-Type': 'text/plain'}
+                headers={"Content-Type": "text/plain"},
             )
         except aiohttp.ClientError as e:
             logger.error(f"S3 proxy client error for {request.url.path}: {e}")
             from fastapi.responses import Response
+
             return Response(
                 content="Bad Gateway",
                 status_code=502,
-                headers={'Content-Type': 'text/plain'}
+                headers={"Content-Type": "text/plain"},
             )
         except Exception as e:
             logger.error(f"S3 proxy error for {request.url.path}: {e}")
             from fastapi.responses import Response
+
             return Response(
                 content="Internal Server Error",
                 status_code=500,
-                headers={'Content-Type': 'text/plain'}
+                headers={"Content-Type": "text/plain"},
             )
 
     def get_s3_service(self):

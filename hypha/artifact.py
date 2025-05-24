@@ -238,7 +238,7 @@ class ArtifactController:
             order_by: str = None,
             pagination: bool = False,
             silent: bool = False,
-            stage: str = 'false',
+            stage: str = "false",
             no_cache: bool = False,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
@@ -255,23 +255,25 @@ class ArtifactController:
                     keywords = keywords.split(",")
                 if filters:
                     filters = json.loads(filters)
-                
+
                 # Convert stage parameter:
                 # 'true' -> True (only staged artifacts)
                 # 'false' -> False (only committed artifacts)
                 # 'all' -> 'all' (both staged and committed artifacts)
-                if stage == 'true':
+                if stage == "true":
                     stage_param = True
-                elif stage == 'false':
+                elif stage == "false":
                     stage_param = False
-                elif stage == 'all':
-                    stage_param = 'all'
+                elif stage == "all":
+                    stage_param = "all"
                 else:
                     # Default to committed artifacts for any invalid value
                     stage_param = False
-                
-                logger.info(f"HTTP list_children endpoint: stage={stage}, converted to stage_param={stage_param}")
-                    
+
+                logger.info(
+                    f"HTTP list_children endpoint: stage={stage}, converted to stage_param={stage_param}"
+                )
+
                 results = await self.list_children(
                     parent_id=parent_id,
                     offset=offset,
@@ -608,7 +610,7 @@ class ArtifactController:
                             s3_key,
                             path=path,
                             zip_tail=zip_tail,
-                            cache_instance=self._cache
+                            cache_instance=self._cache,
                         )
 
             except KeyError:
@@ -887,7 +889,9 @@ class ArtifactController:
         except Exception as e:
             raise
 
-    def _generate_artifact_data(self, artifact: ArtifactModel, parent_artifact: ArtifactModel = None):
+    def _generate_artifact_data(
+        self, artifact: ArtifactModel, parent_artifact: ArtifactModel = None
+    ):
         artifact_data = model_to_dict(artifact)
         if parent_artifact:
             artifact_data["parent_id"] = (
@@ -1119,18 +1123,20 @@ class ArtifactController:
         Get S3 configuration using credentials from the artifact's or parent artifact's secrets.
         If artifact and parent_artifact are None, returns the default S3 configuration.
         When both artifact and parent_artifact are None, workspace must be provided.
-        
+
         Args:
             artifact: The artifact to get S3 config for
             parent_artifact: The parent artifact to inherit S3 config from
             workspace: The workspace to use for default config when artifact is None
-            
+
         Returns:
             Dictionary with S3 configuration
         """
         # If artifact is None, use default config
         if artifact is None:
-            assert workspace is not None, "Workspace must be provided when artifact is None"
+            assert (
+                workspace is not None
+            ), "Workspace must be provided when artifact is None"
             default_config = {
                 "endpoint_url": self.s3_controller.endpoint_url,
                 "access_key_id": self.s3_controller.access_key_id,
@@ -1141,9 +1147,11 @@ class ArtifactController:
                 "public_endpoint_url": None,
             }
             if self.s3_controller.enable_s3_proxy:
-                default_config["public_endpoint_url"] = f"{self.store.public_base_url}/s3"
+                default_config["public_endpoint_url"] = (
+                    f"{self.store.public_base_url}/s3"
+                )
             return default_config
-            
+
         # merge secrets from parent and artifact
         if parent_artifact and parent_artifact.secrets:
             secrets = parent_artifact.secrets.copy()
@@ -1317,19 +1325,19 @@ class ArtifactController:
                 Key=version_key,
                 Body=json.dumps(model_to_dict(artifact)),
             )
-            
+
         # Check if we're using a custom S3 config (not the default one)
         # and create a backup in the default S3 bucket
         is_default_s3 = (
-            s3_config["bucket"] == self.workspace_bucket and
-            s3_config["endpoint_url"] == self.s3_controller.endpoint_url and
-            s3_config["access_key_id"] == self.s3_controller.access_key_id
+            s3_config["bucket"] == self.workspace_bucket
+            and s3_config["endpoint_url"] == self.s3_controller.endpoint_url
+            and s3_config["access_key_id"] == self.s3_controller.access_key_id
         )
-        
+
         if not is_default_s3:
             # Get default S3 config using the workspace from the artifact
             default_s3_config = self._get_s3_config(workspace=artifact.workspace)
-                
+
             # Save backup to default S3
             async with self._create_client_async(default_s3_config) as backup_s3_client:
                 backup_version_key = safe_join(
@@ -1337,7 +1345,7 @@ class ArtifactController:
                     artifact.id,
                     f"v{version_index}.json",
                 )
-                
+
                 # Just save the full artifact data as-is
                 await backup_s3_client.put_object(
                     Bucket=default_s3_config["bucket"],
@@ -1881,7 +1889,9 @@ class ArtifactController:
                     artifact_data = await self._load_version_from_s3(
                         artifact, parent_artifact, version_index, s3_config
                     )
-                    artifact_data = self._generate_artifact_data(ArtifactModel(**artifact_data), parent_artifact)
+                    artifact_data = self._generate_artifact_data(
+                        ArtifactModel(**artifact_data), parent_artifact
+                    )
 
                 if artifact.type == "collection":
                     # Use with_only_columns to optimize the count query
@@ -2676,7 +2686,7 @@ class ArtifactController:
     ):
         """
         List artifacts within a collection under a specific artifact_id.
-        
+
         Parameters:
             stage: Controls which artifacts to return based on their staging status
                 - True: Return only staged artifacts
@@ -2684,11 +2694,11 @@ class ArtifactController:
                 - 'all': Return both staged and committed artifacts
         """
         logger.info(f"list_children implementation: stage parameter value = {stage}")
-        
+
         # Convert 'all' to None for internal implementation
-        if stage == 'all':
+        if stage == "all":
             stage = None
-            
+
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
         if parent_id:
@@ -2767,13 +2777,19 @@ class ArtifactController:
                                 "committed",
                             ], "Invalid version value, it should be 'stage', 'latest' or 'committed'."
                             if value == "stage":
-                                assert stage != None, "Stage parameter cannot be used with version filter."
+                                assert (
+                                    stage != None
+                                ), "Stage parameter cannot be used with version filter."
                                 stage = True
                             elif value == "latest":
-                                assert stage != True, "Stage parameter cannot be used with version filter."
+                                assert (
+                                    stage != True
+                                ), "Stage parameter cannot be used with version filter."
                                 stage = False
                             elif value == "committed":
-                                assert stage != True, "Stage parameter cannot be used with version filter."
+                                assert (
+                                    stage != True
+                                ), "Stage parameter cannot be used with version filter."
                                 stage = False
                             continue
 
@@ -2852,11 +2868,15 @@ class ArtifactController:
                                 ArtifactModel.staging.isnot(None),
                                 text("staging != 'null'"),
                             )
-                            logger.info("Adding condition to return ONLY STAGED artifacts")
+                            logger.info(
+                                "Adding condition to return ONLY STAGED artifacts"
+                            )
                         else:
                             # Return only committed artifacts
                             stage_condition = text("json_array_length(versions) > 0")
-                            logger.info("Adding condition to return ONLY COMMITTED artifacts (with at least 1 version)")
+                            logger.info(
+                                "Adding condition to return ONLY COMMITTED artifacts (with at least 1 version)"
+                            )
                     else:
                         if stage:
                             # Return only staged artifacts
@@ -2864,16 +2884,24 @@ class ArtifactController:
                                 ArtifactModel.staging.isnot(None),
                                 text("staging::text != 'null'"),
                             )
-                            logger.info("Adding condition to return ONLY STAGED artifacts")
+                            logger.info(
+                                "Adding condition to return ONLY STAGED artifacts"
+                            )
                         else:
                             # Return only committed artifacts
-                            stage_condition = func.json_array_length(ArtifactModel.versions) > 0
-                            logger.info("Adding condition to return ONLY COMMITTED artifacts (with at least 1 version)")
+                            stage_condition = (
+                                func.json_array_length(ArtifactModel.versions) > 0
+                            )
+                            logger.info(
+                                "Adding condition to return ONLY COMMITTED artifacts (with at least 1 version)"
+                            )
 
                     query = query.where(stage_condition)
                     count_query = count_query.where(stage_condition)
                 else:
-                    logger.info("No stage filter applied - returning BOTH staged and committed artifacts")
+                    logger.info(
+                        "No stage filter applied - returning BOTH staged and committed artifacts"
+                    )
 
                 # Combine conditions based on mode (AND/OR)
                 if conditions:
