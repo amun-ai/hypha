@@ -1436,8 +1436,8 @@ class ArtifactController:
         version: str = None,
         comment: str = None,
         overwrite: bool = False,
-        context: dict = None,
         stage: bool = False,  # Add stage parameter
+        context: dict = None,
     ):
         """Create a new artifact and store its manifest in the database."""
         if context is None or "ws" not in context:
@@ -1720,8 +1720,8 @@ class ArtifactController:
         secrets: dict = None,
         version: str = None,
         comment: str = None,
+        stage: bool = False,
         context: dict = None,
-        stage: bool = False,  # Add stage parameter
     ):
         """Edit the artifact's manifest and save it in the database."""
         if context is None or "ws" not in context:
