@@ -70,6 +70,9 @@ EXPOSE_HEADERS = [
     "Range",
     "Origin",
     "Content-Type",
+    # SharedArrayBuffer security headers
+    "Cross-Origin-Embedder-Policy",
+    "Cross-Origin-Opener-Policy",
 ]
 
 
