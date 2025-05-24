@@ -11,7 +11,7 @@ DESCRIPTION = (
 )
 
 REQUIREMENTS = [
-    "websockets==14.0",
+    "websockets>=14.0",
     "aiofiles",
     "fastapi>=0.70.0,<=0.106.0",
     "hypha-rpc>=0.20.54",
