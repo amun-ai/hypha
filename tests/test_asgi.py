@@ -336,11 +336,8 @@ async def test_asgi_streaming(fastapi_server, test_user_token):
             for i in range(5):
                 yield f"chunk {i}\n".encode()
                 await asyncio.sleep(0.1)
-        
-        return StreamingResponse(
-            stream_generator(),
-            media_type="text/plain"
-        )
+
+        return StreamingResponse(stream_generator(), media_type="text/plain")
 
     api = await connect_to_server(
         {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
@@ -364,7 +361,7 @@ async def test_asgi_streaming(fastapi_server, test_user_token):
 
     # Test with httpx streaming client
     url = f"{SERVER_URL}/{workspace}/apps/test-streaming/stream"
-    
+
     # Test chunked transfer with streaming client
     async with httpx.AsyncClient() as client:
         chunks = []
@@ -372,16 +369,16 @@ async def test_asgi_streaming(fastapi_server, test_user_token):
             assert response.headers.get("transfer-encoding") == "chunked"
             async for chunk in response.aiter_bytes():
                 chunks.append(chunk.decode())
-    
+
     # Verify that we received 5 chunks
     assert len(chunks) > 1  # Might be coalesced but should be more than one
     complete_response = "".join(chunks)
     assert "chunk 0" in complete_response
     assert "chunk 4" in complete_response
-    
+
     # Check all expected chunks are in the response
     for i in range(5):
         assert f"chunk {i}" in complete_response
-    
+
     # Clean up
     await api.disconnect()

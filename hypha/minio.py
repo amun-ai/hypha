@@ -24,7 +24,9 @@ logger.setLevel(LOGLEVEL)
 MATH_PATTERN = re.compile("{(.+?)}")
 
 
-def setup_minio_executables(executable_path, minio_version=None, mc_version=None, file_system_mode=False):
+def setup_minio_executables(
+    executable_path, minio_version=None, mc_version=None, file_system_mode=False
+):
     """Download and install the minio client and server binary files."""
     if executable_path and not os.path.exists(executable_path):
         os.makedirs(executable_path, exist_ok=True)
@@ -32,13 +34,15 @@ def setup_minio_executables(executable_path, minio_version=None, mc_version=None
     # Default versions if not specified
     default_minio_version = "RELEASE.2024-07-16T23-46-41Z"
     default_mc_version = "RELEASE.2025-04-08T15-39-49Z"
-    
+
     # Use specific versions if file system mode is enabled
     if file_system_mode:
         minio_version = "RELEASE.2022-10-24T18-35-07Z"
         mc_version = "RELEASE.2022-10-29T10-09-23Z"
-        logger.info("Using Minio file system mode with fixed versions: "
-                   f"minio={minio_version}, mc={mc_version}")
+        logger.info(
+            "Using Minio file system mode with fixed versions: "
+            f"minio={minio_version}, mc={mc_version}"
+        )
     else:
         # Use provided versions or defaults
         minio_version = minio_version or default_minio_version
@@ -50,11 +54,15 @@ def setup_minio_executables(executable_path, minio_version=None, mc_version=None
     if sys.platform == "win32":
         mc_base += ".exe"
         minio_base += ".exe"
-    
+
     # Create versioned executable names
-    minio_version_short = minio_version.replace("RELEASE.", "").replace("-", "").replace(":", "")
-    mc_version_short = mc_version.replace("RELEASE.", "").replace("-", "").replace(":", "")
-    
+    minio_version_short = (
+        minio_version.replace("RELEASE.", "").replace("-", "").replace(":", "")
+    )
+    mc_version_short = (
+        mc_version.replace("RELEASE.", "").replace("-", "").replace(":", "")
+    )
+
     mc_executable = f"{mc_base}.{mc_version_short}"
     minio_executable = f"{minio_base}.{minio_version_short}"
 
@@ -84,7 +92,7 @@ def setup_minio_executables(executable_path, minio_version=None, mc_version=None
         )
 
     download_success = True
-    
+
     if not os.path.exists(minio_path):
         try:
             print(f"Minio server executable {minio_version} not found, downloading... ")
@@ -113,7 +121,7 @@ def setup_minio_executables(executable_path, minio_version=None, mc_version=None
                 stat_result = os.stat(minio_path)
                 if not bool(stat_result.st_mode & stat.S_IEXEC):
                     os.chmod(minio_path, stat_result.st_mode | stat.S_IEXEC)
-            
+
             if os.path.exists(mc_path):
                 stat_result = os.stat(mc_path)
                 if not bool(stat_result.st_mode & stat.S_IEXEC):
@@ -162,10 +170,7 @@ def start_minio_server(
 
     # Setup the minio executables with specified versions
     minio_version, mc_version, minio_path, mc_path = setup_minio_executables(
-        executable_path, 
-        minio_version, 
-        mc_version, 
-        file_system_mode
+        executable_path, minio_version, mc_version, file_system_mode
     )
 
     # Create temp directory if workdir not provided
@@ -176,28 +181,30 @@ def start_minio_server(
     else:
         workdir_path = Path(workdir)
         workdir_path.mkdir(parents=True, exist_ok=True)
-        
+
         # When using file system mode, create the format.json file
         if file_system_mode:
             minio_sys_dir = workdir_path / ".minio.sys"
             # Ensure the .minio.sys directory exists
             minio_sys_dir.mkdir(exist_ok=True)
-            
+
             format_file_path = minio_sys_dir / "format.json"
             format_content = {
                 "version": "1",
                 "format": "fs",
                 "id": "avoid-going-into-snsd-mode-legacy-is-fine-with-me",
-                "fs": {"version": "2"}
+                "fs": {"version": "2"},
             }
-            
+
             try:
-                with open(format_file_path, 'w', encoding='utf-8') as f:
+                with open(format_file_path, "w", encoding="utf-8") as f:
                     json.dump(format_content, f, ensure_ascii=False, indent=4)
-                logger.info(f"Created format.json for legacy FS mode in {minio_sys_dir}")
+                logger.info(
+                    f"Created format.json for legacy FS mode in {minio_sys_dir}"
+                )
             except Exception as e:
                 logger.warning(f"Failed to create format.json for legacy FS mode: {e}")
-        
+
         workdir = str(workdir_path)
 
     # Default console port if not provided
@@ -210,7 +217,7 @@ def start_minio_server(
     my_env = os.environ.copy()
     my_env["MINIO_ROOT_USER"] = root_user
     my_env["MINIO_ROOT_PASSWORD"] = root_password
-    
+
     # In file system mode, set additional environment variables
     # Note: Some of these might be redundant or conflicting with the format.json approach,
     # but keeping them for now based on previous attempts.
@@ -235,11 +242,11 @@ def start_minio_server(
         f"--address=:{port}",
         f"--console-address=:{console_port}",
     ]
-    
+
     # Add filesystem mode specific arguments
     if file_system_mode:
         cmd.append("--quiet")  # Run in quiet mode for file system usage
-    
+
     # Add the data directory as the last argument
     cmd.append(workdir)
 
@@ -447,12 +454,9 @@ class MinioClient:
         """Initialize the client."""
         # setup minio executables with specified versions
         _, _, _, mc_path = setup_minio_executables(
-            executable_path, 
-            minio_version, 
-            mc_version, 
-            file_system_mode
+            executable_path, minio_version, mc_version, file_system_mode
         )
-        
+
         # generate alias by hash of endpoint_url, access_key_id, and secret_access_key
         # Ensure alias starts with a letter (a-z) and contains only alphanumeric characters
         hash_str = hashlib.sha256(
@@ -460,10 +464,10 @@ class MinioClient:
         ).hexdigest()
         # Use 'mc' prefix followed by first 8 chars of hash
         self.alias = f"mc{hash_str[:8]}"
-        
+
         # Use the versioned executable path
         self.mc_executable = mc_path
-        
+
         self.endpoint_url = endpoint_url
         self.access_key_id = access_key_id
         self.secret_access_key = secret_access_key

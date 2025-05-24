@@ -28,7 +28,10 @@ class ArtifactModel(SQLModel, table=True):
     versions: Optional[list] = Field(default=None, sa_column=Column(JSON))
     config: Optional[dict] = Field(default=None, sa_column=Column(JSON))
     secrets: Optional[dict] = Field(default=None, sa_column=Column(JSON))
-    __table_args__ = (UniqueConstraint("workspace", "alias", name="_workspace_alias_uc"),)
+    __table_args__ = (
+        UniqueConstraint("workspace", "alias", name="_workspace_alias_uc"),
+    )
+
 
 def setup_engines(pg_uri: str, sqlite_prefix: str):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -41,10 +44,16 @@ def setup_engines(pg_uri: str, sqlite_prefix: str):
     global sqlite_engine, sqlite_session_maker
 
     pg_engine = create_async_engine(pg_uri, echo=False)
-    pg_session_maker = async_sessionmaker(pg_engine, class_=AsyncSession, expire_on_commit=False)
+    pg_session_maker = async_sessionmaker(
+        pg_engine, class_=AsyncSession, expire_on_commit=False
+    )
 
-    sqlite_engine = create_async_engine(f"sqlite+aiosqlite:///{sqlite_path}", echo=False)
-    sqlite_session_maker = async_sessionmaker(sqlite_engine, class_=AsyncSession, expire_on_commit=False)
+    sqlite_engine = create_async_engine(
+        f"sqlite+aiosqlite:///{sqlite_path}", echo=False
+    )
+    sqlite_session_maker = async_sessionmaker(
+        sqlite_engine, class_=AsyncSession, expire_on_commit=False
+    )
 
 
 def build_dependency_graph(artifacts):
@@ -124,6 +133,7 @@ async def backup_artifacts_to_sqlite():
 
     print("✅ Backup to SQLite completed.")
 
+
 async def verify_migration_counts():
     async with pg_session_maker() as pg_session:
         pg_result = await pg_session.execute(select(ArtifactModel))
@@ -142,16 +152,28 @@ async def verify_migration_counts():
     else:
         print("❌ Verification failed: Mismatched record counts.")
 
+
 async def main(pg_uri: str, sqlite_prefix: str):
     setup_engines(pg_uri, sqlite_prefix)
     await init_sqlite_db()
     await backup_artifacts_to_sqlite()
     await verify_migration_counts()
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Backup PostgreSQL artifacts table to SQLite.")
-    parser.add_argument("--database-uri", required=True, help="PostgreSQL database URI (e.g., postgresql+asyncpg://user:pass@host/db)")
-    parser.add_argument("--database-name", default="hypha-app-backup", help="Prefix for the SQLite backup file (default: hypha-app-backup)")
+    parser = argparse.ArgumentParser(
+        description="Backup PostgreSQL artifacts table to SQLite."
+    )
+    parser.add_argument(
+        "--database-uri",
+        required=True,
+        help="PostgreSQL database URI (e.g., postgresql+asyncpg://user:pass@host/db)",
+    )
+    parser.add_argument(
+        "--database-name",
+        default="hypha-app-backup",
+        help="Prefix for the SQLite backup file (default: hypha-app-backup)",
+    )
 
     args = parser.parse_args()
     asyncio.run(main(args.database_uri, args.database_name))
