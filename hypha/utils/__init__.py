@@ -454,10 +454,6 @@ class PatchedCORSMiddleware(CORSMiddleware):
         ]
         headers = MutableHeaders(headers=dict(headers.items()))
 
-        # Add SharedArrayBuffer security headers to all responses
-        headers["Cross-Origin-Embedder-Policy"] = "require-corp"
-        headers["Cross-Origin-Opener-Policy"] = "same-origin"
-
         origin = request_headers["Origin"]
         has_cookie = "cookie" in request_headers
         allow_credential = (

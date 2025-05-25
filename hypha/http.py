@@ -327,9 +327,6 @@ class ASGIRoutingMiddleware:
                     "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
                     "Access-Control-Allow-Headers": "Authorization,Content-Type",
                     "Access-Control-Expose-Headers": "Content-Disposition",
-                    # SharedArrayBuffer security headers
-                    "Cross-Origin-Embedder-Policy": "require-corp",
-                    "Cross-Origin-Opener-Policy": "same-origin",
                 }
                 for key, value in cors_headers.items():
                     headers[key] = value
