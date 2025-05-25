@@ -788,7 +788,7 @@ class S3Controller:
                 # Remove headers that shouldn't be forwarded
                 response_headers.pop("connection", None)
                 response_headers.pop("transfer-encoding", None)
-                response_headers.pop("content-encoding", None)
+                # Keep content-encoding header as it's needed for proper content decoding
 
                 # Create an async generator for streaming content
                 async def stream_content():
