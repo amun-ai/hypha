@@ -70,6 +70,9 @@ EXPOSE_HEADERS = [
     "Range",
     "Origin",
     "Content-Type",
+    # SharedArrayBuffer security headers
+    "Cross-Origin-Embedder-Policy",
+    "Cross-Origin-Opener-Policy",
 ]
 
 
@@ -176,7 +179,7 @@ def norm_url(base_path, url):
 def create_application(args):
     """Create a hypha application."""
     global minio_proc
-    
+
     if args.from_env:
         logger.info("Loading arguments from environment variables")
         _args = get_args_from_env()
@@ -245,7 +248,9 @@ def create_application(args):
                 minio_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 # Force kill if it doesn't terminate gracefully
-                logger.warning("Minio server did not terminate gracefully, forcing termination")
+                logger.warning(
+                    "Minio server did not terminate gracefully, forcing termination"
+                )
                 minio_proc.kill()
 
     application = FastAPI(
