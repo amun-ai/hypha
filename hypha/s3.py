@@ -790,64 +790,32 @@ class S3Controller:
                 response_headers.pop("transfer-encoding", None)
                 response_headers.pop("content-encoding", None)
 
-                # Create a custom streaming response that manages session lifecycle
-                class ManagedStreamingResponse:
-                    def __init__(self, session, resp, status_code, headers, media_type):
-                        self.session = session
-                        self.resp = resp
-                        self.status_code = status_code
-                        self.headers = headers
-                        self.media_type = media_type
-
-                    async def __call__(self, scope, receive, send):
-                        await send({
-                            'type': 'http.response.start',
-                            'status': self.status_code,
-                            'headers': [
-                                [k.encode(), v.encode()] 
-                                for k, v in self.headers.items()
-                            ],
-                        })
-
+                # Create an async generator for streaming content
+                async def stream_content():
+                    try:
+                        chunk_size = 8192  # 8KB chunks
+                        async for chunk in resp.content.iter_chunked(chunk_size):
+                            if not chunk:  # Empty chunk indicates end of stream
+                                break
+                            yield chunk
+                    except (RuntimeError, ConnectionError, asyncio.CancelledError) as e:
+                        # Handle connection closed gracefully
+                        logger.warning(f"Connection closed during streaming: {e}")
+                    except Exception as e:
+                        logger.error(f"Error streaming response: {e}")
+                    finally:
+                        # Clean up resources
                         try:
-                            chunk_size = 8192  # 8KB chunks
-                            async for chunk in self.resp.content.iter_chunked(chunk_size):
-                                if not chunk:  # Empty chunk indicates end of stream
-                                    break
-                                await send({
-                                    'type': 'http.response.body',
-                                    'body': chunk,
-                                    'more_body': True,
-                                })
-                        except (RuntimeError, ConnectionError, asyncio.CancelledError) as e:
-                            # Handle connection closed gracefully
-                            logger.warning(f"Connection closed during streaming: {e}")
+                            if resp and not resp.closed:
+                                resp.close()
+                            if session and not session.closed:
+                                await session.close()
                         except Exception as e:
-                            logger.error(f"Error streaming response: {e}")
-                        finally:
-                            # Send final empty body to close the response
-                            try:
-                                await send({
-                                    'type': 'http.response.body',
-                                    'body': b'',
-                                    'more_body': False,
-                                })
-                            except Exception:
-                                pass  # Client may have disconnected
-                            
-                            # Clean up resources
-                            try:
-                                if self.resp and not self.resp.closed:
-                                    self.resp.close()
-                                if self.session and not self.session.closed:
-                                    await self.session.close()
-                            except Exception as e:
-                                logger.warning(f"Error cleaning up resources: {e}")
+                            logger.warning(f"Error cleaning up resources: {e}")
 
-                # Return the managed streaming response
-                return ManagedStreamingResponse(
-                    session=session,
-                    resp=resp,
+                # Return FastAPI StreamingResponse
+                return StreamingResponse(
+                    content=stream_content(),
                     status_code=resp.status,
                     headers=response_headers,
                     media_type=response_headers.get("content-type", "application/octet-stream")

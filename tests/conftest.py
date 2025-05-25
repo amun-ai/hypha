@@ -353,6 +353,7 @@ def fastapi_server_sqlite_fixture(minio_server):
             f"--port={SIO_PORT_SQLITE}",
             "--enable-server-apps",
             "--enable-s3",
+            "--enable-s3-proxy",
             f"--database-uri={db_path}",
             "--migrate-database=head",
             "--reset-redis",
