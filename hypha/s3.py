@@ -745,11 +745,8 @@ class S3Controller:
     async def s3_proxy_handler(self, request):
         """Custom S3 proxy handler with proper error handling, timeouts, and streaming."""
         try:
-            # Reconstruct the upstream URL
-            path_with_query = str(request.url.path)
-            if request.url.query:
-                path_with_query += "?" + request.url.query
-            path = path_with_query.replace("/s3/", "", 1)
+            # Reconstruct the upstream URL without query parameters
+            path = str(request.url.path).replace('/s3/', '', 1)
             upstream_url = f"{self.endpoint_url.rstrip('/')}/{path}"
 
             # Create simple session
@@ -772,6 +769,7 @@ class S3Controller:
                     body = await request.body()
 
                 # Make the proxied request with asyncio timeout
+                # Pass query parameters separately to avoid duplication
                 async def make_request():
                     return await session.request(
                         method=request.method,
