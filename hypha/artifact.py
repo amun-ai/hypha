@@ -989,6 +989,7 @@ class ArtifactController:
                     "create",
                     "reset_stats",
                     "publish",
+                    "delete",
                 ],
             }
             return permission_map.get(permission, [])
