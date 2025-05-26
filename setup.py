@@ -46,7 +46,6 @@ REQUIREMENTS = [
     "sqlmodel>=0.0.22",
     "alembic>=1.14.0",
     "hrid>=0.2.4",
-    "asgiproxy>=0.1.1",
     "stream-zip>=0.0.83",
     "prompt-toolkit>=3.0.50",
     "ptpython>=3.0.29",

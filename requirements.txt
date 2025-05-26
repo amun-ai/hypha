@@ -36,7 +36,6 @@ alembic==1.14.0
 hrid==0.2.4
 ollama==0.3.3
 fastembed==0.4.2
-asgiproxy==0.1.1
 stream-zip==0.0.83
 greenlet==3.1.1
 prompt-toolkit==3.0.50
