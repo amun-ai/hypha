@@ -259,3 +259,141 @@ async def test_list_service_types(fastapi_server):
     assert len(service_types) == 2
     assert any(st["id"] == service_type_info_1["id"] for st in service_types)
     assert any(st["id"] == service_type_info_2["id"] for st in service_types)
+
+async def test_simple_select_service_syntax(fastapi_server, test_user_token):
+    """Test the simple select service syntax: select:criteria:function."""
+    import asyncio
+    import time
+    
+    # Create multiple service instances with different characteristics
+    class SimpleService:
+        def __init__(self, instance_id: str, load_value: float = 0.0):
+            self.instance_id = instance_id
+            self.load_value = load_value
+            self.cpu_usage = load_value * 100  # Convert to percentage
+            self.priority = 10 - load_value * 10  # Higher load = lower priority
+        
+        async def get_load(self):
+            """Return current load as a simple number."""
+            return self.load_value
+        
+        async def get_cpu_usage(self):
+            """Return CPU usage percentage."""
+            return self.cpu_usage
+        
+        async def get_priority(self):
+            """Return priority score."""
+            return self.priority
+        
+        async def process_task(self, task_data: str):
+            """Process a task."""
+            return f"Task '{task_data}' completed by service {self.instance_id}"
+    
+    # Create service instances with different load values
+    service_a = SimpleService("A", 0.1)  # Low load
+    service_b = SimpleService("B", 0.5)  # Medium load  
+    service_c = SimpleService("C", 0.8)  # High load
+    
+    # Register service instances
+    async with connect_to_server(
+        {"name": "simple-test-client-a", "server_url": SERVER_URL, "token": test_user_token}
+    ) as api_a:
+        await api_a.register_service({
+            "id": "simple-select-service",
+            "name": "Simple Service Instance A",
+            "get_load": service_a.get_load,
+            "get_cpu_usage": service_a.get_cpu_usage,
+            "get_priority": service_a.get_priority,
+            "process_task": service_a.process_task,
+        })
+        
+        async with connect_to_server(
+            {"name": "simple-test-client-b", "server_url": SERVER_URL, "token": test_user_token}
+        ) as api_b:
+            await api_b.register_service({
+                "id": "simple-select-service",
+                "name": "Simple Service Instance B", 
+                "get_load": service_b.get_load,
+                "get_cpu_usage": service_b.get_cpu_usage,
+                "get_priority": service_b.get_priority,
+                "process_task": service_b.process_task,
+            })
+            
+            async with connect_to_server(
+                {"name": "simple-test-client-c", "server_url": SERVER_URL, "token": test_user_token}
+            ) as api_c:
+                await api_c.register_service({
+                    "id": "simple-select-service",
+                    "name": "Simple Service Instance C",
+                    "get_load": service_c.get_load,
+                    "get_cpu_usage": service_c.get_cpu_usage,
+                    "get_priority": service_c.get_priority,
+                    "process_task": service_c.process_task,
+                })
+                
+                # Wait for services to register
+                await asyncio.sleep(0.5)
+                
+                # Create a client to test the new syntax
+                async with connect_to_server(
+                    {"name": "simple-select-client", "server_url": SERVER_URL, "token": test_user_token}
+                ) as client_api:
+                    
+                    print("Testing simple select syntax...")
+                    
+                    # Test 1: select:min:get_load (should select service A - lowest load)
+                    print("\n1. Testing select:min:get_load")
+                    for i in range(5):
+                        service = await client_api.get_service(
+                            "simple-select-service",
+                            mode="select:min:get_load"
+                        )
+                        result = await service.process_task(f"min-load-task-{i}")
+                        print(f"  {result}")
+                        # Should consistently select service A (lowest load)
+                        assert "service A" in result
+                    
+                    # Test 2: select:max:get_load (should select service C - highest load)
+                    print("\n2. Testing select:max:get_load")
+                    for i in range(3):
+                        service = await client_api.get_service(
+                            "simple-select-service",
+                            mode="select:max:get_load"
+                        )
+                        result = await service.process_task(f"max-load-task-{i}")
+                        print(f"  {result}")
+                        # Should consistently select service C (highest load)
+                        assert "service C" in result
+                    
+                    # Test 3: select:max:get_priority (should select service A - highest priority)
+                    print("\n3. Testing select:max:get_priority")
+                    for i in range(3):
+                        service = await client_api.get_service(
+                            "simple-select-service",
+                            mode="select:max:get_priority"
+                        )
+                        result = await service.process_task(f"max-priority-task-{i}")
+                        print(f"  {result}")
+                        # Should consistently select service A (highest priority)
+                        assert "service A" in result
+                    
+                    # Test 4: select:min:get_cpu_usage (should select service A - lowest CPU)
+                    print("\n4. Testing select:min:get_cpu_usage")
+                    service = await client_api.get_service(
+                        "simple-select-service",
+                        mode="select:min:get_cpu_usage"
+                    )
+                    result = await service.process_task("min-cpu-task")
+                    print(f"  {result}")
+                    assert "service A" in result
+                    
+                    # Test 5: first_success criteria
+                    print("\n5. Testing select:first_success:get_load")
+                    service = await client_api.get_service(
+                        "simple-select-service",
+                        mode="select:first_success:get_load"
+                    )
+                    result = await service.process_task("first-success-task")
+                    print(f"  {result}")
+                    # Should work with any service that responds first
+                    assert "service" in result

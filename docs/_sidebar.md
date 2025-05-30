@@ -3,6 +3,7 @@
  * [Hypha RPC](/hypha-rpc)
  * [Migration Guide](/migration-guide)
  * [Service Type Annotation](/service-type-annotation)
+ * [Service Load Balancing](/service-load-balancing)
  * [Serverless Functions](/serverless-functions)
  * [Serve ASGI Web Apps](/asgi-apps)
  * [Launch Service](/launch-service)
