@@ -1369,13 +1369,9 @@ class WorkspaceManager:
             select_timeout = config.get("select_timeout", 2.0) if isinstance(config, dict) else getattr(config, "select_timeout", 2.0)
             key = await self._select_service_by_function(keys, criteria, function_name, select_timeout)
         else:
-            # Default to random if no mode specified
-            if mode is None:
-                key = random.choice(keys)
-            else:
-                raise ValueError(
-                    f"Invalid mode: {mode}. Mode must be 'random', 'first', 'last', 'exact', or 'select:criteria:function' format (e.g., 'select:min:get_load')"
-                )
+            raise ValueError(
+                f"Invalid mode: {mode}. Mode must be 'random', 'first', 'last', 'exact', or 'select:criteria:function' format (e.g., 'select:min:get_load')"
+            )
         # if it's a public service or the user has read permission
         if not key.startswith(b"services:public|") and not user_info.check_permission(
             workspace, UserPermission.read
