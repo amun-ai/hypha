@@ -30,7 +30,7 @@ opt = arg_parser.parse_args()
 app = create_application(opt)
 
 # Let's use the public server to serve the fastapi application
-SERVER_URL = "https://ai.imjoy.io"
+SERVER_URL = "https://hypha.aicell.io"
 async def show_login_url(context):
     print("Please visit the following the link or scan the QR code to login")
     print(context['login_url'])

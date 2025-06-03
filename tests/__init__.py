@@ -9,12 +9,14 @@ SIO_PORT2 = 38223
 SIO_PORT_REDIS_1 = SIO_PORT + 8
 SIO_PORT_REDIS_2 = SIO_PORT + 9
 SIO_PORT_SQLITE = SIO_PORT + 20
+SIO_PORT_COTURN = SIO_PORT + 30  # For server with COTURN support
 TRITON_PORT = 38284
 WS_SERVER_URL = f"ws://127.0.0.1:{SIO_PORT}/ws"
 SERVER_URL = f"http://127.0.0.1:{SIO_PORT}"
 SERVER_URL_REDIS_1 = f"http://127.0.0.1:{SIO_PORT_REDIS_1}"
 SERVER_URL_REDIS_2 = f"http://127.0.0.1:{SIO_PORT_REDIS_2}"
 SERVER_URL_SQLITE = f"http://127.0.0.1:{SIO_PORT_SQLITE}"
+SERVER_URL_COTURN = f"http://127.0.0.1:{SIO_PORT_COTURN}"
 
 MINIO_PORT = 38483
 MINIO_SERVER_URL = f"http://127.0.0.1:{MINIO_PORT}"
@@ -29,6 +31,11 @@ POSTGRES_PASSWORD = "mysecretpassword"
 POSTGRES_DB = "postgres"
 
 POSTGRES_URI = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@localhost:{POSTGRES_PORT}/{POSTGRES_DB}"
+
+# COTURN test configuration
+COTURN_PORT = 38478
+COTURN_SECRET = "test-coturn-secret-key-" + str(uuid.uuid4())
+COTURN_URI = f"127.0.0.1:{COTURN_PORT}"
 
 
 def find_item(items, key, value):

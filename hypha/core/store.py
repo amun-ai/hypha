@@ -136,6 +136,9 @@ class RedisStore:
         enable_service_search=False,
         reconnection_token_life_time=2 * 24 * 60 * 60,
         activity_check_interval=10,
+        coturn_secret=None,
+        coturn_uri=None,
+        public_coturn_uri=None,
     ):
         """Initialize the redis store."""
         self._s3_controller = None
@@ -159,6 +162,9 @@ class RedisStore:
         self.reconnection_token_life_time = reconnection_token_life_time
         self._enable_service_search = enable_service_search
         self._activity_check_interval = activity_check_interval
+        self._coturn_secret = coturn_secret
+        self._coturn_uri = coturn_uri
+        self._public_coturn_uri = public_coturn_uri
         # Create a fixed HTTP anonymous user
         self._http_anonymous_user = UserInfo(
             id="http-anonymous",
@@ -794,6 +800,9 @@ class RedisStore:
             self._artifact_manager,
             self._enable_service_search,
             self._cache_dir,
+            self._coturn_secret,
+            self._coturn_uri,
+            self._public_coturn_uri,
         )
         await manager.setup()
         return manager

@@ -10,4 +10,5 @@
  * [Zip Streaming](/zip-streaming)
  * [Artifact Manager](/artifact-manager)
  * [Vector Search](/vector-search)
+ * [WebRTC Streaming](/webrtc-streaming)
  * [Development](/development)

@@ -31,6 +31,17 @@ jobs:
         ports:
           - 6338:6379
         options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+      coturn:
+        image: coturn/coturn:4
+        ports:
+          - 3478:3478/udp
+          - 3478:3478/tcp
+          - 49152-49200:49152-49200/udp
+        env:
+          TURN_PORT: 3478
+          TURN_RELAY_PORT_RANGE_MIN: 49152
+          TURN_RELAY_PORT_RANGE_MAX: 49200
+        options: --entrypoint="/bin/sh" --command="turnserver --use-auth-secret --static-auth-secret=test-secret --realm=hypha.test --listening-port=3478 --min-port=49152 --max-port=49200 --tcp-relay --verbose"
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}

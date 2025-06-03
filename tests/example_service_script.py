@@ -35,7 +35,7 @@ async def start_service(server_url, service_id, workspace=None, token=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test services")
     parser.add_argument(
-        "--server-url", type=str, default="https://ai.imjoy.io", help="The server url"
+        "--server-url", type=str, default="https://hypha.aicell.io", help="The server url"
     )
     parser.add_argument(
         "--service-id", type=str, default="test-service", help="The service id"

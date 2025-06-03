@@ -9,7 +9,9 @@ import tempfile
 import time
 import uuid
 from threading import Thread
+import socket
 
+import pytest
 import requests
 from requests import RequestException
 import pytest_asyncio
@@ -32,12 +34,17 @@ from . import (
     SIO_PORT_REDIS_1,
     SIO_PORT_REDIS_2,
     SIO_PORT_SQLITE,
+    SIO_PORT_COTURN,
+    SERVER_URL_COTURN,
     TRITON_PORT,
     POSTGRES_PORT,
     POSTGRES_USER,
     POSTGRES_PASSWORD,
     POSTGRES_DB,
     POSTGRES_URI,
+    COTURN_PORT,
+    COTURN_SECRET,
+    COTURN_URI,
 )
 
 JWT_SECRET = str(uuid.uuid4())
@@ -545,3 +552,224 @@ def minio_server_fixture():
                 shutil.rmtree(workdir, ignore_errors=True)
             except Exception as e:
                 print(f"Error removing Minio workdir {workdir}: {e}")
+
+
+@pytest_asyncio.fixture(name="coturn_server", scope="session")
+def coturn_server_fixture():
+    """Start a COTURN server as test fixture and tear down after test."""
+    # Clean up any existing containers first
+    try:
+        subprocess.run(["docker", "stop", "hypha-coturn-test"], 
+                     capture_output=True, timeout=5)
+        subprocess.run(["docker", "rm", "hypha-coturn-test"], 
+                     capture_output=True, timeout=5)
+    except Exception:
+        pass
+    
+    # Use a simpler port range for testing to avoid Docker mapping issues
+    min_port = 49152
+    max_port = 49200  # Much smaller range for testing
+    
+    # Create a comprehensive turnserver.conf for testing
+    turnserver_conf = f"""
+# COTURN configuration for WebRTC testing
+listening-port={COTURN_PORT}
+tls-listening-port=5349
+
+# Relay port range - smaller range for testing
+min-port={min_port}
+max-port={max_port}
+
+# Enable verbose logging for debugging
+verbose
+
+# Security settings
+fingerprint
+lt-cred-mech
+realm=hypha.test
+use-auth-secret
+static-auth-secret={COTURN_SECRET}
+
+# Performance and compatibility
+no-rfc5780
+no-multicast-peers
+no-loopback-peers
+
+# Enable both TCP and UDP
+tcp-relay
+
+# Enable TURN for both TCP and UDP
+relay-ip=127.0.0.1
+external-ip=127.0.0.1
+
+# CLI settings for monitoring (disabled for Docker)
+no-cli
+
+# Logging
+log-file=/var/tmp/turnserver.log
+simple-log
+
+# Ensure we can handle both STUN and TURN requests
+stun-only=false
+"""
+    
+    # Write the config to a temporary file
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as f:
+        f.write(turnserver_conf)
+        conf_file = f.name
+    
+    try:
+        # Check if coturn/coturn:4 image exists locally
+        image_exists = subprocess.run(
+            ["docker", "images", "-q", "coturn/coturn:4"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        if not image_exists:
+            # Pull the COTURN image if it doesn't exist locally
+            print("Pulling COTURN Docker image...")
+            subprocess.run(["docker", "pull", "coturn/coturn:4"], check=True)
+        else:
+            print("COTURN Docker image already exists locally.")
+
+        # Start COTURN container with better networking
+        print(f"Starting COTURN server on port {COTURN_PORT}")
+        proc = subprocess.Popen([
+            "docker", "run", "--rm",
+            "--name", "hypha-coturn-test",
+            "-p", f"{COTURN_PORT}:{COTURN_PORT}/tcp",     # STUN/TURN TCP
+            "-p", f"{COTURN_PORT}:{COTURN_PORT}/udp",     # STUN/TURN UDP
+            "-p", f"{min_port}-{max_port}:{min_port}-{max_port}/udp",  # Relay range
+            "-v", f"{conf_file}:/etc/turnserver.conf:ro",
+            "coturn/coturn:4",
+            "turnserver", "-c", "/etc/turnserver.conf", "-v",
+            "--use-auth-secret", f"--static-auth-secret={COTURN_SECRET}"
+        ])
+        
+        # Wait for COTURN to start with better health check
+        timeout = 20
+        coturn_ready = False
+        while timeout > 0:
+            try:
+                # Test both TCP and UDP connectivity
+                # Test TCP first (what Hypha checks)
+                sock_tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock_tcp.settimeout(2)
+                result = sock_tcp.connect_ex(("127.0.0.1", COTURN_PORT))
+                sock_tcp.close()
+                
+                if result == 0:
+                    # Also test UDP
+                    sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    sock_udp.settimeout(1)
+                    sock_udp.sendto(b'\x00\x01\x00\x00\x21\x12\xA4\x42' + b'\x00' * 12, ("127.0.0.1", COTURN_PORT))
+                    sock_udp.close()
+                    
+                    coturn_ready = True
+                    print(f"COTURN server started successfully on port {COTURN_PORT}")
+                    print(f"  STUN/TURN port: {COTURN_PORT} (TCP/UDP)")
+                    print(f"  Relay port range: {min_port}-{max_port} (UDP)")
+                    break
+                    
+            except Exception as e:
+                print(f"Health check attempt {20-timeout}: {e}")
+                pass
+            timeout -= 1
+            time.sleep(1)
+        
+        if not coturn_ready:
+            # Try to get logs for debugging
+            try:
+                result = subprocess.run(
+                    ["docker", "logs", "hypha-coturn-test"],
+                    capture_output=True, text=True, timeout=5
+                )
+                print(f"COTURN logs: {result.stdout}")
+                if result.stderr:
+                    print(f"COTURN stderr: {result.stderr}")
+            except Exception:
+                pass
+            
+            proc.terminate()
+            raise TimeoutError(f"COTURN server did not start in time on port {COTURN_PORT}")
+        
+        # Return comprehensive server info
+        yield {
+            "uri": COTURN_URI,
+            "secret": COTURN_SECRET,
+            "port": COTURN_PORT,
+            "min_port": min_port,
+            "max_port": max_port,
+            "realm": "hypha.test",
+            "process": proc
+        }
+        
+    except Exception as e:
+        print(f"Failed to start COTURN server: {e}")
+        # If we can't start COTURN, yield None so tests can skip
+        yield None
+        
+    finally:
+        # Clean up
+        try:
+            # Stop the COTURN container
+            subprocess.run(["docker", "stop", "hypha-coturn-test"], 
+                         capture_output=True, timeout=5)
+            subprocess.run(["docker", "rm", "hypha-coturn-test"], 
+                         capture_output=True, timeout=5)
+        except Exception:
+            pass
+        
+        # Remove the temporary config file
+        try:
+            os.unlink(conf_file)
+        except Exception:
+            pass
+
+
+@pytest_asyncio.fixture(name="fastapi_server_coturn", scope="session")
+def fastapi_server_coturn_fixture(minio_server, coturn_server):
+    """Start server with COTURN support as test fixture and tear down after test."""
+    if not coturn_server:
+        pytest.skip("COTURN server not available")
+    
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "hypha.server",
+            f"--port={SIO_PORT_COTURN}",
+            "--enable-server-apps",
+            "--enable-s3",
+            "--reset-redis",
+            f"--endpoint-url={MINIO_SERVER_URL}",
+            f"--access-key-id={MINIO_ROOT_USER}",
+            f"--secret-access-key={MINIO_ROOT_PASSWORD}",
+            f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            "--enable-s3-proxy",
+            f"--workspace-bucket=my-workspaces",
+            "--s3-admin-type=minio",
+            "--cache-dir=./bin/cache",
+            f"--coturn-secret={coturn_server['secret']}",
+            f"--coturn-uri={coturn_server['uri']}",
+        ],
+        env=test_env,
+    ) as proc:
+        timeout = 20
+        while timeout > 0:
+            try:
+                response = requests.get(f"http://127.0.0.1:{SIO_PORT_COTURN}/health/readiness")
+                if response.ok:
+                    break
+            except RequestException:
+                pass
+            timeout -= 0.1
+            time.sleep(0.1)
+        if timeout <= 0:
+            raise TimeoutError("Server (fastapi_server_coturn) did not start in time")
+        response = requests.get(f"http://127.0.0.1:{SIO_PORT_COTURN}/health/liveness")
+        assert response.ok
+        yield
+        proc.kill()
+        proc.terminate()

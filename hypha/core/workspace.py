@@ -7,6 +7,10 @@ import time
 import inspect
 import os
 import sys
+import hmac
+import hashlib
+import base64
+import socket
 from typing import Optional, Union, List, Any, Dict
 from contextlib import asynccontextmanager
 import random
@@ -143,6 +147,9 @@ class WorkspaceManager:
         artifact_manager: Optional[Any] = None,
         enable_service_search: bool = False,
         cache_dir: str = None,
+        coturn_secret: Optional[str] = None,
+        coturn_uri: Optional[str] = None,
+        public_coturn_uri: Optional[str] = None,
     ):
         self._redis = redis
         self._store = store
@@ -157,6 +164,9 @@ class WorkspaceManager:
         self._server_app_controller = server_app_controller
         self._sql_engine = sql_engine
         self._cache_dir = cache_dir
+        self._coturn_secret = coturn_secret
+        self._coturn_uri = coturn_uri
+        self._public_coturn_uri = public_coturn_uri
         if self._sql_engine:
             self.SessionLocal = async_sessionmaker(
                 self._sql_engine, expire_on_commit=False, class_=AsyncSession
@@ -370,6 +380,90 @@ class WorkspaceManager:
             raise e
         finally:
             await session.close()
+
+    @schema_method
+    async def get_rtc_ice_servers(
+        self,
+        ttl: int = Field(12 * 3600, description="Time to live in seconds"),
+        test_connectivity: bool = Field(True, description="Whether to test COTURN server connectivity"),
+        context: Optional[dict] = None,
+    ):
+        """Get the RTC ice servers configuration."""
+        assert context is not None
+        user_info = UserInfo.model_validate(context["user"])
+        # User must not be anonymous
+        if user_info.is_anonymous:
+            raise PermissionError("Anonymous users are not allowed to get RTC ICE servers")
+        
+        # Check if coturn is configured
+        if not self._coturn_secret or not self._coturn_uri:
+            raise RuntimeError("WebRTC ICE servers are not configured on this server")
+        
+        # Generate credentials
+        user_name = user_info.id
+        secret = self._coturn_secret
+        timestamp = int(time.time()) + ttl
+        username = str(timestamp) + ":" + user_name
+        dig = hmac.new(secret.encode(), username.encode(), hashlib.sha1).digest()
+        credential = base64.b64encode(dig).decode()
+
+        # Parse coturn_uri (for connectivity testing) to extract hostname and port
+        if ":" in self._coturn_uri:
+            hostname = self._coturn_uri.split(":")[0]
+            coturn_port = int(self._coturn_uri.split(":")[1])
+        else:
+            hostname = self._coturn_uri
+            coturn_port = 3478  # Default COTURN port
+
+        # Use public URI for client connections, fallback to private URI
+        public_uri = self._public_coturn_uri or self._coturn_uri
+        if ":" in public_uri:
+            public_hostname = public_uri.split(":")[0]
+            public_port = int(public_uri.split(":")[1])
+        else:
+            public_hostname = public_uri
+            public_port = 3478  # Default COTURN port
+
+        logger.debug(f"🔍 Debug: coturn_uri = {self._coturn_uri}, public_coturn_uri = {public_uri}")
+        logger.debug(f"🔍 Debug: internal_host = {hostname}:{coturn_port}, public_host = {public_hostname}:{public_port}")
+
+        # Test COTURN server connectivity if requested (using internal URI)
+        if test_connectivity:
+            # For connectivity test, use internal Docker service name if running in Docker
+            # Check multiple ways to detect if we're running in Docker
+            in_docker = (os.getenv("HYPHA_IN_DOCKER") or 
+                         os.path.exists("/.dockerenv") or 
+                         os.getenv("HOSTNAME", "").startswith("hypha-"))
+            test_hostname = "coturn" if in_docker else hostname
+            logger.debug(f"🔍 Debug: Testing connection to {test_hostname}:{coturn_port} (in_docker={in_docker})")
+
+            # Test COTURN server connectivity
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)  # Timeout for the connect operation
+
+            try:
+                sock.connect((test_hostname, coturn_port))
+                logger.debug(f"✅ COTURN server connection successful to {test_hostname}:{coturn_port}")
+            except socket.error as error:
+                logger.error(f"❌ COTURN server connection failed to {test_hostname}:{coturn_port}: {error}")
+                raise Exception(f"The coturn server ({hostname}:{coturn_port}) is down")
+            finally:
+                sock.close()
+
+        # Generate ICE server configuration using the public_coturn_uri for client connections
+        ice_servers = [
+            {
+                "username": username,
+                "credential": credential,
+                "urls": [
+                    f"turn:{public_hostname}:{public_port}",
+                    f"stun:{public_hostname}:{public_port}",
+                ],
+            }
+        ]
+        
+        logger.debug(f"✅ Generated ICE servers: {ice_servers}")
+        return ice_servers
 
     @schema_method
     async def get_summary(self, context: Optional[dict] = None) -> dict:
@@ -2049,6 +2143,11 @@ class WorkspaceManager:
             "cleanup": self.cleanup,
             "check_status": self.check_status,
         }
+        
+        # Only add WebRTC ICE servers service if coturn is configured
+        if self._coturn_secret and self._coturn_uri:
+            interface["get_rtc_ice_servers"] = self.get_rtc_ice_servers
+        
         interface["config"].update(self._server_info)
         return interface
 

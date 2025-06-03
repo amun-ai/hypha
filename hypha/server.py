@@ -299,6 +299,9 @@ def create_application(args):
             env.get("RECONNECTION_TOKEN_LIFE_TIME", str(2 * 24 * 60 * 60))
         ),
         activity_check_interval=float(env.get("ACTIVITY_CHECK_INTERVAL", str(10))),
+        coturn_secret=args.coturn_secret,
+        coturn_uri=args.coturn_uri,
+        public_coturn_uri=args.public_coturn_uri,
     )
     application.state.store = store
 
@@ -611,6 +614,24 @@ def get_argparser(add_help=True):
         "--minio-file-system-mode",
         action="store_true",
         help="enable file system mode for Minio, which uses specific compatible versions",
+    )
+    parser.add_argument(
+        "--coturn-secret",
+        type=str,
+        default=None,
+        help="secret for COTURN server authentication",
+    )
+    parser.add_argument(
+        "--coturn-uri",
+        type=str,
+        default=None,
+        help="URI for COTURN server including host and port (e.g., 'coturn.example.com:3478')",
+    )
+    parser.add_argument(
+        "--public-coturn-uri",
+        type=str,
+        default=None,
+        help="Public URI for COTURN server for client connections (defaults to coturn-uri if not specified)",
     )
     return parser
 

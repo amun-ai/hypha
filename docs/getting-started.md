@@ -424,6 +424,8 @@ console.log(ret)
 
 By default all the clients connected to Hypha server communicate via the websocket connection or the HTTP proxy. This is suitable for most use cases which involves lightweight data exchange. However, if you need to transfer large data or perform real-time communication, you can use the WebRTC connection between clients. With hypha-rpc, you can easily create a WebRTC connection between two clients easily. See the [WebRTC support](/hypha-rpc?id=peer-to-peer-connection-via-webrtc) for more details.
 
+**Note:** WebRTC features require user authentication. Anonymous users cannot access ICE servers for security reasons. Make sure to use the `login()` function before accessing WebRTC functionality. See the [WebRTC Streaming guide](webrtc-streaming.md) for complete setup instructions.
+
 ### User Login and Token-Based Authentication
 
 To access the full features of the Hypha server, users need to log in and obtain a token for authentication. The `login()` function provides a convenient way to display a login URL, once the user click it and login, it can then return the token for connecting to the server.
@@ -436,12 +438,12 @@ Here is an example of how the login process works using the `login()` function:
 ```python
 from hypha_rpc import login, connect_to_server
 
-token = await login({"server_url": "https://ai.imjoy.io"})
+token = await login({"server_url": "https://hypha.aicell.io"})
 # A login URL will be printed to the console
 # The user needs to open the URL in a browser and log in
 # Once the user logs in, the login function will return
 # with the token for connecting to the server
-server = await connect_to_server({"server_url": "https://ai.imjoy.io", "token": token})
+server = await connect_to_server({"server_url": "https://hypha.aicell.io", "token": token})
 # ...use the server api...
 ```
 
@@ -450,8 +452,8 @@ server = await connect_to_server({"server_url": "https://ai.imjoy.io", "token": 
 ```python
 from hypha_rpc.sync import login, connect_to_server
 
-token = login({"server_url": "https://ai.imjoy.io"})
-server = connect_to_server({"server_url": "https://ai.imjoy.io", "token": token})
+token = login({"server_url": "https://hypha.aicell.io"})
+server = connect_to_server({"server_url": "https://hypha.aicell.io", "token": token})
 
 # ...use the server api...
 ```
@@ -487,7 +489,7 @@ token = await login(
 If a token is generated for a specific workspace, when calling `connect_to_server`, you need to specify the same workspace as well:
 
 ```python
-server = await connect_to_server({"server_url": "https://ai.imjoy.io", "token": token, "workspace": "my-workspace"})
+server = await connect_to_server({"server_url": "https://hypha.aicell.io", "token": token, "workspace": "my-workspace"})
 ```
 
 The `login()` function also supports other additional arguments:
