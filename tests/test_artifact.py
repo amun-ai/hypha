@@ -676,19 +676,22 @@ async def test_versioning_artifacts(
             "name": "Updated Name",
             "description": "Testing version and stage parameters",
         },
-        version="custom_version",  # This should be ignored since stage=True
+        version="new",  # Use valid version "new" when staging
         stage=True,
     )
     assert edited["staging"] is not None
     assert len(edited["versions"]) == 1  # Should still have only initial version
 
     # Commit the staged edit
-    committed = await artifact_manager.commit(artifact_id=another_artifact.id)
+    committed = await artifact_manager.commit(
+        artifact_id=another_artifact.id,
+        version="custom_v1",  # Override version during commit
+    )
     assert committed["versions"] is not None
     assert len(committed["versions"]) == 2  # Should have created a new version
     assert (
-        committed["versions"][-1]["version"] == "v1"
-    )  # Should get v1 regardless of custom_version
+        committed["versions"][-1]["version"] == "custom_v1"
+    )  # Should use custom version name
 
     # Clean up
     await artifact_manager.delete(artifact_id=artifact.id)
@@ -740,7 +743,7 @@ async def test_commit_version_handling(
     await artifact_manager.edit(
         artifact_id=artifact.id,
         manifest=manifest,
-        version="custom_version",  # This should be ignored since stage=True
+        version="new",  # Use valid version "new" when staging
         stage=True,
     )
 
@@ -753,26 +756,26 @@ async def test_commit_version_handling(
     response = requests.put(put_url, data=file_content)
     assert response.ok
 
-    # Commit with explicit version - version parameter should be ignored
-    # and a new version (v1) should be created
+    # Commit with explicit version - version parameter should be used
+    # since we have intent to create a new version
     committed = await artifact_manager.commit(
         artifact_id=artifact.id,
-        version="v5",  # This should be ignored
+        version="v5",  # This should be used since we have new version intent
         comment="Second version",
     )
 
     # Verify new version was added
     assert len(committed["versions"]) == 2
     assert (
-        committed["versions"][-1]["version"] == "v1"
-    )  # Should get v1 regardless of v5
+        committed["versions"][-1]["version"] == "v5"
+    )  # Should get v5 as specified
     assert committed["versions"][-1]["comment"] == "Second version"
 
     # Create another staged version with both version and stage=True
     await artifact_manager.edit(
         artifact_id=artifact.id,
         manifest=manifest,
-        version="another_version",  # This should be ignored since stage=True
+        version="new",  # Use valid version "new" when staging
         stage=True,
     )
 
@@ -785,7 +788,7 @@ async def test_commit_version_handling(
     response = requests.put(put_url, data=file_content)
     assert response.ok
 
-    # Commit again without version - should create v2
+    # Commit again without version - should create v2 (sequential from 2 existing versions)
     committed = await artifact_manager.commit(
         artifact_id=artifact.id, comment="Third version"
     )
@@ -794,7 +797,7 @@ async def test_commit_version_handling(
     assert len(committed["versions"]) == 3
     assert (
         committed["versions"][-1]["version"] == "v2"
-    )  # Should get v2 regardless of another_version
+    )  # Should get v2 as sequential version (len(versions)=2)
     assert committed["versions"][-1]["comment"] == "Third version"
 
     # Clean up
@@ -1210,7 +1213,8 @@ async def test_edit_existing_artifact(minio_server, fastapi_server, test_user_to
         type="dataset",
         artifact_id=dataset.id,
         manifest=edited_manifest,
-        version="stage",
+        stage=True,  # Use stage=True to put artifact in staging mode
+        version="new",  # Explicitly indicate intent to create new version on commit
     )
 
     # Verify the manifest updates are staged (not committed yet)
@@ -1943,7 +1947,8 @@ async def test_artifact_version_management(
     await artifact_manager.edit(
         artifact_id=dataset.id,
         manifest=initial_manifest,
-        version="stage",
+        stage=True,  # Use stage=True to put artifact in staging mode
+        version="new",  # Explicitly indicate intent to create new version
     )
 
     # Add a file to the staged version
@@ -1992,7 +1997,8 @@ async def test_artifact_version_management(
     await artifact_manager.edit(
         artifact_id=dataset.id,
         manifest=initial_manifest,
-        version="stage",
+        stage=True,  # Use stage=True to put artifact in staging mode
+        version="new",  # Explicitly indicate intent to create new version
     )
 
     # Copy file from version 1 to stage
@@ -2076,7 +2082,7 @@ async def test_default_version_handling(minio_server, fastapi_server, test_user_
     assert artifact["versions"][0]["version"] == "v0"
     assert artifact["staging"] is None
 
-    # Edit without specifying version or stage - should update latest version
+    # Edit without specifying version or stage - should UPDATE the existing latest version (v0)
     updated_manifest = {
         "name": "Default Version Test",
         "description": "Updated description",
@@ -2084,13 +2090,16 @@ async def test_default_version_handling(minio_server, fastapi_server, test_user_
     edited = await artifact_manager.edit(
         artifact_id=artifact.id,
         manifest=updated_manifest,
-        # No version or stage specified - should update v0
+        # No version or stage specified - should update existing v0, NOT create new version
     )
 
-    # Verify the edit updated the latest version
+    # Verify the edit updated the existing latest version, not created a new one
     assert len(edited["versions"]) == 1
     assert edited["versions"][0]["version"] == "v0"
     assert edited["staging"] is None
+    # Verify the content was actually updated
+    read_artifact = await artifact_manager.read(artifact_id=artifact.id)
+    assert read_artifact["manifest"]["description"] == "Updated description"
 
     # Put artifact in staging mode to add files
     staged = await artifact_manager.edit(
@@ -2131,7 +2140,7 @@ async def test_default_version_handling(minio_server, fastapi_server, test_user_
     assert len(files_v1) == 1  # File exists in v1
     assert files_v1[0]["name"] == "test.txt"
 
-    # Create another artifact with no versions initially
+    # Create another artifact with no versions initially (legacy case)
     another_manifest = {
         "name": "Another Test",
         "description": "Testing version creation",
@@ -2169,17 +2178,24 @@ async def test_default_version_handling(minio_server, fastapi_server, test_user_
     assert len(files) == 1
     assert files[0]["name"] == "test.txt"
 
-    # Edit without specifying version or stage - should update v0
+    # Edit without specifying version or stage - should UPDATE existing v0, not create new version
+    new_manifest = {
+        "name": "Another Test Updated",
+        "description": "Testing version creation updated",
+    }
     edited = await artifact_manager.edit(
         artifact_id=another.id,
-        manifest=another_manifest,
-        # No version or stage specified - should update v0
+        manifest=new_manifest,
+        # No version or stage specified - should update existing v0
     )
 
-    # Verify the edit updated v0
+    # Verify the edit updated existing v0, not created a new version
     assert len(edited["versions"]) == 1
     assert edited["versions"][0]["version"] == "v0"
     assert edited["staging"] is None
+    # Verify the content was actually updated
+    read_artifact = await artifact_manager.read(artifact_id=another.id)
+    assert read_artifact["manifest"]["name"] == "Another Test Updated"
 
     # Clean up
     await artifact_manager.delete(artifact_id=artifact.id)
@@ -2221,28 +2237,28 @@ async def test_version_handling_rules(minio_server, fastapi_server, test_user_to
     assert len(artifact2["versions"]) == 0
     assert artifact2["staging"] is not None
 
-    # Test Case 3: Edit with stage=True should ignore version parameter
+    # Test Case 3: Edit with stage=True should ignore invalid version parameter
     await artifact_manager.edit(
         artifact_id=artifact.id,
         manifest=manifest,
         stage=True,
-        version="v10",  # This should be ignored since stage=True
+        version="new",  # This is allowed in staging mode
     )
     edited = await artifact_manager.read(artifact_id=artifact.id, version="stage")
     assert edited["staging"] is not None
     assert len(edited["versions"]) == 1  # Still has v0
 
-    # Test Case 4: Edit with version="stage" is equivalent to stage=True
+    # Test Case 4: Edit with stage=True is equivalent to using staging mode
     await artifact_manager.edit(
         artifact_id=artifact.id,
         manifest=manifest,
-        version="stage",  # Equivalent to stage=True
+        stage=True,  # Use stage=True instead of version="stage"
     )
     edited = await artifact_manager.read(artifact_id=artifact.id, version="stage")
     assert edited["staging"] is not None
     assert len(edited["versions"]) == 1  # Still has v0
 
-    # Test Case 5: Commit cannot change whether we're editing current or creating new
+    # Test Case 5: Commit with version override when staging with version="new"
     # Add a file to make sure we're creating a new version
     file_content = "Test content"
     put_url = await artifact_manager.put_file(
@@ -2252,26 +2268,51 @@ async def test_version_handling_rules(minio_server, fastapi_server, test_user_to
     response = requests.put(put_url, data=file_content)
     assert response.ok
 
-    # Commit with a specific version number - should create v1 since we were in staging
+    # Commit with a custom version name since we had version="new" intent
     committed = await artifact_manager.commit(
         artifact_id=artifact.id,
-        version="v5",  # This should only affect the version number
+        version="custom_v1",  # This should be allowed since we had new version intent
     )
     assert len(committed["versions"]) == 2
-    assert (
-        committed["versions"][-1]["version"] == "v1"
-    )  # Should be v1 since we're creating new
+    assert committed["versions"][-1]["version"] == "custom_v1"
     assert committed["staging"] is None
 
-    # Test Case 6: Direct edit without stage should update current version
+    # Test Case 6: Direct edit without stage should UPDATE current version (not create new)
     await artifact_manager.edit(
         artifact_id=artifact.id,
-        manifest={"name": "Updated Name"},
+        manifest={"name": "Updated Name", "description": "Updated description"},
+        # No version or stage parameter - should update existing latest version
     )
     edited = await artifact_manager.read(artifact_id=artifact.id)
     assert edited["manifest"]["name"] == "Updated Name"
-    assert len(edited["versions"]) == 2  # No new version created
+    assert edited["manifest"]["description"] == "Updated description"
+    assert len(edited["versions"]) == 2  # No new version created, still has v0 and custom_v1
     assert edited["staging"] is None
+
+    # Test Case 7: Edit with version="new" should CREATE a new version
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "New Version Name", "description": "New version description"},
+        version="new",  # This should create a new version
+    )
+    edited = await artifact_manager.read(artifact_id=artifact.id)
+    assert edited["manifest"]["name"] == "New Version Name"
+    assert len(edited["versions"]) == 3  # Now should have v0, custom_v1, and v2
+    assert edited["versions"][-1]["version"] == "v2"
+    assert edited["staging"] is None
+
+    # Test Case 8: Edit with existing version name should UPDATE that specific version
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "Updated v0 Name", "description": "Updated v0 description"},
+        version="v0",  # This should update the existing v0
+    )
+    edited = await artifact_manager.read(artifact_id=artifact.id, version="v0")
+    assert edited["manifest"]["name"] == "Updated v0 Name"
+    assert len(edited["versions"]) == 3  # Still 3 versions
+    # Verify other versions weren't affected
+    latest = await artifact_manager.read(artifact_id=artifact.id)
+    assert latest["manifest"]["name"] == "New Version Name"  # Latest should still be v2 content
 
     # Clean up
     await artifact_manager.delete(artifact_id=artifact.id)
@@ -2779,4 +2820,377 @@ async def test_get_zip_file_content_endpoint_large_scale(
 
     # Clean up
     await artifact_manager.delete(artifact_id=dataset.id)
+    await artifact_manager.delete(artifact_id=collection.id)
+
+
+async def test_edit_version_behavior(minio_server, fastapi_server, test_user_token):
+    """Test edit function version handling behavior - when to update vs create new versions."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create an initial artifact with v0
+    initial_manifest = {
+        "name": "Edit Version Test",
+        "description": "Testing edit version behavior",
+    }
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest=initial_manifest,
+        version="v0",
+    )
+    assert len(artifact["versions"]) == 1
+    assert artifact["versions"][0]["version"] == "v0"
+
+    # Case 1: Edit with version=None should UPDATE existing latest version
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "Updated Name", "description": "Updated description"},
+        version=None,  # Explicitly set to None
+    )
+    edited = await artifact_manager.read(artifact_id=artifact.id)
+    assert edited["manifest"]["name"] == "Updated Name"
+    assert len(edited["versions"]) == 1  # Still only 1 version
+    assert edited["versions"][0]["version"] == "v0"  # Still v0
+
+    # Case 2: Edit with no version parameter should UPDATE existing latest version
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "No Param Updated", "description": "No param description"},
+        # No version parameter at all
+    )
+    edited = await artifact_manager.read(artifact_id=artifact.id)
+    assert edited["manifest"]["name"] == "No Param Updated"
+    assert len(edited["versions"]) == 1  # Still only 1 version
+    assert edited["versions"][0]["version"] == "v0"  # Still v0
+
+    # Case 3: Edit with version="new" should CREATE a new version
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "New Version", "description": "New version description"},
+        version="new",
+    )
+    edited = await artifact_manager.read(artifact_id=artifact.id)
+    assert edited["manifest"]["name"] == "New Version"
+    assert len(edited["versions"]) == 2  # Now 2 versions
+    assert edited["versions"][0]["version"] == "v0"  # Original
+    assert edited["versions"][1]["version"] == "v1"  # New version created
+
+    # Case 4: Edit with existing version name should UPDATE that specific version
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "Updated v0", "description": "Updated v0 description"},
+        version="v0",  # Update existing v0
+    )
+    edited = await artifact_manager.read(artifact_id=artifact.id, version="v0")
+    assert edited["manifest"]["name"] == "Updated v0"
+    assert len(edited["versions"]) == 2  # Still 2 versions
+    # Verify v1 wasn't affected
+    v1_data = await artifact_manager.read(artifact_id=artifact.id, version="v1")
+    assert v1_data["manifest"]["name"] == "New Version"
+
+    # Case 5: Try to edit with invalid version name (should fail)
+    with pytest.raises(Exception, match=r".*Invalid version.*"):
+        await artifact_manager.edit(
+            artifact_id=artifact.id,
+            manifest={"name": "Invalid Version"},
+            version="v99",  # This version doesn't exist
+        )
+
+    # Case 6: Edit with stage=True should put in staging mode (version parameter ignored if not allowed)
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "Staged Version", "description": "Staged description"},
+        stage=True,
+    )
+    staged = await artifact_manager.read(artifact_id=artifact.id, version="stage")
+    assert staged["manifest"]["name"] == "Staged Version"
+    assert staged["staging"] is not None
+
+    # Case 7: Edit with stage=True and version="new" should stage with intent for new version
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "Staged New Version", "description": "Staged new description"},
+        stage=True,
+        version="new",  # This should mark intent for new version
+    )
+    staged = await artifact_manager.read(artifact_id=artifact.id, version="stage")
+    assert staged["manifest"]["name"] == "Staged New Version"
+    assert staged["staging"] is not None
+
+    # Case 8: version="stage" is equivalent to stage=True
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "Stage Version", "description": "Stage description"},
+        version="stage",
+    )
+    staged = await artifact_manager.read(artifact_id=artifact.id, version="stage")
+    assert staged["manifest"]["name"] == "Stage Version"
+    assert staged["staging"] is not None
+
+    # Case 9: Try to edit with invalid version while staging (should fail)
+    with pytest.raises(Exception, match=r".*Invalid version.*"):
+        await artifact_manager.edit(
+            artifact_id=artifact.id,
+            manifest={"name": "Invalid Staged"},
+            stage=True,
+            version="v99",  # Invalid version name (not staging specific issue)
+        )
+
+    # Test legacy case: Edit artifact with no versions (should create v0)
+    legacy_artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Legacy Test"},
+        stage=True,  # Create with no versions
+    )
+    assert len(legacy_artifact["versions"]) == 0
+
+    # Edit without version should update staging area (since artifact is already staged)
+    await artifact_manager.edit(
+        artifact_id=legacy_artifact.id,
+        manifest={"name": "Legacy Updated", "description": "Legacy description"},
+        # No version parameter - should update staging area
+    )
+    
+    # Commit to create the first version
+    committed = await artifact_manager.commit(
+        artifact_id=legacy_artifact.id,
+        comment="Initial commit for legacy artifact",
+    )
+    assert committed["manifest"]["name"] == "Legacy Updated"
+    assert len(committed["versions"]) == 1  # Should have created v0
+    assert committed["versions"][0]["version"] == "v0"
+    assert committed["staging"] is None
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact.id)
+    await artifact_manager.delete(artifact_id=legacy_artifact.id)
+
+
+async def test_commit_version_override(minio_server, fastapi_server, test_user_token):
+    """Test commit function with version override when staging with version='new'."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create an initial artifact with v0
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Commit Test", "description": "Testing commit version override"},
+        version="v0",
+    )
+    assert len(artifact["versions"]) == 1
+    assert artifact["versions"][0]["version"] == "v0"
+
+    # Test 1: Stage with version="new" and commit without version override
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "New Version Staged", "description": "Staged for new version"},
+        stage=True,
+        version="new",  # This marks intent for new version
+    )
+    
+    # Add a file to the staged version
+    file_content = "Test content for new version"
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact.id,
+        file_path="test.txt",
+    )
+    response = requests.put(put_url, data=file_content)
+    assert response.ok
+
+    # Commit without version override (should create v1)
+    committed = await artifact_manager.commit(
+        artifact_id=artifact.id,
+        comment="New version created from staging",
+    )
+    assert len(committed["versions"]) == 2
+    assert committed["versions"][0]["version"] == "v0"
+    assert committed["versions"][1]["version"] == "v1"
+    assert committed["staging"] is None
+
+    # Test 2: Stage with version="new" and commit with custom version override
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "Custom Version Staged", "description": "Staged for custom version"},
+        stage=True,
+        version="new",  # This marks intent for new version
+    )
+    
+    # Add another file
+    file_content2 = "Test content for custom version"
+    put_url = await artifact_manager.put_file(
+        artifact_id=artifact.id,
+        file_path="test2.txt",
+    )
+    response = requests.put(put_url, data=file_content2)
+    assert response.ok
+
+    # Commit with custom version override
+    committed = await artifact_manager.commit(
+        artifact_id=artifact.id,
+        version="my_custom_version",  # Override the sequential naming
+        comment="Custom version created from staging",
+    )
+    assert len(committed["versions"]) == 3
+    assert committed["versions"][0]["version"] == "v0"
+    assert committed["versions"][1]["version"] == "v1"
+    assert committed["versions"][2]["version"] == "my_custom_version"
+    assert committed["staging"] is None
+
+    # Test 3: Try to commit with existing version name (should fail)
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "Another Staged", "description": "Another staged version"},
+        stage=True,
+        version="new",
+    )
+
+    with pytest.raises(Exception, match=r".*Version.*already exists.*"):
+        await artifact_manager.commit(
+            artifact_id=artifact.id,
+            version="v1",  # This version already exists
+        )
+
+    # Test 4: Stage without version="new" and commit (should update existing)
+    # First, clear staging and stage normally
+    await artifact_manager.edit(
+        artifact_id=artifact.id,
+        manifest={"name": "Update Staged", "description": "Staged for update"},
+        stage=True,
+        # No version="new", so this should update existing when committed
+    )
+
+    # Commit should update existing latest version, version parameter should be ignored
+    committed = await artifact_manager.commit(
+        artifact_id=artifact.id,
+        version="ignored_version",  # This should be ignored
+        comment="Updated existing version from staging",
+    )
+    assert len(committed["versions"]) == 3  # Still 3 versions
+    assert committed["versions"][-1]["version"] == "my_custom_version"  # Latest is still my_custom_version
+    assert committed["versions"][-1]["comment"] == "Updated existing version from staging"
+
+    # Test 5: Create artifact with no versions and commit (legacy case)
+    legacy_artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Legacy Test"},
+        stage=True,  # Create with no versions
+    )
+    
+    # Add a file
+    put_url = await artifact_manager.put_file(
+        artifact_id=legacy_artifact.id,
+        file_path="legacy.txt",
+    )
+    response = requests.put(put_url, data="Legacy content")
+    assert response.ok
+
+    # Commit should create first version
+    committed = await artifact_manager.commit(
+        artifact_id=legacy_artifact.id,
+        version="initial_version",  # Custom name for first version
+    )
+    assert len(committed["versions"]) == 1
+    assert committed["versions"][0]["version"] == "initial_version"
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact.id)
+    await artifact_manager.delete(artifact_id=legacy_artifact.id)
+
+
+async def test_list_stage_parameter(minio_server, fastapi_server, test_user_token):
+    """Test the stage parameter in list() function."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection for testing
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={
+            "name": "Stage Test Collection",
+            "description": "A collection for testing stage parameter",
+        },
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    # Create artifacts in different states
+    # 1. Committed artifact
+    committed = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Committed Artifact"},
+        version="v0",  # This will create a committed artifact
+    )
+
+    # 2. Staged artifact
+    staged = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Staged Artifact"},
+        stage=True,  # This will create a staged artifact
+    )
+
+    # 3. Another committed artifact
+    committed2 = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Another Committed"},
+        version="v0",
+    )
+
+    # 4. Another staged artifact
+    staged2 = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Another Staged"},
+        stage=True,
+    )
+
+    # Test 1: Default behavior (stage=False) should list only committed artifacts
+    results = await artifact_manager.list(parent_id=collection.id)
+    assert len(results) == 2
+    names = {r["manifest"]["name"] for r in results}
+    assert names == {"Committed Artifact", "Another Committed"}
+
+    # Test 2: stage=False should show only committed artifacts
+    results = await artifact_manager.list(parent_id=collection.id, stage=False)
+    assert len(results) == 2
+    names = {r["manifest"]["name"] for r in results}
+    assert names == {"Committed Artifact", "Another Committed"}
+
+    # Test 3: stage=True should show only staged artifacts
+    results = await artifact_manager.list(parent_id=collection.id, stage=True)
+    assert len(results) == 2
+    names = {r["manifest"]["name"] for r in results}
+    assert names == {"Staged Artifact", "Another Staged"}
+
+    # Test 4: stage='all' should show both staged and committed artifacts
+    results = await artifact_manager.list(parent_id=collection.id, stage="all")
+    assert len(results) == 4
+    names = {r["manifest"]["name"] for r in results}
+    assert names == {
+        "Committed Artifact",
+        "Another Committed",
+        "Staged Artifact",
+        "Another Staged",
+    }
+
+    # Test 5: Backward compatibility with filters={"version": "stage"}
+    results = await artifact_manager.list(
+        parent_id=collection.id, filters={"version": "stage"}
+    )
+    assert len(results) == 2
+    names = {r["manifest"]["name"] for r in results}
+    assert names == {"Staged Artifact", "Another Staged"}
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=committed.id)
+    await artifact_manager.delete(artifact_id=committed2.id)
+    await artifact_manager.delete(artifact_id=staged.id)
+    await artifact_manager.delete(artifact_id=staged2.id)
     await artifact_manager.delete(artifact_id=collection.id)
