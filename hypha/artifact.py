@@ -2160,8 +2160,18 @@ class ArtifactController:
                 ) as s3_client:
                     download_weights = {}
                     for file_info in artifact.staging or []:
-                        # Verify file exists in target version
-                        target_version = file_info.get("target_version", len(versions))
+                        # Skip intent markers when processing files
+                        if "_intent" in file_info:
+                            continue
+
+                        # Determine target version based on intent (same logic as put_file)
+                        if has_new_version_intent:
+                            # Files are in new version index
+                            target_version = len(versions)
+                        else:
+                            # Files are in existing latest version index
+                            target_version = max(0, len(versions) - 1)
+
                         file_key = safe_join(
                             s3_config["prefix"],
                             f"{artifact.id}/v{target_version}/{file_info['path']}",
@@ -2187,13 +2197,20 @@ class ArtifactController:
                         artifact.config["download_weights"] = download_weights
                         flag_modified(artifact, "config")
 
-                    # Count files in the target version
+                    # Count files in the target version based on intent
+                    if has_new_version_intent:
+                        # Files are in new version index
+                        file_count_version = len(versions)
+                    else:
+                        # Files are in existing latest version index
+                        file_count_version = max(0, len(versions) - 1)
+
                     artifact.file_count = await self._count_files_in_prefix(
                         s3_client,
                         s3_config["bucket"],
                         safe_join(
                             s3_config["prefix"],
-                            f"{artifact.id}/v{len(versions)}",
+                            f"{artifact.id}/v{file_count_version}",
                         ),
                     )
 
@@ -2586,8 +2603,6 @@ class ArtifactController:
                     user_info, artifact_id, "put_file", session
                 )
                 assert artifact.staging is not None, "Artifact must be in staging mode."
-                # The new version is not committed yet, so we use a new version index
-                version_index = self._get_version_index(artifact, "stage")
 
                 # Check if there's intent to create a new version
                 staging_list = artifact.staging or []
@@ -2595,16 +2610,19 @@ class ArtifactController:
                     item.get("_intent") == "new_version" for item in staging_list
                 )
 
-                # Calculate target version index based on intent
+                # Determine target version based on intent
                 if has_new_version_intent:
-                    # Creating new version - use next version index
+                    # Creating new version - files go to new version index
                     target_version_index = len(artifact.versions or [])
                 else:
-                    # Updating existing version - use existing latest version index
+                    # Updating existing version - files go to existing latest version index
                     target_version_index = max(0, len(artifact.versions or []) - 1)
 
+                # The staging area index for manifest operations
+                version_index = self._get_version_index(artifact, "stage")
+
                 logger.info(
-                    f"Uploading file '{file_path}' to version {target_version_index} (has_new_version_intent: {has_new_version_intent})"
+                    f"Uploading file '{file_path}' directly to target version {target_version_index} (has_new_version_intent: {has_new_version_intent})"
                 )
 
                 s3_config = self._get_s3_config(artifact, parent_artifact)
@@ -2633,7 +2651,6 @@ class ArtifactController:
                             {
                                 "path": file_path,
                                 "download_weight": download_weight,
-                                "target_version": target_version_index,  # Track which version this file belongs to
                             }
                         )
                         flag_modified(artifact, "staging")
@@ -2673,15 +2690,27 @@ class ArtifactController:
                 session.add(artifact)
                 await session.commit()
 
-                # The new version is not committed yet, so we use a new version index
-                version_index = self._get_version_index(artifact, "stage")
+                # Check if there's intent to create a new version
+                staging_list = artifact.staging or []
+                has_new_version_intent = any(
+                    item.get("_intent") == "new_version" for item in staging_list
+                )
+
+                # Determine target version based on intent
+                if has_new_version_intent:
+                    # Creating new version - files are in new version index
+                    target_version_index = len(artifact.versions or [])
+                else:
+                    # Updating existing version - files are in existing latest version index
+                    target_version_index = max(0, len(artifact.versions or []) - 1)
+
                 s3_config = self._get_s3_config(artifact, parent_artifact)
                 async with self._create_client_async(
                     s3_config,
                 ) as s3_client:
                     file_key = safe_join(
                         s3_config["prefix"],
-                        f"{artifact.id}/v{version_index}/{file_path}",
+                        f"{artifact.id}/v{target_version_index}/{file_path}",
                     )
                     await s3_client.delete_object(
                         Bucket=s3_config["bucket"], Key=file_key
@@ -2776,7 +2805,24 @@ class ArtifactController:
                 artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "list_files", session
                 )
-                version_index = self._get_version_index(artifact, version)
+
+                # Handle staging version with new approach
+                if version == "stage" and artifact.staging is not None:
+                    # Determine where staged files are actually located
+                    staging_list = artifact.staging or []
+                    has_new_version_intent = any(
+                        item.get("_intent") == "new_version" for item in staging_list
+                    )
+
+                    if has_new_version_intent:
+                        # Files are in new version index
+                        version_index = len(artifact.versions or [])
+                    else:
+                        # Files are in existing latest version index
+                        version_index = max(0, len(artifact.versions or []) - 1)
+                else:
+                    version_index = self._get_version_index(artifact, version)
+
                 s3_config = self._get_s3_config(artifact, parent_artifact)
                 async with self._create_client_async(
                     s3_config,
@@ -3423,16 +3469,60 @@ class ArtifactController:
 
                 # Get S3 config for cleaning up staged files and loading committed version
                 s3_config = self._get_s3_config(artifact, parent_artifact)
-                staging_version_index = self._get_version_index(artifact, "stage")
 
-                # Delete staged files from S3
-                try:
-                    await self._delete_version_files_from_s3(
-                        staging_version_index, artifact, s3_config, delete_files=True
-                    )
-                except Exception as e:
-                    # Log the error but don't fail the discard operation
-                    logger.warning(f"Failed to clean up staged files in S3: {e}")
+                # Determine where staged files are located based on intent
+                staging_list = artifact.staging or []
+                has_new_version_intent = any(
+                    item.get("_intent") == "new_version" for item in staging_list
+                )
+
+                if has_new_version_intent:
+                    # Files are in new version index - delete them
+                    staged_files_version_index = len(artifact.versions or [])
+                    try:
+                        await self._delete_version_files_from_s3(
+                            staged_files_version_index,
+                            artifact,
+                            s3_config,
+                            delete_files=True,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to clean up staged files from new version: {e}"
+                        )
+                else:
+                    # Files are in existing version - need to restore from committed state
+                    if artifact.versions and len(artifact.versions) > 0:
+                        # We need to restore the committed files by removing staged files
+                        staged_files_version_index = max(0, len(artifact.versions) - 1)
+
+                        # Delete only the files that were added during staging
+                        try:
+                            async with self._create_client_async(
+                                s3_config
+                            ) as s3_client:
+                                for file_info in staging_list:
+                                    if "_intent" in file_info:
+                                        continue
+                                    file_key = safe_join(
+                                        s3_config["prefix"],
+                                        f"{artifact.id}/v{staged_files_version_index}/{file_info['path']}",
+                                    )
+                                    try:
+                                        await s3_client.delete_object(
+                                            Bucket=s3_config["bucket"], Key=file_key
+                                        )
+                                        logger.info(
+                                            f"Deleted staged file: {file_info['path']}"
+                                        )
+                                    except Exception as e:
+                                        logger.warning(
+                                            f"Failed to delete staged file {file_info['path']}: {e}"
+                                        )
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to clean up staged files from existing version: {e}"
+                            )
 
                 # If artifact has committed versions, restore from the latest committed version
                 if artifact.versions and len(artifact.versions) > 0:
