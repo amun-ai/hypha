@@ -49,7 +49,7 @@ Headerlike = Union[dict, Headers]
 
 class ProxyConfig:
     """Base proxy configuration class."""
-    
+
     def get_upstream_url(self, *, scope: Scope) -> str:
         """Get the upstream URL for a client request."""
         raise NotImplementedError("...")
@@ -73,7 +73,9 @@ class ProxyConfig:
         """Process upstream HTTP headers before they're passed to the client."""
         return proxy_response.headers
 
-    def get_upstream_http_options(self, *, scope: Scope, client_request: Request, data) -> dict:
+    def get_upstream_http_options(
+        self, *, scope: Scope, client_request: Request, data
+    ) -> dict:
         """Get request options (as passed to aiohttp.ClientSession.request)."""
         return dict(
             method=client_request.method,
@@ -89,14 +91,16 @@ class ProxyConfig:
 
 class BaseURLProxyConfigMixin:
     """Mixin for proxy configs that proxy to a base URL."""
-    
+
     upstream_base_url: str
     rewrite_host_header: Optional[str] = None
 
     def get_upstream_url(self, scope: Scope) -> str:
         return urljoin(self.upstream_base_url, scope["path"])
 
-    def process_client_headers(self, *, scope: Scope, headers: Headerlike) -> Headerlike:
+    def process_client_headers(
+        self, *, scope: Scope, headers: Headerlike
+    ) -> Headerlike:
         """Process client HTTP headers before they're passed upstream."""
         if self.rewrite_host_header:
             headers = headers.mutablecopy()  # type: ignore
@@ -107,11 +111,11 @@ class BaseURLProxyConfigMixin:
 class ProxyContext:
     """
     Improved proxy context that creates fresh sessions to avoid connection issues.
-    
+
     Unlike the original asgiproxy, this doesn't reuse sessions which can lead to
     connection exhaustion and unresponsiveness.
     """
-    
+
     def __init__(
         self,
         config: ProxyConfig,
@@ -128,20 +132,20 @@ class ProxyContext:
             ttl_dns_cache=300,  # DNS cache TTL
             use_dns_cache=True,
             keepalive_timeout=30,
-            enable_cleanup_closed=True
+            enable_cleanup_closed=True,
         )
-        
+
         timeout = aiohttp.ClientTimeout(
             total=60,  # Total timeout
             connect=10,  # Connection timeout
-            sock_read=30  # Socket read timeout
+            sock_read=30,  # Socket read timeout
         )
-        
+
         return aiohttp.ClientSession(
             connector=connector,
             timeout=timeout,
             cookie_jar=aiohttp.DummyCookieJar(),
-            auto_decompress=False  # We'll handle content-encoding manually
+            auto_decompress=False,  # We'll handle content-encoding manually
         )
 
     async def __aenter__(self) -> "ProxyContext":
@@ -159,37 +163,53 @@ class ProxyContext:
 def _should_remove_gzip_encoding(content_type: str, file_path: str) -> bool:
     """
     Determine if gzip content-encoding should be removed for already-compressed content.
-    
+
     Uses a simple heuristic: if the content type indicates binary/compressed data
     or the file extension suggests a compressed format, remove gzip encoding.
     """
     import mimetypes
     from pathlib import Path
-    
+
     # Normalize inputs
-    content_type = (content_type or "").lower().split(';')[0].strip()
+    content_type = (content_type or "").lower().split(";")[0].strip()
     file_extension = Path(file_path).suffix.lower()
-    
+
     # Simple heuristic: remove gzip for binary content types that are typically compressed
-    if content_type.startswith(('image/', 'video/', 'audio/', 'application/')):
+    if content_type.startswith(("image/", "video/", "audio/", "application/")):
         # Allow gzip for text-based application types
-        if content_type.startswith(('application/json', 'application/xml', 'application/javascript')):
+        if content_type.startswith(
+            ("application/json", "application/xml", "application/javascript")
+        ):
             return False
         return True
-        
+
     # Check common compressed file extensions
     compressed_extensions = {
-        '.jpg', '.jpeg', '.png', '.gif', '.webp', '.mp4', '.avi', '.mov', 
-        '.mp3', '.wav', '.pdf', '.zip', '.rar', '.gz', '.bz2', '.7z'
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".webp",
+        ".mp4",
+        ".avi",
+        ".mov",
+        ".mp3",
+        ".wav",
+        ".pdf",
+        ".zip",
+        ".rar",
+        ".gz",
+        ".bz2",
+        ".7z",
     }
     if file_extension in compressed_extensions:
         return True
-        
+
     # Use mimetypes as fallback
     guessed_type, _ = mimetypes.guess_type(file_path)
-    if guessed_type and not guessed_type.startswith('text/'):
+    if guessed_type and not guessed_type.startswith("text/"):
         return True
-        
+
     return False
 
 
@@ -215,7 +235,9 @@ def determine_outgoing_streaming(proxy_response: aiohttp.ClientResponse) -> bool
     if proxy_response.status != 200:
         return False
     try:
-        return int(proxy_response.headers["content-length"]) > OUTGOING_STREAMING_THRESHOLD
+        return (
+            int(proxy_response.headers["content-length"]) > OUTGOING_STREAMING_THRESHOLD
+        )
     except (TypeError, ValueError, KeyError):
         # Malformed or missing content-length header; assume a streaming payload
         return True
@@ -239,7 +261,7 @@ async def get_proxy_response(
     """Get the proxy response from upstream, returning both response and session."""
     request = Request(scope, receive)
     should_stream_incoming = determine_incoming_streaming(request)
-    
+
     async with context.semaphore:
         data = None
         if request.method not in ("GET", "HEAD"):
@@ -273,18 +295,20 @@ async def convert_proxy_response_to_user_response(
     """Convert the proxy response to a user response."""
     try:
         # Process headers
-        headers_to_client = dict(context.config.process_upstream_headers(
-            scope=scope, proxy_response=proxy_response
-        ))
-        
+        headers_to_client = dict(
+            context.config.process_upstream_headers(
+                scope=scope, proxy_response=proxy_response
+            )
+        )
+
         # Remove headers that shouldn't be forwarded
         for header in ["connection", "transfer-encoding"]:
             headers_to_client.pop(header, None)
-        
+
         # Handle content-encoding for compressed files
         original_encoding = proxy_response.headers.get("content-encoding", "").lower()
         path = scope.get("path", "")
-        
+
         if original_encoding == "gzip" and _should_remove_gzip_encoding(
             proxy_response.headers.get("content-type", ""), path
         ):
@@ -293,9 +317,9 @@ async def convert_proxy_response_to_user_response(
         elif original_encoding:
             # Preserve other encodings
             headers_to_client["content-encoding"] = original_encoding
-        
+
         status_to_client = proxy_response.status
-        
+
         if determine_outgoing_streaming(proxy_response):
             # Stream large responses
             async def stream_content():
@@ -311,12 +335,14 @@ async def convert_proxy_response_to_user_response(
                         await session.close()
                     except Exception as e:
                         logger.warning(f"Error closing session: {e}")
-                        
+
             return StreamingResponse(
                 content=stream_content(),
                 status_code=status_to_client,
                 headers=headers_to_client,
-                media_type=headers_to_client.get("content-type", "application/octet-stream")
+                media_type=headers_to_client.get(
+                    "content-type", "application/octet-stream"
+                ),
             )
         else:
             # Buffer small responses
@@ -326,12 +352,14 @@ async def convert_proxy_response_to_user_response(
                     content=content,
                     status_code=status_to_client,
                     headers=headers_to_client,
-                    media_type=headers_to_client.get("content-type", "application/octet-stream")
+                    media_type=headers_to_client.get(
+                        "content-type", "application/octet-stream"
+                    ),
                 )
             finally:
                 # Clean up session after reading
                 await session.close()
-                
+
     except Exception:
         # Clean up session on any error
         try:
@@ -353,12 +381,12 @@ async def proxy_http(
         proxy_response, session = await get_proxy_response(
             context=context, scope=scope, receive=receive
         )
-        
+
         user_response = await convert_proxy_response_to_user_response(
             context=context, scope=scope, proxy_response=proxy_response, session=session
         )
         return await user_response(scope, receive, send)
-        
+
     except asyncio.TimeoutError:
         logger.error(f"Proxy timeout for {scope.get('path', 'unknown')}")
         response = Response(
@@ -393,7 +421,7 @@ def make_simple_proxy_app(
 ) -> ASGIApp:
     """
     Create a simple ASGI proxy application.
-    
+
     This is compatible with the asgiproxy API but uses improved session management.
     """
 
@@ -413,4 +441,4 @@ def make_simple_proxy_app(
 
         raise NotImplementedError(f"Scope {scope} is not understood")
 
-    return app 
+    return app

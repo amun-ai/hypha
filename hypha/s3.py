@@ -16,7 +16,12 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
-from hypha.utils.asgi_proxy import make_simple_proxy_app, ProxyContext, BaseURLProxyConfigMixin, ProxyConfig
+from hypha.utils.asgi_proxy import (
+    make_simple_proxy_app,
+    ProxyContext,
+    BaseURLProxyConfigMixin,
+    ProxyConfig,
+)
 
 from hypha.core import UserInfo, WorkspaceInfo, UserPermission
 from hypha.minio import MinioClient
@@ -745,4 +750,3 @@ class S3Controller:
         if self.minio_client:
             svc["generate_credential"] = self.generate_credential
         return svc
-    

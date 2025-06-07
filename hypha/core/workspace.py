@@ -1363,11 +1363,19 @@ class WorkspaceManager:
             # Parse the select syntax: select:criteria:function
             parts = mode.split(":")
             if len(parts) != 3:
-                raise ValueError(f"Invalid select mode format: {mode}. Expected 'select:criteria:function'")
-            
+                raise ValueError(
+                    f"Invalid select mode format: {mode}. Expected 'select:criteria:function'"
+                )
+
             _, criteria, function_name = parts
-            select_timeout = config.get("select_timeout", 2.0) if isinstance(config, dict) else getattr(config, "select_timeout", 2.0)
-            key = await self._select_service_by_function(keys, criteria, function_name, select_timeout)
+            select_timeout = (
+                config.get("select_timeout", 2.0)
+                if isinstance(config, dict)
+                else getattr(config, "select_timeout", 2.0)
+            )
+            key = await self._select_service_by_function(
+                keys, criteria, function_name, select_timeout
+            )
         else:
             raise ValueError(
                 f"Invalid mode: {mode}. Mode must be 'random', 'first', 'last', 'exact', or 'select:criteria:function' format (e.g., 'select:min:get_load')"
@@ -2171,55 +2179,60 @@ class WorkspaceManager:
             logger.error(f"Failed to set workspace status: {e}")
             raise
 
-    async def _select_service_by_function(self, keys: List[bytes], criteria: str, function_name: str, timeout: float = 2.0) -> bytes:
+    async def _select_service_by_function(
+        self, keys: List[bytes], criteria: str, function_name: str, timeout: float = 2.0
+    ) -> bytes:
         """Select service by calling a function on each service and applying selection criteria.
-        
+
         Args:
             keys: List of Redis keys for services
             criteria: Selection criteria ('min', 'max', 'first_success', etc.)
             function_name: Name of the function to call on each service
             timeout: Timeout for function calls
-            
+
         Returns:
             bytes: The Redis key of the selected service
         """
         if len(keys) == 1:
             return keys[0]
-        
+
         # Get service APIs and call the specified function
         service_values = []
-        
+
         for key in keys:
             try:
                 # Get service info
                 service_data = await self._redis.hgetall(key)
                 service_info = ServiceInfo.from_redis_dict(service_data)
-                
+
                 # Get the service API
                 service_api = await self._rpc.get_remote_service(
-                    service_info.id,
-                    {"timeout": timeout}
+                    service_info.id, {"timeout": timeout}
                 )
-                
+
                 # Check if the service has the required function
                 if not hasattr(service_api, function_name):
-                    logger.warning(f"Service {service_info.id} does not have function '{function_name}', skipping")
+                    logger.warning(
+                        f"Service {service_info.id} does not have function '{function_name}', skipping"
+                    )
                     continue
-                
+
                 # Call the function
                 func = getattr(service_api, function_name)
                 result = await func()
-                
+
                 service_values.append((key, result, service_info))
-                
+
             except Exception as e:
                 logger.warning(f"Failed to call {function_name} on service {key}: {e}")
                 continue
-        
+
         if not service_values:
-            logger.warning(f"No services responded to {function_name}, falling back to random selection")
+            logger.warning(
+                f"No services responded to {function_name}, falling back to random selection"
+            )
             return random.choice(keys)
-        
+
         # Apply selection criteria
         if criteria == "min":
             # Select service with minimum value
@@ -2235,5 +2248,5 @@ class WorkspaceManager:
             logger.debug(f"Selected first successful service: {value}")
         else:
             raise ValueError(f"Unknown selection criteria: {criteria}")
-        
+
         return selected_key

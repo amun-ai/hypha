@@ -766,9 +766,7 @@ async def test_commit_version_handling(
 
     # Verify new version was added
     assert len(committed["versions"]) == 2
-    assert (
-        committed["versions"][-1]["version"] == "v5"
-    )  # Should get v5 as specified
+    assert committed["versions"][-1]["version"] == "v5"  # Should get v5 as specified
     assert committed["versions"][-1]["comment"] == "Second version"
 
     # Create another staged version with both version and stage=True
@@ -2286,7 +2284,9 @@ async def test_version_handling_rules(minio_server, fastapi_server, test_user_to
     edited = await artifact_manager.read(artifact_id=artifact.id)
     assert edited["manifest"]["name"] == "Updated Name"
     assert edited["manifest"]["description"] == "Updated description"
-    assert len(edited["versions"]) == 2  # No new version created, still has v0 and custom_v1
+    assert (
+        len(edited["versions"]) == 2
+    )  # No new version created, still has v0 and custom_v1
     assert edited["staging"] is None
 
     # Test Case 7: Edit with version="new" should CREATE a new version
@@ -2300,7 +2300,6 @@ async def test_version_handling_rules(minio_server, fastapi_server, test_user_to
     assert len(edited["versions"]) == 3  # Now should have v0, custom_v1, and v2
     assert edited["versions"][-1]["version"] == "v2"
     assert edited["staging"] is None
-
 
 
 async def test_list_stage_parameter(minio_server, fastapi_server, test_user_token):
@@ -2882,7 +2881,10 @@ async def test_edit_version_behavior(minio_server, fastapi_server, test_user_tok
     # Case 7: Edit with stage=True and version="new" should stage with intent for new version
     await artifact_manager.edit(
         artifact_id=artifact.id,
-        manifest={"name": "Staged New Version", "description": "Staged new description"},
+        manifest={
+            "name": "Staged New Version",
+            "description": "Staged new description",
+        },
         stage=True,
         version="new",  # This should mark intent for new version
     )
@@ -2923,7 +2925,7 @@ async def test_edit_version_behavior(minio_server, fastapi_server, test_user_tok
         manifest={"name": "Legacy Updated", "description": "Legacy description"},
         # No version parameter - should update staging area
     )
-    
+
     # Commit to create the first version
     committed = await artifact_manager.commit(
         artifact_id=legacy_artifact.id,
@@ -2949,7 +2951,10 @@ async def test_commit_version_override(minio_server, fastapi_server, test_user_t
     # Create an initial artifact with v0
     artifact = await artifact_manager.create(
         type="dataset",
-        manifest={"name": "Commit Test", "description": "Testing commit version override"},
+        manifest={
+            "name": "Commit Test",
+            "description": "Testing commit version override",
+        },
         version="v0",
     )
     assert len(artifact["versions"]) == 1
@@ -2958,11 +2963,14 @@ async def test_commit_version_override(minio_server, fastapi_server, test_user_t
     # Test 1: Stage with version="new" and commit without version override
     await artifact_manager.edit(
         artifact_id=artifact.id,
-        manifest={"name": "New Version Staged", "description": "Staged for new version"},
+        manifest={
+            "name": "New Version Staged",
+            "description": "Staged for new version",
+        },
         stage=True,
         version="new",  # This marks intent for new version
     )
-    
+
     # Add a file to the staged version
     file_content = "Test content for new version"
     put_url = await artifact_manager.put_file(
@@ -2985,11 +2993,14 @@ async def test_commit_version_override(minio_server, fastapi_server, test_user_t
     # Test 2: Stage with version="new" and commit with custom version override
     await artifact_manager.edit(
         artifact_id=artifact.id,
-        manifest={"name": "Custom Version Staged", "description": "Staged for custom version"},
+        manifest={
+            "name": "Custom Version Staged",
+            "description": "Staged for custom version",
+        },
         stage=True,
         version="new",  # This marks intent for new version
     )
-    
+
     # Add another file
     file_content2 = "Test content for custom version"
     put_url = await artifact_manager.put_file(
@@ -3041,8 +3052,12 @@ async def test_commit_version_override(minio_server, fastapi_server, test_user_t
         comment="Updated existing version from staging",
     )
     assert len(committed["versions"]) == 3  # Still 3 versions
-    assert committed["versions"][-1]["version"] == "my_custom_version"  # Latest is still my_custom_version
-    assert committed["versions"][-1]["comment"] == "Updated existing version from staging"
+    assert (
+        committed["versions"][-1]["version"] == "my_custom_version"
+    )  # Latest is still my_custom_version
+    assert (
+        committed["versions"][-1]["comment"] == "Updated existing version from staging"
+    )
 
     # Test 5: Create artifact with no versions and commit (legacy case)
     legacy_artifact = await artifact_manager.create(
@@ -3050,7 +3065,7 @@ async def test_commit_version_override(minio_server, fastapi_server, test_user_t
         manifest={"name": "Legacy Test"},
         stage=True,  # Create with no versions
     )
-    
+
     # Add a file
     put_url = await artifact_manager.put_file(
         artifact_id=legacy_artifact.id,
@@ -3171,7 +3186,7 @@ async def test_create_zip_file_download_count(
     minio_server, fastapi_server, test_user_token
 ):
     """Test download count increment behavior for create-zip-file endpoint."""
-    
+
     # Connect and get the artifact manager service
     api = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
@@ -3195,11 +3210,11 @@ async def test_create_zip_file_download_count(
     # Add multiple files to the dataset
     file_contents = {
         "file1.txt": "Contents of file 1",
-        "file2.txt": "Contents of file 2", 
+        "file2.txt": "Contents of file 2",
         "nested/file3.txt": "Contents of nested file 3",
         "nested/deep/file4.txt": "Contents of deeply nested file 4",
     }
-    
+
     for file_path, content in file_contents.items():
         put_url = await artifact_manager.put_file(
             artifact_id=dataset.id,
@@ -3208,7 +3223,7 @@ async def test_create_zip_file_download_count(
         )
         response = requests.put(put_url, data=content)
         assert response.ok
-    
+
     # Add a file with weight 0
     put_url = await artifact_manager.put_file(
         artifact_id=dataset.id,
@@ -3279,7 +3294,7 @@ async def test_workspace_artifacts_endpoint(
     minio_server, fastapi_server, test_user_token
 ):
     """Test the workspace-level artifacts listing endpoint."""
-    
+
     api = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
     )
@@ -3303,7 +3318,10 @@ async def test_workspace_artifacts_endpoint(
     child_dataset = await artifact_manager.create(
         type="dataset",
         parent_id=root_collection.id,
-        manifest={"name": "Child Dataset", "description": "Child dataset in collection"},
+        manifest={
+            "name": "Child Dataset",
+            "description": "Child dataset in collection",
+        },
     )
 
     # 4. Staged artifacts
@@ -3323,20 +3341,26 @@ async def test_workspace_artifacts_endpoint(
     response = requests.get(f"{SERVER_URL}/{api.config.workspace}/artifacts/")
     assert response.status_code == 200
     results = response.json()
-    
+
     # Should return committed root-level artifacts only
     committed_names = {r["manifest"]["name"] for r in results}
     assert "Root Collection" in committed_names
     assert "Root Dataset" in committed_names
-    assert "Child Dataset" not in committed_names  # Child artifacts shouldn't appear at workspace level
-    assert "Staged Collection" not in committed_names  # Staged artifacts not included by default
+    assert (
+        "Child Dataset" not in committed_names
+    )  # Child artifacts shouldn't appear at workspace level
+    assert (
+        "Staged Collection" not in committed_names
+    )  # Staged artifacts not included by default
     assert "Staged Dataset" not in committed_names
 
     # Test 2: Workspace artifacts with stage=true (staged only)
-    response = requests.get(f"{SERVER_URL}/{api.config.workspace}/artifacts/?stage=true")
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/?stage=true"
+    )
     assert response.status_code == 200
     results = response.json()
-    
+
     staged_names = {r["manifest"]["name"] for r in results}
     assert "Staged Collection" in staged_names
     assert "Staged Dataset" in staged_names
@@ -3347,7 +3371,7 @@ async def test_workspace_artifacts_endpoint(
     response = requests.get(f"{SERVER_URL}/{api.config.workspace}/artifacts/?stage=all")
     assert response.status_code == 200
     results = response.json()
-    
+
     all_names = {r["manifest"]["name"] for r in results}
     assert "Root Collection" in all_names
     assert "Root Dataset" in all_names
@@ -3361,7 +3385,7 @@ async def test_workspace_artifacts_endpoint(
     )
     assert response.status_code == 200
     results = response.json()
-    
+
     # Should only return collections
     for result in results:
         assert result["type"] == "collection"
@@ -3375,7 +3399,7 @@ async def test_workspace_artifacts_endpoint(
     )
     assert response.status_code == 200
     results = response.json()
-    
+
     # Should return artifacts with "Root" in their name/description
     root_names = {r["manifest"]["name"] for r in results}
     assert "Root Collection" in root_names
@@ -3387,7 +3411,7 @@ async def test_workspace_artifacts_endpoint(
     )
     assert response.status_code == 200
     results = response.json()
-    
+
     assert "items" in results
     assert "total" in results
     assert len(results["items"]) == 1
@@ -3399,7 +3423,7 @@ async def test_workspace_artifacts_endpoint(
     )
     assert response.status_code == 200
     results = response.json()
-    
+
     # Verify results are ordered (check that we get same artifacts)
     ordered_names = {r["manifest"]["name"] for r in results}
     assert "Root Collection" in ordered_names
@@ -3411,7 +3435,7 @@ async def test_workspace_artifacts_endpoint(
     )
     assert response.status_code == 200
     results = response.json()
-    
+
     # Should match artifacts with "Root" in description
     for result in results:
         assert "Root" in result["manifest"]["description"]
@@ -3448,7 +3472,7 @@ async def test_create_zip_file_download_weight_behavior(
     minio_server, fastapi_server, test_user_token
 ):
     """Test that create-zip-file respects download_weight when incrementing download count."""
-    
+
     # Connect and get the artifact manager service
     api = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
@@ -3476,7 +3500,7 @@ async def test_create_zip_file_download_weight_behavior(
         ("heavy_file.txt", "Heavy content", 5),
         ("zero_weight_file.txt", "Zero weight content", 0),
     ]
-    
+
     for file_path, content, weight in files_with_weights:
         put_url = await artifact_manager.put_file(
             artifact_id=dataset.id,
@@ -3558,11 +3582,9 @@ async def test_create_zip_file_download_weight_behavior(
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_discard_staged_changes(
-    minio_server, fastapi_server, test_user_token
-):
+async def test_discard_staged_changes(minio_server, fastapi_server, test_user_token):
     """Test discarding staged changes for an artifact."""
-    
+
     api = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
     )
@@ -3596,8 +3618,8 @@ async def test_discard_staged_changes(
     await artifact_manager.edit(
         artifact_id=dataset.id,
         manifest={
-            "name": "Discard Test Dataset", 
-            "description": "Modified description for testing discard"
+            "name": "Discard Test Dataset",
+            "description": "Modified description for testing discard",
         },
         stage=True,
     )
@@ -3616,7 +3638,10 @@ async def test_discard_staged_changes(
         artifact_id=dataset.id, version="stage"
     )
     assert staged_artifact["staging"] is not None
-    assert staged_artifact["manifest"]["description"] == "Modified description for testing discard"
+    assert (
+        staged_artifact["manifest"]["description"]
+        == "Modified description for testing discard"
+    )
 
     # List staged files to confirm they exist
     staged_files = await artifact_manager.list_files(
@@ -3630,7 +3655,9 @@ async def test_discard_staged_changes(
 
     # Verify discard worked
     assert discarded_artifact["staging"] is None
-    assert discarded_artifact["manifest"]["description"] == "Initial version"  # Back to original
+    assert (
+        discarded_artifact["manifest"]["description"] == "Initial version"
+    )  # Back to original
     assert len(discarded_artifact["versions"]) == 1  # No new version created
 
     # Verify staged files were cleaned up - should return empty list or raise exception
@@ -3639,7 +3666,9 @@ async def test_discard_staged_changes(
             artifact_id=dataset.id, version="stage"
         )
         # If no exception, should be empty list
-        assert len(staged_files_after_discard) == 0, f"Expected no staged files after discard, but found: {staged_files_after_discard}"
+        assert (
+            len(staged_files_after_discard) == 0
+        ), f"Expected no staged files after discard, but found: {staged_files_after_discard}"
     except Exception:
         # Exception is also acceptable behavior
         pass
@@ -3649,11 +3678,9 @@ async def test_discard_staged_changes(
     await artifact_manager.delete(artifact_id=collection.id)
 
 
-async def test_discard_error_no_staging(
-    minio_server, fastapi_server, test_user_token
-):
+async def test_discard_error_no_staging(minio_server, fastapi_server, test_user_token):
     """Test that discard raises error when no staged changes exist."""
-    
+
     api = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
     )
@@ -3681,7 +3708,7 @@ async def test_discard_with_multiple_staged_files(
     minio_server, fastapi_server, test_user_token
 ):
     """Test discarding when multiple files are staged."""
-    
+
     api = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
     )
@@ -3720,13 +3747,19 @@ async def test_discard_with_multiple_staged_files(
 
     # Verify all staging is cleared
     assert discarded_artifact["staging"] is None
-    assert len(discarded_artifact["versions"]) == 0  # No versions since it was never committed
+    assert (
+        len(discarded_artifact["versions"]) == 0
+    )  # No versions since it was never committed
 
     # Verify staged files are gone - should return empty list or raise exception
     try:
-        staged_files_after = await artifact_manager.list_files(artifact_id=dataset.id, version="stage")
+        staged_files_after = await artifact_manager.list_files(
+            artifact_id=dataset.id, version="stage"
+        )
         # If no exception, should be empty list
-        assert len(staged_files_after) == 0, f"Expected no staged files after discard, but found: {staged_files_after}"
+        assert (
+            len(staged_files_after) == 0
+        ), f"Expected no staged files after discard, but found: {staged_files_after}"
     except Exception:
         # Exception is also acceptable behavior
         pass
@@ -3739,7 +3772,7 @@ async def test_discard_preserves_committed_version(
     minio_server, fastapi_server, test_user_token
 ):
     """Test that discard preserves the committed version and its files."""
-    
+
     api = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
     )
@@ -3807,7 +3840,7 @@ async def test_no_automatic_new_version_intent(
     minio_server, fastapi_server, test_user_token
 ):
     """Test that adding files to staging doesn't automatically trigger new version creation."""
-    
+
     api = await connect_to_server(
         {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
     )
@@ -3816,7 +3849,10 @@ async def test_no_automatic_new_version_intent(
     # Create an initial artifact with v0
     artifact = await artifact_manager.create(
         type="dataset",
-        manifest={"name": "No Auto Version Test", "description": "Testing no automatic versioning"},
+        manifest={
+            "name": "No Auto Version Test",
+            "description": "Testing no automatic versioning",
+        },
         version="v0",
     )
     assert len(artifact["versions"]) == 1
@@ -3825,7 +3861,10 @@ async def test_no_automatic_new_version_intent(
     # Stage changes WITHOUT version="new"
     await artifact_manager.edit(
         artifact_id=artifact.id,
-        manifest={"name": "No Auto Version Test", "description": "Modified description"},
+        manifest={
+            "name": "No Auto Version Test",
+            "description": "Modified description",
+        },
         stage=True,
         # No version="new" - should NOT automatically create new version intent
     )
@@ -3848,19 +3887,25 @@ async def test_no_automatic_new_version_intent(
     assert response.ok
 
     # Verify staging state - should NOT have new_version intent
-    staged_artifact = await artifact_manager.read(artifact_id=artifact.id, version="stage")
+    staged_artifact = await artifact_manager.read(
+        artifact_id=artifact.id, version="stage"
+    )
     assert staged_artifact["staging"] is not None
-    
+
     # Check that no new_version intent was automatically added
-    has_new_version_intent = any(item.get("_intent") == "new_version" for item in staged_artifact["staging"])
-    assert not has_new_version_intent, "Files should not automatically trigger new_version intent"
+    has_new_version_intent = any(
+        item.get("_intent") == "new_version" for item in staged_artifact["staging"]
+    )
+    assert (
+        not has_new_version_intent
+    ), "Files should not automatically trigger new_version intent"
 
     # Commit should UPDATE existing version, not create new version
     committed = await artifact_manager.commit(
         artifact_id=artifact.id,
         comment="Updated existing version with files",
     )
-    
+
     # Should still have only 1 version (v0 updated)
     assert len(committed["versions"]) == 1
     assert committed["versions"][0]["version"] == "v0"
@@ -3876,7 +3921,10 @@ async def test_no_automatic_new_version_intent(
     # Now test explicit new version creation
     await artifact_manager.edit(
         artifact_id=artifact.id,
-        manifest={"name": "No Auto Version Test", "description": "Explicit new version"},
+        manifest={
+            "name": "No Auto Version Test",
+            "description": "Explicit new version",
+        },
         stage=True,
         version="new",  # Explicitly request new version
     )
@@ -3891,16 +3939,22 @@ async def test_no_automatic_new_version_intent(
     assert response.ok
 
     # Verify new_version intent is present when explicitly requested
-    staged_artifact = await artifact_manager.read(artifact_id=artifact.id, version="stage")
-    has_new_version_intent = any(item.get("_intent") == "new_version" for item in staged_artifact["staging"])
-    assert has_new_version_intent, "Explicit version='new' should set new_version intent"
+    staged_artifact = await artifact_manager.read(
+        artifact_id=artifact.id, version="stage"
+    )
+    has_new_version_intent = any(
+        item.get("_intent") == "new_version" for item in staged_artifact["staging"]
+    )
+    assert (
+        has_new_version_intent
+    ), "Explicit version='new' should set new_version intent"
 
     # Commit should CREATE new version
     committed = await artifact_manager.commit(
         artifact_id=artifact.id,
         comment="Explicit new version with file",
     )
-    
+
     # Should now have 2 versions
     assert len(committed["versions"]) == 2
     assert committed["versions"][0]["version"] == "v0"

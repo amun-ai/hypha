@@ -196,7 +196,7 @@ class ArtifactController:
         @router.get("/{workspace}/artifacts/{artifact_alias}")
         async def get_artifact(
             workspace: str,
-            artifact_alias: str=None,
+            artifact_alias: str = None,
             keywords: str = None,
             filters: str = None,
             silent: bool = False,
@@ -216,7 +216,9 @@ class ArtifactController:
                 try:
                     cache_key = f"workspace_artifacts:{workspace}:{offset}:{limit}:{order_by}:{keywords}:{filters}:{mode}:{stage}"
                     if not no_cache:
-                        logger.info(f"Responding to workspace list request ({workspace}) from cache")
+                        logger.info(
+                            f"Responding to workspace list request ({workspace}) from cache"
+                        )
                         cached_results = await self._cache.get(cache_key)
                         if cached_results:
                             return cached_results
@@ -262,11 +264,14 @@ class ArtifactController:
                     raise HTTPException(status_code=403, detail="Permission denied")
                 except SQLAlchemyError as e:
                     logger.error(f"Database error: {str(e)}")
-                    raise HTTPException(status_code=500, detail="Internal server error.")
+                    raise HTTPException(
+                        status_code=500, detail="Internal server error."
+                    )
                 except Exception as e:
                     logger.error(f"Unhandled error in http list_artifacts: {str(e)}")
                     raise HTTPException(
-                        status_code=500, detail=f"An unexpected error occurred: {str(e)}"
+                        status_code=500,
+                        detail=f"An unexpected error occurred: {str(e)}",
                     )
             try:
                 artifact = await self.read(
@@ -491,13 +496,15 @@ class ArtifactController:
                             )
                         else:
                             download_weights = {}
-                        
+
                         # Check for special "create-zip-file" download weight
                         special_zip_weight = download_weights.get("create-zip-file")
                         if special_zip_weight is not None and not silent:
                             total_weight = special_zip_weight
-                            logger.info(f"Using special zip download weight: {total_weight}")
-                        
+                            logger.info(
+                                f"Using special zip download weight: {total_weight}"
+                            )
+
                         try:
                             if isinstance(files, list):
                                 file_list = files
@@ -1841,13 +1848,17 @@ class ArtifactController:
                 if is_staging:
                     logger.info(f"Artifact {artifact_id} is in staging mode")
                     # Validate staging mode parameters
-                    original_version = version  # Always preserve original version for intent logic
+                    original_version = (
+                        version  # Always preserve original version for intent logic
+                    )
                     if artifact.staging is not None or stage:
                         if version not in [None, "new", "stage"]:
                             raise ValueError(
                                 f"When in staging mode, version must be None, 'new', or 'stage', got '{version}'"
                             )
-                        version = "stage"  # Force version to be "stage" when in staging mode
+                        version = (
+                            "stage"  # Force version to be "stage" when in staging mode
+                        )
 
                 # Determine target version ('stage', None for latest, or "new")
                 target_version = None
@@ -1869,7 +1880,9 @@ class ArtifactController:
                 if target_version == "stage":
                     version_index = self._get_version_index(artifact, "stage")
                     logger.info(f"Using staging version index: {version_index}")
-                    logger.info(f"Debug: version='{version}', target_version='{target_version}', stage={stage}")
+                    logger.info(
+                        f"Debug: version='{version}', target_version='{target_version}', stage={stage}"
+                    )
                     # Ensure staging list exists if putting into staging
                     if artifact.staging is None:
                         artifact.staging = []
@@ -1877,12 +1890,16 @@ class ArtifactController:
                     # Store the intended version behavior for commit
                     if original_version == "new":
                         # Remove any existing intent markers first
-                        artifact.staging = [item for item in artifact.staging if not item.get("_intent")]
+                        artifact.staging = [
+                            item for item in artifact.staging if not item.get("_intent")
+                        ]
                         artifact.staging.append({"_intent": "new_version"})
                         flag_modified(artifact, "staging")
                     else:
                         # Clear any existing intent markers when staging without version="new"
-                        artifact.staging = [item for item in artifact.staging if not item.get("_intent")]
+                        artifact.staging = [
+                            item for item in artifact.staging if not item.get("_intent")
+                        ]
                         flag_modified(artifact, "staging")
                 elif target_version == "new":
                     versions = artifact.versions or []
@@ -1970,7 +1987,11 @@ class ArtifactController:
                             f"Edited artifact with ID: {artifact_id} (committed), alias: {artifact.alias}, created new version: {versions[-1]['version']}"
                         )
                     else:
-                        current_version = artifact.versions[-1]["version"] if artifact.versions else "v0"
+                        current_version = (
+                            artifact.versions[-1]["version"]
+                            if artifact.versions
+                            else "v0"
+                        )
                         logger.info(
                             f"Edited artifact with ID: {artifact_id} (committed), alias: {artifact.alias}, updated existing version: {current_version}"
                         )
@@ -1981,7 +2002,9 @@ class ArtifactController:
                     # Save to database when in staging mode to persist the intent
                     session.add(artifact)
                     await session.commit()
-                    logger.info(f"After edit commit - artifact.staging in DB: {artifact.staging}")
+                    logger.info(
+                        f"After edit commit - artifact.staging in DB: {artifact.staging}"
+                    )
 
                 # Always save the current state (staged or committed) to S3
                 await self._save_version_to_s3(
@@ -2085,12 +2108,14 @@ class ArtifactController:
                 artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "commit", session
                 )
-                
-                assert artifact.staging is not None, "Artifact must be in staging mode to commit."
-                
+
+                assert (
+                    artifact.staging is not None
+                ), "Artifact must be in staging mode to commit."
+
                 # Preserve the current database staging state before loading from S3
                 db_staging_state = artifact.staging or []
-                
+
                 # the staging version index
                 staging_version_index = self._get_version_index(artifact, "stage")
                 logger.info(
@@ -2102,7 +2127,7 @@ class ArtifactController:
                 artifact_data = await self._load_version_from_s3(
                     artifact, parent_artifact, staging_version_index, s3_config
                 )
-                
+
                 # Create new artifact from S3 data but preserve the database staging state with intent markers
                 reconstructed_artifact = ArtifactModel(**artifact_data)
                 reconstructed_artifact.staging = db_staging_state  # Keep the database staging state with intent markers
@@ -2113,13 +2138,19 @@ class ArtifactController:
 
                 # Check if there was an intent to create a new version from staging
                 staging_list = artifact.staging or []
-                has_new_version_intent = any(item.get("_intent") == "new_version" for item in staging_list)
-                
-                logger.info(f"Checking for new version intent in staging: {staging_list}")
+                has_new_version_intent = any(
+                    item.get("_intent") == "new_version" for item in staging_list
+                )
+
+                logger.info(
+                    f"Checking for new version intent in staging: {staging_list}"
+                )
                 logger.info(f"Has new version intent: {has_new_version_intent}")
-                
+
                 # Remove intent markers from staging list
-                staging_list = [item for item in staging_list if not item.get("_intent")]
+                staging_list = [
+                    item for item in staging_list if not item.get("_intent")
+                ]
                 artifact.staging = staging_list
                 flag_modified(artifact, "staging")
 
@@ -2187,12 +2218,14 @@ class ArtifactController:
                         # Validate that the specified version doesn't already exist
                         existing_versions = [v["version"] for v in versions]
                         if version in existing_versions:
-                            raise ValueError(f"Version '{version}' already exists. Existing versions: {existing_versions}")
+                            raise ValueError(
+                                f"Version '{version}' already exists. Existing versions: {existing_versions}"
+                            )
                         assigned_version = version
                     else:
                         # Use sequential versioning
                         assigned_version = f"v{len(versions)}"
-                    
+
                     versions.append(
                         {
                             "version": assigned_version,
@@ -2200,18 +2233,20 @@ class ArtifactController:
                             "created_at": int(time.time()),
                         }
                     )
-                    
+
                     logger.info(
                         f"Creating new version {assigned_version} for artifact {artifact_id}"
                     )
                 else:
                     # Updating existing latest version
                     if version is not None:
-                        logger.warning(f"Version parameter '{version}' ignored when updating existing version")
+                        logger.warning(
+                            f"Version parameter '{version}' ignored when updating existing version"
+                        )
                     assigned_version = versions[-1]["version"] if versions else "v0"
                     if versions and comment:
                         versions[-1]["comment"] = comment
-                        
+
                     logger.info(
                         f"Updating existing version {assigned_version} for artifact {artifact_id}"
                     )
@@ -2226,7 +2261,7 @@ class ArtifactController:
                 else:
                     # Updating existing version - use the index of the existing latest version
                     version_index = len(versions) - 1
-                    
+
                 await self._save_version_to_s3(
                     version_index,
                     artifact,
@@ -2556,8 +2591,10 @@ class ArtifactController:
 
                 # Check if there's intent to create a new version
                 staging_list = artifact.staging or []
-                has_new_version_intent = any(item.get("_intent") == "new_version" for item in staging_list)
-                
+                has_new_version_intent = any(
+                    item.get("_intent") == "new_version" for item in staging_list
+                )
+
                 # Calculate target version index based on intent
                 if has_new_version_intent:
                     # Creating new version - use next version index
@@ -2565,7 +2602,7 @@ class ArtifactController:
                 else:
                     # Updating existing version - use existing latest version index
                     target_version_index = max(0, len(artifact.versions or []) - 1)
-                    
+
                 logger.info(
                     f"Uploading file '{file_path}' to version {target_version_index} (has_new_version_intent: {has_new_version_intent})"
                 )
@@ -2600,7 +2637,7 @@ class ArtifactController:
                             }
                         )
                         flag_modified(artifact, "staging")
-                        
+
                     # save the artifact to s3
                     await self._save_version_to_s3(version_index, artifact, s3_config)
                     session.add(artifact)
@@ -3376,16 +3413,18 @@ class ArtifactController:
                 artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "edit", session
                 )
-                
+
                 if artifact.staging is None:
-                    raise ValueError("No staged changes to discard. Artifact is not in staging mode.")
-                
+                    raise ValueError(
+                        "No staged changes to discard. Artifact is not in staging mode."
+                    )
+
                 logger.info(f"Discarding staged changes for artifact {artifact_id}")
-                
+
                 # Get S3 config for cleaning up staged files and loading committed version
                 s3_config = self._get_s3_config(artifact, parent_artifact)
                 staging_version_index = self._get_version_index(artifact, "stage")
-                
+
                 # Delete staged files from S3
                 try:
                     await self._delete_version_files_from_s3(
@@ -3394,17 +3433,25 @@ class ArtifactController:
                 except Exception as e:
                     # Log the error but don't fail the discard operation
                     logger.warning(f"Failed to clean up staged files in S3: {e}")
-                
+
                 # If artifact has committed versions, restore from the latest committed version
                 if artifact.versions and len(artifact.versions) > 0:
                     # Load the latest committed version from S3 to restore manifest
-                    latest_version_index = len(artifact.versions) - 1  # Latest version index
+                    latest_version_index = (
+                        len(artifact.versions) - 1
+                    )  # Latest version index
                     try:
                         committed_data = await self._load_version_from_s3(
-                            artifact, parent_artifact, latest_version_index, s3_config, include_secrets=True
+                            artifact,
+                            parent_artifact,
+                            latest_version_index,
+                            s3_config,
+                            include_secrets=True,
                         )
                         # Restore manifest and other relevant fields from committed version
-                        artifact.manifest = committed_data.get("manifest", artifact.manifest)
+                        artifact.manifest = committed_data.get(
+                            "manifest", artifact.manifest
+                        )
                         artifact.type = committed_data.get("type", artifact.type)
                         if "config" in committed_data:
                             artifact.config = committed_data["config"]
@@ -3416,21 +3463,27 @@ class ArtifactController:
                         flag_modified(artifact, "type")
                         logger.info(f"Restored manifest from latest committed version")
                     except Exception as e:
-                        logger.warning(f"Failed to restore manifest from S3, keeping current manifest: {e}")
+                        logger.warning(
+                            f"Failed to restore manifest from S3, keeping current manifest: {e}"
+                        )
                 else:
-                    logger.info(f"No committed versions to restore from, keeping current manifest")
-                
+                    logger.info(
+                        f"No committed versions to restore from, keeping current manifest"
+                    )
+
                 # Clear staging data
                 artifact.staging = None
                 artifact.last_modified = int(time.time())
                 flag_modified(artifact, "staging")
-                
+
                 await session.merge(artifact)
                 await session.commit()
 
-                logger.info(f"Successfully discarded staged changes for artifact {artifact_id}")
+                logger.info(
+                    f"Successfully discarded staged changes for artifact {artifact_id}"
+                )
                 return self._generate_artifact_data(artifact, parent_artifact)
-                
+
         except Exception as e:
             raise e
         finally:
