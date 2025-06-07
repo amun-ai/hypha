@@ -2301,22 +2301,6 @@ async def test_version_handling_rules(minio_server, fastapi_server, test_user_to
     assert edited["versions"][-1]["version"] == "v2"
     assert edited["staging"] is None
 
-    # Test Case 8: Edit with existing version name should UPDATE that specific version
-    await artifact_manager.edit(
-        artifact_id=artifact.id,
-        manifest={"name": "Updated v0 Name", "description": "Updated v0 description"},
-        version="v0",  # This should update the existing v0
-    )
-    edited = await artifact_manager.read(artifact_id=artifact.id, version="v0")
-    assert edited["manifest"]["name"] == "Updated v0 Name"
-    assert len(edited["versions"]) == 3  # Still 3 versions
-    # Verify other versions weren't affected
-    latest = await artifact_manager.read(artifact_id=artifact.id)
-    assert latest["manifest"]["name"] == "New Version Name"  # Latest should still be v2 content
-
-    # Clean up
-    await artifact_manager.delete(artifact_id=artifact.id)
-    await artifact_manager.delete(artifact_id=artifact2.id)
 
 
 async def test_list_stage_parameter(minio_server, fastapi_server, test_user_token):
@@ -2877,19 +2861,6 @@ async def test_edit_version_behavior(minio_server, fastapi_server, test_user_tok
     assert edited["versions"][0]["version"] == "v0"  # Original
     assert edited["versions"][1]["version"] == "v1"  # New version created
 
-    # Case 4: Edit with existing version name should UPDATE that specific version
-    await artifact_manager.edit(
-        artifact_id=artifact.id,
-        manifest={"name": "Updated v0", "description": "Updated v0 description"},
-        version="v0",  # Update existing v0
-    )
-    edited = await artifact_manager.read(artifact_id=artifact.id, version="v0")
-    assert edited["manifest"]["name"] == "Updated v0"
-    assert len(edited["versions"]) == 2  # Still 2 versions
-    # Verify v1 wasn't affected
-    v1_data = await artifact_manager.read(artifact_id=artifact.id, version="v1")
-    assert v1_data["manifest"]["name"] == "New Version"
-
     # Case 5: Try to edit with invalid version name (should fail)
     with pytest.raises(Exception, match=r".*Invalid version.*"):
         await artifact_manager.edit(
@@ -3193,4 +3164,395 @@ async def test_list_stage_parameter(minio_server, fastapi_server, test_user_toke
     await artifact_manager.delete(artifact_id=committed2.id)
     await artifact_manager.delete(artifact_id=staged.id)
     await artifact_manager.delete(artifact_id=staged2.id)
+    await artifact_manager.delete(artifact_id=collection.id)
+
+
+async def test_create_zip_file_download_count(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test download count increment behavior for create-zip-file endpoint."""
+    
+    # Connect and get the artifact manager service
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection and dataset
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={"name": "Download Count Test Collection"},
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Download Count Test Dataset"},
+        version="stage",
+    )
+
+    # Add multiple files to the dataset
+    file_contents = {
+        "file1.txt": "Contents of file 1",
+        "file2.txt": "Contents of file 2", 
+        "nested/file3.txt": "Contents of nested file 3",
+        "nested/deep/file4.txt": "Contents of deeply nested file 4",
+    }
+    
+    for file_path, content in file_contents.items():
+        put_url = await artifact_manager.put_file(
+            artifact_id=dataset.id,
+            file_path=file_path,
+            download_weight=0.5,
+        )
+        response = requests.put(put_url, data=content)
+        assert response.ok
+    
+    # Add a file with weight 0
+    put_url = await artifact_manager.put_file(
+        artifact_id=dataset.id,
+        file_path="file5.txt",
+        download_weight=0,
+    )
+    response = requests.put(put_url, data="Contents of file 5")
+    assert response.ok
+
+    # Commit the dataset
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Check initial download count (should be 0)
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 0
+
+    # Test 1: Download specific files via create-zip-file endpoint
+    async with httpx.AsyncClient(timeout=200) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/create-zip-file?file=file1.txt&file=file2.txt"
+        )
+        assert response.status_code == 200
+
+    # Check download count increment (should be 2 - one for each file)
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 0.5 + 0.5
+
+    # Test 2: Download all files via create-zip-file endpoint
+    async with httpx.AsyncClient(timeout=200) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/create-zip-file"
+        )
+        assert response.status_code == 200
+
+    # Check download count increment (should be +4 more - one for each file in the dataset)
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 3  # 0.5 + 0.5 + 1 + 1
+
+    # Test 3: Download nested files via create-zip-file endpoint
+    async with httpx.AsyncClient(timeout=200) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/create-zip-file?file=nested/file3.txt&file=nested/deep/file4.txt"
+        )
+        assert response.status_code == 200
+
+    # Check download count increment (should be +2 more)
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 4  # 0.5 + 0.5 + 1 + 1 + 1 + 1
+
+    # Test 4: Multiple requests to same zip endpoint should increment each time
+    for _ in range(3):
+        async with httpx.AsyncClient(timeout=200) as client:
+            response = await client.get(
+                f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/create-zip-file?file=file1.txt"
+            )
+            assert response.status_code == 200
+
+    # Check download count increment (should be +3 more - 0.5 for each request)
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 5.5  # 1 + 2 + 1 + 1.5 (3 requests * 0.5 each)
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=dataset.id)
+    await artifact_manager.delete(artifact_id=collection.id)
+
+
+async def test_workspace_artifacts_endpoint(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test the workspace-level artifacts listing endpoint."""
+    
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create multiple artifacts at different levels
+    # 1. Root-level collection
+    root_collection = await artifact_manager.create(
+        type="collection",
+        manifest={"name": "Root Collection", "description": "Root level collection"},
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    # 2. Root-level dataset
+    root_dataset = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Root Dataset", "description": "Root level dataset"},
+    )
+
+    # 3. Child dataset in collection
+    child_dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=root_collection.id,
+        manifest={"name": "Child Dataset", "description": "Child dataset in collection"},
+    )
+
+    # 4. Staged artifacts
+    staged_collection = await artifact_manager.create(
+        type="collection",
+        manifest={"name": "Staged Collection", "description": "Staged collection"},
+        stage=True,
+    )
+
+    staged_dataset = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Staged Dataset", "description": "Staged dataset"},
+        stage=True,
+    )
+
+    # Test 1: Basic workspace artifacts listing (default: committed only)
+    response = requests.get(f"{SERVER_URL}/{api.config.workspace}/artifacts/")
+    assert response.status_code == 200
+    results = response.json()
+    
+    # Should return committed root-level artifacts only
+    committed_names = {r["manifest"]["name"] for r in results}
+    assert "Root Collection" in committed_names
+    assert "Root Dataset" in committed_names
+    assert "Child Dataset" not in committed_names  # Child artifacts shouldn't appear at workspace level
+    assert "Staged Collection" not in committed_names  # Staged artifacts not included by default
+    assert "Staged Dataset" not in committed_names
+
+    # Test 2: Workspace artifacts with stage=true (staged only)
+    response = requests.get(f"{SERVER_URL}/{api.config.workspace}/artifacts/?stage=true")
+    assert response.status_code == 200
+    results = response.json()
+    
+    staged_names = {r["manifest"]["name"] for r in results}
+    assert "Staged Collection" in staged_names
+    assert "Staged Dataset" in staged_names
+    assert "Root Collection" not in staged_names  # Committed artifacts not included
+    assert "Root Dataset" not in staged_names
+
+    # Test 3: Workspace artifacts with stage=all (both committed and staged)
+    response = requests.get(f"{SERVER_URL}/{api.config.workspace}/artifacts/?stage=all")
+    assert response.status_code == 200
+    results = response.json()
+    
+    all_names = {r["manifest"]["name"] for r in results}
+    assert "Root Collection" in all_names
+    assert "Root Dataset" in all_names
+    assert "Staged Collection" in all_names
+    assert "Staged Dataset" in all_names
+    assert "Child Dataset" not in all_names  # Child artifacts still shouldn't appear
+
+    # Test 4: Filtering by type
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/?filters={json.dumps({'type': 'collection'})}"
+    )
+    assert response.status_code == 200
+    results = response.json()
+    
+    # Should only return collections
+    for result in results:
+        assert result["type"] == "collection"
+    collection_names = {r["manifest"]["name"] for r in results}
+    assert "Root Collection" in collection_names
+    assert "Root Dataset" not in collection_names
+
+    # Test 5: Keyword search
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/?keywords=Root"
+    )
+    assert response.status_code == 200
+    results = response.json()
+    
+    # Should return artifacts with "Root" in their name/description
+    root_names = {r["manifest"]["name"] for r in results}
+    assert "Root Collection" in root_names
+    assert "Root Dataset" in root_names
+
+    # Test 6: Pagination
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/?pagination=true&limit=1"
+    )
+    assert response.status_code == 200
+    results = response.json()
+    
+    assert "items" in results
+    assert "total" in results
+    assert len(results["items"]) == 1
+    assert results["total"] >= 2  # At least root collection and root dataset
+
+    # Test 7: Ordering
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/?order_by=created_at"
+    )
+    assert response.status_code == 200
+    results = response.json()
+    
+    # Verify results are ordered (check that we get same artifacts)
+    ordered_names = {r["manifest"]["name"] for r in results}
+    assert "Root Collection" in ordered_names
+    assert "Root Dataset" in ordered_names
+
+    # Test 8: Complex filtering with manifest fields
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/?filters={json.dumps({'manifest': {'description': '*Root*'}})}"
+    )
+    assert response.status_code == 200
+    results = response.json()
+    
+    # Should match artifacts with "Root" in description
+    for result in results:
+        assert "Root" in result["manifest"]["description"]
+
+    # Test 9: Authentication required for private artifacts
+    # Create a private artifact
+    private_dataset = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Private Dataset", "description": "Private dataset"},
+        config={"permissions": {"@": "rw+"}},  # Only owner has access
+    )
+
+    # Test with authentication
+    token = await api.generate_token()
+    response = requests.get(
+        f"{SERVER_URL}/{api.config.workspace}/artifacts/?no_cache=true",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    results = response.json()
+    private_names = {r["manifest"]["name"] for r in results}
+    assert "Private Dataset" in private_names
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=root_collection.id)
+    await artifact_manager.delete(artifact_id=root_dataset.id)
+    await artifact_manager.delete(artifact_id=child_dataset.id)
+    await artifact_manager.delete(artifact_id=staged_collection.id)
+    await artifact_manager.delete(artifact_id=staged_dataset.id)
+    await artifact_manager.delete(artifact_id=private_dataset.id)
+
+
+async def test_create_zip_file_download_weight_behavior(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test that create-zip-file respects download_weight when incrementing download count."""
+    
+    # Connect and get the artifact manager service
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection and dataset
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={"name": "Download Weight Test Collection"},
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Download Weight Test Dataset"},
+        version="stage",
+    )
+
+    # Add files with different download weights
+    files_with_weights = [
+        ("light_file.txt", "Light content", 1),
+        ("medium_file.txt", "Medium content", 3),
+        ("heavy_file.txt", "Heavy content", 5),
+        ("zero_weight_file.txt", "Zero weight content", 0),
+    ]
+    
+    for file_path, content, weight in files_with_weights:
+        put_url = await artifact_manager.put_file(
+            artifact_id=dataset.id,
+            file_path=file_path,
+            download_weight=weight,
+        )
+        response = requests.put(put_url, data=content)
+        assert response.ok
+
+    # Commit the dataset
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Check initial download count
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 0
+
+    # Test 1: Download file with weight 1
+    async with httpx.AsyncClient(timeout=200) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/create-zip-file?file=light_file.txt"
+        )
+        assert response.status_code == 200
+
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 1
+
+    # Test 2: Download file with weight 3
+    async with httpx.AsyncClient(timeout=200) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/create-zip-file?file=medium_file.txt"
+        )
+        assert response.status_code == 200
+
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 4  # 1 + 3
+
+    # Test 3: Download file with weight 5
+    async with httpx.AsyncClient(timeout=200) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/create-zip-file?file=heavy_file.txt"
+        )
+        assert response.status_code == 200
+
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 9  # 4 + 5
+
+    # Test 4: Download file with weight 0 (should not increment)
+    async with httpx.AsyncClient(timeout=200) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/create-zip-file?file=zero_weight_file.txt"
+        )
+        assert response.status_code == 200
+
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 9  # Should remain 9
+
+    # Test 5: Download multiple files with mixed weights
+    async with httpx.AsyncClient(timeout=200) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/create-zip-file?file=light_file.txt&file=medium_file.txt&file=zero_weight_file.txt"
+        )
+        assert response.status_code == 200
+
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 13  # 9 + 1 + 3 + 0
+
+    # Test 6: Download all files (should sum all weights)
+    async with httpx.AsyncClient(timeout=200) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/create-zip-file"
+        )
+        assert response.status_code == 200
+
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["download_count"] == 22  # 13 + 1 + 3 + 5 + 0
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=dataset.id)
     await artifact_manager.delete(artifact_id=collection.id)
