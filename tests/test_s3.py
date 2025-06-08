@@ -21,18 +21,18 @@ from hypha.core.auth import (
     UserPermission,
 )
 
-from . import WS_SERVER_URL, SERVER_URL, find_item
+from . import WS_SERVER_URL, SERVER_URL, SIO_PORT_SQLITE, find_item
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
 
 
-async def test_s3_proxy(minio_server, fastapi_server, test_user_token):
+async def test_s3_proxy(minio_server, fastapi_server_sqlite, test_user_token):
     """Test s3 proxy."""
     api = await connect_to_server(
         {
             "name": "anonymous client",
-            "server_url": WS_SERVER_URL,
+            "server_url": f"ws://127.0.0.1:{SIO_PORT_SQLITE}/ws",
             "token": test_user_token,
         }
     )
@@ -52,6 +52,8 @@ async def test_s3_proxy(minio_server, fastapi_server, test_user_token):
     presigned_url = await s3controller.generate_presigned_url(
         f"apps/test.zip", client_method="put_object"
     )
+    # Ensure we're testing the S3 proxy, not direct MinIO access
+    assert "/s3/" in presigned_url, "Presigned URL should be a proxy URL"
     # Use requests to upload the ZIP file to the presigned URL
     response = requests.put(
         presigned_url,
@@ -64,6 +66,8 @@ async def test_s3_proxy(minio_server, fastapi_server, test_user_token):
     presigned_url = await s3controller.generate_presigned_url(
         f"apps/test.zip", client_method="get_object"
     )
+    # Ensure we're testing the S3 proxy, not direct MinIO access
+    assert "/s3/" in presigned_url, "Presigned URL should be a proxy URL"
     response = requests.get(presigned_url)
     assert response.status_code == 200
     assert response.content == zip_buffer.getvalue()
@@ -80,6 +84,8 @@ async def test_s3_proxy(minio_server, fastapi_server, test_user_token):
     presigned_url = await s3controller.generate_presigned_url(
         f"apps/test.zip", client_method="get_object"
     )
+    # Ensure we're testing the S3 proxy, not direct MinIO access
+    assert "/s3/" in presigned_url, "Presigned URL should be a proxy URL"
     response = requests.get(presigned_url)
     assert response.status_code == 200
     assert response.content == zip_buffer.getvalue()
@@ -249,6 +255,8 @@ async def test_s3(minio_server, fastapi_server, test_user_token_8):
 
         url = await s3controller.generate_presigned_url("hello.txt")
         assert url.startswith("http") and "X-Amz-Algorithm" in url
+        # Ensure we're testing the S3 proxy, not direct MinIO access
+        assert "/s3/" in url, "Presigned URL should be a proxy URL"
 
         response = requests.get(url)
         assert response.ok, response.text

@@ -72,6 +72,8 @@ print("Dataset added to the gallery.")
 
 Each dataset can contain multiple files. Use pre-signed URLs for secure uploads and set `download_weight` to track file downloads.
 
+**Important:** Adding files to a staged artifact does NOT automatically create a new version. You must explicitly specify `version="new"` when editing if you want to create a new version upon commit.
+
 ```python
 # Generate a pre-signed URL to upload a file with a specific download weight
 put_url = await artifact_manager.put_file(
@@ -88,7 +90,7 @@ print("File uploaded to the dataset.")
 
 ### Step 5: Committing the Dataset
 
-After uploading files, commit the dataset to finalize its status in the collection. Committed datasets are accessible based on their permissions.
+After uploading files, commit the dataset to finalize its status in the collection. Since no `version="new"` was specified when staging or adding files, this will create the initial version v0.
 
 ```python
 # Commit the dataset to finalize its status
@@ -167,6 +169,51 @@ async def main():
 
 asyncio.run(main())
 ```
+
+---
+
+## Advanced Usage: Version Management and Performance Optimization
+
+### Understanding the New Version Control System
+
+The Artifact Manager has been optimized for better performance and more predictable version management. Key improvements include:
+
+#### 1. Explicit Version Control
+- **No Automatic Versioning**: Simply adding files to a staged artifact does not create a new version
+- **Explicit Intent Required**: You must use `version="new"` when editing to create new versions
+- **Predictable Costs**: Prevents unexpected version proliferation that can lead to high storage costs
+
+#### 2. Direct File Placement
+- **Optimized Upload**: Files are placed directly in their final S3 destination based on version intent
+- **No File Copying**: Eliminates expensive file copying operations during commit
+- **Fast Commits**: Commit operations are now metadata-only and complete quickly regardless of file size
+
+#### 3. Version Creation Examples
+
+```python
+# Example 1: Update existing version (no new version created)
+await artifact_manager.edit(artifact_id=dataset.id, manifest=updated_manifest, stage=True)
+# Add files - these go to existing version
+put_url = await artifact_manager.put_file(artifact_id=dataset.id, file_path="update.csv")
+await artifact_manager.commit(artifact_id=dataset.id)  # Updates existing version
+
+# Example 2: Create new version explicitly
+await artifact_manager.edit(
+    artifact_id=dataset.id, 
+    manifest=updated_manifest, 
+    stage=True,
+    version="new"  # Explicit new version intent
+)
+# Add files - these go to new version location
+put_url = await artifact_manager.put_file(artifact_id=dataset.id, file_path="new_data.csv")
+await artifact_manager.commit(artifact_id=dataset.id, version="v2.0")  # Creates new version
+```
+
+#### 4. Performance Benefits
+- **Large File Support**: Adding large files is much faster since they're placed directly in final location
+- **Reduced S3 Costs**: No duplicate file storage during staging process
+- **Fast Commits**: Commit operations complete in seconds, not minutes, regardless of data size
+- **Efficient Storage**: Only one copy of each file is stored per version
 
 ---
 
@@ -258,8 +305,12 @@ Creates a new artifact or collection with the specified manifest. The artifact i
   - `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
   - `list_fields`: Optional. A list of fields to be collected when calling ``list`` function. By default, it collects all fields in the artifacts. If you want to collect only specific fields, you can set this field to a list of field names, e.g. `["manifest", "download_count"]`.
   - `publish_to`: Optional. A string specifying the target platform to publish the artifact. Supported values are `zenodo` and `sandbox_zenodo`. If set, the artifact will be published to the specified platform. The artifact must have a valid Zenodo metadata schema to be published.
-- `version`: Optional. The version of the artifact to create. By default, it set to None or `"new"`, it will generate a version `v0`. If you want to create a staged version, you can set it to `"stage"` (equivalent to `stage=True`). Note that if `stage=True` is specified, any version parameter is ignored.
-- `stage`: Optional. If `True`, the artifact will be created in staging mode regardless of the version parameter. Default is `False`.
+- `version`: Optional. **Version Creation Behavior**: Controls initial version creation for the artifact.
+  - `None` or `"new"` (default): Creates version "v0" immediately (unless `stage=True`)
+  - `"stage"`: Creates the artifact in staging mode (equivalent to `stage=True`)
+  
+  **Important**: If `stage=True` is specified, any version parameter is ignored and the artifact starts in staging mode. When a staged artifact is committed, it will create version "v0" by default.
+- `stage`: Optional. If `True`, the artifact will be created in staging mode regardless of the version parameter. Default is `False`. When in staging mode, you must call `commit()` to finalize the artifact with its first version.
 - `comment`: Optional. A comment to describe the changes made to the artifact.
 - `secrets`: Optional. A dictionary containing secrets to be stored with the artifact. Secrets are encrypted and can only be accessed by the artifact owner or users with appropriate permissions. The following keys can be used:
   - `ZENODO_ACCESS_TOKEN`: The Zenodo access token to publish the artifact to Zenodo.
@@ -378,42 +429,115 @@ Edits an existing artifact's manifest. The new manifest is staged until committe
 - `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
 - `secrets`: Optional. A dictionary containing secrets to be stored with the artifact. Secrets are encrypted and can only be accessed by the artifact owner or users with appropriate permissions. See the `create` function for a list of supported secrets.
 - `config`: Optional. A dictionary containing additional configuration options for the artifact.
-- `version`: Optional. The version of the artifact to edit. By default, it set to None, the version will stay the same. If you want to create a staged version, you can set it to `"stage"` (equivalent to `stage=True`). Note that if `stage=True` is specified, any version parameter is ignored.
-- `stage`: Optional. If `True`, the artifact will be edited in staging mode regardless of the version parameter. Default is `False`. When in staging mode, committing will create a new version.
+- `version`: Optional. **Strict Validation Applied**: Must be `None`, `"new"`, or an existing version name from the artifact's versions array. Custom version names are NOT allowed during edit - they can only be specified during `commit()`.
+  - `None` (default): Updates the latest existing version
+  - `"new"`: Creates a new version immediately (unless `stage=True`)
+  - `"stage"`: Enters staging mode (equivalent to `stage=True`)
+  - `"existing_version_name"`: Updates the specified existing version (must already exist in the versions array)
+  
+  **Special Staging Behavior**: When `stage=True` and `version="new"` are used together, it stores an intent marker for creating a new version during commit, and allows custom version names to be specified later during the `commit()` operation.
+- `stage`: Optional. If `True`, the artifact will be edited in staging mode regardless of the version parameter. Default is `False`. When in staging mode, the artifact must be committed to finalize changes.
 - `comment`: Optional. A comment to describe the changes made to the artifact.
+
+**Important Notes:**
+- **Version Validation**: The system now strictly validates the `version` parameter. You cannot specify arbitrary custom version names during edit.
+- **Staging Intent System**: When you use `version="new"` with `stage=True`, the system stores an "intent" to create a new version, which allows you to specify a custom version name later during `commit()`.
+- **Historical Version Editing**: You can edit specific existing versions by providing their exact version name (e.g., `version="v1"`), but the version must already exist.
 
 **Example:**
 
 ```python
-# Edit an artifact and create a new version with files copied from the previous version
+# Edit an artifact and update the latest version
+await artifact_manager.edit(
+    artifact_id="example-dataset",
+    manifest=updated_manifest
+)
+
+# Edit an artifact and create a new version immediately
+await artifact_manager.edit(
+    artifact_id="example-dataset", 
+    manifest=updated_manifest,
+    version="new"
+)
+
+# Edit an artifact in staging mode with intent to create new version on commit
 await artifact_manager.edit(
     artifact_id="example-dataset",
     manifest=updated_manifest,
     stage=True,
+    version="new"  # This sets intent for new version creation during commit
 )
 
+# Edit a specific existing version (version must already exist)
+await artifact_manager.edit(
+    artifact_id="example-dataset",
+    manifest=updated_manifest,
+    version="v1"  # Must be an existing version name from the versions array
+)
+
+# INVALID: This will raise an error
+await artifact_manager.edit(
+    artifact_id="example-dataset",
+    manifest=updated_manifest,
+    version="custom-v2.0"  # ERROR: Custom version names not allowed during edit
+)
 ```
 
 ---
 
-### `commit(artifact_id: str, version: str = None, comment: str = None) -> None`
+### `commit(artifact_id: str, version: str = None, comment: str = None) -> dict`
 
-Finalizes and commits an artifact's staged changes. Validates uploaded files and commit the staged manifest. This process also updates view and download statistics.
+Commits staged changes to an artifact, creating a new version or updating the existing latest version depending on the staging mode and version intent.
 
 **Parameters:**
 
-- `artifact_id`: The id of the artifact to commit. It can be an uuid generated by `create` or `edit` function, or it can be an alias of the artifact under the current workspace. If you want to refer to an artifact in another workspace, you should use the full alias in the format of `"workspace_id/alias"`.
-- `version`: Optional. The version number to use for the committed artifact. Note that this only affects the version number - whether a new version is created or the current version is updated depends on whether the artifact was in staging mode. If committing from staging mode, a new version is always created. If committing a direct edit, the current version is updated.
-- `comment`: Optional. A comment to describe the changes made to the artifact.
+- `artifact_id`: The id of the artifact to commit. Can be a UUID or alias.
+- `version`: Optional custom version name. If not provided, a sequential version name will be generated.
+- `comment`: Optional comment describing the changes in this version.
+
+**Returns:**
+
+A dictionary containing the committed artifact with updated versions and no staging data.
+
+**Behavior:**
+
+- **Version Creation:** Only creates a new version if `version="new"` was explicitly specified during edit operations
+- **Version Update:** If no new version intent exists, updates the existing latest version (or creates v0 if no versions exist)
+- **Metadata-Only Operation:** Commit is now a fast, metadata-only operation with no file copying
+- **File Placement:** Files are already in their final locations (placed there during upload based on intent)
+- **Staging Cleanup:** The staging area is cleared and metadata is finalized
+
+**Performance Note:** The commit operation is highly optimized and performs no file copying, making it fast even for artifacts with large files.
+
+### `discard(artifact_id: str) -> dict`
+
+Discards all staged changes for an artifact, reverting to the last committed state.
+
+**Parameters:**
+
+- `artifact_id`: The id of the artifact to discard changes for. Can be a UUID or alias.
+
+**Returns:**
+
+A dictionary containing the artifact reverted to its last committed state.
+
+**Behavior:**
+
+- Clears all staged manifest changes, reverting to the last committed manifest
+- Removes all staged files from S3 storage
+- Clears the staging area (sets `staging` to `None`)
+- Preserves all committed versions and their files
+- Raises an error if no staged changes exist
 
 **Example:**
-
 ```python
-# Commit a staged artifact (will create a new version)
-await artifact_manager.commit(artifact_id=artifact.id, version="v1")
+# Create an artifact and make some changes
+artifact = await artifact_manager.create(type="dataset", manifest={"name": "Test"}, stage=True)
+await artifact_manager.put_file(artifact_id=artifact.id, file_path="test.txt")
 
-# Commit a direct edit (will update current version)
-await artifact_manager.commit(artifact_id=artifact.id)
+# Discard all staged changes
+reverted = await artifact_manager.discard(artifact_id=artifact.id)
+assert reverted["staging"] is None  # No staged changes
 ```
 
 ---
@@ -557,17 +681,24 @@ vectors = await artifact_manager.list_vectors(artifact_id="example-id", limit=20
 
 ---
 
-### `put_file(artifact_id: str, file_path: str, download_weight: int = 0) -> str`
+### `put_file(artifact_id: str, file_path: str, download_weight: float = 0) -> str`
 
-Generates a pre-signed URL to upload a file to the artifact in S3. The URL can be used with an HTTP `PUT` request to upload the file. The file is staged until the artifact is committed.
+Generates a pre-signed URL to upload a file to the artifact in S3. The URL can be used with an HTTP `PUT` request to upload the file. 
+
+**File Placement Optimization:** Files are placed directly in their final destination based on version intent:
+- If the artifact has `new_version` intent (set via `version="new"` during edit), files are uploaded to the new version location
+- Otherwise, files are uploaded to the existing latest version location
+- This eliminates the need for expensive file copying during commit operations
 
 **Parameters:**
 
 - `artifact_id`: The id of the artifact to upload the file to. It can be an uuid generated by `create` or `edit` function, or it can be an alias of the artifact under the current workspace. If you want to refer to an artifact in another workspace, you should use the full alias in the format of `"workspace_id/alias"`.
 - `file_path`: The relative path of the file to upload within the artifact (e.g., `"data.csv"`).
-- `download_weight`: A float value representing the file's impact on download count (0-1). Defaults to `None`.
+- `download_weight`: A float value representing the file's impact on download count when downloaded via any endpoint. Defaults to `0`. Files with weight `0` don't increment download count when accessed.
 
 **Returns:** A pre-signed URL for uploading the file.
+
+**Important Note:** Adding files to staging does NOT automatically create new version intent. You must explicitly use `version="new"` during edit operations if you want to create a new version when committing.
 
 **Example:**
 
@@ -662,7 +793,7 @@ files = await artifact_manager.list_files(artifact_id="other_workspace/example-d
 
 ---
 
-### `read(artifact_id: str, stage: bool = False, silent: bool = False, include_metadata: bool = False) -> dict`
+### `read(artifact_id: str, version: str = None, silent: bool = False, include_metadata: bool = False) -> dict`
 
 Reads and returns the manifest of an artifact or collection. If in staging mode, reads the staged manifest.
 
@@ -678,18 +809,26 @@ Reads and returns the manifest of an artifact or collection. If in staging mode,
 **Example:**
 
 ```python
-manifest = await artifact_manager.read(artifact_id=artifact.id)
+artifact = await artifact_manager.read(artifact_id=artifact.id)
 
 # If "example-dataset" is an alias of the artifact under the current workspace
-manifest = await artifact_manager.read(artifact_id="example-dataset")
+artifact = await artifact_manager.read(artifact_id="example-dataset")
 
 # If "example-dataset" is an alias of the artifact under another workspace
-manifest = await artifact_manager.read(artifact_id="other_workspace/example-dataset")
+artifact = await artifact_manager.read(artifact_id="other_workspace/example-dataset")
+
+
+# Read a specific version
+artifact = await artifact_manager.read(artifact_id="example-dataset", version="v1")
+
+# Read the staged version
+artifact = await artifact_manager.read(artifact_id="example-dataset", version="stage")
+
 ```
 
 ---
 
-### `list(artifact_id: str=None, keywords: List[str] = None, filters: dict = None, mode: str = "AND", offset: int = 0, limit: int = 100, order_by: str = None, silent: bool = False, stage: bool = False) -> list`
+### `list(parent_id: str=None, keywords: List[str] = None, filters: dict = None, mode: str = "AND", offset: int = 0, limit: int = 100, order_by: str = None, silent: bool = False, stage: bool = False) -> list`
 
 Retrieve a list of child artifacts within a specified collection, supporting keyword-based fuzzy search, field-specific filters, and flexible ordering. This function allows detailed control over the search and pagination of artifacts in a collection, including staged artifacts if specified.
 
@@ -826,12 +965,14 @@ dataset_manifest = {
 dataset = await artifact_manager.create(parent_id=collection.id, alias="example-dataset" manifest=dataset_manifest, stage=True)
 
 # Step 4: Upload a file to the dataset
+# Note: Adding files does not automatically create new versions
 put_url = await artifact_manager.put_file(dataset.id, file_path="data.csv")
 with open("path/to/local/data.csv", "rb") as f:
     response = requests.put(put_url, data=f)
     assert response.ok, "File upload failed"
 
 # Step 5: Commit the dataset
+# This creates v0 since no version="new" was specified
 await artifact_manager.commit(dataset.id)
 
 # Step 6: List all datasets in the gallery
@@ -848,6 +989,20 @@ The `Artifact Manager` provides an HTTP API for retrieving artifact manifests, d
 
 #### Endpoints:
 
+- `/{workspace}/artifacts/`: List all top-level artifacts in the workspace.
+  - **Query Parameters**:
+    - `keywords`: (Optional) Comma-separated search terms
+    - `filters`: (Optional) JSON-encoded filter conditions
+    - `offset`: (Optional) Number of results to skip
+    - `limit`: (Optional) Maximum number of results to return
+    - `order_by`: (Optional) Field to sort results by
+    - `mode`: (Optional) How to combine conditions ("AND" or "OR")
+    - `pagination`: (Optional) Whether to include pagination metadata
+    - `stage`: (Optional) Filter by staging status:
+      - `true`: Return only staged artifacts
+      - `false`: Return only committed artifacts (default)
+      - `all`: Return both staged and committed artifacts
+    - `no_cache`: (Optional) Force refresh of cached results
 - `/{workspace}/artifacts/{artifact_alias}`: Fetch the artifact manifest.
 - `/{workspace}/artifacts/{artifact_alias}/children`: List all artifacts in a collection.
   - **Query Parameters**:
@@ -903,6 +1058,28 @@ The `Artifact Manager` provides an HTTP API for retrieving artifact manifests, d
 
 - **Download File**: A redirect to a pre-signed URL for the file.
 
+#### Authentication for Workspace-Level Endpoint:
+
+The `/{workspace}/artifacts/` endpoint requires authentication to access private artifacts:
+
+- **Public artifacts**: Can be accessed without authentication
+- **Private artifacts**: Require an `Authorization: Bearer <token>` header
+- **Token generation**: Use `api.generate_token()` to create a token for authenticated requests
+
+**Example with Authentication**:
+```python
+import requests
+
+# Get a token for authenticated requests
+token = await api.generate_token()
+
+# Access workspace artifacts with authentication
+response = requests.get(
+    f"{SERVER_URL}/{workspace}/artifacts/",
+    headers={"Authorization": f"Bearer {token}"}
+)
+```
+
 ---
 
 ### Dynamic Zip File Creation Endpoint
@@ -925,7 +1102,18 @@ The `Artifact Manager` provides an HTTP API for retrieving artifact manifests, d
 - **Headers**:
   - `Content-Disposition`: Attachment with the artifact alias as the filename.
 
-#### Example Usage:
+#### Download Count Behavior:
+
+When using the `create-zip-file` endpoint, the artifact's download count is incremented based on the files included in the zip:
+
+- **Per-file increment**: Each file included in the zip contributes to the download count based on its `download_weight`
+- **Zero-weight files**: Files with `download_weight=0` are included in the zip but do not increment the download count
+- **Multiple requests**: Each request to the endpoint increments the download count independently
+- **All files**: When no specific files are requested (downloading all files), the download count is incremented by the sum of all file weights
+
+**Example**: If you create a zip with 3 files having weights [0.5, 1.0, 0], the download count will increase by 1.5 (0.5 + 1.0 + 0).
+
+**Example Usage:
 
 ```python
 import requests
@@ -1081,61 +1269,104 @@ with open("example2.txt", "wb") as f:
 
 The Artifact Manager follows specific rules for version handling during `create`, `edit`, and `commit` operations:
 
-1. **Version Determination at Creation Time**
+1. **Explicit Version Control**
+   - **No Automatic Versioning:** Adding files to staging does NOT automatically create new version intent
+   - **Explicit Intent Required:** Users must explicitly specify `version="new"` during edit operations to create new versions
+   - **Predictable Behavior:** Version creation is always under explicit user control, preventing unexpected version proliferation
+   - **Cost Optimization:** Eliminates costly file copying operations in S3 by requiring deliberate version decisions
+
+2. **Version Parameter Validation**
+   - The `version` parameter in `edit()` is strictly validated
+   - Valid values are: `None`, `"new"`, `"stage"`, or existing version names from the artifact's versions list
+   - Custom version names cannot be specified during `edit()` - they can only be provided during `commit()`
+   - This prevents confusion and ensures predictable version management
+
+3. **File Placement Optimization**
+   - **Direct Placement:** Files are uploaded directly to their final destination based on version intent
+   - **New Version Intent:** Files uploaded when `new_version` intent exists go to the new version location
+   - **Existing Version:** Files uploaded without new version intent go to the existing latest version location
+   - **No File Copying:** Commit operations perform no file copying, making them fast and efficient
+   - **S3 Cost Efficiency:** Eliminates expensive duplicate file storage during staging
+
+4. **Staging Intent System**
+   - When `stage=True` and `version="new"` are used together in `edit()`, the system stores an "intent" to create a new version
+   - This intent is preserved until commit, allowing custom version names to be specified at commit time
+   - The intent system separates the decision of "what to do" (edit vs create) from "what to name it"
+   - **Important:** The intent is only set when explicitly requested, never automatically
+
+5. **Version Determination at Creation Time**
    - When creating an artifact, the version handling must be determined at creation time
    - If `stage=True` is specified, any version parameter is ignored and the artifact starts in staging mode
-   - Using `stage=True` is equivalent to `version="stage"`(not recommended) for backward compatibility
+   - Using `stage=True` is equivalent to `version="stage"` (not recommended) for backward compatibility
    - When committing a staged artifact, it will create version "v0" regardless of any version specified during creation
 
-2. **Version Determination at Edit Time**
+6. **Version Determination at Edit Time**
    - When editing an artifact, the version handling must be determined at edit time
    - If `stage=True` is specified, any version parameter is ignored and the artifact goes into staging mode
-   - Using `stage=True` is equivalent to `version="stage"`(not recommended) for backward compatibility
-   - Direct edits without staging will update the current version without creating a new one
+   - Direct edits without staging will update the specified version or the latest version if none is specified
+   - Custom version names are no longer allowed during edit - only during commit for staged artifacts
 
-3. **Version Handling During Commit**
-   - The commit operation can only override the version number
-   - It cannot change whether we're editing the current version or creating a new one
-   - This decision is determined by whether the artifact was in staging mode:
-     - If committing from staging mode, it will create a new version
-     - If committing a direct edit, it will update the current version
-   - The version number can be overridden using the `version` parameter
+7. **Version Handling During Commit**
+   - The commit operation is now a fast, metadata-only operation
+   - Whether we're editing an existing version or creating a new one is determined by the staging intent
+   - **New version creation**: When committing from staging with "new version intent", custom version names are allowed
+   - **Existing version update**: When committing updates to existing versions, the version parameter is ignored
+   - Version names must be unique - the system validates that specified versions don't already exist
 
 **Example: Version Handling in Practice**
 
 ```python
-# Create an artifact in staging mode (both approaches are equivalent)
+# Create an artifact in staging mode
 artifact = await artifact_manager.create(
     type="dataset",
     manifest=manifest,
-    stage=True,  # This puts the artifact in staging mode
-    version="v5"  # This is ignored since stage=True is specified
+    stage=True  # This puts the artifact in staging mode
 )
 
-# Alternative approach using stage=True
-artifact = await artifact_manager.create(
-    type="dataset",
-    manifest=manifest,
-    stage=True  # Equivalent to stage=True
-)
+# Add files to staging - this does NOT automatically create new version intent
+put_url = await artifact_manager.put_file(artifact_id=artifact.id, file_path="data.csv")
+response = requests.put(put_url, data="some data")
 
-# Edit an artifact in staging mode
+# Commit without new version intent - creates v0 (initial version)
+committed = await artifact_manager.commit(artifact_id=artifact.id)
+# Result: v0 created with the uploaded file
+
+# Edit with explicit intent to create new version during commit
 await artifact_manager.edit(
     artifact_id=artifact.id,
     manifest=updated_manifest,
-    stage=True,  # This puts the artifact in staging mode
-    version="v10"  # This is ignored since stage=True is specified
+    stage=True,
+    version="new"  # EXPLICIT intent for new version creation
 )
 
-# Direct edit without staging (updates current version)
-await artifact_manager.edit(
-    artifact_id=artifact.id,
-    manifest={"name": "Updated Name"}
-)
+# Add more files - these will go to the new version location
+put_url = await artifact_manager.put_file(artifact_id=artifact.id, file_path="new_data.csv")
+response = requests.put(put_url, data="new data")
 
-# Commit from staging mode (creates new version)
+# Commit with custom version name (allowed due to explicit new version intent)
 committed = await artifact_manager.commit(
     artifact_id=artifact.id,
-    version="v5"  # This only affects the version number
+    version="v2.0-beta"  # Custom version name allowed here
 )
+
+# Edit without new version intent - adds files to existing version
+await artifact_manager.edit(
+    artifact_id=artifact.id,
+    manifest={"name": "Updated Name"},
+    stage=True  # No version="new" specified
+)
+
+# Add file to existing version
+put_url = await artifact_manager.put_file(artifact_id=artifact.id, file_path="update.csv")
+response = requests.put(put_url, data="update data")
+
+# Commit updates existing version (v2.0-beta), does not create new version
+committed = await artifact_manager.commit(artifact_id=artifact.id)
 ```
+
+**Key Benefits of the New System:**
+- **Explicit Control**: Version creation only happens when explicitly requested with `version="new"`
+- **Cost Efficient**: No file copying during commit - files are placed directly in final destinations
+- **Predictable**: No surprise version creation from simply adding files
+- **Performance**: Fast, metadata-only commit operations
+- **S3 Optimized**: Eliminates expensive file duplication in cloud storage

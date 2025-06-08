@@ -11,9 +11,10 @@ DESCRIPTION = (
 )
 
 REQUIREMENTS = [
+    "websockets>=14.0",
     "aiofiles",
     "fastapi>=0.70.0,<=0.106.0",
-    "hypha-rpc>=0.20.51",
+    "hypha-rpc>=0.20.54",
     "msgpack>=1.0.2",
     "numpy",
     "pydantic[email]>=2.6.1",
@@ -45,7 +46,6 @@ REQUIREMENTS = [
     "sqlmodel>=0.0.22",
     "alembic>=1.14.0",
     "hrid>=0.2.4",
-    "asgiproxy>=0.1.1",
     "stream-zip>=0.0.83",
     "prompt-toolkit>=3.0.50",
     "ptpython>=3.0.29",
@@ -77,7 +77,7 @@ setup(
             "aiobotocore>=2.1.0",
         ],
         "server-apps": [
-            "redis>=5.2.0",
+            "redis==5.2.0",
             "aiobotocore>=2.1.0",
             "aiortc>=1.9.0",
             "requests>=2.26.0",

@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   hypha-server:
-    image: ghcr.io/amun-ai/hypha:0.20.51
+    image: ghcr.io/amun-ai/hypha:0.20.54
     ports:
       - "${HYPHA_PORT:-9527}:9527"
     environment:

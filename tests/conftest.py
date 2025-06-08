@@ -125,10 +125,16 @@ def generate_authenticated_user_6():
 def generate_authenticated_user_7():
     """Generate a test user token."""
     yield from _generate_token("user-7", [])
-    
+
 
 @pytest_asyncio.fixture(name="test_user_token_8", scope="session")
 def generate_authenticated_user_8():
+    """Generate a test user token."""
+    yield from _generate_token("user-8", [])
+
+
+@pytest_asyncio.fixture(name="test_user_token_9", scope="session")
+def generate_authenticated_user_9():
     """Generate a test user token."""
     yield from _generate_token("user-8", [])
 
@@ -353,6 +359,7 @@ def fastapi_server_sqlite_fixture(minio_server):
             f"--port={SIO_PORT_SQLITE}",
             "--enable-server-apps",
             "--enable-s3",
+            "--enable-s3-proxy",
             f"--database-uri={db_path}",
             "--migrate-database=head",
             "--reset-redis",
@@ -506,12 +513,12 @@ def minio_server_fixture():
     # Use start_minio_server to manage the Minio instance
     proc, server_url, workdir = start_minio_server(
         executable_path="./bin",  # Specify where executables are/should be downloaded
-        workdir=tempfile.mkdtemp(), # Create a temporary directory for this session
+        workdir=tempfile.mkdtemp(),  # Create a temporary directory for this session
         port=MINIO_PORT,
-        console_port=MINIO_PORT + 1, # Keep console port logic if needed
+        console_port=MINIO_PORT + 1,  # Keep console port logic if needed
         root_user=MINIO_ROOT_USER,
         root_password=MINIO_ROOT_PASSWORD,
-        timeout=10, # Keep timeout
+        timeout=10,  # Keep timeout
     )
 
     if not proc:
@@ -520,16 +527,16 @@ def minio_server_fixture():
     print(f"Minio server started successfully at {server_url}")
     print(f"Minio data directory: {workdir}")
 
-    yield server_url # Yield the URL provided by the function
+    yield server_url  # Yield the URL provided by the function
 
     print("Stopping Minio server...")
     proc.terminate()
     try:
-        proc.wait(timeout=5) # Wait for graceful termination
+        proc.wait(timeout=5)  # Wait for graceful termination
         print("Minio server stopped.")
     except subprocess.TimeoutExpired:
         print("Minio server did not terminate gracefully, killing...")
-        proc.kill() # Force kill if necessary
+        proc.kill()  # Force kill if necessary
     finally:
         # Clean up the temporary directory
         if workdir and os.path.exists(workdir):

@@ -183,10 +183,10 @@ pip install hypha-rpc
 
 The following code registers a service called "Hello World" with the ID "hello-world" and a function called `hello()`. The function takes a single argument, `name`, and prints "Hello" followed by the name. The function also returns a string containing "Hello" followed by the name.
 
-We provide two versions of the code: an asynchronous version for native CPython or Pyodide-based Python in the browser (without thread support), and a synchronous version for native Python with thread support (more details about the [synchronous wrapper](/hypha-rpc?id=synchronous-wrapper)):
+We provide three versions of the code: an asynchronous version for native CPython or Pyodide-based Python in the browser (without thread support), a synchronous version for native Python with thread support (more details about the [synchronous wrapper](/hypha-rpc?id=synchronous-wrapper)), and a JavaScript version for web browsers:
 
 <!-- tabs:start -->
-#### ** Asynchronous Worker **
+#### ** Asynchronous Server **
 
 ```python
 import asyncio
@@ -212,7 +212,7 @@ async def start_server(server_url):
 
     print(f'You can use this service using the service id: {svc.id}')
 
-    print(f"You can also test the service via the HTTP proxy: {server_url}/{server.config.workspace}/services/{svc.id}/hello?name=John")
+    print(f"You can also test the service via the HTTP proxy: {server_url}/{server.config.workspace}/services/{svc.id.split('/')[1]}/hello?name=John")
 
     # Keep the server running
     await server.serve()
@@ -222,7 +222,7 @@ if __name__ == "__main__":
     asyncio.run(start_server(server_url))
 ```
 
-#### ** Synchronous Worker **
+#### ** Synchronous Server **
 
 ```python
 from hypha_rpc.sync import connect_to_server
@@ -247,15 +247,77 @@ def start_server(server_url):
 
     print(f'You can use this service using the service id: {svc.id}')
 
-    print(f"You can also test the service via the HTTP proxy: {server_url}/{server.config.workspace}/services/{svc.id}/hello?name=John")
+    print(f"You can also test the service via the HTTP proxy: {server_url}/{server.config.workspace}/services/{svc.id.split('/')[1]}/hello?name=John")
 
 if __name__ == "__main__":
     server_url = "http://localhost:9527"
     start_server(server_url)
 ```
+
+#### ** JavaScript Server **
+
+First, install the `hypha-rpc` library:
+
+```bash
+npm install hypha-rpc
+```
+
+Or include it via CDN in your HTML file:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.min.js"></script>
+```
+
+Then use the following JavaScript code to register a service:
+
+```javascript
+const serverUrl = "https://hypha.aicell.io"
+
+const loginCallback = (context) => {
+  window.open(context.login_url);
+};
+
+async function startServer(serverUrl) {
+  // Log in and connect to the Hypha server
+  const token = await hyphaWebsocketClient.login({
+    server_url: serverUrl,
+    login_callback: loginCallback,
+  });
+
+  const server = await hyphaWebsocketClient.connectToServer({
+    server_url: serverUrl,
+    token: token,
+  });
+
+  // Define a service method
+  function hello(name, context) {
+    console.log("Hello " + name);
+    return "Hello " + name;
+  }
+
+  // Register the service with the server
+  const myService = await server.registerService({
+    id: "hello-world",
+    name: "Hello World",
+    description: "A simple hello world service",
+    config: {
+      visibility: "public",
+      require_context: true,
+    },
+    hello: hello, // or just `hello,` in modern JS
+  });
+
+  console.log(`Hello world service registered at workspace: ${server.config.workspace}, id: ${myService.id}`);
+  console.log(`You can use this service using the service id: ${myService.id}`);
+  console.log(`You can also test the service via the HTTP proxy: ${serverUrl}/${server.config.workspace}/services/${myService.id.split('/')[1]}/hello?name=John`);
+}
+
+// Start the server
+startServer(serverUrl);
+```
 <!-- tabs:end -->
 
-Run the server via `python hello-world-worker.py` and keep it running. You can now access the service from a client script. You will see the service ID printed in the console, which you can use to access the service.
+Run the server script and keep it running. You can now access the service from a client script. You will see the service ID printed in the console, which you can use to access the service.
 
 Tips: You don't need to run the client script on the same server. If you want to connect to the server from another computer, make sure to change the `server_url` to an URL with the external IP or domain name of the server.
 
@@ -334,7 +396,7 @@ svc = await get_remote_service("http://localhost:9527/ws-user-scintillating-lawy
 Include the following script in your HTML file to load the `hypha-rpc` client:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.51/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
 Use the following code in JavaScript to connect to the server and access an existing service:
@@ -343,7 +405,7 @@ Use the following code in JavaScript to connect to the server and access an exis
 async function main(){
     const server = await hyphaWebsocketClient.connectToServer({"server_url": "http://localhost:9527"})
     // NOTE: You need to replace the service id with the actual id you obtained when registering the service
-    const svc = await server.get_service("ws-user-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
+    const svc = await server.getService("ws-user-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
     const ret = await svc.hello("John")
     console.log(ret)
 }

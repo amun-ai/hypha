@@ -16,9 +16,12 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.datastructures import Headers
 from starlette.types import Receive, Scope, Send
-from asgiproxy.simple_proxy import make_simple_proxy_app
-from asgiproxy.context import ProxyContext
-from asgiproxy.config import BaseURLProxyConfigMixin, ProxyConfig
+from hypha.utils.asgi_proxy import (
+    make_simple_proxy_app,
+    ProxyContext,
+    BaseURLProxyConfigMixin,
+    ProxyConfig,
+)
 
 from hypha.core import UserInfo, WorkspaceInfo, UserPermission
 from hypha.minio import MinioClient

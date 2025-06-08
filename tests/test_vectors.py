@@ -188,7 +188,7 @@ async def test_delete_collection(vector_search_engine):
 
 
 async def test_artifact_vector_collection(
-    minio_server, fastapi_server_redis_1, test_user_token
+    minio_server, fastapi_server_redis_1, test_user_token_9
 ):
     """Test vector-related functions within a vector-collection artifact."""
 
@@ -197,7 +197,7 @@ async def test_artifact_vector_collection(
         {
             "name": "test deploy client",
             "server_url": SERVER_URL_REDIS_1,
-            "token": test_user_token,
+            "token": test_user_token_9,
         }
     ) as api:
         await api.create_workspace(
@@ -213,7 +213,7 @@ async def test_artifact_vector_collection(
         {
             "name": "test deploy client",
             "server_url": SERVER_URL_REDIS_1,
-            "token": test_user_token,
+            "token": test_user_token_9,
             "workspace": "my-vector-test-workspace",
         }
     ) as api:

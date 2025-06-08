@@ -109,7 +109,7 @@ def validate_key_part(key_part: str):
 class GetServiceConfig(BaseModel):
     mode: Optional[str] = Field(
         None,
-        description="Mode for selecting the service, it can be 'random', 'first', 'last' or 'exact'",
+        description="Mode for selecting the service. Can be 'random', 'first', 'last', 'exact', or 'select:criteria:function' format (e.g., 'select:min:get_load', 'select:max:get_cpu_usage')",
     )
     timeout: Optional[float] = Field(
         10.0,
@@ -118,6 +118,10 @@ class GetServiceConfig(BaseModel):
     case_conversion: Optional[str] = Field(
         None,
         description="The case conversion for service keys, can be 'camel', 'snake' or None, default is None.",
+    )
+    select_timeout: Optional[float] = Field(
+        2.0,
+        description="The timeout duration in seconds for calling service functions when using select mode.",
     )
 
 
@@ -557,7 +561,10 @@ class WorkspaceManager:
             self._active_ws.inc()
 
         # Skip S3 setup for anonymous users
-        if not workspace.id.startswith(ANONYMOUS_USER_WS_PREFIX) and self._s3_controller:
+        if (
+            not workspace.id.startswith(ANONYMOUS_USER_WS_PREFIX)
+            and self._s3_controller
+        ):
             await self._s3_controller.setup_workspace(workspace)
 
         # Verify workspace exists in Redis
@@ -1300,7 +1307,7 @@ class WorkspaceManager:
         ),
         config: Optional[dict] = Field(
             None,
-            description="Options for getting service, the only available config is `mode`, for selecting the service, it can be 'random', 'first', 'last' or 'exact'",
+            description="Options for getting service, available configs are `mode` (for selecting the service: 'random', 'first', 'last', 'exact', or 'select:criteria:function') and `select_timeout` (timeout for function calls when using select mode)",
         ),
         context: Optional[dict] = None,
     ):
@@ -1344,7 +1351,7 @@ class WorkspaceManager:
         if mode == "exact":
             assert (
                 len(keys) == 1
-            ), f"Multiple services found for {service_id}, e.g. {keys[:5]}. You can either specify the mode as 'random', 'first' or 'last', or provide the service id in `client_id:service_id` format."
+            ), f"Multiple services found for {service_id}, e.g. {keys[:5]}. You can either specify the mode as 'random', 'first', 'last', or use 'select:criteria:function' format."
             key = keys[0]
         elif mode == "random":
             key = random.choice(keys)
@@ -1352,9 +1359,26 @@ class WorkspaceManager:
             key = keys[0]
         elif mode == "last":
             key = keys[-1]
+        elif mode and mode.startswith("select:"):
+            # Parse the select syntax: select:criteria:function
+            parts = mode.split(":")
+            if len(parts) != 3:
+                raise ValueError(
+                    f"Invalid select mode format: {mode}. Expected 'select:criteria:function'"
+                )
+
+            _, criteria, function_name = parts
+            select_timeout = (
+                config.get("select_timeout", 2.0)
+                if isinstance(config, dict)
+                else getattr(config, "select_timeout", 2.0)
+            )
+            key = await self._select_service_by_function(
+                keys, criteria, function_name, select_timeout
+            )
         else:
             raise ValueError(
-                f"Invalid mode: {mode}, the mode must be 'random', 'first', 'last' or 'exact'"
+                f"Invalid mode: {mode}. Mode must be 'random', 'first', 'last', 'exact', or 'select:criteria:function' format (e.g., 'select:min:get_load')"
             )
         # if it's a public service or the user has read permission
         if not key.startswith(b"services:public|") and not user_info.check_permission(
@@ -2154,3 +2178,75 @@ class WorkspaceManager:
         except Exception as e:
             logger.error(f"Failed to set workspace status: {e}")
             raise
+
+    async def _select_service_by_function(
+        self, keys: List[bytes], criteria: str, function_name: str, timeout: float = 2.0
+    ) -> bytes:
+        """Select service by calling a function on each service and applying selection criteria.
+
+        Args:
+            keys: List of Redis keys for services
+            criteria: Selection criteria ('min', 'max', 'first_success', etc.)
+            function_name: Name of the function to call on each service
+            timeout: Timeout for function calls
+
+        Returns:
+            bytes: The Redis key of the selected service
+        """
+        if len(keys) == 1:
+            return keys[0]
+
+        # Get service APIs and call the specified function
+        service_values = []
+
+        for key in keys:
+            try:
+                # Get service info
+                service_data = await self._redis.hgetall(key)
+                service_info = ServiceInfo.from_redis_dict(service_data)
+
+                # Get the service API
+                service_api = await self._rpc.get_remote_service(
+                    service_info.id, {"timeout": timeout}
+                )
+
+                # Check if the service has the required function
+                if not hasattr(service_api, function_name):
+                    logger.warning(
+                        f"Service {service_info.id} does not have function '{function_name}', skipping"
+                    )
+                    continue
+
+                # Call the function
+                func = getattr(service_api, function_name)
+                result = await func()
+
+                service_values.append((key, result, service_info))
+
+            except Exception as e:
+                logger.warning(f"Failed to call {function_name} on service {key}: {e}")
+                continue
+
+        if not service_values:
+            logger.warning(
+                f"No services responded to {function_name}, falling back to random selection"
+            )
+            return random.choice(keys)
+
+        # Apply selection criteria
+        if criteria == "min":
+            # Select service with minimum value
+            selected_key, value, _ = min(service_values, key=lambda x: float(x[1]))
+            logger.debug(f"Selected service with minimum {function_name}: {value}")
+        elif criteria == "max":
+            # Select service with maximum value
+            selected_key, value, _ = max(service_values, key=lambda x: float(x[1]))
+            logger.debug(f"Selected service with maximum {function_name}: {value}")
+        elif criteria == "first_success":
+            # Select first service that successfully responded
+            selected_key, value, _ = service_values[0]
+            logger.debug(f"Selected first successful service: {value}")
+        else:
+            raise ValueError(f"Unknown selection criteria: {criteria}")
+
+        return selected_key

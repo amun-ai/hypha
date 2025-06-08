@@ -164,7 +164,6 @@ async def test_create_workspace_token(fastapi_server, test_user_token):
 
     print(f"Workspace created: {workspace['name']}")
 
-
     # Generate a workspace token
     token = await user.generate_token(
         {

@@ -48,7 +48,7 @@ if __name__ == "__main__":
 ### JavaScript
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.51/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.min.js"></script>
 <script>
 async function registerService() {
     const server = await hyphaWebsocketClient.connectToServer({
@@ -106,7 +106,7 @@ if __name__ == "__main__":
 ### JavaScript Client
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.51/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.min.js"></script>
 <script>
 async function useService() {
     const server = await hyphaWebsocketClient.connectToServer({
