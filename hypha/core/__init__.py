@@ -208,7 +208,7 @@ class RemoteService(ServiceInfo):
 class UserTokenInfo(BaseModel):
     """Represent user profile."""
 
-    token: constr(max_length=1024)  # type: ignore
+    token: constr(max_length=4096)  # type: ignore
     workspace: Optional[str] = None
     expires_in: Optional[int] = None
     email: Optional[EmailStr] = None
