@@ -21,6 +21,16 @@
             <button onclick="login()" id="login-btn" class="w-full bg-blue-500 text-white py-3 rounded-lg text-lg">
                 Login / Sign up
             </button>
+            <div class="mt-4" id="error-panel" style="display:none;">
+                <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+                    <span class="block sm:inline" id="error-message"></span>
+                    <div class="mt-3">
+                        <button onclick="clearLoginState()" class="bg-red-600 hover:bg-red-700 text-white font-bold py-1 px-3 rounded text-sm">
+                            Clear Login Info
+                        </button>
+                    </div>
+                </div>
+            </div>
             <div class="mt-8" id="info-panel" style="display:none;">
                 <div class="text-center mb-4">
                     <img id="picture" alt="Avatar" class="w-20 h-20 rounded-full mx-auto">
@@ -66,6 +76,7 @@
                 <details class="bg-gray-200 p-4 rounded-lg">
                     <summary class="font-semibold cursor-pointer">Having trouble logging in?</summary>
                     <div class="mt-4">
+                        <p class="mb-4"><strong>If you just signed up:</strong> Check your email and verify your account before you can proceed. You should have received a verification email from Auth0.</p>
                         <p class="mb-2">Ensure that pop-ups are enabled in your browser:</p>
                         <ul class="list-disc list-inside">
                             <li><strong>Chrome:</strong> Go to Settings > Privacy and security > Site Settings > Pop-ups and redirects, and allow pop-ups for this site.</li>
@@ -91,6 +102,32 @@
             useRefreshTokens: true,
             useRefreshTokensFallback: true,
         });
+
+        const showError = (message) => {
+            document.getElementById("error-message").innerHTML = String(message);
+            document.getElementById("error-panel").style.display = "block";
+            // Hide error after 10 seconds
+            setTimeout(() => {
+                document.getElementById("error-panel").style.display = "none";
+            }, 10000);
+        };
+
+        const hideError = () => {
+            document.getElementById("error-panel").style.display = "none";
+        };
+
+        const clearLoginState = async () => {
+            // Clear cookies
+            document.cookie = 'access_token=; path=/; max-age=0; samesite=lax';
+            document.cookie = 'hypha_version=; path=/; max-age=0; samesite=lax';
+            
+            // Clear Auth0 local storage cache
+            try {
+                await auth0.logout({ logoutParams: { returnTo: window.location.href }, localOnly: true });
+            } catch (e) {
+                console.log("Error clearing Auth0 local storage:", e);
+            }
+        };
 
         document.addEventListener('DOMContentLoaded', async () => {
             try {
@@ -235,6 +272,9 @@
         };
 
         window.login = async () => {
+            // Hide any previous errors
+            hideError();
+            
             try {
                 // Manually open the popup window
                 const popupWindow = window.open('', '_blank', 'width=500,height=600');
@@ -247,18 +287,26 @@
                         await showUserProfile();
                     } catch (e) {
                         console.error('Login with popup failed', e);
+                        // Convert error to string and show in UI
+                        let errorMessage = String(e);
+                        if (e.message) {
+                            errorMessage = e.message;
+                        } else if (e.error_description) {
+                            errorMessage = e.error_description;
+                        }
+                        showError(errorMessage);
                         if (!popupWindow.closed) {
                             popupWindow.close(); // Ensure the popup window is closed in case of failure
                         }
                     }
                 } else {
                     console.error('Unable to open popup window for login');
-                    alert('It seesm popup window is blocked by the browser. Please allow popups for the login');
+                    showError('Unable to open popup window for login. Please allow popups for this site.');
                 }
                 
             } catch (e) {
-                alert("Failed to open login window. Please allow pop-ups for this site.");
                 console.error(e);
+                showError("Failed to open login window. Please allow pop-ups for this site.");
             }
         };
 

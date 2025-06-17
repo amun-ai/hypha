@@ -161,6 +161,7 @@
             const [isModalOpen, setIsModalOpen] = React.useState(false);
             const [isLoggedIn, setIsLoggedIn] = React.useState(false);
             const [user, setUser] = React.useState(null);
+            const [loginError, setLoginError] = React.useState(null);
 
             React.useEffect(() => {
                 const fetchConfig = async () => {
@@ -215,8 +216,10 @@
             }, [isLoggedIn, user]);
 
             const onLogin = async () => {
+                // Clear any previous errors
+                setLoginError(null);
+                
                 try {
-
                     // Manually open the popup window
                     const popupWindow = window.open('', '_blank', 'width=500,height=600');
                     if (popupWindow) {
@@ -229,18 +232,43 @@
                             setIsLoggedIn(true);
                         } catch (e) {
                             console.error('Login with popup failed', e);
+                            // Convert error to string and show in UI
+                            let errorMessage = String(e);
+                            if (e.message) {
+                                errorMessage = e.message;
+                            } else if (e.error_description) {
+                                errorMessage = e.error_description;
+                            }
+                            setLoginError(errorMessage);
                             if (!popupWindow.closed) {
                                 popupWindow.close(); // Ensure the popup window is closed in case of failure
                             }
                         }
                     } else {
                         console.error('Unable to open popup window for login');
-                        alert('It seesm popup window is blocked by the browser. Please allow popups for the login');
+                        setLoginError('Unable to open popup window for login. Please allow popups for this site.');
                     }
                 } catch (e) {
-                    alert("Failed to open login window. Please allow pop-ups for this site.");
                     console.error(e);
+                    setLoginError("Failed to open login window. Please allow pop-ups for this site.");
                 }
+            };
+
+            const clearLoginState = async () => {
+                // Clear cookies
+                document.cookie = 'access_token=; path=/; max-age=0; samesite=lax';
+                document.cookie = 'hypha_version=; path=/; max-age=0; samesite=lax';
+                
+                // Clear Auth0 local storage cache
+                try {
+                    await window.auth0Client.logout({ logoutParams: { returnTo: window.location.href }, localOnly: true });
+                } catch (e) {
+                    console.log("Error clearing Auth0 local storage:", e);
+                }
+                
+                // Clear React state
+                setIsLoggedIn(false);
+                setUser(null);
             };
 
             const onLogout = async () => {
@@ -267,6 +295,27 @@
                     <div className="container mx-auto mt-16 pt-20 text-center">
                         <h1 className="text-4xl font-bold">Welcome to Hypha</h1>
                         <p className="text-xl text-gray-400 mt-4">A collaborative workspace for data analysis</p>
+                        {loginError && (
+                            <div className="mt-4 max-w-lg mx-auto">
+                                <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+                                    <span className="block sm:inline">{loginError}</span>
+                                    <div className="mt-3 flex justify-between items-center">
+                                        <button 
+                                            onClick={clearLoginState}
+                                            className="bg-red-600 hover:bg-red-700 text-white font-bold py-1 px-3 rounded text-sm"
+                                        >
+                                            Clear Login Info
+                                        </button>
+                                        <button 
+                                            className="text-red-500 hover:text-red-700 font-bold text-lg"
+                                            onClick={() => setLoginError(null)}
+                                        >
+                                            &times;
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </div>
                     <div className="m-16 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                         <FeatureBlock
