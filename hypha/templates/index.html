@@ -239,6 +239,14 @@
                             } else if (e.error_description) {
                                 errorMessage = e.error_description;
                             }
+                            
+                            // Enhance email verification error message
+                            if (errorMessage.toLowerCase().includes('verify your email') || 
+                                errorMessage.toLowerCase().includes('email verification') ||
+                                errorMessage.toLowerCase().includes('email not verified')) {
+                                errorMessage = "Please check your email and follow the instructions to verify your email address before proceeding with the login. If you don't see the verification email, check your spam folder or try signing up again.";
+                            }
+                            
                             setLoginError(errorMessage);
                             if (!popupWindow.closed) {
                                 popupWindow.close(); // Ensure the popup window is closed in case of failure
