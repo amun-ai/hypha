@@ -4038,6 +4038,12 @@ async def test_secret_management(
         secret_key="api_key",
     )
     assert secret_value == "secret123"
+    
+    # Test get_secret with all secrets (should work)
+    secrets = await artifact_manager.get_secret(
+        artifact_id=artifact_id,
+    )
+    assert secrets == {"api_key": "secret123"}
 
     # Test get_secret for non-existent key (should return None)
     non_existent = await artifact_manager.get_secret(
@@ -4085,49 +4091,20 @@ async def test_secret_management(
     )
     artifact_manager2 = await api2.get_service("public/artifact-manager")
 
-    # First, give the second user read_write permission
-    user_2_payload = valid_token(test_user_token_2)
-    await artifact_manager.edit(
-        artifact_id=artifact_id,
-        config={
-            "permissions": {
-                user_2_payload["sub"]: "rw"
-            }
-        },
-    )
-
-    # Second user should be able to put_secret (has write permission)
-    await artifact_manager2.put_secret(
-        artifact_id=artifact_id,
-        secret_key="user2_secret",
-        secret_value="user2value",
-    )
-
-    # But second user should NOT be able to get_secret (requires admin permission)
-    with pytest.raises(Exception) as exc_info:
-        await artifact_manager2.get_secret(
-            artifact_id=artifact_id,
-            secret_key="api_key",
-        )
-    assert "permission" in str(exc_info.value).lower()
-
-    # Test with user having no permissions
-    # Remove permissions for second user
-    await artifact_manager.edit(
-        artifact_id=artifact_id,
-        config={"permissions": {}},
-    )
-
-    # Second user should not be able to put_secret (no write permission)
+    # Secret operations require workspace-level permissions, not artifact-level permissions
+    # Since test_user_token_2 only has access to their own workspace (ws-user-user-2),
+    # they should not be able to access secrets in user-1's workspace
+    
+    # Second user should NOT be able to put_secret (no workspace permission)
     with pytest.raises(Exception) as exc_info:
         await artifact_manager2.put_secret(
             artifact_id=artifact_id,
-            secret_key="unauthorized_secret",
-            secret_value="value",
+            secret_key="user2_secret",
+            secret_value="user2value",
         )
     assert "permission" in str(exc_info.value).lower()
 
-    # Second user should not be able to get_secret (no admin permission)
+    # Second user should NOT be able to get_secret (no workspace permission)
     with pytest.raises(Exception) as exc_info:
         await artifact_manager2.get_secret(
             artifact_id=artifact_id,

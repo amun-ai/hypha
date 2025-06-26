@@ -3584,7 +3584,7 @@ class ArtifactController:
     async def get_secret(
         self,
         artifact_id: str,
-        secret_key: str,
+        secret_key: str = None,
         context: dict = None,
     ):
         """Get a secret value from an artifact. Requires admin permission."""
@@ -3601,6 +3601,8 @@ class ArtifactController:
                 )
                 
                 secrets = artifact.secrets or {}
+                if secret_key is None:
+                    return secrets
                 return secrets.get(secret_key)
                 
         except Exception as e:
