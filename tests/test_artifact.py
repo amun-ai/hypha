@@ -4006,3 +4006,190 @@ async def test_no_automatic_new_version_intent(
 
     # Clean up
     await artifact_manager.delete(artifact_id=artifact.id)
+
+
+async def test_secret_management(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """Test secret management functions."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create an artifact with admin user
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Test Artifact"},
+    )
+    artifact_id = artifact.id
+
+    # Test put_secret with admin user (should work)
+    await artifact_manager.put_secret(
+        artifact_id=artifact_id,
+        secret_key="api_key",
+        secret_value="secret123",
+    )
+
+    # Test get_secret with admin user (should work)
+    secret_value = await artifact_manager.get_secret(
+        artifact_id=artifact_id,
+        secret_key="api_key",
+    )
+    assert secret_value == "secret123"
+
+    # Test get_secret for non-existent key (should return None)
+    non_existent = await artifact_manager.get_secret(
+        artifact_id=artifact_id,
+        secret_key="nonexistent",
+    )
+    assert non_existent is None
+
+    # Test updating existing secret
+    await artifact_manager.put_secret(
+        artifact_id=artifact_id,
+        secret_key="api_key",
+        secret_value="updated_secret",
+    )
+    
+    updated_value = await artifact_manager.get_secret(
+        artifact_id=artifact_id,
+        secret_key="api_key",
+    )
+    assert updated_value == "updated_secret"
+
+    # Test adding multiple secrets
+    await artifact_manager.put_secret(
+        artifact_id=artifact_id,
+        secret_key="db_password",
+        secret_value="dbpass456",
+    )
+
+    db_password = await artifact_manager.get_secret(
+        artifact_id=artifact_id,
+        secret_key="db_password",
+    )
+    assert db_password == "dbpass456"
+
+    # Verify original secret still exists
+    api_key = await artifact_manager.get_secret(
+        artifact_id=artifact_id,
+        secret_key="api_key",
+    )
+    assert api_key == "updated_secret"
+
+    # Test permission restrictions with second user (non-admin)
+    api2 = await connect_to_server(
+        {"name": "test-client-2", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
+    artifact_manager2 = await api2.get_service("public/artifact-manager")
+
+    # First, give the second user read_write permission
+    await artifact_manager.edit(
+        artifact_id=artifact_id,
+        config={
+            "permissions": {
+                decode_jwt(test_user_token_2)["id"]: "rw"
+            }
+        },
+    )
+
+    # Second user should be able to put_secret (has write permission)
+    await artifact_manager2.put_secret(
+        artifact_id=artifact_id,
+        secret_key="user2_secret",
+        secret_value="user2value",
+    )
+
+    # But second user should NOT be able to get_secret (requires admin permission)
+    with pytest.raises(Exception) as exc_info:
+        await artifact_manager2.get_secret(
+            artifact_id=artifact_id,
+            secret_key="api_key",
+        )
+    assert "permission" in str(exc_info.value).lower()
+
+    # Test with user having no permissions
+    # Remove permissions for second user
+    await artifact_manager.edit(
+        artifact_id=artifact_id,
+        config={"permissions": {}},
+    )
+
+    # Second user should not be able to put_secret (no write permission)
+    with pytest.raises(Exception) as exc_info:
+        await artifact_manager2.put_secret(
+            artifact_id=artifact_id,
+            secret_key="unauthorized_secret",
+            secret_value="value",
+        )
+    assert "permission" in str(exc_info.value).lower()
+
+    # Second user should not be able to get_secret (no admin permission)
+    with pytest.raises(Exception) as exc_info:
+        await artifact_manager2.get_secret(
+            artifact_id=artifact_id,
+            secret_key="api_key",
+        )
+    assert "permission" in str(exc_info.value).lower()
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact_id)
+
+
+async def test_secret_edge_cases(minio_server, fastapi_server, test_user_token):
+    """Test edge cases for secret management."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create an artifact
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Test Artifact"},
+    )
+    artifact_id = artifact.id
+
+    # Test with None secret value (should work)
+    await artifact_manager.put_secret(
+        artifact_id=artifact_id,
+        secret_key="null_secret",
+        secret_value=None,
+    )
+
+    null_value = await artifact_manager.get_secret(
+        artifact_id=artifact_id,
+        secret_key="null_secret",
+    )
+    assert null_value is None
+
+    # Test with empty string secret value
+    await artifact_manager.put_secret(
+        artifact_id=artifact_id,
+        secret_key="empty_secret",
+        secret_value="",
+    )
+
+    empty_value = await artifact_manager.get_secret(
+        artifact_id=artifact_id,
+        secret_key="empty_secret",
+    )
+    assert empty_value == ""
+
+    # Test with non-existent artifact
+    with pytest.raises(Exception):
+        await artifact_manager.get_secret(
+            artifact_id="nonexistent/artifact",
+            secret_key="key",
+        )
+
+    with pytest.raises(Exception):
+        await artifact_manager.put_secret(
+            artifact_id="nonexistent/artifact",
+            secret_key="key",
+            secret_value="value",
+        )
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=artifact_id)

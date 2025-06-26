@@ -1,5 +1,10 @@
 # Hypha Change Log
 
+### 0.20.55
+
+ - Add `get_secret` and `put_secret` to the artifact manager to allow storing and retrieving secret values in the artifact.
+ - Add `set_env` and `get_env` to workspace to allow setting and retrieving environment variables in the workspace.
+
 ### 0.20.41
 
  - Add `stop_after_inactive` option for server apps to stop the server app after a period of inactivity.

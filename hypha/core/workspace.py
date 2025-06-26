@@ -376,6 +376,54 @@ class WorkspaceManager:
             await session.close()
 
     @schema_method
+    async def set_env(
+        self,
+        key: str = Field(..., description="Environment variable key"),
+        value: str = Field(..., description="Environment variable value"),
+        context: Optional[dict] = None,
+    ):
+        """Set an environment variable for the workspace."""
+        assert context is not None
+        ws = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(ws, UserPermission.read_write):
+            raise PermissionError(f"Permission denied for workspace {ws}")
+
+        workspace_info = await self.load_workspace_info(ws)
+        workspace_info.config = workspace_info.config or {}
+        if "environs" not in workspace_info.config:
+            workspace_info.config["environs"] = {}
+        
+        workspace_info.config["environs"][key] = value
+        await self._update_workspace(workspace_info, user_info)
+        await self.log_event("env_set", {"key": key}, context=context)
+        logger.info(f"Environment variable '{key}' set in workspace {ws}")
+
+    @schema_method
+    async def get_env(
+        self,
+        key: Optional[str] = Field(None, description="Environment variable key (optional, returns all if not specified)"),
+        context: Optional[dict] = None,
+    ):
+        """Get environment variable(s) from the workspace."""
+        assert context is not None
+        ws = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        if not user_info.check_permission(ws, UserPermission.read_write):
+            raise PermissionError(f"Permission denied for workspace {ws}")
+
+        workspace_info = await self.load_workspace_info(ws)
+        workspace_info.config = workspace_info.config or {}
+        environs = workspace_info.config.get("environs", {})
+        
+        if key is None:
+            return environs
+        else:
+            if key not in environs:
+                raise KeyError(f"Environment variable '{key}' not found in workspace {ws}")
+            return environs[key]
+
+    @schema_method
     async def get_summary(self, context: Optional[dict] = None) -> dict:
         """Get a summary about the workspace."""
         assert context is not None
@@ -2069,6 +2117,8 @@ class WorkspaceManager:
             "ping": self.ping_client,
             "cleanup": self.cleanup,
             "check_status": self.check_status,
+            "set_env": self.set_env,
+            "get_env": self.get_env,
         }
         interface["config"].update(self._server_info)
         return interface
