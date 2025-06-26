@@ -12,6 +12,7 @@ import json
 import zipfile
 
 from . import SERVER_URL, SERVER_URL_SQLITE, find_item
+from hypha.core.auth import valid_token
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
@@ -4085,11 +4086,12 @@ async def test_secret_management(
     artifact_manager2 = await api2.get_service("public/artifact-manager")
 
     # First, give the second user read_write permission
+    user_2_payload = valid_token(test_user_token_2)
     await artifact_manager.edit(
         artifact_id=artifact_id,
         config={
             "permissions": {
-                decode_jwt(test_user_token_2)["id"]: "rw"
+                user_2_payload["sub"]: "rw"
             }
         },
     )
