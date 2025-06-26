@@ -1127,9 +1127,11 @@ class ArtifactController:
             "put_file": UserPermission.read_write,
             "remove_vectors": UserPermission.read_write,
             "remove_file": UserPermission.read_write,
+            "put_secret": UserPermission.read_write,
             "delete": UserPermission.admin,
             "reset_stats": UserPermission.admin,
             "publish": UserPermission.admin,
+            "get_secret": UserPermission.admin,
         }
         required_perm = operation_map.get(operation)
         if required_perm is None:
@@ -3579,6 +3581,76 @@ class ArtifactController:
         finally:
             await session.close()
 
+    async def get_secret(
+        self,
+        artifact_id: str,
+        secret_key: str = None,
+        context: dict = None,
+    ):
+        """Get a secret value from an artifact. Requires admin permission."""
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.model_validate(context["user"])
+        session = await self._get_session(read_only=True)
+        
+        try:
+            async with session.begin():
+                artifact, _ = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "get_secret", session
+                )
+                
+                secrets = artifact.secrets or {}
+                if secret_key is None:
+                    return secrets
+                return secrets.get(secret_key)
+                
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
+    async def put_secret(
+        self,
+        artifact_id: str,
+        secret_key: str,
+        secret_value: str,
+        context: dict = None,
+    ):
+        """Set a secret value for an artifact. Requires read_write permission."""
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.model_validate(context["user"])
+        session = await self._get_session()
+        
+        try:
+            async with session.begin():
+                artifact, _ = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "put_secret", session
+                )
+                
+                # Initialize secrets dict if it doesn't exist
+                if artifact.secrets is None:
+                    artifact.secrets = {}
+                
+                # Update the secret
+                artifact.secrets[secret_key] = secret_value
+                artifact.last_modified = int(time.time())
+                
+                # Mark the field as modified for SQLAlchemy
+                flag_modified(artifact, "secrets")
+                
+                session.add(artifact)
+                await session.commit()
+                
+                logger.info(f"Updated secret '{secret_key}' for artifact {artifact_id}")
+                
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
     def get_artifact_service(self):
         """Return the artifact service definition."""
         return {
@@ -3604,4 +3676,6 @@ class ArtifactController:
             "get_vector": self.get_vector,
             "list_vectors": self.list_vectors,
             "publish": self.publish,
+            "get_secret": self.get_secret,
+            "put_secret": self.put_secret,
         }

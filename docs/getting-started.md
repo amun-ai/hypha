@@ -265,7 +265,7 @@ npm install hypha-rpc
 Or include it via CDN in your HTML file:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.55/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
 Then use the following JavaScript code to register a service:
@@ -396,7 +396,7 @@ svc = await get_remote_service("http://localhost:9527/ws-user-scintillating-lawy
 Include the following script in your HTML file to load the `hypha-rpc` client:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.55/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
 Use the following code in JavaScript to connect to the server and access an existing service:
@@ -595,6 +595,69 @@ With the token, you can now request any protected service by passing the `token`
 curl -X POST "https://ai.imjoy.io/public/services/hello-world/hello" -H "Content-Type: application/json" -H "Authorization : Bearer <token>" -d '{"name": "John"}'
 ```
 For more details, see the service request api endpoint [here](https://ai.imjoy.io/api-docs#/default/service_function__workspace__services__service___keys__post).
+
+### Workspace Environment Variables
+
+Hypha allows you to store and share configuration variables within a workspace. These environment variables are useful for sharing API keys, database URLs, and other configuration parameters between services without hardcoding them. Variables are persisted in S3 storage and shared between all authorized clients in the same workspace.
+
+**Note:** Both `set_env` and `get_env` require `read_write` permission on the workspace.
+
+<!-- tabs:start -->
+#### ** Python (Async) **
+
+```python
+from hypha_rpc import connect_to_server
+
+async def main():
+    # Connect with a token that has read_write permission
+    server = await connect_to_server({
+        "server_url": "https://ai.imjoy.io",
+        "token": "your-token-here"
+    })
+    
+    # Set environment variables
+    await server.set_env("DATABASE_URL", "postgres://localhost:5432/mydb")
+    await server.set_env("API_KEY", "your-secret-key")
+    
+    # Get a specific environment variable
+    db_url = await server.get_env("DATABASE_URL")
+    print(f"Database URL: {db_url}")
+    
+    # Get all environment variables
+    all_vars = await server.get_env()
+    print(f"All variables: {all_vars}")
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+```
+
+#### ** JavaScript **
+
+```javascript
+async function main() {
+    // Connect with a token that has read_write permission
+    const server = await hyphaWebsocketClient.connectToServer({
+        server_url: "https://ai.imjoy.io",
+        token: "your-token-here"
+    });
+    
+    // Set environment variables
+    await server.setEnv("DATABASE_URL", "postgres://localhost:5432/mydb");
+    await server.setEnv("API_KEY", "your-secret-key");
+    
+    // Get a specific environment variable
+    const dbUrl = await server.getEnv("DATABASE_URL");
+    console.log("Database URL:", dbUrl);
+    
+    // Get all environment variables
+    const allVars = await server.getEnv();
+    console.log("All variables:", allVars);
+}
+
+main();
+```
+<!-- tabs:end -->
 
 ### Service Probes
 
