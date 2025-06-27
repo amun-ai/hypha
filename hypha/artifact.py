@@ -3641,7 +3641,7 @@ class ArtifactController:
                 else:
                     artifact.secrets[secret_key] = secret_value
                     logger.info(f"Updated secret '{secret_key}' for artifact {artifact_id}")
-                
+
                 artifact.last_modified = int(time.time())
                 
                 # Mark the field as modified for SQLAlchemy
@@ -3649,6 +3649,9 @@ class ArtifactController:
                 
                 session.add(artifact)
                 await session.commit()
+                
+                logger.info(f"Updated secret '{secret_key}' for artifact {artifact_id}")
+
         except Exception as e:
             raise e
         finally:
