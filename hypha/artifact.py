@@ -1127,7 +1127,7 @@ class ArtifactController:
             "put_file": UserPermission.read_write,
             "remove_vectors": UserPermission.read_write,
             "remove_file": UserPermission.read_write,
-            "put_secret": UserPermission.read_write,
+            "set_secret": UserPermission.read_write,
             "delete": UserPermission.admin,
             "reset_stats": UserPermission.admin,
             "publish": UserPermission.admin,
@@ -3610,7 +3610,7 @@ class ArtifactController:
         finally:
             await session.close()
 
-    async def put_secret(
+    async def set_secret(
         self,
         artifact_id: str,
         secret_key: str,
@@ -3627,15 +3627,21 @@ class ArtifactController:
         try:
             async with session.begin():
                 artifact, _ = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "put_secret", session
+                    user_info, artifact_id, "set_secret", session
                 )
                 
                 # Initialize secrets dict if it doesn't exist
                 if artifact.secrets is None:
                     artifact.secrets = {}
+                # Update or remove the secret
+                if secret_value is None:
+                    if secret_key in artifact.secrets:
+                        del artifact.secrets[secret_key]
+                        logger.info(f"Removed secret '{secret_key}' from artifact {artifact_id}")
+                else:
+                    artifact.secrets[secret_key] = secret_value
+                    logger.info(f"Updated secret '{secret_key}' for artifact {artifact_id}")
                 
-                # Update the secret
-                artifact.secrets[secret_key] = secret_value
                 artifact.last_modified = int(time.time())
                 
                 # Mark the field as modified for SQLAlchemy
@@ -3643,9 +3649,6 @@ class ArtifactController:
                 
                 session.add(artifact)
                 await session.commit()
-                
-                logger.info(f"Updated secret '{secret_key}' for artifact {artifact_id}")
-                
         except Exception as e:
             raise e
         finally:
@@ -3677,5 +3680,5 @@ class ArtifactController:
             "list_vectors": self.list_vectors,
             "publish": self.publish,
             "get_secret": self.get_secret,
-            "put_secret": self.put_secret,
+            "set_secret": self.set_secret,
         }

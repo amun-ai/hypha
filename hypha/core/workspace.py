@@ -394,10 +394,17 @@ class WorkspaceManager:
         if "environs" not in workspace_info.config:
             workspace_info.config["environs"] = {}
         
-        workspace_info.config["environs"][key] = value
+        if value is None:
+            if key in workspace_info.config["environs"]:
+                del workspace_info.config["environs"][key]
+                await self.log_event("env_removed", {"key": key}, context=context)
+                logger.info(f"Environment variable '{key}' removed from workspace {ws}")
+        else:
+            workspace_info.config["environs"][key] = value
+            await self.log_event("env_set", {"key": key}, context=context)
+            logger.info(f"Environment variable '{key}' set in workspace {ws}")
+            
         await self._update_workspace(workspace_info, user_info)
-        await self.log_event("env_set", {"key": key}, context=context)
-        logger.info(f"Environment variable '{key}' set in workspace {ws}")
 
     @schema_method
     async def get_env(

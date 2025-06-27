@@ -618,6 +618,8 @@ async def main():
     # Set environment variables
     await server.set_env("DATABASE_URL", "postgres://localhost:5432/mydb")
     await server.set_env("API_KEY", "your-secret-key")
+    # Remove an environment variable
+    await server.set_env("API_KEY", None)
     
     # Get a specific environment variable
     db_url = await server.get_env("DATABASE_URL")
@@ -643,11 +645,12 @@ async function main() {
     });
     
     // Set environment variables
-    await server.setEnv("DATABASE_URL", "postgres://localhost:5432/mydb");
-    await server.setEnv("API_KEY", "your-secret-key");
-    
+    await server.setEnv({key: "DATABASE_URL", value: "postgres://localhost:5432/mydb", _rkwargs: true});
+    await server.setEnv({key: "API_KEY", value: "your-secret-key", _rkwargs: true});
+    // Remove an environment variable
+    await server.setEnv({key: "API_KEY", value: null, _rkwargs: true});
     // Get a specific environment variable
-    const dbUrl = await server.getEnv("DATABASE_URL");
+    const dbUrl = await server.getEnv({key: "DATABASE_URL", value: null, _rkwargs: true});
     console.log("Database URL:", dbUrl);
     
     // Get all environment variables
