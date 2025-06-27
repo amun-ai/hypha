@@ -393,7 +393,7 @@ class WorkspaceManager:
         workspace_info.config = workspace_info.config or {}
         if "environs" not in workspace_info.config:
             workspace_info.config["environs"] = {}
-        
+
         if value is None:
             if key in workspace_info.config["environs"]:
                 del workspace_info.config["environs"][key]
