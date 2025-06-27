@@ -817,6 +817,7 @@ class WorkspaceManager:
         user_info.scope = create_scope(
             {allowed_workspace: permission},
             current_workspace=allowed_workspace,
+            client_id=config.client_id,
             extra_scopes=extra_scopes,
         )
         config.expires_in = config.expires_in or 3600
