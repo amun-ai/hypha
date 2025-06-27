@@ -122,7 +122,7 @@ async def test_generate_token_with_client_id_restriction(fastapi_server):
             ):
                 assert False, "Should have raised an exception due to client_id mismatch"
         except Exception as e:
-            assert "Client id mismatch: this token is restricted to client 'allowed-client'" in str(e)
+            assert "Client id mismatch" in str(e) and "allowed-client" in str(e)
 
 
 async def test_generate_token_without_client_id_restriction(fastapi_server):

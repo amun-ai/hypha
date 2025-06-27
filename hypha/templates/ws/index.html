@@ -719,12 +719,13 @@
         const TokenPanel = ({ workspaceId, onGenerateToken }) => {
             const [workspace, setWorkspace] = React.useState(workspaceId);
             const [expiryTime, setExpiryTime] = React.useState(3600);
+            const [clientId, setClientId] = React.useState(null);
             const [generatedToken, setGeneratedToken] = React.useState('');
             const [showSnackBar, setShowSnackBar] = React.useState(false);
 
             const handleGenerateToken = async () => {
                 try {
-                    const token = await onGenerateToken(workspace, expiryTime);
+                    const token = await onGenerateToken(workspace, expiryTime, clientId);
                     setGeneratedToken(token);
                 } catch (error) {
                     console.error("Failed to generate token:", error);
@@ -765,6 +766,23 @@
                             placeholder="3600"
                             value={expiryTime}
                             onChange={(e) => setExpiryTime(e.target.value)}
+                        />
+                    </div>
+                    <div className="mt-4">
+                        <label htmlFor="client-id" className="block text-sm font-medium text-gray-300">
+                            Client ID (Optional)
+                            <p className="text-gray-500 text-xs mt-1">
+                                If specified, this token can only be used by the client with this ID. Leave empty for unrestricted access.
+                            </p>
+                        </label>
+                        <input
+                            type="text"
+                            id="client-id"
+                            name="client-id"
+                            className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                            placeholder="e.g., my-app-client"
+                            value={clientId || ''}
+                            onChange={(e) => setClientId(e.target.value.trim() === '' ? null : e.target.value)}
                         />
                     </div>
                     <div className="mt-4">
@@ -1941,8 +1959,12 @@
                             </h2>
                             <TokenPanel
                                 workspaceId={workspaceId}
-                                onGenerateToken={async (workspace, expiryTime) => {
-                                    const token = await ws.generateToken({ expires_in: expiryTime, workspace });
+                                onGenerateToken={async (workspace, expiryTime, clientId) => {
+                                    const tokenConfig = { expires_in: expiryTime, workspace };
+                                    if (clientId && clientId.trim()) {
+                                        tokenConfig.client_id = clientId.trim();
+                                    }
+                                    const token = await ws.generateToken(tokenConfig);
                                     return token;
                                 }}
                             />
