@@ -240,6 +240,12 @@ class WebsocketServer:
                 )
             elif token:
                 user_info = await self.store.parse_user_token(token)
+                # Check if the token has a restricted client_id
+                if user_info.scope and user_info.scope.client_id:
+                    # Token is restricted to a specific client_id
+                    if user_info.scope.client_id != client_id:
+                        logger.error(f"Client id mismatch: token restricted to '{user_info.scope.client_id}' but client '{client_id}' attempted to use it")
+                        raise RuntimeError(f"Client id mismatch: this token is restricted to client with client_id='{user_info.scope.client_id}'")
                 # user token doesn't have client id, so we add that
                 user_info.scope.client_id = client_id
                 if user_info.scope.current_workspace and workspace:

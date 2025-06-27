@@ -4025,8 +4025,8 @@ async def test_secret_management(
     )
     artifact_id = artifact.id
 
-    # Test put_secret with admin user (should work)
-    await artifact_manager.put_secret(
+    # Test set_secret with admin user (should work)
+    await artifact_manager.set_secret(
         artifact_id=artifact_id,
         secret_key="api_key",
         secret_value="secret123",
@@ -4053,7 +4053,7 @@ async def test_secret_management(
     assert non_existent is None
 
     # Test updating existing secret
-    await artifact_manager.put_secret(
+    await artifact_manager.set_secret(
         artifact_id=artifact_id,
         secret_key="api_key",
         secret_value="updated_secret",
@@ -4066,7 +4066,7 @@ async def test_secret_management(
     assert updated_value == "updated_secret"
 
     # Test adding multiple secrets
-    await artifact_manager.put_secret(
+    await artifact_manager.set_secret(
         artifact_id=artifact_id,
         secret_key="db_password",
         secret_value="dbpass456",
@@ -4095,9 +4095,9 @@ async def test_secret_management(
     # Since test_user_token_2 only has access to their own workspace (ws-user-user-2),
     # they should not be able to access secrets in user-1's workspace
     
-    # Second user should NOT be able to put_secret (no workspace permission)
+    # Second user should NOT be able to set_secret (no workspace permission)
     with pytest.raises(Exception) as exc_info:
-        await artifact_manager2.put_secret(
+        await artifact_manager2.set_secret(
             artifact_id=artifact_id,
             secret_key="user2_secret",
             secret_value="user2value",
@@ -4131,7 +4131,7 @@ async def test_secret_edge_cases(minio_server, fastapi_server, test_user_token):
     artifact_id = artifact.id
 
     # Test with None secret value (should work)
-    await artifact_manager.put_secret(
+    await artifact_manager.set_secret(
         artifact_id=artifact_id,
         secret_key="null_secret",
         secret_value=None,
@@ -4144,7 +4144,7 @@ async def test_secret_edge_cases(minio_server, fastapi_server, test_user_token):
     assert null_value is None
 
     # Test with empty string secret value
-    await artifact_manager.put_secret(
+    await artifact_manager.set_secret(
         artifact_id=artifact_id,
         secret_key="empty_secret",
         secret_value="",
@@ -4164,7 +4164,7 @@ async def test_secret_edge_cases(minio_server, fastapi_server, test_user_token):
         )
 
     with pytest.raises(Exception):
-        await artifact_manager.put_secret(
+        await artifact_manager.set_secret(
             artifact_id="nonexistent/artifact",
             secret_key="key",
             secret_value="value",

@@ -2,8 +2,9 @@
 
 ### 0.20.55
 
- - Add `get_secret` and `put_secret` to the artifact manager to allow storing and retrieving secret values in the artifact.
+ - Add `get_secret` and `set_secret` to the artifact manager to allow storing and retrieving secret values in the artifact.
  - Add `set_env` and `get_env` to workspace to allow setting and retrieving environment variables in the workspace.
+ - Provide environment variables in the web ui.
 
 ### 0.20.41
 

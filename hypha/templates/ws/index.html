@@ -160,7 +160,7 @@
 <body class="bg-black text-white font-poppins">
     <div id="app"></div>
     <script type="module">
-        import { HyphaCore } from "https://cdn.jsdelivr.net/npm/hypha-core@0.20.55/dist/hypha-core.mjs";
+        import { HyphaCore } from "https://cdn.jsdelivr.net/npm/hypha-core@0.20.58/dist/hypha-core.mjs";
 
         const defaultService = {
             getServerConfig(context){
@@ -463,15 +463,269 @@
             );
         };
 
+        const EnvManagementPanel = ({ ws }) => {
+            const [envVars, setEnvVars] = React.useState({});
+            const [showEnvVars, setShowEnvVars] = React.useState(false);
+            const [newEnvKey, setNewEnvKey] = React.useState('');
+            const [newEnvValue, setNewEnvValue] = React.useState('');
+            const [loading, setLoading] = React.useState(false);
+            const [visibleValues, setVisibleValues] = React.useState({});
+            const [copiedKeys, setCopiedKeys] = React.useState({});
+
+            const fetchEnvVars = async () => {
+                if (!ws) return;
+                try {
+                    setLoading(true);
+                    const allEnvs = await ws.getEnv();
+                    setEnvVars(allEnvs || {});
+                } catch (error) {
+                    console.error('Failed to fetch environment variables:', error);
+                    alert('Failed to fetch environment variables: ' + error.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            React.useEffect(() => {
+                if (showEnvVars) {
+                    fetchEnvVars();
+                }
+            }, [showEnvVars, ws]);
+
+            const handleAddEnvVar = async () => {
+                if (!newEnvKey.trim()) {
+                    alert('Please enter a valid environment variable name');
+                    return;
+                }
+                
+                try {
+                    setLoading(true);
+                    await ws.setEnv(newEnvKey.trim(), newEnvValue);
+                    setNewEnvKey('');
+                    setNewEnvValue('');
+                    await fetchEnvVars();
+                } catch (error) {
+                    console.error('Failed to set environment variable:', error);
+                    alert('Failed to set environment variable: ' + error.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleRemoveEnvVar = async (key) => {
+                if (!confirm(`Are you sure you want to remove the environment variable "${key}"?`)) {
+                    return;
+                }
+                
+                try {
+                    setLoading(true);
+                    await ws.setEnv({key, value: null, _rkwargs: true});
+                    await fetchEnvVars();
+                } catch (error) {
+                    console.error('Failed to remove environment variable:', error);
+                    alert('Failed to remove environment variable: ' + error.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const toggleValueVisibility = (key) => {
+                setVisibleValues(prev => ({
+                    ...prev,
+                    [key]: !prev[key]
+                }));
+            };
+
+            const copyEnvVar = async (key, value) => {
+                const envString = `${key}="${value}"`;
+                try {
+                    await navigator.clipboard.writeText(envString);
+                    // Show copied feedback
+                    setCopiedKeys(prev => ({ ...prev, [key]: true }));
+                    setTimeout(() => {
+                        setCopiedKeys(prev => ({ ...prev, [key]: false }));
+                    }, 2000);
+                } catch (error) {
+                    console.error('Failed to copy to clipboard:', error);
+                    // Fallback for older browsers
+                    const textArea = document.createElement('textarea');
+                    textArea.value = envString;
+                    document.body.appendChild(textArea);
+                    textArea.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(textArea);
+                    // Show copied feedback for fallback too
+                    setCopiedKeys(prev => ({ ...prev, [key]: true }));
+                    setTimeout(() => {
+                        setCopiedKeys(prev => ({ ...prev, [key]: false }));
+                    }, 2000);
+                }
+            };
+
+            return (
+                <div className="main-content">
+                    <p className="text-xl text-gray-400 mt-4">
+                        Manage environment variables shared across all clients in this workspace
+                    </p>
+                    
+                    <button
+                        className={`mt-4 font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
+                            showEnvVars 
+                                ? 'bg-red-600 hover:bg-red-500 text-white' 
+                                : 'bg-blue-600 hover:bg-blue-500 text-white'
+                        }`}
+                        onClick={() => setShowEnvVars(!showEnvVars)}
+                        disabled={loading}
+                    >
+                        <i className={`fas ${showEnvVars ? 'fa-eye-slash' : 'fa-eye'} mr-2`}></i>
+                        {showEnvVars ? 'Hide' : 'Show'} Environment Variables
+                    </button>
+
+                    {showEnvVars && (
+                        <div className="mt-6 p-6 bg-gray-800 rounded-lg shadow-lg">
+                            {/* Add new environment variable */}
+                            <div className="mb-4 p-3 bg-gray-700 rounded-lg">
+                                <h3 className="text-lg font-bold mb-3 text-white">Add New Environment Variable</h3>
+                                <div className="flex flex-col md:flex-row gap-3">
+                                    <div className="flex-1">
+                                        <label className="block text-sm font-medium text-gray-300 mb-1">
+                                            Variable Name
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={newEnvKey}
+                                            onChange={(e) => setNewEnvKey(e.target.value)}
+                                            placeholder="e.g., API_KEY"
+                                            className="w-full px-3 py-2 border border-gray-600 rounded-md bg-gray-900 text-white"
+                                            disabled={loading}
+                                        />
+                                    </div>
+                                    <div className="flex-1">
+                                        <label className="block text-sm font-medium text-gray-300 mb-1">
+                                            Value
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={newEnvValue}
+                                            onChange={(e) => setNewEnvValue(e.target.value)}
+                                            placeholder="Variable value"
+                                            className="w-full px-3 py-2 border border-gray-600 rounded-md bg-gray-900 text-white"
+                                            disabled={loading}
+                                        />
+                                    </div>
+                                    <div className="flex items-end">
+                                        <button
+                                            onClick={handleAddEnvVar}
+                                            disabled={loading || !newEnvKey.trim()}
+                                            className="w-full md:w-auto bg-green-600 hover:bg-green-500 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition duration-300"
+                                        >
+                                            {loading ? 'Adding...' : 'Add Variable'}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Current environment variables */}
+                            <div>
+                                <h3 className="text-lg font-bold mb-4 text-white">Current Environment Variables</h3>
+                                {loading ? (
+                                    <div className="text-center py-4">
+                                        <i className="fas fa-spinner fa-spin text-2xl text-gray-400"></i>
+                                        <p className="text-gray-400 mt-2">Loading environment variables...</p>
+                                    </div>
+                                ) : Object.keys(envVars).length === 0 ? (
+                                    <div className="text-center py-8 text-gray-400">
+                                        <i className="fas fa-inbox text-4xl mb-4"></i>
+                                        <p>No environment variables set</p>
+                                    </div>
+                                ) : (
+                                                                         <div className="space-y-3">
+                                        {Object.entries(envVars).map(([key, value]) => (
+                                            <div
+                                                key={key}
+                                                className="flex items-center justify-between p-3 bg-gray-700 rounded-lg hover:bg-gray-600 transition duration-300"
+                                            >
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex items-center space-x-3">
+                                                        <span className="font-mono text-sm bg-gray-800 px-2 py-1 rounded text-green-400">
+                                                            {key}
+                                                        </span>
+                                                        <span className="text-gray-300">=</span>
+                                                        <span className="font-mono text-sm text-gray-300 truncate">
+                                                            {visibleValues[key] 
+                                                                ? (typeof value === 'string' && value.length > 50 
+                                                                    ? `${value.substring(0, 50)}...` 
+                                                                    : String(value))
+                                                                : '****'
+                                                            }
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center space-x-2">
+                                                    <button
+                                                        onClick={() => toggleValueVisibility(key)}
+                                                        className="bg-gray-600 hover:bg-gray-500 text-white font-bold py-1 px-3 rounded transition duration-300 flex items-center"
+                                                        title={visibleValues[key] ? 'Hide value' : 'Show value'}
+                                                    >
+                                                        <i className={`fas ${visibleValues[key] ? 'fa-eye-slash' : 'fa-eye'}`}></i>
+                                                    </button>
+                                                    <button
+                                                        onClick={() => copyEnvVar(key, value)}
+                                                        className={`font-bold py-1 px-3 rounded transition duration-300 flex items-center ${
+                                                            copiedKeys[key] 
+                                                                ? 'bg-green-600 hover:bg-green-500 text-white' 
+                                                                : 'bg-blue-600 hover:bg-blue-500 text-white'
+                                                        }`}
+                                                        title={copiedKeys[key] ? 'Copied!' : `Copy ${key}="${value}"`}
+                                                    >
+                                                        <i className={`fas ${copiedKeys[key] ? 'fa-check' : 'fa-copy'}`}></i>
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleRemoveEnvVar(key)}
+                                                        disabled={loading}
+                                                        className="bg-red-600 hover:bg-red-500 disabled:bg-gray-600 text-white font-bold py-1 px-3 rounded transition duration-300 flex items-center"
+                                                        title={`Remove ${key}`}
+                                                    >
+                                                        <i className="fas fa-times"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Info box */}
+                            <div className="mt-6 p-4 bg-blue-900 bg-opacity-30 border border-blue-700 rounded-lg">
+                                <div className="flex items-start">
+                                    <i className="fas fa-info-circle text-blue-400 mr-3 mt-1"></i>
+                                    <div className="text-sm text-blue-200">
+                                        <p className="font-medium mb-1">About Environment Variables:</p>
+                                        <ul className="list-disc list-inside space-y-1 text-blue-300">
+                                            <li>Environment variables are shared across all clients in this workspace</li>
+                                            <li>They are stored securely and persist between sessions</li>
+                                            <li>Use them to store API keys, configuration values, or other shared data</li>
+                                            <li>Removing a variable sets its value to null</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
         const TokenPanel = ({ workspaceId, onGenerateToken }) => {
             const [workspace, setWorkspace] = React.useState(workspaceId);
             const [expiryTime, setExpiryTime] = React.useState(3600);
+            const [clientId, setClientId] = React.useState(null);
             const [generatedToken, setGeneratedToken] = React.useState('');
             const [showSnackBar, setShowSnackBar] = React.useState(false);
 
             const handleGenerateToken = async () => {
                 try {
-                    const token = await onGenerateToken(workspace, expiryTime);
+                    const token = await onGenerateToken(workspace, expiryTime, clientId);
                     setGeneratedToken(token);
                 } catch (error) {
                     console.error("Failed to generate token:", error);
@@ -512,6 +766,23 @@
                             placeholder="3600"
                             value={expiryTime}
                             onChange={(e) => setExpiryTime(e.target.value)}
+                        />
+                    </div>
+                    <div className="mt-4">
+                        <label htmlFor="client-id" className="block text-sm font-medium text-gray-300">
+                            Client ID (Optional)
+                            <p className="text-gray-500 text-xs mt-1">
+                                If specified, this token can only be used by the client with this ID. Leave empty for unrestricted access.
+                            </p>
+                        </label>
+                        <input
+                            type="text"
+                            id="client-id"
+                            name="client-id"
+                            className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                            placeholder="e.g., my-app-client"
+                            value={clientId || ''}
+                            onChange={(e) => setClientId(e.target.value.trim() === '' ? null : e.target.value)}
                         />
                     </div>
                     <div className="mt-4">
@@ -1688,11 +1959,22 @@
                             </h2>
                             <TokenPanel
                                 workspaceId={workspaceId}
-                                onGenerateToken={async (workspace, expiryTime) => {
-                                    const token = await ws.generateToken({ expires_in: expiryTime, workspace });
+                                onGenerateToken={async (workspace, expiryTime, clientId) => {
+                                    const tokenConfig = { expires_in: expiryTime, workspace };
+                                    if (clientId && clientId.trim()) {
+                                        tokenConfig.client_id = clientId.trim();
+                                    }
+                                    const token = await ws.generateToken(tokenConfig);
                                     return token;
                                 }}
                             />
+
+                            <hr className="my-8 border-gray-700"></hr>
+
+                            <h2 className="text-2xl font-bold mt-5">
+                                Environment Variables <i className="fas fa-cog text-xl text-gray-400"></i>
+                            </h2>
+                            <EnvManagementPanel ws={ws} />
                         </>
                     )}
                     { panel === 'artifacts' && (

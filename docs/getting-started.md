@@ -265,7 +265,7 @@ npm install hypha-rpc
 Or include it via CDN in your HTML file:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.55/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.58/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
 Then use the following JavaScript code to register a service:
@@ -396,7 +396,7 @@ svc = await get_remote_service("http://localhost:9527/ws-user-scintillating-lawy
 Include the following script in your HTML file to load the `hypha-rpc` client:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.55/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.58/dist/hypha-rpc-websocket.min.js"></script>
 ```
 
 Use the following code in JavaScript to connect to the server and access an existing service:
@@ -618,6 +618,8 @@ async def main():
     # Set environment variables
     await server.set_env("DATABASE_URL", "postgres://localhost:5432/mydb")
     await server.set_env("API_KEY", "your-secret-key")
+    # Remove an environment variable
+    await server.set_env("API_KEY", None)
     
     # Get a specific environment variable
     db_url = await server.get_env("DATABASE_URL")
@@ -643,11 +645,12 @@ async function main() {
     });
     
     // Set environment variables
-    await server.setEnv("DATABASE_URL", "postgres://localhost:5432/mydb");
-    await server.setEnv("API_KEY", "your-secret-key");
-    
+    await server.setEnv({key: "DATABASE_URL", value: "postgres://localhost:5432/mydb", _rkwargs: true});
+    await server.setEnv({key: "API_KEY", value: "your-secret-key", _rkwargs: true});
+    // Remove an environment variable
+    await server.setEnv({key: "API_KEY", value: null, _rkwargs: true});
     // Get a specific environment variable
-    const dbUrl = await server.getEnv("DATABASE_URL");
+    const dbUrl = await server.getEnv({key: "DATABASE_URL", value: null, _rkwargs: true});
     console.log("Database URL:", dbUrl);
     
     // Get all environment variables
