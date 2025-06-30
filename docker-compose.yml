@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  hypha:
+    build: .
+    image: amun-ai/hypha
+    container_name: hypha
+    command: --port 9520 --host=0.0.0.0
+    ports:
+      - 9520:9520
