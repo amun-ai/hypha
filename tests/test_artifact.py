@@ -4172,3 +4172,174 @@ async def test_secret_edge_cases(minio_server, fastapi_server, test_user_token):
 
     # Clean up
     await artifact_manager.delete(artifact_id=artifact_id)
+
+
+async def test_collection_permission_inheritance(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """Test that collection permissions are properly inherited by child artifacts."""
+    
+    # Set up first user (collection owner)
+    api_owner = await connect_to_server(
+        {"name": "owner-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager_owner = await api_owner.get_service("public/artifact-manager")
+    owner_user_id = api_owner.config.user["id"]
+    
+    # Set up second user (with collection permissions)
+    api_user = await connect_to_server(
+        {"name": "user-client", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
+    artifact_manager_user = await api_user.get_service("public/artifact-manager")
+    user_user_id = api_user.config.user["id"]
+    
+    # Create a collection with owner giving rw+ permissions to second user
+    collection_manifest = {
+        "name": "Permission Inheritance Collection",
+        "description": "Collection to test permission inheritance",
+    }
+    collection = await artifact_manager_owner.create(
+        type="collection",
+        manifest=collection_manifest,
+        config={
+            "permissions": {
+                owner_user_id: "*",  # Owner has full access
+                user_user_id: "rw+",  # Second user has read-write-create access
+                "*": "r",  # Public read access
+            }
+        },
+    )
+    
+    # Verify second user can read the collection
+    collection_read = await artifact_manager_user.read(artifact_id=collection.id)
+    assert collection_read["manifest"]["name"] == "Permission Inheritance Collection"
+    
+    # Second user creates a child artifact in the collection
+    child_manifest = {
+        "name": "Child Artifact",
+        "description": "Child artifact for permission testing",
+    }
+    child_artifact = await artifact_manager_user.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest=child_manifest,
+        version="stage",
+    )
+    
+    # Verify child artifact was created successfully
+    assert child_artifact["parent_id"] == f"{api_owner.config.workspace}/{collection.alias}"
+    assert child_artifact["manifest"]["name"] == "Child Artifact"
+    
+    # Test that second user can edit the child artifact (this was the original issue)
+    updated_manifest = {
+        "name": "Child Artifact",
+        "description": "Updated description by second user",
+        "custom_field": "added by second user",
+    }
+    
+    # This should work now with the permission inheritance fix
+    await artifact_manager_user.edit(
+        artifact_id=child_artifact.id,
+        manifest=updated_manifest,
+        stage=True,
+    )
+    
+    # Verify the edit was successful
+    edited_artifact = await artifact_manager_user.read(
+        artifact_id=child_artifact.id, version="stage"
+    )
+    assert edited_artifact["manifest"]["description"] == "Updated description by second user"
+    assert edited_artifact["manifest"]["custom_field"] == "added by second user"
+    
+    # Test that second user can add files to the child artifact
+    file_content = "File content added by second user"
+    put_url = await artifact_manager_user.put_file(
+        artifact_id=child_artifact.id,
+        file_path="test_file.txt",
+        download_weight=1,
+    )
+    response = requests.put(put_url, data=file_content)
+    assert response.ok
+    
+    # Test that second user can commit the child artifact
+    committed_artifact = await artifact_manager_user.commit(
+        artifact_id=child_artifact.id,
+        comment="Committed by second user",
+    )
+    
+    # Verify commit was successful
+    assert committed_artifact["staging"] is None
+    assert len(committed_artifact["versions"]) == 1
+    assert committed_artifact["versions"][0]["comment"] == "Committed by second user"
+    
+    # Verify the committed manifest contains the updates
+    assert committed_artifact["manifest"]["description"] == "Updated description by second user"
+    assert committed_artifact["manifest"]["custom_field"] == "added by second user"
+    
+    # Verify the file was committed
+    files = await artifact_manager_user.list_files(artifact_id=child_artifact.id)
+    assert len(files) == 1
+    assert files[0]["name"] == "test_file.txt"
+    
+    # Test that second user can continue editing the committed artifact
+    await artifact_manager_user.edit(
+        artifact_id=child_artifact.id,
+        manifest={
+            "name": "Child Artifact",
+            "description": "Second update by second user",
+            "custom_field": "updated again",
+        },
+        stage=True,
+        version="new",  # Create a new version
+    )
+    
+    # Commit the new version
+    second_commit = await artifact_manager_user.commit(
+        artifact_id=child_artifact.id,
+        comment="Second version by second user",
+    )
+    
+    # Verify second version was created
+    assert len(second_commit["versions"]) == 2
+    assert second_commit["versions"][1]["comment"] == "Second version by second user"
+    assert second_commit["manifest"]["description"] == "Second update by second user"
+    
+    # Test that anonymous users still cannot edit (should only have read access)
+    api_anonymous = await connect_to_server(
+        {"name": "anonymous-client", "server_url": SERVER_URL}
+    )
+    artifact_manager_anonymous = await api_anonymous.get_service("public/artifact-manager")
+    
+    # Anonymous user should be able to read
+    anonymous_read = await artifact_manager_anonymous.read(artifact_id=child_artifact.id)
+    assert anonymous_read["manifest"]["name"] == "Child Artifact"
+    
+    # But anonymous user should NOT be able to edit
+    with pytest.raises(Exception, match=r".*permission.*"):
+        await artifact_manager_anonymous.edit(
+            artifact_id=child_artifact.id,
+            manifest={"name": "Should not work"},
+        )
+    
+    # Test that a user with only list permissions cannot edit
+    # Create a third user and give them only list permissions on the collection
+    # (We can't easily test this without a third token, so we'll skip this part)
+    
+    # Test that the collection owner can still access and edit the child artifact
+    owner_read = await artifact_manager_owner.read(artifact_id=child_artifact.id)
+    assert owner_read["manifest"]["name"] == "Child Artifact"
+    
+    await artifact_manager_owner.edit(
+        artifact_id=child_artifact.id,
+        manifest={
+            "name": "Child Artifact", 
+            "description": "Updated by owner",
+        },
+    )
+    
+    owner_updated = await artifact_manager_owner.read(artifact_id=child_artifact.id)
+    assert owner_updated["manifest"]["description"] == "Updated by owner"
+    
+    # Clean up
+    await artifact_manager_owner.delete(artifact_id=child_artifact.id)
+    await artifact_manager_owner.delete(artifact_id=collection.id)

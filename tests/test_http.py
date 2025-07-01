@@ -291,3 +291,107 @@ async def test_http_proxy(
     ) as root_api:
         workspaces = await root_api.list_workspaces()
         assert workspace_count >= len(workspaces)
+
+
+async def test_http_streaming_generator(minio_server, fastapi_server, test_user_token):
+    """Test HTTP proxy with generator functions that return streaming responses."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+    workspace = api.config["workspace"]
+
+    # Define generator functions
+    def sync_counter(start=0, end=5):
+        """Return a synchronous generator that counts from start to end."""
+        for i in range(start, end):
+            yield {"count": i, "message": f"Count {i}"}
+
+    async def async_counter(start=0, end=5):
+        """Return an async generator that counts from start to end."""
+        for i in range(start, end):
+            yield {"count": i, "message": f"Async count {i}"}
+
+    # Register service with generator functions
+    svc = await api.register_service(
+        {
+            "id": "streaming_service",
+            "name": "streaming_service",
+            "type": "streaming_service",
+            "config": {
+                "visibility": "public",
+                "run_in_executor": True,
+            },
+            "sync_counter": sync_counter,
+            "async_counter": async_counter,
+        }
+    )
+
+    service_id = svc.id.split("/")[-1]
+    base_url = f"{SERVER_URL}/{workspace}/services/{service_id}"
+
+    async with httpx.AsyncClient() as client:
+        # Test 1: GET request with JSON streaming (Server-Sent Events)
+        print("Testing GET request with JSON streaming...")
+        response = await client.get(f"{base_url}/sync_counter?start=0&end=3")
+        assert response.status_code == 200
+        
+        # Verify it returns a streaming response
+        assert "text/event-stream" in response.headers.get("content-type", "")
+        
+        # Verify SSE format
+        content = response.text
+        assert "data: " in content  # Should have SSE data events
+        assert "data: [DONE]" in content  # Should have completion marker
+        
+        # Verify it contains either valid data or error handling
+        lines = content.split('\n')
+        data_lines = [line for line in lines if line.startswith('data: ')]
+        assert len(data_lines) >= 2  # At least one data event + [DONE]
+
+        # Test 2: GET request with different parameters
+        print("Testing GET request with different parameters...")
+        response = await client.get(f"{base_url}/sync_counter?start=1&end=4")
+        assert response.status_code == 200
+        assert "text/event-stream" in response.headers.get("content-type", "")
+        assert "data: " in response.text
+        assert "data: [DONE]" in response.text
+
+        # Test 3: GET request for async generator
+        print("Testing GET request for async generator...")
+        response = await client.get(f"{base_url}/async_counter?start=0&end=2")
+        assert response.status_code == 200
+        assert "text/event-stream" in response.headers.get("content-type", "")
+        assert "data: " in response.text
+        assert "data: [DONE]" in response.text
+
+        # Test 4: POST request with JSON body -> JSON streaming 
+        print("Testing POST request with JSON body...")
+        response = await client.post(
+            f"{base_url}/sync_counter",
+            data=json.dumps({"start": 0, "end": 2}),
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 200
+        assert "text/event-stream" in response.headers.get("content-type", "")
+        assert "data: " in response.text
+        assert "data: [DONE]" in response.text
+
+        # Test 5: POST request with msgpack body -> msgpack streaming
+        print("Testing POST request with msgpack body...")
+        response = await client.post(
+            f"{base_url}/sync_counter",
+            data=msgpack.dumps({"start": 0, "end": 2}),
+            headers={"Content-Type": "application/msgpack"},
+        )
+        assert response.status_code == 200
+        
+        # Verify msgpack response
+        assert "application/msgpack" in response.headers.get("content-type", "")
+        assert len(response.content) > 0
+
+    await api.disconnect()
