@@ -1148,6 +1148,10 @@ class ArtifactController:
         if await self._check_permissions(artifact, user_info, operation):
             return artifact, parent_artifact
 
+        # Check permissions on parent artifact (collection) if it exists
+        if parent_artifact and await self._check_permissions(parent_artifact, user_info, operation):
+            return artifact, parent_artifact
+
         # Finally, check workspace-level permission
         if user_info.check_permission(artifact.workspace, required_perm):
             return artifact, parent_artifact
