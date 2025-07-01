@@ -20,6 +20,7 @@ from fastapi.responses import (
     Response,
     RedirectResponse,
     FileResponse,
+    StreamingResponse,
 )
 import jose
 import os
@@ -573,8 +574,81 @@ class HTTPProxy:
             results = func(**kwargs)
             if inspect.isawaitable(results):
                 results = await results
+            
+            # Check if the result is a generator (regular or async)
+            if inspect.isgenerator(results) or inspect.isasyncgen(results):
+                return results  # Return the generator directly without encoding
+            
             results = _rpc.encode(results)
             return results
+
+        async def _create_streaming_response(generator, response_type):
+            """Create a streaming response from a generator."""
+            _rpc = RPC(None, "anon")
+            
+            if response_type == "application/msgpack":
+                # For msgpack, stream individual encoded items
+                async def stream_msgpack():
+                    try:
+                        if inspect.isasyncgen(generator):
+                            async for item in generator:
+                                encoded_item = _rpc.encode(item)
+                                yield msgpack.dumps(encoded_item)
+                        else:
+                            # Regular generator - convert to async
+                            for item in generator:
+                                encoded_item = _rpc.encode(item)
+                                yield msgpack.dumps(encoded_item)
+                    except Exception as e:
+                        logger.error(f"Error in msgpack streaming: {e}")
+                        # Send error as final chunk
+                        error_data = {"error": str(e), "traceback": traceback.format_exc()}
+                        yield msgpack.dumps(error_data)
+                
+                return StreamingResponse(
+                    stream_msgpack(),
+                    media_type="application/msgpack",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                    }
+                )
+            else:
+                # For JSON, use Server-Sent Events format
+                async def stream_json():
+                    try:
+                        if inspect.isasyncgen(generator):
+                            async for item in generator:
+                                encoded_item = _rpc.encode(item)
+                                json_data = json.dumps(encoded_item)
+                                yield f"data: {json_data}\n\n"
+                        else:
+                            # Regular generator - convert to async
+                            for item in generator:
+                                encoded_item = _rpc.encode(item)
+                                json_data = json.dumps(encoded_item)
+                                yield f"data: {json_data}\n\n"
+                        
+                        # Send end marker
+                        yield "data: [DONE]\n\n"
+                    except Exception as e:
+                        logger.error(f"Error in JSON streaming: {e}")
+                        # Send error as final event
+                        error_data = {"error": str(e), "traceback": traceback.format_exc()}
+                        json_data = json.dumps(error_data)
+                        yield f"data: {json_data}\n\n"
+                        yield "data: [DONE]\n\n"
+                
+                return StreamingResponse(
+                    stream_json(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Headers": "Cache-Control",
+                    }
+                )
 
         @app.get(norm_url("/{workspace}/apps"))
         async def get_workspace_apps(
@@ -757,6 +831,10 @@ class HTTPProxy:
                                 "detail": traceback.format_exc(),
                             },
                         )
+
+                    # Check if the result is a generator - if so, create streaming response
+                    if inspect.isgenerator(results) or inspect.isasyncgen(results):
+                        return await _create_streaming_response(results, response_type)
 
                     if response_type == "application/msgpack":
                         return MsgpackResponse(
