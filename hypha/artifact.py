@@ -1664,6 +1664,23 @@ class ArtifactController:
                             raise FileExistsError(
                                 f"Artifact with alias '{alias}' already exists, please choose a different alias or remove the existing artifact (ID: {existing_artifact.workspace}/{existing_artifact.alias})."
                             )
+                        
+                        # Check if overwriting a collection with children
+                        if overwrite and existing_artifact.type == "collection":
+                            children_count_query = select(func.count()).where(
+                                ArtifactModel.parent_id == existing_artifact.id
+                            )
+                            children_result = await self._execute_with_retry(
+                                session,
+                                children_count_query,
+                                description=f"check children count for overwrite of '{workspace}/{alias}'",
+                            )
+                            children_count = children_result.scalar()
+                            if children_count > 0:
+                                raise ValueError(
+                                    f"Cannot overwrite collection '{existing_artifact.workspace}/{existing_artifact.alias}' as it has {children_count} child artifacts. Remove the children first or use a different alias."
+                                )
+                        
                         id = existing_artifact.id
                     except KeyError:
                         overwrite = False
@@ -3225,25 +3242,96 @@ class ArtifactController:
                     total_count = None
 
                 # Pagination and ordering
-                order_field_map = {
-                    "id": ArtifactModel.id,
-                    "view_count": ArtifactModel.view_count,
-                    "download_count": ArtifactModel.download_count,
-                    "last_modified": ArtifactModel.last_modified,
-                    "created_at": ArtifactModel.created_at,
-                }
                 order_by = order_by or "id"
-                order_field = order_field_map.get(
-                    order_by.split("<")[0] if order_by else "id"
-                )
-                ascending = "<" in order_by if order_by else True
-                query = (
-                    query.order_by(
-                        order_field.asc() if ascending else order_field.desc()
+                # Parse field name and direction - handle both < and > suffixes
+                if order_by:
+                    if "<" in order_by:
+                        field_name = order_by.split("<")[0]
+                        ascending = True
+                    elif ">" in order_by:
+                        field_name = order_by.split(">")[0]
+                        ascending = False
+                    else:
+                        field_name = order_by
+                        ascending = True
+                else:
+                    field_name = "id"
+                    ascending = True
+
+                # Handle JSON fields (manifest.* or config.*)  
+                if field_name.startswith("manifest."):
+                    json_key = field_name[9:]  # Remove "manifest." prefix
+                    if backend == "postgresql":
+                        # For PostgreSQL, smart ordering: numeric values first, then text values
+                        order_clause = f"""
+                        CASE 
+                            WHEN manifest->>'{json_key}' ~ '^-?[0-9]+\.?[0-9]*$' 
+                            THEN (manifest->>'{json_key}')::numeric 
+                        END {'ASC' if ascending else 'DESC'} NULLS LAST,
+                        CASE 
+                            WHEN manifest->>'{json_key}' !~ '^-?[0-9]+\.?[0-9]*$' 
+                            THEN manifest->>'{json_key}' 
+                        END {'ASC' if ascending else 'DESC'} NULLS LAST
+                        """
+                        query = query.order_by(text(order_clause))
+                    else:
+                        # For SQLite, smart ordering with type checking
+                        order_clause = f"""
+                        CASE 
+                            WHEN typeof(json_extract(manifest, '$.{json_key}')) IN ('integer', 'real')
+                            THEN json_extract(manifest, '$.{json_key}')
+                        END {'ASC' if ascending else 'DESC'},
+                        CASE 
+                            WHEN typeof(json_extract(manifest, '$.{json_key}')) NOT IN ('integer', 'real')
+                            THEN json_extract(manifest, '$.{json_key}')
+                        END {'ASC' if ascending else 'DESC'}
+                        """
+                        query = query.order_by(text(order_clause))
+                elif field_name.startswith("config."):
+                    json_key = field_name[7:]  # Remove "config." prefix
+                    if backend == "postgresql":
+                        # For PostgreSQL, smart ordering: numeric values first, then text values
+                        order_clause = f"""
+                        CASE 
+                            WHEN config->>'{json_key}' ~ '^-?[0-9]+\.?[0-9]*$' 
+                            THEN (config->>'{json_key}')::numeric 
+                        END {'ASC' if ascending else 'DESC'} NULLS LAST,
+                        CASE 
+                            WHEN config->>'{json_key}' !~ '^-?[0-9]+\.?[0-9]*$' 
+                            THEN config->>'{json_key}' 
+                        END {'ASC' if ascending else 'DESC'} NULLS LAST
+                        """
+                        query = query.order_by(text(order_clause))
+                    else:
+                        # For SQLite, smart ordering with type checking
+                        order_clause = f"""
+                        CASE 
+                            WHEN typeof(json_extract(config, '$.{json_key}')) IN ('integer', 'real')
+                            THEN json_extract(config, '$.{json_key}')
+                        END {'ASC' if ascending else 'DESC'},
+                        CASE 
+                            WHEN typeof(json_extract(config, '$.{json_key}')) NOT IN ('integer', 'real')
+                            THEN json_extract(config, '$.{json_key}')
+                        END {'ASC' if ascending else 'DESC'}
+                        """
+                        query = query.order_by(text(order_clause))
+                else:
+                    # Handle regular fields
+                    order_field_map = {
+                        "id": ArtifactModel.id,
+                        "view_count": ArtifactModel.view_count,
+                        "download_count": ArtifactModel.download_count,
+                        "last_modified": ArtifactModel.last_modified,
+                        "created_at": ArtifactModel.created_at,
+                    }
+                    order_field = order_field_map.get(field_name, ArtifactModel.id)
+                    query = (
+                        query.order_by(
+                            order_field.asc() if ascending else order_field.desc()
+                        )
                     )
-                    .limit(limit)
-                    .offset(offset)
-                )
+
+                query = query.limit(limit).offset(offset)
 
                 # Execute the query
                 result = await self._execute_with_retry(
@@ -3305,9 +3393,43 @@ class ArtifactController:
                 zenodo_client = self._get_zenodo_client(
                     artifact, parent_artifact, publish_to=to
                 )
-                deposition_info = (
-                    config.get("zenodo") or await zenodo_client.create_deposition()
-                )
+                
+                # Handle deposition state - create new version if already published
+                existing_zenodo_record = config.get("zenodo")
+                deposition_info = None
+                
+                if existing_zenodo_record:
+                    # Check if this is a published record (has record_id or published DOI)
+                    record_id = existing_zenodo_record.get("record_id") or existing_zenodo_record.get("id")
+                    is_published = "doi" in existing_zenodo_record and existing_zenodo_record.get("state") == "done"
+                    
+                    if is_published and record_id:
+                        try:
+                            logger.info(f"Creating new version for published record {record_id}")
+                            deposition_info = await zenodo_client.create_new_version(record_id)
+                        except Exception as e:
+                            logger.warning(f"Failed to create new version for record {record_id}: {e}")
+                            # If creating new version fails, try to load the existing deposition
+                            try:
+                                deposition_info = await zenodo_client.load_deposition(record_id)
+                            except Exception as load_e:
+                                logger.warning(f"Failed to load existing deposition {record_id}: {load_e}")
+                                # If both fail, create a new deposition
+                                deposition_info = await zenodo_client.create_deposition()
+                    else:
+                        # Try to load the existing deposition if it's not published
+                        try:
+                            deposition_id = existing_zenodo_record.get("id")
+                            if deposition_id:
+                                deposition_info = await zenodo_client.load_deposition(str(deposition_id))
+                        except Exception as e:
+                            logger.warning(f"Failed to load existing deposition: {e}")
+                            # If loading fails, create a new deposition
+                            deposition_info = await zenodo_client.create_deposition()
+                
+                if not deposition_info:
+                    deposition_info = await zenodo_client.create_deposition()
+
                 _metadata = {
                     "title": manifest.get("name", "Untitled"),
                     "upload_type": "dataset" if artifact.type == "dataset" else "other",
@@ -3327,6 +3449,10 @@ class ArtifactController:
                     _metadata.update(metadata)
                 await zenodo_client.update_metadata(deposition_info, _metadata)
 
+                # Check if files already exist in the deposition (e.g., from a previous version)
+                existing_files = await zenodo_client.list_files(deposition_info)
+                existing_file_names = {f["filename"] for f in existing_files}
+                
                 async def upload_files(dir_path=""):
                     files = await self.list_files(
                         artifact.id, dir_path=dir_path, context=context
@@ -3336,10 +3462,19 @@ class ArtifactController:
                         if file_info["type"] == "directory":
                             await upload_files(safe_join(dir_path, name))
                         else:
+                            file_path = safe_join(dir_path, name) if dir_path else name
+                            if file_path in existing_file_names:
+                                logger.info(f"File {file_path} already exists in deposition, skipping upload")
+                                continue
                             url = await self.get_file(
-                                artifact.id, safe_join(dir_path, name), context=context
+                                artifact.id, file_path, context=context
                             )
-                            await zenodo_client.import_file(deposition_info, name, url)
+                            try:
+                                await zenodo_client.import_file(deposition_info, file_path, url)
+                                logger.info(f"Successfully uploaded file: {file_path}")
+                            except Exception as e:
+                                logger.error(f"Failed to upload file {file_path}: {e}")
+                                raise
 
                 await upload_files()
                 record = await zenodo_client.publish(deposition_info)
@@ -3350,6 +3485,7 @@ class ArtifactController:
                 await session.commit()
                 return record
         except Exception as e:
+            # Re-raise the exception as-is since HTTP errors are now sanitized in ZenodoClient
             raise e
         finally:
             await session.close()
