@@ -4344,7 +4344,6 @@ async def test_collection_permission_inheritance(
     await artifact_manager_owner.delete(artifact_id=child_artifact.id)
     await artifact_manager_owner.delete(artifact_id=collection.id)
 
-
 async def test_order_by_custom_json_fields(
     minio_server, fastapi_server, fastapi_server_sqlite, test_user_token
 ):
