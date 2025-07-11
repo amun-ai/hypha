@@ -710,13 +710,23 @@ class RedisEventBus:
     async def stop(self):
         """Stop the event bus."""
         self._stop = True
+        
+        # Cancel tasks first
         if self._subscribe_task:
             self._subscribe_task.cancel()
         if self._health_check_task:
             self._health_check_task.cancel()
+        
+        # Clean up pubsub connections
         if self._health_check_pubsub:
-            await self._health_check_pubsub.unsubscribe()
-            await self._health_check_pubsub.close()
+            try:
+                await self._health_check_pubsub.unsubscribe()
+                await self._health_check_pubsub.close()
+                self._health_check_pubsub = None
+            except Exception as e:
+                logger.warning(f"Error cleaning up health check pubsub during stop: {str(e)}")
+        
+        # Wait for tasks to complete
         try:
             await asyncio.gather(
                 self._subscribe_task, self._health_check_task, return_exceptions=True
@@ -765,6 +775,14 @@ class RedisEventBus:
         except Exception as e:
             logger.error(f"Pubsub health check failed: {str(e)}")
             self._counter.labels(event="pubsub_health", status="error").inc()
+            # Clean up health check pubsub on error
+            if self._health_check_pubsub:
+                try:
+                    await self._health_check_pubsub.unsubscribe()
+                    await self._health_check_pubsub.close()
+                    self._health_check_pubsub = None
+                except Exception as cleanup_error:
+                    logger.warning(f"Error cleaning up health check pubsub: {str(cleanup_error)}")
             return False
 
     async def _process_health_check_message(self, message):
@@ -816,9 +834,22 @@ class RedisEventBus:
         """Attempt to reconnect with exponential backoff."""
         while self._circuit_breaker_open and not self._stop:
             try:
-                # Cancel existing subscription task
+                # Cancel existing subscription task and clean up connections
                 if self._subscribe_task:
                     self._subscribe_task.cancel()
+                    try:
+                        await self._subscribe_task
+                    except asyncio.CancelledError:
+                        pass
+                
+                # Clean up health check pubsub during reconnection
+                if self._health_check_pubsub:
+                    try:
+                        await self._health_check_pubsub.unsubscribe()
+                        await self._health_check_pubsub.close()
+                        self._health_check_pubsub = None
+                    except Exception as cleanup_error:
+                        logger.warning(f"Error cleaning up health check pubsub during reconnection: {str(cleanup_error)}")
 
                 await asyncio.sleep(self._reconnect_delay)
 
@@ -853,6 +884,7 @@ class RedisEventBus:
         )
 
         while not self._stop:
+            pubsub = None
             try:
                 pubsub = self._redis.pubsub()
                 self._stop = False
@@ -897,6 +929,14 @@ class RedisEventBus:
                 if not self._ready.done():
                     self._ready.set_exception(exp)
                 await asyncio.sleep(1)  # Prevent tight loop on connection errors
+            finally:
+                # Always clean up pubsub connection
+                if pubsub:
+                    try:
+                        await pubsub.unsubscribe()
+                        await pubsub.close()
+                    except Exception as e:
+                        logger.warning(f"Error cleaning up pubsub connection: {str(e)}")
 
     async def _process_message(self, msg, semaphore):
         """Process a single message while respecting the semaphore."""
