@@ -2,7 +2,7 @@ aioboto3==13.1.1
 aiofiles==23.2.1
 websockets==14.0
 base58==2.1.1
-fastapi==0.106.0
+fastapi==0.115.2
 hypha-rpc==0.20.60
 jinja2==3.1.4
 lxml==4.9.3
