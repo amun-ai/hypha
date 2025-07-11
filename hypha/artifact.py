@@ -1037,6 +1037,22 @@ class ArtifactController:
                     "remove_file",
                     "remove_vectors",
                 ],
+                "rd+": [
+                    "read",
+                    "get_file",
+                    "get_vector",
+                    "search_vectors",
+                    "list_files",
+                    "list_vectors",
+                    "list",
+                    "edit",
+                    # "commit", can create but not commit
+                    "put_file",
+                    "add_vectors",
+                    "remove_file",
+                    "remove_vectors",
+                    "create",
+                ],
                 "rw+": [
                     "read",
                     "get_file",
@@ -1110,6 +1126,7 @@ class ArtifactController:
         """
         Check whether a user has the required permission to perform an operation on an artifact.
         Fetches artifact and parent artifacts, checking permissions hierarchically.
+        If multiple operations are provided, all must be satisfied.
         """
         # Map operation to permission level
         operation_map = {
@@ -1133,9 +1150,18 @@ class ArtifactController:
             "publish": UserPermission.admin,
             "get_secret": UserPermission.admin,
         }
-        required_perm = operation_map.get(operation)
-        if required_perm is None:
-            raise ValueError(f"Operation '{operation}' is not supported.")
+
+        # Handle both single operation and list of operations
+        operations = [operation] if isinstance(operation, str) else operation
+
+        # Check all operations are supported
+        for op in operations:
+            if op not in operation_map:
+                raise ValueError(f"Operation '{op}' is not supported.")
+
+        # Get highest required permission level
+        required_perms = [operation_map[op] for op in operations]
+        highest_required_perm = max(required_perms)
 
         # Fetch the primary artifact
         artifact, parent_artifact = await self._get_artifact_with_parent(
@@ -1144,20 +1170,34 @@ class ArtifactController:
         if not artifact:
             raise KeyError(f"Artifact with ID '{artifact_id}' does not exist.")
 
-        # Check permissions on the artifact itself
-        if await self._check_permissions(artifact, user_info, operation):
+        # Check permissions on the artifact itself - all operations must be allowed
+        artifact_permissions_satisfied = True
+        for op in operations:
+            if not await self._check_permissions(artifact, user_info, op):
+                artifact_permissions_satisfied = False
+                break
+        if artifact_permissions_satisfied:
             return artifact, parent_artifact
 
-        # Check permissions on parent artifact (collection) if it exists
-        if parent_artifact and await self._check_permissions(parent_artifact, user_info, operation):
+        # Check permissions on parent artifact (collection) if it exists - all operations must be allowed
+        if parent_artifact:
+            parent_permissions_satisfied = True
+            for op in operations:
+                if not await self._check_permissions(parent_artifact, user_info, op):
+                    parent_permissions_satisfied = False
+                    break
+            if parent_permissions_satisfied:
+                return artifact, parent_artifact
+
+        # Finally, check workspace-level permission using the highest required permission
+        if user_info.check_permission(artifact.workspace, highest_required_perm):
             return artifact, parent_artifact
 
-        # Finally, check workspace-level permission
-        if user_info.check_permission(artifact.workspace, required_perm):
-            return artifact, parent_artifact
-
+        operation_str = (
+            operation if isinstance(operation, str) else f"operations {operations}"
+        )
         raise PermissionError(
-            f"User does not have permission to perform the operation '{operation}' on the artifact."
+            f"User does not have permission to perform the operation '{operation_str}' on the artifact."
         )
 
     async def _increment_stat(self, session, artifact_id, field, increment=1.0):
@@ -1569,9 +1609,15 @@ class ArtifactController:
                 parent_artifact = None
                 if parent_id:
                     parent_id = self._validate_artifact_id(parent_id, context)
-                    parent_artifact, _ = await self._get_artifact_with_permission(
-                        user_info, parent_id, "create", session
-                    )
+                    if stage:
+                        parent_artifact, _ = await self._get_artifact_with_permission(
+                            user_info, parent_id, "create", session
+                        )
+                    else:
+                        # if not staging, we need to check if the user has both create and commit permissions
+                        parent_artifact, _ = await self._get_artifact_with_permission(
+                            user_info, parent_id, ["create", "commit"], session
+                        )
                     parent_id = parent_artifact.id
                     if workspace:
                         assert (
@@ -1664,7 +1710,7 @@ class ArtifactController:
                             raise FileExistsError(
                                 f"Artifact with alias '{alias}' already exists, please choose a different alias or remove the existing artifact (ID: {existing_artifact.workspace}/{existing_artifact.alias})."
                             )
-                        
+
                         # Check if overwriting a collection with children
                         if overwrite and existing_artifact.type == "collection":
                             children_count_query = select(func.count()).where(
@@ -1680,7 +1726,7 @@ class ArtifactController:
                                 raise ValueError(
                                     f"Cannot overwrite collection '{existing_artifact.workspace}/{existing_artifact.alias}' as it has {children_count} child artifacts. Remove the children first or use a different alias."
                                 )
-                        
+
                         id = existing_artifact.id
                     except KeyError:
                         overwrite = False
@@ -3258,7 +3304,7 @@ class ArtifactController:
                     field_name = "id"
                     ascending = True
 
-                # Handle JSON fields (manifest.* or config.*)  
+                # Handle JSON fields (manifest.* or config.*)
                 if field_name.startswith("manifest."):
                     json_key = field_name[9:]  # Remove "manifest." prefix
                     if backend == "postgresql":
@@ -3325,10 +3371,8 @@ class ArtifactController:
                         "created_at": ArtifactModel.created_at,
                     }
                     order_field = order_field_map.get(field_name, ArtifactModel.id)
-                    query = (
-                        query.order_by(
-                            order_field.asc() if ascending else order_field.desc()
-                        )
+                    query = query.order_by(
+                        order_field.asc() if ascending else order_field.desc()
                     )
 
                 query = query.limit(limit).offset(offset)
@@ -3393,40 +3437,59 @@ class ArtifactController:
                 zenodo_client = self._get_zenodo_client(
                     artifact, parent_artifact, publish_to=to
                 )
-                
+
                 # Handle deposition state - create new version if already published
                 existing_zenodo_record = config.get("zenodo")
                 deposition_info = None
-                
+
                 if existing_zenodo_record:
                     # Check if this is a published record (has record_id or published DOI)
-                    record_id = existing_zenodo_record.get("record_id") or existing_zenodo_record.get("id")
-                    is_published = "doi" in existing_zenodo_record and existing_zenodo_record.get("state") == "done"
-                    
+                    record_id = existing_zenodo_record.get(
+                        "record_id"
+                    ) or existing_zenodo_record.get("id")
+                    is_published = (
+                        "doi" in existing_zenodo_record
+                        and existing_zenodo_record.get("state") == "done"
+                    )
+
                     if is_published and record_id:
                         try:
-                            logger.info(f"Creating new version for published record {record_id}")
-                            deposition_info = await zenodo_client.create_new_version(record_id)
+                            logger.info(
+                                f"Creating new version for published record {record_id}"
+                            )
+                            deposition_info = await zenodo_client.create_new_version(
+                                record_id
+                            )
                         except Exception as e:
-                            logger.warning(f"Failed to create new version for record {record_id}: {e}")
+                            logger.warning(
+                                f"Failed to create new version for record {record_id}: {e}"
+                            )
                             # If creating new version fails, try to load the existing deposition
                             try:
-                                deposition_info = await zenodo_client.load_deposition(record_id)
+                                deposition_info = await zenodo_client.load_deposition(
+                                    record_id
+                                )
                             except Exception as load_e:
-                                logger.warning(f"Failed to load existing deposition {record_id}: {load_e}")
+                                logger.warning(
+                                    f"Failed to load existing deposition {record_id}: {load_e}"
+                                )
                                 # If both fail, create a new deposition
-                                deposition_info = await zenodo_client.create_deposition()
+                                deposition_info = (
+                                    await zenodo_client.create_deposition()
+                                )
                     else:
                         # Try to load the existing deposition if it's not published
                         try:
                             deposition_id = existing_zenodo_record.get("id")
                             if deposition_id:
-                                deposition_info = await zenodo_client.load_deposition(str(deposition_id))
+                                deposition_info = await zenodo_client.load_deposition(
+                                    str(deposition_id)
+                                )
                         except Exception as e:
                             logger.warning(f"Failed to load existing deposition: {e}")
                             # If loading fails, create a new deposition
                             deposition_info = await zenodo_client.create_deposition()
-                
+
                 if not deposition_info:
                     deposition_info = await zenodo_client.create_deposition()
 
@@ -3452,7 +3515,7 @@ class ArtifactController:
                 # Check if files already exist in the deposition (e.g., from a previous version)
                 existing_files = await zenodo_client.list_files(deposition_info)
                 existing_file_names = {f["filename"] for f in existing_files}
-                
+
                 async def upload_files(dir_path=""):
                     files = await self.list_files(
                         artifact.id, dir_path=dir_path, context=context
@@ -3464,13 +3527,17 @@ class ArtifactController:
                         else:
                             file_path = safe_join(dir_path, name) if dir_path else name
                             if file_path in existing_file_names:
-                                logger.info(f"File {file_path} already exists in deposition, skipping upload")
+                                logger.info(
+                                    f"File {file_path} already exists in deposition, skipping upload"
+                                )
                                 continue
                             url = await self.get_file(
                                 artifact.id, file_path, context=context
                             )
                             try:
-                                await zenodo_client.import_file(deposition_info, file_path, url)
+                                await zenodo_client.import_file(
+                                    deposition_info, file_path, url
+                                )
                                 logger.info(f"Successfully uploaded file: {file_path}")
                             except Exception as e:
                                 logger.error(f"Failed to upload file {file_path}: {e}")
@@ -3733,18 +3800,18 @@ class ArtifactController:
         artifact_id = self._validate_artifact_id(artifact_id, context)
         user_info = UserInfo.model_validate(context["user"])
         session = await self._get_session(read_only=True)
-        
+
         try:
             async with session.begin():
                 artifact, _ = await self._get_artifact_with_permission(
                     user_info, artifact_id, "get_secret", session
                 )
-                
+
                 secrets = artifact.secrets or {}
                 if secret_key is None:
                     return secrets
                 return secrets.get(secret_key)
-                
+
         except Exception as e:
             raise e
         finally:
@@ -3763,13 +3830,13 @@ class ArtifactController:
         artifact_id = self._validate_artifact_id(artifact_id, context)
         user_info = UserInfo.model_validate(context["user"])
         session = await self._get_session()
-        
+
         try:
             async with session.begin():
                 artifact, _ = await self._get_artifact_with_permission(
                     user_info, artifact_id, "set_secret", session
                 )
-                
+
                 # Initialize secrets dict if it doesn't exist
                 if artifact.secrets is None:
                     artifact.secrets = {}
@@ -3777,19 +3844,23 @@ class ArtifactController:
                 if secret_value is None:
                     if secret_key in artifact.secrets:
                         del artifact.secrets[secret_key]
-                        logger.info(f"Removed secret '{secret_key}' from artifact {artifact_id}")
+                        logger.info(
+                            f"Removed secret '{secret_key}' from artifact {artifact_id}"
+                        )
                 else:
                     artifact.secrets[secret_key] = secret_value
-                    logger.info(f"Updated secret '{secret_key}' for artifact {artifact_id}")
+                    logger.info(
+                        f"Updated secret '{secret_key}' for artifact {artifact_id}"
+                    )
 
                 artifact.last_modified = int(time.time())
-                
+
                 # Mark the field as modified for SQLAlchemy
                 flag_modified(artifact, "secrets")
-                
+
                 session.add(artifact)
                 await session.commit()
-                
+
                 logger.info(f"Updated secret '{secret_key}' for artifact {artifact_id}")
 
         except Exception as e:

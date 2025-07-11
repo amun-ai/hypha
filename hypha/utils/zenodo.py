@@ -27,15 +27,13 @@ class ZenodoClient:
             request = error.request
             url = str(request.url)
             sanitized_url = sanitize_url_for_logging(url)
-            
+
             # Create a new error message with sanitized URL
             sanitized_message = f"Client error '{error.response.status_code} {error.response.reason_phrase}' for url '{sanitized_url}'"
-            
+
             # Create a new HTTPStatusError with sanitized message
             new_error = httpx.HTTPStatusError(
-                sanitized_message,
-                request=request,
-                response=error.response
+                sanitized_message, request=request, response=error.response
             )
             return new_error
         return error
@@ -68,7 +66,7 @@ class ZenodoClient:
         """Loads an existing published record to retrieve the concept_id."""
         url = f"{self.zenodo_server}/api/records/{record_id}"
         response = await self._make_request("GET", url, follow_redirects=True)
-        
+
         record_info = response.json()
         concept_id = record_info.get("conceptrecid")
         if not concept_id:
@@ -152,7 +150,10 @@ class ZenodoClient:
                 try:
                     response_data = e.response.json()
                 except:
-                    response_data = {"status": e.response.status_code, "message": "Bad request"}
+                    response_data = {
+                        "status": e.response.status_code,
+                        "message": "Bad request",
+                    }
                 raise RuntimeError(
                     f"Failed to publish deposition: {response_data}, you might have forgotten to update the metadata."
                 ) from None

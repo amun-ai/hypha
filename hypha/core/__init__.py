@@ -437,7 +437,10 @@ class TokenConfig(BaseModel):
         pattern="^(read|read_write|admin)$",
     )
     extra_scopes: Optional[List[str]] = Field(None, description="List of extra scopes")
-    client_id: Optional[str] = Field(None, description="Optional client ID to restrict the token to a specific client")
+    client_id: Optional[str] = Field(
+        None,
+        description="Optional client ID to restrict the token to a specific client",
+    )
 
     @field_validator("extra_scopes")
     def validate_scopes(cls, v):

@@ -403,6 +403,7 @@ class HTTPProxy:
         region_name=None,
         workspace_bucket="hypha-workspaces",
         base_path="/",
+        enable_a2a=False,
     ) -> None:
         """Initialize the http proxy."""
         # pylint: disable=broad-except
@@ -574,18 +575,18 @@ class HTTPProxy:
             results = func(**kwargs)
             if inspect.isawaitable(results):
                 results = await results
-            
+
             # Check if the result is a generator (regular or async)
             if inspect.isgenerator(results) or inspect.isasyncgen(results):
                 return results  # Return the generator directly without encoding
-            
+
             results = _rpc.encode(results)
             return results
 
         async def _create_streaming_response(generator, response_type):
             """Create a streaming response from a generator."""
             _rpc = RPC(None, "anon")
-            
+
             if response_type == "application/msgpack":
                 # For msgpack, stream individual encoded items
                 async def stream_msgpack():
@@ -602,16 +603,19 @@ class HTTPProxy:
                     except Exception as e:
                         logger.error(f"Error in msgpack streaming: {e}")
                         # Send error as final chunk
-                        error_data = {"error": str(e), "traceback": traceback.format_exc()}
+                        error_data = {
+                            "error": str(e),
+                            "traceback": traceback.format_exc(),
+                        }
                         yield msgpack.dumps(error_data)
-                
+
                 return StreamingResponse(
                     stream_msgpack(),
                     media_type="application/msgpack",
                     headers={
                         "Cache-Control": "no-cache",
                         "Connection": "keep-alive",
-                    }
+                    },
                 )
             else:
                 # For JSON, use Server-Sent Events format
@@ -628,17 +632,20 @@ class HTTPProxy:
                                 encoded_item = _rpc.encode(item)
                                 json_data = json.dumps(encoded_item)
                                 yield f"data: {json_data}\n\n"
-                        
+
                         # Send end marker
                         yield "data: [DONE]\n\n"
                     except Exception as e:
                         logger.error(f"Error in JSON streaming: {e}")
                         # Send error as final event
-                        error_data = {"error": str(e), "traceback": traceback.format_exc()}
+                        error_data = {
+                            "error": str(e),
+                            "traceback": traceback.format_exc(),
+                        }
                         json_data = json.dumps(error_data)
                         yield f"data: {json_data}\n\n"
                         yield "data: [DONE]\n\n"
-                
+
                 return StreamingResponse(
                     stream_json(),
                     media_type="text/event-stream",
@@ -647,7 +654,7 @@ class HTTPProxy:
                         "Connection": "keep-alive",
                         "Access-Control-Allow-Origin": "*",
                         "Access-Control-Allow-Headers": "Cache-Control",
-                    }
+                    },
                 )
 
         @app.get(norm_url("/{workspace}/apps"))
@@ -745,6 +752,28 @@ class HTTPProxy:
             base_path=base_path,
             store=store,
         )
+
+        # Add A2A middleware for A2A services if enabled
+        logger.info(f"enable_a2a = {enable_a2a}")
+        if enable_a2a:
+            try:
+                from hypha.a2a import A2ARoutingMiddleware
+
+                logger.info("Adding A2ARoutingMiddleware to the app")
+                app.add_middleware(
+                    A2ARoutingMiddleware,
+                    base_path=base_path,
+                    store=store,
+                )
+                logger.info("A2ARoutingMiddleware added successfully")
+            except ImportError as e:
+                logger.error(f"Failed to import A2ARoutingMiddleware: {e}")
+                raise
+            except Exception as e:
+                logger.error(f"Failed to add A2ARoutingMiddleware: {e}")
+                raise
+        else:
+            logger.info("A2A middleware not enabled (enable_a2a=False)")
 
         @app.get(norm_url("/{workspace}/apps/{service_id}"))
         async def get_app_info(

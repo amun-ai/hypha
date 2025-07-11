@@ -496,35 +496,34 @@ def sanitize_url_for_logging(url: str) -> str:
     """Remove sensitive parameters from URLs for safe logging."""
     import re
     from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-    
+
     try:
         # Parse the URL
         parsed = urlparse(str(url))
         if not parsed.query:
             return str(url)  # No query parameters to sanitize
-        
+
         # Parse query parameters
         params = parse_qs(parsed.query, keep_blank_values=True)
-        
+
         # Remove sensitive parameters (case insensitive)
-        sensitive_keys = {'access_token', 'token', 'key', 'secret', 'password'}
+        sensitive_keys = {"access_token", "token", "key", "secret", "password"}
         sanitized_params = {
-            k: v for k, v in params.items() 
-            if k.lower() not in sensitive_keys
+            k: v for k, v in params.items() if k.lower() not in sensitive_keys
         }
-        
+
         # Rebuild the URL
         new_query = urlencode(sanitized_params, doseq=True)
         sanitized_parsed = parsed._replace(query=new_query)
         return urlunparse(sanitized_parsed)
-        
+
     except Exception:
         # Fallback to regex if URL parsing fails
-        sensitive_params = r'[?&](?:access_token|token|key|secret|password)=[^&]*'
-        sanitized = re.sub(sensitive_params, '', str(url), flags=re.IGNORECASE)
-        sanitized = re.sub(r'\?&', '?', sanitized)
-        sanitized = re.sub(r'&+', '&', sanitized)
-        sanitized = re.sub(r'[?&]$', '', sanitized)
+        sensitive_params = r"[?&](?:access_token|token|key|secret|password)=[^&]*"
+        sanitized = re.sub(sensitive_params, "", str(url), flags=re.IGNORECASE)
+        sanitized = re.sub(r"\?&", "?", sanitized)
+        sanitized = re.sub(r"&+", "&", sanitized)
+        sanitized = re.sub(r"[?&]$", "", sanitized)
         return sanitized
 
 
@@ -569,7 +568,9 @@ async def chunked_transfer_remote_file(
         range_headers = {"Range": "bytes=0-0"}
         range_headers.update(source_headers)
 
-        logger.info(f"Fetching file size from {sanitize_url_for_logging(source_url)}...")
+        logger.info(
+            f"Fetching file size from {sanitize_url_for_logging(source_url)}..."
+        )
         range_response = await client.get(
             source_url, headers=range_headers, params=source_params
         )

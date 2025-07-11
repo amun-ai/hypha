@@ -403,13 +403,16 @@ class WorkspaceManager:
             workspace_info.config["environs"][key] = value
             await self.log_event("env_set", {"key": key}, context=context)
             logger.info(f"Environment variable '{key}' set in workspace {ws}")
-            
+
         await self._update_workspace(workspace_info, user_info)
 
     @schema_method
     async def get_env(
         self,
-        key: Optional[str] = Field(None, description="Environment variable key (optional, returns all if not specified)"),
+        key: Optional[str] = Field(
+            None,
+            description="Environment variable key (optional, returns all if not specified)",
+        ),
         context: Optional[dict] = None,
     ):
         """Get environment variable(s) from the workspace."""
@@ -422,12 +425,14 @@ class WorkspaceManager:
         workspace_info = await self.load_workspace_info(ws)
         workspace_info.config = workspace_info.config or {}
         environs = workspace_info.config.get("environs", {})
-        
+
         if key is None:
             return environs
         else:
             if key not in environs:
-                raise KeyError(f"Environment variable '{key}' not found in workspace {ws}")
+                raise KeyError(
+                    f"Environment variable '{key}' not found in workspace {ws}"
+                )
             return environs[key]
 
     @schema_method
