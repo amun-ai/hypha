@@ -1897,9 +1897,14 @@ class ArtifactController:
 
         try:
             async with session.begin():
-                artifact, parent_artifact = await self._get_artifact_with_permission(
-                    user_info, artifact_id, "edit", session
-                )
+                if stage:
+                    artifact, parent_artifact = await self._get_artifact_with_permission(
+                        user_info, artifact_id, "edit", session
+                    )
+                else:
+                    artifact, parent_artifact = await self._get_artifact_with_permission(
+                        user_info, artifact_id, ["edit", "commit"], session
+                    )
 
                 # Validate version parameter - ONLY allow None (current version), "new" (create new), or "stage" (staging mode)
                 # Do NOT allow editing historical versions by specific version names
