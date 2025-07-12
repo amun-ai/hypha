@@ -511,6 +511,9 @@ async def test_lazy_service(fastapi_server, test_user_token):
         .open(encoding="utf-8")
         .read()
     )
+    # stop all the running apps
+    for app in await controller.list_running():
+        await controller.stop(app["id"])
 
     app_info = await controller.install(
         source=source,
@@ -549,6 +552,9 @@ async def test_lazy_service_with_default_timeout(fastapi_server, test_user_token
         .open(encoding="utf-8")
         .read()
     )
+    # stop all the running apps
+    for app in await controller.list_running():
+        await controller.stop(app["id"])
 
     app_info = await controller.install(
         source=source,
@@ -605,6 +611,9 @@ async def test_startup_config_comprehensive(fastapi_server, test_user_token):
         .open(encoding="utf-8")
         .read()
     )
+    # stop all the running apps
+    for app in await controller.list_running():
+        await controller.stop(app["id"])
 
     app_info = await controller.install(
         source=source,

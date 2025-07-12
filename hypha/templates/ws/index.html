@@ -207,13 +207,84 @@
         }
         window.loadPlugin = loadPluginFromUrl;
 
-        window.loadCodeEditor = async function () {
-            const response = await fetch("/ws/code_template.html");
-            const pythonPluginCode = await response.text();
-            const codeEditor = await api.loadPlugin({
-                src: "https://if.imjoy.io",
+                 window.loadCodeEditor = async function (ws, refreshApps) {
+             if (!ws || !ws.getService) {
+                 alert('WebSocket connection not ready. Please wait for the connection to be established.');
+                 return;
+             }
+             
+             const response = await fetch("/ws/code_template.html");
+             const pythonPluginCode = await response.text();
+             await api.createWindow({ 
+                 name: "Code Editor",
+                 src: "https://if.imjoy.io",
+                config: {
+                    fold: [1],
+                    templates: [
+                        {
+                            name: "Basic JavaScript App",
+                            url: window.location.origin + "/ws/code_template.html",
+                            lang: 'javascript',
+                        },
+                        {
+                            name: "JavaScript Test App", 
+                            url: window.location.origin + "/ws/javascript_app_template.html",
+                            lang: 'javascript',
+                        },
+                        {
+                            name: "Python Test App",
+                            url: window.location.origin + "/ws/python_app_template.html", 
+                            lang: 'python',
+                        },
+                        {
+                            name: "FastAPI Web App",
+                            url: window.location.origin + "/ws/fastapi_app_template.html",
+                            lang: 'python',
+                        },
+                    ],
+                    ui_elements: {
+                         install: {
+                             _rintf: true,
+                             type: "button",
+                             label: "Install Application",
+                             visible: true,
+                             icon: "file-download-outline",
+                             callback: async (source, config) => {
+                                 try {
+                                     // Show full page spinner
+                                     window.showInstallSpinner?.();
+                                     
+                                     if (!ws || !ws.getService) {
+                                         throw new Error('WebSocket connection not ready');
+                                     }
+                                     const controller = await ws.getService("public/server-apps");
+                                     const appInfo = await controller.install(source, {
+                                         config: config,
+                                         overwrite: true,
+                                         _rkwargs: true
+                                     });
+                                     console.log("App installed successfully:", appInfo);
+                                     
+                                     // Refresh the apps list
+                                     await refreshApps(ws);
+                                     return appInfo;
+                                 } catch (error) {
+                                     console.error("Failed to install app:", error);
+                                     // For errors, we still show an alert since it's important feedback
+                                     alert("Failed to install app: " + error.message);
+                                     throw error;
+                                 } finally {
+                                     // Hide spinner
+                                     window.hideInstallSpinner?.();
+                                 }
+                             }
+                         }
+                     }
+                },  
+                data: {
+                    code: pythonPluginCode,
+                }
             });
-            await codeEditor.run({ config: {fold: [1]},  data: {code: pythonPluginCode} });
             console.log("Loaded and ran code editor plugin");
         };
     </script>
@@ -335,13 +406,97 @@
           };          
         
 
-        const AppCard = ({ app }) => {
+        const AppCard = ({ app, onUninstall, onShowDetails, onStart }) => {
             return (
-                <div className="flex flex-col items-center p-6 bg-gray-800 rounded-lg shadow-lg mb-6">
-                    <i className={`fas fa-th-large fa-3x text-white mb-4`}></i>
-                    <div className="text-center">
-                        <h3 className="text-xl font-bold">{app.name}</h3>
-                        <p className="text-gray-400">{app.description}</p>
+                <div className="flex flex-col items-start p-6 bg-gray-800 rounded-lg shadow-lg mb-6 w-full">
+                    <div className="flex items-center mb-4 w-full">
+                        <i className={`fas fa-th-large fa-3x text-white mr-4`}></i>
+                        <div className="flex-1">
+                            <h3 className="text-xl font-bold">{app.name || 'Untitled App'}</h3>
+                            <p className="text-gray-400 text-sm">ID: <code className="bg-gray-700 px-1 rounded">{app.id}</code></p>
+                            <p className="text-gray-400 mt-2">{app.description || 'No description available'}</p>
+                            <div className="flex flex-wrap gap-2 mt-2">
+                                <span className="bg-blue-600 text-white px-2 py-1 rounded text-xs">
+                                    {app.type || 'Unknown'}
+                                </span>
+                                <span className="bg-gray-600 text-white px-2 py-1 rounded text-xs">
+                                    v{app.version || '1.0.0'}
+                                </span>
+                                {app.daemon && (
+                                    <span className="bg-green-600 text-white px-2 py-1 rounded text-xs">
+                                        Daemon
+                                    </span>
+                                )}
+                                {app.singleton && (
+                                    <span className="bg-purple-600 text-white px-2 py-1 rounded text-xs">
+                                        Singleton
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex gap-2 w-full justify-end">
+                        <button
+                            className="bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded transition duration-300 flex items-center"
+                            onClick={() => onStart(app.id)}
+                        >
+                            <i className="fas fa-play mr-2"></i> Start
+                        </button>
+                        <button
+                            className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded transition duration-300 flex items-center"
+                            onClick={() => onShowDetails(app)}
+                        >
+                            <i className="fas fa-info-circle mr-2"></i> More
+                        </button>
+                        <button
+                            className="bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded transition duration-300 flex items-center"
+                            onClick={() => onUninstall(app.id)}
+                        >
+                            <i className="fas fa-trash mr-2"></i> Uninstall
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        const RunningAppCard = ({ app, onStop, onShowDetails }) => {
+            return (
+                <div className="flex flex-col items-start p-6 bg-gray-800 rounded-lg shadow-lg mb-6 w-full">
+                    <div className="flex items-center mb-4 w-full">
+                        <i className={`fas fa-play-circle fa-3x text-green-400 mr-4`}></i>
+                        <div className="flex-1">
+                            <h3 className="text-xl font-bold">{app.name || 'Untitled App'}</h3>
+                            <p className="text-gray-400 text-sm">Session ID: <code className="bg-gray-700 px-1 rounded">{app.id}</code></p>
+                            <p className="text-gray-400 text-sm">App ID: <code className="bg-gray-700 px-1 rounded">{app.app_id}</code></p>
+                            <p className="text-gray-400 mt-2">{app.description || 'No description available'}</p>
+                            <div className="flex flex-wrap gap-2 mt-2">
+                                <span className="bg-green-600 text-white px-2 py-1 rounded text-xs">
+                                    <i className="fas fa-play mr-1"></i> Running
+                                </span>
+                                <span className="bg-blue-600 text-white px-2 py-1 rounded text-xs">
+                                    Workspace: {app.workspace}
+                                </span>
+                                {app.service_id && (
+                                    <span className="bg-purple-600 text-white px-2 py-1 rounded text-xs">
+                                        Service: {app.service_id.split('@')[0]}
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex gap-2 w-full justify-end">
+                        <button
+                            className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded transition duration-300 flex items-center"
+                            onClick={() => onShowDetails(app)}
+                        >
+                            <i className="fas fa-info-circle mr-2"></i> More
+                        </button>
+                        <button
+                            className="bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded transition duration-300 flex items-center"
+                            onClick={() => onStop(app.id)}
+                        >
+                            <i className="fas fa-stop mr-2"></i> Stop
+                        </button>
                     </div>
                 </div>
             );
@@ -463,6 +618,38 @@
             );
         };
 
+        const SpinnerOverlay = ({ isVisible, message = "Loading..." }) => {
+            if (!isVisible) return null;
+            
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
+                    <div className="bg-gray-800 rounded-lg p-8 flex flex-col items-center">
+                        <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-white mb-4"></div>
+                        <p className="text-white text-lg font-medium">{message}</p>
+                        <p className="text-gray-400 text-sm mt-2">Please wait...</p>
+                    </div>
+                </div>
+            );
+        };
+
+        const AppDetailsModal = ({ app, onClose }) => {
+            return (
+                <div className="modal">
+                    <div className="modal-content">
+                        <div className="modal-header">
+                            <h2 className="text-2xl font-bold">App Details</h2>
+                            <button onClick={onClose} className="text-white text-2xl">&times;</button>
+                        </div>
+                        <div className="modal-body">
+                            <pre className="whitespace-pre-wrap text-gray-200 max-h-96 overflow-y-auto">
+                                {JSON.stringify(app, null, 2)}
+                            </pre>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
         const EnvManagementPanel = ({ ws }) => {
             const [envVars, setEnvVars] = React.useState({});
             const [showEnvVars, setShowEnvVars] = React.useState(false);
@@ -499,6 +686,7 @@
                 }
                 
                 try {
+                    window.showLoadingSpinner('Adding Environment Variable...');
                     setLoading(true);
                     await ws.setEnv(newEnvKey.trim(), newEnvValue);
                     setNewEnvKey('');
@@ -509,6 +697,7 @@
                     alert('Failed to set environment variable: ' + error.message);
                 } finally {
                     setLoading(false);
+                    window.hideLoadingSpinner();
                 }
             };
 
@@ -518,6 +707,7 @@
                 }
                 
                 try {
+                    window.showLoadingSpinner('Removing Environment Variable...');
                     setLoading(true);
                     await ws.setEnv({key, value: null, _rkwargs: true});
                     await fetchEnvVars();
@@ -526,6 +716,7 @@
                     alert('Failed to remove environment variable: ' + error.message);
                 } finally {
                     setLoading(false);
+                    window.hideLoadingSpinner();
                 }
             };
 
@@ -938,13 +1129,16 @@
         
             const handleListFiles = async () => {
                 try {
+                    window.showLoadingSpinner('Loading Files...');
                     setLoading(true); // Show loading state
                     const fileList = await listFiles(artifact.id, ""); // Fetch files at the root of the artifact
                     setFiles(fileList);
                 } catch (error) {
                     console.error("Failed to list files:", error);
+                    alert("Failed to list files: " + error.message);
                 } finally {
                     setLoading(false); // Hide loading state
+                    window.hideLoadingSpinner();
                 }
             };
         
@@ -959,10 +1153,14 @@
         
             const handleDeleteFile = async (filePath) => {
                 try {
+                    window.showLoadingSpinner(`Deleting ${filePath}...`);
                     await am.removeFile(artifact.id, filePath); // Delete the file
                     setFiles(await listFiles(artifact.id, "")); // Refresh the file list
                 } catch (error) {
                     console.error("Failed to delete file:", error);
+                    alert("Failed to delete file: " + error.message);
+                } finally {
+                    window.hideLoadingSpinner();
                 }
             };
         
@@ -972,6 +1170,7 @@
         
                 const filePath = file.name; // Set the file path to the file's name
                 try {
+                    window.showLoadingSpinner(`Uploading ${file.name} to Artifact...`);
                     setUploading(true);
                     const uploadUrl = await am.putFile(artifact.id, filePath); // Get the upload URL
                     await axios.put(uploadUrl, file, {
@@ -980,8 +1179,10 @@
                     setFiles(await listFiles(artifact.id, "")); // Refresh the file list
                 } catch (error) {
                     console.error("Failed to upload file:", error);
+                    alert("Failed to upload file: " + error.message);
                 } finally {
                     setUploading(false);
+                    window.hideLoadingSpinner();
                 }
             };
         
@@ -1138,6 +1339,7 @@
                 event.preventDefault();
                 if (confirm(`Are you sure you want to delete the artifact with ID: ${artifactId}?`)) {
                     try {
+                        window.showLoadingSpinner('Deleting Artifact...');
                         await am.delete(artifactId, {delete_files: true, recursive: true, _rkwargs: true}); // Delete the artifact
             
                         if (parentId) {
@@ -1153,6 +1355,8 @@
                         }
                     } catch (error) {
                         alert(`Failed to delete artifact with ID: ${artifactId}. Error: ${error}`);
+                    } finally {
+                        window.hideLoadingSpinner();
                     }
                 }
             };            
@@ -1409,9 +1613,13 @@
             services,
             apps,
             files,
+            runningApps,
             onShowDetails,
             onInstallApp,
+            isInstallingApp,
             setClients,
+            setApps,
+            setRunningApps,
         }) => {
         
             const [workspaces, setWorkspaces] = React.useState([]);
@@ -1422,6 +1630,8 @@
             const [bookmarkedItems, setBookmarkedItems] = React.useState([]);
             const [uploadProgress, setUploadProgress] = React.useState(0);
             const [fileList, setFileList] = React.useState(files);
+            const [selectedApp, setSelectedApp] = React.useState(null);
+            const [selectedRunningApp, setSelectedRunningApp] = React.useState(null);
         
             // Centralized expandedDirs state
             const [expandedDirs, setExpandedDirs] = React.useState({});
@@ -1462,30 +1672,39 @@
         
             const handleDeleteWorkspace = async (workspaceId) => {
                 try {
+                    window.showLoadingSpinner('Deleting Workspace...');
                     await ws.deleteWorkspace(workspaceId);
                     setWorkspaces(await ws.listWorkspaces());
                     setSelectedWorkspaceInfo(null);
                 } catch (error) {
                     alert(`Failed to delete workspace: ${error.message}`);
+                } finally {
+                    window.hideLoadingSpinner();
                 }
             };
         
             const handleCreateWorkspace = async (workspaceData, overwrite) => {
                 try {
+                    window.showLoadingSpinner('Creating Workspace...');
                     await ws.createWorkspace({ ...workspaceData }, overwrite);
                     setWorkspaces(await ws.listWorkspaces());
                 } catch (error) {
                     alert(`Failed to create workspace: ${error.message}`);
                     throw error;
+                } finally {
+                    window.hideLoadingSpinner();
                 }
             };
         
             const handleInfoClick = async (workspaceId) => {
                 try {
+                    window.showLoadingSpinner('Loading Workspace Info...');
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setSelectedWorkspaceInfo(workspaceInfo);
                 } catch (error) {
                     alert(`Failed to get workspace info: ${error.message}`);
+                } finally {
+                    window.hideLoadingSpinner();
                 }
             };
         
@@ -1495,16 +1714,20 @@
         
             const handleSaveEditedWorkspace = async (workspaceData, overwrite) => {
                 try {
+                    window.showLoadingSpinner('Updating Workspace...');
                     await ws.createWorkspace({ ...workspaceData }, overwrite);
                     setWorkspaces(await ws.listWorkspaces());
                     setEditingWorkspace(null); // Close the modal after editing
                 } catch (error) {
                     alert(`Failed to update workspace: ${error.message}`);
+                } finally {
+                    window.hideLoadingSpinner();
                 }
             };
         
             const handleBookmarkWorkspace = async (newWorkspaceId) => {
                 try {
+                    window.showLoadingSpinner('Bookmarking Workspace...');
                     await ws.bookmark({
                         bookmark_type: 'workspace',
                         id: newWorkspaceId
@@ -1512,14 +1735,16 @@
                     // Refresh the workspace info
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setCurrentWorkspaceInfo(workspaceInfo);
-                    alert('Workspace bookmarked successfully!');
                 } catch (error) {
                     alert(`Failed to bookmark workspace: ${error.message}`);
+                } finally {
+                    window.hideLoadingSpinner();
                 }
             };
         
             const handleBookmarkService = async (serviceId) => {
                 try {
+                    window.showLoadingSpinner('Bookmarking Service...');
                     await ws.bookmark({
                         bookmark_type: 'service',
                         id: serviceId
@@ -1527,14 +1752,16 @@
                     // Refresh the workspace info
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setCurrentWorkspaceInfo(workspaceInfo);
-                    alert('Service bookmarked successfully!');
                 } catch (error) {
                     alert(`Failed to bookmark service: ${error.message}`);
+                } finally {
+                    window.hideLoadingSpinner();
                 }
             };
         
             const handleUnbookmarkItem = async (bookmark_type, id) => {
                 try {
+                    window.showLoadingSpinner('Removing Bookmark...');
                     await ws.unbookmark({
                         bookmark_type,
                         id
@@ -1544,6 +1771,8 @@
                     setCurrentWorkspaceInfo(workspaceInfo);
                 } catch (error) {
                     alert(`Failed to unbookmark workspace: ${error.message}`);
+                } finally {
+                    window.hideLoadingSpinner();
                 }
             };
         
@@ -1557,6 +1786,7 @@
         
             const handleFileUpload = async (file) => {
                 try {
+                    window.showLoadingSpinner(`Uploading ${file.name}...`);
                     const presignedUrl = await s3.generatePresignedUrl(file.name, "put_object");
         
                     const response = await axios.put(presignedUrl, file, {
@@ -1578,10 +1808,14 @@
                         setFileList(updatedFiles); // Update the fileList state to trigger a re-render
                     } else {
                         console.error("File upload failed", response.statusText);
+                        alert("File upload failed: " + response.statusText);
                     }
                     setUploadProgress(0); // Reset progress after upload
                 } catch (error) {
                     console.error("File upload failed", error);
+                    alert("File upload failed: " + error.message);
+                } finally {
+                    window.hideLoadingSpinner();
                 }
             };
         
@@ -1606,6 +1840,8 @@
                     }
                     if (!answer) return;
             
+                    window.showLoadingSpinner(`Deleting ${fullPath}...`);
+                    
                     // Delete the file or directory
                     if (type === "directory") {
                         await s3.deleteDirectory(fullPath + "/");
@@ -1630,6 +1866,9 @@
                     }
                 } catch (error) {
                     console.error("Failed to delete file", error);
+                    alert("Failed to delete file: " + error.message);
+                } finally {
+                    window.hideLoadingSpinner();
                 }
             };            
         
@@ -1640,6 +1879,96 @@
                 } catch (error) {
                     console.error("Failed to list files", error);
                     return [];
+                }
+            };
+
+            // App management handlers
+            const handleUninstallApp = async (appId) => {
+                if (!confirm(`Are you sure you want to uninstall app ${appId}?`)) {
+                    return;
+                }
+                try {
+                    window.showLoadingSpinner('Uninstalling Application...');
+                    if (!ws || !ws.getService) {
+                        throw new Error('WebSocket connection not ready. Please wait for the connection to be established.');
+                    }
+                    const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
+                    await controller.uninstall(appId);
+                    await refreshApps(ws);
+                } catch (error) {
+                    console.error('Failed to uninstall app:', error);
+                    alert('Failed to uninstall app: ' + error.message);
+                } finally {
+                    window.hideLoadingSpinner();
+                }
+            };
+
+            const handleStartApp = async (appId) => {
+                try {
+                    window.showLoadingSpinner('Starting Application...');
+                    if (!ws || !ws.getService) {
+                        throw new Error('WebSocket connection not ready. Please wait for the connection to be established.');
+                    }
+                    const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
+                    const appInfo = await controller.start(appId);
+                    console.log('App started:', appInfo);
+                    // Refresh both apps and running apps lists
+                    await refreshApps(ws);
+                    await refreshRunningApps(ws);
+                } catch (error) {
+                    console.error('Failed to start app:', error);
+                    // Still show alert for errors since it's important feedback
+                    alert('Failed to start app: ' + error.message);
+                } finally {
+                    window.hideLoadingSpinner();
+                }
+            };
+
+            const handleStopApp = async (sessionId) => {
+                if (!confirm(`Are you sure you want to stop session ${sessionId}?`)) {
+                    return;
+                }
+                try {
+                    window.showLoadingSpinner('Stopping Application...');
+                    if (!ws || !ws.getService) {
+                        throw new Error('WebSocket connection not ready. Please wait for the connection to be established.');
+                    }
+                    const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
+                    await controller.stop(sessionId);
+                    await refreshRunningApps(ws);
+                } catch (error) {
+                    console.error('Failed to stop app:', error);
+                    alert('Failed to stop app: ' + error.message);
+                } finally {
+                    window.hideLoadingSpinner();
+                }
+            };
+
+            const refreshApps = async (wsConnection) => {
+                try {
+                    if (!wsConnection || !wsConnection.getService) {
+                        console.warn('WebSocket connection not ready for refreshApps');
+                        return;
+                    }
+                    const controller = await wsConnection.getService('public/server-apps', { case_conversion: 'camel' });
+                    const apps = await controller.listApps();
+                    setApps(apps);
+                } catch (error) {
+                    console.error('Failed to refresh apps:', error);
+                }
+            };
+
+            const refreshRunningApps = async (wsConnection) => {
+                try {
+                    if (!wsConnection || !wsConnection.getService) {
+                        console.warn('WebSocket connection not ready for refreshRunningApps');
+                        return;
+                    }
+                    const controller = await wsConnection.getService('public/server-apps', { case_conversion: 'camel' });
+                    const running = await controller.listRunning();
+                    setRunningApps(running);
+                } catch (error) {
+                    console.error('Failed to refresh running apps:', error);
                 }
             };
         
@@ -1668,14 +1997,16 @@
                                         className="absolute top-4 right-16 text-blue-400 hover:text-blue-500 transition duration-300 flex items-center"
                                         onClick={async () => {
                                             try {
+                                                window.showLoadingSpinner('Cleaning up Workspace...');
                                                 await window.remoteServer.cleanup();
                                                 // Refresh clients list after cleanup
                                                 const updatedClients = await ws.listClients();
                                                 setClients(updatedClients);
-                                                alert('Workspace cleanup completed successfully!');
                                             } catch (error) {
                                                 console.error('Cleanup failed:', error);
                                                 alert('Failed to cleanup workspace: ' + error.message);
+                                            } finally {
+                                                window.hideLoadingSpinner();
                                             }
                                         }}
                                         title="Remove dead clients and cleanup workspace"
@@ -1842,21 +2173,120 @@
                     {panel === 'applications' && (
                         <>
                             <h1 className="text-4xl font-bold capitalize">Applications</h1>
-        
+                            <div
+                                style={{ display: 'block', width: '100%', height: '100%', zIndex: 1000 }}
+                                id="hypha-window-container"
+                            ></div>
                             <p className="text-xl text-gray-400 mt-4">
                                 Applications installed in workspace: <code>{workspaceId}</code>
                             </p>
-                            <button
-                                className="mt-4 bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 flex items-center"
-                                onClick={() => onInstallApp()}
-                            >
-                                <i className="fas fa-plus mr-2"></i> Install App
-                            </button>
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mt-6">
-                                {apps.map(app => (
-                                    <AppCard key={app.id} app={app} />
-                                ))}
+                            <div className="flex gap-4 mt-6">
+                                <button
+                                    className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
+                                        isInstallingApp || !ws
+                                            ? 'bg-gray-700 cursor-not-allowed' 
+                                            : 'bg-green-600 hover:bg-green-500'
+                                    } text-white`}
+                                    onClick={() => window.loadCodeEditor(ws, refreshApps)}
+                                    disabled={isInstallingApp || !ws}
+                                >
+                                    <i className="fas fa-code mr-2"></i> New App
+                                </button>
+                                <button
+                                    className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
+                                        isInstallingApp || !ws
+                                            ? 'bg-gray-600 cursor-not-allowed' 
+                                            : 'bg-gray-600 hover:bg-gray-500'
+                                    } text-white`}
+                                    onClick={() => onInstallApp()}
+                                    disabled={isInstallingApp || !ws}
+                                >
+                                    {isInstallingApp ? (
+                                        <>
+                                            <i className="fas fa-spinner fa-spin mr-2"></i> Installing...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <i className="fas fa-plus mr-2"></i> Install From URL
+                                        </>
+                                    )}
+                                </button>
+                                <button
+                                    className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
+                                        isInstallingApp || !ws
+                                            ? 'bg-gray-700 cursor-not-allowed' 
+                                            : 'bg-gray-600 hover:bg-gray-500'
+                                    } text-white`}
+                                    onClick={() => refreshApps(ws)}
+                                    disabled={isInstallingApp || !ws}
+                                >
+                                    <i className="fas fa-sync mr-2"></i> Refresh
+                                </button>
                             </div>
+                            
+                            <hr className="my-8 border-gray-700"></hr>
+                            
+                            <div className="flex items-center mb-6">
+                                <i className="fas fa-th-large fa-2x text-blue-400 mr-3"></i>
+                                <h2 className="text-2xl font-bold">Installed Applications</h2>
+                            </div>
+                            
+                            {apps.length === 0 ? (
+                                <div className="text-center py-8 text-gray-400">
+                                    <i className="fas fa-inbox text-4xl mb-4"></i>
+                                    <p>No apps installed</p>
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-1 md:grid-cols-1 lg:grid-cols-2 gap-8">
+                                    {apps.map(app => (
+                                        <AppCard 
+                                            key={app.id} 
+                                            app={app} 
+                                            onUninstall={handleUninstallApp}
+                                            onShowDetails={setSelectedApp}
+                                            onStart={handleStartApp}
+                                        />
+                                    ))}
+                                </div>
+                            )}
+                            
+                            <hr className="my-8 border-gray-700"></hr>
+                            
+                            <div className="flex items-center justify-between mb-6">
+                                <div className="flex items-center">
+                                    <i className="fas fa-play-circle fa-2x text-green-400 mr-3"></i>
+                                    <h2 className="text-2xl font-bold">Running Applications</h2>
+                                </div>
+                                <button
+                                    className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
+                                        isInstallingApp || !ws
+                                            ? 'bg-gray-700 cursor-not-allowed' 
+                                            : 'bg-gray-600 hover:bg-gray-500'
+                                    } text-white`}
+                                    onClick={() => refreshRunningApps(ws)}
+                                    disabled={isInstallingApp || !ws}
+                                >
+                                    <i className="fas fa-sync mr-2"></i> Refresh
+                                </button>
+                            </div>
+                            
+                            {runningApps.length === 0 ? (
+                                <div className="text-center py-8 text-gray-400">
+                                    <i className="fas fa-sleep text-4xl mb-4"></i>
+                                    <p>No apps currently running</p>
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-1 md:grid-cols-1 lg:grid-cols-2 gap-8">
+                                    {runningApps.map(app => (
+                                        <RunningAppCard 
+                                            key={app.id} 
+                                            app={app} 
+                                            onStop={handleStopApp}
+                                            onShowDetails={setSelectedRunningApp}
+                                        />
+                                    ))}
+                                </div>
+                            )}
                         </>
                     )}
         
@@ -1904,25 +2334,6 @@
                         <>
                             <h1 className="text-4xl font-bold capitalize">Development</h1>
 
-                            {enabledPanels.includes('applications') && (
-                                <>
-                                <hr className="my-8 border-gray-700"></hr>
-                                <h2 className="text-2xl font-bold mt-5">
-                                    Applications <i className="fas fa-th-large text-xl text-gray-400"></i>
-                                </h2>
-                                <p className="text-xl text-gray-400 mt-4">Develop Applications for Hypha</p>
-                                <button
-                                    onClick={() => window.loadCodeEditor()}
-                                    className="mt-4 bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 flex items-center"
-                                >
-                                    <i className="fas fa-code mr-2"></i> New App
-                                </button>
-                                <div
-                                    style={{ display: 'block', width: '100%', height: '100%', zIndex: 1000 }}
-                                    id="hypha-window-container"
-                                ></div>
-                                </>
-                            )}
 
                             <hr className="my-8 border-gray-700"></hr>
         
@@ -2013,6 +2424,21 @@
                             onClose={() => setSelectedWorkspaceInfo(null)}
                         />
                     )}
+                    
+                    {selectedApp && (
+                        <AppDetailsModal
+                            app={selectedApp}
+                            onClose={() => setSelectedApp(null)}
+                        />
+                    )}
+                    
+                    {selectedRunningApp && (
+                        <AppDetailsModal
+                            app={selectedRunningApp}
+                            onClose={() => setSelectedRunningApp(null)}
+                        />
+                    )}
+                    
                     <footer className="bg-gray-900 text-gray-400 py-6 mt-16">
                         <div className="container mx-auto text-center">
                             <p>Hypha is an open-source platform released under the MIT license.</p>
@@ -2039,12 +2465,36 @@
             const [clients, setClients] = React.useState([]);
             const [services, setServices] = React.useState([]);
             const [apps, setApps] = React.useState([]);
+            const [runningApps, setRunningApps] = React.useState([]);
             const [files, setFiles] = React.useState([]);
             const [ws, setWs] = React.useState(null);
             const [s3, setS3] = React.useState(null);
             const [am, setAM] = React.useState(null);
             const [selectedService, setSelectedService] = React.useState(null);
+            const [isInstallingApp, setIsInstallingApp] = React.useState(false);
+            const [isLoadingSpinnerVisible, setIsLoadingSpinnerVisible] = React.useState(false);
+            const [loadingMessage, setLoadingMessage] = React.useState('Loading...');
         
+            // Expose spinner control functions globally for code editor and other components
+            window.showLoadingSpinner = (message = 'Loading...') => {
+                setLoadingMessage(message);
+                setIsLoadingSpinnerVisible(true);
+            };
+            
+            window.hideLoadingSpinner = () => {
+                setIsLoadingSpinnerVisible(false);
+                setLoadingMessage('Loading...');
+            };
+            
+            // Keep backward compatibility
+            window.showInstallSpinner = (message = 'Installing Application...') => {
+                window.showLoadingSpinner(message);
+            };
+            
+            window.hideInstallSpinner = () => {
+                window.hideLoadingSpinner();
+            };
+
             React.useEffect(() => {
                 // Connect to the Hypha server
                 const connectToServer = async () => {
@@ -2103,7 +2553,9 @@
                         try {
                             const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
                             const apps = await controller.listApps();
+                            const running = await controller.listRunning();
                             setApps(apps);
+                            setRunningApps(running);
                         } catch (e) {
                             alert(`Failed to list apps: ${e.message}`);
                         }
@@ -2133,12 +2585,20 @@
             };
         
             const onInstallApp = async () => {
+                if (!ws || !ws.getService) {
+                    alert('WebSocket connection not ready. Please wait for the connection to be established.');
+                    return;
+                }
+                
                 const url = prompt(
                     'Enter the URL of the app to install',
-                    'https://raw.githubusercontent.com/amun-ai/hypha/main/tests/testWebWorkerPlugin.imjoy.html'
+                    window.location.origin + '/ws/code_template.html'
                 );
+                if (!url) return;
+                
+                setIsInstallingApp(true);
                 try {
-                    if (!url) return;
+                    window.showLoadingSpinner('Installing Application...');
                     const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
                     const appInfo = await controller.install(url, { overwrite: true, _rkwargs: true});
                     console.log('App installed:', appInfo);
@@ -2146,6 +2606,9 @@
                 } catch (e) {
                     console.error(e);
                     alert(`Failed to install app: ${e.message}`);
+                } finally {
+                    setIsInstallingApp(false);
+                    window.hideLoadingSpinner();
                 }
             };
         
@@ -2183,12 +2646,17 @@
                         clients={clients}
                         services={services}
                         apps={apps}
+                        runningApps={runningApps}
                         files={files}
                         onShowDetails={onShowDetails}
                         onInstallApp={onInstallApp}
+                        isInstallingApp={isInstallingApp}
                         setClients={setClients}
+                        setApps={setApps}
+                        setRunningApps={setRunningApps}
                     />
                     {selectedService && <Modal serviceInfo={selectedService} onClose={() => setSelectedService(null)} />}
+                    <SpinnerOverlay isVisible={isLoadingSpinnerVisible} message={loadingMessage} />
                 </div>
             );
         };

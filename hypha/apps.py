@@ -497,6 +497,8 @@ class ServerAppController:
             timeout = 60
         if wait_for_service is None and "wait_for_service" in startup_config:
             wait_for_service = startup_config["wait_for_service"]
+        # Only apply startup_config if stop_after_inactive is None (not explicitly set)
+        # Do not override explicitly passed values (including verification timeout)
         if stop_after_inactive is None and "stop_after_inactive" in startup_config:
             stop_after_inactive = startup_config["stop_after_inactive"]
 
@@ -563,11 +565,11 @@ class ServerAppController:
 
         # test activity tracker
         tracker = self.store.get_activity_tracker()
-        if not manifest.daemon and stop_after_inactive and stop_after_inactive > 0:
+        if not manifest.daemon and stop_after_inactive is not None and stop_after_inactive > 0:
 
             async def _stop_after_inactive():
                 if full_client_id in self._sessions:
-                    await runner.stop(full_client_id)
+                    await self._stop(full_client_id, raise_exception=False)
                 logger.info(
                     f"App {full_client_id} stopped because of inactive for {stop_after_inactive}s."
                 )
