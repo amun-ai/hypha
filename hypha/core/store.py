@@ -218,8 +218,10 @@ class RedisStore:
 
             # Configure connection pool for production Redis
             max_connections = int(os.environ.get("HYPHA_REDIS_MAX_CONNECTIONS", "100"))
-            health_check_interval = int(os.environ.get("HYPHA_REDIS_HEALTH_CHECK_INTERVAL", "30"))
-            
+            health_check_interval = int(
+                os.environ.get("HYPHA_REDIS_HEALTH_CHECK_INTERVAL", "30")
+            )
+
             self._redis = aioredis.from_url(
                 redis_uri,
                 max_connections=max_connections,

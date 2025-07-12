@@ -710,13 +710,13 @@ class RedisEventBus:
     async def stop(self):
         """Stop the event bus."""
         self._stop = True
-        
+
         # Cancel tasks first
         if self._subscribe_task:
             self._subscribe_task.cancel()
         if self._health_check_task:
             self._health_check_task.cancel()
-        
+
         # Clean up pubsub connections
         if self._health_check_pubsub:
             try:
@@ -724,8 +724,10 @@ class RedisEventBus:
                 await self._health_check_pubsub.close()
                 self._health_check_pubsub = None
             except Exception as e:
-                logger.warning(f"Error cleaning up health check pubsub during stop: {str(e)}")
-        
+                logger.warning(
+                    f"Error cleaning up health check pubsub during stop: {str(e)}"
+                )
+
         # Wait for tasks to complete
         try:
             await asyncio.gather(
@@ -782,7 +784,9 @@ class RedisEventBus:
                     await self._health_check_pubsub.close()
                     self._health_check_pubsub = None
                 except Exception as cleanup_error:
-                    logger.warning(f"Error cleaning up health check pubsub: {str(cleanup_error)}")
+                    logger.warning(
+                        f"Error cleaning up health check pubsub: {str(cleanup_error)}"
+                    )
             return False
 
     async def _process_health_check_message(self, message):
@@ -841,7 +845,7 @@ class RedisEventBus:
                         await self._subscribe_task
                     except asyncio.CancelledError:
                         pass
-                
+
                 # Clean up health check pubsub during reconnection
                 if self._health_check_pubsub:
                     try:
@@ -849,7 +853,9 @@ class RedisEventBus:
                         await self._health_check_pubsub.close()
                         self._health_check_pubsub = None
                     except Exception as cleanup_error:
-                        logger.warning(f"Error cleaning up health check pubsub during reconnection: {str(cleanup_error)}")
+                        logger.warning(
+                            f"Error cleaning up health check pubsub during reconnection: {str(cleanup_error)}"
+                        )
 
                 await asyncio.sleep(self._reconnect_delay)
 

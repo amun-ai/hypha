@@ -1898,12 +1898,16 @@ class ArtifactController:
         try:
             async with session.begin():
                 if stage:
-                    artifact, parent_artifact = await self._get_artifact_with_permission(
-                        user_info, artifact_id, "edit", session
+                    artifact, parent_artifact = (
+                        await self._get_artifact_with_permission(
+                            user_info, artifact_id, "edit", session
+                        )
                     )
                 else:
-                    artifact, parent_artifact = await self._get_artifact_with_permission(
-                        user_info, artifact_id, ["edit", "commit"], session
+                    artifact, parent_artifact = (
+                        await self._get_artifact_with_permission(
+                            user_info, artifact_id, ["edit", "commit"], session
+                        )
                     )
 
                 # Validate version parameter - ONLY allow None (current version), "new" (create new), or "stage" (staging mode)
@@ -2712,6 +2716,7 @@ class ArtifactController:
                         Params={"Bucket": s3_config["bucket"], "Key": file_key},
                         ExpiresIn=3600,
                     )
+                    # Use proxy based on server configuration (put_file always uses proxy)
                     if s3_config["public_endpoint_url"]:
                         # replace the endpoint with the proxy base URL
                         presigned_url = presigned_url.replace(
@@ -2799,7 +2804,13 @@ class ArtifactController:
             await session.close()
 
     async def get_file(
-        self, artifact_id, file_path, silent=False, version=None, context: dict = None
+        self,
+        artifact_id,
+        file_path,
+        silent=False,
+        version=None,
+        use_proxy=None,
+        context: dict = None,
     ):
         """Generate a pre-signed URL to download a file from an artifact in S3."""
         if context is None or "ws" not in context:
@@ -2834,7 +2845,11 @@ class ArtifactController:
                         Params={"Bucket": s3_config["bucket"], "Key": file_key},
                         ExpiresIn=3600,
                     )
-                    if s3_config["public_endpoint_url"]:
+                    # Use proxy based on use_proxy parameter (None means use server config)
+                    if use_proxy is None:
+                        use_proxy = self.s3_controller.enable_s3_proxy
+
+                    if s3_config["public_endpoint_url"] and use_proxy:
                         # replace the endpoint with the proxy base URL
                         presigned_url = presigned_url.replace(
                             s3_config["endpoint_url"], s3_config["public_endpoint_url"]
@@ -3523,7 +3538,10 @@ class ArtifactController:
 
                 async def upload_files(dir_path=""):
                     files = await self.list_files(
-                        artifact.id, dir_path=dir_path, context=context
+                        artifact.id,
+                        dir_path=dir_path,
+                        version="latest",
+                        context=context,
                     )
                     for file_info in files:
                         name = file_info["name"]
@@ -3537,7 +3555,11 @@ class ArtifactController:
                                 )
                                 continue
                             url = await self.get_file(
-                                artifact.id, file_path, context=context
+                                artifact.id,
+                                file_path,
+                                version="latest",
+                                use_proxy=False,
+                                context=context,
                             )
                             try:
                                 await zenodo_client.import_file(
