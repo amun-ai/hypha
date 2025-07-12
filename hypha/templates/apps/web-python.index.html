@@ -91,20 +91,15 @@ del m
 async def run():
     try:
         await micropip.install(["numpy", "pydantic", "hypha-rpc=={{ hypha_main_version }}", {% for req in requirements %}"{{req}}", {% endfor %}])
-        js.__resolve()
     except Exception as e:
         console.error("Failed to install packages: ", traceback.format_exc())
-        js.__reject(traceback.format_exc())
+        raise e
 
-asyncio.get_event_loop().run_until_complete(run())
+await run()
 `
 
-function installPackage(){
-    return new Promise((resolve, reject)=>{
-        self.__resolve = resolve
-        self.__reject = reject
-        self.pyodide.runPython(startupScript)
-    })
+async function installPackage(){
+    return await self.pyodide.runPythonAsync(startupScript)
 }
 
 const toObject = (x) => {
@@ -121,9 +116,9 @@ const toObject = (x) => {
 
 async function setupPyodide() {
     if(self.pyodide) return;
-    importScripts('https://cdn.jsdelivr.net/pyodide/v0.27.0/full/pyodide.js');
+    importScripts('https://cdn.jsdelivr.net/pyodide/v0.28.0/full/pyodide.js');
     self.pyodide = await loadPyodide({
-        indexURL : 'https://cdn.jsdelivr.net/pyodide/v0.27.0/full/',
+        indexURL : 'https://cdn.jsdelivr.net/pyodide/v0.28.0/full/',
         stdout: (text) => {
             self.postMessage({"type": "stdout", "content": text})
         },
@@ -142,7 +137,7 @@ self.onmessage = async function(e) {
     self.config = config
     try {
         await setupPyodide()
-        self.pyodide.runPython(src);
+        await self.pyodide.runPythonAsync(src);
     } catch (err) {
         console.error("Failed to start the script", err);
         self.postMessage({type: "stderr", "content": err})
