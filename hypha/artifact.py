@@ -2666,7 +2666,12 @@ class ArtifactController:
             await session.close()
 
     async def put_file(
-        self, artifact_id, file_path, download_weight: float = 0, context: dict = None
+        self,
+        artifact_id,
+        file_path,
+        download_weight: float = 0,
+        use_proxy=None,
+        context: dict = None,
     ):
         """Generate a pre-signed URL to upload a file to an artifact in S3."""
         if context is None or "ws" not in context:
@@ -2716,8 +2721,11 @@ class ArtifactController:
                         Params={"Bucket": s3_config["bucket"], "Key": file_key},
                         ExpiresIn=3600,
                     )
-                    # Use proxy based on server configuration (put_file always uses proxy)
-                    if s3_config["public_endpoint_url"]:
+                    # Use proxy based on use_proxy parameter (None means use server config)
+                    if use_proxy is None:
+                        use_proxy = self.s3_controller.enable_s3_proxy
+
+                    if s3_config["public_endpoint_url"] and use_proxy:
                         # replace the endpoint with the proxy base URL
                         presigned_url = presigned_url.replace(
                             s3_config["endpoint_url"], s3_config["public_endpoint_url"]
