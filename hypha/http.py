@@ -713,7 +713,7 @@ class HTTPProxy:
                 )
 
             if not path:
-                return FileResponse(safe_join(str(self.ws_apps_dir), "ws/index.html"))
+                return FileResponse(safe_join(str(self.ws_apps_dir), "index.html"))
 
             # check if the path is inside the built-in apps dir
             # get the jinja template from the built-in apps dir

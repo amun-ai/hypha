@@ -30,6 +30,20 @@ logger.setLevel(LOGLEVEL)
 multihash.CodecReg.register("base58", base58.b58encode, base58.b58decode)
 
 
+# Add a helper function to detect raw HTML content
+def is_raw_html_content(source: str) -> bool:
+    """Check if source is raw HTML content (not a URL or ImJoy/Hypha template)."""
+    if not source or source.startswith("http"):
+        return False
+    
+    # Check for basic HTML structure
+    source_lower = source.lower().strip()
+    return (
+        source_lower.startswith(("<!doctype html", "<html", "<head", "<body")) or
+        ("<html" in source_lower and "</html>" in source_lower)
+    )
+
+
 class ServerAppController:
     """Server App Controller."""
 
@@ -131,12 +145,14 @@ class ServerAppController:
                 f" to install apps in workspace {workspace_info.id}"
             )
 
+        # Determine template type
         if config:
             config["entry_point"] = config.get("entry_point", "index.html")
             template = config.get("type") + "." + config["entry_point"]
         else:
             template = "hypha"
 
+        # Handle different source types
         if source.startswith("http"):
             if not (
                 source.startswith("https://")
@@ -155,6 +171,19 @@ class ServerAppController:
                     source = response.text
             else:
                 template = None
+        elif is_raw_html_content(source):
+            # Handle raw HTML content
+            if not config:
+                config = {
+                    "name": "Raw HTML App",
+                    "version": "0.1.0",
+                    "type": "window",
+                    "entry_point": "index.html",
+                }
+            else:
+                config["entry_point"] = config.get("entry_point", "index.html")
+                config["type"] = config.get("type", "window")
+            template = "raw_html"
 
         # Compute multihash of the source code
         mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
@@ -166,9 +195,13 @@ class ServerAppController:
                 source.encode("utf-8")
             ), f"App source code verification failed (source_hash: {source_hash})."
 
+        # Process based on template type
         if template is None:
             config = config or {}
             config["entry_point"] = config.get("entry_point", source)
+            entry_point = config["entry_point"]
+        elif template == "raw_html":
+            # For raw HTML, we'll upload the content as-is
             entry_point = config["entry_point"]
         elif template == "hypha":
             if not source:
@@ -226,7 +259,17 @@ class ServerAppController:
 
         app_id = f"{mhash}"
 
-        if template:
+        # Create artifact object
+        if template and template != "raw_html":
+            public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}"
+            artifact_obj = convert_config_to_artifact(config, app_id, public_url)
+            artifact_obj.update(
+                {
+                    "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}",
+                    "public_url": public_url,
+                }
+            )
+        elif template == "raw_html":
             public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}"
             artifact_obj = convert_config_to_artifact(config, app_id, public_url)
             artifact_obj.update(
@@ -241,11 +284,6 @@ class ServerAppController:
         # Set default startup config if provided
         if startup_config is not None:
             artifact_obj["startup_config"] = startup_config
-            # Also set the individual fields for backward compatibility
-            if "stop_after_inactive" in startup_config:
-                artifact_obj["stop_after_inactive"] = startup_config[
-                    "stop_after_inactive"
-                ]
 
         ApplicationManifest.model_validate(artifact_obj)
 
@@ -267,7 +305,8 @@ class ServerAppController:
             context=context,
         )
 
-        if template:
+        # Upload files for template-based apps and raw HTML
+        if template and template != "raw_html":
             # Upload the main source file
             put_url = await self.artifact_manager.put_file(
                 artifact["id"], file_path=config["entry_point"], context=context
@@ -277,6 +316,16 @@ class ServerAppController:
                 assert (
                     response.status_code == 200
                 ), f"Failed to upload {config['entry_point']}"
+        elif template == "raw_html":
+            # Upload the raw HTML content
+            put_url = await self.artifact_manager.put_file(
+                artifact["id"], file_path=entry_point, context=context
+            )
+            async with httpx.AsyncClient() as client:
+                response = await client.put(put_url, data=source)
+                assert (
+                    response.status_code == 200
+                ), f"Failed to upload {entry_point}"
 
         if version != "stage":
             # Commit the artifact if stage is not enabled
@@ -345,8 +394,9 @@ class ServerAppController:
 
             # Don't use timeout during verification, except for daemon apps
             # which have special handling
+            startup_config = manifest.startup_config or {}
             verification_timeout = (
-                None if not manifest.daemon else manifest.stop_after_inactive
+                None if not manifest.daemon else startup_config.get("stop_after_inactive")
             )
 
             info = await self.start(
@@ -462,8 +512,8 @@ class ServerAppController:
         if stop_after_inactive is None:
             stop_after_inactive = (
                 600
-                if manifest.stop_after_inactive is None
-                else manifest.stop_after_inactive
+                if startup_config.get("stop_after_inactive") is None
+                else startup_config.get("stop_after_inactive")
             )
         entry_point = manifest.entry_point
         assert entry_point, f"Entry point not found for app {app_id}."

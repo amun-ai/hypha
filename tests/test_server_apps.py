@@ -38,6 +38,50 @@ api.export({
 })
 """
 
+# Add test for raw HTML apps
+TEST_RAW_HTML_APP = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Raw HTML Test App</title>
+</head>
+<body>
+    <h1>Raw HTML Test App</h1>
+    <p>This is a test raw HTML app.</p>
+    <script type="module">
+        const params = new URLSearchParams(window.location.search);
+        const server_url = params.get('server_url') || window.location.origin;
+        const workspace = params.get('workspace');
+        const client_id = params.get('client_id');
+        const token = params.get('token');
+        
+        const hyphaWebsocketClient = await import(server_url + '/assets/hypha-rpc-websocket.mjs');
+        const config = {
+            server_url,
+            workspace,
+            client_id,
+            token
+        };
+        
+        const api = await hyphaWebsocketClient.connectToServer(config);
+        
+        // Export a simple service
+        api.export({
+            async setup() {
+                console.log("Raw HTML app initialized");
+            },
+            async sayHello(name) {
+                return `Hello, ${name}! This is a raw HTML app.`;
+            },
+            async add(a, b) {
+                return a + b;
+            }
+        });
+    </script>
+</body>
+</html>
+"""
+
 
 async def test_server_apps_workspace_removal(
     fastapi_server, test_user_token_5, root_user_token
@@ -598,5 +642,82 @@ async def test_startup_config_comprehensive(fastapi_server, test_user_token):
     ), "App should be stopped after inactive timeout from startup_config"
 
     await controller.uninstall(app_info.id)
+
+    await api.disconnect()
+
+
+async def test_raw_html_apps(fastapi_server, test_user_token):
+    """Test raw HTML app installation and launching."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+
+    # Test installing raw HTML app without config
+    app_info = await controller.install(
+        source=TEST_RAW_HTML_APP,
+        overwrite=True,
+    )
+    
+    assert app_info["name"] == "Raw HTML App"
+    assert app_info["type"] == "application"  # convert_config_to_artifact sets this
+    assert app_info["entry_point"] == "index.html"
+
+    # Test launching the raw HTML app
+    config = await controller.launch(
+        source=TEST_RAW_HTML_APP,
+        config={"name": "Custom Raw HTML App", "type": "window"},
+        overwrite=True,
+        wait_for_service="default",
+    )
+    
+    assert "id" in config.keys()
+    app = await api.get_app(config.id)
+    
+    # Test the exported functions
+    assert "sayHello" in app
+    assert "add" in app
+    
+    result = await app.sayHello("World")
+    assert result == "Hello, World! This is a raw HTML app."
+    
+    result = await app.add(5, 3)
+    assert result == 8
+    
+    await controller.stop(config.id)
+    
+    # Test installing raw HTML app with custom config
+    app_info2 = await controller.install(
+        source=TEST_RAW_HTML_APP,
+        config={
+            "name": "Custom Raw HTML App",
+            "version": "1.0.0",
+            "type": "window",
+            "entry_point": "main.html",
+        },
+        overwrite=True,
+    )
+    
+    assert app_info2["name"] == "Custom Raw HTML App"
+    assert app_info2["version"] == "1.0.0"
+    assert app_info2["type"] == "application"  # convert_config_to_artifact sets this
+    assert app_info2["entry_point"] == "main.html"
+
+    # Clean up - both apps have the same ID since they have the same source code
+    # So we only need to uninstall once
+    try:
+        await controller.uninstall(app_info["id"])
+    except Exception as e:
+        # If first uninstall fails, try the second app's ID
+        if "does not exist" in str(e):
+            await controller.uninstall(app_info2["id"])
+        else:
+            raise
 
     await api.disconnect()
