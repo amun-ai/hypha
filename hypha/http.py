@@ -245,13 +245,18 @@ class ASGIRoutingMiddleware:
                     async with self.store.get_workspace_interface(
                         user_info, user_info.scope.current_workspace
                     ) as api:
-                        # Call get_service_type_id to check if it's an ASGI service
-                        service_info = await api.get_service_info(
+                        # Call get_service to trigger lazy loading if needed
+                        service = await api.get_service(
                             workspace + "/" + service_id, {"mode": _mode}
                         )
-                        service = await api.get_service(service_info.id)
                         # intercept the request if it's an ASGI service
-                        if service_info.type == "asgi" or service_info.type == "ASGI":
+                        # Check multiple possible ways the service type might be stored
+                        service_type = (
+                            service.get("config", {}).get("type")
+                            or service.get("type")
+                            or getattr(service, "type", None)
+                        )
+                        if service_type == "asgi":
                             # Call the ASGI app with manually provided receive and send
                             await service.serve(
                                 {
@@ -260,7 +265,7 @@ class ASGIRoutingMiddleware:
                                     "send": send,
                                 }
                             )
-                        elif service_info.type == "functions":
+                        elif service_type == "functions":
                             await self.handle_function_service(
                                 service, path, scope, receive, send
                             )
@@ -834,10 +839,9 @@ class HTTPProxy:
                     if service_id == "ws":
                         service = api
                     else:
-                        info = await api.get_service_info(
+                        service = await api.get_service(
                             workspace + "/" + service_id, {"mode": _mode}
                         )
-                        service = await api.get_service(info.id)
                     func = get_value(function_key, service)
                     if not func:
                         return JSONResponse(

@@ -484,3 +484,119 @@ async def test_lazy_service(fastapi_server, test_user_token):
     await controller.uninstall(app_info.id)
 
     await api.disconnect()
+
+
+async def test_lazy_service_with_default_timeout(fastapi_server, test_user_token):
+    """Test lazy service loading with startup_config."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    # Test app with Web Worker template (simpler and more reliable)
+    controller = await api.get_service("public/server-apps")
+
+    source = (
+        (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
+        .open(encoding="utf-8")
+        .read()
+    )
+
+    app_info = await controller.install(
+        source=source,
+        timeout=30,
+        overwrite=True,
+        startup_config={
+            "stop_after_inactive": 3,  # Auto-stop after 3 seconds of inactivity
+            "timeout": 30,  # Default timeout for starting
+            "wait_for_service": "echo",  # Default service to wait for
+        },
+    )
+
+    # Test lazy loading via get_service (this should trigger the app start)
+    service = await api.get_service("echo@" + app_info.id, mode="first")
+    assert service.echo is not None
+    assert await service.echo("hello") == "hello"
+
+    # Verify that the app is running after lazy loading
+    apps = await controller.list_running()
+    running_app = find_item(apps, "app_id", app_info.id)
+    assert running_app is not None, "App should be running after lazy loading"
+
+    # Wait for the startup_config stop_after_inactive to trigger (3 seconds + some buffer)
+    await asyncio.sleep(5)
+
+    # Verify that the app has been stopped due to inactivity (as configured in startup_config)
+    apps = await controller.list_running()
+    running_app = find_item(apps, "app_id", app_info.id)
+    assert (
+        running_app is None
+    ), "App should be stopped after inactive timeout from startup_config"
+
+    await controller.uninstall(app_info.id)
+
+    await api.disconnect()
+
+
+async def test_startup_config_comprehensive(fastapi_server, test_user_token):
+    """Test comprehensive startup_config with all parameters."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    # Test app with Web Worker template
+    controller = await api.get_service("public/server-apps")
+
+    source = (
+        (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
+        .open(encoding="utf-8")
+        .read()
+    )
+
+    app_info = await controller.install(
+        source=source,
+        timeout=30,
+        overwrite=True,
+        startup_config={
+            "stop_after_inactive": 2,  # Auto-stop after 2 seconds of inactivity
+            "timeout": 25,  # Default timeout for starting
+            "wait_for_service": "echo",  # Default service to wait for
+        },
+    )
+
+    # Test that the app starts with the default configuration
+    # This should use the default wait_for_service and timeout from the config
+    started_info = await controller.start(app_info["id"])
+
+    # Verify that the app is running
+    apps = await controller.list_running()
+    running_app = find_item(apps, "app_id", app_info.id)
+    assert running_app is not None, "App should be running after start"
+
+    # Verify that the service is available
+    service = await api.get_service("echo@" + app_info.id, mode="first")
+    assert service.echo is not None
+    assert await service.echo("hello") == "hello"
+
+    # Wait for the startup_config stop_after_inactive to trigger (2 seconds + some buffer)
+    await asyncio.sleep(4)
+
+    # Verify that the app has been stopped due to inactivity (as configured in startup_config)
+    apps = await controller.list_running()
+    running_app = find_item(apps, "app_id", app_info.id)
+    assert (
+        running_app is None
+    ), "App should be stopped after inactive timeout from startup_config"
+
+    await controller.uninstall(app_info.id)
+
+    await api.disconnect()

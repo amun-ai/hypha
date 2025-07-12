@@ -115,6 +115,7 @@ class ServerAppController:
         overwrite: bool = False,
         timeout: float = 60,
         version: str = None,
+        startup_config: Optional[Dict[str, Any]] = None,
         context: Optional[dict] = None,
     ) -> str:
         """Save a server app."""
@@ -236,6 +237,16 @@ class ServerAppController:
             )
         else:
             artifact_obj = convert_config_to_artifact(config, app_id, source)
+
+        # Set default startup config if provided
+        if startup_config is not None:
+            artifact_obj["startup_config"] = startup_config
+            # Also set the individual fields for backward compatibility
+            if "stop_after_inactive" in startup_config:
+                artifact_obj["stop_after_inactive"] = startup_config[
+                    "stop_after_inactive"
+                ]
+
         ApplicationManifest.model_validate(artifact_obj)
 
         try:
@@ -325,11 +336,25 @@ class ServerAppController:
     ):
         """Finalize the edits to the application by committing the artifact."""
         try:
+            # Read the manifest to check if it's a daemon app
+            artifact_info = await self.artifact_manager.read(
+                f"applications:{app_id}", version="stage", context=context
+            )
+            manifest = artifact_info.get("manifest", {})
+            manifest = ApplicationManifest.model_validate(manifest)
+
+            # Don't use timeout during verification, except for daemon apps
+            # which have special handling
+            verification_timeout = (
+                None if not manifest.daemon else manifest.stop_after_inactive
+            )
+
             info = await self.start(
                 app_id,
                 timeout=timeout,
                 wait_for_service="default",
                 version="stage",
+                stop_after_inactive=verification_timeout,
                 context=context,
             )
             await self.stop(info["id"], context=context)
@@ -381,7 +406,7 @@ class ServerAppController:
         self,
         app_id,
         client_id=None,
-        timeout: float = 60,
+        timeout: float = None,
         version: str = None,
         wait_for_service: Union[str, bool] = None,
         stop_after_inactive: Optional[int] = None,
@@ -413,6 +438,18 @@ class ServerAppController:
         )
         manifest = artifact_info.get("manifest", {})
         manifest = ApplicationManifest.model_validate(manifest)
+
+        # Apply default startup config from manifest if not explicitly provided
+        startup_config = manifest.startup_config or {}
+        if timeout is None and "timeout" in startup_config:
+            timeout = startup_config["timeout"]
+        else:
+            timeout = 60
+        if wait_for_service is None and "wait_for_service" in startup_config:
+            wait_for_service = startup_config["wait_for_service"]
+        if stop_after_inactive is None and "stop_after_inactive" in startup_config:
+            stop_after_inactive = startup_config["stop_after_inactive"]
+
         if manifest.singleton:
             # check if the app is already running
             for session_info in self._sessions.values():

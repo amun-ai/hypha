@@ -386,7 +386,7 @@ class ApplicationManifest(Artifact):
     daemon: Optional[bool] = False  # whether the application is a daemon
     singleton: Optional[bool] = False  # whether the application is a singleton
     services: Optional[List[SerializeAsAny[ServiceInfo]]] = None  # for application
-    stop_after_inactive: Optional[float] = None  # stop the application after inactivity
+    startup_config: Optional[Dict[str, Any]] = None  # default startup configuration
 
 
 class ServiceTypeInfo(BaseModel):

@@ -1679,8 +1679,9 @@ class WorkspaceManager:
             raise Exception(
                 "Failed to launch application: artifact-manager service not found."
             )
-        if ":" in service_id:
-            service_id = service_id.split(":")[1]
+        assert (
+            ":" not in service_id
+        ), f"To automatically launch an application, the service name should not specify the client id, i.e. please remove the client id from the service name: {service_id}"
 
         assert service_id and service_id not in [
             "*",
@@ -1723,7 +1724,6 @@ class WorkspaceManager:
             )
         client_info = await self._server_app_controller.start(
             app_id,
-            timeout=timeout * 5,
             wait_for_service=service_id,
             context=context,
         )
@@ -1798,9 +1798,17 @@ class WorkspaceManager:
                 workspace = (
                     service_id.split("/")[0] if "/" in service_id else context["ws"]
                 )
+                # Extract just the service name from the full service ID
+                if "/" in service_id:
+                    service_name = service_id.split("/")[1]
+                else:
+                    service_name = service_id
+                assert (
+                    ":" not in service_name
+                ), f"To automatically launch an application, the service name should not specify the client id, i.e. please remove the client id from the service name: {service_name}"
                 return await self._launch_application_for_service(
                     app_id,
-                    service_id,
+                    service_name,
                     workspace=workspace,
                     timeout=config.timeout,
                     case_conversion=config.case_conversion,
