@@ -606,7 +606,6 @@ async def chunked_transfer_remote_file(
                 raise Exception(
                     f"Failed to download the file. Status code: {response.status_code}, {info}"
                 )
-            info = await response.aread()
             # Step 3: Upload to target with content-length
             target_headers.update(
                 {
