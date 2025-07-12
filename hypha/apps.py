@@ -35,12 +35,11 @@ def is_raw_html_content(source: str) -> bool:
     """Check if source is raw HTML content (not a URL or ImJoy/Hypha template)."""
     if not source or source.startswith("http"):
         return False
-    
+
     # Check for basic HTML structure
     source_lower = source.lower().strip()
-    return (
-        source_lower.startswith(("<!doctype html", "<html", "<head", "<body")) or
-        ("<html" in source_lower and "</html>" in source_lower)
+    return source_lower.startswith(("<!doctype html", "<html", "<head", "<body")) or (
+        "<html" in source_lower and "</html>" in source_lower
     )
 
 
@@ -323,9 +322,7 @@ class ServerAppController:
             )
             async with httpx.AsyncClient() as client:
                 response = await client.put(put_url, data=source)
-                assert (
-                    response.status_code == 200
-                ), f"Failed to upload {entry_point}"
+                assert response.status_code == 200, f"Failed to upload {entry_point}"
 
         if version != "stage":
             # Commit the artifact if stage is not enabled
@@ -335,6 +332,24 @@ class ServerAppController:
                 version=version,
                 context=context,
             )
+            # After commit, read the updated artifact to get the collected services
+            updated_artifact_info = await self.artifact_manager.read(
+                f"applications:{app_id}", version=version, context=context
+            )
+            return updated_artifact_info.get("manifest", artifact_obj)
+        elif version is None:
+            # If no version is specified, commit with default version to trigger verification
+            await self.commit(
+                app_id,
+                timeout=timeout,
+                version="v1",
+                context=context,
+            )
+            # After commit, read the updated artifact to get the collected services
+            updated_artifact_info = await self.artifact_manager.read(
+                f"applications:{app_id}", version="v1", context=context
+            )
+            return updated_artifact_info.get("manifest", artifact_obj)
         return artifact_obj
 
     async def add_file(
@@ -396,7 +411,9 @@ class ServerAppController:
             # which have special handling
             startup_config = manifest.startup_config or {}
             verification_timeout = (
-                None if not manifest.daemon else startup_config.get("stop_after_inactive")
+                None
+                if not manifest.daemon
+                else startup_config.get("stop_after_inactive")
             )
 
             info = await self.start(
@@ -408,6 +425,12 @@ class ServerAppController:
                 context=context,
             )
             await self.stop(info["id"], context=context)
+
+            # After verification, read the updated manifest that includes collected services
+            updated_artifact_info = await self.artifact_manager.read(
+                f"applications:{app_id}", version="stage", context=context
+            )
+
         except asyncio.TimeoutError:
             logger.error("Failed to start the app: %s during installation", app_id)
             await self.uninstall(app_id, context=context)
@@ -565,7 +588,11 @@ class ServerAppController:
 
         # test activity tracker
         tracker = self.store.get_activity_tracker()
-        if not manifest.daemon and stop_after_inactive is not None and stop_after_inactive > 0:
+        if (
+            not manifest.daemon
+            and stop_after_inactive is not None
+            and stop_after_inactive > 0
+        ):
 
             async def _stop_after_inactive():
                 if full_client_id in self._sessions:
@@ -612,6 +639,10 @@ class ServerAppController:
                 await self.event_bus.wait_for_local(
                     "client_connected", match={"id": full_client_id}, timeout=timeout
                 )
+
+            # Give some time for additional services to be registered (e.g., from setup() method)
+            # This is particularly important during verification/installation to collect all services
+            await asyncio.sleep(0.5)
 
             # save the services
             manifest.name = manifest.name or app_info.get("name", "Untitled App")

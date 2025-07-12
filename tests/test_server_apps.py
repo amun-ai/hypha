@@ -673,7 +673,7 @@ async def test_raw_html_apps(fastapi_server, test_user_token):
         source=TEST_RAW_HTML_APP,
         overwrite=True,
     )
-    
+
     assert app_info["name"] == "Raw HTML App"
     assert app_info["type"] == "application"  # convert_config_to_artifact sets this
     assert app_info["entry_point"] == "index.html"
@@ -685,22 +685,22 @@ async def test_raw_html_apps(fastapi_server, test_user_token):
         overwrite=True,
         wait_for_service="default",
     )
-    
+
     assert "id" in config.keys()
     app = await api.get_app(config.id)
-    
+
     # Test the exported functions
     assert "sayHello" in app
     assert "add" in app
-    
+
     result = await app.sayHello("World")
     assert result == "Hello, World! This is a raw HTML app."
-    
+
     result = await app.add(5, 3)
     assert result == 8
-    
+
     await controller.stop(config.id)
-    
+
     # Test installing raw HTML app with custom config
     app_info2 = await controller.install(
         source=TEST_RAW_HTML_APP,
@@ -712,7 +712,7 @@ async def test_raw_html_apps(fastapi_server, test_user_token):
         },
         overwrite=True,
     )
-    
+
     assert app_info2["name"] == "Custom Raw HTML App"
     assert app_info2["version"] == "1.0.0"
     assert app_info2["type"] == "application"  # convert_config_to_artifact sets this
@@ -729,4 +729,153 @@ async def test_raw_html_apps(fastapi_server, test_user_token):
         else:
             raise
 
+    await api.disconnect()
+
+
+async def test_lazy_service_web_python_app(fastapi_server, test_user_token):
+    """Test lazy service loading with web python app (FastAPI template)."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    # Test app with FastAPI template
+    controller = await api.get_service("public/server-apps")
+
+    # Read the FastAPI template
+    source = (
+        (
+            Path(__file__).parent.parent
+            / "hypha"
+            / "templates"
+            / "ws"
+            / "fastapi_app_template.html"
+        )
+        .open(encoding="utf-8")
+        .read()
+    )
+
+    # Stop all the running apps first
+    for app in await controller.list_running():
+        await controller.stop(app["id"])
+
+    app_info = await controller.install(
+        source=source,
+        timeout=30,
+        overwrite=True,
+    )
+
+    print(f"App info: {app_info}")
+    print(f"App services: {app_info.get('services', [])}")
+
+    # Test lazy loading via get_service - this should trigger the app start
+    # The FastAPI template registers a service with id "hello-fastapi"
+    try:
+        service = await api.get_service("hello-fastapi@" + app_info.id, mode="first")
+        assert service is not None, "Service should be available via lazy loading"
+
+        # The service should be accessible (it's an ASGI service)
+        print(f"Service loaded successfully: {service}")
+
+    except Exception as e:
+        print(f"Failed to load service: {e}")
+        raise
+
+    # Verify that the app is running after lazy loading
+    apps = await controller.list_running()
+    running_app = find_item(apps, "app_id", app_info.id)
+    assert running_app is not None, "App should be running after lazy loading"
+
+    await controller.uninstall(app_info.id)
+    await api.disconnect()
+
+
+async def test_service_collection_comparison(fastapi_server, test_user_token):
+    """Compare service collection between web-worker and web-python apps during installation."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+
+    # Stop all the running apps first
+    for app in await controller.list_running():
+        await controller.stop(app["id"])
+
+    # Test 1: Web Worker Plugin - should collect services during installation
+    source_webworker = (
+        (Path(__file__).parent / "testWebWorkerPlugin.imjoy.html")
+        .open(encoding="utf-8")
+        .read()
+    )
+
+    app_info_webworker = await controller.install(
+        source=source_webworker,
+        timeout=30,
+        overwrite=True,
+    )
+
+    print(f"Web Worker App info: {app_info_webworker}")
+    print(f"Web Worker App services: {app_info_webworker.get('services', [])}")
+
+    # Test 2: FastAPI Web Python App - currently doesn't collect services during installation
+    source_fastapi = (
+        (
+            Path(__file__).parent.parent
+            / "hypha"
+            / "templates"
+            / "ws"
+            / "fastapi_app_template.html"
+        )
+        .open(encoding="utf-8")
+        .read()
+    )
+
+    app_info_fastapi = await controller.install(
+        source=source_fastapi,
+        timeout=30,
+        overwrite=True,
+    )
+
+    print(f"FastAPI App info: {app_info_fastapi}")
+    print(f"FastAPI App services: {app_info_fastapi.get('services', [])}")
+
+    # Assert that both apps now have services collected during installation
+    assert (
+        len(app_info_webworker.get("services", [])) > 0
+    ), "Web Worker app should have services collected during installation"
+    assert (
+        len(app_info_fastapi.get("services", [])) > 0
+    ), "FastAPI app should now have services collected during installation"
+
+    print(f"✓ Both apps now collect services during installation!")
+    print(f"  - WebWorker services: {len(app_info_webworker.get('services', []))}")
+    print(f"  - FastAPI services: {len(app_info_fastapi.get('services', []))}")
+
+    # But lazy loading should still work for both
+    # Test web-worker lazy loading
+    webworker_service = await api.get_service(
+        "echo@" + app_info_webworker.id, mode="first"
+    )
+    assert webworker_service is not None
+    assert await webworker_service.echo("hello") == "hello"
+
+    # Test FastAPI lazy loading
+    fastapi_service = await api.get_service(
+        "hello-fastapi@" + app_info_fastapi.id, mode="first"
+    )
+    assert fastapi_service is not None
+
+    # Clean up
+    await controller.uninstall(app_info_webworker.id)
+    await controller.uninstall(app_info_fastapi.id)
     await api.disconnect()
