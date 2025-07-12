@@ -121,9 +121,9 @@ const toObject = (x) => {
 
 async function setupPyodide() {
     if(self.pyodide) return;
-    importScripts('https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js');
+    importScripts('https://cdn.jsdelivr.net/pyodide/v0.28.0/full/pyodide.js');
     self.pyodide = await loadPyodide({
-        indexURL : 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/',
+        indexURL : 'https://cdn.jsdelivr.net/pyodide/v0.28.0/full/',
         stdout: (text) => {
             self.postMessage({"type": "stdout", "content": text})
         },
