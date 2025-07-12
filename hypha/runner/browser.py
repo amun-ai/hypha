@@ -71,7 +71,8 @@ class BrowserAppRunner:
             "--site-per-process",
             "--enable-unsafe-webgpu",
             "--use-vulkan",
-            "--enable-features=Vulkan",
+            "--enable-features=Vulkan,WebAssemblyJSPI",
+            "--enable-experimental-web-platform-features",
         ]
         # so it works in the docker image
         if self.in_docker:

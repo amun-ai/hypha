@@ -7,6 +7,7 @@
  * [Serverless Functions](/serverless-functions)
  * [Serve ASGI Web Apps](/asgi-apps)
  * [Launch Service](/launch-service)
+ * [Server Apps](/apps)
  * [Operate Files](/operate-files)
  * [Zip Streaming](/zip-streaming)
  * [Artifact Manager](/artifact-manager)

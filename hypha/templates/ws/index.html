@@ -237,10 +237,10 @@
                         <span className="ml-2">Dashboard</span>
                     </div>
                     )}
-                    {enabledPanels.includes('apps') && (
-                    <div className="menu-item" onClick={() => setActivePanel('apps')}>
+                    {enabledPanels.includes('applications') && (
+                    <div className="menu-item" onClick={() => setActivePanel('applications')}>
                         <i className="fas fa-th-large"></i>
-                        <span className="ml-2">Apps</span>
+                        <span className="ml-2">Applications</span>
                     </div>
                     )}
                     {enabledPanels.includes('files') && (
@@ -1839,7 +1839,7 @@
                         </>
                     )}
         
-                    {panel === 'apps' && (
+                    {panel === 'applications' && (
                         <>
                             <h1 className="text-4xl font-bold capitalize">Applications</h1>
         
@@ -1904,13 +1904,13 @@
                         <>
                             <h1 className="text-4xl font-bold capitalize">Development</h1>
 
-                            {enabledPanels.includes('apps') && (
+                            {enabledPanels.includes('applications') && (
                                 <>
                                 <hr className="my-8 border-gray-700"></hr>
                                 <h2 className="text-2xl font-bold mt-5">
-                                    Apps <i className="fas fa-th-large text-xl text-gray-400"></i>
+                                    Applications <i className="fas fa-th-large text-xl text-gray-400"></i>
                                 </h2>
-                                <p className="text-xl text-gray-400 mt-4">Develop Apps for Hypha</p>
+                                <p className="text-xl text-gray-400 mt-4">Develop Applications for Hypha</p>
                                 <button
                                     onClick={() => window.loadCodeEditor()}
                                     className="mt-4 bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 flex items-center"
@@ -2054,7 +2054,7 @@
                         const newPanels = [];
                         try{
                             await remoteServer.getService('public/server-apps', { case_conversion: 'camel' });
-                            newPanels.push('apps');
+                            newPanels.push('applications');
                         }
                         catch(e){
                             console.log("Server apps service not available");
@@ -2099,7 +2099,7 @@
                     if (activePanel === 'dashboard') {
                         setClients(await ws.listClients());
                         setServices(await ws.listServices(config.workspace));
-                    } else if (activePanel === 'apps') {
+                    } else if (activePanel === 'applications') {
                         try {
                             const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
                             const apps = await controller.listApps();
@@ -2144,6 +2144,7 @@
                     console.log('App installed:', appInfo);
                     setApps(await controller.listApps());
                 } catch (e) {
+                    console.error(e);
                     alert(`Failed to install app: ${e.message}`);
                 }
             };

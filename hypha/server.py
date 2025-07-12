@@ -137,6 +137,7 @@ def start_builtin_services(
         region_name=args.region_name,
         workspace_bucket=args.workspace_bucket,
         base_path=args.base_path,
+        enable_a2a=args.enable_a2a,
     )
 
 
@@ -555,6 +556,11 @@ def get_argparser(add_help=True):
         "--enable-service-search",
         action="store_true",
         help="enable semantic service search via vector database",
+    )
+    parser.add_argument(
+        "--enable-a2a",
+        action="store_true",
+        help="enable A2A (Agent-to-Agent) protocol support",
     )
     parser.add_argument(
         "--interactive",

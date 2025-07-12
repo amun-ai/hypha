@@ -403,13 +403,16 @@ class WorkspaceManager:
             workspace_info.config["environs"][key] = value
             await self.log_event("env_set", {"key": key}, context=context)
             logger.info(f"Environment variable '{key}' set in workspace {ws}")
-            
+
         await self._update_workspace(workspace_info, user_info)
 
     @schema_method
     async def get_env(
         self,
-        key: Optional[str] = Field(None, description="Environment variable key (optional, returns all if not specified)"),
+        key: Optional[str] = Field(
+            None,
+            description="Environment variable key (optional, returns all if not specified)",
+        ),
         context: Optional[dict] = None,
     ):
         """Get environment variable(s) from the workspace."""
@@ -422,12 +425,14 @@ class WorkspaceManager:
         workspace_info = await self.load_workspace_info(ws)
         workspace_info.config = workspace_info.config or {}
         environs = workspace_info.config.get("environs", {})
-        
+
         if key is None:
             return environs
         else:
             if key not in environs:
-                raise KeyError(f"Environment variable '{key}' not found in workspace {ws}")
+                raise KeyError(
+                    f"Environment variable '{key}' not found in workspace {ws}"
+                )
             return environs[key]
 
     @schema_method
@@ -1674,8 +1679,9 @@ class WorkspaceManager:
             raise Exception(
                 "Failed to launch application: artifact-manager service not found."
             )
-        if ":" in service_id:
-            service_id = service_id.split(":")[1]
+        assert (
+            ":" not in service_id
+        ), f"To automatically launch an application, the service name should not specify the client id, i.e. please remove the client id from the service name: {service_id}"
 
         assert service_id and service_id not in [
             "*",
@@ -1718,7 +1724,6 @@ class WorkspaceManager:
             )
         client_info = await self._server_app_controller.start(
             app_id,
-            timeout=timeout * 5,
             wait_for_service=service_id,
             context=context,
         )
@@ -1793,9 +1798,17 @@ class WorkspaceManager:
                 workspace = (
                     service_id.split("/")[0] if "/" in service_id else context["ws"]
                 )
+                # Extract just the service name from the full service ID
+                if "/" in service_id:
+                    service_name = service_id.split("/")[1]
+                else:
+                    service_name = service_id
+                assert (
+                    ":" not in service_name
+                ), f"To automatically launch an application, the service name should not specify the client id, i.e. please remove the client id from the service name: {service_name}"
                 return await self._launch_application_for_service(
                     app_id,
-                    service_id,
+                    service_name,
                     workspace=workspace,
                     timeout=config.timeout,
                     case_conversion=config.case_conversion,

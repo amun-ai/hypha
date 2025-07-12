@@ -4038,7 +4038,7 @@ async def test_secret_management(
         secret_key="api_key",
     )
     assert secret_value == "secret123"
-    
+
     # Test get_secret with all secrets (should work)
     secrets = await artifact_manager.get_secret(
         artifact_id=artifact_id,
@@ -4058,7 +4058,7 @@ async def test_secret_management(
         secret_key="api_key",
         secret_value="updated_secret",
     )
-    
+
     updated_value = await artifact_manager.get_secret(
         artifact_id=artifact_id,
         secret_key="api_key",
@@ -4094,7 +4094,7 @@ async def test_secret_management(
     # Secret operations require workspace-level permissions, not artifact-level permissions
     # Since test_user_token_2 only has access to their own workspace (ws-user-user-2),
     # they should not be able to access secrets in user-1's workspace
-    
+
     # Second user should NOT be able to set_secret (no workspace permission)
     with pytest.raises(Exception) as exc_info:
         await artifact_manager2.set_secret(
@@ -4178,21 +4178,21 @@ async def test_collection_permission_inheritance(
     minio_server, fastapi_server, test_user_token, test_user_token_2
 ):
     """Test that collection permissions are properly inherited by child artifacts."""
-    
+
     # Set up first user (collection owner)
     api_owner = await connect_to_server(
         {"name": "owner-client", "server_url": SERVER_URL, "token": test_user_token}
     )
     artifact_manager_owner = await api_owner.get_service("public/artifact-manager")
     owner_user_id = api_owner.config.user["id"]
-    
+
     # Set up second user (with collection permissions)
     api_user = await connect_to_server(
         {"name": "user-client", "server_url": SERVER_URL, "token": test_user_token_2}
     )
     artifact_manager_user = await api_user.get_service("public/artifact-manager")
     user_user_id = api_user.config.user["id"]
-    
+
     # Create a collection with owner giving rw+ permissions to second user
     collection_manifest = {
         "name": "Permission Inheritance Collection",
@@ -4209,11 +4209,11 @@ async def test_collection_permission_inheritance(
             }
         },
     )
-    
+
     # Verify second user can read the collection
     collection_read = await artifact_manager_user.read(artifact_id=collection.id)
     assert collection_read["manifest"]["name"] == "Permission Inheritance Collection"
-    
+
     # Second user creates a child artifact in the collection
     child_manifest = {
         "name": "Child Artifact",
@@ -4225,32 +4225,38 @@ async def test_collection_permission_inheritance(
         manifest=child_manifest,
         version="stage",
     )
-    
+
     # Verify child artifact was created successfully
-    assert child_artifact["parent_id"] == f"{api_owner.config.workspace}/{collection.alias}"
+    assert (
+        child_artifact["parent_id"]
+        == f"{api_owner.config.workspace}/{collection.alias}"
+    )
     assert child_artifact["manifest"]["name"] == "Child Artifact"
-    
+
     # Test that second user can edit the child artifact (this was the original issue)
     updated_manifest = {
         "name": "Child Artifact",
         "description": "Updated description by second user",
         "custom_field": "added by second user",
     }
-    
+
     # This should work now with the permission inheritance fix
     await artifact_manager_user.edit(
         artifact_id=child_artifact.id,
         manifest=updated_manifest,
         stage=True,
     )
-    
+
     # Verify the edit was successful
     edited_artifact = await artifact_manager_user.read(
         artifact_id=child_artifact.id, version="stage"
     )
-    assert edited_artifact["manifest"]["description"] == "Updated description by second user"
+    assert (
+        edited_artifact["manifest"]["description"]
+        == "Updated description by second user"
+    )
     assert edited_artifact["manifest"]["custom_field"] == "added by second user"
-    
+
     # Test that second user can add files to the child artifact
     file_content = "File content added by second user"
     put_url = await artifact_manager_user.put_file(
@@ -4260,27 +4266,30 @@ async def test_collection_permission_inheritance(
     )
     response = requests.put(put_url, data=file_content)
     assert response.ok
-    
+
     # Test that second user can commit the child artifact
     committed_artifact = await artifact_manager_user.commit(
         artifact_id=child_artifact.id,
         comment="Committed by second user",
     )
-    
+
     # Verify commit was successful
     assert committed_artifact["staging"] is None
     assert len(committed_artifact["versions"]) == 1
     assert committed_artifact["versions"][0]["comment"] == "Committed by second user"
-    
+
     # Verify the committed manifest contains the updates
-    assert committed_artifact["manifest"]["description"] == "Updated description by second user"
+    assert (
+        committed_artifact["manifest"]["description"]
+        == "Updated description by second user"
+    )
     assert committed_artifact["manifest"]["custom_field"] == "added by second user"
-    
+
     # Verify the file was committed
     files = await artifact_manager_user.list_files(artifact_id=child_artifact.id)
     assert len(files) == 1
     assert files[0]["name"] == "test_file.txt"
-    
+
     # Test that second user can continue editing the committed artifact
     await artifact_manager_user.edit(
         artifact_id=child_artifact.id,
@@ -4292,72 +4301,77 @@ async def test_collection_permission_inheritance(
         stage=True,
         version="new",  # Create a new version
     )
-    
+
     # Commit the new version
     second_commit = await artifact_manager_user.commit(
         artifact_id=child_artifact.id,
         comment="Second version by second user",
     )
-    
+
     # Verify second version was created
     assert len(second_commit["versions"]) == 2
     assert second_commit["versions"][1]["comment"] == "Second version by second user"
     assert second_commit["manifest"]["description"] == "Second update by second user"
-    
+
     # Test that anonymous users still cannot edit (should only have read access)
     api_anonymous = await connect_to_server(
         {"name": "anonymous-client", "server_url": SERVER_URL}
     )
-    artifact_manager_anonymous = await api_anonymous.get_service("public/artifact-manager")
-    
+    artifact_manager_anonymous = await api_anonymous.get_service(
+        "public/artifact-manager"
+    )
+
     # Anonymous user should be able to read
-    anonymous_read = await artifact_manager_anonymous.read(artifact_id=child_artifact.id)
+    anonymous_read = await artifact_manager_anonymous.read(
+        artifact_id=child_artifact.id
+    )
     assert anonymous_read["manifest"]["name"] == "Child Artifact"
-    
+
     # But anonymous user should NOT be able to edit
     with pytest.raises(Exception, match=r".*permission.*"):
         await artifact_manager_anonymous.edit(
             artifact_id=child_artifact.id,
             manifest={"name": "Should not work"},
         )
-    
+
     # Test that a user with only list permissions cannot edit
     # Create a third user and give them only list permissions on the collection
     # (We can't easily test this without a third token, so we'll skip this part)
-    
+
     # Test that the collection owner can still access and edit the child artifact
     owner_read = await artifact_manager_owner.read(artifact_id=child_artifact.id)
     assert owner_read["manifest"]["name"] == "Child Artifact"
-    
+
     await artifact_manager_owner.edit(
         artifact_id=child_artifact.id,
         manifest={
-            "name": "Child Artifact", 
+            "name": "Child Artifact",
             "description": "Updated by owner",
         },
     )
-    
+
     owner_updated = await artifact_manager_owner.read(artifact_id=child_artifact.id)
     assert owner_updated["manifest"]["description"] == "Updated by owner"
-    
+
     # Clean up
     await artifact_manager_owner.delete(artifact_id=child_artifact.id)
     await artifact_manager_owner.delete(artifact_id=collection.id)
+
 
 async def test_order_by_custom_json_fields(
     minio_server, fastapi_server, fastapi_server_sqlite, test_user_token
 ):
     """Test ordering by custom JSON fields in manifest and config for both SQL backends."""
-    
+
     # Test with both PostgreSQL and SQLite backends
     test_configs = [
         {"server_url": SERVER_URL, "backend": "postgresql"},
-        {"server_url": SERVER_URL_SQLITE, "backend": "sqlite"}
+        {"server_url": SERVER_URL_SQLITE, "backend": "sqlite"},
     ]
-    
+
     for config in test_configs:
         print(f"Testing order_by with {config['backend']} backend")
-        
+
         # Connect to the appropriate server
         api = await connect_to_server(
             {
@@ -4390,14 +4404,14 @@ async def test_order_by_custom_json_fields(
                     "likes": 100,
                     "priority": "high",
                     "score": 95.5,
-                    "tags": ["important", "featured"]
+                    "tags": ["important", "featured"],
                 },
                 "config": {
                     "permissions": {"*": "r", "@": "rw+"},
                     "priority": 1,
                     "rating": 4.8,
-                    "category": "premium"
-                }
+                    "category": "premium",
+                },
             },
             {
                 "alias": f"artifact-b-{config['backend']}",
@@ -4407,14 +4421,14 @@ async def test_order_by_custom_json_fields(
                     "likes": 50,
                     "priority": "medium",
                     "score": 87.2,
-                    "tags": ["standard"]
+                    "tags": ["standard"],
                 },
                 "config": {
                     "permissions": {"*": "r", "@": "rw+"},
                     "priority": 3,
                     "rating": 3.9,
-                    "category": "standard"
-                }
+                    "category": "standard",
+                },
             },
             {
                 "alias": f"artifact-c-{config['backend']}",
@@ -4424,15 +4438,15 @@ async def test_order_by_custom_json_fields(
                     "likes": 200,
                     "priority": "low",
                     "score": 76.8,
-                    "tags": ["basic"]
+                    "tags": ["basic"],
                 },
                 "config": {
                     "permissions": {"*": "r", "@": "rw+"},
                     "priority": 2,
                     "rating": 4.2,
-                    "category": "basic"
-                }
-            }
+                    "category": "basic",
+                },
+            },
         ]
 
         # Create the artifacts
@@ -4450,116 +4464,128 @@ async def test_order_by_custom_json_fields(
 
         # Test 1: Order by manifest.likes (ascending)
         results = await artifact_manager.list(
-            parent_id=collection.id,
-            order_by="manifest.likes<"
+            parent_id=collection.id, order_by="manifest.likes<"
         )
         likes_values = [result["manifest"]["likes"] for result in results]
         aliases = [result["alias"] for result in results]
         print(f"Ascending likes order: {list(zip(aliases, likes_values))}")
-        assert likes_values == sorted(likes_values), f"Manifest likes ascending failed for {config['backend']}: {likes_values}"
-        
+        assert likes_values == sorted(
+            likes_values
+        ), f"Manifest likes ascending failed for {config['backend']}: {likes_values}"
+
         # Test 2: Order by manifest.likes (descending)
         results = await artifact_manager.list(
-            parent_id=collection.id,
-            order_by="manifest.likes>"
+            parent_id=collection.id, order_by="manifest.likes>"
         )
         likes_values = [result["manifest"]["likes"] for result in results]
         aliases = [result["alias"] for result in results]
         print(f"Descending likes order: {list(zip(aliases, likes_values))}")
-        assert likes_values == sorted(likes_values, reverse=True), f"Manifest likes descending failed for {config['backend']}: {likes_values}"
+        assert likes_values == sorted(
+            likes_values, reverse=True
+        ), f"Manifest likes descending failed for {config['backend']}: {likes_values}"
 
         # Test 3: Order by manifest.score (ascending)
         results = await artifact_manager.list(
-            parent_id=collection.id,
-            order_by="manifest.score<"
+            parent_id=collection.id, order_by="manifest.score<"
         )
         score_values = [result["manifest"]["score"] for result in results]
-        assert score_values == sorted(score_values), f"Manifest score ascending failed for {config['backend']}: {score_values}"
+        assert score_values == sorted(
+            score_values
+        ), f"Manifest score ascending failed for {config['backend']}: {score_values}"
 
         # Test 4: Order by config.priority (ascending)
         results = await artifact_manager.list(
-            parent_id=collection.id,
-            order_by="config.priority<"
+            parent_id=collection.id, order_by="config.priority<"
         )
         priority_values = [result["config"]["priority"] for result in results]
-        assert priority_values == sorted(priority_values), f"Config priority ascending failed for {config['backend']}: {priority_values}"
+        assert priority_values == sorted(
+            priority_values
+        ), f"Config priority ascending failed for {config['backend']}: {priority_values}"
 
         # Test 5: Order by config.rating (descending)
         results = await artifact_manager.list(
-            parent_id=collection.id,
-            order_by="config.rating>"
+            parent_id=collection.id, order_by="config.rating>"
         )
         rating_values = [result["config"]["rating"] for result in results]
-        assert rating_values == sorted(rating_values, reverse=True), f"Config rating descending failed for {config['backend']}: {rating_values}"
+        assert rating_values == sorted(
+            rating_values, reverse=True
+        ), f"Config rating descending failed for {config['backend']}: {rating_values}"
 
         # Test 6: Order by manifest.priority (string field, ascending)
         results = await artifact_manager.list(
-            parent_id=collection.id,
-            order_by="manifest.priority<"
+            parent_id=collection.id, order_by="manifest.priority<"
         )
         priority_strings = [result["manifest"]["priority"] for result in results]
-        assert priority_strings == sorted(priority_strings), f"Manifest priority string ascending failed for {config['backend']}: {priority_strings}"
+        assert priority_strings == sorted(
+            priority_strings
+        ), f"Manifest priority string ascending failed for {config['backend']}: {priority_strings}"
 
         # Test 7: Order by config.category (string field, descending)
         results = await artifact_manager.list(
-            parent_id=collection.id,
-            order_by="config.category>"
+            parent_id=collection.id, order_by="config.category>"
         )
         category_values = [result["config"]["category"] for result in results]
-        assert category_values == sorted(category_values, reverse=True), f"Config category descending failed for {config['backend']}: {category_values}"
+        assert category_values == sorted(
+            category_values, reverse=True
+        ), f"Config category descending failed for {config['backend']}: {category_values}"
 
         # Test 8: Test built-in fields still work (created_at ascending)
         results = await artifact_manager.list(
-            parent_id=collection.id,
-            order_by="created_at<"
+            parent_id=collection.id, order_by="created_at<"
         )
         created_at_values = [result["created_at"] for result in results]
-        assert created_at_values == sorted(created_at_values), f"Built-in created_at ascending failed for {config['backend']}: {created_at_values}"
+        assert created_at_values == sorted(
+            created_at_values
+        ), f"Built-in created_at ascending failed for {config['backend']}: {created_at_values}"
 
         # Test 9: Test built-in fields still work (id descending)
-        results = await artifact_manager.list(
-            parent_id=collection.id,
-            order_by="id>"
-        )
+        results = await artifact_manager.list(parent_id=collection.id, order_by="id>")
         id_values = [result["_id"] for result in results]  # _id is the actual UUID
-        assert id_values == sorted(id_values, reverse=True), f"Built-in id descending failed for {config['backend']}: {id_values}"
+        assert id_values == sorted(
+            id_values, reverse=True
+        ), f"Built-in id descending failed for {config['backend']}: {id_values}"
 
         # Test 10: Test default ordering still works (should default to id ascending)
-        results_default = await artifact_manager.list(
-            parent_id=collection.id
-        )
+        results_default = await artifact_manager.list(parent_id=collection.id)
         results_explicit = await artifact_manager.list(
-            parent_id=collection.id,
-            order_by="id<"
+            parent_id=collection.id, order_by="id<"
         )
-        assert len(results_default) == len(results_explicit), f"Default ordering length mismatch for {config['backend']}"
+        assert len(results_default) == len(
+            results_explicit
+        ), f"Default ordering length mismatch for {config['backend']}"
         for i in range(len(results_default)):
-            assert results_default[i]["id"] == results_explicit[i]["id"], f"Default ordering differs from explicit id< for {config['backend']}"
+            assert (
+                results_default[i]["id"] == results_explicit[i]["id"]
+            ), f"Default ordering differs from explicit id< for {config['backend']}"
 
         # Test HTTP endpoints as well
         workspace = api.config.workspace
-        
+
         # Test HTTP endpoint with manifest ordering
         response = requests.get(
             f"{config['server_url']}/{workspace}/artifacts/{collection.alias}/children",
             params={"order_by": "manifest.likes>"},
-            headers={"Authorization": f"Bearer {test_user_token}"}
+            headers={"Authorization": f"Bearer {test_user_token}"},
         )
         assert response.status_code == 200
         http_results = response.json()
         http_likes = [item["manifest"]["likes"] for item in http_results]
-        assert http_likes == sorted(http_likes, reverse=True), f"HTTP manifest.likes> failed for {config['backend']}: {http_likes}"
+        assert http_likes == sorted(
+            http_likes, reverse=True
+        ), f"HTTP manifest.likes> failed for {config['backend']}: {http_likes}"
 
         # Test HTTP endpoint with config ordering
         response = requests.get(
             f"{config['server_url']}/{workspace}/artifacts/{collection.alias}/children",
             params={"order_by": "config.priority<"},
-            headers={"Authorization": f"Bearer {test_user_token}"}
+            headers={"Authorization": f"Bearer {test_user_token}"},
         )
         assert response.status_code == 200
         http_results = response.json()
         http_priorities = [item["config"]["priority"] for item in http_results]
-        assert http_priorities == sorted(http_priorities), f"HTTP config.priority< failed for {config['backend']}: {http_priorities}"
+        assert http_priorities == sorted(
+            http_priorities
+        ), f"HTTP config.priority< failed for {config['backend']}: {http_priorities}"
 
         # Clean up - delete artifacts and collection
         for artifact in created_artifacts:
@@ -4569,11 +4595,9 @@ async def test_order_by_custom_json_fields(
         print(f"✓ All order_by tests passed for {config['backend']} backend")
 
 
-async def test_order_by_edge_cases(
-    minio_server, fastapi_server, test_user_token
-):
+async def test_order_by_edge_cases(minio_server, fastapi_server, test_user_token):
     """Test edge cases for the order_by functionality."""
-    
+
     api = await connect_to_server(
         {
             "name": "test-client-edge-cases",
@@ -4602,37 +4626,34 @@ async def test_order_by_edge_cases(
             "manifest": {
                 "name": "Artifact with nulls",
                 "likes": None,  # null value
-                "priority": "high"
+                "priority": "high",
             },
             "config": {
                 "permissions": {"*": "r", "@": "rw+"},
-                "rating": None  # null value
-            }
+                "rating": None,  # null value
+            },
         },
         {
             "alias": "artifact-missing-fields",
             "manifest": {
                 "name": "Artifact missing fields",
-                "priority": "medium"
+                "priority": "medium",
                 # missing likes field
             },
             "config": {
                 "permissions": {"*": "r", "@": "rw+"}
                 # missing rating field
-            }
+            },
         },
         {
             "alias": "artifact-with-values",
             "manifest": {
                 "name": "Artifact with values",
                 "likes": 150,
-                "priority": "low"
+                "priority": "low",
             },
-            "config": {
-                "permissions": {"*": "r", "@": "rw+"},
-                "rating": 4.5
-            }
-        }
+            "config": {"permissions": {"*": "r", "@": "rw+"}, "rating": 4.5},
+        },
     ]
 
     # Create the artifacts
@@ -4650,22 +4671,24 @@ async def test_order_by_edge_cases(
     # Test ordering with missing/null fields - should handle gracefully
     try:
         results = await artifact_manager.list(
-            parent_id=collection.id,
-            order_by="manifest.likes<"
+            parent_id=collection.id, order_by="manifest.likes<"
         )
         # Should not crash, and results should be returned
-        assert len(results) == 3, "Should return all artifacts even with missing/null fields"
+        assert (
+            len(results) == 3
+        ), "Should return all artifacts even with missing/null fields"
         print("✓ Order by missing/null manifest fields handled gracefully")
     except Exception as e:
         pytest.fail(f"Order by missing manifest fields should not crash: {e}")
 
     try:
         results = await artifact_manager.list(
-            parent_id=collection.id,
-            order_by="config.rating>"
+            parent_id=collection.id, order_by="config.rating>"
         )
         # Should not crash, and results should be returned
-        assert len(results) == 3, "Should return all artifacts even with missing/null config fields"
+        assert (
+            len(results) == 3
+        ), "Should return all artifacts even with missing/null config fields"
         print("✓ Order by missing/null config fields handled gracefully")
     except Exception as e:
         pytest.fail(f"Order by missing config fields should not crash: {e}")
@@ -4673,10 +4696,11 @@ async def test_order_by_edge_cases(
     # Test ordering by non-existent fields - should default to id ordering
     try:
         results = await artifact_manager.list(
-            parent_id=collection.id,
-            order_by="manifest.nonexistent<"
+            parent_id=collection.id, order_by="manifest.nonexistent<"
         )
-        assert len(results) == 3, "Should return all artifacts even with non-existent fields"
+        assert (
+            len(results) == 3
+        ), "Should return all artifacts even with non-existent fields"
         print("✓ Order by non-existent fields handled gracefully")
     except Exception as e:
         pytest.fail(f"Order by non-existent fields should not crash: {e}")
@@ -4693,7 +4717,7 @@ async def test_overwrite_collection_with_children_fails(
     minio_server, fastapi_server, test_user_token
 ):
     """Test that overwriting a collection with children throws an error."""
-    
+
     api = await connect_to_server(
         {
             "name": "test-client-overwrite",
@@ -4733,7 +4757,7 @@ async def test_overwrite_collection_with_children_fails(
         "name": "New Collection",
         "description": "This should not work",
     }
-    
+
     with pytest.raises(Exception) as exc_info:
         await artifact_manager.create(
             type="collection",
@@ -4742,21 +4766,30 @@ async def test_overwrite_collection_with_children_fails(
             config={"permissions": {"*": "r", "@": "rw+"}},
             overwrite=True,
         )
-    
+
     # Verify the error message contains information about children
     error_message = str(exc_info.value)
-    assert "Cannot overwrite collection" in error_message, f"Expected collection overwrite error, got: {error_message}"
-    assert "child artifacts" in error_message, f"Expected children count in error, got: {error_message}"
-    assert "1 child" in error_message, f"Expected '1 child' in error message, got: {error_message}"
+    assert (
+        "Cannot overwrite collection" in error_message
+    ), f"Expected collection overwrite error, got: {error_message}"
+    assert (
+        "child artifacts" in error_message
+    ), f"Expected children count in error, got: {error_message}"
+    assert (
+        "1 child" in error_message
+    ), f"Expected '1 child' in error message, got: {error_message}"
 
     # Verify collection still exists with original data
     existing_collection = await artifact_manager.read(collection.id)
     assert existing_collection["manifest"]["name"] == "Test Collection"
-    assert existing_collection["manifest"]["description"] == "Collection for testing overwrite protection"
+    assert (
+        existing_collection["manifest"]["description"]
+        == "Collection for testing overwrite protection"
+    )
 
     # Test that overwrite works after removing children
     await artifact_manager.delete(child.id)
-    
+
     # Now overwrite should work
     updated_collection = await artifact_manager.create(
         type="collection",
@@ -4765,13 +4798,13 @@ async def test_overwrite_collection_with_children_fails(
         config={"permissions": {"*": "r", "@": "rw+"}},
         overwrite=True,
     )
-    
+
     assert updated_collection["manifest"]["name"] == "New Collection"
     assert updated_collection["manifest"]["description"] == "This should not work"
-    
+
     # Clean up
     await artifact_manager.delete(updated_collection["id"])
-    
+
     print("✓ Collection overwrite protection test passed")
 
 
@@ -4779,7 +4812,7 @@ async def test_zenodo_access_token_not_exposed_in_errors(
     minio_server, fastapi_server, test_user_token
 ):
     """Test that Zenodo access tokens are not exposed in error messages."""
-    
+
     api = await connect_to_server(
         {
             "name": "test-client-security",
@@ -4796,45 +4829,47 @@ async def test_zenodo_access_token_not_exposed_in_errors(
         "description": "Testing access token security",
         "authors": [{"name": "Test Author"}],
     }
-    
+
     # Create artifact with secrets containing a fake Zenodo token
     artifact = await artifact_manager.create(
         type="dataset",
         alias="security-test-artifact",
         manifest=manifest,
         config={"permissions": {"*": "r", "@": "rw+"}},
-        secrets={
-            "SANDBOX_ZENODO_ACCESS_TOKEN": fake_token
-        }
+        secrets={"SANDBOX_ZENODO_ACCESS_TOKEN": fake_token},
     )
 
     # Try to publish to sandbox zenodo (will fail due to fake token)
     # This should trigger an HTTP error that potentially exposes the token
     with pytest.raises(Exception) as exc_info:
-        await artifact_manager.publish(
-            artifact_id=artifact.id,
-            to="sandbox_zenodo"
-        )
-    
+        await artifact_manager.publish(artifact_id=artifact.id, to="sandbox_zenodo")
+
     # Check that the access token is not present in the error message
     error_message = str(exc_info.value)
-    assert fake_token not in error_message, f"Access token should not be exposed in error message: {error_message}"
-    
+    assert (
+        fake_token not in error_message
+    ), f"Access token should not be exposed in error message: {error_message}"
+
     # The error should be about publishing/validation, indicating Zenodo interaction occurred
-    assert any(keyword in error_message.lower() for keyword in ["publish", "deposition", "validation", "zenodo"]), \
-        f"Expected Zenodo-related error message: {error_message}"
-    
+    assert any(
+        keyword in error_message.lower()
+        for keyword in ["publish", "deposition", "validation", "zenodo"]
+    ), f"Expected Zenodo-related error message: {error_message}"
+
     # Check that any URL with access_token parameter is sanitized if URLs are present
     import re
+
     # Look for any URL patterns
     url_pattern = r'https://[^\s\'"]+'
     urls = re.findall(url_pattern, error_message)
     for url in urls:
-        assert "access_token=" not in url, f"Found unsanitized URL with access_token: {url}"
-    
+        assert (
+            "access_token=" not in url
+        ), f"Found unsanitized URL with access_token: {url}"
+
     # Clean up
     await artifact_manager.delete(artifact.id)
-    
+
     print("✓ Zenodo access token security test passed")
 
 
@@ -4842,7 +4877,7 @@ async def test_zenodo_publish_twice_handling(
     minio_server, fastapi_server, test_user_token
 ):
     """Test that publishing an artifact twice to Zenodo handles gracefully."""
-    
+
     api = await connect_to_server(
         {
             "name": "test-client-publish-twice",
@@ -4858,7 +4893,7 @@ async def test_zenodo_publish_twice_handling(
         "description": "Testing double publish handling",
         "authors": [{"name": "Test Author"}],
     }
-    
+
     # Create artifact with a mock already-published Zenodo record
     mock_zenodo_record = {
         "id": "12345",
@@ -4866,9 +4901,9 @@ async def test_zenodo_publish_twice_handling(
         "conceptrecid": "67890",
         "state": "done",  # Published state
         "doi": "10.5072/zenodo.12345",
-        "submitted": True
+        "submitted": True,
     }
-    
+
     artifact = await artifact_manager.create(
         type="dataset",
         alias="double-publish-test",
@@ -4876,40 +4911,142 @@ async def test_zenodo_publish_twice_handling(
         config={
             "permissions": {"*": "r", "@": "rw+"},
             "zenodo": mock_zenodo_record,  # Simulate already published record
-            "publish_to": "sandbox_zenodo"
+            "publish_to": "sandbox_zenodo",
         },
-        secrets={
-            "SANDBOX_ZENODO_ACCESS_TOKEN": "fake_token_for_test"
-        }
+        secrets={"SANDBOX_ZENODO_ACCESS_TOKEN": "fake_token_for_test"},
     )
 
     # Try to publish again - this should handle gracefully
     # It should either create a new version or handle the already-published state
     try:
         # This will likely fail due to fake token, but it should attempt to create new version
-        await artifact_manager.publish(
-            artifact_id=artifact.id,
-            to="sandbox_zenodo"
-        )
+        await artifact_manager.publish(artifact_id=artifact.id, to="sandbox_zenodo")
     except Exception as e:
         error_message = str(e)
         # Verify the error handling path was taken - should not crash with state issues
         # The error should be about authentication/HTTP, not about invalid state
-        assert "state" not in error_message.lower() or "version" in error_message.lower(), \
-            f"Expected version handling or auth error, got state error: {error_message}"
-        
+        assert (
+            "state" not in error_message.lower() or "version" in error_message.lower()
+        ), f"Expected version handling or auth error, got state error: {error_message}"
+
         # Ensure access token is still not exposed
-        assert "fake_token_for_test" not in error_message, \
-            f"Access token exposed in double publish error: {error_message}"
-    
+        assert (
+            "fake_token_for_test" not in error_message
+        ), f"Access token exposed in double publish error: {error_message}"
+
     # Verify the artifact's config was updated appropriately
     updated_artifact = await artifact_manager.read(artifact.id)
     zenodo_config = updated_artifact.get("config", {}).get("zenodo", {})
-    
+
     # The zenodo config should still exist and be valid
     assert isinstance(zenodo_config, dict), "Zenodo config should remain a dictionary"
-    
+
     # Clean up
     await artifact_manager.delete(artifact.id)
-    
+
     print("✓ Zenodo double publish handling test passed")
+
+
+async def test_multi_operation_permission_checking(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
+    """Test that _get_artifact_with_permission properly handles multiple operations."""
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    api_user2 = await connect_to_server(
+        {"name": "test-client-2", "server_url": SERVER_URL, "token": test_user_token_2}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+    artifact_manager_user2 = await api_user2.get_service("public/artifact-manager")
+
+    # Get the actual user IDs from the API config
+    user1_id = api.config.user["id"]
+    user2_id = api_user2.config.user["id"]
+
+    # Create a collection with specific permissions
+    collection_manifest = {
+        "name": "Test Collection",
+        "description": "A test collection for multi-operation permission testing",
+        "type": "collection",
+    }
+
+    # Give user2 only "create" permission but not "commit"
+    collection_config = {
+        "permissions": {
+            user1_id: "*",  # Owner has full access
+            user2_id: "rd+",  # Has create but not commit (rd+ vs rw+ which has commit)
+        }
+    }
+
+    collection = await artifact_manager.create(
+        manifest=collection_manifest,
+        type="collection",
+        config=collection_config,
+    )
+
+    # Test 1: User2 should fail to create a non-staged artifact (requires both create and commit)
+    child_manifest = {
+        "name": "Test Child",
+        "description": "A test child artifact",
+    }
+
+    with pytest.raises(Exception) as exc_info:
+        await artifact_manager_user2.create(
+            parent_id=collection.id,
+            manifest=child_manifest,
+            stage=False,  # This requires both create and commit permissions
+        )
+
+    # Should get a permission error
+    assert "permission" in str(exc_info.value).lower()
+
+    # Test 2: User2 should succeed in creating a staged artifact (only requires create)
+    staged_artifact = await artifact_manager_user2.create(
+        parent_id=collection.id,
+        manifest=child_manifest,
+        stage=True,  # This only requires create permission
+    )
+
+    assert staged_artifact.id is not None
+    assert staged_artifact.staging is not None
+
+    # Test 3: User2 should fail to commit the staged artifact (requires commit permission)
+    with pytest.raises(Exception) as exc_info:
+        await artifact_manager_user2.commit(staged_artifact.id)
+
+    assert "permission" in str(exc_info.value).lower()
+
+    # Test 4: Update permissions to give user2 both create and commit
+    collection_config_updated = {
+        "permissions": {
+            user1_id: "*",  # Owner has full access
+            user2_id: "rw+",  # Has both create and commit
+        }
+    }
+
+    await artifact_manager.edit(
+        collection.id,
+        config=collection_config_updated,
+    )
+
+    # Now user2 should be able to create a non-staged artifact
+    child_manifest_2 = {
+        "name": "Test Child 2",
+        "description": "A second test child artifact",
+    }
+
+    committed_artifact = await artifact_manager_user2.create(
+        parent_id=collection.id,
+        manifest=child_manifest_2,
+        stage=False,  # This should now work since user2 has both permissions
+    )
+
+    assert committed_artifact.id is not None
+    assert committed_artifact.staging is None  # Should be committed
+    assert len(committed_artifact.versions) > 0  # Should have versions
+
+    # Test 5: User2 should now be able to commit the previously staged artifact
+    committed_staged = await artifact_manager_user2.commit(staged_artifact.id)
+    assert committed_staged.staging is None
+    assert len(committed_staged.versions) > 0

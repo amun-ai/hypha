@@ -306,6 +306,7 @@ def fastapi_server_fixture(minio_server, postgres_server):
             f"--port={SIO_PORT}",
             "--enable-server-apps",
             "--enable-s3",
+            "--enable-a2a",
             f"--database-uri={POSTGRES_URI}",
             "--migrate-database=head",
             "--reset-redis",

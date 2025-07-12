@@ -216,7 +216,23 @@ class RedisStore:
         if redis_uri and redis_uri.startswith("redis://"):
             from redis import asyncio as aioredis
 
-            self._redis = aioredis.from_url(redis_uri)
+            # Configure connection pool for production Redis
+            max_connections = int(os.environ.get("HYPHA_REDIS_MAX_CONNECTIONS", "100"))
+            health_check_interval = int(
+                os.environ.get("HYPHA_REDIS_HEALTH_CHECK_INTERVAL", "30")
+            )
+
+            self._redis = aioredis.from_url(
+                redis_uri,
+                max_connections=max_connections,
+                retry_on_timeout=True,
+                retry_on_error=[],
+                health_check_interval=health_check_interval,
+                socket_keepalive=True,
+                socket_keepalive_options={},
+                socket_connect_timeout=5,
+                socket_timeout=5,
+            )
 
         else:  #  Create a redis server with fakeredis
             from fakeredis import aioredis

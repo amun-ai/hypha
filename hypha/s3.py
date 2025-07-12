@@ -128,7 +128,7 @@ DEFAULT_CORS_POLICY = {
         {
             "AllowedHeaders": ["*"],
             "ExposeHeaders": ["Accept-Ranges", "Content-Length", "Content-Range"],
-            "AllowedMethods": ["GET", "HEAD"],
+            "AllowedMethods": ["GET", "HEAD", "PUT", "POST", "DELETE"],
             "AllowedOrigins": ["*"],
             "MaxAgeSeconds": 3000,
         }
@@ -257,6 +257,15 @@ class S3Controller:
                     .replace("http://", "")
                     .split("/")[0]
                 )
+
+                def get_upstream_url(self, scope):
+                    # Strip the /s3/ prefix from the path before forwarding to MinIO
+                    path = scope["path"]
+                    if path.startswith("/s3/"):
+                        path = path[4:]  # Remove "/s3/"
+                    from urllib.parse import urljoin
+
+                    return urljoin(self.upstream_base_url, path)
 
             config = S3ProxyConfig()
             context = ProxyContext(config=config)

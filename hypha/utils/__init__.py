@@ -496,140 +496,32 @@ def sanitize_url_for_logging(url: str) -> str:
     """Remove sensitive parameters from URLs for safe logging."""
     import re
     from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-    
+
     try:
         # Parse the URL
         parsed = urlparse(str(url))
         if not parsed.query:
             return str(url)  # No query parameters to sanitize
-        
+
         # Parse query parameters
         params = parse_qs(parsed.query, keep_blank_values=True)
-        
+
         # Remove sensitive parameters (case insensitive)
-        sensitive_keys = {'access_token', 'token', 'key', 'secret', 'password'}
+        sensitive_keys = {"access_token", "token", "key", "secret", "password"}
         sanitized_params = {
-            k: v for k, v in params.items() 
-            if k.lower() not in sensitive_keys
+            k: v for k, v in params.items() if k.lower() not in sensitive_keys
         }
-        
+
         # Rebuild the URL
         new_query = urlencode(sanitized_params, doseq=True)
         sanitized_parsed = parsed._replace(query=new_query)
         return urlunparse(sanitized_parsed)
-        
+
     except Exception:
         # Fallback to regex if URL parsing fails
-        sensitive_params = r'[?&](?:access_token|token|key|secret|password)=[^&]*'
-        sanitized = re.sub(sensitive_params, '', str(url), flags=re.IGNORECASE)
-        sanitized = re.sub(r'\?&', '?', sanitized)
-        sanitized = re.sub(r'&+', '&', sanitized)
-        sanitized = re.sub(r'[?&]$', '', sanitized)
+        sensitive_params = r"[?&](?:access_token|token|key|secret|password)=[^&]*"
+        sanitized = re.sub(sensitive_params, "", str(url), flags=re.IGNORECASE)
+        sanitized = re.sub(r"\?&", "?", sanitized)
+        sanitized = re.sub(r"&+", "&", sanitized)
+        sanitized = re.sub(r"[?&]$", "", sanitized)
         return sanitized
-
-
-async def chunked_transfer_remote_file(
-    source_url: str,
-    target_url: str,
-    source_params: Optional[Dict] = None,
-    target_params: Optional[Dict] = None,
-    source_headers: Optional[Dict] = None,
-    target_headers: Optional[Dict] = None,
-    logger: Optional[logging.Logger] = None,
-    chunk_size: int = 2048,
-    timeout: int = 60,
-):
-    """
-    Transfers a file from a remote source to a remote target without fully buffering in memory.
-
-    Args:
-        source_url (str): The URL of the source file.
-        target_url (str): The URL where the file will be uploaded.
-        source_params (Dict, optional): Additional query parameters for the source request.
-        target_params (Dict, optional): Additional query parameters for the target request.
-        source_headers (Dict, optional): Headers for the source request.
-        target_headers (Dict, optional): Headers for the target request.
-        logger (logging.Logger, optional): Logger for logging messages.
-        chunk_size (int, optional): Size of chunks for streaming. Default is 2048 bytes.
-        timeout (int, optional): Timeout for the HTTP requests in seconds. Default is 60.
-    """
-    source_params = source_params or {}
-    target_params = target_params or {}
-    source_headers = source_headers or {}
-    target_headers = target_headers or {}
-    if not logger:
-        logger = logging.getLogger(__name__)
-        LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-        logger.setLevel(LOGLEVEL)
-
-    async with httpx.AsyncClient(
-        headers={"Connection": "close"}, timeout=timeout
-    ) as client:
-        # Step 1: Get file size from the source
-        range_headers = {"Range": "bytes=0-0"}
-        range_headers.update(source_headers)
-
-        logger.info(f"Fetching file size from {sanitize_url_for_logging(source_url)}...")
-        range_response = await client.get(
-            source_url, headers=range_headers, params=source_params
-        )
-        if range_response.status_code not in [200, 206]:
-            logger.error(
-                f"Failed to fetch file size. Status code: {range_response.status_code}"
-            )
-            logger.error(f"Response: {range_response.text}")
-            return
-
-        content_range = range_response.headers.get("Content-Range")
-        if not content_range or "/" not in content_range:
-            logger.error("Content-Range header is missing or invalid.")
-            return
-
-        file_size = int(content_range.split("/")[-1])
-        logger.info(f"File size: {file_size} bytes")
-
-        # Step 2: Stream the file from source
-        async def s3_response_chunk_reader(response):
-            async for chunk in response.aiter_bytes(chunk_size):
-                yield chunk
-
-        async with client.stream(
-            "GET", source_url, headers=source_headers, params=source_params
-        ) as response:
-            if response.status_code != 200:
-                info = await response.aread()
-                info = info.decode("utf-8") if info else ""
-                logger.error(
-                    f"Failed to download the file. Status code: {response.status_code}, {info}"
-                )
-                raise Exception(
-                    f"Failed to download the file. Status code: {response.status_code}, {info}"
-                )
-            info = await response.aread()
-            # Step 3: Upload to target with content-length
-            target_headers.update(
-                {
-                    "Content-Type": "application/octet-stream",
-                    "Content-Length": str(file_size),
-                }
-            )
-
-            async def upload_generator():
-                async for chunk in s3_response_chunk_reader(response):
-                    yield chunk
-
-            logger.info(f"Uploading file to {sanitize_url_for_logging(target_url)}...")
-            put_response = await client.put(
-                target_url,
-                headers=target_headers,
-                data=upload_generator(),
-                params=target_params,
-            )
-
-            if put_response.status_code >= 400:
-                logger.error(
-                    f"Failed to upload the file. Status code: {put_response.status_code}, {put_response.text}"
-                )
-                raise Exception(
-                    f"Failed to upload the file. Status code: {put_response.status_code}, {put_response.text}"
-                )

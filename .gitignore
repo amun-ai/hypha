@@ -1,3 +1,4 @@
+examples/
 minio-data/
 helm-charts/*.tgz
 **/.minio.sys

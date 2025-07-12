@@ -13,7 +13,7 @@ DESCRIPTION = (
 REQUIREMENTS = [
     "websockets>=14.0",
     "aiofiles",
-    "fastapi>=0.70.0,<=0.106.0",
+    "fastapi>=0.70.0,<=0.115.2",
     "hypha-rpc>=0.20.60",
     "msgpack>=1.0.2",
     "numpy",

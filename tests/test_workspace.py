@@ -192,7 +192,7 @@ async def test_workspace_ready(fastapi_server):
 async def test_workspace_env_variables(fastapi_server, test_user_token):
     """Test workspace environment variables with proper permission controls."""
     server_url = WS_SERVER_URL
-    
+
     # Connect with authorized user
     authorized_api = await connect_to_server(
         {
@@ -203,22 +203,22 @@ async def test_workspace_env_variables(fastapi_server, test_user_token):
             "token": test_user_token,
         }
     )
-    
+
     # Test setting environment variables
     await authorized_api.set_env("TEST_VAR1", "value1")
     await authorized_api.set_env("TEST_VAR2", "value2")
     await authorized_api.set_env("DATABASE_URL", "postgres://localhost:5432/testdb")
-    
+
     # Test getting individual environment variables
     var1 = await authorized_api.get_env("TEST_VAR1")
     assert var1 == "value1"
-    
-    var2 = await authorized_api.get_env("TEST_VAR2") 
+
+    var2 = await authorized_api.get_env("TEST_VAR2")
     assert var2 == "value2"
-    
+
     db_url = await authorized_api.get_env("DATABASE_URL")
     assert db_url == "postgres://localhost:5432/testdb"
-    
+
     # Test getting all environment variables
     all_vars = await authorized_api.get_env()
     assert isinstance(all_vars, dict)
@@ -226,19 +226,19 @@ async def test_workspace_env_variables(fastapi_server, test_user_token):
     assert all_vars["TEST_VAR2"] == "value2"
     assert all_vars["DATABASE_URL"] == "postgres://localhost:5432/testdb"
     assert len(all_vars) == 3
-    
+
     # Test getting non-existent variable
     try:
         await authorized_api.get_env("NON_EXISTENT_VAR")
         assert False, "Should have raised KeyError"
     except Exception as e:
         assert "not found" in str(e)
-    
+
     # Test overwriting existing variable
     await authorized_api.set_env("TEST_VAR1", "new_value1")
     updated_var1 = await authorized_api.get_env("TEST_VAR1")
     assert updated_var1 == "new_value1"
-    
+
     # Test with unauthorized client (different workspace)
     # Create a second workspace with different user
     second_workspace_user = await connect_to_server(
@@ -249,25 +249,25 @@ async def test_workspace_env_variables(fastapi_server, test_user_token):
             "token": test_user_token,  # Same user but will create different workspace
         }
     )
-    
+
     second_workspace = await second_workspace_user.create_workspace(
         {
             "id": "test-env-workspace-2",
-            "name": "Test Environment Workspace 2", 
+            "name": "Test Environment Workspace 2",
             "description": "Second test workspace for env variables",
             "visibility": "protected",
             "persistent": False,
         },
         overwrite=True,
     )
-    
+
     # Anonymous user should not be able to connect to protected workspace
     connection_failed = False
     try:
         unauthorized_api = await connect_to_server(
             {
                 "client_id": "unauthorized-client",
-                "server_url": server_url, 
+                "server_url": server_url,
                 "workspace": "test-env-workspace-2",  # Try to connect to protected workspace
                 "method_timeout": 5,
             }
@@ -278,37 +278,39 @@ async def test_workspace_env_variables(fastapi_server, test_user_token):
         assert False, "Should have raised PermissionError"
     except Exception as e:
         # Connection or operation should fail
-        assert "Permission denied" in str(e) or "Failed to connect" in str(e), f"Expected permission error, got: {e}"
+        assert "Permission denied" in str(e) or "Failed to connect" in str(
+            e
+        ), f"Expected permission error, got: {e}"
         connection_failed = True
-    
+
     # Test env variables persist across different clients in same workspace
     workspace_token = await authorized_api.generate_token()
-    
+
     second_client = await connect_to_server(
         {
             "client_id": "env-test-client-2",
-            "name": "Second Environment Test Client", 
+            "name": "Second Environment Test Client",
             "server_url": server_url,
             "token": workspace_token,
             "method_timeout": 10,
         }
     )
-    
+
     # Should be able to access env vars set by first client
     shared_var = await second_client.get_env("TEST_VAR1")
     assert shared_var == "new_value1"
-    
+
     # Should be able to set new env vars
     await second_client.set_env("SHARED_VAR", "shared_value")
-    
+
     # First client should see the new variable
     shared_from_first = await authorized_api.get_env("SHARED_VAR")
     assert shared_from_first == "shared_value"
-    
+
     # Verify all variables are accessible from both clients
     all_vars_second = await second_client.get_env()
     all_vars_first = await authorized_api.get_env()
-    
+
     assert all_vars_first == all_vars_second
     assert "SHARED_VAR" in all_vars_first
     assert all_vars_first["SHARED_VAR"] == "shared_value"

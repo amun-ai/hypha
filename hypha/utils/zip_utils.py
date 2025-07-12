@@ -464,12 +464,26 @@ async def read_file_from_zip(s3_client, bucket, key, zip_info, zip_tail):
         bytes: The decompressed file content
     """
     try:
-        # For small files, use the zipfile module directly for simplicity
-        if zip_info.file_size < 10 * 1024 * 1024:  # < 10MB
+        # Get the total ZIP file size to determine if zip_tail contains the full file
+        try:
+            zip_file_metadata = await s3_client.head_object(Bucket=bucket, Key=key)
+            total_zip_size = zip_file_metadata["ContentLength"]
+        except Exception as e:
+            logger.error(f"Failed to get ZIP file size: {str(e)}")
+            # If we can't get the size, assume zip_tail is partial and use streaming approach
+            total_zip_size = len(zip_tail) + 1  # Force streaming approach
+
+        # Only use the simple approach if zip_tail contains the full ZIP file
+        # AND the file inside the ZIP is small
+        zip_tail_is_full_file = len(zip_tail) == total_zip_size
+
+        if (
+            zip_tail_is_full_file and zip_info.file_size < 10 * 1024 * 1024
+        ):  # < 10MB and zip_tail is the full file
             with zipfile.ZipFile(BytesIO(zip_tail)) as zf:
                 return zf.read(zip_info.filename)
 
-        # For larger files, use streaming approach
+        # For larger files or when zip_tail is partial, use streaming approach
         chunks = []
         async for chunk in stream_file_chunks_from_zip(
             s3_client, bucket, key, zip_info, zip_tail
@@ -499,18 +513,30 @@ async def stream_file_from_zip(
         bytes: Chunks of decompressed file data
     """
     try:
-        # For small files or stored files, use the simpler approach
-        if (
+        # Get the total ZIP file size to determine if zip_tail contains the full file
+        try:
+            zip_file_metadata = await s3_client.head_object(Bucket=bucket, Key=key)
+            total_zip_size = zip_file_metadata["ContentLength"]
+        except Exception as e:
+            logger.error(f"Failed to get ZIP file size: {str(e)}")
+            # If we can't get the size, assume zip_tail is partial and use streaming approach
+            total_zip_size = len(zip_tail) + 1  # Force streaming approach
+
+        # Only use the simple approach if zip_tail contains the full ZIP file
+        # AND the file inside the ZIP is small or uncompressed
+        zip_tail_is_full_file = len(zip_tail) == total_zip_size
+
+        if zip_tail_is_full_file and (
             zip_info.file_size < 1 * 1024 * 1024
             or zip_info.compress_type == zipfile.ZIP_STORED
-        ):  # < 1MB
+        ):  # < 1MB and zip_tail is the full file
             with zipfile.ZipFile(BytesIO(zip_tail)) as zf:
                 file_content = zf.read(zip_info.filename)
                 for i in range(0, len(file_content), chunk_size):
                     yield file_content[i : i + chunk_size]
             return
 
-        # For larger files, use the streaming implementation
+        # For larger files or when zip_tail is partial, use the streaming implementation
         async for chunk in stream_file_chunks_from_zip(
             s3_client, bucket, key, zip_info, zip_tail, chunk_size
         ):
@@ -571,12 +597,26 @@ async def stream_file_chunks_from_zip(
             )
     except Exception as e:
         logger.error(f"Error calculating data offset: {str(e)}")
-        # Fall back to simple approach if we can't calculate the offset
-        with zipfile.ZipFile(BytesIO(zip_tail)) as zf:
-            file_content = zf.read(zip_info.filename)
-            for i in range(0, len(file_content), chunk_size):
-                yield file_content[i : i + chunk_size]
-        return
+        # Fall back to simple approach only if zip_tail contains the full ZIP file
+        try:
+            zip_file_metadata = await s3_client.head_object(Bucket=bucket, Key=key)
+            total_zip_size = zip_file_metadata["ContentLength"]
+            zip_tail_is_full_file = len(zip_tail) == total_zip_size
+
+            if zip_tail_is_full_file:
+                with zipfile.ZipFile(BytesIO(zip_tail)) as zf:
+                    file_content = zf.read(zip_info.filename)
+                    for i in range(0, len(file_content), chunk_size):
+                        yield file_content[i : i + chunk_size]
+                return
+            else:
+                logger.error(
+                    f"Cannot use fallback approach: zip_tail is partial (size: {len(zip_tail)}, full size: {total_zip_size})"
+                )
+                raise e  # Re-raise the original exception since fallback is not possible
+        except Exception as fallback_error:
+            logger.error(f"Fallback approach also failed: {str(fallback_error)}")
+            raise e  # Re-raise the original exception
 
     # For DEFLATE compression, we need to use zlib to decompress
     if compression_method == zipfile.ZIP_DEFLATED:
@@ -659,11 +699,29 @@ async def stream_file_chunks_from_zip(
                 logger.error(f"Error fetching chunk: {str(e)}")
                 raise
     else:
-        # For other compression methods, fall back to the zipfile module
+        # For other compression methods, fall back to the zipfile module only if zip_tail is the full file
         logger.info(
             f"Unsupported compression method {compression_method}, falling back to zipfile module"
         )
-        with zipfile.ZipFile(BytesIO(zip_tail)) as zf:
-            file_content = zf.read(zip_info.filename)
-            for i in range(0, len(file_content), chunk_size):
-                yield file_content[i : i + chunk_size]
+        try:
+            zip_file_metadata = await s3_client.head_object(Bucket=bucket, Key=key)
+            total_zip_size = zip_file_metadata["ContentLength"]
+            zip_tail_is_full_file = len(zip_tail) == total_zip_size
+
+            if zip_tail_is_full_file:
+                with zipfile.ZipFile(BytesIO(zip_tail)) as zf:
+                    file_content = zf.read(zip_info.filename)
+                    for i in range(0, len(file_content), chunk_size):
+                        yield file_content[i : i + chunk_size]
+            else:
+                logger.error(
+                    f"Cannot use zipfile fallback: zip_tail is partial (size: {len(zip_tail)}, full size: {total_zip_size})"
+                )
+                raise ValueError(
+                    f"Unsupported compression method {compression_method} and zip_tail is partial"
+                )
+        except Exception as fallback_error:
+            logger.error(f"Zipfile fallback failed: {str(fallback_error)}")
+            raise ValueError(
+                f"Unsupported compression method {compression_method}: {str(fallback_error)}"
+            )
