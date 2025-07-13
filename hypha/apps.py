@@ -291,6 +291,7 @@ class ServerAppController:
                 raise Exception(f"Failed to read artifact {app_id}: {exp}")
         else:
             artifact = await self.artifact_manager.create(
+                type="application",
                 parent_id=collection_id,
                 alias=app_id,
                 overwrite=overwrite,
