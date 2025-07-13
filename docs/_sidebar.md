@@ -11,5 +11,6 @@
  * [Operate Files](/operate-files)
  * [Zip Streaming](/zip-streaming)
  * [Artifact Manager](/artifact-manager)
+ * [Agent2Agent](/a2a)
  * [Vector Search](/vector-search)
  * [Development](/development)
