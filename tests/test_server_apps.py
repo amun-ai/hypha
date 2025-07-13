@@ -560,10 +560,12 @@ async def test_lazy_service_with_default_timeout(fastapi_server, test_user_token
         source=source,
         timeout=30,
         overwrite=True,
-        startup_config={
-            "stop_after_inactive": 3,  # Auto-stop after 3 seconds of inactivity
-            "timeout": 30,  # Default timeout for starting
-            "wait_for_service": "echo",  # Default service to wait for
+        config={
+            "startup_config": {
+                "stop_after_inactive": 3,  # Auto-stop after 3 seconds of inactivity
+                "timeout": 30,  # Default timeout for starting
+                "wait_for_service": "echo",  # Default service to wait for
+            }
         },
     )
 
@@ -619,10 +621,12 @@ async def test_startup_config_comprehensive(fastapi_server, test_user_token):
         source=source,
         timeout=30,
         overwrite=True,
-        startup_config={
-            "stop_after_inactive": 2,  # Auto-stop after 2 seconds of inactivity
-            "timeout": 25,  # Default timeout for starting
-            "wait_for_service": "echo",  # Default service to wait for
+        config={
+            "startup_config": {
+                "stop_after_inactive": 2,  # Auto-stop after 2 seconds of inactivity
+                "timeout": 25,  # Default timeout for starting
+                "wait_for_service": "echo",  # Default service to wait for
+            }
         },
     )
 
@@ -753,7 +757,7 @@ async def test_lazy_service_web_python_app(fastapi_server, test_user_token):
             / "hypha"
             / "templates"
             / "ws"
-            / "fastapi_app_template.html"
+            / "fastapi_app_template.hypha.html"
         )
         .open(encoding="utf-8")
         .read()
@@ -834,7 +838,7 @@ async def test_service_collection_comparison(fastapi_server, test_user_token):
             / "hypha"
             / "templates"
             / "ws"
-            / "fastapi_app_template.html"
+            / "fastapi_app_template.hypha.html"
         )
         .open(encoding="utf-8")
         .read()
