@@ -1400,6 +1400,55 @@ class WorkspaceManager:
         key = f"services:*|*:{service_id}@{app_id}"
         keys = await self._redis.keys(key)
         if not keys:
+            # If no services found in Redis but app_id is provided, try to get from application artifact
+            if app_id != "*":
+                try:
+                    # Extract service name from service_id (remove workspace/client_id prefix)
+                    service_name = service_id.split(":")[-1]
+                    app_info, service_info = await self._get_application_by_service_id(
+                        app_id, service_name, workspace, context
+                    )
+
+                    # Create a ServiceInfo object with the application service information
+                    # We need to format the service_info from the application manifest to match what get_service_info expects
+                    service_info_dict = service_info.model_dump()
+
+                    # Update the service id to include the workspace prefix for consistency
+                    if "/" not in service_info_dict["id"]:
+                        service_info_dict["id"] = (
+                            f"{workspace}/{service_info_dict['id']}"
+                        )
+
+                    # Set the app_id
+                    service_info_dict["app_id"] = app_id
+
+                    # Ensure config is properly set
+                    if service_info_dict.get("config") is None:
+                        service_info_dict["config"] = {}
+
+                    # Set workspace in config
+                    service_info_dict["config"]["workspace"] = workspace
+
+                    # Check permissions for non-public services
+                    service_visibility = service_info_dict.get("config", {}).get(
+                        "visibility", "protected"
+                    )
+                    if (
+                        service_visibility != "public"
+                        and not user_info.check_permission(
+                            workspace, UserPermission.read
+                        )
+                    ):
+                        raise PermissionError(
+                            f"Permission denied for non-public service in workspace {workspace}"
+                        )
+
+                    # Return the ServiceInfo object
+                    return ServiceInfo.model_validate(service_info_dict)
+                except Exception:
+                    # If we can't find it in the application artifacts either, raise the original error
+                    pass
+
             raise KeyError(f"Service not found: {service_id}@{app_id}")
         config = config or {}
         mode = config.get("mode")
@@ -1654,16 +1703,18 @@ class WorkspaceManager:
         workspace_info = await self.load_workspace_info(workspace)
         return workspace_info.model_dump()
 
-    async def _launch_application_for_service(
+    async def _get_application_by_service_id(
         self,
         app_id: str,
         service_id: str,
         workspace: str = None,
-        timeout: float = 10,
-        case_conversion: str = None,
         context: dict = None,
-    ):
-        """Launch an installed application by service name."""
+    ) -> tuple:
+        """Get application info and service info by service id from the artifact manager.
+
+        Returns:
+            tuple: (app_info, service_info) where app_info is ApplicationManifest and service_info is ServiceInfo
+        """
         self.validate_context(context, permission=UserPermission.read)
         ws = context["ws"]
         workspace = workspace or ws
@@ -1677,11 +1728,11 @@ class WorkspaceManager:
 
         if not self._artifact_manager:
             raise Exception(
-                "Failed to launch application: artifact-manager service not found."
+                "Failed to get application info: artifact-manager service not found."
             )
         assert (
             ":" not in service_id
-        ), f"To automatically launch an application, the service name should not specify the client id, i.e. please remove the client id from the service name: {service_id}"
+        ), f"To get application service info, the service name should not specify the client id, i.e. please remove the client id from the service name: {service_id}"
 
         assert service_id and service_id not in [
             "*",
@@ -1706,16 +1757,35 @@ class WorkspaceManager:
         assert (
             app_info.services
         ), f"No services found in application {app_id}, please make sure it's properly installed."
-        # check if service_id is one of the service.id in the app
-        found = False
+
+        # Find the service in the application
+        found_service = None
         for svc in app_info.services:
             if svc.id.endswith(":" + service_id):
-                found = True
+                found_service = svc
                 break
-        if not found:
+
+        if not found_service:
             raise KeyError(
                 f"Service id `{service_id}` not found in application {app_id}"
             )
+
+        return app_info, found_service
+
+    async def _launch_application_for_service(
+        self,
+        app_id: str,
+        service_id: str,
+        workspace: str = None,
+        timeout: float = 10,
+        case_conversion: str = None,
+        context: dict = None,
+    ):
+        """Launch an installed application by service name."""
+        # Get application and service info
+        app_info, service_info = await self._get_application_by_service_id(
+            app_id, service_id, workspace, context
+        )
 
         if not self._server_app_controller:
             raise Exception(
@@ -1775,9 +1845,10 @@ class WorkspaceManager:
         # self.validate_context(context, permission=UserPermission.read)
         try:
             config = config or GetServiceConfig()
+            service_id_without_app_id = service_id.split("@")[0]
             # Permission check will be handled by the get_service_api function
             svc_info = await self.get_service_info(
-                service_id, {"mode": config.mode}, context=context
+                service_id_without_app_id, {"mode": config.mode}, context=context
             )
             service_api = await self._rpc.get_remote_service(
                 svc_info.id,

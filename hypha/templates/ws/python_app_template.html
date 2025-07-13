@@ -17,7 +17,7 @@
 <script lang="python">
 from hypha_rpc import api
 
-class ImJoyPlugin():
+class HyphaApp():
     async def setup(self):
         api.log('Python Test app connected!')
         
@@ -35,5 +35,5 @@ class ImJoyPlugin():
             "features": ["multiply", "process_list"]
         }
 
-api.export(ImJoyPlugin())
+api.export(HyphaApp())
 </script> 

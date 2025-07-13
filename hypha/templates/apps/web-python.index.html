@@ -16,6 +16,7 @@
 const window = self;
 const src = `
 import sys
+import os
 import asyncio
 import json
 from types import ModuleType
@@ -58,6 +59,10 @@ async def patch_hypha_rpc(default_config):
 async def run():
     from js import config, script_src
     config = config.to_py()
+    os.environ["HYPHA_SERVER_URL"] = config.get("server_url", "")
+    os.environ["HYPHA_WORKSPACE"] = config.get("workspace", "")
+    os.environ["HYPHA_CLIENT_ID"] = config.get("client_id", "")
+    os.environ["HYPHA_TOKEN"] = config.get("token", "")
     try:
         hypha_rpc = await patch_hypha_rpc(config)
         exec(script_src, globals())

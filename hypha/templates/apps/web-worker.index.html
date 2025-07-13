@@ -14,6 +14,11 @@
 self.onmessage = async function(e) {
 const hyphaWebsocketClient = await import("{{ hypha_rpc_websocket_mjs }}");
 const config = e.data
+self.env = new Map()
+self.env.set("HYPHA_SERVER_URL", config.server_url)
+self.env.set("HYPHA_WORKSPACE", config.workspace)
+self.env.set("HYPHA_CLIENT_ID", config.client_id)
+self.env.set("HYPHA_TOKEN", config.token)
 const api = await hyphaWebsocketClient.connectToServer(config)
 await hyphaWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
 {{ script | safe }}
