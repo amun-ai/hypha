@@ -976,31 +976,6 @@ Validate Agent Card:
 curl -X GET "https://hypha.aicell.io/my-workspace/a2a/my-agent/agent.json"
 ```
 
-## Implementation Details
-
-### Architecture
-
-Hypha's A2A support is built on the official [a2a-sdk](https://github.com/a2aproject/a2a-samples/tree/main/python) and includes:
-
-1. **HyphaAgentExecutor**: Bridges A2A SDK with Hypha services by implementing the `AgentExecutor` interface
-2. **A2AServiceManager**: Manages A2A service lifecycle and HTTP endpoint routing  
-3. **HTTP Integration**: Routes A2A requests to `A2AStarletteApplication` instances
-4. **Automatic Registration**: A2A services are automatically registered when services with `type="a2a"` are created
-
-### Dependencies
-
-A2A support requires the official A2A SDK:
-
-```bash
-pip install a2a-sdk>=0.1.0
-```
-
-Or install all dependencies:
-
-```bash  
-pip install -r requirements_a2a.txt
-```
-
 ### HTTP Endpoints
 
 When you register an A2A service, Hypha automatically creates these endpoints:
@@ -1025,33 +1000,6 @@ A2A services inherit Hypha's capabilities:
 - **Service Management**: Start/stop/monitor via Hypha APIs
 - **Logging**: Integrated with Hypha's logging system
 - **Metrics**: Tracked with Hypha's metrics collection
-
-### Advanced Configuration
-
-Enable enhanced A2A features:
-
-```python
-# Service with context access
-await server.register_service({
-    "id": "context-aware-agent",
-    "type": "a2a", 
-    "config": {
-        "visibility": "public",
-        "require_context": True  # Enables user/workspace context
-    },
-    "agent_card": agent_card,
-    "run": agent_with_context
-})
-
-async def agent_with_context(message, context=None):
-    """Agent that can access user and workspace information."""
-    if context:
-        user = context.get("user")
-        workspace = context.get("workspace") 
-        # Use context for personalized responses
-    
-    return f"Hello from {workspace}!"
-```
 
 ## Conclusion
 

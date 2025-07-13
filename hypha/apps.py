@@ -128,10 +128,22 @@ class ServerAppController:
         overwrite: bool = False,
         timeout: float = 60,
         version: str = None,
-        startup_config: Optional[Dict[str, Any]] = None,
         context: Optional[dict] = None,
     ) -> str:
-        """Save a server app."""
+        """Save a server app.
+
+        Args:
+            source: The source code of the application, URL to fetch the source, or None if using config
+            source_hash: Optional hash of the source for verification
+            config: Application configuration dictionary containing app metadata and settings.
+                   Can include startup_config with default startup parameters like timeout,
+                   wait_for_service, and stop_after_inactive.
+            workspace: Target workspace for installation (defaults to current workspace)
+            overwrite: Whether to overwrite existing app with same name
+            timeout: Maximum time to wait for installation completion
+            version: Version identifier for the app
+            context: Additional context information
+        """
         if not workspace:
             workspace = context["ws"]
 
@@ -145,7 +157,7 @@ class ServerAppController:
             )
 
         # Determine template type
-        if config:
+        if config and config.get("type"):
             config["entry_point"] = config.get("entry_point", "index.html")
             template = config.get("type") + "." + config["entry_point"]
         else:
@@ -205,13 +217,25 @@ class ServerAppController:
         elif template == "hypha":
             if not source:
                 raise Exception("Source should be provided for hypha app.")
-            assert config is None, "Config should not be provided for hypha app."
 
             try:
-                config = parse_imjoy_plugin(source)
-                config["source_hash"] = mhash
-                entry_point = config.get("entry_point", "index.html")
-                config["entry_point"] = entry_point
+                # Parse the template config
+                template_config = parse_imjoy_plugin(source)
+                template_config["source_hash"] = mhash
+                entry_point = template_config.get("entry_point", "index.html")
+                template_config["entry_point"] = entry_point
+
+                # Merge with provided config, giving priority to template config for app metadata
+                # but allowing additional config like startup_config to be provided
+                if config:
+                    merged_config = config.copy()
+                    merged_config.update(
+                        template_config
+                    )  # Template config overrides provided config
+                    config = merged_config
+                else:
+                    config = template_config
+
                 temp = self.jinja_env.get_template(
                     safe_join("apps", config["type"] + "." + entry_point)
                 )
@@ -280,9 +304,8 @@ class ServerAppController:
         else:
             artifact_obj = convert_config_to_artifact(config, app_id, source)
 
-        # Set default startup config if provided
-        if startup_config is not None:
-            artifact_obj["startup_config"] = startup_config
+        # startup_config is now handled automatically by convert_config_to_artifact
+        # if it exists in the config
 
         ApplicationManifest.model_validate(artifact_obj)
 

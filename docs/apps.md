@@ -183,10 +183,12 @@ api.export({
     # Install app with startup configuration
     app_info = await controller.install(
         source=python_app_source,
-        startup_config={
-            "timeout": 45,  # Startup timeout
-            "wait_for_service": "default",  # Service to wait for
-            "stop_after_inactive": 300,  # Auto-stop after 5 minutes of inactivity
+        config={
+            "startup_config": {
+                "timeout": 45,  # Startup timeout
+                "wait_for_service": "default",  # Service to wait for
+                "stop_after_inactive": 300,  # Auto-stop after 5 minutes of inactivity
+            }
         },
         overwrite=True
     )
@@ -228,11 +230,13 @@ The Server Apps service supports lazy loading, where apps are automatically star
 # Install an app without starting it
 app_info = await controller.install(
     source=app_source,
-    config={"type": "web-worker"},
-    startup_config={
-        "timeout": 30,
-        "wait_for_service": "echo",
-        "stop_after_inactive": 120,  # Auto-stop after 2 minutes
+    config={
+        "type": "web-worker",
+        "startup_config": {
+            "timeout": 30,
+            "wait_for_service": "echo",
+            "stop_after_inactive": 120,  # Auto-stop after 2 minutes
+        }
     },
     overwrite=True
 )
@@ -322,10 +326,12 @@ api.export({
 # Install the ASGI app
 app_info = await controller.install(
     source=fastapi_app_source,
-    startup_config={
-        "timeout": 60,
-        "wait_for_service": "serve",
-        "stop_after_inactive": 600,  # 10 minutes
+    config={
+        "startup_config": {
+            "timeout": 60,
+            "wait_for_service": "serve",
+            "stop_after_inactive": 600,  # 10 minutes
+        }
     },
     overwrite=True
 )
@@ -356,15 +362,17 @@ You can configure startup behavior in two ways:
 </config>
 ```
 
-2. **As a parameter to `install()`:**
+2. **As part of the `config` parameter in `install()`:**
 ```python
 # Install app with comprehensive startup configuration
 app_info = await controller.install(
     source=app_source,
-    startup_config={
-        "timeout": 45,  # Maximum time to wait for app startup
-        "wait_for_service": "default",  # Service to wait for during startup
-        "stop_after_inactive": 300,  # Auto-stop after 5 minutes of inactivity
+    config={
+        "startup_config": {
+            "timeout": 45,  # Maximum time to wait for app startup
+            "wait_for_service": "default",  # Service to wait for during startup
+            "stop_after_inactive": 300,  # Auto-stop after 5 minutes of inactivity
+        }
     },
     overwrite=True
 )
@@ -372,7 +380,7 @@ app_info = await controller.install(
 **Priority Order:**
 When the same startup parameter is specified in multiple places, the priority order is:
 1. **Explicit parameters in `start()` method** (highest priority)
-2. **`startup_config` parameter in `install()` method** (medium priority)  
+2. **`startup_config` in `config` parameter of `install()` method** (medium priority)  
 3. **`startup_config` in HTML `<config>` section** (lowest priority)
 
 # Start app - will use the startup_config defaults
@@ -390,7 +398,7 @@ started_app = await controller.start(
 
 ## API Reference
 
-### `install(source: str = None, source_hash: str = None, config: Dict[str, Any] = None, workspace: str = None, overwrite: bool = False, timeout: float = 60, version: str = None, startup_config: Dict[str, Any] = None, context: dict = None) -> AppInfo`
+### `install(source: str = None, source_hash: str = None, config: Dict[str, Any] = None, workspace: str = None, overwrite: bool = False, timeout: float = 60, version: str = None, context: dict = None) -> AppInfo`
 
 Installs an application from source code, URL, or configuration.
 
@@ -398,15 +406,14 @@ Installs an application from source code, URL, or configuration.
 
 - `source`: The source code of the application, URL to fetch the source, or None if using config
 - `source_hash`: Optional hash of the source for verification
-- `config`: Application configuration dictionary containing app metadata and settings
+- `config`: Application configuration dictionary containing app metadata and settings. Can include `startup_config` with default startup parameters:
+  - `startup_config.timeout`: Default timeout for starting the app
+  - `startup_config.wait_for_service`: Default service to wait for during startup
+  - `startup_config.stop_after_inactive`: Default inactivity timeout (seconds) for auto-stopping
 - `workspace`: Target workspace for installation (defaults to current workspace)
 - `overwrite`: Whether to overwrite existing app with same name
 - `timeout`: Maximum time to wait for installation completion
 - `version`: Version identifier for the app
-- `startup_config`: Default startup configuration with the following options:
-  - `timeout`: Default timeout for starting the app
-  - `wait_for_service`: Default service to wait for during startup
-  - `stop_after_inactive`: Default inactivity timeout (seconds) for auto-stopping
 - `context`: Additional context information
 
 **Returns:** `AppInfo` object containing app details including `id`, `name`, `type`, etc.
@@ -416,11 +423,14 @@ Installs an application from source code, URL, or configuration.
 ```python
 app_info = await controller.install(
     source=app_source,
-    config={"type": "web-worker", "name": "My App"},
-    startup_config={
-        "timeout": 30,
-        "wait_for_service": "default",
-        "stop_after_inactive": 180
+    config={
+        "type": "web-worker", 
+        "name": "My App",
+        "startup_config": {
+            "timeout": 30,
+            "wait_for_service": "default",
+            "stop_after_inactive": 180
+        }
     },
     overwrite=True
 )
@@ -792,10 +802,12 @@ Always define startup configuration for consistent app behavior:
 ```python
 app_info = await controller.install(
     source=app_source,
-    startup_config={
-        "timeout": 45,  # Allow sufficient time for startup
-        "wait_for_service": "default",  # Wait for main service
-        "stop_after_inactive": 300  # Auto-cleanup after 5 minutes
+    config={
+        "startup_config": {
+            "timeout": 45,  # Allow sufficient time for startup
+            "wait_for_service": "default",  # Wait for main service
+            "stop_after_inactive": 300  # Auto-cleanup after 5 minutes
+        }
     }
 )
 ```
@@ -848,9 +860,11 @@ For apps that are accessed infrequently, use lazy loading:
 # Install without starting
 app_info = await controller.install(
     source=app_source,
-    startup_config={
-        "stop_after_inactive": 60,  # Quick cleanup for on-demand apps
-        "timeout": 30
+    config={
+        "startup_config": {
+            "stop_after_inactive": 60,  # Quick cleanup for on-demand apps
+            "timeout": 30
+        }
     }
 )
 
@@ -918,10 +932,12 @@ api.export({
 # Install and start the ML model server
 app_info = await controller.install(
     source=ml_model_source,
-    startup_config={
-        "timeout": 60,  # ML models may take longer to start
-        "wait_for_service": "default",
-        "stop_after_inactive": 1800  # 30 minutes for ML workloads
+    config={
+        "startup_config": {
+            "timeout": 60,  # ML models may take longer to start
+            "wait_for_service": "default",
+            "stop_after_inactive": 1800  # 30 minutes for ML workloads
+        }
     }
 )
 
@@ -1055,9 +1071,11 @@ api.export({
 
 app_info = await controller.install(
     source=dashboard_source,
-    startup_config={
-        "wait_for_service": "serve",
-        "stop_after_inactive": 3600  # 1 hour for dashboard
+    config={
+        "startup_config": {
+            "wait_for_service": "serve",
+            "stop_after_inactive": 3600  # 1 hour for dashboard
+        }
     }
 )
 
@@ -1151,10 +1169,12 @@ api.export({
 
 app_info = await controller.install(
     source=file_processor_source,
-    startup_config={
-        "timeout": 30,
-        "wait_for_service": "default",
-        "stop_after_inactive": 600
+    config={
+        "startup_config": {
+            "timeout": 30,
+            "wait_for_service": "default",
+            "stop_after_inactive": 600
+        }
     }
 )
 
