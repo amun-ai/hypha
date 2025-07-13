@@ -293,7 +293,7 @@
                                  } catch (error) {
                                      console.error("Failed to install app:", error);
                                      // For errors, we still show an alert since it's important feedback
-                                     alert("Failed to install app: " + error.message);
+                                     alert(`Failed to install app: ${error}`);
                                      throw error;
                                  } finally {
                                      // Hide spinner
@@ -1055,7 +1055,7 @@
                     setEnvVars(allEnvs || {});
                 } catch (error) {
                     console.error('Failed to fetch environment variables:', error);
-                    alert('Failed to fetch environment variables: ' + error.message);
+                    alert(`Failed to fetch environment variables: ${error}`);
                 } finally {
                     setLoading(false);
                 }
@@ -1082,7 +1082,7 @@
                     await fetchEnvVars();
                 } catch (error) {
                     console.error('Failed to set environment variable:', error);
-                    alert('Failed to set environment variable: ' + error.message);
+                    alert(`Failed to set environment variable: ${error}`);
                 } finally {
                     setLoading(false);
                     window.hideLoadingSpinner();
@@ -1101,7 +1101,7 @@
                     await fetchEnvVars();
                 } catch (error) {
                     console.error('Failed to remove environment variable:', error);
-                    alert('Failed to remove environment variable: ' + error.message);
+                    alert(`Failed to remove environment variable: ${error}`);
                 } finally {
                     setLoading(false);
                     window.hideLoadingSpinner();
@@ -1523,7 +1523,7 @@
                     setFiles(fileList);
                 } catch (error) {
                     console.error("Failed to list files:", error);
-                    alert("Failed to list files: " + error.message);
+                    alert(`Failed to list files: ${error}`);
                 } finally {
                     setLoading(false); // Hide loading state
                     window.hideLoadingSpinner();
@@ -1546,7 +1546,7 @@
                     setFiles(await listFiles(artifact.id, "")); // Refresh the file list
                 } catch (error) {
                     console.error("Failed to delete file:", error);
-                    alert("Failed to delete file: " + error.message);
+                    alert(`Failed to delete file: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
                 }
@@ -1567,7 +1567,7 @@
                     setFiles(await listFiles(artifact.id, "")); // Refresh the file list
                 } catch (error) {
                     console.error("Failed to upload file:", error);
-                    alert("Failed to upload file: " + error.message);
+                    alert(`Failed to upload file: ${error}`);
                 } finally {
                     setUploading(false);
                     window.hideLoadingSpinner();
@@ -2042,18 +2042,19 @@
                             globalSetUploadProgress(progress);
                         }
                     },
+                    timeout: 30000, // 30 second timeout
                 });
 
                 if (response.status === 200) {
                     console.log(`File ${file.name} uploaded successfully to ${targetPath || 'root'}`);
                     return true;
                 } else {
-                    console.error("File upload failed", response.statusText);
-                    return false;
+                    console.error(`File upload failed for ${file.name}:`, response.statusText);
+                    throw new Error(`Upload failed with status ${response.status}: ${response.statusText}`);
                 }
             } catch (error) {
-                console.error("File upload failed", error);
-                return false;
+                console.error(`File upload failed for ${file.name}:`, error);
+                throw error; // Re-throw to allow proper error handling upstream
             } finally {
                 if (showProgress) {
                     if (globalSetUploadProgress) globalSetUploadProgress(0);
@@ -2082,91 +2083,35 @@
             }
         };
 
-        // Global progress tracking variables
-        let globalCurrentFileIndex = 0;
-        let globalTotalFiles = 0;
-        let globalCurrentFileName = "";
-
-        // Utility function to count total files recursively
-        const countTotalFiles = async (items) => {
-            let totalFiles = 0;
-            
-            const countInEntry = async (entry) => {
-                if (entry.isFile) {
-                    totalFiles++;
-                } else if (entry.isDirectory) {
-                    const reader = entry.createReader();
-                    const allEntries = [];
-                    
-                    const readEntries = () => {
-                        return new Promise((resolve) => {
-                            reader.readEntries((entries) => {
-                                if (entries.length > 0) {
-                                    allEntries.push(...entries);
-                                    readEntries().then(resolve);
-                                } else {
-                                    resolve();
-                                }
-                            });
-                        });
-                    };
-                    
-                    await readEntries();
-                    
-                    for (const subEntry of allEntries) {
-                        await countInEntry(subEntry);
-                    }
-                }
-            };
-            
-            for (const item of items) {
-                if (item.webkitGetAsEntry) {
-                    const entry = item.webkitGetAsEntry();
-                    if (entry) {
-                        await countInEntry(entry);
-                    }
-                } else if (item.getAsFile) {
-                    const file = item.getAsFile();
-                    if (file) {
-                        totalFiles++;
-                    }
-                }
-            }
-            
-            return totalFiles;
-        };
-
         // Utility function to process directory entry recursively
-        const processDirectoryEntry = async (entry, targetPath = "") => {
-            const fullPath = targetPath ? `${targetPath}/${entry.name}` : entry.name;
+        const processDirectoryEntry = async (entry, parentPath = "") => {
+            const entryPath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
             
             if (entry.isFile) {
-                return new Promise((resolve) => {
-                    entry.file(async (file) => {
-                        globalCurrentFileIndex++;
-                        globalCurrentFileName = file.name;
-                        
-                        // Update progress display
-                        const progressText = `Uploading ${globalCurrentFileName} (${globalCurrentFileIndex}/${globalTotalFiles})`;
-                        window.showLoadingSpinner(progressText);
-                        
-                        const success = await uploadFileToPath(file, targetPath, false);
-                        resolve(success);
+                try {
+                    const file = await new Promise((resolve, reject) => {
+                        entry.file(resolve, reject);
                     });
-                });
+                    
+                    window.showLoadingSpinner(`Uploading ${entryPath}...`);
+                    
+                    await uploadFileToPath(file, parentPath, false);
+                    // Small delay to prevent overwhelming the server
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    return true;
+                } catch (error) {
+                    console.error(`Failed to upload file ${entry.name}:`, error);
+                    return false;
+                }
             } else if (entry.isDirectory) {
-                // Create the directory structure
-                await createFolderStructure(fullPath);
-                
-                // Process directory contents - read all entries (may require multiple calls)
                 const reader = entry.createReader();
-                const allEntries = [];
+                const dirEntries = [];
                 
                 const readEntries = () => {
                     return new Promise((resolve) => {
                         reader.readEntries((entries) => {
                             if (entries.length > 0) {
-                                allEntries.push(...entries);
+                                dirEntries.push(...entries);
                                 readEntries().then(resolve);
                             } else {
                                 resolve();
@@ -2177,32 +2122,41 @@
                 
                 await readEntries();
                 
-                for (const subEntry of allEntries) {
-                    await processDirectoryEntry(subEntry, fullPath);
+                // Process files in this directory
+                for (const subEntry of dirEntries) {
+                    await processDirectoryEntry(subEntry, entryPath);
+                }
+                
+                // Only create .keep file if directory is completely empty
+                if (dirEntries.length === 0) {
+                    try {
+                        window.showLoadingSpinner(`Creating empty folder ${entryPath}...`);
+                        const keepFile = new Blob([''], { type: 'text/plain' });
+                        // Create the .keep file directly in the folder path
+                        const keepFilePath = `${entryPath}/.keep`;
+                        const presignedUrl = await globalS3.generatePresignedUrl(keepFilePath, "put_object");
+                        await axios.put(presignedUrl, keepFile, {
+                            headers: { "Content-Type": "text/plain" }
+                        });
+                    } catch (error) {
+                        console.error(`Failed to create empty folder ${entryPath}:`, error);
+                    }
                 }
                 return true;
             }
+            return false;
         };
+
+
 
         // Utility function to process dropped items (files and folders)
         const processDroppedItems = async (items, targetPath = "") => {
-            // Reset global progress tracking
-            globalCurrentFileIndex = 0;
-            globalCurrentFileName = "";
-            
-            // Count total files first
-            window.showLoadingSpinner("Counting files...");
-            globalTotalFiles = await countTotalFiles(items);
-            
-            if (globalTotalFiles === 0) {
-                window.hideLoadingSpinner();
-                return;
-            }
-            
-            window.showLoadingSpinner(`Preparing to upload ${globalTotalFiles} files...`);
+            window.showLoadingSpinner("Processing dropped items...");
             
             try {
-                for (const item of items) {
+                for (let i = 0; i < items.length; i++) {
+                    const item = items[i];
+                    
                     if (item.webkitGetAsEntry) {
                         const entry = item.webkitGetAsEntry();
                         if (entry) {
@@ -2211,14 +2165,9 @@
                     } else if (item.getAsFile) {
                         const file = item.getAsFile();
                         if (file) {
-                            globalCurrentFileIndex++;
-                            globalCurrentFileName = file.name;
-                            
-                            // Update progress display
-                            const progressText = `Uploading ${globalCurrentFileName} (${globalCurrentFileIndex}/${globalTotalFiles})`;
-                            window.showLoadingSpinner(progressText);
-                            
+                            window.showLoadingSpinner(`Uploading ${file.name}...`);
                             await uploadFileToPath(file, targetPath, false);
+                            await new Promise(resolve => setTimeout(resolve, 100));
                         }
                     }
                 }
@@ -2228,7 +2177,7 @@
                 
             } catch (error) {
                 console.error("Error processing dropped items:", error);
-                alert("Error processing dropped items: " + error.message);
+                alert(`Error processing dropped items: ${error}`);
             } finally {
                 window.hideLoadingSpinner();
             }
@@ -2261,9 +2210,27 @@
             } else {
                 // Fallback for older browsers
                 const files = Array.from(e.dataTransfer.files);
-                for (const file of files) {
-                    await uploadFileToPath(file, targetPath, true);
-                    await refreshFileList(targetPath);
+                if (files.length > 0) {
+                    window.showLoadingSpinner(`Uploading ${files.length} files...`);
+                    try {
+                        for (let i = 0; i < files.length; i++) {
+                            const file = files[i];
+                            try {
+                                window.showLoadingSpinner(`Uploading ${file.name} (${i + 1}/${files.length})`);
+                                await uploadFileToPath(file, targetPath, false);
+                                // Small delay to prevent overwhelming the server
+                                await new Promise(resolve => setTimeout(resolve, 100));
+                            } catch (fileError) {
+                                console.error(`Failed to upload ${file.name}:`, fileError);
+                                // Continue with next file
+                            }
+                        }
+                        await refreshFileList(targetPath);
+                    } catch (error) {
+                        console.error("Error in fallback file upload:", error);
+                    } finally {
+                        window.hideLoadingSpinner();
+                    }
                 }
             }
         };
@@ -2277,24 +2244,12 @@
                 const files = Array.from(event.target.files);
                 if (files.length === 0) return;
                 
-                // Reset global progress tracking
-                globalCurrentFileIndex = 0;
-                globalCurrentFileName = "";
-                globalTotalFiles = files.length;
-                
-                window.showLoadingSpinner(`Preparing to upload ${globalTotalFiles} files...`);
+                window.showLoadingSpinner("Processing folder upload...");
                 
                 try {
-                    // Group files by their directory structure
-                    const createdFolders = new Set();
-                    
                     for (const file of files) {
-                        globalCurrentFileIndex++;
-                        globalCurrentFileName = file.name;
-                        
                         // Update progress display
-                        const progressText = `Uploading ${globalCurrentFileName} (${globalCurrentFileIndex}/${globalTotalFiles})`;
-                        window.showLoadingSpinner(progressText);
+                        window.showLoadingSpinner(`Uploading ${file.name}...`);
                         
                         const relativePath = file.webkitRelativePath;
                         const pathParts = relativePath.split('/');
@@ -2304,20 +2259,15 @@
                         // Create full target path
                         const targetFolderPath = folderPath ? `${folderPath}/${fileFolderPath}` : fileFolderPath;
                         
-                        // Ensure all parent directories exist
-                        const pathSegments = targetFolderPath.split('/').filter(Boolean);
-                        let currentPath = folderPath || '';
-                        
-                        for (const segment of pathSegments) {
-                            currentPath = currentPath ? `${currentPath}/${segment}` : segment;
-                            if (!createdFolders.has(currentPath)) {
-                                await createFolderStructure(currentPath);
-                                createdFolders.add(currentPath);
-                            }
+                        // Upload the file directly - S3 will automatically create the folder structure
+                        try {
+                            await uploadFileToPath(file, targetFolderPath, false);
+                            // Small delay to prevent overwhelming the server
+                            await new Promise(resolve => setTimeout(resolve, 100));
+                        } catch (fileError) {
+                            console.error(`Failed to upload ${file.name}:`, fileError);
+                            // Continue with next file instead of stopping
                         }
-                        
-                        // Upload the file
-                        await uploadFileToPath(file, targetFolderPath, false);
                     }
                     
                     // Refresh the file list
@@ -2325,7 +2275,7 @@
                     
                 } catch (error) {
                     console.error("Error uploading folder:", error);
-                    alert("Error uploading folder: " + error.message);
+                    alert(`Error uploading folder: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
                 }
@@ -2426,7 +2376,7 @@
                     setWorkspaces(await ws.listWorkspaces());
                     setSelectedWorkspaceInfo(null);
                 } catch (error) {
-                    alert(`Failed to delete workspace: ${error.message}`);
+                    alert(`Failed to delete workspace: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
                 }
@@ -2438,7 +2388,7 @@
                     await ws.createWorkspace({ ...workspaceData }, overwrite);
                     setWorkspaces(await ws.listWorkspaces());
                 } catch (error) {
-                    alert(`Failed to create workspace: ${error.message}`);
+                    alert(`Failed to create workspace: ${error}`);
                     throw error;
                 } finally {
                     window.hideLoadingSpinner();
@@ -2451,7 +2401,7 @@
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setSelectedWorkspaceInfo(workspaceInfo);
                 } catch (error) {
-                    alert(`Failed to get workspace info: ${error.message}`);
+                    alert(`Failed to get workspace info: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
                 }
@@ -2468,7 +2418,7 @@
                     setWorkspaces(await ws.listWorkspaces());
                     setEditingWorkspace(null); // Close the modal after editing
                 } catch (error) {
-                    alert(`Failed to update workspace: ${error.message}`);
+                    alert(`Failed to update workspace: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
                 }
@@ -2485,7 +2435,7 @@
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setCurrentWorkspaceInfo(workspaceInfo);
                 } catch (error) {
-                    alert(`Failed to bookmark workspace: ${error.message}`);
+                    alert(`Failed to bookmark workspace: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
                 }
@@ -2502,7 +2452,7 @@
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setCurrentWorkspaceInfo(workspaceInfo);
                 } catch (error) {
-                    alert(`Failed to bookmark service: ${error.message}`);
+                    alert(`Failed to bookmark service: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
                 }
@@ -2519,7 +2469,7 @@
                     const workspaceInfo = await ws.getWorkspaceInfo(workspaceId);
                     setCurrentWorkspaceInfo(workspaceInfo);
                 } catch (error) {
-                    alert(`Failed to unbookmark workspace: ${error.message}`);
+                    alert(`Failed to unbookmark workspace: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
                 }
@@ -2581,8 +2531,8 @@
                         setFileList(updatedFiles);
                     }
                 } catch (error) {
-                    console.error("Failed to delete file", error);
-                    alert("Failed to delete file: " + error.message);
+                    console.error("Failed to delete file/directory", error);
+                    alert(`Failed to delete ${type === "directory" ? "directory" : "file"}: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
                 }
@@ -2607,20 +2557,20 @@
                     if (files.length === 0) return;
                     
                     // Reset global progress tracking
-                    globalCurrentFileIndex = 0;
-                    globalCurrentFileName = "";
-                    globalTotalFiles = files.length;
-                    
                     try {
-                        for (const file of files) {
-                            globalCurrentFileIndex++;
-                            globalCurrentFileName = file.name;
-                            
-                            // Update progress display
-                            const progressText = `Uploading ${globalCurrentFileName} (${globalCurrentFileIndex}/${globalTotalFiles})`;
-                            window.showLoadingSpinner(progressText);
-                            
-                            await uploadFileToPath(file, folderPath, false);
+                        for (let i = 0; i < files.length; i++) {
+                            const file = files[i];
+                            try {
+                                // Update progress display
+                                window.showLoadingSpinner(`Uploading ${file.name}...`);
+                                
+                                await uploadFileToPath(file, folderPath, false);
+                                // Small delay to prevent overwhelming the server
+                                await new Promise(resolve => setTimeout(resolve, 100));
+                            } catch (fileError) {
+                                console.error(`Failed to upload file ${file.name}:`, fileError);
+                                // Continue with next file instead of stopping
+                            }
                         }
                         
                         // Refresh the file list
@@ -2628,7 +2578,7 @@
                         
                     } catch (error) {
                         console.error("Error uploading files:", error);
-                        alert("Error uploading files: " + error.message);
+                        alert(`Error uploading files: ${error}`);
                     } finally {
                         window.hideLoadingSpinner();
                     }
@@ -2685,7 +2635,7 @@
                     }
                 } catch (error) {
                     console.error("Folder creation failed", error);
-                    alert("Folder creation failed: " + error.message);
+                    alert(`Folder creation failed: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
                 }
@@ -2706,7 +2656,7 @@
                     await refreshApps(ws);
                 } catch (error) {
                     console.error('Failed to uninstall app:', error);
-                    alert('Failed to uninstall app: ' + error.message);
+                    alert(`Failed to uninstall app: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
                 }
@@ -2747,7 +2697,7 @@
                     await refreshRunningApps(ws);
                 } catch (error) {
                     console.error('Failed to stop app:', error);
-                    alert('Failed to stop app: ' + error.message);
+                    alert(`Failed to stop app: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
                 }
@@ -2811,7 +2761,7 @@
                                                 setClients(updatedClients);
                                             } catch (error) {
                                                 console.error('Cleanup failed:', error);
-                                                alert('Failed to cleanup workspace: ' + error.message);
+                                                alert(`Failed to cleanup workspace: ${error}`);
                                             } finally {
                                                 window.hideLoadingSpinner();
                                             }

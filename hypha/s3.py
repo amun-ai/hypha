@@ -466,15 +466,8 @@ class S3Controller:
                     },
                 )
 
-    async def _delete_dir_or_files(self, path: str, context: dict):
-        """Delete files."""
-        workspace = context["ws"]
-        user_info = UserInfo.model_validate(context["user"])
-        assert user_info.check_permission(
-            workspace, UserPermission.read
-        ), f"Permission denied: {workspace}"
-        full_path = safe_join(workspace, path)
-
+    async def _delete_full_path(self, full_path: str):
+        """Delete files using already-joined full path."""
         async with self.create_client_async() as s3_client:
             if full_path.endswith("/"):
                 await remove_objects_async(s3_client, self.workspace_bucket, full_path)
@@ -498,9 +491,19 @@ class S3Controller:
                     status_code=404,
                     content={
                         "success": False,
-                        "detail": f"File does not exists: {path}",
+                        "detail": f"File does not exists: {full_path}",
                     },
                 )
+
+    async def _delete_dir_or_files(self, path: str, context: dict):
+        """Delete files."""
+        workspace = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        assert user_info.check_permission(
+            workspace, UserPermission.read
+        ), f"Permission denied: {workspace}"
+        full_path = safe_join(workspace, path)
+        return await self._delete_full_path(full_path)
 
     def create_client_sync(self):
         """Create client sync."""
@@ -738,12 +741,40 @@ class S3Controller:
         """Delete directory."""
         # make sure the path is a directory
         assert path.endswith("/"), "Path should end with a slash for directory"
-        return await self._delete_dir_or_files(path, context)
+        workspace = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        if path.startswith("/"):
+            assert user_info.check_permission(
+                "*", UserPermission.admin
+            ), "Permission denied: only admin can access the root folder."
+            # remove the leading slash
+            full_path = path[1:]
+        else:
+            assert user_info.check_permission(
+                workspace, UserPermission.read_write
+            ), f"Permission denied: {workspace}"
+            full_path = safe_join(workspace, path)
+        if not full_path.endswith("/"):
+            full_path += "/"
+        return await self._delete_full_path(full_path)
 
     async def delete_file(self, path: str, context: dict = None):
         """Delete file."""
         assert not path.endswith("/"), "Path should not end with a slash for file"
-        return await self._delete_dir_or_files(path, context)
+        workspace = context["ws"]
+        user_info = UserInfo.model_validate(context["user"])
+        if path.startswith("/"):
+            assert user_info.check_permission(
+                "*", UserPermission.admin
+            ), "Permission denied: only admin can access the root folder."
+            # remove the leading slash
+            full_path = path[1:]
+        else:
+            assert user_info.check_permission(
+                workspace, UserPermission.read_write
+            ), f"Permission denied: {workspace}"
+            full_path = safe_join(workspace, path)
+        return await self._delete_full_path(full_path)
 
     def get_s3_service(self):
         """Get s3 controller."""
