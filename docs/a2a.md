@@ -5,17 +5,21 @@
 Hypha supports the Agent-to-Agent (A2A) Protocol, an open standard designed to facilitate communication and interoperability between independent AI agent systems. The A2A protocol enables agents to discover each other's capabilities, negotiate interaction modalities, manage collaborative tasks, and securely exchange information.
 
 With Hypha's A2A service support, you can:
-- Register AI agents that comply with the A2A protocol specification
+- Register AI agents that comply with the A2A protocol specification in both Python and JavaScript
 - Automatically expose agents through standardized HTTP endpoints
 - Enable agent discovery through Agent Cards
 - Support various interaction patterns including streaming and push notifications
 - Integrate with existing A2A-compatible clients and tools
+- Use the same API across different programming languages with camelCase naming in JavaScript
 
 ## Prerequisites
 
 - **Hypha Server**: Ensure you have Hypha installed and configured
 - **A2A SDK**: Install the optional A2A SDK dependency: `pip install a2a-sdk`
-- **Python 3.9+**: The A2A implementation requires Python 3.9 or higher
+- **Python 3.9+ or JavaScript**: The A2A implementation requires Python 3.9 or higher for Python services, or any modern JavaScript environment (Node.js or browser) for JavaScript services
+- **Hypha-RPC**: Install the hypha-rpc client library for your language:
+  - Python: `pip install hypha-rpc`
+  - JavaScript: `npm install hypha-rpc` or use CDN: `https://cdn.jsdelivr.net/npm/hypha-rpc@latest/dist/hypha-rpc-websocket.min.js`
 
 ## Installation and Setup
 
@@ -44,6 +48,9 @@ This provides A2A services with their own dedicated URL space and specialized ha
 A2A services are registered using the standard Hypha service registration API with `type="a2a"`. The service only requires an Agent Card and a `run` function - the server handles all A2A protocol complexity.
 
 ### Basic A2A Service Registration
+
+<!-- tabs:start -->
+#### ** Python **
 
 ```python
 import asyncio
@@ -109,9 +116,94 @@ async def main():
 asyncio.run(main())
 ```
 
+#### ** JavaScript **
+
+First, install the `hypha-rpc` library:
+
+```bash
+npm install hypha-rpc
+```
+
+Or include it via CDN in your HTML file:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.66/dist/hypha-rpc-websocket.min.js"></script>
+```
+
+```javascript
+function textGenerationAgent(message) {
+    // Extract text from message parts
+    let textContent = "";
+    for (const part of message.parts || []) {
+        if (part.kind === "text") {
+            textContent += part.text || "";
+        }
+    }
+    
+    // Simple text generation (replace with your AI model)
+    const responseText = `Generated response for: ${textContent}`;
+    
+    // Return simple text response - server handles A2A Task wrapping
+    return responseText;
+}
+
+async function main() {
+    // Connect to Hypha server
+    const server = await hyphaWebsocketClient.connectToServer({
+        server_url: "https://hypha.aicell.io"
+    });
+    
+    // Register the A2A service
+    const serviceInfo = await server.registerService({
+        id: "text-generator",
+        name: "Text Generation Agent",
+        type: "a2a",
+        config: {
+            visibility: "public"
+        },
+        agent_card: {
+            protocolVersion: "0.2.9",
+            name: "Text Generation Agent",
+            description: "A simple text generation agent that can create various types of content",
+            version: "1.0.0",
+            capabilities: {
+                streaming: true,
+                pushNotifications: false,
+                stateTransitionHistory: false
+            },
+            defaultInputModes: ["text/plain", "application/json"],
+            defaultOutputModes: ["text/plain", "text/markdown"],
+            skills: [
+                {
+                    id: "text-generation",
+                    name: "Text Generation",
+                    description: "Generate text content based on user prompts",
+                    tags: ["text", "generation", "content", "writing"],
+                    examples: [
+                        "Generate a short story about a robot",
+                        "Write a technical explanation of machine learning"
+                    ]
+                }
+            ]
+        },
+        run: textGenerationAgent
+    });
+    
+    console.log(`A2A agent registered: ${serviceInfo.id}`);
+    // Keep the server running (in a web context, this would be handled by the page lifecycle)
+}
+
+main();
+```
+<!-- tabs:end -->
+```
+
 ### Streaming A2A Service
 
 For streaming responses, simply return an async generator from your `run` function:
+
+<!-- tabs:start -->
+#### ** Python **
 
 ```python
 import asyncio
@@ -200,9 +292,107 @@ async def main():
 asyncio.run(main())
 ```
 
-### Using Pydantic Models for Agent Cards
+#### ** JavaScript **
 
-You can use Pydantic models to define your agent card with type safety and validation:
+```javascript
+async function streamingChatAgent(message, context) {
+    // Extract text from message parts
+    let textContent = "";
+    for (const part of message.parts || []) {
+        if (part.kind === "text") {
+            textContent += part.text || "";
+        }
+    }
+    
+    // Get user info if available
+    const userId = context?.user?.id || "anonymous";
+    
+    // Return async generator for streaming - server handles SSE conversion
+    async function* streamResponse() {
+        const responseParts = [
+            `Hello ${userId}! `,
+            "I received your message: ",
+            `"${textContent}". `,
+            "Let me think about this... ",
+            "Here's my detailed response: ",
+            "This is a streaming response that comes in chunks. ",
+            "Each chunk is sent as it becomes available. ",
+            "This enables real-time interaction with the agent."
+        ];
+        
+        for (const part of responseParts) {
+            yield part;
+            await new Promise(resolve => setTimeout(resolve, 500)); // Simulate processing time
+        }
+    }
+    
+    return streamResponse();
+}
+
+async function main() {
+    const server = await hyphaWebsocketClient.connectToServer({
+        server_url: "https://hypha.aicell.io"
+    });
+    
+    const serviceInfo = await server.registerService({
+        id: "streaming-chat-agent",
+        name: "Streaming Chat Agent",
+        type: "a2a",
+        config: {
+            visibility: "public",
+            require_context: true  // Enable user context
+        },
+        agent_card: {
+            protocolVersion: "0.2.9",
+            name: "Streaming Chat Agent",
+            description: "An AI chat agent with streaming response capabilities",
+            version: "1.0.0",
+            capabilities: {
+                streaming: true,
+                pushNotifications: false,
+                stateTransitionHistory: false
+            },
+            securitySchemes: {
+                bearerAuth: {
+                    type: "http",
+                    scheme: "bearer"
+                }
+            },
+            security: [{"bearerAuth": []}],
+            defaultInputModes: ["text/plain", "application/json"],
+            defaultOutputModes: ["text/plain", "text/markdown"],
+            skills: [
+                {
+                    id: "chat",
+                    name: "Interactive Chat",
+                    description: "Engage in conversational interactions with streaming responses",
+                    tags: ["chat", "conversation", "streaming", "interactive"],
+                    examples: [
+                        "Tell me about the weather",
+                        "Help me write a Python function",
+                        "Explain quantum computing in simple terms"
+                    ]
+                }
+            ]
+        },
+        run: streamingChatAgent
+    });
+    
+    console.log(`Streaming A2A agent registered: ${serviceInfo.id}`);
+    // Keep the server running (in a web context, this would be handled by the page lifecycle)
+}
+
+main();
+```
+<!-- tabs:end -->
+```
+
+### Using Structured Models for Agent Cards
+
+You can use structured models to define your agent card with better organization and validation:
+
+<!-- tabs:start -->
+#### ** Python (with Pydantic) **
 
 ```python
 import asyncio
@@ -307,9 +497,132 @@ async def main():
 asyncio.run(main())
 ```
 
+#### ** JavaScript (with Classes) **
+
+```javascript
+class AgentSkill {
+    constructor(id, name, description, tags, examples, inputModes = null, outputModes = null) {
+        this.id = id;
+        this.name = name;
+        this.description = description;
+        this.tags = tags;
+        this.examples = examples;
+        this.inputModes = inputModes;
+        this.outputModes = outputModes;
+    }
+}
+
+class AgentCapabilities {
+    constructor(streaming = false, pushNotifications = false, stateTransitionHistory = false) {
+        this.streaming = streaming;
+        this.pushNotifications = pushNotifications;
+        this.stateTransitionHistory = stateTransitionHistory;
+    }
+}
+
+class AgentProvider {
+    constructor(organization, url) {
+        this.organization = organization;
+        this.url = url;
+    }
+}
+
+class AgentCard {
+    constructor(name, description, version, capabilities, defaultInputModes, defaultOutputModes, skills, provider = null, securitySchemes = null, security = null) {
+        this.protocolVersion = "0.2.9";
+        this.name = name;
+        this.description = description;
+        this.version = version;
+        this.capabilities = capabilities;
+        this.defaultInputModes = defaultInputModes;
+        this.defaultOutputModes = defaultOutputModes;
+        this.skills = skills;
+        this.provider = provider;
+        this.securitySchemes = securitySchemes;
+        this.security = security;
+    }
+}
+
+function mathAgent(message, context) {
+    // Extract text from message parts
+    let textContent = "";
+    for (const part of message.parts || []) {
+        if (part.kind === "text") {
+            textContent += part.text || "";
+        }
+    }
+    
+    // Simple math evaluation (in practice, use a proper math parser)
+    try {
+        if (textContent.includes("+")) {
+            const parts = textContent.split("+");
+            const result = parts.reduce((sum, part) => sum + parseFloat(part.trim()), 0);
+            return `The result is: ${result}`;
+        }
+    } catch (error) {
+        // Handle parsing errors
+    }
+    
+    return "I can help with simple math operations like addition.";
+}
+
+function createAgentCard() {
+    // Function that returns the agent card configuration
+    return new AgentCard(
+        "Math Agent",
+        "A simple agent that can perform basic mathematical operations",
+        "1.0.0",
+        new AgentCapabilities(false, false),
+        ["text/plain"],
+        ["text/plain"],
+        [
+            new AgentSkill(
+                "basic-math",
+                "Basic Math",
+                "Perform basic mathematical operations like addition",
+                ["math", "calculator", "arithmetic"],
+                [
+                    "What is 5 + 3?",
+                    "Calculate 10 + 15 + 20"
+                ]
+            )
+        ],
+        new AgentProvider(
+            "My Organization",
+            "https://my-org.com"
+        )
+    );
+}
+
+async function main() {
+    const server = await hyphaWebsocketClient.connectToServer({
+        server_url: "https://hypha.aicell.io"
+    });
+    
+    const serviceInfo = await server.registerService({
+        id: "math-agent",
+        name: "Math Agent",
+        type: "a2a",
+        config: { visibility: "public" },
+        agent_card: createAgentCard,  // Function that returns agent card
+        run: mathAgent
+    });
+    
+    console.log(`Math agent registered: ${serviceInfo.id}`);
+    // Keep the server running (in a web context, this would be handled by the page lifecycle)
+}
+
+main();
+```
+<!-- tabs:end -->
+```
+
 ### Dynamic Agent Card Generation
 
 Agent card functions can also be dynamic, allowing you to generate different configurations based on runtime conditions:
+
+<!-- tabs:start -->
+#### ** Python **
 
 ```python
 def create_dynamic_agent_card(enable_streaming=False, user_permissions=None):
@@ -364,15 +677,76 @@ service_info = await server.register_service({
 })
 ```
 
+#### ** JavaScript **
+
+```javascript
+function createDynamicAgentCard(enableStreaming = false, userPermissions = null) {
+    // Dynamically create agent card based on conditions
+    const capabilities = new AgentCapabilities(
+        enableStreaming,
+        false
+    );
+    
+    const skills = [
+        new AgentSkill(
+            "basic-chat",
+            "Basic Chat",
+            "Basic conversational capabilities",
+            ["chat", "conversation"],
+            ["Hello", "How are you?"]
+        )
+    ];
+    
+    // Add advanced skills based on permissions
+    if (userPermissions && userPermissions.includes("advanced")) {
+        skills.push(
+            new AgentSkill(
+                "advanced-analysis",
+                "Advanced Analysis",
+                "Advanced data analysis capabilities",
+                ["analysis", "data", "advanced"],
+                ["Analyze this dataset", "Generate insights"]
+            )
+        );
+    }
+    
+    return new AgentCard(
+        "Dynamic Agent",
+        "An agent with dynamic capabilities",
+        "2.0.0",
+        capabilities,
+        ["text/plain", "application/json"],
+        ["text/plain"],
+        skills
+    );
+}
+
+// Usage with dynamic configuration
+const serviceInfo = await server.registerService({
+    id: "dynamic-agent",
+    type: "a2a",
+    config: { visibility: "public" },
+    agent_card: () => createDynamicAgentCard(
+        true,  // enableStreaming
+        ["advanced"]  // userPermissions
+    ),
+    run: myAgentFunction
+});
+```
+<!-- tabs:end -->
+```
+
 ## Summary
 
-A2A services in Hypha follow an extremely simple pattern:
+A2A services in Hypha follow an extremely simple pattern across both Python and JavaScript:
 
-1. **Register** with `type="a2a"`
+1. **Register** with `type="a2a"` (Python) or `type: "a2a"` (JavaScript)
 2. **Provide** an `agent_card` (A2A Agent Card specification)
 3. **Implement** a `run` function (your agent logic)
 
-The server handles all A2A protocol complexity - JSON-RPC conversion, task management, streaming, authentication, and response formatting. Your `run` function just needs to process the message and return a response (string, dict, list, or async generator for streaming).
+The server handles all A2A protocol complexity - JSON-RPC conversion, task management, streaming, authentication, and response formatting. Your `run` function just needs to process the message and return a response (string, dict/object, list/array, or async generator for streaming).
+
+**JavaScript developers**: Use camelCase naming conventions (e.g., `registerService`, `connectToServer`) and all the same functionality is available as shown in the examples above.
 
 ## A2A Service Configuration
 
@@ -647,6 +1021,70 @@ asyncio.run(main())
 
 Once your A2A service is registered, it can be accessed by any A2A-compatible client:
 
+### Using Hypha-RPC Client
+
+<!-- tabs:start -->
+#### ** Python **
+
+```python
+import asyncio
+from hypha_rpc import connect_to_server
+
+async def test_agent():
+    # Connect to Hypha server
+    server = await connect_to_server({"server_url": "https://hypha.aicell.io"})
+    
+    # Get the A2A service
+    service = await server.get_service("my-workspace/text-generator")
+    
+    # Call the service directly
+    response = await service.run({
+        "role": "user",
+        "parts": [
+            {
+                "kind": "text",
+                "text": "Generate a short story about AI"
+            }
+        ],
+        "messageId": "msg-123"
+    })
+    
+    print("Response:", response)
+
+asyncio.run(test_agent())
+```
+
+#### ** JavaScript **
+
+```javascript
+async function testAgent() {
+    // Connect to Hypha server
+    const server = await hyphaWebsocketClient.connectToServer({
+        server_url: "https://hypha.aicell.io"
+    });
+    
+    // Get the A2A service
+    const service = await server.getService("my-workspace/text-generator");
+    
+    // Call the service directly
+    const response = await service.run({
+        role: "user",
+        parts: [
+            {
+                kind: "text",
+                text: "Generate a short story about AI"
+            }
+        ],
+        messageId: "msg-123"
+    });
+    
+    console.log("Response:", response);
+}
+
+testAgent();
+```
+<!-- tabs:end -->
+
 ### Using Python A2A Client
 
 ```python
@@ -679,6 +1117,9 @@ asyncio.run(test_agent())
 ```
 
 ### Using HTTP Requests
+
+<!-- tabs:start -->
+#### ** Python **
 
 ```python
 import httpx
@@ -718,9 +1159,57 @@ async def call_agent_http():
 asyncio.run(call_agent_http())
 ```
 
+#### ** JavaScript **
+
+```javascript
+async function callAgentHttp() {
+    const agentUrl = "https://hypha.aicell.io/my-workspace/a2a/text-generator";
+    
+    const payload = {
+        jsonrpc: "2.0",
+        method: "message/send",
+        params: {
+            message: {
+                role: "user",
+                parts: [
+                    {
+                        kind: "text",
+                        text: "Hello, AI agent!"
+                    }
+                ],
+                messageId: "msg-456"
+            }
+        },
+        id: 1
+    };
+    
+    try {
+        const response = await fetch(agentUrl, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
+        
+        const result = await response.json();
+        console.log("Agent response:", result);
+    } catch (error) {
+        console.error("Error calling agent:", error);
+    }
+}
+
+callAgentHttp();
+```
+<!-- tabs:end -->
+```
+
 ## Authentication and Security
 
 ### Requiring Authentication
+
+<!-- tabs:start -->
+#### ** Python **
 
 ```python
 async def secure_agent(message, context=None):
@@ -758,6 +1247,51 @@ service_info = await server.register_service({
     },
     "run": secure_agent
 })
+```
+
+#### ** JavaScript **
+
+```javascript
+function secureAgent(message, context) {
+    // Agent with user context for authentication
+    if (context) {
+        const userId = context.user?.id;
+        const permissions = context.user?.permissions || [];
+        
+        // Check user permissions
+        if (!permissions.includes("agent_access")) {
+            throw new Error("Insufficient permissions");
+        }
+        
+        console.log(`Processing request from user: ${userId}`);
+    }
+    
+    // Process the message...
+    return `Secure response for user ${userId}`;
+}
+
+// Register with authentication required
+const serviceInfo = await server.registerService({
+    id: "secure-agent",
+    type: "a2a",
+    config: {
+        visibility: "protected",  // Requires authentication
+        require_context: true,    // Provides user context to run function
+    },
+    agent_card: {
+        // ... other fields ...
+        securitySchemes: {
+            bearerAuth: {
+                type: "http",
+                scheme: "bearer"
+            }
+        },
+        security: [{"bearerAuth": []}]
+    },
+    run: secureAgent
+});
+```
+<!-- tabs:end -->
 ```
 
 ## Advanced Features
@@ -844,6 +1378,9 @@ asyncio.run(main())
 
 ### Error Handling
 
+<!-- tabs:start -->
+#### ** Python **
+
 ```python
 import logging
 
@@ -885,7 +1422,60 @@ async def process_message_safely(message, context):
     return f"Processed: {text_content}"
 ```
 
+#### ** JavaScript **
+
+```javascript
+function robustAgent(message, context) {
+    // Agent with proper error handling
+    try {
+        // Validate message
+        if (!message) {
+            throw new Error("No message provided");
+        }
+        
+        const parts = message.parts || [];
+        if (parts.length === 0) {
+            throw new Error("Message has no parts");
+        }
+        
+        // Process message safely
+        const result = processMessageSafely(message, context);
+        return result;
+        
+    } catch (error) {
+        if (error.name === 'Error') {
+            // Client errors - return error message
+            throw new Error(`Invalid request: ${error.message}`);
+        } else {
+            console.error(`Unexpected error in agent: ${error}`);
+            throw new Error("Internal server error");
+        }
+    }
+}
+
+function processMessageSafely(message, context) {
+    // Safely process the message with validation
+    let textContent = "";
+    for (const part of message.parts || []) {
+        if (part.kind === "text") {
+            textContent += part.text || "";
+        }
+    }
+    
+    if (!textContent.trim()) {
+        throw new Error("No text content found in message");
+    }
+    
+    return `Processed: ${textContent}`;
+}
+```
+<!-- tabs:end -->
+```
+
 ### Resource Management
+
+<!-- tabs:start -->
+#### ** Python **
 
 ```python
 import asyncio
@@ -941,8 +1531,87 @@ service_info = await server.register_service({
     "type": "a2a",
     "config": {"visibility": "public"},
     "agent_card": { ... },
-    "run": agent_instance  # Use the instance as callable
+    "run": agent_instance.__call__
 })
+```
+
+#### ** JavaScript **
+
+```javascript
+class ResourceManagedAgent {
+    constructor() {
+        this.maxConcurrentTasks = 10;
+        this.activeTasks = new Set();
+        this.activeRequests = new Map();
+    }
+    
+    async call(message, context) {
+        // Agent run function with resource limits
+        if (this.activeTasks.size >= this.maxConcurrentTasks) {
+            throw new Error("Too many concurrent requests");
+        }
+        
+        const taskId = `task-${Date.now()}-${Math.random()}`;
+        this.activeTasks.add(taskId);
+        
+        try {
+            return await this._processMessage(message, context);
+        } finally {
+            this.activeTasks.delete(taskId);
+        }
+    }
+    
+    async _processMessage(message, context) {
+        // Actual message processing with resource tracking
+        const requestId = `req-${Date.now()}`;
+        this.activeRequests.set(requestId, Date.now());
+        
+        try {
+            // Your agent logic here
+            const result = await this.generateResponse(message);
+            return result;
+        } finally {
+            // Clean up request tracking
+            this.activeRequests.delete(requestId);
+        }
+    }
+    
+    async generateResponse(message) {
+        // Generate response with proper resource management
+        const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error("Request timeout - processing took too long")), 30000);
+        });
+        
+        try {
+            return await Promise.race([
+                this.doHeavyProcessing(message),
+                timeoutPromise
+            ]);
+        } catch (error) {
+            throw error;
+        }
+    }
+    
+    async doHeavyProcessing(message) {
+        // Heavy processing that might take time
+        // Your computationally intensive logic here
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate work
+        return "Processed response";
+    }
+}
+
+// Register the agent instance
+const agentInstance = new ResourceManagedAgent();
+
+const serviceInfo = await server.registerService({
+    id: "resource-managed-agent",
+    type: "a2a",
+    config: { visibility: "public" },
+    agent_card: { /* ... */ },
+    run: agentInstance.call.bind(agentInstance)
+});
+```
+<!-- tabs:end -->
 ```
 
 ## Troubleshooting

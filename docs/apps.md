@@ -1195,3 +1195,49 @@ print(f"Processed files: {files}")
 ```
 
 The Server Apps service provides a powerful and flexible platform for running various types of applications in the Hypha ecosystem. With features like lazy loading, startup configuration, and comprehensive lifecycle management, it enables developers to build and deploy sophisticated applications with ease. 
+
+## Service Selection Mode for Multiple Instances
+
+When multiple instances of the same service are running, you can configure how Hypha selects which instance to use when accessed via URL without specifying a `_mode` parameter.
+
+### Configuring Service Selection Mode
+
+You can set the `service_selection_mode` in your application configuration:
+
+```python
+# Example: Install an app with service selection mode
+await controller.install(
+    source_code,
+    config={
+        "name": "my-app",
+        "type": "web-python",
+        "service_selection_mode": "random",  # Default mode when multiple instances exist
+    },
+)
+```
+
+### Available Selection Modes
+
+The following modes are available:
+
+- **`"random"`**: Randomly select one of the available instances
+- **`"first"`**: Always select the first available instance
+- **`"last"`**: Always select the last available instance
+- **`"select:min:function_name"`**: Select the instance with minimum value returned by `function_name`
+- **`"select:max:function_name"`**: Select the instance with maximum value returned by `function_name`
+
+### Usage
+
+When you access your app via URL without specifying a `_mode` parameter:
+
+```
+https://hypha.aicell.io/workspace/apps/my-service@app_id/
+```
+
+The system will automatically use the configured `service_selection_mode` instead of throwing an error about multiple services.
+
+### Example Use Cases
+
+1. **Load Balancing**: Use `"random"` to distribute requests across multiple instances
+2. **Failover**: Use `"first"` to always prefer the primary instance
+3. **Resource-based Selection**: Use `"select:min:get_load"` to route to the least loaded instance 

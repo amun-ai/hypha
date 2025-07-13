@@ -123,6 +123,7 @@ class ServerAppController:
         self,
         source: str = None,
         source_hash: str = None,
+        app_id: str = None,
         config: Optional[Dict[str, Any]] = None,
         workspace: Optional[str] = None,
         overwrite: bool = False,
@@ -134,6 +135,8 @@ class ServerAppController:
 
         Args:
             source: The source code of the application, URL to fetch the source, or None if using config
+            app_id: Optional app ID. If provided and overwrite=True, will update existing app.
+                   If not provided, the artifact manager will generate an ID automatically.
             source_hash: Optional hash of the source for verification
             config: Application configuration dictionary containing app metadata and settings.
                    Can include startup_config with default startup parameters like timeout,
@@ -280,8 +283,21 @@ class ServerAppController:
         elif not source:
             raise Exception("Source or template should be provided.")
 
-        app_id = f"{mhash}"
-
+        if app_id is not None:
+            try:
+                artifact = await self.artifact_manager.read(app_id, context=context)
+            except Exception as exp:
+                logger.warning(f"Failed to read artifact {app_id}: {exp}")
+                raise Exception(f"Failed to read artifact {app_id}: {exp}")
+        else:
+            artifact = await self.artifact_manager.create(
+                parent_id=collection_id,
+                alias=app_id,
+                overwrite=overwrite,
+                version="stage",
+                context=context,
+            )
+        app_id = artifact.alias
         # Create artifact object
         if template and template != "raw_html":
             public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}"
@@ -318,9 +334,8 @@ class ServerAppController:
             )
 
         # Create artifact using the artifact controller
-        artifact = await self.artifact_manager.create(
-            parent_id=collection_id,
-            alias=f"applications:{app_id}",
+        artifact = await self.artifact_manager.edit(
+            artifact_id=artifact.id,
             manifest=artifact_obj,
             overwrite=overwrite,
             version="stage",
@@ -331,7 +346,10 @@ class ServerAppController:
         if template and template != "raw_html":
             # Upload the main source file
             put_url = await self.artifact_manager.put_file(
-                artifact["id"], file_path=config["entry_point"], context=context
+                artifact["id"],
+                file_path=config["entry_point"],
+                context=context,
+                use_proxy=False,
             )
             async with httpx.AsyncClient() as client:
                 response = await client.put(put_url, data=source)
@@ -341,7 +359,7 @@ class ServerAppController:
         elif template == "raw_html":
             # Upload the raw HTML content
             put_url = await self.artifact_manager.put_file(
-                artifact["id"], file_path=entry_point, context=context
+                artifact["id"], file_path=entry_point, context=context, use_proxy=False
             )
             async with httpx.AsyncClient() as client:
                 response = await client.put(put_url, data=source)
@@ -384,7 +402,10 @@ class ServerAppController:
     ):
         """Add a file to the installed application."""
         put_url = await self.artifact_manager.put_file(
-            f"applications:{app_id}", file_path=file_path, context=context
+            f"applications:{app_id}",
+            file_path=file_path,
+            context=context,
+            use_proxy=False,
         )
         response = httpx.put(put_url, data=file_content)
         assert response.status_code == 200, f"Failed to upload {file_path} to {app_id}"
