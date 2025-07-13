@@ -283,13 +283,31 @@ class ServerAppController:
         elif not source:
             raise Exception("Source or template should be provided.")
 
+        # If app_id is provided, try to read existing artifact, otherwise create new one
         if app_id is not None:
             try:
                 artifact = await self.artifact_manager.read(app_id, context=context)
             except Exception as exp:
                 logger.warning(f"Failed to read artifact {app_id}: {exp}")
-                raise Exception(f"Failed to read artifact {app_id}: {exp}")
+                # If reading fails, we need to create the artifact
+                try:
+                    artifact = await self.artifact_manager.read("applications", context=context)
+                    collection_id = artifact["id"]
+                except KeyError:
+                    collection_id = await self.setup_applications_collection(
+                        overwrite=True, context=context
+                    )
+                artifact = await self.artifact_manager.create(
+                    type="application",
+                    parent_id=collection_id,
+                    alias=app_id,
+                    manifest=config,
+                    overwrite=overwrite,
+                    version="stage",
+                    context=context,
+                )
         else:
+            # No app_id provided, create a new unique artifact
             try:
                 artifact = await self.artifact_manager.read("applications", context=context)
                 collection_id = artifact["id"]
@@ -300,12 +318,14 @@ class ServerAppController:
             artifact = await self.artifact_manager.create(
                 type="application",
                 parent_id=collection_id,
-                alias=app_id,
+                alias=None,  # Let artifact manager assign a unique alias
+                manifest=config,
                 overwrite=overwrite,
                 version="stage",
                 context=context,
             )
-        app_id = artifact.alias
+            app_id = artifact["alias"]
+        
         # Create artifact object
         if template and template != "raw_html":
             public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}"
@@ -336,9 +356,8 @@ class ServerAppController:
 
         # Create artifact using the artifact controller
         artifact = await self.artifact_manager.edit(
-            artifact_id=artifact.id,
+            artifact_id=artifact["id"],
             manifest=artifact_obj,
-            overwrite=overwrite,
             version="stage",
             context=context,
         )
