@@ -1,4 +1,4 @@
-importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js");
+importScripts("https://cdn.jsdelivr.net/pyodide/v0.28.0/full/pyodide.js");
 
 const startupScript = `
 import sys
@@ -27,7 +27,7 @@ loadPyodide().then(async (pyodide) => {
     pyodide.setStderr({ batched: (msg) => console.error(msg) });
     await pyodide.loadPackage("micropip");
     const micropip = pyodide.pyimport("micropip");
-    await micropip.install('hypha-rpc==0.20.60');
+    await micropip.install('hypha-rpc==0.20.66');
     const isWindow = typeof window !== "undefined";
     
     setTimeout(() => {

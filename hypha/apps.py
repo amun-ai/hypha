@@ -30,6 +30,19 @@ logger.setLevel(LOGLEVEL)
 multihash.CodecReg.register("base58", base58.b58encode, base58.b58decode)
 
 
+# Add a helper function to detect raw HTML content
+def is_raw_html_content(source: str) -> bool:
+    """Check if source is raw HTML content (not a URL or ImJoy/Hypha template)."""
+    if not source or source.startswith("http"):
+        return False
+
+    # Check for basic HTML structure
+    source_lower = source.lower().strip()
+    return source_lower.startswith(("<!doctype html", "<html", "<head", "<body")) or (
+        "<html" in source_lower and "</html>" in source_lower
+    )
+
+
 class ServerAppController:
     """Server App Controller."""
 
@@ -115,6 +128,7 @@ class ServerAppController:
         overwrite: bool = False,
         timeout: float = 60,
         version: str = None,
+        startup_config: Optional[Dict[str, Any]] = None,
         context: Optional[dict] = None,
     ) -> str:
         """Save a server app."""
@@ -130,12 +144,14 @@ class ServerAppController:
                 f" to install apps in workspace {workspace_info.id}"
             )
 
+        # Determine template type
         if config:
             config["entry_point"] = config.get("entry_point", "index.html")
             template = config.get("type") + "." + config["entry_point"]
         else:
             template = "hypha"
 
+        # Handle different source types
         if source.startswith("http"):
             if not (
                 source.startswith("https://")
@@ -154,6 +170,19 @@ class ServerAppController:
                     source = response.text
             else:
                 template = None
+        elif is_raw_html_content(source):
+            # Handle raw HTML content
+            if not config:
+                config = {
+                    "name": "Raw HTML App",
+                    "version": "0.1.0",
+                    "type": "window",
+                    "entry_point": "index.html",
+                }
+            else:
+                config["entry_point"] = config.get("entry_point", "index.html")
+                config["type"] = config.get("type", "window")
+            template = "raw_html"
 
         # Compute multihash of the source code
         mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
@@ -165,9 +194,13 @@ class ServerAppController:
                 source.encode("utf-8")
             ), f"App source code verification failed (source_hash: {source_hash})."
 
+        # Process based on template type
         if template is None:
             config = config or {}
             config["entry_point"] = config.get("entry_point", source)
+            entry_point = config["entry_point"]
+        elif template == "raw_html":
+            # For raw HTML, we'll upload the content as-is
             entry_point = config["entry_point"]
         elif template == "hypha":
             if not source:
@@ -225,7 +258,17 @@ class ServerAppController:
 
         app_id = f"{mhash}"
 
-        if template:
+        # Create artifact object
+        if template and template != "raw_html":
+            public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}"
+            artifact_obj = convert_config_to_artifact(config, app_id, public_url)
+            artifact_obj.update(
+                {
+                    "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}",
+                    "public_url": public_url,
+                }
+            )
+        elif template == "raw_html":
             public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}"
             artifact_obj = convert_config_to_artifact(config, app_id, public_url)
             artifact_obj.update(
@@ -236,6 +279,11 @@ class ServerAppController:
             )
         else:
             artifact_obj = convert_config_to_artifact(config, app_id, source)
+
+        # Set default startup config if provided
+        if startup_config is not None:
+            artifact_obj["startup_config"] = startup_config
+
         ApplicationManifest.model_validate(artifact_obj)
 
         try:
@@ -256,7 +304,8 @@ class ServerAppController:
             context=context,
         )
 
-        if template:
+        # Upload files for template-based apps and raw HTML
+        if template and template != "raw_html":
             # Upload the main source file
             put_url = await self.artifact_manager.put_file(
                 artifact["id"], file_path=config["entry_point"], context=context
@@ -266,6 +315,14 @@ class ServerAppController:
                 assert (
                     response.status_code == 200
                 ), f"Failed to upload {config['entry_point']}"
+        elif template == "raw_html":
+            # Upload the raw HTML content
+            put_url = await self.artifact_manager.put_file(
+                artifact["id"], file_path=entry_point, context=context
+            )
+            async with httpx.AsyncClient() as client:
+                response = await client.put(put_url, data=source)
+                assert response.status_code == 200, f"Failed to upload {entry_point}"
 
         if version != "stage":
             # Commit the artifact if stage is not enabled
@@ -275,6 +332,24 @@ class ServerAppController:
                 version=version,
                 context=context,
             )
+            # After commit, read the updated artifact to get the collected services
+            updated_artifact_info = await self.artifact_manager.read(
+                f"applications:{app_id}", version=version, context=context
+            )
+            return updated_artifact_info.get("manifest", artifact_obj)
+        elif version is None:
+            # If no version is specified, commit with default version to trigger verification
+            await self.commit(
+                app_id,
+                timeout=timeout,
+                version="v1",
+                context=context,
+            )
+            # After commit, read the updated artifact to get the collected services
+            updated_artifact_info = await self.artifact_manager.read(
+                f"applications:{app_id}", version="v1", context=context
+            )
+            return updated_artifact_info.get("manifest", artifact_obj)
         return artifact_obj
 
     async def add_file(
@@ -325,14 +400,37 @@ class ServerAppController:
     ):
         """Finalize the edits to the application by committing the artifact."""
         try:
+            # Read the manifest to check if it's a daemon app
+            artifact_info = await self.artifact_manager.read(
+                f"applications:{app_id}", version="stage", context=context
+            )
+            manifest = artifact_info.get("manifest", {})
+            manifest = ApplicationManifest.model_validate(manifest)
+
+            # Don't use timeout during verification, except for daemon apps
+            # which have special handling
+            startup_config = manifest.startup_config or {}
+            verification_timeout = (
+                None
+                if not manifest.daemon
+                else startup_config.get("stop_after_inactive")
+            )
+
             info = await self.start(
                 app_id,
                 timeout=timeout,
                 wait_for_service="default",
                 version="stage",
+                stop_after_inactive=verification_timeout,
                 context=context,
             )
             await self.stop(info["id"], context=context)
+
+            # After verification, read the updated manifest that includes collected services
+            updated_artifact_info = await self.artifact_manager.read(
+                f"applications:{app_id}", version="stage", context=context
+            )
+
         except asyncio.TimeoutError:
             logger.error("Failed to start the app: %s during installation", app_id)
             await self.uninstall(app_id, context=context)
@@ -381,7 +479,7 @@ class ServerAppController:
         self,
         app_id,
         client_id=None,
-        timeout: float = 60,
+        timeout: float = None,
         version: str = None,
         wait_for_service: Union[str, bool] = None,
         stop_after_inactive: Optional[int] = None,
@@ -413,6 +511,20 @@ class ServerAppController:
         )
         manifest = artifact_info.get("manifest", {})
         manifest = ApplicationManifest.model_validate(manifest)
+
+        # Apply default startup config from manifest if not explicitly provided
+        startup_config = manifest.startup_config or {}
+        if timeout is None and "timeout" in startup_config:
+            timeout = startup_config["timeout"]
+        else:
+            timeout = 60
+        if wait_for_service is None and "wait_for_service" in startup_config:
+            wait_for_service = startup_config["wait_for_service"]
+        # Only apply startup_config if stop_after_inactive is None (not explicitly set)
+        # Do not override explicitly passed values (including verification timeout)
+        if stop_after_inactive is None and "stop_after_inactive" in startup_config:
+            stop_after_inactive = startup_config["stop_after_inactive"]
+
         if manifest.singleton:
             # check if the app is already running
             for session_info in self._sessions.values():
@@ -425,8 +537,8 @@ class ServerAppController:
         if stop_after_inactive is None:
             stop_after_inactive = (
                 600
-                if manifest.stop_after_inactive is None
-                else manifest.stop_after_inactive
+                if startup_config.get("stop_after_inactive") is None
+                else startup_config.get("stop_after_inactive")
             )
         entry_point = manifest.entry_point
         assert entry_point, f"Entry point not found for app {app_id}."
@@ -476,11 +588,15 @@ class ServerAppController:
 
         # test activity tracker
         tracker = self.store.get_activity_tracker()
-        if not manifest.daemon and stop_after_inactive and stop_after_inactive > 0:
+        if (
+            not manifest.daemon
+            and stop_after_inactive is not None
+            and stop_after_inactive > 0
+        ):
 
             async def _stop_after_inactive():
                 if full_client_id in self._sessions:
-                    await runner.stop(full_client_id)
+                    await self._stop(full_client_id, raise_exception=False)
                 logger.info(
                     f"App {full_client_id} stopped because of inactive for {stop_after_inactive}s."
                 )
@@ -498,12 +614,14 @@ class ServerAppController:
             "id": full_client_id,
             "app_id": app_id,
             "workspace": workspace,
+            "client_id": client_id,
             "config": {},
         }
 
         def service_added(info: dict):
             if info["id"].startswith(full_client_id + ":"):
-                collected_services.append(ServiceInfo.model_validate(info))
+                sinfo = ServiceInfo.model_validate(info)
+                collected_services.append(sinfo)
             if info["id"] == full_client_id + ":default":
                 for key in ["config", "name", "description"]:
                     if info.get(key):
@@ -523,6 +641,10 @@ class ServerAppController:
                 await self.event_bus.wait_for_local(
                     "client_connected", match={"id": full_client_id}, timeout=timeout
                 )
+
+            # Give some time for additional services to be registered (e.g., from setup() method)
+            # This is particularly important during verification/installation to collect all services
+            await asyncio.sleep(0.5)
 
             # save the services
             manifest.name = manifest.name or app_info.get("name", "Untitled App")
@@ -559,6 +681,10 @@ class ServerAppController:
             app_info["service_id"] = (
                 full_client_id + ":" + wait_for_service + "@" + app_id
             )
+        app_info["services"] = [
+            svc.model_dump(mode="json") for svc in collected_services
+        ]
+        metadata["services"] = app_info["services"]
         return app_info
 
     async def stop(

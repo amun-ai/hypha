@@ -13,6 +13,13 @@
   const config = {{ config | tojson(indent=2) }}
   const cfg = Object.assign(config, Object.fromEntries(new URLSearchParams(window.location.search)));
   if(!cfg.server_url) cfg.server_url = window.location.origin;
+    
+  window.env = new Map()
+  window.env.set("HYPHA_SERVER_URL", config.server_url)
+  window.env.set("HYPHA_WORKSPACE", config.workspace)
+  window.env.set("HYPHA_CLIENT_ID", config.client_id)
+  window.env.set("HYPHA_TOKEN", config.token)
+
   const hyphaWebsocketClient = await import(cfg.server_url + '/assets/hypha-rpc-websocket.mjs');
   hyphaWebsocketClient.connectToServer(cfg).then(async (api)=>{
       await hyphaWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])

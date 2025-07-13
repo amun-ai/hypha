@@ -1,0 +1,39 @@
+<config lang="json">
+{
+    "name": "Python Test App",
+    "type": "web-python",
+    "version": "0.1.0",
+    "description": "A simple Python test app with math functions and list processing.",
+    "tags": [],
+    "ui": "",
+    "cover": "",
+    "icon": "extension",
+    "api_version": "0.1.8",
+    "requirements": [],
+    "dependencies": []
+}
+</config>
+
+<script lang="python">
+from hypha_rpc import api
+
+class HyphaApp():
+    async def setup(self):
+        api.log('Python Test app connected!')
+        
+    async def multiply(self, x, y):
+        return x * y
+        
+    async def process_list(self, numbers):
+        return [n * 2 for n in numbers]
+        
+    async def info(self):
+        return {
+            "name": "Python Test App", 
+            "type": "python",
+            "status": "ok",
+            "features": ["multiply", "process_list"]
+        }
+
+api.export(HyphaApp())
+</script> 

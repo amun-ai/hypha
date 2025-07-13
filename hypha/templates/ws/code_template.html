@@ -9,23 +9,18 @@
     "description": "[TODO: describe this app with one sentence.]",
     "icon": "extension",
     "api_version": "0.1.8",
-    "requirements": ["https://cdn.jsdelivr.net/npm/hypha-rpc@latest/dist/hypha-rpc-websocket.min.js"],
+    "requirements": [],
     "dependencies": []
 }
 </config>
 
 <script lang="javascript">
-class HyphaApp {
-    async setup() {
-        const serverConfig = await api.getServerConfig()
-        const server = await hyphaWebsocketClient.connectToServer(serverConfig)
-        // now you can use the server object to interact with the server
-        await api.alert(await server.echo("Hello World!"))
-        
-        await server.disconnect()
-    }
+async function setup() {
+    await api.log("initialized")
 }
 
-api.export(new HyphaApp())
+api.export({
+    setup,
+})
 </script>
     

@@ -1,0 +1,56 @@
+<config lang="json">
+{
+    "name": "FastAPI Web App",
+    "type": "web-python",
+    "version": "0.1.0",
+    "description": "A FastAPI web application with ASGI service endpoints.",
+    "tags": ["web", "api", "fastapi"],
+    "ui": "",
+    "cover": "",
+    "icon": "extension",
+    "api_version": "0.1.8",
+    "requirements": ["fastapi==0.112.1"],
+    "dependencies": []
+}
+</config>
+
+<script lang="python">
+from hypha_rpc import api
+from fastapi import FastAPI
+
+def create_fastapi_app():
+    app = FastAPI()
+
+    @app.get("/")
+    async def root():
+        return {"message": "Hello World"}
+
+    @app.get("/health")
+    async def health():
+        return {"status": "healthy", "service": "hello-fastapi"}
+
+    @app.get("/api/add/{a}/{b}")
+    async def add_numbers(a: int, b: int):
+        return {"result": a + b}
+
+    return app
+
+
+async def setup():
+    # Registering fastapi app
+    fastapi_app = create_fastapi_app()
+
+    async def serve_fastapi(args):
+        await fastapi_app(args["scope"], args["receive"], args["send"])
+
+    await api.register_service({
+        "id": "hello-fastapi",
+        "type": "asgi",
+        "serve": serve_fastapi,
+        "config": {
+            "visibility": "public"
+        }
+    }, {"overwrite": True})
+
+api.export({"setup": setup})
+</script> 

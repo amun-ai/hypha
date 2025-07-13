@@ -120,7 +120,9 @@ async def test_generate_token_with_client_id_restriction(fastapi_server):
                     "workspace": api1.config.workspace,
                 }
             ):
-                assert False, "Should have raised an exception due to client_id mismatch"
+                assert (
+                    False
+                ), "Should have raised an exception due to client_id mismatch"
         except Exception as e:
             assert "Client id mismatch" in str(e) and "allowed-client" in str(e)
 

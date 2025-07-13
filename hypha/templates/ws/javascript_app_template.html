@@ -1,0 +1,39 @@
+<config lang="json">
+{
+    "name": "JavaScript Test App",
+    "type": "window",
+    "tags": [],
+    "ui": "",
+    "version": "0.1.0",
+    "cover": "",
+    "description": "A simple JavaScript test app with basic arithmetic functions.",
+    "icon": "extension",
+    "api_version": "0.1.8",
+    "requirements": [],
+    "dependencies": []
+}
+</config>
+
+<script lang="javascript">
+async function setup() {
+    await api.log('JavaScript Test app connected!');
+}
+
+async function add(a, b) {
+    return a + b;
+}
+
+async function info() {
+    return {
+        name: "JS Test App", 
+        type: "javascript", 
+        status: "ok"
+    };
+}
+
+api.export({
+    setup,
+    add,
+    info,
+})
+</script> 

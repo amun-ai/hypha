@@ -3,7 +3,7 @@ import asyncio
 from typing import Dict, Any, List, Optional
 import aiofiles
 from pathlib import PurePosixPath
-from hypha.utils import chunked_transfer_remote_file, sanitize_url_for_logging
+from hypha.utils import sanitize_url_for_logging
 
 ZENODO_TIMEOUT = 30  # seconds
 
@@ -27,15 +27,13 @@ class ZenodoClient:
             request = error.request
             url = str(request.url)
             sanitized_url = sanitize_url_for_logging(url)
-            
+
             # Create a new error message with sanitized URL
             sanitized_message = f"Client error '{error.response.status_code} {error.response.reason_phrase}' for url '{sanitized_url}'"
-            
+
             # Create a new HTTPStatusError with sanitized message
             new_error = httpx.HTTPStatusError(
-                sanitized_message,
-                request=request,
-                response=error.response
+                sanitized_message, request=request, response=error.response
             )
             return new_error
         return error
@@ -68,7 +66,7 @@ class ZenodoClient:
         """Loads an existing published record to retrieve the concept_id."""
         url = f"{self.zenodo_server}/api/records/{record_id}"
         response = await self._make_request("GET", url, follow_redirects=True)
-        
+
         record_info = response.json()
         concept_id = record_info.get("conceptrecid")
         if not concept_id:
@@ -127,12 +125,36 @@ class ZenodoClient:
         except httpx.HTTPStatusError as e:
             raise self._sanitize_error(e) from None
 
-    async def import_file(self, deposition_info, name, source_url):
+    async def import_file(
+        self, deposition_info, name, source_url, chunk_size: int = 8192
+    ):
+        """
+        Import a file from a URL to Zenodo using streaming to handle large files efficiently.
+
+        Args:
+            deposition_info: Zenodo deposition information
+            name: Name of the file in the deposition
+            source_url: URL to stream the file from
+            chunk_size: Size of chunks to stream (default 8192 bytes for better performance)
+        """
         bucket_url = deposition_info["links"]["bucket"]
         target_url = f"{bucket_url}/{name}"
-        await chunked_transfer_remote_file(
-            source_url, target_url, target_params=self.params
-        )
+
+        # Use direct streaming approach to avoid S3 proxy issues
+        async with httpx.AsyncClient(timeout=300) as client:
+            async with client.stream("GET", source_url) as response:
+                if response.status_code != 200:
+                    raise Exception(
+                        f"Failed to download file from {source_url}: {response.status_code}"
+                    )
+
+                # Stream the file content to Zenodo with configurable chunk size
+                await client.put(
+                    target_url,
+                    params=self.params,
+                    content=response.aiter_bytes(chunk_size),
+                    headers={"Content-Type": "application/octet-stream"},
+                )
 
     async def delete_deposition(self, deposition_id: str) -> None:
         """Deletes a deposition. Only unpublished depositions can be deleted."""
@@ -152,7 +174,10 @@ class ZenodoClient:
                 try:
                     response_data = e.response.json()
                 except:
-                    response_data = {"status": e.response.status_code, "message": "Bad request"}
+                    response_data = {
+                        "status": e.response.status_code,
+                        "message": "Bad request",
+                    }
                 raise RuntimeError(
                     f"Failed to publish deposition: {response_data}, you might have forgotten to update the metadata."
                 ) from None

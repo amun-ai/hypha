@@ -2,14 +2,14 @@ aioboto3==13.1.1
 aiofiles==23.2.1
 websockets==14.0
 base58==2.1.1
-fastapi==0.106.0
-hypha-rpc==0.20.60
+fastapi==0.115.2
+hypha-rpc==0.20.66
 jinja2==3.1.4
 lxml==4.9.3
 msgpack==1.0.8
 numpy>=1.21.6
 playwright==1.51.0
-pydantic[email]==2.8.2
+pydantic[email]==2.11.3
 pymultihash==0.8.2
 python-dotenv==0.21.1
 python-jose==3.3.0
@@ -18,7 +18,7 @@ pyyaml==6.0.1
 requests==2.31.0
 shortuuid==1.0.11
 uvicorn==0.23.2
-httpx==0.27.0
+httpx==0.28.1
 pyotritonclient==0.2.6
 fakeredis==2.24.1
 redis==5.2.0
@@ -34,7 +34,7 @@ asyncpg>=0.30.0
 sqlmodel==0.0.22
 alembic==1.14.0
 hrid==0.2.4
-ollama==0.3.3
+ollama==0.5.1
 fastembed==0.4.2
 stream-zip==0.0.83
 greenlet==3.1.1
