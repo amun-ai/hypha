@@ -290,6 +290,13 @@ class ServerAppController:
                 logger.warning(f"Failed to read artifact {app_id}: {exp}")
                 raise Exception(f"Failed to read artifact {app_id}: {exp}")
         else:
+            try:
+                artifact = await self.artifact_manager.read("applications", context=context)
+                collection_id = artifact["id"]
+            except KeyError:
+                collection_id = await self.setup_applications_collection(
+                    overwrite=True, context=context
+                )
             artifact = await self.artifact_manager.create(
                 type="application",
                 parent_id=collection_id,
@@ -326,13 +333,6 @@ class ServerAppController:
 
         ApplicationManifest.model_validate(artifact_obj)
 
-        try:
-            artifact = await self.artifact_manager.read("applications", context=context)
-            collection_id = artifact["id"]
-        except KeyError:
-            collection_id = await self.setup_applications_collection(
-                overwrite=True, context=context
-            )
 
         # Create artifact using the artifact controller
         artifact = await self.artifact_manager.edit(
