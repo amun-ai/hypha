@@ -134,7 +134,7 @@ if __name__ == "__main__":
 **JavaScript Client: Service Usage**
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.60/dist/hypha-rpc-websocket.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.66/dist/hypha-rpc-websocket.min.js"></script>
 <script>
 async function main() {
     const server = await hyphaWebsocketClient.connectToServer({"server_url": "https://hypha.amun.ai"});
