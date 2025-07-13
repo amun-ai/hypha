@@ -287,8 +287,7 @@ class ServerAppController:
         if app_id is not None:
             try:
                 artifact = await self.artifact_manager.read(app_id, context=context)
-            except Exception as exp:
-                logger.warning(f"Failed to read artifact {app_id}: {exp}")
+            except KeyError:
                 # If reading fails, we need to create the artifact
                 try:
                     artifact = await self.artifact_manager.read(

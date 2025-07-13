@@ -559,6 +559,7 @@ class HTTPProxy:
                 ) as api:
                     if service_id == "ws":
                         return serialize(api)
+                    
                     service_info = await api.get_service_info(
                         service_id, {"mode": _mode}
                     )
