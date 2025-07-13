@@ -425,15 +425,11 @@ class ServerAppController:
         self, app_id: str, context: Optional[dict] = None
     ) -> List[dict]:
         """List files of an installed application."""
-        return await self.artifact_manager.list_files(
-            f"{app_id}", context=context
-        )
+        return await self.artifact_manager.list_files(f"{app_id}", context=context)
 
     async def edit(self, app_id: str, context: Optional[dict] = None):
         """Edit an application by re-opening its artifact."""
-        await self.artifact_manager.edit(
-            f"{app_id}", version="stage", context=context
-        )
+        await self.artifact_manager.edit(f"{app_id}", version="stage", context=context)
 
     async def commit(
         self,
