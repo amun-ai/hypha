@@ -300,20 +300,20 @@ class ServerAppController:
         app_id = artifact.alias
         # Create artifact object
         if template and template != "raw_html":
-            public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}"
+            public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}"
             artifact_obj = convert_config_to_artifact(config, app_id, public_url)
             artifact_obj.update(
                 {
-                    "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}",
+                    "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}",
                     "public_url": public_url,
                 }
             )
         elif template == "raw_html":
-            public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}"
+            public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}"
             artifact_obj = convert_config_to_artifact(config, app_id, public_url)
             artifact_obj.update(
                 {
-                    "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}",
+                    "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}",
                     "public_url": public_url,
                 }
             )
@@ -375,7 +375,7 @@ class ServerAppController:
             )
             # After commit, read the updated artifact to get the collected services
             updated_artifact_info = await self.artifact_manager.read(
-                f"applications:{app_id}", version=version, context=context
+                f"{app_id}", version=version, context=context
             )
             return updated_artifact_info.get("manifest", artifact_obj)
         elif version is None:
@@ -388,7 +388,7 @@ class ServerAppController:
             )
             # After commit, read the updated artifact to get the collected services
             updated_artifact_info = await self.artifact_manager.read(
-                f"applications:{app_id}", version="v1", context=context
+                f"{app_id}", version="v1", context=context
             )
             return updated_artifact_info.get("manifest", artifact_obj)
         return artifact_obj
@@ -402,7 +402,7 @@ class ServerAppController:
     ):
         """Add a file to the installed application."""
         put_url = await self.artifact_manager.put_file(
-            f"applications:{app_id}",
+            f"{app_id}",
             file_path=file_path,
             context=context,
             use_proxy=False,
@@ -418,7 +418,7 @@ class ServerAppController:
     ):
         """Remove a file from the installed application."""
         await self.artifact_manager.remove_file(
-            f"applications:{app_id}", file_path=file_path, context=context
+            f"{app_id}", file_path=file_path, context=context
         )
 
     async def list_files(
@@ -426,13 +426,13 @@ class ServerAppController:
     ) -> List[dict]:
         """List files of an installed application."""
         return await self.artifact_manager.list_files(
-            f"applications:{app_id}", context=context
+            f"{app_id}", context=context
         )
 
     async def edit(self, app_id: str, context: Optional[dict] = None):
         """Edit an application by re-opening its artifact."""
         await self.artifact_manager.edit(
-            f"applications:{app_id}", version="stage", context=context
+            f"{app_id}", version="stage", context=context
         )
 
     async def commit(
@@ -446,7 +446,7 @@ class ServerAppController:
         try:
             # Read the manifest to check if it's a daemon app
             artifact_info = await self.artifact_manager.read(
-                f"applications:{app_id}", version="stage", context=context
+                f"{app_id}", version="stage", context=context
             )
             manifest = artifact_info.get("manifest", {})
             manifest = ApplicationManifest.model_validate(manifest)
@@ -472,7 +472,7 @@ class ServerAppController:
 
             # After verification, read the updated manifest that includes collected services
             updated_artifact_info = await self.artifact_manager.read(
-                f"applications:{app_id}", version="stage", context=context
+                f"{app_id}", version="stage", context=context
             )
 
         except asyncio.TimeoutError:
@@ -488,12 +488,12 @@ class ServerAppController:
                 f"Failed to start the app: {app_id} during installation, error: {exp}"
             )
         await self.artifact_manager.commit(
-            f"applications:{app_id}", version=version, context=context
+            f"{app_id}", version=version, context=context
         )
 
     async def uninstall(self, app_id: str, context: Optional[dict] = None) -> None:
         """Uninstall an application by removing its artifact."""
-        await self.artifact_manager.delete(f"applications:{app_id}", context=context)
+        await self.artifact_manager.delete(f"{app_id}", context=context)
 
     async def launch(
         self,
@@ -551,7 +551,7 @@ class ServerAppController:
             client_id = random_id(readable=True)
 
         artifact_info = await self.artifact_manager.read(
-            f"applications:{app_id}", version=version, context=context
+            f"{app_id}", version=version, context=context
         )
         manifest = artifact_info.get("manifest", {})
         manifest = ApplicationManifest.model_validate(manifest)
@@ -587,7 +587,7 @@ class ServerAppController:
         entry_point = manifest.entry_point
         assert entry_point, f"Entry point not found for app {app_id}."
         if not entry_point.startswith("http"):
-            entry_point = f"{self.local_base_url}/{workspace}/artifacts/applications:{app_id}/files/{entry_point}"
+            entry_point = f"{self.local_base_url}/{workspace}/artifacts/{app_id}/files/{entry_point}"
         server_url = self.local_base_url
         local_url = (
             f"{entry_point}?"
@@ -600,7 +600,7 @@ class ServerAppController:
         )
         server_url = self.public_base_url
         public_url = (
-            f"{self.public_base_url}/{workspace}/artifacts/applications:{app_id}/files/{entry_point}?"
+            f"{self.public_base_url}/{workspace}/artifacts/{app_id}/files/{entry_point}?"
             + f"client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}"
@@ -700,7 +700,7 @@ class ServerAppController:
                 manifest.model_dump(mode="json")
             )
             await self.artifact_manager.edit(
-                f"applications:{app_id}",
+                f"{app_id}",
                 version=version,
                 manifest=manifest.model_dump(mode="json"),
                 context=context,
