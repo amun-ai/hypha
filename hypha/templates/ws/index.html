@@ -83,6 +83,7 @@
             right: 0;
             top: 50%;
             transform: translateY(-50%);
+            gap: 0.25rem;
         }
         .file-item:hover .file-item-buttons {
             display: flex;
@@ -778,6 +779,8 @@
             isExpanded,
             children,
             fullPath,
+            onUploadToFolder,
+            onCreateFolder,
         }) => {
             const isDirectory = file.type === 'directory';
             return (
@@ -793,17 +796,43 @@
                             {file.name}
                         </div>
                         <div className="file-item-buttons">
-                            {!isDirectory && (
+                            {isDirectory ? (
+                                <>
+                                <button
+                                    className="bg-green-600 hover:bg-green-500 text-white font-bold py-1 px-2 rounded-full transition duration-300 mr-1"
+                                    onClick={() => onUploadToFolder(fullPath)}
+                                    title="Upload files to this folder"
+                                >
+                                    <i className="fas fa-upload"></i>
+                                </button>
+                                <button
+                                    className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-1 px-2 rounded-full transition duration-300 mr-1"
+                                    onClick={() => onCreateFolder(fullPath)}
+                                    title="Create subfolder"
+                                >
+                                    <i className="fas fa-folder-plus"></i>
+                                </button>
+                                <button
+                                    className="bg-red-600 hover:bg-red-500 text-white font-bold py-1 px-2 rounded-full transition duration-300"
+                                    onClick={() => onDelete(fullPath, file.type)}
+                                    title="Delete folder"
+                                >
+                                    <i className="fas fa-trash"></i>
+                                </button>
+                                </>
+                            ) : (
                                 <>
                                 <button
                                     className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300"
                                     onClick={() => onDownload(fullPath)}
+                                    title="Download file"
                                 >
                                     <i className="fas fa-download"></i>
                                 </button>
                                 <button
                                     className="bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 ml-2"
                                     onClick={() => onDelete(fullPath, file.type)}
+                                    title="Delete file"
                                 >
                                     <i className="fas fa-trash"></i>
                                 </button>
@@ -825,6 +854,8 @@
             expandedDirs,
             setExpandedDirs,
             parentPath = "",
+            onUploadToFolder,
+            onCreateFolder,
         }) => {
             const handleToggle = async (fullPath) => {
                 const isExpanded = !!expandedDirs[fullPath];
@@ -849,6 +880,8 @@
                                 isExpanded={!!expandedDirs[fullPath]}
                                 onToggle={handleToggle}
                                 fullPath={fullPath}
+                                onUploadToFolder={onUploadToFolder}
+                                onCreateFolder={onCreateFolder}
                             >
                                 {expandedDirs[fullPath] && (
                                     <FileTree
@@ -859,6 +892,8 @@
                                         expandedDirs={expandedDirs}
                                         setExpandedDirs={setExpandedDirs}
                                         parentPath={fullPath}
+                                        onUploadToFolder={onUploadToFolder}
+                                        onCreateFolder={onCreateFolder}
                                     />
                                 )}
                             </FileCard>
@@ -2048,14 +2083,15 @@
                 e.preventDefault();
                 const droppedFiles = e.dataTransfer.files;
                 for (const file of droppedFiles) {
-                    await handleFileUpload(file);
+                    await handleFileUpload(file, ""); // Upload to root folder
                 }
             };
         
-            const handleFileUpload = async (file) => {
+            const handleFileUpload = async (file, targetPath = "") => {
                 try {
                     window.showLoadingSpinner(`Uploading ${file.name}...`);
-                    const presignedUrl = await s3.generatePresignedUrl(file.name, "put_object");
+                    const filePath = targetPath ? `${targetPath}/${file.name}` : file.name;
+                    const presignedUrl = await s3.generatePresignedUrl(filePath, "put_object");
         
                     const response = await axios.put(presignedUrl, file, {
                         headers: {
@@ -2072,8 +2108,18 @@
                         console.log(`File ${file.name} uploaded successfully`);
         
                         // Re-fetch the updated file list and update the state
-                        const updatedFiles = await listFiles(); // Fetch the updated files after upload
-                        setFileList(updatedFiles); // Update the fileList state to trigger a re-render
+                        if (targetPath) {
+                            // If uploading to a specific folder, refresh that folder's contents
+                            const updatedFiles = await listFiles(targetPath);
+                            setExpandedDirs(prev => ({
+                                ...prev,
+                                [targetPath]: updatedFiles
+                            }));
+                        } else {
+                            // If uploading to root, refresh the root file list
+                            const updatedFiles = await listFiles();
+                            setFileList(updatedFiles);
+                        }
                     } else {
                         console.error("File upload failed", response.statusText);
                         alert("File upload failed: " + response.statusText);
@@ -2147,6 +2193,72 @@
                 } catch (error) {
                     console.error("Failed to list files", error);
                     return [];
+                }
+            };
+
+            const handleUploadToFolder = async (folderPath) => {
+                const fileInput = document.createElement('input');
+                fileInput.type = 'file';
+                fileInput.multiple = true;
+                fileInput.onchange = async (event) => {
+                    const files = event.target.files;
+                    for (const file of files) {
+                        await handleFileUpload(file, folderPath);
+                    }
+                };
+                fileInput.click();
+            };
+
+            const handleCreateFolder = async (parentPath) => {
+                const folderName = prompt('Enter folder name:');
+                if (!folderName || !folderName.trim()) {
+                    return;
+                }
+                
+                const sanitizedFolderName = folderName.trim().replace(/[^a-zA-Z0-9._-]/g, '_');
+                if (sanitizedFolderName !== folderName.trim()) {
+                    if (!confirm(`Folder name will be sanitized to: "${sanitizedFolderName}". Continue?`)) {
+                        return;
+                    }
+                }
+                
+                try {
+                    window.showLoadingSpinner(`Creating folder ${sanitizedFolderName}...`);
+                    const keepFilePath = parentPath ? `${parentPath}/${sanitizedFolderName}/.keep` : `${sanitizedFolderName}/.keep`;
+                    
+                    // Create a .keep file to represent the folder
+                    const keepFile = new Blob([''], { type: 'text/plain' });
+                    const presignedUrl = await s3.generatePresignedUrl(keepFilePath, "put_object");
+                    
+                    const response = await axios.put(presignedUrl, keepFile, {
+                        headers: {
+                            "Content-Type": "text/plain",
+                        },
+                    });
+                    
+                    if (response.status === 200) {
+                        console.log(`Folder ${sanitizedFolderName} created successfully`);
+                        
+                        // Refresh the appropriate file list
+                        if (parentPath) {
+                            const updatedFiles = await listFiles(parentPath);
+                            setExpandedDirs(prev => ({
+                                ...prev,
+                                [parentPath]: updatedFiles
+                            }));
+                        } else {
+                            const updatedFiles = await listFiles();
+                            setFileList(updatedFiles);
+                        }
+                    } else {
+                        console.error("Folder creation failed", response.statusText);
+                        alert("Folder creation failed: " + response.statusText);
+                    }
+                } catch (error) {
+                    console.error("Folder creation failed", error);
+                    alert("Folder creation failed: " + error.message);
+                } finally {
+                    window.hideLoadingSpinner();
                 }
             };
 
@@ -2564,9 +2676,26 @@
                             <p className="text-xl text-gray-400 mt-4">
                                 Files in workspace: <code>{workspaceId}</code>
                             </p>
+                            
+                            {/* Root folder management buttons */}
+                            <div className="flex gap-4 mt-6">
+                                <button
+                                    className="bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 flex items-center"
+                                    onClick={() => handleUploadToFolder("")}
+                                >
+                                    <i className="fas fa-upload mr-2"></i> Upload Files
+                                </button>
+                                <button
+                                    className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 flex items-center"
+                                    onClick={() => handleCreateFolder("")}
+                                >
+                                    <i className="fas fa-folder-plus mr-2"></i> Create Folder
+                                </button>
+                            </div>
+                            
                             <div className="p-4 border-dashed border-4 border-gray-600 rounded mt-6">
                                 <p className="text-center text-gray-500">
-                                    Drag and drop files here to upload
+                                    Drag and drop files here to upload to root folder
                                 </p>
                                 {!!uploadProgress && (
                                     <div className="w-full bg-gray-600 h-4 rounded relative flex items-center justify-center">
@@ -2592,6 +2721,8 @@
                                         // Pass the centralized expandedDirs and setExpandedDirs
                                         expandedDirs={expandedDirs}
                                         setExpandedDirs={setExpandedDirs}
+                                        onUploadToFolder={handleUploadToFolder}
+                                        onCreateFolder={handleCreateFolder}
                                     />
                                 )}
                             </div>
