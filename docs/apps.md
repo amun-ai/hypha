@@ -338,6 +338,25 @@ print(f"Access it at: {SERVER_URL}/{api.config['workspace']}/apps/serve@{app_inf
 
 The `startup_config` parameter allows you to set default configurations that will be used when starting apps.
 
+**Configuration Options:**
+You can configure startup behavior in two ways:
+
+1. **In the app's HTML `<config>` section:**
+```html
+<config lang="json">
+{
+    "name": "My App",
+    "type": "web-python",
+    "startup_config": {
+        "timeout": 60,
+        "wait_for_service": "default",
+        "stop_after_inactive": 300
+    }
+}
+</config>
+```
+
+2. **As a parameter to `install()`:**
 ```python
 # Install app with comprehensive startup configuration
 app_info = await controller.install(
@@ -349,6 +368,12 @@ app_info = await controller.install(
     },
     overwrite=True
 )
+
+**Priority Order:**
+When the same startup parameter is specified in multiple places, the priority order is:
+1. **Explicit parameters in `start()` method** (highest priority)
+2. **`startup_config` parameter in `install()` method** (medium priority)  
+3. **`startup_config` in HTML `<config>` section** (lowest priority)
 
 # Start app - will use the startup_config defaults
 started_app = await controller.start(app_info.id)

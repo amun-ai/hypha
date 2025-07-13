@@ -235,7 +235,7 @@
                  return;
              }
              
-             const response = await fetch("/ws/code_template.html");
+             const response = await fetch("/ws/code_template.hypha.html");
              const pythonPluginCode = await response.text();
              await api.createWindow({ 
                  name: "Code Editor",
@@ -245,22 +245,22 @@
                     templates: [
                         {
                             name: "Basic JavaScript App",
-                            url: window.location.origin + "/ws/code_template.html",
+                            url: window.location.origin + "/ws/code_template.hypha.html",
                             lang: 'javascript',
                         },
                         {
                             name: "JavaScript Test App", 
-                            url: window.location.origin + "/ws/javascript_app_template.html",
+                            url: window.location.origin + "/ws/javascript_app_template.hypha.html",
                             lang: 'javascript',
                         },
                         {
                             name: "Python Test App",
-                            url: window.location.origin + "/ws/python_app_template.html", 
+                            url: window.location.origin + "/ws/python_app_template.hypha.html", 
                             lang: 'python',
                         },
                         {
                             name: "FastAPI Web App",
-                            url: window.location.origin + "/ws/fastapi_app_template.html",
+                            url: window.location.origin + "/ws/fastapi_app_template.hypha.html",
                             lang: 'python',
                         },
                     ],
@@ -3388,7 +3388,7 @@
                 
                 const url = prompt(
                     'Enter the URL of the app to install',
-                    window.location.origin + '/ws/code_template.html'
+                    window.location.origin + '/ws/code_template.hypha.html'
                 );
                 if (!url) return;
                 
