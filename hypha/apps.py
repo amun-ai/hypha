@@ -291,7 +291,9 @@ class ServerAppController:
                 logger.warning(f"Failed to read artifact {app_id}: {exp}")
                 # If reading fails, we need to create the artifact
                 try:
-                    artifact = await self.artifact_manager.read("applications", context=context)
+                    artifact = await self.artifact_manager.read(
+                        "applications", context=context
+                    )
                     collection_id = artifact["id"]
                 except KeyError:
                     collection_id = await self.setup_applications_collection(
@@ -303,13 +305,15 @@ class ServerAppController:
                     alias=app_id,
                     manifest=config,
                     overwrite=overwrite,
-                    version="stage",
+                    stage=True,
                     context=context,
                 )
         else:
             # No app_id provided, create a new unique artifact
             try:
-                artifact = await self.artifact_manager.read("applications", context=context)
+                artifact = await self.artifact_manager.read(
+                    "applications", context=context
+                )
                 collection_id = artifact["id"]
             except KeyError:
                 collection_id = await self.setup_applications_collection(
@@ -321,11 +325,11 @@ class ServerAppController:
                 alias=None,  # Let artifact manager assign a unique alias
                 manifest=config,
                 overwrite=overwrite,
-                version="stage",
+                stage=True,
                 context=context,
             )
             app_id = artifact["alias"]
-        
+
         # Create artifact object
         if template and template != "raw_html":
             public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}"
@@ -353,12 +357,11 @@ class ServerAppController:
 
         ApplicationManifest.model_validate(artifact_obj)
 
-
         # Create artifact using the artifact controller
         artifact = await self.artifact_manager.edit(
             artifact_id=artifact["id"],
             manifest=artifact_obj,
-            version="stage",
+            stage=True,
             context=context,
         )
 
@@ -449,7 +452,7 @@ class ServerAppController:
 
     async def edit(self, app_id: str, context: Optional[dict] = None):
         """Edit an application by re-opening its artifact."""
-        await self.artifact_manager.edit(f"{app_id}", version="stage", context=context)
+        await self.artifact_manager.edit(f"{app_id}", stage=True, context=context)
 
     async def commit(
         self,
@@ -518,11 +521,22 @@ class ServerAppController:
         config: Optional[Dict[str, Any]] = None,
         overwrite: bool = False,
         wait_for_service: str = None,
+        app_id: str = None,
         context: Optional[dict] = None,
     ) -> dict:
         """Start a server app instance."""
+
+        # For singleton apps, use content hash as app_id to ensure same source = same app
+        if app_id is None and config and config.get("singleton"):
+            import multihash
+
+            mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
+            mhash = mhash.encode("base58").decode("ascii")
+            app_id = f"applications:{mhash}"
+
         app_info = await self.install(
             source,
+            app_id=app_id,
             config=config,
             overwrite=overwrite,
             context=context,
@@ -717,7 +731,7 @@ class ServerAppController:
             )
             await self.artifact_manager.edit(
                 f"{app_id}",
-                version=version,
+                stage=True,
                 manifest=manifest.model_dump(mode="json"),
                 context=context,
             )

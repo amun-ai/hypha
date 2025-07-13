@@ -205,6 +205,7 @@ async def test_singleton_apps(fastapi_server, test_user_token):
     )
     controller = await api.get_service("public/server-apps")
 
+    # Test 1: Singleton apps with automatic app_id generation based on source hash
     # Launch the first instance of the singleton app
     config1 = await controller.launch(
         source=TEST_APP_CODE,
@@ -215,6 +216,7 @@ async def test_singleton_apps(fastapi_server, test_user_token):
     assert "id" in config1.keys()
 
     # Try launching another instance of the same singleton app
+    # This should fail because they have the same source code and singleton=True
     with pytest.raises(Exception, match="is a singleton app and already running"):
         await controller.launch(
             source=TEST_APP_CODE,
@@ -229,6 +231,122 @@ async def test_singleton_apps(fastapi_server, test_user_token):
     # Verify the singleton app is no longer running
     running_apps = await controller.list_running()
     assert not any(app["id"] == config1.id for app in running_apps)
+
+    # Test 2: Explicit app_id for singleton detection
+    # Launch first instance with explicit app_id
+    config2 = await controller.launch(
+        source=TEST_APP_CODE,
+        config={"type": "window", "singleton": True},
+        app_id="my-singleton-app",
+        overwrite=True,
+        wait_for_service="default",
+    )
+    assert "id" in config2.keys()
+
+    # Try launching another instance with the same app_id - should fail
+    with pytest.raises(Exception, match="is a singleton app and already running"):
+        await controller.launch(
+            source=TEST_APP_CODE,
+            config={"type": "window", "singleton": True},
+            app_id="my-singleton-app",
+            overwrite=True,
+            wait_for_service="default",
+        )
+
+    # Launch with a different app_id - should succeed
+    config3 = await controller.launch(
+        source=TEST_APP_CODE,
+        config={"type": "window", "singleton": True},
+        app_id="my-other-singleton-app",
+        overwrite=True,
+        wait_for_service="default",
+    )
+    assert "id" in config3.keys()
+    assert config3.id != config2.id
+
+    # Stop both apps
+    await controller.stop(config2.id)
+    await controller.stop(config3.id)
+
+    # Verify both apps are no longer running
+    running_apps = await controller.list_running()
+    assert not any(app["id"] == config2.id for app in running_apps)
+    assert not any(app["id"] == config3.id for app in running_apps)
+
+
+async def test_app_id_parameter(fastapi_server, test_user_token):
+    """Test the app_id parameter functionality."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+    controller = await api.get_service("public/server-apps")
+
+    # Test 1: Install with explicit app_id
+    app_info1 = await controller.install(
+        source=TEST_APP_CODE,
+        app_id="test-app-123",
+        config={"type": "window"},
+        overwrite=True,
+    )
+    assert app_info1["id"] == "test-app-123"
+
+    # Test 2: Install without app_id (should get auto-generated ID)
+    app_info2 = await controller.install(
+        source=TEST_APP_CODE,
+        config={"type": "window"},
+        overwrite=True,
+    )
+    assert app_info2["id"] != "test-app-123"
+    assert app_info2["id"] is not None
+
+    # Test 3: Launch with explicit app_id
+    config1 = await controller.launch(
+        source=TEST_APP_CODE,
+        app_id="launch-test-456",
+        config={"type": "window"},
+        overwrite=True,
+        wait_for_service="default",
+    )
+    assert "id" in config1.keys()
+    assert config1.app_id == "launch-test-456"
+
+    # Test 4: Launch without app_id (should get auto-generated ID)
+    config2 = await controller.launch(
+        source=TEST_APP_CODE,
+        config={"type": "window"},
+        overwrite=True,
+        wait_for_service="default",
+    )
+    assert "id" in config2.keys()
+    assert config2.app_id != "launch-test-456"
+    assert config2.app_id is not None
+
+    # Test 5: Overwrite existing app with same app_id
+    app_info3 = await controller.install(
+        source=TEST_APP_CODE + "\n// Modified",
+        app_id="test-app-123",
+        config={"type": "window", "name": "Modified App"},
+        overwrite=True,
+    )
+    assert app_info3["id"] == "test-app-123"
+    assert app_info3["name"] == "Modified App"
+
+    # Stop running apps
+    await controller.stop(config1.id)
+    await controller.stop(config2.id)
+
+    # Clean up installed apps
+    await controller.uninstall("test-app-123")
+    await controller.uninstall(app_info2["id"])
+    await controller.uninstall("launch-test-456")
+    await controller.uninstall(config2.app_id)
+
+    await api.disconnect()
 
 
 async def test_daemon_apps(fastapi_server, test_user_token_6, root_user_token):
