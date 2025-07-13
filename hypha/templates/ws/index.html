@@ -84,9 +84,29 @@
             top: 50%;
             transform: translateY(-50%);
             gap: 0.25rem;
+            align-items: center;
+            flex-wrap: wrap;
         }
         .file-item:hover .file-item-buttons {
             display: flex;
+        }
+        .file-card {
+            position: relative;
+            min-height: 60px;
+        }
+        .file-card.drag-over {
+            background-color: #4a5568;
+            border-color: #4299e1;
+        }
+        .border-blue-500 {
+            border-color: #4299e1 !important;
+            border-width: 2px !important;
+        }
+        .file-card.drag-over,
+        .bg-gray-600.border-blue-500 {
+            background-color: #4a5568 !important;
+            border-color: #4299e1 !important;
+            transform: scale(1.02);
         }
         .file-card:hover {
             background-color: #2d3748;
@@ -777,23 +797,53 @@
             onDelete,
             onToggle,
             isExpanded,
+            isLoading,
             children,
             fullPath,
             onUploadToFolder,
             onCreateFolder,
+            onDragOver,
+            onDragEnter,
+            onDragLeave,
+            onDrop,
+            onUploadFolderToPath,
         }) => {
             const isDirectory = file.type === 'directory';
+            const [isHovered, setIsHovered] = React.useState(false);
+            
             return (
-                <div className="file-card flex flex-col justify-between items-start p-3 bg-gray-700 shadow-md">
-                    <div className="file-item flex items-center w-full justify-between">
+                <div 
+                    className="file-card flex flex-col justify-between items-start p-3 bg-gray-700 shadow-md transition-colors duration-200"
+                    onDragOver={isDirectory ? onDragOver : undefined}
+                    onDragEnter={isDirectory ? onDragEnter : undefined}
+                    onDragLeave={isDirectory ? onDragLeave : undefined}
+                    onDrop={isDirectory ? (e) => onDrop(e, fullPath) : undefined}
+                    onMouseEnter={() => setIsHovered(true)}
+                    onMouseLeave={() => setIsHovered(false)}
+                >
+                    <div className="file-item flex items-center w-full justify-between relative">
                         <div className="flex items-center">
                             {isDirectory && (
-                                <button className="mr-2" onClick={() => onToggle(fullPath)}>
-                                    {isExpanded ? '-' : '+'}
+                                <button 
+                                    className="mr-2 min-w-[20px] text-center" 
+                                    onClick={() => onToggle(fullPath)} 
+                                    disabled={isLoading}
+                                    style={{ opacity: isLoading ? 0.7 : 1 }}
+                                >
+                                    {isLoading ? (
+                                        <i className="fas fa-spinner fa-spin text-blue-400"></i>
+                                    ) : (
+                                        isExpanded ? '-' : '+'
+                                    )}
                                 </button>
                             )}
                             <i className={`fas ${isDirectory ? 'fa-folder' : 'fa-file-alt'} mr-2`}></i>
-                            {file.name}
+                            <span className="flex-1">
+                                {file.name}
+                                {isDirectory && isHovered && (
+                                    <span className="text-xs text-gray-400 ml-2">(drop files/folders here)</span>
+                                )}
+                            </span>
                         </div>
                         <div className="file-item-buttons">
                             {isDirectory ? (
@@ -804,6 +854,13 @@
                                     title="Upload files to this folder"
                                 >
                                     <i className="fas fa-upload"></i>
+                                </button>
+                                <button
+                                    className="bg-purple-600 hover:bg-purple-500 text-white font-bold py-1 px-2 rounded-full transition duration-300 mr-1"
+                                    onClick={() => onUploadFolderToPath(fullPath)}
+                                    title="Upload folder to this folder"
+                                >
+                                    <i className="fas fa-folder-open"></i>
                                 </button>
                                 <button
                                     className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-1 px-2 rounded-full transition duration-300 mr-1"
@@ -856,14 +913,31 @@
             parentPath = "",
             onUploadToFolder,
             onCreateFolder,
+            onDragOver,
+            onDragEnter,
+            onDragLeave,
+            onDrop,
+            onUploadFolderToPath,
         }) => {
+            const [loadingDirs, setLoadingDirs] = React.useState({});
+            
             const handleToggle = async (fullPath) => {
                 const isExpanded = !!expandedDirs[fullPath];
                 if (isExpanded) {
                     setExpandedDirs({ ...expandedDirs, [fullPath]: null });
                 } else {
-                    const children = await listFiles(fullPath);
-                    setExpandedDirs({ ...expandedDirs, [fullPath]: children });
+                    // Set loading state immediately
+                    setLoadingDirs({ ...loadingDirs, [fullPath]: true });
+                    
+                    try {
+                        const children = await listFiles(fullPath);
+                        setExpandedDirs({ ...expandedDirs, [fullPath]: children });
+                    } catch (error) {
+                        console.error("Error loading directory:", error);
+                    } finally {
+                        // Clear loading state
+                        setLoadingDirs({ ...loadingDirs, [fullPath]: false });
+                    }
                 }
             };
         
@@ -878,10 +952,16 @@
                                 onDownload={onDownload}
                                 onDelete={onDelete}
                                 isExpanded={!!expandedDirs[fullPath]}
+                                isLoading={!!loadingDirs[fullPath]}
                                 onToggle={handleToggle}
                                 fullPath={fullPath}
                                 onUploadToFolder={onUploadToFolder}
                                 onCreateFolder={onCreateFolder}
+                                onDragOver={onDragOver}
+                                onDragEnter={onDragEnter}
+                                onDragLeave={onDragLeave}
+                                onDrop={onDrop}
+                                onUploadFolderToPath={onUploadFolderToPath}
                             >
                                 {expandedDirs[fullPath] && (
                                     <FileTree
@@ -894,6 +974,11 @@
                                         parentPath={fullPath}
                                         onUploadToFolder={onUploadToFolder}
                                         onCreateFolder={onCreateFolder}
+                                        onDragOver={onDragOver}
+                                        onDragEnter={onDragEnter}
+                                        onDragLeave={onDragLeave}
+                                        onDrop={onDrop}
+                                        onUploadFolderToPath={onUploadFolderToPath}
                                     />
                                 )}
                             </FileCard>
@@ -1904,6 +1989,350 @@
             );
         };
         
+        // Global drag and drop handlers and utility functions
+        let globalUploadProgress = 0;
+        let globalSetUploadProgress = null;
+        let globalSetFileList = null;
+        let globalSetExpandedDirs = null;
+        let globalS3 = null;
+        let globalListFiles = null;
+
+        // Drag and drop event handlers
+        const handleDragOver = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = 'copy';
+        };
+
+        const handleDragEnter = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            // Only add visual feedback to the immediate target
+            if (e.target === e.currentTarget || e.currentTarget.contains(e.target)) {
+                e.currentTarget.classList.add('bg-gray-600', 'border-blue-500');
+            }
+        };
+
+        const handleDragLeave = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            // Only remove visual feedback if we're leaving the drop zone
+            if (!e.currentTarget.contains(e.relatedTarget)) {
+                e.currentTarget.classList.remove('bg-gray-600', 'border-blue-500');
+            }
+        };
+
+        // Utility function to upload a single file to a specific path
+        const uploadFileToPath = async (file, targetPath = "", showProgress = true) => {
+            try {
+                if (showProgress) {
+                    window.showLoadingSpinner(`Uploading ${file.name}...`);
+                }
+                const filePath = targetPath ? `${targetPath}/${file.name}` : file.name;
+                const presignedUrl = await globalS3.generatePresignedUrl(filePath, "put_object");
+
+                const response = await axios.put(presignedUrl, file, {
+                    headers: {
+                        "Content-Type": file.type || "application/octet-stream",
+                    },
+                    onUploadProgress: (progressEvent) => {
+                        if (!progressEvent.total) return;
+                        const progress = (progressEvent.loaded / progressEvent.total) * 100;
+                        if (showProgress && globalSetUploadProgress) {
+                            globalSetUploadProgress(progress);
+                        }
+                    },
+                });
+
+                if (response.status === 200) {
+                    console.log(`File ${file.name} uploaded successfully to ${targetPath || 'root'}`);
+                    return true;
+                } else {
+                    console.error("File upload failed", response.statusText);
+                    return false;
+                }
+            } catch (error) {
+                console.error("File upload failed", error);
+                return false;
+            } finally {
+                if (showProgress) {
+                    if (globalSetUploadProgress) globalSetUploadProgress(0);
+                    window.hideLoadingSpinner();
+                }
+            }
+        };
+
+        // Utility function to create folder structure
+        const createFolderStructure = async (folderPath) => {
+            try {
+                const keepFilePath = folderPath ? `${folderPath}/.keep` : `.keep`;
+                const keepFile = new Blob([''], { type: 'text/plain' });
+                const presignedUrl = await globalS3.generatePresignedUrl(keepFilePath, "put_object");
+                
+                const response = await axios.put(presignedUrl, keepFile, {
+                    headers: {
+                        "Content-Type": "text/plain",
+                    },
+                });
+                
+                return response.status === 200;
+            } catch (error) {
+                console.error("Folder creation failed", error);
+                return false;
+            }
+        };
+
+        // Global progress tracking variables
+        let globalCurrentFileIndex = 0;
+        let globalTotalFiles = 0;
+        let globalCurrentFileName = "";
+
+        // Utility function to count total files recursively
+        const countTotalFiles = async (items) => {
+            let totalFiles = 0;
+            
+            const countInEntry = async (entry) => {
+                if (entry.isFile) {
+                    totalFiles++;
+                } else if (entry.isDirectory) {
+                    const reader = entry.createReader();
+                    const allEntries = [];
+                    
+                    const readEntries = () => {
+                        return new Promise((resolve) => {
+                            reader.readEntries((entries) => {
+                                if (entries.length > 0) {
+                                    allEntries.push(...entries);
+                                    readEntries().then(resolve);
+                                } else {
+                                    resolve();
+                                }
+                            });
+                        });
+                    };
+                    
+                    await readEntries();
+                    
+                    for (const subEntry of allEntries) {
+                        await countInEntry(subEntry);
+                    }
+                }
+            };
+            
+            for (const item of items) {
+                if (item.webkitGetAsEntry) {
+                    const entry = item.webkitGetAsEntry();
+                    if (entry) {
+                        await countInEntry(entry);
+                    }
+                } else if (item.getAsFile) {
+                    const file = item.getAsFile();
+                    if (file) {
+                        totalFiles++;
+                    }
+                }
+            }
+            
+            return totalFiles;
+        };
+
+        // Utility function to process directory entry recursively
+        const processDirectoryEntry = async (entry, targetPath = "") => {
+            const fullPath = targetPath ? `${targetPath}/${entry.name}` : entry.name;
+            
+            if (entry.isFile) {
+                return new Promise((resolve) => {
+                    entry.file(async (file) => {
+                        globalCurrentFileIndex++;
+                        globalCurrentFileName = file.name;
+                        
+                        // Update progress display
+                        const progressText = `Uploading ${globalCurrentFileName} (${globalCurrentFileIndex}/${globalTotalFiles})`;
+                        window.showLoadingSpinner(progressText);
+                        
+                        const success = await uploadFileToPath(file, targetPath, false);
+                        resolve(success);
+                    });
+                });
+            } else if (entry.isDirectory) {
+                // Create the directory structure
+                await createFolderStructure(fullPath);
+                
+                // Process directory contents - read all entries (may require multiple calls)
+                const reader = entry.createReader();
+                const allEntries = [];
+                
+                const readEntries = () => {
+                    return new Promise((resolve) => {
+                        reader.readEntries((entries) => {
+                            if (entries.length > 0) {
+                                allEntries.push(...entries);
+                                readEntries().then(resolve);
+                            } else {
+                                resolve();
+                            }
+                        });
+                    });
+                };
+                
+                await readEntries();
+                
+                for (const subEntry of allEntries) {
+                    await processDirectoryEntry(subEntry, fullPath);
+                }
+                return true;
+            }
+        };
+
+        // Utility function to process dropped items (files and folders)
+        const processDroppedItems = async (items, targetPath = "") => {
+            // Reset global progress tracking
+            globalCurrentFileIndex = 0;
+            globalCurrentFileName = "";
+            
+            // Count total files first
+            window.showLoadingSpinner("Counting files...");
+            globalTotalFiles = await countTotalFiles(items);
+            
+            if (globalTotalFiles === 0) {
+                window.hideLoadingSpinner();
+                return;
+            }
+            
+            window.showLoadingSpinner(`Preparing to upload ${globalTotalFiles} files...`);
+            
+            try {
+                for (const item of items) {
+                    if (item.webkitGetAsEntry) {
+                        const entry = item.webkitGetAsEntry();
+                        if (entry) {
+                            await processDirectoryEntry(entry, targetPath);
+                        }
+                    } else if (item.getAsFile) {
+                        const file = item.getAsFile();
+                        if (file) {
+                            globalCurrentFileIndex++;
+                            globalCurrentFileName = file.name;
+                            
+                            // Update progress display
+                            const progressText = `Uploading ${globalCurrentFileName} (${globalCurrentFileIndex}/${globalTotalFiles})`;
+                            window.showLoadingSpinner(progressText);
+                            
+                            await uploadFileToPath(file, targetPath, false);
+                        }
+                    }
+                }
+                
+                // Refresh the appropriate file list
+                await refreshFileList(targetPath);
+                
+            } catch (error) {
+                console.error("Error processing dropped items:", error);
+                alert("Error processing dropped items: " + error.message);
+            } finally {
+                window.hideLoadingSpinner();
+            }
+        };
+
+        // Utility function to refresh file list
+        const refreshFileList = async (targetPath = "") => {
+            if (targetPath) {
+                const updatedFiles = await globalListFiles(targetPath);
+                if (globalSetExpandedDirs) {
+                    globalSetExpandedDirs(prev => ({
+                        ...prev,
+                        [targetPath]: updatedFiles
+                    }));
+                }
+            } else {
+                const updatedFiles = await globalListFiles();
+                if (globalSetFileList) globalSetFileList(updatedFiles);
+            }
+        };
+
+        const handleFileDrop = async (e, targetPath = "") => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.currentTarget.classList.remove('bg-gray-600', 'border-blue-500');
+            
+            const items = Array.from(e.dataTransfer.items);
+            if (items.length > 0) {
+                await processDroppedItems(items, targetPath);
+            } else {
+                // Fallback for older browsers
+                const files = Array.from(e.dataTransfer.files);
+                for (const file of files) {
+                    await uploadFileToPath(file, targetPath, true);
+                    await refreshFileList(targetPath);
+                }
+            }
+        };
+
+        const handleUploadFolderToPath = async (folderPath) => {
+            const fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.webkitdirectory = true;
+            fileInput.multiple = true;
+            fileInput.onchange = async (event) => {
+                const files = Array.from(event.target.files);
+                if (files.length === 0) return;
+                
+                // Reset global progress tracking
+                globalCurrentFileIndex = 0;
+                globalCurrentFileName = "";
+                globalTotalFiles = files.length;
+                
+                window.showLoadingSpinner(`Preparing to upload ${globalTotalFiles} files...`);
+                
+                try {
+                    // Group files by their directory structure
+                    const createdFolders = new Set();
+                    
+                    for (const file of files) {
+                        globalCurrentFileIndex++;
+                        globalCurrentFileName = file.name;
+                        
+                        // Update progress display
+                        const progressText = `Uploading ${globalCurrentFileName} (${globalCurrentFileIndex}/${globalTotalFiles})`;
+                        window.showLoadingSpinner(progressText);
+                        
+                        const relativePath = file.webkitRelativePath;
+                        const pathParts = relativePath.split('/');
+                        const fileName = pathParts.pop();
+                        const fileFolderPath = pathParts.join('/');
+                        
+                        // Create full target path
+                        const targetFolderPath = folderPath ? `${folderPath}/${fileFolderPath}` : fileFolderPath;
+                        
+                        // Ensure all parent directories exist
+                        const pathSegments = targetFolderPath.split('/').filter(Boolean);
+                        let currentPath = folderPath || '';
+                        
+                        for (const segment of pathSegments) {
+                            currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+                            if (!createdFolders.has(currentPath)) {
+                                await createFolderStructure(currentPath);
+                                createdFolders.add(currentPath);
+                            }
+                        }
+                        
+                        // Upload the file
+                        await uploadFileToPath(file, targetFolderPath, false);
+                    }
+                    
+                    // Refresh the file list
+                    await refreshFileList(folderPath);
+                    
+                } catch (error) {
+                    console.error("Error uploading folder:", error);
+                    alert("Error uploading folder: " + error.message);
+                } finally {
+                    window.hideLoadingSpinner();
+                }
+            };
+            fileInput.click();
+        };
+
         const MainContent = ({
             isCollapsed,
             enabledPanels,
@@ -1938,6 +2367,23 @@
         
             // Centralized expandedDirs state
             const [expandedDirs, setExpandedDirs] = React.useState({});
+
+            // Set global references
+            React.useEffect(() => {
+                globalSetUploadProgress = setUploadProgress;
+                globalSetFileList = setFileList;
+                globalSetExpandedDirs = setExpandedDirs;
+                globalS3 = s3;
+                globalListFiles = async (path = '') => {
+                    try {
+                        const files = await s3.listFiles(path);
+                        return files;
+                    } catch (error) {
+                        console.error("Failed to list files", error);
+                        return [];
+                    }
+                };
+            }, [s3]);
         
             React.useEffect(() => {
                 setFileList(files); // Keep file list updated
@@ -2079,57 +2525,13 @@
                 }
             };
         
-            const handleFileDrop = async (e) => {
-                e.preventDefault();
-                const droppedFiles = e.dataTransfer.files;
-                for (const file of droppedFiles) {
-                    await handleFileUpload(file, ""); // Upload to root folder
-                }
-            };
+
         
+            // Legacy function for backward compatibility
             const handleFileUpload = async (file, targetPath = "") => {
-                try {
-                    window.showLoadingSpinner(`Uploading ${file.name}...`);
-                    const filePath = targetPath ? `${targetPath}/${file.name}` : file.name;
-                    const presignedUrl = await s3.generatePresignedUrl(filePath, "put_object");
-        
-                    const response = await axios.put(presignedUrl, file, {
-                        headers: {
-                            "Content-Type": file.type || "application/octet-stream",
-                        },
-                        onUploadProgress: (progressEvent) => {
-                            if (!progressEvent.total) return;
-                            const progress = (progressEvent.loaded / progressEvent.total) * 100;
-                            setUploadProgress(progress);
-                        },
-                    });
-        
-                    if (response.status === 200) {
-                        console.log(`File ${file.name} uploaded successfully`);
-        
-                        // Re-fetch the updated file list and update the state
-                        if (targetPath) {
-                            // If uploading to a specific folder, refresh that folder's contents
-                            const updatedFiles = await listFiles(targetPath);
-                            setExpandedDirs(prev => ({
-                                ...prev,
-                                [targetPath]: updatedFiles
-                            }));
-                        } else {
-                            // If uploading to root, refresh the root file list
-                            const updatedFiles = await listFiles();
-                            setFileList(updatedFiles);
-                        }
-                    } else {
-                        console.error("File upload failed", response.statusText);
-                        alert("File upload failed: " + response.statusText);
-                    }
-                    setUploadProgress(0); // Reset progress after upload
-                } catch (error) {
-                    console.error("File upload failed", error);
-                    alert("File upload failed: " + error.message);
-                } finally {
-                    window.hideLoadingSpinner();
+                const success = await uploadFileToPath(file, targetPath, true);
+                if (success) {
+                    await refreshFileList(targetPath);
                 }
             };
         
@@ -2201,13 +2603,40 @@
                 fileInput.type = 'file';
                 fileInput.multiple = true;
                 fileInput.onchange = async (event) => {
-                    const files = event.target.files;
-                    for (const file of files) {
-                        await handleFileUpload(file, folderPath);
+                    const files = Array.from(event.target.files);
+                    if (files.length === 0) return;
+                    
+                    // Reset global progress tracking
+                    globalCurrentFileIndex = 0;
+                    globalCurrentFileName = "";
+                    globalTotalFiles = files.length;
+                    
+                    try {
+                        for (const file of files) {
+                            globalCurrentFileIndex++;
+                            globalCurrentFileName = file.name;
+                            
+                            // Update progress display
+                            const progressText = `Uploading ${globalCurrentFileName} (${globalCurrentFileIndex}/${globalTotalFiles})`;
+                            window.showLoadingSpinner(progressText);
+                            
+                            await uploadFileToPath(file, folderPath, false);
+                        }
+                        
+                        // Refresh the file list
+                        await refreshFileList(folderPath);
+                        
+                    } catch (error) {
+                        console.error("Error uploading files:", error);
+                        alert("Error uploading files: " + error.message);
+                    } finally {
+                        window.hideLoadingSpinner();
                     }
                 };
                 fileInput.click();
             };
+
+
 
             const handleCreateFolder = async (parentPath) => {
                 const folderName = prompt('Enter folder name:');
@@ -2355,8 +2784,6 @@
             return (
                 <div
                     className={`main-content transition-all duration-300 ${isCollapsed ? 'ml-16' : 'ml-64'}`}
-                    onDrop={handleFileDrop}
-                    onDragOver={(e) => e.preventDefault()} // Prevent default to allow drop
                 >
                     {panel === 'dashboard' && (
                         <>
@@ -2686,6 +3113,12 @@
                                     <i className="fas fa-upload mr-2"></i> Upload Files
                                 </button>
                                 <button
+                                    className="bg-purple-600 hover:bg-purple-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 flex items-center"
+                                    onClick={() => handleUploadFolderToPath("")}
+                                >
+                                    <i className="fas fa-folder-open mr-2"></i> Upload Folder
+                                </button>
+                                <button
                                     className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-full transition duration-300 flex items-center"
                                     onClick={() => handleCreateFolder("")}
                                 >
@@ -2693,12 +3126,21 @@
                                 </button>
                             </div>
                             
-                            <div className="p-4 border-dashed border-4 border-gray-600 rounded mt-6">
+                            <div 
+                                className="p-4 border-dashed border-4 border-gray-600 rounded mt-6 transition-all duration-200"
+                                onDragOver={handleDragOver}
+                                onDragEnter={handleDragEnter}
+                                onDragLeave={handleDragLeave}
+                                onDrop={(e) => handleFileDrop(e, "")}
+                            >
                                 <p className="text-center text-gray-500">
-                                    Drag and drop files here to upload to root folder
+                                    Drag and drop files or folders here to upload to root folder
+                                </p>
+                                <p className="text-center text-gray-400 text-sm mt-2">
+                                    Supports nested folder structures
                                 </p>
                                 {!!uploadProgress && (
-                                    <div className="w-full bg-gray-600 h-4 rounded relative flex items-center justify-center">
+                                    <div className="w-full bg-gray-600 h-4 rounded relative flex items-center justify-center mt-4">
                                         <div
                                             className="bg-blue-500 h-4 rounded"
                                             style={{ width: `${uploadProgress}%` }}
@@ -2723,6 +3165,11 @@
                                         setExpandedDirs={setExpandedDirs}
                                         onUploadToFolder={handleUploadToFolder}
                                         onCreateFolder={handleCreateFolder}
+                                        onDragOver={handleDragOver}
+                                        onDragEnter={handleDragEnter}
+                                        onDragLeave={handleDragLeave}
+                                        onDrop={handleFileDrop}
+                                        onUploadFolderToPath={handleUploadFolderToPath}
                                     />
                                 )}
                             </div>
