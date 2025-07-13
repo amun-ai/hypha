@@ -438,13 +438,13 @@
             const getServiceUrl = (service) => {
                 // For installed apps: [workspace]/apps/[service_id]@[app_id]/
  
-                return `${serverUrl}/${workspace}/apps/${service.id}@${app.id}/`;
+                return `${serverUrl}/${workspace}/services/${service.id.split(":")[1]}@${app.id}`;
                 
             };
             
             const getAppUrl = (service) => {
                 // For ASGI apps, same URL as service URL
-                return getServiceUrl(service);
+                return `${serverUrl}/${workspace}/apps/${service.id.split(":")[1]}@${app.id}/`;
             };
             
             return (
@@ -625,13 +625,12 @@
                 // For running apps: [workspace]/apps/[client_id]:[service_id]/
                 const serviceName = service.id.split('@')[0];
                 
-                return `${serverUrl}/${workspace}/apps/${app.id}:${serviceName}/`;
+                return `${serverUrl}/${workspace}/services/${serviceName.split("/")[1]}`;
                 
             };
             
             const getAppUrl = (service) => {
-                // For ASGI apps, same URL as service URL
-                return getServiceUrl(service);
+                return `${serverUrl}/${workspace}/apps/${service.id.split("/")[1]}/`;
             };
             
             return (

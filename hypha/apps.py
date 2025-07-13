@@ -684,6 +684,7 @@ class ServerAppController:
         app_info["services"] = [
             svc.model_dump(mode="json") for svc in collected_services
         ]
+        metadata["services"] = app_info["services"]
         return app_info
 
     async def stop(

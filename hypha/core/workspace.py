@@ -1709,7 +1709,7 @@ class WorkspaceManager:
         # check if service_id is one of the service.id in the app
         found = False
         for svc in app_info.services:
-            if svc.id == service_id:
+            if svc.id.endswith(":" + service_id):
                 found = True
                 break
         if not found:
