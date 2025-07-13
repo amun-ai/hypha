@@ -614,12 +614,14 @@ class ServerAppController:
             "id": full_client_id,
             "app_id": app_id,
             "workspace": workspace,
+            "client_id": client_id,
             "config": {},
         }
 
         def service_added(info: dict):
             if info["id"].startswith(full_client_id + ":"):
-                collected_services.append(ServiceInfo.model_validate(info))
+                sinfo = ServiceInfo.model_validate(info)
+                collected_services.append(sinfo)
             if info["id"] == full_client_id + ":default":
                 for key in ["config", "name", "description"]:
                     if info.get(key):
@@ -679,6 +681,9 @@ class ServerAppController:
             app_info["service_id"] = (
                 full_client_id + ":" + wait_for_service + "@" + app_id
             )
+        app_info["services"] = [
+            svc.model_dump(mode="json") for svc in collected_services
+        ]
         return app_info
 
     async def stop(

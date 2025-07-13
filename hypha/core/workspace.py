@@ -1685,7 +1685,6 @@ class WorkspaceManager:
 
         assert service_id and service_id not in [
             "*",
-            "default",
             "built-in",
         ], f"Invalid service id: {service_id}"
 
@@ -1710,7 +1709,7 @@ class WorkspaceManager:
         # check if service_id is one of the service.id in the app
         found = False
         for svc in app_info.services:
-            if svc.id.endswith(":" + service_id):
+            if svc.id == service_id:
                 found = True
                 break
         if not found:
