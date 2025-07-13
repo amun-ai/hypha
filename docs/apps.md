@@ -363,6 +363,7 @@ You can configure startup behavior in two ways:
 ```
 
 2. **As part of the `config` parameter in `install()`:**
+
 ```python
 # Install app with comprehensive startup configuration
 app_info = await controller.install(
@@ -377,12 +378,15 @@ app_info = await controller.install(
     overwrite=True
 )
 
+```
+
 **Priority Order:**
 When the same startup parameter is specified in multiple places, the priority order is:
 1. **Explicit parameters in `start()` method** (highest priority)
 2. **`startup_config` in `config` parameter of `install()` method** (medium priority)  
 3. **`startup_config` in HTML `<config>` section** (lowest priority)
 
+```python
 # Start app - will use the startup_config defaults
 started_app = await controller.start(app_info.id)
 
