@@ -757,7 +757,7 @@ async def test_lazy_service_web_python_app(fastapi_server, test_user_token):
             / "hypha"
             / "templates"
             / "ws"
-            / "fastapi_app_template.html"
+            / "fastapi_app_template.hypha.html"
         )
         .open(encoding="utf-8")
         .read()
@@ -838,7 +838,7 @@ async def test_service_collection_comparison(fastapi_server, test_user_token):
             / "hypha"
             / "templates"
             / "ws"
-            / "fastapi_app_template.html"
+            / "fastapi_app_template.hypha.html"
         )
         .open(encoding="utf-8")
         .read()
