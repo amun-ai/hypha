@@ -251,11 +251,7 @@ class ASGIRoutingMiddleware:
                         )
                         # intercept the request if it's an ASGI service
                         # Check multiple possible ways the service type might be stored
-                        service_type = (
-                            service.get("config", {}).get("type")
-                            or service.get("type")
-                            or getattr(service, "type", None)
-                        )
+                        service_type = getattr(service, "type", None)
                         if service_type == "asgi":
                             # Call the ASGI app with manually provided receive and send
                             await service.serve(
@@ -273,7 +269,7 @@ class ASGIRoutingMiddleware:
                             await send(
                                 {
                                     "type": "http.response.start",
-                                    "status": 404,
+                                    "status": 500,
                                     "headers": [
                                         [b"content-type", b"text/plain"],
                                     ],
@@ -282,7 +278,7 @@ class ASGIRoutingMiddleware:
                             await send(
                                 {
                                     "type": "http.response.body",
-                                    "body": b"Not Found",
+                                    "body": b"Invalid service type: " + str(service_type).encode(),
                                     "more_body": False,
                                 }
                             )

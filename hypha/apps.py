@@ -242,7 +242,7 @@ class ServerAppController:
 
                 source = temp.render(
                     hypha_main_version=main_version,
-                    hypha_rpc_websocket_mjs=self.public_base_url
+                    hypha_rpc_websocket_mjs=self.local_base_url
                     + "/assets/hypha-rpc-websocket.mjs",
                     config={k: config[k] for k in config if k in PLUGIN_CONFIG_FIELDS},
                     script=config["script"],
@@ -270,7 +270,7 @@ class ServerAppController:
             config["entry_point"] = entry_point
             source = temp.render(
                 hypha_main_version=main_version,
-                hypha_rpc_websocket_mjs=self.public_base_url
+                hypha_rpc_websocket_mjs=self.local_base_url
                 + "/assets/hypha-rpc-websocket.mjs",
                 script=source,
                 source_hash=mhash,
@@ -674,7 +674,21 @@ class ServerAppController:
             manifest.description = manifest.description or app_info.get(
                 "description", ""
             )
-            manifest.services = collected_services
+            
+            # Replace client ID with * in service IDs for manifest storage
+            manifest_services = []
+            for svc in collected_services:
+                manifest_svc = svc.model_copy()
+                service_id_parts = manifest_svc.id.split(":")
+                if len(service_id_parts) >= 2:
+                    # Replace client ID with * (workspace/client_id -> workspace/*)
+                    workspace_client = service_id_parts[0]
+                    workspace_part = workspace_client.rsplit("/", 1)[0]  # Get workspace part
+                    service_name = ":".join(service_id_parts[1:])  # Get service name part
+                    manifest_svc.id = f"{workspace_part}/*:{service_name}"
+                manifest_services.append(manifest_svc)
+            
+            manifest.services = manifest_services
             manifest = ApplicationManifest.model_validate(
                 manifest.model_dump(mode="json")
             )
@@ -707,7 +721,7 @@ class ServerAppController:
         app_info["services"] = [
             svc.model_dump(mode="json") for svc in collected_services
         ]
-        metadata["services"] = app_info["services"]
+        self._sessions[full_client_id]["services"] = app_info["services"]
         return app_info
 
     async def stop(
