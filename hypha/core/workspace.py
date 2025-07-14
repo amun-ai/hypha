@@ -1237,6 +1237,11 @@ class WorkspaceManager:
         if "/" not in client_id:
             client_id = f"{ws}/{client_id}"
         service.config.workspace = ws
+
+        # Add null check for service.id before calling split()
+        if service.id is None:
+            raise ValueError("Service ID cannot be None")
+
         if "/" not in service.id:
             service.id = f"{ws}/{service.id}"
         assert ":" in service.id, "Service id info must contain ':'"
@@ -1377,6 +1382,11 @@ class WorkspaceManager:
         assert service_id.count("/") <= 1, "Service id must contain at most one '/'"
         assert service_id.count(":") <= 1, "Service id must contain at most one ':'"
         assert service_id.count("@") <= 1, "Service id must contain at most one '@'"
+
+        # Add null check for service_id before calling split()
+        if service_id is None:
+            raise ValueError("Service ID cannot be None")
+
         if "/" not in service_id:
             service_id = f"{context['ws']}/{service_id}"
         if ":" not in service_id:
@@ -1860,6 +1870,11 @@ class WorkspaceManager:
         assert (
             service_id != "*"
         ), "Invalid service id: {service_id}, it cannot be a wildcard."
+
+        # Add null check for service_id before calling split()
+        if service_id is None:
+            raise ValueError("Service ID cannot be None")
+
         # no need to validate the context
         # self.validate_context(context, permission=UserPermission.read)
         try:

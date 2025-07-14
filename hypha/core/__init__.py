@@ -154,11 +154,14 @@ class ServiceInfo(BaseModel):
                     value if isinstance(value, str) else value.decode("utf-8")
                 )
             elif field_info.annotation in {list, List[str], Optional[List[str]]}:
-                config_data[field_name] = (
-                    value.split(",")
-                    if isinstance(value, str)
-                    else value.decode("utf-8").split(",")
-                )
+                if value is None:
+                    config_data[field_name] = None
+                else:
+                    config_data[field_name] = (
+                        value.split(",")
+                        if isinstance(value, str)
+                        else value.decode("utf-8").split(",")
+                    )
             else:
                 value_str = value if isinstance(value, str) else value.decode("utf-8")
                 config_data[field_name] = json.loads(value_str)
@@ -183,11 +186,14 @@ class ServiceInfo(BaseModel):
                     value if isinstance(value, str) else value.decode("utf-8")
                 )
             elif field_info.annotation in {list, List[str], Optional[List[str]]}:
-                config_data[field_name] = (
-                    value.split(",")
-                    if isinstance(value, str)
-                    else value.decode("utf-8").split(",")
-                )
+                if value is None:
+                    converted_data[field_name] = None
+                else:
+                    converted_data[field_name] = (
+                        value.split(",")
+                        if isinstance(value, str)
+                        else value.decode("utf-8").split(",")
+                    )
             else:
                 value_str = value if isinstance(value, str) else value.decode("utf-8")
                 converted_data[field_name] = json.loads(value_str)
