@@ -3268,8 +3268,8 @@
             const [am, setAM] = React.useState(null);
             const [selectedService, setSelectedService] = React.useState(null);
             const [isInstallingApp, setIsInstallingApp] = React.useState(false);
-            const [isLoadingSpinnerVisible, setIsLoadingSpinnerVisible] = React.useState(false);
-            const [loadingMessage, setLoadingMessage] = React.useState('Loading...');
+            const [isLoadingSpinnerVisible, setIsLoadingSpinnerVisible] = React.useState(true); // Show loading initially
+            const [loadingMessage, setLoadingMessage] = React.useState('Connecting to Hypha server...');
         
             // Expose spinner control functions globally for code editor and other components
             window.showLoadingSpinner = (message = 'Loading...') => {
@@ -3295,8 +3295,11 @@
                 // Connect to the Hypha server
                 const connectToServer = async () => {
                     try{
+                        setLoadingMessage('Connecting to Hypha server...');
                         const remoteServer = await hyphaWebsocketClient.connectToServer(config);
                         window.remoteServer = remoteServer;
+                        
+                        setLoadingMessage('Loading services...');
                         const newPanels = [];
                         try{
                             await remoteServer.getService('public/server-apps', { case_conversion: 'camel' });
@@ -3322,10 +3325,19 @@
                         catch(e){
                             console.log("Artifacts service not available");
                         }
+                        
+                        setLoadingMessage('Initializing workspace...');
                         setEnabledPanels([...enabledPanels, ...newPanels]);
                         setWs(remoteServer);
+                        
+                        // Hide loading overlay after successful connection
+                        setTimeout(() => {
+                            setIsLoadingSpinnerVisible(false);
+                        }, 500); // Small delay to show "Initializing workspace..." message
                     }
                     catch(e){
+                        // Hide loading overlay on error
+                        setIsLoadingSpinnerVisible(false);
                         // clear access token
                         document.cookie = 'access_token=; path=/; max-age=0; samesite=lax';
                         const redirectUrl = '/public/apps/hypha-login/?redirect=' + window.location.href;
@@ -3342,10 +3354,20 @@
                     if (!ws) {
                         return;
                     }
+                    
+                    // Show loading overlay for data fetching when switching panels
                     if (activePanel === 'dashboard') {
-                        setClients(await ws.listClients());
-                        setServices(await ws.listServices(config.workspace));
+                        setLoadingMessage('Loading dashboard data...');
+                        setIsLoadingSpinnerVisible(true);
+                        try {
+                            setClients(await ws.listClients());
+                            setServices(await ws.listServices(config.workspace));
+                        } finally {
+                            setIsLoadingSpinnerVisible(false);
+                        }
                     } else if (activePanel === 'applications') {
+                        setLoadingMessage('Loading applications...');
+                        setIsLoadingSpinnerVisible(true);
                         try {
                             const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
                             const apps = await controller.listApps();
@@ -3354,21 +3376,31 @@
                             setRunningApps(running);
                         } catch (e) {
                             alert(`Failed to list apps: ${e.message}`);
+                        } finally {
+                            setIsLoadingSpinnerVisible(false);
                         }
                     } else if (activePanel === 'files') {
+                        setLoadingMessage('Loading files...');
+                        setIsLoadingSpinnerVisible(true);
                         try {
                             const s3 = await ws.getService('public/s3-storage', { case_conversion: 'camel' });
                             const files = await s3.listFiles();
                             setFiles(files);
                         } catch (e) {
                             alert(`Failed to list files: ${e.message}`);
+                        } finally {
+                            setIsLoadingSpinnerVisible(false);
                         }
                     } else if (activePanel === 'artifacts') {
+                        setLoadingMessage('Loading artifacts...');
+                        setIsLoadingSpinnerVisible(true);
                         try {
                             const am = await ws.getService('public/artifact-manager', { case_conversion: 'camel' });
                             setAM(am);
                         } catch (e) {
                             alert(`Failed to list artifacts: ${e.message}`);
+                        } finally {
+                            setIsLoadingSpinnerVisible(false);
                         }
                     }
                 };
