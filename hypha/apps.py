@@ -368,10 +368,7 @@ class ServerAppController:
         if template and template != "raw_html":
             # Upload the main source file
             put_url = await self.artifact_manager.put_file(
-                artifact["id"],
-                file_path=config["entry_point"],
-                context=context,
-                use_proxy=False,
+                artifact["id"], file_path=config["entry_point"], use_proxy=False, context=context
             )
             async with httpx.AsyncClient() as client:
                 response = await client.put(put_url, data=source)
@@ -381,7 +378,7 @@ class ServerAppController:
         elif template == "raw_html":
             # Upload the raw HTML content
             put_url = await self.artifact_manager.put_file(
-                artifact["id"], file_path=entry_point, context=context, use_proxy=False
+                artifact["id"], file_path=entry_point, use_proxy=False, context=context
             )
             async with httpx.AsyncClient() as client:
                 response = await client.put(put_url, data=source)
@@ -424,10 +421,7 @@ class ServerAppController:
     ):
         """Add a file to the installed application."""
         put_url = await self.artifact_manager.put_file(
-            f"{app_id}",
-            file_path=file_path,
-            context=context,
-            use_proxy=False,
+            f"applications:{app_id}", file_path=file_path, use_proxy=False, context=context
         )
         response = httpx.put(put_url, data=file_content)
         assert response.status_code == 200, f"Failed to upload {file_path} to {app_id}"
