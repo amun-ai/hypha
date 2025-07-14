@@ -375,7 +375,7 @@ class ServerAppController:
             return updated_artifact_info.get("manifest", artifact_obj)
         return artifact_obj
 
-    async def add_file(
+    async def edit_file(
         self,
         app_id: str,
         file_path: str,
@@ -631,6 +631,14 @@ class ServerAppController:
                 entity_type="client",
             )
 
+        # Track that this app is being installed (for version="stage")
+        # This will help the register_service method know to skip app_id validation
+        if version == "stage":
+            # Add this app to the list of apps being installed
+            if not hasattr(self.store, '_apps_being_installed'):
+                self.store._apps_being_installed = set()
+            self.store._apps_being_installed.add(f"{workspace}/{app_id}")
+            
         # collecting services registered during the startup of the script
         collected_services: List[ServiceInfo] = []
         app_info = {
@@ -713,6 +721,10 @@ class ServerAppController:
             ) from exp
         finally:
             self.event_bus.off_local("service_added", service_added)
+            
+            # Clean up the tracking of apps being installed
+            if version == "stage" and hasattr(self.store, '_apps_being_installed'):
+                self.store._apps_being_installed.discard(f"{workspace}/{app_id}")
 
         if wait_for_service:
             app_info["service_id"] = (
@@ -852,7 +864,7 @@ class ServerAppController:
             "list_apps": self.list_apps,
             "list_running": self.list_running,
             "get_log": self.get_log,
-            "add_file": self.add_file,
+            "edit_file": self.edit_file,
             "remove_file": self.remove_file,
             "list_files": self.list_files,
             "edit": self.edit,

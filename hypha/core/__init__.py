@@ -387,6 +387,9 @@ class ApplicationManifest(Artifact):
     singleton: Optional[bool] = False  # whether the application is a singleton
     services: Optional[List[SerializeAsAny[ServiceInfo]]] = None  # for application
     startup_config: Optional[Dict[str, Any]] = None  # default startup configuration
+    service_selection_mode: Optional[str] = (
+        None  # default service selection mode for multiple instances
+    )
 
 
 class ServiceTypeInfo(BaseModel):

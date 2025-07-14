@@ -883,3 +883,221 @@ async def test_service_collection_comparison(fastapi_server, test_user_token):
     await controller.uninstall(app_info_webworker.id)
     await controller.uninstall(app_info_fastapi.id)
     await api.disconnect()
+
+
+async def test_service_selection_mode_with_multiple_instances(fastapi_server, test_user_token):
+    """Test service selection mode with multiple instances of an app."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+
+    # Stop all running apps first
+    for app in await controller.list_running():
+        await controller.stop(app["id"])
+
+    # Create a test app with service_selection_mode set to "random"
+    test_app_source = """
+    api.export({
+        async setup() {
+            console.log("Multi-instance test app initialized");
+        },
+        async getName() {
+            return "test-service-instance";
+        },
+        async getInstanceId() {
+            return Math.random().toString(36).substring(7);
+        },
+        async echo(message) {
+            return `Echo from instance: ${message}`;
+        },
+        async add(a, b) {
+            return a + b;
+        }
+    });
+    """
+
+    # Install the app with service_selection_mode configuration
+    app_info = await controller.install(
+        source=test_app_source,
+        config={
+            "name": "multi-instance-test-app",
+            "type": "window",
+            "service_selection_mode": "random",  # Set random selection mode
+        },
+        overwrite=True,
+    )
+
+    print(f"App installed with service_selection_mode: {app_info}")
+
+    # Launch two instances of the same app using the existing artifact
+    # Start the first instance using the installed app
+    config1 = await controller.start(
+        app_info["id"],
+        wait_for_service="default",
+    )
+
+    # Start the second instance using the same app artifact
+    config2 = await controller.start(
+        app_info["id"],
+        wait_for_service="default",
+    )
+
+    print(f"Instance 1 ID: {config1.id}")
+    print(f"Instance 2 ID: {config2.id}")
+
+    # Verify both instances are running
+    running_apps = await controller.list_running()
+    instance1 = find_item(running_apps, "id", config1.id)
+    instance2 = find_item(running_apps, "id", config2.id)
+    
+    assert instance1 is not None, "First instance should be running"
+    assert instance2 is not None, "Second instance should be running"
+
+    # Now test service selection - this should work without error due to random selection mode
+    # Test 1: Using get_service with app_id should use the app's service_selection_mode
+    try:
+        service = await api.get_service(f"default@{app_info.id}")
+        assert service is not None, "Service should be accessible with random selection mode"
+        
+        # Test that the service actually works
+        echo_result = await service.echo("test message")
+        assert "Echo from instance: test message" in echo_result
+        
+        print("✅ Service selection with app_id works correctly")
+        
+    except Exception as e:
+        print(f"❌ Service selection with app_id failed: {e}")
+        raise
+
+    # Test 2: Test multiple calls to verify random selection is working
+    # (We can't predict which instance will be selected, but all calls should succeed)
+    successful_calls = 0
+    for i in range(5):
+        try:
+            service = await api.get_service(f"default@{app_info.id}")
+            result = await service.getName()
+            assert result == "test-service-instance"
+            successful_calls += 1
+        except Exception as e:
+            print(f"Call {i+1} failed: {e}")
+            
+    assert successful_calls == 5, f"All 5 calls should succeed, but only {successful_calls} did"
+    print("✅ Multiple service selection calls all succeeded")
+
+    # Test 3: Test that explicit mode parameter still takes precedence
+    try:
+        # Try to get the first instance specifically (should work if there are multiple)
+        service = await api.get_service(f"default@{app_info.id}", {"mode": "first"})
+        assert service is not None, "Service should be accessible with explicit 'first' mode"
+        
+        result = await service.echo("explicit mode test")
+        assert "Echo from instance: explicit mode test" in result
+        
+        print("✅ Explicit mode parameter takes precedence")
+        
+    except Exception as e:
+        print(f"❌ Explicit mode test failed: {e}")
+        raise
+
+    # Test 4: Verify that without app_id, it would fail with multiple instances
+    # This should demonstrate the value of the service_selection_mode feature
+    try:
+        # This should fail because there are multiple instances and no selection mode
+        service = await api.get_service("default", {"mode": "exact"})
+        assert False, "Should have failed with exact mode and multiple instances"
+    except Exception as e:
+        print(f"✅ Expected failure with exact mode and multiple instances: {e}")
+
+    # Test 5: Test HTTP service endpoint without _mode parameter
+    # This should use the app's service_selection_mode (random) and work correctly
+    workspace = api.config["workspace"]
+    
+    # Test HTTP service endpoint
+    service_url = f"{SERVER_URL}/{workspace}/services/default@{app_info.id}/echo"
+    response = requests.post(
+        service_url,
+        json={"message": "HTTP service test"},
+        headers={"Authorization": f"Bearer {test_user_token}"}
+    )
+    
+    assert response.status_code == 200, f"HTTP service request failed: {response.status_code} {response.text}"
+    result = response.json()
+    assert "Echo from instance: HTTP service test" in result, f"Unexpected response: {result}"
+    print("✅ HTTP service endpoint works with service_selection_mode")
+
+    # Test multiple HTTP service calls to verify random selection is working
+    successful_http_calls = 0
+    for i in range(3):
+        response = requests.post(
+            service_url,
+            json={"message": f"HTTP test {i+1}"},
+            headers={"Authorization": f"Bearer {test_user_token}"}
+        )
+        if response.status_code == 200:
+            successful_http_calls += 1
+            
+    assert successful_http_calls == 3, f"All 3 HTTP calls should succeed, but only {successful_http_calls} did"
+    print("✅ Multiple HTTP service calls all succeeded")
+
+    # Test 6: Test HTTP app endpoint without _mode parameter
+    # This should also use the app's service_selection_mode (random) and work correctly
+    app_url = f"{SERVER_URL}/{workspace}/apps/{app_info.id}/add"
+    response = requests.post(
+        app_url,
+        json={"a": 10, "b": 20},
+        headers={"Authorization": f"Bearer {test_user_token}"}
+    )
+    
+    assert response.status_code == 200, f"HTTP app request failed: {response.status_code} {response.text}"
+    result = response.json()
+    assert result == 30, f"Expected 30, got {result}"
+    print("✅ HTTP app endpoint works with service_selection_mode")
+
+    # Test multiple HTTP app calls to verify random selection is working
+    successful_app_calls = 0
+    for i in range(3):
+        response = requests.post(
+            app_url,
+            json={"a": i, "b": i * 2},
+            headers={"Authorization": f"Bearer {test_user_token}"}
+        )
+        if response.status_code == 200:
+            result = response.json()
+            expected = i + (i * 2)
+            assert result == expected, f"Expected {expected}, got {result}"
+            successful_app_calls += 1
+            
+    assert successful_app_calls == 3, f"All 3 HTTP app calls should succeed, but only {successful_app_calls} did"
+    print("✅ Multiple HTTP app calls all succeeded")
+
+    # Test 7: Test that HTTP requests without app_id would fail with multiple instances
+    # This demonstrates the value of the service_selection_mode feature for HTTP endpoints
+    try:
+        # This should fail because there are multiple instances and no selection mode
+        service_url_no_app = f"{SERVER_URL}/{workspace}/services/default/echo"
+        response = requests.post(
+            service_url_no_app,
+            json={"message": "Should fail"},
+            headers={"Authorization": f"Bearer {test_user_token}"}
+        )
+        # Should return an error status code
+        assert response.status_code != 200, "HTTP request should have failed with multiple instances"
+        print(f"✅ Expected HTTP failure without app_id: {response.status_code}")
+    except Exception as e:
+        print(f"✅ Expected HTTP failure without app_id: {e}")
+
+    # Clean up
+    await controller.stop(config1.id)
+    await controller.stop(config2.id)
+    await controller.uninstall(app_info.id)
+
+    print("✅ Service selection mode test completed successfully!")
+
+    await api.disconnect()

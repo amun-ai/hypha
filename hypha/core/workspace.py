@@ -1223,7 +1223,7 @@ class WorkspaceManager:
         self,
         service: ServiceInfo = Field(..., description="Service info"),
         config: Optional[dict] = Field(
-            None, description="Options for registering service"
+            None, description="Options for registering service, available options: skip_app_id_validation (bool, default: False) - skip validation of app_id during registration"
         ),
         context: Optional[dict] = None,
     ):
@@ -1232,6 +1232,7 @@ class WorkspaceManager:
         ws = context["ws"]
         client_id = context["from"]
         user_info = UserInfo.model_validate(context["user"])
+        config = config or {}
         if not user_info.check_permission(ws, UserPermission.read_write):
             raise PermissionError(f"Permission denied for workspace {ws}")
         if "/" not in client_id:
@@ -1240,10 +1241,39 @@ class WorkspaceManager:
         if "/" not in service.id:
             service.id = f"{ws}/{service.id}"
         assert ":" in service.id, "Service id info must contain ':'"
-
+        
+        # Get workspace from service id for validation
+        workspace = service.id.split("/")[0]
         service_name = service.id.split(":")[1]
         service.name = service.name or service_name
-        workspace = service.id.split("/")[0]
+        
+        if service.app_id:
+            assert "/" not in service.app_id, "App id info must not contain '/'"
+            
+            # Validate that the app_id exists in the artifact manager 
+            # Only validate real app_ids, not the wildcard value "*"
+            # Skip validation if explicitly requested in config
+            skip_validation = config.get("skip_app_id_validation", False)
+            
+            # Also skip validation if the app is currently being installed
+            # (tracked during the "stage" version installation process)
+            if not skip_validation and hasattr(self._store, '_apps_being_installed'):
+                app_key = f"{workspace}/{service.app_id}"
+                if app_key in self._store._apps_being_installed:
+                    skip_validation = True
+                    logger.info(f"Skipping app_id validation for service {service.id} - app {service.app_id} is being installed")
+            
+            if self._artifact_manager and service.app_id != "*" and not skip_validation:
+                try:
+                    await self._artifact_manager.read(
+                        f"{workspace}/{service.app_id}",
+                        context={"ws": workspace, "user": user_info.model_dump()}
+                    )
+                except Exception as e:
+                    raise ValueError(
+                        f"Invalid app_id '{service.app_id}': Application not found in workspace '{workspace}'. "
+                        f"Please ensure the application is properly installed before registering services for it."
+                    ) from e
 
         # Store all the info for client's built-in services
         if service_name == "built-in" and service.type == "built-in":
@@ -1301,7 +1331,11 @@ class WorkspaceManager:
             if isinstance(service.config.visibility, VisibilityEnum)
             else service.config.visibility
         )
-        key = f"services:{visibility}|{service.type}:{service.id}@{service.app_id}"
+        
+        # Handle None app_id by defaulting to "*"
+        app_id = service.app_id or "*"
+        service.app_id = app_id  # Store the normalized app_id back to the service object
+        key = f"services:{visibility}|{service.type}:{service.id}@{app_id}"
 
         if service_exists:
             # remove all the existing services
@@ -1453,11 +1487,30 @@ class WorkspaceManager:
         config = config or {}
         mode = config.get("mode")
         if mode is None:
-            # Set random mode for public services, since there can be many hypha servers
-            if workspace == "public":
-                mode = "random"
-            else:
-                mode = "exact"
+            # If app_id is provided, try to get service_selection_mode directly from artifact
+            if app_id != "*" and self._artifact_manager:
+                try:
+                    artifact = await self._artifact_manager.read(
+                        f"{workspace}/{app_id}"
+                    )
+                    if (
+                        artifact
+                        and artifact["manifest"]
+                        and artifact["manifest"].get("service_selection_mode")
+                    ):
+                        mode = artifact["manifest"]["service_selection_mode"]
+                except Exception:
+                    logger.warning(
+                        f"Failed to read artifact {workspace}/{app_id} for retrieving service selection mode"
+                    )
+
+            # If mode is still None, apply default logic
+            if mode is None:
+                # Set random mode for public services, since there can be many hypha servers
+                if workspace == "public":
+                    mode = "random"
+                else:
+                    mode = "exact"
         if mode == "exact":
             assert (
                 len(keys) == 1

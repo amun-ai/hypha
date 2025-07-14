@@ -732,6 +732,303 @@ readinessProbe:
 
 (Make sure to replace `https://my-hypha-server.org` with your actual hypha server URL)
 
+### Application-Level Service Configuration with App ID
+
+Hypha supports application-level configuration for services through the `app_id` parameter. This feature allows you to group distributed services under a single application manifest and share configuration settings across all services belonging to the same application.
+
+#### Creating Application Manifests
+
+An application manifest defines the configuration and metadata for a group of related services. You can create applications using the artifact manager and include app-level settings like `service_selection_mode`.
+
+<!-- tabs:start -->
+#### ** Python **
+
+```python
+from hypha_rpc import connect_to_server
+
+async def create_application(server_url, token):
+    server = await connect_to_server({
+        "server_url": server_url,
+        "token": token
+    })
+    
+    # Get the artifact manager
+    artifact_manager = await server.get_service("public/artifact-manager")
+    
+    # Create an application manifest
+    app_manifest = {
+        "name": "my-distributed-app",
+        "description": "A distributed application with multiple service instances",
+        "type": "application",
+        "service_selection_mode": "random",  # How to select between multiple instances
+        "services": [
+            {
+                "id": "worker-service",
+                "name": "Worker Service",
+                "type": "compute",
+                "description": "A compute worker service"
+            },
+            {
+                "id": "storage-service", 
+                "name": "Storage Service",
+                "type": "storage",
+                "description": "A storage service"
+            }
+        ]
+    }
+    
+    # Create the application artifact
+    app_artifact = await artifact_manager.create(
+        type="application",
+        manifest=app_manifest,
+        alias="my-distributed-app"
+    )
+    
+    # Commit the artifact to make it available
+    await artifact_manager.commit(artifact_id=app_artifact.id)
+    
+    print(f"Application created with ID: {app_artifact.id}")
+    return app_artifact
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(create_application("https://ai.imjoy.io", "your-token"))
+```
+
+#### ** JavaScript **
+
+```javascript
+async function createApplication(serverUrl, token) {
+    const server = await hyphaWebsocketClient.connectToServer({
+        server_url: serverUrl,
+        token: token
+    });
+    
+    // Get the artifact manager
+    const artifactManager = await server.getService("public/artifact-manager");
+    
+    // Create an application manifest
+    const appManifest = {
+        name: "my-distributed-app",
+        description: "A distributed application with multiple service instances",
+        type: "application",
+        service_selection_mode: "random",  // How to select between multiple instances
+        services: [
+            {
+                id: "worker-service",
+                name: "Worker Service",
+                type: "compute",
+                description: "A compute worker service"
+            },
+            {
+                id: "storage-service",
+                name: "Storage Service", 
+                type: "storage",
+                description: "A storage service"
+            }
+        ]
+    };
+    
+    // Create the application artifact
+    const appArtifact = await artifactManager.create({
+        type: "application",
+        manifest: appManifest,
+        alias: "my-distributed-app",
+        _rkwargs: true
+    });
+    
+    // Commit the artifact to make it available
+    await artifactManager.commit({artifact_id: appArtifact.id, _rkwargs: true});
+    
+    console.log(`Application created with ID: ${appArtifact.id}`);
+    return appArtifact;
+}
+
+// Usage
+createApplication("https://ai.imjoy.io", "your-token");
+```
+<!-- tabs:end -->
+
+#### Registering Services with App ID
+
+Once you have created an application manifest, you can register services with the `app_id` parameter to associate them with the application. This allows the services to inherit app-level configuration.
+
+<!-- tabs:start -->
+#### ** Python **
+
+```python
+from hypha_rpc import connect_to_server
+
+async def register_worker_service(server_url, token, app_id):
+    server = await connect_to_server({
+        "server_url": server_url,
+        "token": token
+    })
+    
+    def process_task(task_data):
+        # Process the task
+        print(f"Processing task: {task_data}")
+        return f"Task completed: {task_data}"
+    
+    def get_status():
+        return {"status": "ready", "load": 0.5}
+    
+    # Register service with app_id
+    service_info = await server.register_service({
+        "id": "worker-service-instance-1",
+        "name": "Worker Service Instance 1",
+        "type": "compute",
+        "app_id": app_id,  # Associate with the application
+        "config": {
+            "visibility": "public"
+        },
+        "process_task": process_task,
+        "get_status": get_status
+    })
+    
+    print(f"Service registered: {service_info.id}")
+    print(f"Associated with app: {app_id}")
+    
+    # Keep the service running
+    await server.serve()
+
+if __name__ == "__main__":
+    import asyncio
+    # Use the app_id from the application you created
+    asyncio.run(register_worker_service("https://ai.imjoy.io", "your-token", "my-distributed-app"))
+```
+
+#### ** JavaScript **
+
+```javascript
+async function registerWorkerService(serverUrl, token, appId) {
+    const server = await hyphaWebsocketClient.connectToServer({
+        server_url: serverUrl,
+        token: token
+    });
+    
+    function processTask(taskData) {
+        // Process the task
+        console.log(`Processing task: ${taskData}`);
+        return `Task completed: ${taskData}`;
+    }
+    
+    function getStatus() {
+        return {status: "ready", load: 0.5};
+    }
+    
+    // Register service with app_id
+    const serviceInfo = await server.registerService({
+        id: "worker-service-instance-1",
+        name: "Worker Service Instance 1",
+        type: "compute",
+        app_id: appId,  // Associate with the application
+        config: {
+            visibility: "public"
+        },
+        process_task: processTask,
+        get_status: getStatus
+    });
+    
+    console.log(`Service registered: ${serviceInfo.id}`);
+    console.log(`Associated with app: ${appId}`);
+}
+
+// Usage
+registerWorkerService("https://ai.imjoy.io", "your-token", "my-distributed-app");
+```
+<!-- tabs:end -->
+
+#### Service Selection Modes
+
+The `service_selection_mode` in the application manifest controls how Hypha selects between multiple service instances when accessing services by name. This is particularly useful for distributed applications where you may have multiple instances of the same service running.
+
+**Available selection modes:**
+- `"random"`: Randomly select from available instances
+- `"first"`: Always use the first available instance
+- `"last"`: Always use the last available instance
+- `"exact"`: Require exact service ID match (default behavior)
+
+#### Using Services with App-Level Configuration
+
+When you have multiple service instances registered with the same `app_id`, you can access them using the service name with the app ID, and Hypha will automatically apply the selection mode from the application manifest.
+
+<!-- tabs:start -->
+#### ** Python **
+
+```python
+from hypha_rpc import connect_to_server
+
+async def use_distributed_service(server_url, token):
+    server = await connect_to_server({
+        "server_url": server_url,
+        "token": token
+    })
+    
+    # Access service by name with app_id
+    # Hypha will use the service_selection_mode from the application manifest
+    worker_service = await server.get_service("worker-service@my-distributed-app")
+    
+    # Call the service - Hypha will automatically select an instance
+    # based on the app's service_selection_mode (e.g., "random")
+    result = await worker_service.process_task("important-computation")
+    print(f"Result: {result}")
+    
+    # Check status of the selected instance
+    status = await worker_service.get_status()
+    print(f"Service status: {status}")
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(use_distributed_service("https://ai.imjoy.io", "your-token"))
+```
+
+#### ** JavaScript **
+
+```javascript
+async function useDistributedService(serverUrl, token) {
+    const server = await hyphaWebsocketClient.connectToServer({
+        server_url: serverUrl,
+        token: token
+    });
+    
+    // Access service by name with app_id
+    // Hypha will use the service_selection_mode from the application manifest
+    const workerService = await server.getService("worker-service@my-distributed-app");
+    
+    // Call the service - Hypha will automatically select an instance
+    // based on the app's service_selection_mode (e.g., "random")
+    const result = await workerService.process_task("important-computation");
+    console.log(`Result: ${result}`);
+    
+    // Check status of the selected instance
+    const status = await workerService.get_status();
+    console.log(`Service status: ${status}`);
+}
+
+// Usage
+useDistributedService("https://ai.imjoy.io", "your-token");
+```
+<!-- tabs:end -->
+
+#### Benefits of App-Level Configuration
+
+1. **Centralized Configuration**: All services belonging to an application share the same configuration, making it easier to manage distributed systems.
+
+2. **Automatic Load Balancing**: With `service_selection_mode` set to `"random"`, requests are automatically distributed across available service instances.
+
+3. **Service Discovery**: Services can be accessed by logical names rather than specific instance IDs, making the system more flexible.
+
+4. **Validation**: Hypha validates that the `app_id` exists before registering services, preventing configuration errors.
+
+5. **Scalability**: You can easily add or remove service instances without changing client code.
+
+This feature is particularly useful for:
+- **Microservices architectures** where you have multiple instances of the same service
+- **Distributed computing** where you want to balance load across worker nodes
+- **High availability setups** where you need redundant service instances
+- **Development environments** where you want to easily switch between different service configurations
+
 ### Custom Initialization and Service Integration with Hypha Server
 
 Hypha's flexibility allows services to be registered from scripts running on the same host as the server or on a different one. To further accommodate complex applications, Hypha supports the initiation of "built-in" services in conjunction with server startup. This can be achieved using the `--startup-functions` option.
