@@ -245,8 +245,7 @@ class ServerAppController:
 
                 source = temp.render(
                     hypha_main_version=main_version,
-                    hypha_rpc_websocket_mjs=self.public_base_url
-                    + "/assets/hypha-rpc-websocket.mjs",
+                    hypha_rpc_websocket_mjs="/assets/hypha-rpc-websocket.mjs",
                     config={k: config[k] for k in config if k in PLUGIN_CONFIG_FIELDS},
                     script=config["script"],
                     requirements=config["requirements"],
@@ -273,8 +272,7 @@ class ServerAppController:
             config["entry_point"] = entry_point
             source = temp.render(
                 hypha_main_version=main_version,
-                hypha_rpc_websocket_mjs=self.public_base_url
-                + "/assets/hypha-rpc-websocket.mjs",
+                hypha_rpc_websocket_mjs="/assets/hypha-rpc-websocket.mjs",
                 script=source,
                 source_hash=mhash,
                 config=config,
