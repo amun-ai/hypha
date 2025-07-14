@@ -422,7 +422,7 @@ class ServerAppController:
     ):
         """Add a file to the installed application."""
         put_url = await self.artifact_manager.put_file(
-            f"applications:{app_id}",
+            f"{app_id}",
             file_path=file_path,
             use_proxy=False,
             context=context,
@@ -618,10 +618,12 @@ class ServerAppController:
         server_url = self.local_base_url
         local_url = (
             f"{entry_point}?"
-            + f"server_url={server_url}&client_id={client_id}&workspace={workspace}"
+            + f"client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
+            + f"&server_url={server_url}"
             + (f"&token={token}" if token else "")
             + (f"&version={version}" if version else "")
+            + (f"&use_proxy=false")
         )
         server_url = self.public_base_url
         public_url = (
