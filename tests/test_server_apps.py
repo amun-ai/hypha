@@ -346,22 +346,22 @@ async def test_app_id_parameter(fastapi_server, test_user_token):
         await controller.uninstall("test-app-123")
     except Exception:
         pass  # May have been auto-deleted on commit failure
-    
+
     try:
         await controller.uninstall(app_info2["id"])
     except Exception:
         pass
-        
+
     try:
         await controller.uninstall("launch-test-456")
     except Exception:
         pass
-        
+
     try:
         await controller.uninstall(config2.app_id)
     except Exception:
         pass
-        
+
     try:
         await controller.uninstall("test-app-modified")
     except Exception:

@@ -1456,12 +1456,20 @@ class WorkspaceManager:
             # If app_id is provided, try to get service_selection_mode directly from artifact
             if app_id != "*" and self._artifact_manager:
                 try:
-                    artifact = await self._artifact_manager.read(f"{workspace}/{app_id}")
-                    if artifact and artifact["manifest"] and artifact["manifest"].get("service_selection_mode"):
+                    artifact = await self._artifact_manager.read(
+                        f"{workspace}/{app_id}"
+                    )
+                    if (
+                        artifact
+                        and artifact["manifest"]
+                        and artifact["manifest"].get("service_selection_mode")
+                    ):
                         mode = artifact["manifest"]["service_selection_mode"]
                 except Exception:
-                    logger.warning(f"Failed to read artifact {f"{workspace}/{app_id}"} for retrieving service selection mode")
-            
+                    logger.warning(
+                        f"Failed to read artifact {workspace}/{app_id} for retrieving service selection mode"
+                    )
+
             # If mode is still None, apply default logic
             if mode is None:
                 # Set random mode for public services, since there can be many hypha servers
