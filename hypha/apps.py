@@ -307,6 +307,12 @@ class ServerAppController:
         # startup_config is now handled automatically by convert_config_to_artifact
         # if it exists in the config
 
+        # Store startup_context with workspace and user info from installation time
+        artifact_obj["startup_context"] = {
+            "ws": context["ws"],
+            "user": context["user"]
+        }
+
         ApplicationManifest.model_validate(artifact_obj)
 
         try:
@@ -469,6 +475,11 @@ class ServerAppController:
         await self.artifact_manager.commit(
             f"applications:{app_id}", version=version, context=context
         )
+        # After commit, read the updated artifact to get the collected services
+        updated_artifact_info = await self.artifact_manager.read(
+            f"applications:{app_id}", version=version, context=context
+        )
+        return updated_artifact_info.get("manifest", {})
 
     async def uninstall(self, app_id: str, context: Optional[dict] = None) -> None:
         """Uninstall an application by removing its artifact."""
@@ -540,7 +551,7 @@ class ServerAppController:
         if timeout is None and "timeout" in startup_config:
             timeout = startup_config["timeout"]
         else:
-            timeout = 60
+            timeout = 120
         if wait_for_service is None and "wait_for_service" in startup_config:
             wait_for_service = startup_config["wait_for_service"]
         # Only apply startup_config if stop_after_inactive is None (not explicitly set)
@@ -631,14 +642,6 @@ class ServerAppController:
                 entity_type="client",
             )
 
-        # Track that this app is being installed (for version="stage")
-        # This will help the register_service method know to skip app_id validation
-        if version == "stage":
-            # Add this app to the list of apps being installed
-            if not hasattr(self.store, '_apps_being_installed'):
-                self.store._apps_being_installed = set()
-            self.store._apps_being_installed.add(f"{workspace}/{app_id}")
-            
         # collecting services registered during the startup of the script
         collected_services: List[ServiceInfo] = []
         app_info = {
@@ -675,7 +678,7 @@ class ServerAppController:
 
             # Give some time for additional services to be registered (e.g., from setup() method)
             # This is particularly important during verification/installation to collect all services
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(2.0)
 
             # save the services
             manifest.name = manifest.name or app_info.get("name", "Untitled App")
@@ -708,23 +711,31 @@ class ServerAppController:
             )
 
         except asyncio.TimeoutError:
-            logs = await runner.get_log(full_client_id)
-            await runner.stop(full_client_id)
+            try:
+                logs = await runner.get_log(full_client_id)
+            except Exception:
+                logs = "No logs available (browser session not found)"
+            try:
+                await runner.stop(full_client_id)
+            except Exception:
+                pass  # Session might not exist or already stopped
             raise Exception(
                 f"Failed to start the app: {workspace}/{app_id}, timeout reached ({timeout}s), browser logs:\n{logs}"
             )
         except Exception as exp:
-            logs = await runner.get_log(full_client_id)
-            await runner.stop(full_client_id)
+            try:
+                logs = await runner.get_log(full_client_id)
+            except Exception:
+                logs = "No logs available (browser session not found)"
+            try:
+                await runner.stop(full_client_id)
+            except Exception:
+                pass  # Session might not exist or already stopped
             raise Exception(
                 f"Failed to start the app: {workspace}/{app_id}, error: {exp}, browser logs:\n{logs}"
             ) from exp
         finally:
             self.event_bus.off_local("service_added", service_added)
-            
-            # Clean up the tracking of apps being installed
-            if version == "stage" and hasattr(self.store, '_apps_being_installed'):
-                self.store._apps_being_installed.discard(f"{workspace}/{app_id}")
 
         if wait_for_service:
             app_info["service_id"] = (
@@ -733,7 +744,8 @@ class ServerAppController:
         app_info["services"] = [
             svc.model_dump(mode="json") for svc in collected_services
         ]
-        self._sessions[full_client_id]["services"] = app_info["services"]
+        if full_client_id in self._sessions:
+            self._sessions[full_client_id]["services"] = app_info["services"]
         return app_info
 
     async def stop(

@@ -1249,31 +1249,6 @@ class WorkspaceManager:
         
         if service.app_id:
             assert "/" not in service.app_id, "App id info must not contain '/'"
-            
-            # Validate that the app_id exists in the artifact manager 
-            # Only validate real app_ids, not the wildcard value "*"
-            # Skip validation if explicitly requested in config
-            skip_validation = config.get("skip_app_id_validation", False)
-            
-            # Also skip validation if the app is currently being installed
-            # (tracked during the "stage" version installation process)
-            if not skip_validation and hasattr(self._store, '_apps_being_installed'):
-                app_key = f"{workspace}/{service.app_id}"
-                if app_key in self._store._apps_being_installed:
-                    skip_validation = True
-                    logger.info(f"Skipping app_id validation for service {service.id} - app {service.app_id} is being installed")
-            
-            if self._artifact_manager and service.app_id != "*" and not skip_validation:
-                try:
-                    await self._artifact_manager.read(
-                        f"{workspace}/{service.app_id}",
-                        context={"ws": workspace, "user": user_info.model_dump()}
-                    )
-                except Exception as e:
-                    raise ValueError(
-                        f"Invalid app_id '{service.app_id}': Application not found in workspace '{workspace}'. "
-                        f"Please ensure the application is properly installed before registering services for it."
-                    ) from e
 
         # Store all the info for client's built-in services
         if service_name == "built-in" and service.type == "built-in":
@@ -1434,55 +1409,7 @@ class WorkspaceManager:
         key = f"services:*|*:{service_id}@{app_id}"
         keys = await self._redis.keys(key)
         if not keys:
-            # If no services found in Redis but app_id is provided, try to get from application artifact
-            if app_id != "*":
-                try:
-                    # Extract service name from service_id (remove workspace/client_id prefix)
-                    service_name = service_id.split(":")[-1]
-                    app_info, service_info = await self._get_application_by_service_id(
-                        app_id, service_name, workspace, context
-                    )
-
-                    # Create a ServiceInfo object with the application service information
-                    # We need to format the service_info from the application manifest to match what get_service_info expects
-                    service_info_dict = service_info.model_dump()
-
-                    # Update the service id to include the workspace prefix for consistency
-                    if "/" not in service_info_dict["id"]:
-                        service_info_dict["id"] = (
-                            f"{workspace}/{service_info_dict['id']}"
-                        )
-
-                    # Set the app_id
-                    service_info_dict["app_id"] = app_id
-
-                    # Ensure config is properly set
-                    if service_info_dict.get("config") is None:
-                        service_info_dict["config"] = {}
-
-                    # Set workspace in config
-                    service_info_dict["config"]["workspace"] = workspace
-
-                    # Check permissions for non-public services
-                    service_visibility = service_info_dict.get("config", {}).get(
-                        "visibility", "protected"
-                    )
-                    if (
-                        service_visibility != "public"
-                        and not user_info.check_permission(
-                            workspace, UserPermission.read
-                        )
-                    ):
-                        raise PermissionError(
-                            f"Permission denied for non-public service in workspace {workspace}"
-                        )
-
-                    # Return the ServiceInfo object
-                    return ServiceInfo.model_validate(service_info_dict)
-                except Exception:
-                    # If we can't find it in the application artifacts either, raise the original error
-                    pass
-
+            # If no services found in Redis, raise KeyError to trigger lazy loading
             raise KeyError(f"Service not found: {service_id}@{app_id}")
         config = config or {}
         mode = config.get("mode")
@@ -1491,7 +1418,7 @@ class WorkspaceManager:
             if app_id != "*" and self._artifact_manager:
                 try:
                     artifact = await self._artifact_manager.read(
-                        f"{workspace}/{app_id}"
+                        f"applications:{app_id}", context=context
                     )
                     if (
                         artifact
@@ -1499,11 +1426,10 @@ class WorkspaceManager:
                         and artifact["manifest"].get("service_selection_mode")
                     ):
                         mode = artifact["manifest"]["service_selection_mode"]
-                except Exception:
+                except Exception as e:
                     logger.warning(
-                        f"Failed to read artifact {workspace}/{app_id} for retrieving service selection mode"
+                        f"Failed to read artifact applications:{app_id} for retrieving service selection mode: {e}"
                     )
-
             # If mode is still None, apply default logic
             if mode is None:
                 # Set random mode for public services, since there can be many hypha servers
@@ -1792,10 +1718,16 @@ class WorkspaceManager:
             "built-in",
         ], f"Invalid service id: {service_id}"
 
-        applications = await self._artifact_manager.list_children(
-            f"{workspace}/applications",
-            context={"ws": workspace, "user": user_info.model_dump()},
-        )
+        # Try to find the application in both committed and staged versions
+        # First try committed applications
+        try:
+            applications = await self._artifact_manager.list_children(
+                f"{workspace}/applications",
+                context={"ws": workspace, "user": user_info.model_dump()},
+            )
+        except Exception:
+            logger.warning(f"Failed to list applications in workspace {workspace}, error: {traceback.format_exc()}")
+            applications = []
         applications = {
             item["manifest"]["id"]: ApplicationManifest.model_validate(item["manifest"])
             for item in applications
@@ -1836,18 +1768,32 @@ class WorkspaceManager:
     ):
         """Launch an installed application by service name."""
         # Get application and service info
+        # read the info using root user since the user might not able to read it
         app_info, service_info = await self._get_application_by_service_id(
-            app_id, service_id, workspace, context
+            app_id, service_id, workspace, context={"user": self._root_user.model_dump(), "ws": workspace}
         )
 
         if not self._server_app_controller:
             raise Exception(
                 "Failed to launch application: server apps controller is not configured."
             )
+        
+        # Use startup_context from the app_info if available, otherwise use current context
+        startup_context = getattr(app_info, "startup_context", None)
+        if startup_context:
+            # Create context using the stored workspace and user info from installation time
+            launch_context = {
+                "ws": startup_context["ws"],
+                "user": startup_context["user"]
+            }
+        else:
+            # Fallback to current context if no startup_context is available
+            launch_context = context
+        
         client_info = await self._server_app_controller.start(
             app_id,
             wait_for_service=service_id,
-            context=context,
+            context=launch_context,
         )
         return await self.get_service(
             f"{client_info['id']}:{service_id}",  # should not contain @app_id
@@ -1901,7 +1847,7 @@ class WorkspaceManager:
             service_id_without_app_id = service_id.split("@")[0]
             # Permission check will be handled by the get_service_api function
             svc_info = await self.get_service_info(
-                service_id_without_app_id, {"mode": config.mode}, context=context
+                service_id, {"mode": config.mode}, context=context
             )
             service_api = await self._rpc.get_remote_service(
                 svc_info.id,
@@ -1926,6 +1872,9 @@ class WorkspaceManager:
                     service_name = service_id.split("/")[1]
                 else:
                     service_name = service_id
+                # Remove client_id part if present (e.g., "*:default" -> "default")
+                if ":" in service_name:
+                    service_name = service_name.split(":", 1)[1]
                 assert (
                     ":" not in service_name
                 ), f"To automatically launch an application, the service name should not specify the client id, i.e. please remove the client id from the service name: {service_name}"

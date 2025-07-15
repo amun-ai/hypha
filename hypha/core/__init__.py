@@ -390,6 +390,7 @@ class ApplicationManifest(Artifact):
     service_selection_mode: Optional[str] = (
         None  # default service selection mode for multiple instances
     )
+    startup_context: Optional[Dict[str, Any]] = None  # context from installation time
 
 
 class ServiceTypeInfo(BaseModel):
