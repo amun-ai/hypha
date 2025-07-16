@@ -6,6 +6,7 @@ import requests
 import time
 
 import pytest
+import hypha_rpc
 from hypha_rpc import connect_to_server
 
 from . import WS_SERVER_URL, SERVER_URL, find_item, wait_for_workspace_ready
@@ -1107,7 +1108,6 @@ async def test_manifest_parameter_install(fastapi_server, test_user_token):
         "version": "1.0.0",
         "type": "application",
         "entry_point": "index.html",
-        "script": test_script,
         "requirements": [],
         "singleton": False,
         "daemon": False,
@@ -1116,7 +1116,7 @@ async def test_manifest_parameter_install(fastapi_server, test_user_token):
     
     # Test 1: Install with manifest parameter
     app_info = await controller.install(
-        source=None,  # No source needed when using manifest
+        source=test_script,
         manifest=manifest,
         overwrite=True,
     )
@@ -1129,7 +1129,7 @@ async def test_manifest_parameter_install(fastapi_server, test_user_token):
     # Test 2: Try to install with both manifest and config (should fail)
     try:
         await controller.install(
-            source=None,
+            source=test_script,
             manifest=manifest,
             config={"name": "Should not work"},
             overwrite=True,
@@ -1144,7 +1144,7 @@ async def test_manifest_parameter_install(fastapi_server, test_user_token):
     
     try:
         await controller.install(
-            source=None,
+            source=test_script,
             manifest=invalid_manifest,
             overwrite=True,
         )
@@ -1297,5 +1297,128 @@ async def test_new_app_management_functions(fastapi_server, test_user_token):
         print(f"Cleanup failed (app may have been already removed): {e}")
 
     print("✅ All new app management function tests passed!")
+
+    await api.disconnect()
+
+
+# Test Python code for the python-eval app type
+TEST_PYTHON_CODE = """
+import os
+from hypha_rpc.sync import connect_to_server
+
+server = connect_to_server({
+    "client_id": os.environ["HYPHA_CLIENT_ID"],
+    "server_url": os.environ["HYPHA_SERVER_URL"],
+    "workspace": os.environ["HYPHA_WORKSPACE"],
+    "method_timeout": 30,
+    "token": os.environ["HYPHA_TOKEN"],
+})
+
+# Simple Python test app
+print("Python eval app started!")
+
+# Basic calculations
+a = 10
+b = 20
+result = a + b
+print(f"Calculation: {a} + {b} = {result}")
+
+# Test some Python features
+numbers = [1, 2, 3, 4, 5]
+total = sum(numbers)
+print(f"Sum of {numbers} = {total}")
+
+# Create a simple data structure
+server.register_service({
+    "id": "default",
+    "name": "Test App",
+    "version": "1.0.0",
+    "calculate": lambda a, b: a + b,
+    "sum": lambda numbers: sum(numbers),
+    "setup": lambda: print("Setup function called"),
+})
+
+print("Python eval app completed successfully!")
+"""
+
+
+async def test_python_eval_apps(fastapi_server, test_user_token):
+    """Test Python eval app installation and execution."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+
+    # Test installing a Python eval app
+    app_info = await controller.install(
+        source=TEST_PYTHON_CODE,
+        manifest={
+            "name": "Test Python Eval App",
+            "type": "python-eval",
+            "version": "1.0.0",
+            "entry_point": "main.py",
+            "description": "A test Python evaluation app"
+        },
+        timeout=2,
+        overwrite=True,
+        wait_for_service=None,
+    )
+
+    assert app_info["name"] == "Test Python Eval App"
+    assert app_info["type"] == "python-eval"  # Python eval app type is preserved
+    assert app_info["entry_point"] == "main.py"
+    # The actual app type is stored in the manifest
+
+    # Test starting the Python eval app
+    started_app = await controller.start(
+        app_info["id"],
+        timeout=2,
+    )
+
+    assert "id" in started_app
+
+    # Verify the logs contain our expected output
+    logs = await controller.logs(started_app["id"])
+    assert len(logs) > 0
+    
+    # Check that our print statements are in the logs
+    log_text = " ".join(logs["log"])
+    assert "Python eval app started!" in log_text
+    assert "Calculation: 10 + 20 = 30" in log_text
+    assert "Sum of [1, 2, 3, 4, 5] = 15" in log_text
+    assert "Python eval app completed successfully!" in log_text
+
+    # Test stopping the session
+    await controller.stop(started_app["id"])
+
+    # Test launching a Python eval app with an error
+    error_python_code = """
+print("This will work")
+undefined_variable_that_will_cause_error
+print("This won't be reached")
+"""
+
+    await controller.uninstall(app_info["id"])
+
+    with pytest.raises(hypha_rpc.rpc.RemoteException):
+        await controller.install(
+            source=error_python_code,
+            manifest={
+                "name": "Test Python Eval App Error", 
+                "type": "python-eval",
+                "version": "1.0.0",
+                "entry_point": "error.py",
+            },
+            timeout=2,
+            overwrite=True,
+        )
+
+
 
     await api.disconnect()

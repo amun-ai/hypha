@@ -25,7 +25,7 @@ from hypha.core import WorkspaceInfo
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
 
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "INFO").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("apps")
 logger.setLevel(LOGLEVEL)
@@ -104,7 +104,7 @@ class AutoscalingManager:
             
             for session_id, session_info in current_instances.items():
                 client_id = session_info.get("id", "").split("/")[-1]
-                if client_id.endswith("_rlb"):  # Only consider load balancing enabled clients
+                if client_id.endswith("__rlb"):  # Only consider load balancing enabled clients
                     load = RedisRPCConnection.get_client_load(workspace, client_id)
                     total_load += load
                     active_instances += 1
@@ -172,7 +172,7 @@ class AutoscalingManager:
             
             for session_id, session_info in instances.items():
                 client_id = session_info.get("id", "").split("/")[-1]
-                if client_id.endswith("_rlb"):
+                if client_id.endswith("__rlb"):
                     load = RedisRPCConnection.get_client_load(workspace, client_id)
                     if load < min_load:
                         min_load = load
@@ -245,17 +245,39 @@ class ServerAppController:
         self.event_bus.on_local("client_disconnected", client_disconnected)
         store.set_server_app_controller(self)
 
-    async def get_runners(self):
+    async def get_runners(self, app_type: str = None):
         # start the browser runner
         server = await self.store.get_public_api()
-        svcs = await server.list_services("public/server-app-worker")
+        # Search for all server-app-worker services (including ones with unique IDs)
+        svcs = await server.list_services({"type": "server-app-worker"})
+        logger.info(f"Found {len(svcs)} server-app-worker services: {[svc['id'] for svc in svcs]}")
         if not svcs:
             return []
         runners = [await server.get_service(svc["id"]) for svc in svcs]
-        if runners:
-            return runners
-        else:
-            []
+        
+        # Filter runners by supported types if app_type is specified
+        if app_type and runners:
+            filtered_runners = []
+            for i, runner in enumerate(runners):
+                try:
+                    # Check if runner supports the requested app type
+                    # First try to get from service info, then fallback to runner attribute
+                    svc_info = svcs[i]
+                    supported_types = runner.supported_types
+                    logger.info(f"Runner {svc_info['id']} supports types: {supported_types}")
+                    if app_type in supported_types:
+                        filtered_runners.append(runner)
+                        logger.info(f"Runner {svc_info['id']} selected for app_type: {app_type}")
+                except Exception as e:
+                    logger.warning(f"Error checking supported types for runner {svc_info['id']}: {e}")
+                    # If we can't check supported types, assume it's a legacy runner
+                    # that supports the default browser-based types
+                    if app_type in ["web-python", "web-worker", "window", "iframe"]:
+                        filtered_runners.append(runner)
+            logger.info(f"After filtering for app_type {app_type}: {len(filtered_runners)} runners selected")
+            return filtered_runners
+        
+        return runners if runners else []
 
     async def setup_applications_collection(self, overwrite=True, context=None):
         """Set up the workspace."""
@@ -295,23 +317,27 @@ class ServerAppController:
             None,
             description="Application configuration dictionary containing app metadata and settings. Can include startup_config with default startup parameters like timeout, wait_for_service, and stop_after_inactive. Required fields: name, type, version. Optional fields: description, entry_point, requirements, etc. MUTUALLY EXCLUSIVE with 'manifest' parameter - when config is provided, manifest must be None."
         ),
+        wait_for_service: Optional[str] = Field(
+            "default",
+            description="The service to wait for before installing the app. If not provided, the app will be installed without waiting for any service."
+        ),
         workspace: Optional[str] = Field(
             None,
             description="Target workspace for installation. If not provided, uses the current workspace from context."
         ),
-        overwrite: bool = Field(
+        overwrite: Optional[bool] = Field(
             False,
             description="Whether to overwrite existing app with same name. Set to True to replace existing installations."
         ),
-        timeout: float = Field(
-            60,
+        timeout: Optional[float] = Field(
+            None,
             description="Maximum time to wait for installation completion in seconds. Increase for complex apps that take longer to start."
         ),
-        version: str = Field(
+        version: Optional[str] = Field(
             None,
             description="Version identifier for the app. If not provided, uses default versioning."
         ),
-        stage: bool = Field(
+        stage: Optional[bool] = Field(
             False,
             description="Whether to install the app in stage mode. If True, the app will be installed as a staged artifact that can be discarded or committed later."
         ),
@@ -357,9 +383,11 @@ class ServerAppController:
             assert config is None, "config should be None when manifest is provided"
             # For manifest installations, we need to extract the source from the manifest
             # and compute the hash from the script content
-            source = artifact_obj.get("script", "")
-            mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
-            mhash = mhash.encode("base58").decode("ascii")
+            if source:
+                mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
+                mhash = mhash.encode("base58").decode("ascii")
+            else:
+                mhash = None
         else:
             # Determine template type
             if config and config.get("type"):
@@ -555,32 +583,33 @@ class ServerAppController:
                 )
                 file_path = entry_point
         
-        # Update the artifact with the correct app_id and URLs
-        await self.artifact_manager.edit(
-            artifact["id"],
-            stage=True,
-            manifest=artifact_obj,
-            context=context,
-        )
-        put_url = await self.artifact_manager.put_file(
-            artifact["id"], file_path=file_path, use_proxy=False, context=context
-        )
-        async with httpx.AsyncClient() as client:
-            response = await client.put(put_url, data=source)
-            assert response.status_code == 200, f"Failed to upload {file_path}"
+        if source:
+            # Update the artifact with the correct app_id and URLs
+            await self.artifact_manager.edit(
+                artifact["id"],
+                stage=True,
+                manifest=artifact_obj,
+                context=context,
+            )
+            put_url = await self.artifact_manager.put_file(
+                artifact["id"], file_path=file_path, use_proxy=False, context=context
+            )
+            async with httpx.AsyncClient() as client:
+                response = await client.put(put_url, data=source)
+                assert response.status_code == 200, f"Failed to upload {file_path}"
 
         if not stage:
             # Commit the artifact if stage is not enabled
-            commit_version = version if version else "v1"
             await self.commit_app(
                 app_id,
-                timeout=timeout,
-                version=commit_version,
+                timeout=timeout or 60,
+                version=version,
+                wait_for_service=wait_for_service,
                 context=context,
             )
             # After commit, read the updated artifact to get the collected services
             updated_artifact_info = await self.artifact_manager.read(
-                app_id, version=commit_version, context=context
+                app_id, version=version, context=context
             )
             return updated_artifact_info.get("manifest", artifact_obj)
         return artifact_obj
@@ -665,6 +694,10 @@ class ServerAppController:
             None,
             description="Version identifier for the committed app. If not provided, uses default versioning."
         ),
+        wait_for_service: Optional[str] = Field(
+            None,
+            description="The service to wait for before committing the app. If not provided, the app will be committed without waiting for any service."
+        ),
         context: Optional[dict] = Field(
             None,
             description="Additional context information including user and workspace details. Usually provided automatically by the system."
@@ -691,7 +724,7 @@ class ServerAppController:
             info = await self.start(
                 app_id,
                 timeout=timeout,
-                wait_for_service="default",
+                wait_for_service=wait_for_service,
                 version="stage",
                 stop_after_inactive=verification_timeout,
                 context=context,
@@ -783,6 +816,7 @@ class ServerAppController:
         app_info = await self.install(
             source,
             config=config,
+            timeout=timeout,
             overwrite=overwrite,
             stage=True,
             context=context,
@@ -796,6 +830,83 @@ class ServerAppController:
             stage=True,
             context=context,
         )
+
+    async def start_by_type(
+        self,
+        app_id: str,
+        app_type: str,
+        client_id: str,
+        server_url: str,
+        public_base_url: str,
+        local_base_url: str,
+        workspace: str,
+        version: str = None,
+        token: str = None,
+        manifest: dict = None,
+        metadata: dict = None,
+        context: dict = None,
+    ):
+        """Start the app by type using the appropriate runner."""
+        # Get runners that support this app type
+        runners = await self.get_runners(app_type)
+        if not runners:
+            raise Exception(f"No server app worker found for type: {app_type}")
+        
+        # Select a runner (random choice for now, could be improved with load balancing)
+        runner = random.choice(runners)
+        
+        # Get entry point from manifest
+        entry_point = manifest.entry_point
+        assert entry_point, f"Entry point not found for app {app_id}."
+        
+        # Prepare session metadata
+        full_client_id = workspace + "/" + client_id
+        session_metadata = {
+            "id": full_client_id,
+            "app_id": app_id,
+            "workspace": workspace,
+            "client_id": client_id,
+            "server_url": server_url,
+            "public_base_url": public_base_url,
+            "local_base_url": local_base_url,
+            "version": version,
+            "token": token,
+            "app_type": app_type,
+            "entry_point": entry_point,
+            "source_hash": manifest.source_hash,
+            "name": manifest.name,
+            "description": manifest.description,
+        }
+        
+        # Update with any additional metadata
+        if metadata:
+            session_metadata.update(metadata)
+        
+        # Start the app using the runner
+        session_data = await runner.start(
+            client_id=client_id,
+            app_id=app_id,
+            server_url=server_url,
+            public_base_url=public_base_url,
+            local_base_url=local_base_url,
+            workspace=workspace,
+            version=version,
+            token=token,
+            entry_point=entry_point,
+            app_type=app_type,
+            metadata=session_metadata,
+        )
+        
+        # Store session info
+        self._sessions[full_client_id] = {
+            **session_metadata,
+            "_runner": runner,
+        }
+        
+        # Python eval apps don't need to emit client_connected event since they execute immediately
+        # and we skip the wait logic for them
+        
+        return session_data
 
     @schema_method
     async def start(
@@ -847,9 +958,9 @@ class ServerAppController:
                 f" to run app {app_id} in workspace {workspace}."
             )
 
-        # Add "_rlb" suffix to enable load balancing metrics for app clients
+        # Add "__rlb" suffix to enable load balancing metrics for app clients
         # This allows the system to track load only for clients that may have multiple instances
-        client_id = random_id(readable=True) + "_rlb"
+        client_id = random_id(readable=True) + "__rlb"
 
         # If stage is True, use stage version, otherwise use provided version
         read_version = "stage" if stage else version
@@ -865,7 +976,8 @@ class ServerAppController:
         if timeout is None and "timeout" in startup_config:
             timeout = startup_config["timeout"]
         else:
-            timeout = 120
+            timeout = timeout or 60
+
         if wait_for_service is None and "wait_for_service" in startup_config:
             wait_for_service = startup_config["wait_for_service"]
         # Only apply startup_config if stop_after_inactive is None (not explicitly set)
@@ -887,76 +999,11 @@ class ServerAppController:
                 if startup_config.get("stop_after_inactive") is None
                 else startup_config.get("stop_after_inactive")
             )
-        entry_point = manifest.entry_point
-        assert entry_point, f"Entry point not found for app {app_id}."
-        if not entry_point.startswith("http"):
-            entry_point = f"{self.local_base_url}/{workspace}/artifacts/{app_id}/files/{entry_point}"
-        server_url = self.local_base_url
-        local_url = (
-            f"{entry_point}?"
-            + f"server_url={server_url}&client_id={client_id}&workspace={workspace}"
-            + f"&app_id={app_id}"
-            + f"&server_url={server_url}"
-            + (f"&token={token}" if token else "")
-            + (f"&version={version}" if version else "")
-            + (f"&use_proxy=true")
-        )
-        server_url = self.public_base_url
-        public_url = (
-            f"{self.public_base_url}/{workspace}/artifacts/{app_id}/files/{entry_point}?"
-            + f"client_id={client_id}&workspace={workspace}"
-            + f"&app_id={app_id}"
-            + f"&server_url={server_url}"
-            + (f"&token={token}" if token else "")
-            + (f"&version={version}" if version else "")
-            + (f"&use_proxy=true")
-        )
-        runners = await self.get_runners()
-        if not runners:
-            raise Exception("No server app worker found")
-        runner = random.choice(runners)
-
+        # Get app type from config, fallback to manifest type
+        app_type = manifest.type if manifest else None
+        logger.info(f"App type determined as: {app_type}")
+        
         full_client_id = workspace + "/" + client_id
-        metadata = {
-            "id": full_client_id,
-            "app_id": app_id,
-            "workspace": workspace,
-            "local_url": local_url,
-            "public_url": public_url,
-            "_runner": runner,
-            "source_hash": manifest.source_hash,  # Store source hash for singleton checking
-            "name": manifest.name,  # Add app name for UI display
-            "description": manifest.description,  # Add app description for UI display
-        }
-
-        await runner.start(
-            url=local_url,
-            session_id=full_client_id,
-            metadata=metadata,
-        )
-        self._sessions[full_client_id] = metadata
-
-        # test activity tracker
-        tracker = self.store.get_activity_tracker()
-        if (
-            not manifest.daemon
-            and stop_after_inactive is not None
-            and stop_after_inactive > 0
-        ):
-
-            async def _stop_after_inactive():
-                if full_client_id in self._sessions:
-                    await self._stop(full_client_id, raise_exception=False)
-                logger.info(
-                    f"App {full_client_id} stopped because of inactive for {stop_after_inactive}s."
-                )
-
-            tracker.register(
-                full_client_id,
-                inactive_period=stop_after_inactive,
-                on_inactive=_stop_after_inactive,
-                entity_type="client",
-            )
 
         # collecting services registered during the startup of the script
         collected_services: List[ServiceInfo] = []
@@ -966,8 +1013,12 @@ class ServerAppController:
             "workspace": workspace,
             "client_id": client_id,
             "config": {},
+            "session_data": {},  # Will be updated after start_by_type
         }
 
+        # Create a future that will be set when the target event occurs
+        event_future = asyncio.Future()
+        
         def service_added(info: dict):
             logger.info(f"Service added: {info}")
             if info["id"].startswith(full_client_id + ":"):
@@ -977,25 +1028,72 @@ class ServerAppController:
                 for key in ["config", "name", "description"]:
                     if info.get(key):
                         app_info[key] = info[key]
+            
+            # Check if this is the target service we're waiting for
+            if wait_for_service and info["id"] == full_client_id + ":" + wait_for_service:
+                if not event_future.done():
+                    event_future.set_result(info)
+                    logger.info(f"Target service found: {info['id']}")
 
+        def client_connected(info: dict):
+            logger.info(f"Client connected: {info}")
+            # Check if this is the target client we're waiting for
+            if not wait_for_service and info["id"] == full_client_id:
+                if not event_future.done():
+                    event_future.set_result(info)
+                    logger.info(f"Target client connected: {info['id']}")
+
+        # Set up event callbacks BEFORE starting the app to avoid timing issues
         self.event_bus.on_local("service_added", service_added)
+        if not wait_for_service:
+            self.event_bus.on_local("client_connected", client_connected)
 
         try:
-            if wait_for_service:
-                logger.info(f"Waiting for service: {full_client_id}:{wait_for_service}")
-                await self.event_bus.wait_for_local(
-                    "service_added",
-                    match={"id": full_client_id + ":" + wait_for_service},
-                    timeout=timeout,
-                )
-            else:
-                await self.event_bus.wait_for_local(
-                    "client_connected", match={"id": full_client_id}, timeout=timeout
+            # Start the app using the new start_by_type function
+            session_data = await self.start_by_type(
+                app_id=app_id,
+                app_type=app_type,
+                client_id=client_id,
+                server_url=self.local_base_url,
+                public_base_url=self.public_base_url,
+                local_base_url=self.local_base_url,
+                workspace=workspace,
+                version=version,
+                token=token,
+                manifest=manifest,
+                context=context,
+            )
+            
+            # Update app_info with session data
+            app_info["session_data"] = session_data
+
+            # Set up activity tracker after starting the app
+            tracker = self.store.get_activity_tracker()
+            if (
+                not manifest.daemon
+                and stop_after_inactive is not None
+                and stop_after_inactive > 0
+            ):
+
+                async def _stop_after_inactive():
+                    if full_client_id in self._sessions:
+                        await self._stop(full_client_id, raise_exception=False)
+                    logger.info(
+                        f"App {full_client_id} stopped because of inactive for {stop_after_inactive}s."
+                    )
+
+                tracker.register(
+                    full_client_id,
+                    inactive_period=stop_after_inactive,
+                    on_inactive=_stop_after_inactive,
+                    entity_type="client",
                 )
 
-            # Give some time for additional services to be registered (e.g., from setup() method)
-            # This is particularly important during verification/installation to collect all services
-            await asyncio.sleep(2.0)
+            # Now wait for the event that we set up before starting the app
+            logger.info(f"Waiting for event after starting app: {full_client_id}, timeout: {timeout}")
+            await asyncio.wait_for(event_future, timeout=timeout)
+            logger.info(f"Event received for app: {full_client_id}")
+
 
             # save the services
             manifest.name = manifest.name or app_info.get("name", "Untitled App")
@@ -1030,11 +1128,17 @@ class ServerAppController:
 
         except asyncio.TimeoutError:
             try:
-                logs = await runner.logs(full_client_id)
+                session_info = self._sessions.get(full_client_id)
+                if session_info and "_runner" in session_info:
+                    logs = await session_info["_runner"].logs(full_client_id)
+                else:
+                    logs = "No logs available (session not found)"
             except Exception:
-                logs = "No logs available (browser session not found)"
+                logs = "No logs available (session not found)"
             try:
-                await runner.stop(full_client_id)
+                session_info = self._sessions.get(full_client_id)
+                if session_info and "_runner" in session_info:
+                    await session_info["_runner"].stop(full_client_id)
             except Exception:
                 pass  # Session might not exist or already stopped
             raise Exception(
@@ -1042,18 +1146,28 @@ class ServerAppController:
             )
         except Exception as exp:
             try:
-                logs = await runner.logs(full_client_id)
+                session_info = self._sessions.get(full_client_id)
+                if session_info and "_runner" in session_info:
+                    logs = await session_info["_runner"].logs(full_client_id)
+                else:
+                    logs = "No logs available (session not found)"
             except Exception:
-                logs = "No logs available (browser session not found)"
+                logs = "No logs available (session not found)"
             try:
-                await runner.stop(full_client_id)
+                session_info = self._sessions.get(full_client_id)
+                if session_info and "_runner" in session_info:
+                    await session_info["_runner"].stop(full_client_id)
             except Exception:
                 pass  # Session might not exist or already stopped
             raise Exception(
                 f"Failed to start the app: {workspace}/{app_id}, error: {exp}, browser logs:\n{logs}"
             ) from exp
         finally:
+            # Clean up event listeners
             self.event_bus.off_local("service_added", service_added)
+            if not wait_for_service:
+                self.event_bus.off_local("client_connected", client_connected)
+            
 
         if wait_for_service:
             app_info["service_id"] = (
@@ -1073,7 +1187,6 @@ class ServerAppController:
             await self.autoscaling_manager.start_autoscaling(
                 app_id, manifest.autoscaling, context
             )
-        
         return app_info
 
     @schema_method
@@ -1513,6 +1626,16 @@ class ServerAppController:
                     logger.error(
                         f"Failed to start daemon app: {app['id']}, error: {exp}"
                     )
+        runners = await self.get_runners()
+        if not runners:
+            return
+        for runner in runners:
+            try:
+                await runner.prepare_workspace(workspace_info.id)
+            except Exception as exp:
+                logger.warning(
+                    f"Worker failed to prepare workspace: {workspace_info.id}, error: {exp}"
+                )
 
     async def close_workspace(self, workspace_info: WorkspaceInfo):
         """Archive the workspace."""

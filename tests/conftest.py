@@ -323,6 +323,7 @@ def fastapi_server_fixture(minio_server, postgres_server):
             "--startup-functions",
             "hypha.utils:_example_hypha_startup",
             "./tests/example-startup-function.py:hypha_startup",
+            "hypha.runner.python_eval:hypha_startup",
         ],
         env=test_env,
     ) as proc:

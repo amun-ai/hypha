@@ -107,11 +107,119 @@ class BrowserAppRunner:
 
     async def start(
         self,
+        client_id: str,
+        app_id: str,
+        server_url: str,
+        public_base_url: str,
+        local_base_url: str,
+        workspace: str,
+        version: str = None,
+        token: str = None,
+        entry_point: str = None,
+        app_type: str = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        url: str = None,  # For backward compatibility
+        session_id: Optional[str] = None,  # For backward compatibility
+    ):
+        """Start a browser app instance."""
+        # Handle backward compatibility
+        if url and session_id:
+            return await self._start_legacy(url, session_id, metadata)
+        
+        # New logic for type-based starting
+        full_session_id = f"{workspace}/{client_id}"
+        
+        if not self.browser:
+            await self.initialize()
+
+        try:
+            # Create URLs for the app
+            if not entry_point.startswith("http"):
+                entry_point = f"{local_base_url}/{workspace}/artifacts/{app_id}/files/{entry_point}"
+            
+            # Create local and public URLs
+            local_url = (
+                f"{entry_point}?"
+                + f"server_url={server_url}&client_id={client_id}&workspace={workspace}"
+                + f"&app_id={app_id}"
+                + f"&server_url={server_url}"
+                + (f"&token={token}" if token else "")
+                + (f"&version={version}" if version else "")
+                + (f"&use_proxy=true")
+            )
+            
+            public_url = (
+                f"{public_base_url}/{workspace}/artifacts/{app_id}/files/{entry_point}?"
+                + f"client_id={client_id}&workspace={workspace}"
+                + f"&app_id={app_id}"
+                + f"&server_url={public_base_url}"
+                + (f"&token={token}" if token else "")
+                + (f"&version={version}" if version else "")
+                + (f"&use_proxy=true")
+            )
+
+            # Create a new context for isolation
+            context = await self.browser.new_context(
+                viewport={"width": 1280, "height": 720}, accept_downloads=True
+            )
+
+            # Create a new page in the context
+            page = await context.new_page()
+
+            logs = {}
+            session_data = {
+                "session_id": full_session_id,
+                "url": local_url,
+                "local_url": local_url,
+                "public_url": public_url,
+                "status": "connecting",
+                "page": page,
+                "context": context,
+                "logs": logs,
+                "metadata": metadata,
+                "app_type": app_type,
+            }
+            
+            self._browser_sessions[full_session_id] = session_data
+
+            _capture_logs_from_browser_tabs(page, logs)
+
+            logger.info("Loading browser app: %s", local_url)
+            response = await page.goto(local_url, timeout=60000, wait_until="load")
+
+            if not response:
+                raise Exception(f"Failed to load URL: {local_url}")
+
+            if response.status != 200:
+                raise Exception(
+                    f"Failed to start browser app instance, "
+                    f"status: {response.status}, url: {local_url}"
+                )
+
+            logger.info("Browser app loaded successfully: %s", local_url)
+            self._browser_sessions[full_session_id]["status"] = "connected"
+
+            return {
+                "session_id": full_session_id,
+                "status": "connected",
+                "url": local_url,
+                "local_url": local_url,
+                "public_url": public_url,
+            }
+
+        except Exception as e:
+            logger.error("Error starting browser session: %s", str(e))
+            if full_session_id in self._browser_sessions:
+                await self.stop(full_session_id)
+            raise
+
+    async def _start_legacy(
+        self,
         url: str,
         session_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ):
-        """Start a browser app instance."""
+        """Legacy start method for backward compatibility."""
         if session_id is None:
             session_id = str(uuid.uuid4())
 
@@ -225,17 +333,24 @@ class BrowserAppRunner:
         for session_id in session_ids:
             await self.stop(session_id)
 
+    async def prepare_workspace(self, workspace: str) -> None:
+        """Prepare the workspace for the browser app."""
+        pass
+
     def get_service(self):
         """Get the service."""
         return {
-            "id": "server-app-worker",
-            "name": "Server App Worker",
+            "id": f"browser-runner-{self.controller_id}",
+            "type": "server-app-worker",
+            "name": "Browser Server App Worker",
             "description": "A worker for running server apps",
             "config": {"visibility": "protected"},
+            "supported_types": ["web-python", "web-worker", "window", "iframe"],
             "start": self.start,
             "stop": self.stop,
             "list": self.list,
             "logs": self.logs,
             "shutdown": self.shutdown,
+            "prepare_workspace": self.prepare_workspace,
             "close_workspace": self.close_workspace,
         }

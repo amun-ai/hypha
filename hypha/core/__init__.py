@@ -583,7 +583,7 @@ class RedisRPCConnection:
 
     def _is_load_balancing_enabled(self):
         """Check if load balancing is enabled for this client."""
-        return self._client_id.endswith("_rlb")
+        return self._client_id.endswith("__rlb")
 
     def _update_load_metric(self):
         """Update the load metric based on message rate (requests per minute)."""
@@ -646,7 +646,7 @@ class RedisRPCConnection:
         """Get the current load for a specific client (requests per minute)."""
         try:
             # Only return load for load balancing enabled clients
-            if not client_id.endswith("_rlb"):
+            if not client_id.endswith("__rlb"):
                 return 0.0
             
             metric = cls._client_load_gauge.labels(workspace=workspace, client_id=client_id)
