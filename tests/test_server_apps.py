@@ -1087,17 +1087,59 @@ async def test_manifest_parameter_install(fastapi_server, test_user_token):
     
     # Test script for the manifest app
     test_script = """
-    api.export({
-        async setup() {
-            console.log("Manifest app initialized");
-        },
-        async getMessage() {
-            return "Hello from manifest app!";
-        },
-        async calculate(a, b) {
-            return a * b;
-        }
-    });
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Hypha App (web-worker)</title>
+    <meta name="description" content="Template for Hypha app">
+    <meta name="author" content="ImJoy-Team">
+</head>
+
+<body>
+<script id="worker" type="javascript/worker">
+
+self.onmessage = async function(e) {
+const hyphaWebsocketClient = await import(" http://127.0.0.1:38283/assets/hypha-rpc-websocket.mjs");
+const config = e.data
+self.env = new Map()
+self.env.set("HYPHA_SERVER_URL", config.server_url)
+self.env.set("HYPHA_WORKSPACE", config.workspace)
+self.env.set("HYPHA_CLIENT_ID", config.client_id)
+self.env.set("HYPHA_TOKEN", config.token)
+const api = await hyphaWebsocketClient.connectToServer(config)
+api.export({
+    async setup() {
+        console.log("Manifest app initialized");
+    },
+    async getMessage() {
+        return "Hello from manifest app!";
+    },
+    async calculate(a, b) {
+        return a * b;
+    }
+});
+
+}
+</script>
+<script>
+window.onload = function() {
+    const blob = new Blob([
+        document.querySelector('#worker').textContent
+    ], { type: "text/javascript" })
+    const worker = new Worker(window.URL.createObjectURL(blob), {type: "module"});
+    worker.onerror = console.error
+    worker.onmessage = console.log
+    const config = {}
+    const cfg = Object.assign(config, Object.fromEntries(new URLSearchParams(window.location.search)));
+    if(!cfg.server_url) cfg.server_url = window.location.origin;
+    worker.postMessage(cfg); 
+}
+</script>
+</body>
+</html>
+
     """
     
     # Create a manifest directly (without config conversion)
@@ -1106,7 +1148,7 @@ async def test_manifest_parameter_install(fastapi_server, test_user_token):
         "name": "Manifest Test App", 
         "description": "App installed using manifest parameter",
         "version": "1.0.0",
-        "type": "application",
+        "type": "web-worker",
         "entry_point": "index.html",
         "requirements": [],
         "singleton": False,
