@@ -224,6 +224,11 @@ class ServerAppController:
         )
         self.templates_dir = Path(__file__).parent / "templates"
         self.autoscaling_manager = AutoscalingManager(self)
+        
+        # Cache for workers
+        self._workers_cache = None
+        self._workers_cache_timestamp = 0
+        self._workers_cache_timeout = 300  # 5 minutes in seconds
 
         def shutdown(_) -> None:
             asyncio.ensure_future(self.shutdown())
@@ -245,20 +250,43 @@ class ServerAppController:
         self.event_bus.on_local("client_disconnected", client_disconnected)
         store.set_server_app_controller(self)
 
-    async def get_runners(self, app_type: str = None):
-        # start the browser runner
-        server = await self.store.get_public_api()
-        # Search for all server-app-worker services (including ones with unique IDs)
-        svcs = await server.list_services({"type": "server-app-worker"})
-        logger.info(f"Found {len(svcs)} server-app-worker services: {[svc['id'] for svc in svcs]}")
-        if not svcs:
-            return []
-        runners = [await server.get_service(svc["id"]) for svc in svcs]
+    async def get_server_app_workers(self, app_type: str = None):
+        current_time = time.time()
         
-        # Filter runners by supported types if app_type is specified
-        if app_type and runners:
-            filtered_runners = []
-            for i, runner in enumerate(runners):
+        # Check if cache is valid
+        if (self._workers_cache is not None and 
+            current_time - self._workers_cache_timestamp < self._workers_cache_timeout):
+            logger.debug("Using cached workers")
+            workers_data = self._workers_cache
+        else:
+            # Cache is expired or doesn't exist, fetch fresh data
+            logger.info("Fetching fresh workers (cache expired or missing)")
+            server = await self.store.get_public_api()
+            # Search for all server-app-worker services (including ones with unique IDs)
+            svcs = await server.list_services({"type": "server-app-worker"})
+            logger.info(f"Found {len(svcs)} server-app-worker services: {[svc['id'] for svc in svcs]} for app_type {app_type}")
+            
+            if not svcs:
+                # Update cache with empty result
+                self._workers_cache = {"svcs": [], "workers": []}
+                self._workers_cache_timestamp = current_time
+                return []
+            
+            workers = [await server.get_service(svc["id"]) for svc in svcs]
+            
+            # Update cache
+            workers_data = {"svcs": svcs, "workers": workers}
+            self._workers_cache = workers_data
+            self._workers_cache_timestamp = current_time
+        
+        # Extract data from cache
+        svcs = workers_data["svcs"]
+        workers = workers_data["workers"]
+        
+        # Filter workers by supported types if app_type is specified
+        if app_type and workers:
+            filtered_workers = []
+            for i, runner in enumerate(workers):
                 try:
                     # Check if runner supports the requested app type
                     # First try to get from service info, then fallback to runner attribute
@@ -266,18 +294,24 @@ class ServerAppController:
                     supported_types = runner.supported_types
                     logger.info(f"Runner {svc_info['id']} supports types: {supported_types}")
                     if app_type in supported_types:
-                        filtered_runners.append(runner)
+                        filtered_workers.append(runner)
                         logger.info(f"Runner {svc_info['id']} selected for app_type: {app_type}")
                 except Exception as e:
                     logger.warning(f"Error checking supported types for runner {svc_info['id']}: {e}")
                     # If we can't check supported types, assume it's a legacy runner
                     # that supports the default browser-based types
                     if app_type in ["web-python", "web-worker", "window", "iframe"]:
-                        filtered_runners.append(runner)
-            logger.info(f"After filtering for app_type {app_type}: {len(filtered_runners)} runners selected")
-            return filtered_runners
+                        filtered_workers.append(runner)
+            logger.info(f"After filtering for app_type {app_type}: {len(filtered_workers)} workers selected")
+            return filtered_workers
         
-        return runners if runners else []
+        return workers if workers else []
+
+    def clear_workers_cache(self):
+        """Clear the workers cache to force a fresh fetch on next get_server_app_workers call."""
+        self._workers_cache = None
+        self._workers_cache_timestamp = 0
+        logger.info("workers cache cleared")
 
     async def setup_applications_collection(self, overwrite=True, context=None):
         """Set up the workspace."""
@@ -368,6 +402,7 @@ class ServerAppController:
             workspace = context["ws"]
 
         user_info = UserInfo.model_validate(context["user"])
+        assert not user_info.is_anonymous, "Anonymous users cannot install apps"
         workspace_info = await self.store.get_workspace_info(workspace, load=True)
         assert workspace_info, f"Workspace {workspace} not found."
         if not user_info.check_permission(workspace_info.id, UserPermission.read_write):
@@ -847,13 +882,13 @@ class ServerAppController:
         context: dict = None,
     ):
         """Start the app by type using the appropriate runner."""
-        # Get runners that support this app type
-        runners = await self.get_runners(app_type)
-        if not runners:
+        # Get workers that support this app type
+        workers = await self.get_server_app_workers(app_type)
+        if not workers:
             raise Exception(f"No server app worker found for type: {app_type}")
         
         # Select a runner (random choice for now, could be improved with load balancing)
-        runner = random.choice(runners)
+        runner = random.choice(workers)
         
         # Get entry point from manifest
         entry_point = manifest.entry_point
@@ -1608,6 +1643,9 @@ class ServerAppController:
         for app_id in list(self.autoscaling_manager._autoscaling_tasks.keys()):
             await self.autoscaling_manager.stop_autoscaling(app_id)
         
+        # Clear workers cache
+        self.clear_workers_cache()
+        
         for app in self._sessions.values():
             await self.stop(app["id"], raise_exception=False)
 
@@ -1628,16 +1666,17 @@ class ServerAppController:
                     logger.error(
                         f"Failed to start daemon app: {app['id']}, error: {exp}"
                     )
-        runners = await self.get_runners()
-        if not runners:
-            return
-        for runner in runners:
-            try:
-                await runner.prepare_workspace(workspace_info.id)
-            except Exception as exp:
-                logger.warning(
-                    f"Worker failed to prepare workspace: {workspace_info.id}, error: {exp}"
-                )
+        
+        if workspace_info.id not in ["ws-user-root", "public", "ws-anonymous"]:
+            server = await self.store.get_public_api()
+            workers = await self.get_server_app_workers()
+            for runner in workers:
+                try:
+                    await runner.prepare_workspace(workspace_info.id)
+                except Exception as exp:
+                    logger.warning(
+                        f"Worker failed to prepare workspace: {workspace_info.id}, error: {exp}"
+                    )
 
     async def close_workspace(self, workspace_info: WorkspaceInfo):
         """Archive the workspace."""
@@ -1645,11 +1684,11 @@ class ServerAppController:
         for app in list(self._sessions.values()):
             if app["workspace"] == workspace_info.id:
                 await self._stop(app["id"], raise_exception=False)
-        # Send to all runners
-        runners = await self.get_runners()
-        if not runners:
+        # Send to all workers
+        workers = await self.get_server_app_workers()
+        if not workers:
             return
-        for runner in runners:
+        for runner in workers:
             try:
                 await runner.close_workspace(workspace_info.id)
             except Exception as exp:
