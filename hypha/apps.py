@@ -6,12 +6,13 @@ import multihash
 import asyncio
 import logging
 import sys
+import time
 from pathlib import Path
 
 from hypha import main_version
 from jinja2 import Environment, PackageLoader, select_autoescape
 from typing import Any, Dict, List, Optional, Union
-from hypha.core import UserInfo, UserPermission, ServiceInfo, ApplicationManifest
+from hypha.core import UserInfo, UserPermission, ServiceInfo, ApplicationManifest, AutoscalingConfig, RedisRPCConnection
 from hypha.utils import (
     random_id,
     PLUGIN_CONFIG_FIELDS,
@@ -30,6 +31,159 @@ logger = logging.getLogger("apps")
 logger.setLevel(LOGLEVEL)
 
 multihash.CodecReg.register("base58", base58.b58encode, base58.b58decode)
+
+
+class AutoscalingManager:
+    """Manages autoscaling for applications based on client load."""
+    
+    def __init__(self, app_controller):
+        self.app_controller = app_controller
+        self._autoscaling_tasks = {}  # app_id -> asyncio.Task
+        self._scaling_locks = {}  # app_id -> asyncio.Lock
+        self._last_scale_time = {}  # app_id -> {scale_up: timestamp, scale_down: timestamp}
+        
+    async def start_autoscaling(self, app_id: str, autoscaling_config: AutoscalingConfig, context: dict):
+        """Start autoscaling monitoring for an application."""
+        if not autoscaling_config.enabled:
+            return
+            
+        if app_id in self._autoscaling_tasks:
+            return  # Already monitoring
+            
+        self._scaling_locks[app_id] = asyncio.Lock()
+        self._last_scale_time[app_id] = {"scale_up": 0, "scale_down": 0}
+        
+        # Start monitoring task
+        task = asyncio.create_task(self._monitor_app_load(app_id, autoscaling_config, context))
+        self._autoscaling_tasks[app_id] = task
+        logger.info(f"Started autoscaling monitoring for app {app_id}")
+    
+    async def stop_autoscaling(self, app_id: str):
+        """Stop autoscaling monitoring for an application."""
+        if app_id in self._autoscaling_tasks:
+            task = self._autoscaling_tasks.pop(app_id)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+                
+        self._scaling_locks.pop(app_id, None)
+        self._last_scale_time.pop(app_id, None)
+        logger.info(f"Stopped autoscaling monitoring for app {app_id}")
+    
+    async def _monitor_app_load(self, app_id: str, config: AutoscalingConfig, context: dict):
+        """Monitor load for an application and scale instances as needed."""
+        try:
+            while True:
+                await asyncio.sleep(10)  # Check every 10 seconds
+                
+                async with self._scaling_locks[app_id]:
+                    await self._check_and_scale(app_id, config, context)
+                    
+        except asyncio.CancelledError:
+            logger.info(f"Autoscaling monitoring cancelled for app {app_id}")
+            raise
+        except Exception as e:
+            logger.error(f"Error in autoscaling monitoring for app {app_id}: {e}")
+    
+    async def _check_and_scale(self, app_id: str, config: AutoscalingConfig, context: dict):
+        """Check current load and scale instances if needed."""
+        try:
+            # Get current instances for this app
+            current_instances = self._get_app_instances(app_id)
+            current_count = len(current_instances)
+            
+            if current_count == 0:
+                return  # No instances to monitor
+            
+            # Calculate average load across all instances
+            total_load = 0
+            active_instances = 0
+            workspace = context["ws"]
+            
+            for session_id, session_info in current_instances.items():
+                client_id = session_info.get("id", "").split("/")[-1]
+                if client_id.endswith("_rlb"):  # Only consider load balancing enabled clients
+                    load = RedisRPCConnection.get_client_load(workspace, client_id)
+                    total_load += load
+                    active_instances += 1
+            
+            if active_instances == 0:
+                return  # No load balancing enabled instances
+            
+            average_load = total_load / active_instances
+            current_time = time.time()
+            
+            # Check if we need to scale up
+            if (average_load > config.scale_up_threshold * config.target_requests_per_instance and
+                current_count < config.max_instances):
+                
+                # Check cooldown period
+                if current_time - self._last_scale_time[app_id]["scale_up"] > config.scale_up_cooldown:
+                    await self._scale_up(app_id, context)
+                    self._last_scale_time[app_id]["scale_up"] = current_time
+                    logger.info(f"Scaled up app {app_id} due to high load: {average_load:.2f}")
+            
+            # Check if we need to scale down
+            elif (average_load < config.scale_down_threshold * config.target_requests_per_instance and
+                  current_count > config.min_instances):
+                
+                # Check cooldown period
+                if current_time - self._last_scale_time[app_id]["scale_down"] > config.scale_down_cooldown:
+                    await self._scale_down(app_id, context)
+                    self._last_scale_time[app_id]["scale_down"] = current_time
+                    logger.info(f"Scaled down app {app_id} due to low load: {average_load:.2f}")
+                    
+        except Exception as e:
+            logger.error(f"Error checking and scaling app {app_id}: {e}")
+    
+    def _get_app_instances(self, app_id: str) -> Dict[str, dict]:
+        """Get all running instances for a specific app."""
+        instances = {}
+        for session_id, session_info in self.app_controller._sessions.items():
+            if session_info.get("app_id") == app_id:
+                instances[session_id] = session_info
+        return instances
+    
+    async def _scale_up(self, app_id: str, context: dict):
+        """Scale up by starting a new instance."""
+        try:
+            # Start a new instance with load balancing enabled
+            await self.app_controller.start(
+                app_id=app_id,
+                context=context
+            )
+            logger.info(f"Successfully scaled up app {app_id}")
+        except Exception as e:
+            logger.error(f"Failed to scale up app {app_id}: {e}")
+    
+    async def _scale_down(self, app_id: str, context: dict):
+        """Scale down by stopping the least loaded instance."""
+        try:
+            instances = self._get_app_instances(app_id)
+            if len(instances) <= 1:
+                return  # Don't scale down if only one instance
+            
+            # Find the instance with the lowest load
+            min_load = float('inf')
+            least_loaded_session = None
+            workspace = context["ws"]
+            
+            for session_id, session_info in instances.items():
+                client_id = session_info.get("id", "").split("/")[-1]
+                if client_id.endswith("_rlb"):
+                    load = RedisRPCConnection.get_client_load(workspace, client_id)
+                    if load < min_load:
+                        min_load = load
+                        least_loaded_session = session_id
+            
+            if least_loaded_session:
+                await self.app_controller._stop(least_loaded_session, raise_exception=False)
+                logger.info(f"Successfully scaled down app {app_id} by stopping {least_loaded_session}")
+                
+        except Exception as e:
+            logger.error(f"Failed to scale down app {app_id}: {e}")
 
 
 # Add a helper function to detect raw HTML content
@@ -69,6 +223,7 @@ class ServerAppController:
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
         )
         self.templates_dir = Path(__file__).parent / "templates"
+        self.autoscaling_manager = AutoscalingManager(self)
 
         def shutdown(_) -> None:
             asyncio.ensure_future(self.shutdown())
@@ -908,6 +1063,13 @@ class ServerAppController:
             # Update session metadata with final app name and description
             self._sessions[full_client_id]["name"] = manifest.name
             self._sessions[full_client_id]["description"] = manifest.description
+        
+        # Start autoscaling if enabled
+        if manifest.autoscaling and manifest.autoscaling.enabled:
+            await self.autoscaling_manager.start_autoscaling(
+                app_id, manifest.autoscaling, context
+            )
+        
         return app_info
 
     @schema_method
@@ -946,6 +1108,14 @@ class ServerAppController:
                     raise
                 else:
                     logger.warning(f"Failed to stop browser tab: {exp}")
+            
+            # Check if this was the last instance of an app and stop autoscaling
+            app_id = app_info.get("app_id")
+            if app_id:
+                remaining_instances = self.autoscaling_manager._get_app_instances(app_id)
+                if not remaining_instances:
+                    await self.autoscaling_manager.stop_autoscaling(app_id)
+                    
         elif raise_exception:
             raise Exception(f"Server app instance not found: {session_id}")
 
@@ -1227,6 +1397,10 @@ class ServerAppController:
             None,
             description="Whether to disable the application. Set to True to disable, False to enable. If not provided, disabled status is not changed."
         ),
+        autoscaling_config: Optional[Dict[str, Any]] = Field(
+            None,
+            description="Autoscaling configuration dictionary. Set to None to disable autoscaling."
+        ),
         context: Optional[dict] = Field(
             None,
             description="Additional context information including user and workspace details. Usually provided automatically by the system."
@@ -1273,6 +1447,15 @@ class ServerAppController:
                 if disabled is not None:
                     updated_manifest["config"]["disabled"] = disabled
 
+            # Handle autoscaling configuration updates
+            if autoscaling_config is not None:
+                if autoscaling_config:
+                    # Validate the autoscaling config
+                    autoscaling_obj = AutoscalingConfig.model_validate(autoscaling_config)
+                    updated_manifest["autoscaling"] = autoscaling_obj.model_dump()
+                else:
+                    updated_manifest["autoscaling"] = None
+
             # Update the manifest with all changes
             await self.artifact_manager.edit(
                 app_id,
@@ -1281,12 +1464,31 @@ class ServerAppController:
                 context=context
             )
             
+            # If the app is currently running and autoscaling config changed, restart autoscaling
+            if autoscaling_config is not None:
+                app_instances = self.autoscaling_manager._get_app_instances(app_id)
+                if app_instances:
+                    # Stop existing autoscaling
+                    await self.autoscaling_manager.stop_autoscaling(app_id)
+                    
+                    # Start new autoscaling if enabled
+                    if autoscaling_config and autoscaling_config.get("enabled", False):
+                        autoscaling_obj = AutoscalingConfig.model_validate(autoscaling_config)
+                        await self.autoscaling_manager.start_autoscaling(
+                            app_id, autoscaling_obj, context
+                        )
+            
         except Exception as exp:
             raise Exception(f"Failed to edit app '{app_id}': {exp}") from exp
 
     async def shutdown(self) -> None:
         """Shutdown the app controller."""
         logger.info("Closing the server app controller...")
+        
+        # Stop all autoscaling tasks
+        for app_id in list(self.autoscaling_manager._autoscaling_tasks.keys()):
+            await self.autoscaling_manager.stop_autoscaling(app_id)
+        
         for app in self._sessions.values():
             await self.stop(app["id"], raise_exception=False)
 
