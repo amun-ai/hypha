@@ -551,7 +551,7 @@ await controller.uninstall(app_info.id)
 
 ---
 
-### `get_log(session_id: str, type: str = None, offset: int = 0, limit: int = 100, context: dict = None) -> Union[Dict[str, List], List]`
+### `logs(session_id: str, type: str = None, offset: int = 0, limit: int = 100, context: dict = None) -> Union[Dict[str, List], List]`
 
 Retrieves logs from a running application session.
 
@@ -569,13 +569,13 @@ Retrieves logs from a running application session.
 
 ```python
 # Get all logs
-logs = await controller.get_log(session.id)
+logs = await controller.logs(session.id)
 
 # Get only error logs
-errors = await controller.get_log(session.id, type="error")
+errors = await controller.logs(session.id, type="error")
 
 # Get recent logs with pagination
-recent_logs = await controller.get_log(session.id, offset=0, limit=50)
+recent_logs = await controller.logs(session.id, offset=0, limit=50)
 ```
 
 ---

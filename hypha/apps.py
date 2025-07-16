@@ -21,6 +21,8 @@ import base58
 import random
 from hypha.plugin_parser import convert_config_to_artifact, parse_imjoy_plugin
 from hypha.core import WorkspaceInfo
+from hypha_rpc.utils.schema import schema_method
+from pydantic import Field
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -119,16 +121,45 @@ class ServerAppController:
         logger.info(f"Applications collection created for workspace {ws}")
         return collection["id"]
 
+    @schema_method
     async def install(
         self,
-        source: str = None,
-        source_hash: str = None,
-        config: Optional[Dict[str, Any]] = None,
-        workspace: Optional[str] = None,
-        overwrite: bool = False,
-        timeout: float = 60,
-        version: str = None,
-        context: Optional[dict] = None,
+        source: str = Field(
+            None,
+            description="The source code of the application, URL to fetch the source, or None if using config. Can be raw HTML content, ImJoy/Hypha plugin code, or a URL to download the source from. URLs must be HTTPS or localhost/127.0.0.1."
+        ),
+        source_hash: str = Field(
+            None,
+            description="Optional hash of the source for verification. Use this to ensure the downloaded source matches the expected content."
+        ),
+        config: Optional[Dict[str, Any]] = Field(
+            None,
+            description="Application configuration dictionary containing app metadata and settings. Can include startup_config with default startup parameters like timeout, wait_for_service, and stop_after_inactive. Required fields: name, type, version. Optional fields: description, entry_point, requirements, etc."
+        ),
+        workspace: Optional[str] = Field(
+            None,
+            description="Target workspace for installation. If not provided, uses the current workspace from context."
+        ),
+        overwrite: bool = Field(
+            False,
+            description="Whether to overwrite existing app with same name. Set to True to replace existing installations."
+        ),
+        timeout: float = Field(
+            60,
+            description="Maximum time to wait for installation completion in seconds. Increase for complex apps that take longer to start."
+        ),
+        version: str = Field(
+            None,
+            description="Version identifier for the app. If not provided, uses default versioning."
+        ),
+        stage: bool = Field(
+            False,
+            description="Whether to install the app in stage mode. If True, the app will be installed as a staged artifact that can be discarded or committed later."
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
     ) -> str:
         """Save a server app.
 
@@ -280,29 +311,18 @@ class ServerAppController:
         elif not source:
             raise Exception("Source or template should be provided.")
 
-        app_id = f"{mhash}"
-
-        # Create artifact object
+        # Create artifact object first (with placeholder app_id)
+        placeholder_app_id = "temp_app_id"
         if template and template != "raw_html":
-            public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}"
-            artifact_obj = convert_config_to_artifact(config, app_id, public_url)
-            artifact_obj.update(
-                {
-                    "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}",
-                    "public_url": public_url,
-                }
-            )
+            # Use placeholder URLs that will be updated after we get the actual app_id
+            placeholder_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{placeholder_app_id}/files/{entry_point}"
+            artifact_obj = convert_config_to_artifact(config, placeholder_app_id, placeholder_url)
         elif template == "raw_html":
-            public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}"
-            artifact_obj = convert_config_to_artifact(config, app_id, public_url)
-            artifact_obj.update(
-                {
-                    "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/applications:{app_id}/files/{entry_point}",
-                    "public_url": public_url,
-                }
-            )
+            # Use placeholder URLs that will be updated after we get the actual app_id
+            placeholder_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{placeholder_app_id}/files/{entry_point}"
+            artifact_obj = convert_config_to_artifact(config, placeholder_app_id, placeholder_url)
         else:
-            artifact_obj = convert_config_to_artifact(config, app_id, source)
+            artifact_obj = convert_config_to_artifact(config, placeholder_app_id, source)
 
         # startup_config is now handled automatically by convert_config_to_artifact
         # if it exists in the config
@@ -312,6 +332,9 @@ class ServerAppController:
             "ws": context["ws"],
             "user": context["user"]
         }
+        
+        # Store source hash for singleton checking
+        artifact_obj["source_hash"] = mhash
 
         ApplicationManifest.model_validate(artifact_obj)
 
@@ -323,13 +346,43 @@ class ServerAppController:
                 overwrite=True, context=context
             )
 
-        # Create artifact using the artifact controller
+        # Create artifact using the artifact controller - let it generate the alias
         artifact = await self.artifact_manager.create(
+            type="application",
             parent_id=collection_id,
-            alias=f"applications:{app_id}",
             manifest=artifact_obj,
             overwrite=overwrite,
             version="stage",
+            context=context,
+        )
+        
+        # Now get the app_id from the artifact alias
+        app_id = artifact["alias"]
+        
+        # Update the artifact object with the correct app_id and URLs
+        artifact_obj["id"] = app_id
+        if template and template != "raw_html":
+            public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}"
+            artifact_obj.update(
+                {
+                    "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}",
+                    "public_url": public_url,
+                }
+            )
+        elif template == "raw_html":
+            public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}"
+            artifact_obj.update(
+                {
+                    "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}",
+                    "public_url": public_url,
+                }
+            )
+        
+        # Update the artifact with the correct app_id and URLs
+        await self.artifact_manager.edit(
+            artifact["id"],
+            stage=True,
+            manifest=artifact_obj,
             context=context,
         )
 
@@ -353,85 +406,112 @@ class ServerAppController:
                 response = await client.put(put_url, data=source)
                 assert response.status_code == 200, f"Failed to upload {entry_point}"
 
-        if version != "stage":
+        if not stage:
             # Commit the artifact if stage is not enabled
-            await self.commit(
+            commit_version = version if version else "v1"
+            await self.commit_app(
                 app_id,
                 timeout=timeout,
-                version=version,
+                version=commit_version,
                 context=context,
             )
             # After commit, read the updated artifact to get the collected services
             updated_artifact_info = await self.artifact_manager.read(
-                f"applications:{app_id}", version=version, context=context
-            )
-            return updated_artifact_info.get("manifest", artifact_obj)
-        elif version is None:
-            # If no version is specified, commit with default version to trigger verification
-            await self.commit(
-                app_id,
-                timeout=timeout,
-                version="v1",
-                context=context,
-            )
-            # After commit, read the updated artifact to get the collected services
-            updated_artifact_info = await self.artifact_manager.read(
-                f"applications:{app_id}", version="v1", context=context
+                app_id, version=commit_version, context=context
             )
             return updated_artifact_info.get("manifest", artifact_obj)
         return artifact_obj
 
+    @schema_method
     async def edit_file(
         self,
-        app_id: str,
-        file_path: str,
-        file_content: str,
-        context: Optional[dict] = None,
+        app_id: str = Field(
+            ...,
+            description="The unique identifier of the application to edit. This is typically the alias of the application."
+        ),
+        file_path: str = Field(
+            ...,
+            description="The path of the file to edit. Use forward slashes for path separators (e.g., 'src/main.js', 'index.html')."
+        ),
+        file_content: str = Field(
+            ...,
+            description="The new content for the file. This will completely replace the existing file content."
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
     ):
         """Add a file to the installed application."""
         put_url = await self.artifact_manager.put_file(
-            f"applications:{app_id}", file_path=file_path, use_proxy=False, context=context
+            app_id, file_path=file_path, use_proxy=False, context=context
         )
         response = httpx.put(put_url, data=file_content)
         assert response.status_code == 200, f"Failed to upload {file_path} to {app_id}"
 
+    @schema_method
     async def remove_file(
         self,
-        app_id: str,
-        file_path: str,
-        context: Optional[dict] = None,
+        app_id: str = Field(
+            ...,
+            description="The unique identifier of the application to modify. This is typically the alias of the application."
+        ),
+        file_path: str = Field(
+            ...,
+            description="The path of the file to remove from the application. Use forward slashes for path separators (e.g., 'src/main.js', 'index.html')."
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
     ):
         """Remove a file from the installed application."""
         await self.artifact_manager.remove_file(
-            f"applications:{app_id}", file_path=file_path, context=context
+            app_id, file_path=file_path, context=context
         )
 
+    @schema_method
     async def list_files(
-        self, app_id: str, context: Optional[dict] = None
+        self,
+        app_id: str = Field(
+            ...,
+            description="The unique identifier of the application to inspect. This is typically the alias of the application."
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
     ) -> List[dict]:
         """List files of an installed application."""
         return await self.artifact_manager.list_files(
-            f"applications:{app_id}", context=context
+            app_id, context=context
         )
 
-    async def edit(self, app_id: str, context: Optional[dict] = None):
-        """Edit an application by re-opening its artifact."""
-        await self.artifact_manager.edit(
-            f"applications:{app_id}", version="stage", context=context
-        )
-
-    async def commit(
+    @schema_method
+    async def commit_app(
         self,
-        app_id: str,
-        timeout: int = 30,
-        version: str = None,
-        context: Optional[dict] = None,
+        app_id: str = Field(
+            ...,
+            description="The unique identifier of the application to commit. This is typically the alias of the application."
+        ),
+        timeout: int = Field(
+            30,
+            description="Maximum time to wait for commit completion in seconds. Increase for complex apps that take longer to verify."
+        ),
+        version: str = Field(
+            None,
+            description="Version identifier for the committed app. If not provided, uses default versioning."
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
     ):
         """Finalize the edits to the application by committing the artifact."""
         try:
             # Read the manifest to check if it's a daemon app
             artifact_info = await self.artifact_manager.read(
-                f"applications:{app_id}", version="stage", context=context
+                app_id, version="stage", context=context
             )
             manifest = artifact_info.get("manifest", {})
             manifest = ApplicationManifest.model_validate(manifest)
@@ -457,7 +537,7 @@ class ServerAppController:
 
             # After verification, read the updated manifest that includes collected services
             updated_artifact_info = await self.artifact_manager.read(
-                f"applications:{app_id}", version="stage", context=context
+                app_id, version="stage", context=context
             )
 
         except asyncio.TimeoutError:
@@ -473,51 +553,122 @@ class ServerAppController:
                 f"Failed to start the app: {app_id} during installation, error: {exp}"
             )
         await self.artifact_manager.commit(
-            f"applications:{app_id}", version=version, context=context
+            app_id, version=version, context=context
         )
         # After commit, read the updated artifact to get the collected services
         updated_artifact_info = await self.artifact_manager.read(
-            f"applications:{app_id}", version=version, context=context
+            app_id, version=version, context=context
         )
         return updated_artifact_info.get("manifest", {})
 
-    async def uninstall(self, app_id: str, context: Optional[dict] = None) -> None:
-        """Uninstall an application by removing its artifact."""
-        await self.artifact_manager.delete(f"applications:{app_id}", context=context)
 
+
+    @schema_method
+    async def uninstall(
+        self,
+        app_id: str = Field(
+            ...,
+            description="The unique identifier of the application to uninstall. This is typically the alias of the application."
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
+    ) -> None:
+        """Uninstall an application by removing its artifact."""
+        # Check if the artifact is in stage mode
+        try:
+            artifact_info = await self.artifact_manager.read(app_id, version="stage", context=context)
+            # If we can read the stage version, it means the artifact is in stage mode
+            # Use discard instead of delete to revert to the last committed state
+            await self.artifact_manager.discard(app_id, context=context)
+        except Exception:
+            # If we can't read the stage version, the artifact is committed
+            # Use delete as usual
+            await self.artifact_manager.delete(app_id, context=context)
+
+    @schema_method
     async def launch(
         self,
-        source: str,
-        timeout: float = 60,
-        config: Optional[Dict[str, Any]] = None,
-        overwrite: bool = False,
-        wait_for_service: str = None,
-        context: Optional[dict] = None,
+        source: str = Field(
+            ...,
+            description="The source code of the application, URL to fetch the source, or application configuration. Can be raw HTML content, ImJoy/Hypha plugin code, or a URL to download the source from."
+        ),
+        timeout: float = Field(
+            60,
+            description="Maximum time to wait for launch completion in seconds. Increase for complex apps that take longer to start."
+        ),
+        config: Optional[Dict[str, Any]] = Field(
+            None,
+            description="Application configuration dictionary containing app metadata and settings. Can include startup_config with default startup parameters."
+        ),
+        overwrite: bool = Field(
+            False,
+            description="Whether to overwrite existing app with same name. Set to True to replace existing installations."
+        ),
+        wait_for_service: str = Field(
+            None,
+            description="Name of the service to wait for before considering the app started. If not provided, waits for default service."
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
     ) -> dict:
-        """Start a server app instance."""
+        """Install and start a server app instance in stage mode."""
+        # Install app in stage mode
         app_info = await self.install(
             source,
             config=config,
             overwrite=overwrite,
+            stage=True,
             context=context,
         )
         app_id = app_info["id"]
+        # Start the app in stage mode
         return await self.start(
             app_id,
             timeout=timeout,
             wait_for_service=wait_for_service,
+            stage=True,
             context=context,
         )
 
+    @schema_method
     async def start(
         self,
-        app_id,
-        client_id=None,
-        timeout: float = None,
-        version: str = None,
-        wait_for_service: Union[str, bool] = None,
-        stop_after_inactive: Optional[int] = None,
-        context: Optional[dict] = None,
+        app_id: str = Field(
+            ...,
+            description="The unique identifier of the application to start. This is typically the alias of the application."
+        ),
+        client_id: str = Field(
+            None,
+            description="Optional client ID for the session. If not provided, a random ID will be generated."
+        ),
+        timeout: float = Field(
+            None,
+            description="Maximum time to wait for start completion in seconds. If not provided, uses default timeout from app configuration."
+        ),
+        version: str = Field(
+            None,
+            description="Version of the application to start. If not provided, uses the latest version."
+        ),
+        wait_for_service: Union[str, bool] = Field(
+            None,
+            description="Name of the service to wait for before considering the app started. If True, waits for 'default' service. If not provided, uses app configuration."
+        ),
+        stop_after_inactive: Optional[int] = Field(
+            None,
+            description="Number of seconds to wait before stopping the app due to inactivity. If not provided, uses app configuration."
+        ),
+        stage: bool = Field(
+            False,
+            description="Whether to start the app from stage mode. If True, starts from the staged version."
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
     ):
         """Start the app and keep it alive."""
         if wait_for_service is True:
@@ -538,10 +689,14 @@ class ServerAppController:
             )
 
         if client_id is None:
-            client_id = random_id(readable=True)
+            # Add "_rlb" suffix to enable load balancing metrics for app clients
+            # This allows the system to track load only for clients that may have multiple instances
+            client_id = random_id(readable=True) + "_rlb"
 
+        # If stage is True, use stage version, otherwise use provided version
+        read_version = "stage" if stage else version
         artifact_info = await self.artifact_manager.read(
-            f"applications:{app_id}", version=version, context=context
+            app_id, version=read_version, context=context
         )
         manifest = artifact_info.get("manifest", {})
         manifest = ApplicationManifest.model_validate(manifest)
@@ -563,9 +718,8 @@ class ServerAppController:
             # check if the app is already running
             for session_info in self._sessions.values():
                 if session_info["app_id"] == app_id:
-                    raise RuntimeError(
-                        f"App {app_id} is a singleton app and already running (id: {session_info['id']})"
-                    )
+                    # For singleton apps, return the existing session instead of raising an error
+                    return session_info
         if manifest.daemon and stop_after_inactive and stop_after_inactive > 0:
             raise ValueError("Daemon apps should not have stop_after_inactive set.")
         if stop_after_inactive is None:
@@ -577,7 +731,7 @@ class ServerAppController:
         entry_point = manifest.entry_point
         assert entry_point, f"Entry point not found for app {app_id}."
         if not entry_point.startswith("http"):
-            entry_point = f"{self.local_base_url}/{workspace}/artifacts/applications:{app_id}/files/{entry_point}"
+            entry_point = f"{self.local_base_url}/{workspace}/artifacts/{app_id}/files/{entry_point}"
         server_url = self.local_base_url
         local_url = (
             f"{entry_point}?"
@@ -590,7 +744,7 @@ class ServerAppController:
         )
         server_url = self.public_base_url
         public_url = (
-            f"{self.public_base_url}/{workspace}/artifacts/applications:{app_id}/files/{entry_point}?"
+            f"{self.public_base_url}/{workspace}/artifacts/{app_id}/files/{entry_point}?"
             + f"client_id={client_id}&workspace={workspace}"
             + f"&app_id={app_id}"
             + f"&server_url={server_url}"
@@ -611,6 +765,9 @@ class ServerAppController:
             "local_url": local_url,
             "public_url": public_url,
             "_runner": runner,
+            "source_hash": manifest.source_hash,  # Store source hash for singleton checking
+            "name": manifest.name,  # Add app name for UI display
+            "description": manifest.description,  # Add app description for UI display
         }
 
         await runner.start(
@@ -653,6 +810,7 @@ class ServerAppController:
         }
 
         def service_added(info: dict):
+            logger.info(f"Service added: {info}")
             if info["id"].startswith(full_client_id + ":"):
                 sinfo = ServiceInfo.model_validate(info)
                 collected_services.append(sinfo)
@@ -704,15 +862,16 @@ class ServerAppController:
                 manifest.model_dump(mode="json")
             )
             await self.artifact_manager.edit(
-                f"applications:{app_id}",
+                app_id,
                 version=version,
+                stage=stage,
                 manifest=manifest.model_dump(mode="json"),
                 context=context,
             )
 
         except asyncio.TimeoutError:
             try:
-                logs = await runner.get_log(full_client_id)
+                logs = await runner.logs(full_client_id)
             except Exception:
                 logs = "No logs available (browser session not found)"
             try:
@@ -724,7 +883,7 @@ class ServerAppController:
             )
         except Exception as exp:
             try:
-                logs = await runner.get_log(full_client_id)
+                logs = await runner.logs(full_client_id)
             except Exception:
                 logs = "No logs available (browser session not found)"
             try:
@@ -746,10 +905,26 @@ class ServerAppController:
         ]
         if full_client_id in self._sessions:
             self._sessions[full_client_id]["services"] = app_info["services"]
+            # Update session metadata with final app name and description
+            self._sessions[full_client_id]["name"] = manifest.name
+            self._sessions[full_client_id]["description"] = manifest.description
         return app_info
 
+    @schema_method
     async def stop(
-        self, session_id: str, raise_exception=True, context: Optional[dict] = None
+        self,
+        session_id: str = Field(
+            ...,
+            description="The session ID of the running application instance to stop. This is typically in the format 'workspace/client_id'."
+        ),
+        raise_exception: bool = Field(
+            True,
+            description="Whether to raise an exception if the session is not found. Set to False to ignore missing sessions."
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
     ) -> None:
         """Stop a server app instance."""
         user_info = UserInfo.model_validate(context["user"])
@@ -774,15 +949,31 @@ class ServerAppController:
         elif raise_exception:
             raise Exception(f"Server app instance not found: {session_id}")
 
-    async def get_log(
+    @schema_method
+    async def logs(
         self,
-        session_id: str,
-        type: str = None,  # pylint: disable=redefined-builtin
-        offset: int = 0,
-        limit: Optional[int] = None,
-        context: Optional[dict] = None,
+        session_id: str = Field(
+            ...,
+            description="The session ID of the running application instance. This is typically in the format 'workspace/client_id'."
+        ),
+        type: str = Field(
+            None,
+            description="Type of logs to retrieve: 'log', 'error', or None for all types."
+        ),
+        offset: int = Field(
+            0,
+            description="Starting offset for log entries. Use for pagination."
+        ),
+        limit: Optional[int] = Field(
+            None,
+            description="Maximum number of log entries to return. If not provided, returns all available logs."
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
     ) -> Union[Dict[str, List[str]], List[str]]:
-        """Get server app instance log."""
+        """Get server app instance logs."""
         user_info = UserInfo.model_validate(context["user"])
         workspace = context["ws"]
         if not user_info.check_permission(workspace, UserPermission.read):
@@ -791,13 +982,21 @@ class ServerAppController:
                 f" to get log for app {session_id} in workspace {workspace}."
             )
         if session_id in self._sessions:
-            return await self._sessions[session_id]["_runner"].get_log(
+            return await self._sessions[session_id]["_runner"].logs(
                 session_id, type=type, offset=offset, limit=limit
             )
         else:
             raise Exception(f"Server app instance not found: {session_id}")
 
-    async def list_running(self, context: Optional[dict] = None) -> List[str]:
+
+    @schema_method
+    async def list_running(
+        self,
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
+    ) -> List[str]:
         """List the running sessions for the current workspace."""
         workspace = context["ws"]
         return [
@@ -806,18 +1005,284 @@ class ServerAppController:
             if session_id.startswith(f"{workspace}/")
         ]
 
-    async def list_apps(self, context: Optional[dict] = None):
+    @schema_method
+    async def list_apps(
+        self,
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
+    ):
         """List applications in the workspace."""
         try:
             ws = context["ws"]
             apps = await self.artifact_manager.list_children(
-                f"{ws}/applications", context=context
+                f"{ws}/applications", filters={"type": "application"}, context=context
             )
             return [app["manifest"] for app in apps]
         except KeyError:
             return []
         except Exception as exp:
             raise Exception(f"Failed to list apps: {exp}") from exp
+
+    @schema_method
+    async def get_app_info(
+        self,
+        app_id: str = Field(
+            ...,
+            description="The unique identifier of the application to inspect. This is typically the alias of the application."
+        ),
+        version: str = Field(
+            None,
+            description="Version of the application to inspect. If not provided, uses the latest version."
+        ),
+        stage: bool = Field(
+            False,
+            description="Whether to inspect the staging version of the application. Set to True to inspect the staged version."
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
+    ) -> dict:
+        """Get detailed information about an installed application.
+
+        This method returns comprehensive information about an application:
+        1. Validates permissions and application existence
+        2. Retrieves the application manifest and metadata
+        3. Returns detailed configuration and service information
+
+        Returns a dictionary containing:
+        - manifest: The application manifest with all metadata
+        - id: The application ID
+        - name: The application name
+        - description: The application description
+        - version: The current version
+        - type: The application type
+        - entry_point: The main entry point file
+        - services: List of services provided by the application
+        - files: List of files in the application
+        - config: Application configuration
+        - created_at: Creation timestamp
+        - updated_at: Last update timestamp
+        """
+        try:
+            artifact_info = await self.artifact_manager.read(
+                app_id, version=version, stage=stage, context=context
+            )
+            return artifact_info
+        except Exception as exp:
+            raise Exception(f"Failed to get app info for {app_id}: {exp}") from exp
+
+    @schema_method
+    async def get_file_content(
+        self,
+        app_id: str = Field(
+            ...,
+            description="The unique identifier of the application containing the file."
+        ),
+        file_path: str = Field(
+            ...,
+            description="The path of the file to read. Use forward slashes for path separators (e.g., 'src/main.js', 'index.html')."
+        ),
+        format: str = Field(
+            "text",
+            description="Format to return the content in: 'text', 'json', or 'binary'. Binary returns base64 encoded content."
+        ),
+        version: str = Field(
+            None,
+            description="Version of the application to inspect. If not provided, uses the latest version."
+        ),
+        stage: bool = Field(
+            False,
+            description="Whether to read the file from the staged version of the application. Set to True to read from the staged version."
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
+    ) -> Union[str, dict, bytes]:
+        """Get the content of a specific file from an installed application.
+
+        This method retrieves the content of a file stored in the application:
+        1. Validates permissions and application existence
+        2. Retrieves the file content from the artifact storage
+        3. Returns the file content in the specified format
+
+        Returns:
+            - str: File content as text when format='text'
+            - dict: Parsed JSON content when format='json'
+            - str: Base64 encoded content when format='binary'
+        """
+        try:
+            get_url = await self.artifact_manager.get_file(
+                app_id, file_path=file_path, version=version, stage=stage, context=context
+            )
+            async with httpx.AsyncClient() as client:
+                response = await client.get(get_url)
+                if response.status_code == 200:
+                    if format == "text":
+                        return response.text
+                    elif format == "json":
+                        return response.json()
+                    elif format == "binary":
+                        import base64
+                        return base64.b64encode(response.content).decode()
+                    else:
+                        raise ValueError(f"Invalid format '{format}'. Must be 'text', 'json' or 'binary'")
+                else:
+                    raise Exception(f"Failed to retrieve file {file_path}: HTTP {response.status_code}")
+        except Exception as exp:
+            raise Exception(f"Failed to get file content for {app_id}/{file_path}: {exp}") from exp
+
+    @schema_method
+    async def validate_app_config(
+        self,
+        config: Dict[str, Any] = Field(
+            ...,
+            description="Application configuration dictionary to validate."
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
+    ) -> dict:
+        """Validate an application configuration dictionary.
+
+        This method checks if an application configuration is valid:
+        1. Validates required fields are present
+        2. Checks field types and formats
+        3. Validates application type and entry point
+        4. Checks for common configuration errors
+
+        Returns a dictionary containing:
+        - valid: Boolean indicating if the configuration is valid
+        - errors: List of validation errors (if any)
+        - warnings: List of validation warnings (if any)
+        - suggestions: List of suggestions for improvement (if any)
+        """
+        validation_result = {
+            "valid": True,
+            "errors": [],
+            "warnings": [],
+            "suggestions": []
+        }
+        
+        try:
+            # Check required fields
+            required_fields = ["name", "type", "version"]
+            for field in required_fields:
+                if field not in config:
+                    validation_result["errors"].append(f"Missing required field: {field}")
+                    validation_result["valid"] = False
+            
+            # Check field types
+            if "name" in config and not isinstance(config["name"], str):
+                validation_result["errors"].append("Field 'name' must be a string")
+                validation_result["valid"] = False
+            
+            if "type" in config and config["type"] not in ["window", "web-worker", "web-python"]:
+                validation_result["warnings"].append(f"Unusual application type: {config['type']}")
+            
+            if "version" in config and not isinstance(config["version"], str):
+                validation_result["errors"].append("Field 'version' must be a string")
+                validation_result["valid"] = False
+            
+            # Check entry point
+            if "entry_point" in config:
+                entry_point = config["entry_point"]
+                if not entry_point.endswith((".html", ".js", ".py")):
+                    validation_result["warnings"].append(f"Entry point '{entry_point}' has unusual extension")
+            
+            # Suggestions
+            if "description" not in config:
+                validation_result["suggestions"].append("Consider adding a description for better documentation")
+            
+            if "tags" not in config:
+                validation_result["suggestions"].append("Consider adding tags for better discoverability")
+            
+            return validation_result
+            
+        except Exception as exp:
+            validation_result["valid"] = False
+            validation_result["errors"].append(f"Validation error: {exp}")
+            return validation_result
+
+    @schema_method
+    async def edit_app(
+        self,
+        app_id: str = Field(
+            ...,
+            description="The unique identifier of the application to edit."
+        ),
+        manifest: Optional[Dict[str, Any]] = Field(
+            None,
+            description="Updated manifest fields to merge with the existing manifest. Only provided fields will be updated."
+        ),
+        config: Optional[Dict[str, Any]] = Field(
+            None,
+            description="Updated config fields to merge with the existing config. Only provided fields will be updated."
+        ),
+        disabled: Optional[bool] = Field(
+            None,
+            description="Whether to disable the application. Set to True to disable, False to enable. If not provided, disabled status is not changed."
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
+    ) -> None:
+        """Edit an application's manifest, config, and/or disabled status.
+
+        This method allows you to update various aspects of an application:
+        1. Retrieves the current application manifest
+        2. Merges provided manifest updates with existing manifest
+        3. Merges provided config updates with existing config
+        4. Updates the disabled status if provided
+        5. Saves the updated manifest
+
+        The method performs selective updates - only the fields you provide will be changed.
+        Existing fields not mentioned in the updates will remain unchanged.
+
+        Note: This will put the application in staging mode and must be committed to take effect.
+        Use commit_app() after editing to make changes permanent.
+        """
+        try:
+            # Get current app info
+            app_info = await self.get_app_info(app_id, context=context)
+            current_manifest = app_info["manifest"]
+            
+            # Start with current manifest
+            updated_manifest = current_manifest.copy() if current_manifest else {}
+            
+            # Update manifest fields if provided
+            if manifest:
+                updated_manifest.update(manifest)
+            
+            # Handle config updates
+            if config is not None or disabled is not None:
+                # Ensure config exists in manifest
+                if "config" not in updated_manifest or updated_manifest["config"] is None:
+                    updated_manifest["config"] = {}
+                
+                # Update config fields if provided
+                if config:
+                    updated_manifest["config"].update(config)
+                
+                # Update disabled status if provided
+                if disabled is not None:
+                    updated_manifest["config"]["disabled"] = disabled
+
+            # Update the manifest with all changes
+            await self.artifact_manager.edit(
+                app_id,
+                manifest=updated_manifest,
+                stage=True,
+                context=context
+            )
+            
+        except Exception as exp:
+            raise Exception(f"Failed to edit app '{app_id}': {exp}") from exp
 
     async def shutdown(self) -> None:
         """Shutdown the app controller."""
@@ -875,10 +1340,13 @@ class ServerAppController:
             "stop": self.stop,
             "list_apps": self.list_apps,
             "list_running": self.list_running,
-            "get_log": self.get_log,
+            "logs": self.logs,
             "edit_file": self.edit_file,
             "remove_file": self.remove_file,
             "list_files": self.list_files,
-            "edit": self.edit,
-            "commit": self.commit,
+            "commit_app": self.commit_app,
+            "get_app_info": self.get_app_info,
+            "get_file_content": self.get_file_content,
+            "validate_app_config": self.validate_app_config,
+            "edit_app": self.edit_app,
         }

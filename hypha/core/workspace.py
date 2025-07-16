@@ -109,7 +109,7 @@ def validate_key_part(key_part: str):
 class GetServiceConfig(BaseModel):
     mode: Optional[str] = Field(
         None,
-        description="Mode for selecting the service. Can be 'random', 'first', 'last', 'exact', or 'select:criteria:function' format (e.g., 'select:min:get_load', 'select:max:get_cpu_usage')",
+        description="Mode for selecting the service. Can be 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function' format (e.g., 'select:min:get_load', 'select:max:get_cpu_usage')",
     )
     timeout: Optional[float] = Field(
         10.0,
@@ -1377,7 +1377,7 @@ class WorkspaceManager:
         ),
         config: Optional[dict] = Field(
             None,
-            description="Options for getting service, available configs are `mode` (for selecting the service: 'random', 'first', 'last', 'exact', or 'select:criteria:function') and `select_timeout` (timeout for function calls when using select mode)",
+            description="Options for getting service, available configs are `mode` (for selecting the service: 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function') and `select_timeout` (timeout for function calls when using select mode)",
         ),
         context: Optional[dict] = None,
     ):
@@ -1418,7 +1418,7 @@ class WorkspaceManager:
             if app_id != "*" and self._artifact_manager:
                 try:
                     artifact = await self._artifact_manager.read(
-                        f"applications:{app_id}", context=context
+                        app_id, context=context
                     )
                     if (
                         artifact
@@ -1428,7 +1428,7 @@ class WorkspaceManager:
                         mode = artifact["manifest"]["service_selection_mode"]
                 except Exception as e:
                     logger.warning(
-                        f"Failed to read artifact applications:{app_id} for retrieving service selection mode: {e}"
+                        f"Failed to read artifact {app_id} for retrieving service selection mode: {e}"
                     )
             # If mode is still None, apply default logic
             if mode is None:
@@ -1448,6 +1448,8 @@ class WorkspaceManager:
             key = keys[0]
         elif mode == "last":
             key = keys[-1]
+        elif mode == "min_load":
+            key = await self._select_service_by_load(keys, "min")
         elif mode and mode.startswith("select:"):
             # Parse the select syntax: select:criteria:function
             parts = mode.split(":")
@@ -1467,7 +1469,7 @@ class WorkspaceManager:
             )
         else:
             raise ValueError(
-                f"Invalid mode: {mode}. Mode must be 'random', 'first', 'last', 'exact', or 'select:criteria:function' format (e.g., 'select:min:get_load')"
+                f"Invalid mode: {mode}. Mode must be 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function' format (e.g., 'select:min:get_load')"
             )
         # if it's a public service or the user has read permission
         if not key.startswith(b"services:public|") and not user_info.check_permission(
@@ -2322,6 +2324,61 @@ class WorkspaceManager:
             logger.error(f"Failed to set workspace status: {e}")
             raise
 
+    async def _select_service_by_load(
+        self, keys: List[bytes], criteria: str = "min"
+    ) -> bytes:
+        """Select service by client load.
+
+        Args:
+            keys: List of Redis keys for services
+            criteria: Selection criteria ('min' or 'max')
+
+        Returns:
+            bytes: The Redis key of the selected service
+        """
+        if len(keys) == 1:
+            return keys[0]
+
+        service_values = []
+
+        for key in keys:
+            try:
+                # Get service info
+                service_data = await self._redis.hgetall(key)
+                service_info = ServiceInfo.from_redis_dict(service_data)
+
+                # Get client load
+                from hypha.core import RedisRPCConnection
+                workspace = service_info.id.split("/")[0]
+                client_id = service_info.id.split("/")[1].split(":")[0]
+                load = RedisRPCConnection.get_client_load(workspace, client_id)
+
+                service_values.append((key, load, service_info))
+
+            except Exception as e:
+                logger.warning(f"Failed to get load for service {key}: {e}")
+                continue
+
+        if not service_values:
+            logger.warning(
+                f"No services responded for load check, falling back to random selection"
+            )
+            return random.choice(keys)
+
+        # Apply selection criteria
+        if criteria == "min":
+            selected_key, value, _ = min(service_values, key=lambda x: float(x[1]))
+            logger.debug(f"Selected service with minimum load: {value}")
+        elif criteria == "max":
+            selected_key, value, _ = max(service_values, key=lambda x: float(x[1]))
+            logger.debug(f"Selected service with maximum load: {value}")
+        else:
+            raise ValueError(f"Unknown selection criteria: {criteria}")
+
+        return selected_key
+
+
+
     async def _select_service_by_function(
         self, keys: List[bytes], criteria: str, function_name: str, timeout: float = 2.0
     ) -> bytes:
@@ -2348,7 +2405,7 @@ class WorkspaceManager:
                 service_data = await self._redis.hgetall(key)
                 service_info = ServiceInfo.from_redis_dict(service_data)
 
-                # Get the service API
+                # Get the service API for custom functions
                 service_api = await self._rpc.get_remote_service(
                     service_info.id, {"timeout": timeout}
                 )
