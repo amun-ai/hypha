@@ -690,7 +690,7 @@ async def test_raw_html_apps(fastapi_server, test_user_token):
     )
 
     assert app_info["name"] == "Raw HTML App"
-    assert app_info["type"] == "application"  # convert_config_to_artifact sets this
+    assert app_info["type"] == "window"  # convert_config_to_artifact sets this
     assert app_info["entry_point"] == "index.html"
 
     # Test launching the raw HTML app
@@ -730,7 +730,7 @@ async def test_raw_html_apps(fastapi_server, test_user_token):
 
     assert app_info2["name"] == "Custom Raw HTML App"
     assert app_info2["version"] == "1.0.0"
-    assert app_info2["type"] == "application"  # convert_config_to_artifact sets this
+    assert app_info2["type"] == "window"  # convert_config_to_artifact sets this
     assert app_info2["entry_point"] == "main.html"
 
     # Clean up - both apps have the same ID since they have the same source code
