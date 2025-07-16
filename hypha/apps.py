@@ -34,7 +34,22 @@ multihash.CodecReg.register("base58", base58.b58encode, base58.b58decode)
 
 
 class AutoscalingManager:
-    """Manages autoscaling for applications based on client load."""
+    """Manages autoscaling for applications based on client load.
+    
+    This class provides automatic scaling functionality for server applications.
+    It monitors the load on application instances and automatically scales them
+    up or down based on configurable thresholds.
+    
+    Key features:
+    - Monitors request rate (requests per minute) for load balancing enabled clients
+    - Scales up when load exceeds scale_up_threshold * target_requests_per_instance
+    - Scales down when load falls below scale_down_threshold * target_requests_per_instance
+    - Respects min_instances and max_instances limits
+    - Uses cooldown periods to prevent rapid scaling oscillations
+    - Automatically stops autoscaling when the last instance of an app is removed
+    
+    See docs/autoscaling.md for detailed documentation and examples.
+    """
     
     def __init__(self, app_controller):
         self.app_controller = app_controller
