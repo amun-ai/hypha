@@ -323,6 +323,26 @@ class BrowserAppRunner:
 
         return self._browser_sessions[session_id]["logs"][type][offset : offset + limit]
 
+    async def take_screenshot(
+        self,
+        session_id: str,
+        format: str = "png",
+    ) -> str:
+        """Take a screenshot of a browser app instance."""
+        if session_id not in self._browser_sessions:
+            raise Exception(f"Browser app instance not found: {session_id}")
+
+        session = self._browser_sessions[session_id]
+        page = session["page"]
+        
+        # Validate format
+        if format not in ["png", "jpeg"]:
+            raise ValueError(f"Invalid format '{format}'. Must be 'png' or 'jpeg'")
+        
+        # Take screenshot and return as base64
+        screenshot = await page.screenshot(type=format)
+        return screenshot
+
     async def close_workspace(self, workspace: str) -> None:
         """Close all browser app instances for a workspace."""
         session_ids = [
@@ -349,7 +369,8 @@ class BrowserAppRunner:
             "start": self.start,
             "stop": self.stop,
             "list": self.list,
-            "logs": self.logs,
+            "get_logs": self.get_logs,
+            "take_screenshot": self.take_screenshot,
             "shutdown": self.shutdown,
             "prepare_workspace": self.prepare_workspace,
             "close_workspace": self.close_workspace,

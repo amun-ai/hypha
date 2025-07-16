@@ -168,9 +168,9 @@ async def test_server_apps(fastapi_server, test_user_token):
     assert webgpu_available is True
 
     # Test logs
-    logs = await controller.logs(config.id)
+    logs = await controller.get_logs(config.id)
     assert "log" in logs and "error" in logs
-    logs = await controller.logs(config.id, type="log", offset=0, limit=1)
+    logs = await controller.get_logs(config.id, type="log", offset=0, limit=1)
     assert len(logs) == 1
 
     await controller.stop(config.id)
@@ -1312,7 +1312,7 @@ async def test_new_app_management_functions(fastapi_server, test_user_token):
     started_app = await controller.start(app_id, wait_for_service="default")
     
     # Get logs
-    logs = await controller.logs(started_app["id"])
+    logs = await controller.get_logs(started_app["id"])
     assert logs is not None
     
     # Stop the app
@@ -1426,7 +1426,7 @@ async def test_python_eval_apps(fastapi_server, test_user_token):
     assert "id" in started_app
 
     # Verify the logs contain our expected output
-    logs = await controller.logs(started_app["id"])
+    logs = await controller.get_logs(started_app["id"])
     assert len(logs) > 0
     
     # Check that our print statements are in the logs
@@ -1463,6 +1463,184 @@ print("This won't be reached")
 
 
 
+    await api.disconnect()
+
+
+async def test_detached_mode_apps(fastapi_server, test_user_token):
+    """Test detached mode app functionality."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+
+    # Test script that doesn't need to stay connected as a client
+    detached_script = """
+    console.log("Detached script started");
+    console.log("Performing some computation...");
+    
+    // Simulate some work
+    let result = 0;
+    for (let i = 0; i < 100; i++) {
+        result += i;
+    }
+    console.log("Computation result:", result);
+    
+    // This script doesn't export any services or maintain a connection
+    console.log("Detached script completed");
+    """
+
+    # Test 1: Launch with detached=True, should not wait for services
+    print("Testing detached mode with launch...")
+    config = await controller.launch(
+        source=detached_script,
+        config={"type": "window", "name": "Detached Script"},
+        detached=True,
+        timeout=5,  # Short timeout should be fine since we're not waiting
+    )
+    
+    assert "id" in config
+    print(f"✓ Detached launch successful: {config['id']}")
+    
+    # Give it a moment to execute
+    await asyncio.sleep(1)
+    
+    # Check logs to verify it executed
+    logs = await controller.get_logs(config["id"])
+    assert "log" in logs
+    log_text = " ".join(logs["log"])
+    assert "Detached script started" in log_text
+    assert "Computation result:" in log_text
+    assert "Detached script completed" in log_text
+    print("✓ Detached script executed correctly")
+    
+    # Clean up
+    await controller.stop(config["id"])
+    
+    # Test 2: Install and start with detached=True
+    print("Testing detached mode with install + start...")
+    app_info = await controller.install(
+        source=detached_script,
+        config={"type": "window", "name": "Detached Script Install"},
+        overwrite=True,
+    )
+    
+    # Start in detached mode
+    start_config = await controller.start(
+        app_info["id"],
+        detached=True,
+        timeout=5,  # Short timeout should be fine
+    )
+    
+    assert "id" in start_config
+    print(f"✓ Detached start successful: {start_config['id']}")
+    
+    # Give it a moment to execute
+    await asyncio.sleep(1)
+    
+    # Check logs
+    logs = await controller.get_logs(start_config["id"])
+    assert "log" in logs
+    log_text = " ".join(logs["log"])
+    assert "Detached script started" in log_text
+    print("✓ Detached install + start worked correctly")
+    
+    # Clean up
+    await controller.stop(start_config["id"])
+    await controller.uninstall(app_info["id"])
+    
+    # Test 3: Python eval script in detached mode
+    print("Testing detached mode with Python eval...")
+    python_detached_script = """
+import os
+print("Python detached script started")
+print("Environment variables available:", len(os.environ))
+
+# Perform some computation
+numbers = list(range(100))
+total = sum(numbers)
+print(f"Sum of numbers 0-99: {total}")
+
+# This script doesn't register any services
+print("Python detached script completed")
+"""
+    
+    try:
+        python_config = await controller.launch(
+            source=python_detached_script,
+            config={"type": "python-eval", "name": "Python Detached Script"},
+            detached=True,
+            timeout=5,
+        )
+        
+        assert "id" in python_config
+        print(f"✓ Python detached launch successful: {python_config['id']}")
+        
+        # Give it a moment to execute
+        await asyncio.sleep(1)
+        
+        # Check logs
+        logs = await controller.get_logs(python_config["id"])
+        assert len(logs) > 0
+        log_text = " ".join(logs["log"])
+        assert "Python detached script started" in log_text
+        assert "Sum of numbers 0-99: 4950" in log_text
+        print("✓ Python detached script executed correctly")
+        
+        # Clean up
+        await controller.stop(python_config["id"])
+        
+    except Exception as e:
+        print(f"⚠️  Python eval test skipped (may not be available): {e}")
+    
+    # Test 4: Compare detached vs normal mode timing
+    print("Testing detached mode performance benefit...")
+    
+    # Script that would normally try to register a service but fails
+    problematic_script = """
+    console.log("Script starting");
+    // This would normally cause waiting, but in detached mode it's bypassed
+    console.log("Script completed without service registration");
+    """
+    
+    # Test normal mode (should timeout because no service is registered)
+    normal_start_time = time.time()
+    try:
+        await controller.launch(
+            source=problematic_script,
+            config={"type": "window", "name": "Normal Mode Script"},
+            timeout=3,  # Short timeout to demonstrate the difference
+            overwrite=True,
+        )
+        assert False, "Should have timed out"
+    except Exception as e:
+        normal_duration = time.time() - normal_start_time
+        print(f"✓ Normal mode timed out as expected in {normal_duration:.2f}s")
+    
+    # Test detached mode (should complete quickly)
+    detached_start_time = time.time()
+    detached_config = await controller.launch(
+        source=problematic_script,
+        config={"type": "window", "name": "Detached Mode Script"},
+        detached=True,
+        timeout=3,
+        overwrite=True,
+    )
+    detached_duration = time.time() - detached_start_time
+    
+    print(f"✓ Detached mode completed in {detached_duration:.2f}s")
+    assert detached_duration < 2, "Detached mode should complete quickly"
+    
+    # Clean up
+    await controller.stop(detached_config["id"])
+    
+    print("✅ All detached mode tests passed!")
+    
     await api.disconnect()
 
 

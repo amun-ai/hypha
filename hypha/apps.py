@@ -258,7 +258,7 @@ class ServerAppController:
             if full_client_id in self._sessions:
                 app_info = self._sessions.pop(full_client_id, None)
                 try:
-                    await app_info["_runner"].stop(full_client_id)
+                    await app_info["_worker"].stop(full_client_id)
                 except Exception as exp:
                     logger.warning(f"Failed to stop browser tab: {exp}")
 
@@ -350,7 +350,7 @@ class ServerAppController:
     @schema_method
     async def install(
         self,
-        source: str = Field(
+        source: Optional[str] = Field(
             None,
             description="The source code of the application, URL to fetch the source, or None if using config. Can be raw HTML content, ImJoy/Hypha plugin code, or a URL to download the source from. URLs must be HTTPS or localhost/127.0.0.1."
         ),
@@ -366,9 +366,17 @@ class ServerAppController:
             None,
             description="Application configuration dictionary containing app metadata and settings. Can include startup_config with default startup parameters like timeout, wait_for_service, and stop_after_inactive. Required fields: name, type, version. Optional fields: description, entry_point, requirements, etc. MUTUALLY EXCLUSIVE with 'manifest' parameter - when config is provided, manifest must be None."
         ),
+        stop_after_inactive: Optional[int] = Field(
+            None,
+            description="Number of seconds to wait before stopping the app due to inactivity. If not provided, uses app configuration."
+        ),
         wait_for_service: Optional[str] = Field(
-            "default",
+            None,
             description="The service to wait for before installing the app. If not provided, the app will be installed without waiting for any service."
+        ),
+        detached: bool = Field(
+            False,
+            description="Whether to start the app in detached mode. If True, the app starts without waiting for any service registration or client connection, useful for running scripts that don't need to stay connected."
         ),
         workspace: Optional[str] = Field(
             None,
@@ -438,7 +446,12 @@ class ServerAppController:
                 mhash = mhash.encode("base58").decode("ascii")
             else:
                 mhash = None
+            # Set default wait_for_service if not provided, consistent with config path
+            if wait_for_service is None:
+                wait_for_service = "default"
         else:
+            wait_for_service = wait_for_service or "default"
+
             # Determine template type
             if config and config.get("type"):
                 config["entry_point"] = config.get("entry_point", "index.html")
@@ -585,8 +598,29 @@ class ServerAppController:
             "user": context["user"]
         }
         
-        # Store source hash for singleton checking
-        artifact_obj["source_hash"] = mhash
+        # Create startup_config from the arguments if any are provided
+        startup_config = {}
+        if timeout is not None:
+            startup_config["timeout"] = timeout
+        if wait_for_service is not None:
+            startup_config["wait_for_service"] = wait_for_service
+        if detached is not None:
+            startup_config["detached"] = detached
+        if stop_after_inactive is not None:
+            startup_config["stop_after_inactive"] = stop_after_inactive
+        
+        # Merge with existing startup_config if any
+        if startup_config:
+            existing_startup_config = artifact_obj.get("startup_config", {})
+            if existing_startup_config:
+                existing_startup_config.update(startup_config)
+                artifact_obj["startup_config"] = existing_startup_config
+            else:
+                artifact_obj["startup_config"] = startup_config
+        
+        if mhash:
+            # Store source hash for singleton checking
+            artifact_obj["source_hash"] = mhash
 
         ApplicationManifest.model_validate(artifact_obj)
 
@@ -655,6 +689,8 @@ class ServerAppController:
                 timeout=timeout or 60,
                 version=version,
                 wait_for_service=wait_for_service,
+                stop_after_inactive=stop_after_inactive,
+                detached=detached,
                 context=context,
             )
             # After commit, read the updated artifact to get the collected services
@@ -744,9 +780,17 @@ class ServerAppController:
             None,
             description="Version identifier for the committed app. If not provided, uses default versioning."
         ),
+        stop_after_inactive: Optional[int] = Field(
+            None,
+            description="Number of seconds to wait before stopping the app due to inactivity. If not provided, uses app configuration."
+        ),
         wait_for_service: Optional[str] = Field(
             None,
             description="The service to wait for before committing the app. If not provided, the app will be committed without waiting for any service."
+        ),
+        detached: bool = Field(
+            False,
+            description="Whether to start the app in detached mode. If True, the app starts without waiting for any service registration or client connection, useful for running scripts that don't need to stay connected."
         ),
         context: Optional[dict] = Field(
             None,
@@ -762,13 +806,29 @@ class ServerAppController:
             manifest = artifact_info.get("manifest", {})
             manifest = ApplicationManifest.model_validate(manifest)
 
-            # Don't use timeout during verification, except for daemon apps
-            # which have special handling
+            # Create startup_config from provided arguments and existing config
             startup_config = manifest.startup_config or {}
-            verification_timeout = (
-                None
-                if not manifest.daemon
-                else startup_config.get("stop_after_inactive")
+            
+            # Only update startup_config if arguments are explicitly provided
+            if timeout is not None:
+                startup_config["timeout"] = timeout
+            if wait_for_service is not None:
+                startup_config["wait_for_service"] = wait_for_service
+            if detached is not None:
+                startup_config["detached"] = detached
+            if stop_after_inactive is not None:
+                startup_config["stop_after_inactive"] = stop_after_inactive
+            
+            # Update the manifest with the new startup_config
+            manifest.startup_config = startup_config
+            
+            # Save the updated manifest back to the artifact
+            await self.artifact_manager.edit(
+                app_id,
+                version="stage",
+                stage=True,
+                manifest=manifest.model_dump(mode="json"),
+                context=context,
             )
 
             info = await self.start(
@@ -776,7 +836,8 @@ class ServerAppController:
                 timeout=timeout,
                 wait_for_service=wait_for_service,
                 version="stage",
-                stop_after_inactive=verification_timeout,
+                detached=detached,
+                stop_after_inactive=stop_after_inactive,
                 context=context,
             )
             await self.stop(info["id"], context=context)
@@ -836,8 +897,8 @@ class ServerAppController:
     @schema_method
     async def launch(
         self,
-        source: str = Field(
-            ...,
+        source: Optional[str] = Field(
+            None,
             description="The source code of the application, URL to fetch the source, or application configuration. Can be raw HTML content, ImJoy/Hypha plugin code, or a URL to download the source from."
         ),
         timeout: float = Field(
@@ -856,6 +917,14 @@ class ServerAppController:
             None,
             description="Name of the service to wait for before considering the app started. If not provided, waits for default service."
         ),
+        detached: bool = Field(
+            False,
+            description="Whether to start the app in detached mode. If True, the app starts without waiting for any service registration or client connection, useful for running scripts that don't need to stay connected."
+        ),
+        stop_after_inactive: Optional[int] = Field(
+            None,
+            description="Number of seconds to wait before stopping the app due to inactivity. If not provided, uses app configuration."
+        ),
         context: Optional[dict] = Field(
             None,
             description="Additional context information including user and workspace details. Usually provided automatically by the system."
@@ -864,7 +933,7 @@ class ServerAppController:
         """Install and start a server app instance in stage mode."""
         # Install app in stage mode
         app_info = await self.install(
-            source,
+            source=source,
             config=config,
             timeout=timeout,
             overwrite=overwrite,
@@ -877,6 +946,8 @@ class ServerAppController:
             app_id,
             timeout=timeout,
             wait_for_service=wait_for_service,
+            detached=detached,
+            stop_after_inactive=stop_after_inactive,
             stage=True,
             context=context,
         )
@@ -950,7 +1021,7 @@ class ServerAppController:
         # Store session info
         self._sessions[full_client_id] = {
             **session_metadata,
-            "_runner": runner,
+            "_worker": runner,
         }
         
         # Python eval apps don't need to emit client_connected event since they execute immediately
@@ -985,6 +1056,10 @@ class ServerAppController:
             False,
             description="Whether to start the app from stage mode. If True, starts from the staged version."
         ),
+        detached: bool = Field(
+            False,
+            description="Whether to start the app in detached mode. If True, the app starts without waiting for any service registration or client connection, useful for running scripts that don't need to stay connected."
+        ),
         context: Optional[dict] = Field(
             None,
             description="Additional context information including user and workspace details. Usually provided automatically by the system."
@@ -995,6 +1070,10 @@ class ServerAppController:
             wait_for_service = "default"
         if wait_for_service and ":" in wait_for_service:
             wait_for_service = wait_for_service.split(":")[1]
+
+        # When detached=True, ignore wait_for_service to avoid waiting
+        if detached:
+            wait_for_service = None
 
         workspace = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
@@ -1030,6 +1109,15 @@ class ServerAppController:
 
         if wait_for_service is None and "wait_for_service" in startup_config:
             wait_for_service = startup_config["wait_for_service"]
+
+        # Handle detached parameter from startup_config if not explicitly provided
+        if not detached and "detached" in startup_config:
+            detached = startup_config["detached"]
+
+        # When detached=True, override wait_for_service to avoid waiting
+        if detached:
+            wait_for_service = None
+            
         # Only apply startup_config if stop_after_inactive is None (not explicitly set)
         # Do not override explicitly passed values (including verification timeout)
         if stop_after_inactive is None and "stop_after_inactive" in startup_config:
@@ -1067,38 +1155,53 @@ class ServerAppController:
             "session_data": {},  # Will be updated after start_by_type
         }
 
-        # Create a future that will be set when the target event occurs
-        event_future = asyncio.Future()
-        
-        def service_added(info: dict):
-            logger.info(f"Service added: {info}")
-            if info["id"].startswith(full_client_id + ":"):
-                sinfo = ServiceInfo.model_validate(info)
-                collected_services.append(sinfo)
-            if info["id"] == full_client_id + ":default":
-                for key in ["config", "name", "description"]:
-                    if info.get(key):
-                        app_info[key] = info[key]
+        # Only set up event waiting if not in detached mode
+        event_future = None
+        if not detached:
+            # Create a future that will be set when the target event occurs
+            event_future = asyncio.Future()
             
-            # Check if this is the target service we're waiting for
-            if wait_for_service and info["id"] == full_client_id + ":" + wait_for_service:
-                if not event_future.done():
-                    event_future.set_result(info)
-                    logger.info(f"Target service found: {info['id']}")
+            def service_added(info: dict):
+                logger.info(f"Service added: {info}")
+                if info["id"].startswith(full_client_id + ":"):
+                    sinfo = ServiceInfo.model_validate(info)
+                    collected_services.append(sinfo)
+                if info["id"] == full_client_id + ":default":
+                    for key in ["config", "name", "description"]:
+                        if info.get(key):
+                            app_info[key] = info[key]
+                
+                # Check if this is the target service we're waiting for
+                if wait_for_service and info["id"] == full_client_id + ":" + wait_for_service:
+                    if not event_future.done():
+                        event_future.set_result(info)
+                        logger.info(f"Target service found: {info['id']}")
 
-        def client_connected(info: dict):
-            logger.info(f"Client connected: {info}")
-            # Check if this is the target client we're waiting for
-            if not wait_for_service and info["id"] == full_client_id:
-                if not event_future.done():
-                    event_future.set_result(info)
-                    logger.info(f"Target client connected: {info['id']}")
+            def client_connected(info: dict):
+                logger.info(f"Client connected: {info}")
+                # Check if this is the target client we're waiting for
+                if not wait_for_service and info["id"] == full_client_id:
+                    if not event_future.done():
+                        event_future.set_result(info)
+                        logger.info(f"Target client connected: {info['id']}")
 
-        # Set up event callbacks BEFORE starting the app to avoid timing issues
-        self.event_bus.on_local("service_added", service_added)
-        if not wait_for_service:
-            self.event_bus.on_local("client_connected", client_connected)
+            # Set up event callbacks BEFORE starting the app to avoid timing issues
+            self.event_bus.on_local("service_added", service_added)
+            if not wait_for_service:
+                self.event_bus.on_local("client_connected", client_connected)
+        else:
+            # In detached mode, still collect services but don't wait for them
+            def service_added(info: dict):
+                logger.info(f"Service added (detached): {info}")
+                if info["id"].startswith(full_client_id + ":"):
+                    sinfo = ServiceInfo.model_validate(info)
+                    collected_services.append(sinfo)
+                if info["id"] == full_client_id + ":default":
+                    for key in ["config", "name", "description"]:
+                        if info.get(key):
+                            app_info[key] = info[key]
 
+            self.event_bus.on_local("service_added", service_added)
 
         try:
             # Start the app using the new start_by_type function
@@ -1141,18 +1244,24 @@ class ServerAppController:
                     entity_type="client",
                 )
 
-            # Now wait for the event that we set up before starting the app
-            logger.info(f"Waiting for event after starting app: {full_client_id}, timeout: {timeout}")
-            await asyncio.wait_for(event_future, timeout=timeout)
-            logger.info(f"Event received for app: {full_client_id}")
-
+            # Only wait for events if not in detached mode
+            if not detached and event_future is not None:
+                # Now wait for the event that we set up before starting the app
+                logger.info(f"Waiting for event after starting app: {full_client_id}, timeout: {timeout}")
+                await asyncio.wait_for(event_future, timeout=timeout)
+                logger.info(f"Event received for app: {full_client_id}")
+            else:
+                # In detached mode, give a brief moment for services to be registered
+                # but don't wait for them
+                logger.info(f"Started app in detached mode: {full_client_id}")
+                await asyncio.sleep(0.1)  # Brief delay to allow service registration
 
             # save the services
             manifest.name = manifest.name or app_info.get("name", "Untitled App")
             manifest.description = manifest.description or app_info.get(
                 "description", ""
             )
-            
+
             # Replace client ID with * in service IDs for manifest storage
             manifest_services = []
             for svc in collected_services:
@@ -1181,16 +1290,16 @@ class ServerAppController:
         except asyncio.TimeoutError:
             try:
                 session_info = self._sessions.get(full_client_id)
-                if session_info and "_runner" in session_info:
-                    logs = await session_info["_runner"].logs(full_client_id)
+                if session_info and "_worker" in session_info:
+                    logs = await session_info["_worker"].get_logs(full_client_id)
                 else:
                     logs = "No logs available (session not found)"
             except Exception:
                 logs = "No logs available (session not found)"
             try:
                 session_info = self._sessions.get(full_client_id)
-                if session_info and "_runner" in session_info:
-                    await session_info["_runner"].stop(full_client_id)
+                if session_info and "_worker" in session_info:
+                    await session_info["_worker"].stop(full_client_id)
             except Exception:
                 pass  # Session might not exist or already stopped
             raise Exception(
@@ -1199,16 +1308,16 @@ class ServerAppController:
         except Exception as exp:
             try:
                 session_info = self._sessions.get(full_client_id)
-                if session_info and "_runner" in session_info:
-                    logs = await session_info["_runner"].logs(full_client_id)
+                if session_info and "_worker" in session_info:
+                    logs = await session_info["_worker"].get_logs(full_client_id)
                 else:
                     logs = "No logs available (session not found)"
             except Exception:
                 logs = "No logs available (session not found)"
             try:
                 session_info = self._sessions.get(full_client_id)
-                if session_info and "_runner" in session_info:
-                    await session_info["_runner"].stop(full_client_id)
+                if session_info and "_worker" in session_info:
+                    await session_info["_worker"].stop(full_client_id)
             except Exception:
                 pass  # Session might not exist or already stopped
             raise Exception(
@@ -1216,10 +1325,12 @@ class ServerAppController:
             ) from exp
         finally:
             # Clean up event listeners
-            self.event_bus.off_local("service_added", service_added)
-            if not wait_for_service:
-                self.event_bus.off_local("client_connected", client_connected)
-            
+            if not detached:
+                self.event_bus.off_local("service_added", service_added)
+                if not wait_for_service:
+                    self.event_bus.off_local("client_connected", client_connected)
+            else:
+                self.event_bus.off_local("service_added", service_added)
 
         if wait_for_service:
             app_info["service_id"] = (
@@ -1271,7 +1382,7 @@ class ServerAppController:
         if session_id in self._sessions:
             app_info = self._sessions.pop(session_id, None)
             try:
-                await app_info["_runner"].stop(session_id)
+                await app_info["_worker"].stop(session_id)
             except Exception as exp:
                 if raise_exception:
                     raise
@@ -1321,8 +1432,39 @@ class ServerAppController:
                 f" to get log for app {session_id} in workspace {workspace}."
             )
         if session_id in self._sessions:
-            return await self._sessions[session_id]["_runner"].logs(
+            return await self._sessions[session_id]["_worker"].get_logs(
                 session_id, type=type, offset=offset, limit=limit
+            )
+        else:
+            raise Exception(f"Server app instance not found: {session_id}")
+
+    @schema_method
+    async def take_screenshot(
+        self,
+        session_id: str = Field(
+            ...,
+            description="The session ID of the running application instance. This is typically in the format 'workspace/client_id'."
+        ),
+        format: str = Field(
+            "png",
+            description="Screenshot format: 'png' or 'jpeg'. Returns base64 encoded image data."
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system."
+        ),
+    ) -> str:
+        """Take a screenshot of a running server app instance."""
+        user_info = UserInfo.model_validate(context["user"])
+        workspace = context["ws"]
+        if not user_info.check_permission(workspace, UserPermission.read):
+            raise Exception(
+                f"User {user_info.id} does not have permission"
+                f" to take screenshot of app {session_id} in workspace {workspace}."
+            )
+        if session_id in self._sessions:
+            return await self._sessions[session_id]["_worker"].take_screenshot(
+                session_id, format=format
             )
         else:
             raise Exception(f"Server app instance not found: {session_id}")
@@ -1570,6 +1712,10 @@ class ServerAppController:
             None,
             description="Autoscaling configuration dictionary. Set to None to disable autoscaling."
         ),
+        startup_config: Optional[Dict[str, Any]] = Field(
+            None,
+            description="Startup configuration dictionary containing default startup parameters like timeout, wait_for_service, detached, and stop_after_inactive."
+        ),
         context: Optional[dict] = Field(
             None,
             description="Additional context information including user and workspace details. Usually provided automatically by the system."
@@ -1582,7 +1728,9 @@ class ServerAppController:
         2. Merges provided manifest updates with existing manifest
         3. Merges provided config updates with existing config
         4. Updates the disabled status if provided
-        5. Saves the updated manifest
+        5. Updates the startup_config if provided
+        6. Updates the autoscaling_config if provided
+        7. Saves the updated manifest
 
         The method performs selective updates - only the fields you provide will be changed.
         Existing fields not mentioned in the updates will remain unchanged.
@@ -1624,6 +1772,14 @@ class ServerAppController:
                     updated_manifest["autoscaling"] = autoscaling_obj.model_dump()
                 else:
                     updated_manifest["autoscaling"] = None
+
+            # Handle startup_config updates
+            if startup_config is not None:
+                if startup_config:
+                    # Simply update the startup_config dictionary
+                    updated_manifest["startup_config"] = startup_config
+                else:
+                    updated_manifest["startup_config"] = None
 
             # Update the manifest with all changes
             await self.artifact_manager.edit(
@@ -1725,7 +1881,8 @@ class ServerAppController:
             "stop": self.stop,
             "list_apps": self.list_apps,
             "list_running": self.list_running,
-            "logs": self.logs,
+            "get_logs": self.get_logs,
+            "take_screenshot": self.take_screenshot,
             "edit_file": self.edit_file,
             "remove_file": self.remove_file,
             "list_files": self.list_files,

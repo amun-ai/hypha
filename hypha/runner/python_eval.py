@@ -9,6 +9,7 @@ import httpx
 from typing import Any, Dict, List, Optional, Union
 import json
 import traceback
+import io
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -184,6 +185,98 @@ class PythonEvalRunner:
         
         return []
 
+    async def take_screenshot(
+        self,
+        session_id: str,
+        format: str = "png",
+    ) -> bytes:
+        """Take a screenshot for a Python eval session."""
+        if session_id not in self._eval_sessions:
+            raise Exception(f"Python eval session not found: {session_id}")
+        from PIL import Image, ImageDraw, ImageFont
+
+        # Validate format
+        if format not in ["png", "jpeg"]:
+            raise ValueError(f"Invalid format '{format}'. Must be 'png' or 'jpeg'")
+        
+        session = self._eval_sessions[session_id]
+        
+        try:
+            # Try to capture the desktop screen
+            if sys.platform == "darwin":  # macOS
+                import subprocess
+                # Use screencapture command on macOS
+                result = subprocess.run(
+                    ["screencapture", "-t", format, "-"], 
+                    capture_output=True, 
+                    check=True
+                )
+                return result.stdout
+            elif sys.platform.startswith("linux"):
+                # Try to use scrot or gnome-screenshot on Linux
+                import subprocess
+                try:
+                    result = subprocess.run(
+                        ["scrot", "-o", "/dev/stdout"], 
+                        capture_output=True, 
+                        check=True
+                    )
+                    return result.stdout
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    # Fall back to gnome-screenshot
+                    result = subprocess.run(
+                        ["gnome-screenshot", "-f", "/dev/stdout"], 
+                        capture_output=True, 
+                        check=True
+                    )
+                    return result.stdout
+            elif sys.platform == "win32":
+                # Use PIL ImageGrab on Windows
+                from PIL import ImageGrab
+                screenshot = ImageGrab.grab()
+                img_buffer = io.BytesIO()
+                screenshot.save(img_buffer, format=format.upper())
+                return img_buffer.getvalue()
+            else:
+                # Fallback: create a placeholder screenshot
+                raise NotImplementedError(f"Screenshot not supported on {sys.platform}")
+        
+        except Exception as e:
+            logger.warning(f"Failed to capture desktop screenshot: {str(e)}, creating placeholder")
+            # Create a placeholder screenshot
+            img = Image.new('RGB', (800, 600), color='#f0f0f0')
+            draw = ImageDraw.Draw(img)
+            
+            # Try to use a default font, fall back to default if not available
+            try:
+                font = ImageFont.truetype("arial.ttf", 24)
+            except (IOError, OSError):
+                font = ImageFont.load_default()
+            
+            # Draw session information
+            session_info = [
+                f"Python Eval Session: {session_id}",
+                f"Status: {session.get('status', 'unknown')}",
+                f"App Type: {session.get('app_type', 'unknown')}",
+                "",
+                "Logs:",
+            ]
+            
+            # Add recent logs
+            logs = session.get('logs', [])
+            recent_logs = logs[-5:] if logs else ["No logs available"]
+            session_info.extend(recent_logs)
+            
+            y_position = 50
+            for line in session_info:
+                draw.text((50, y_position), line, fill='black', font=font)
+                y_position += 30
+            
+            # Save to buffer
+            img_buffer = io.BytesIO()
+            img.save(img_buffer, format=format.upper())
+            return img_buffer.getvalue()
+
     async def close_workspace(self, workspace: str) -> None:
         """Close all Python eval sessions for a workspace."""
         session_ids = [
@@ -222,7 +315,8 @@ class PythonEvalRunner:
             "start": self.start,
             "stop": self.stop,
             "list": self.list,
-            "logs": self.logs,
+            "get_logs": self.get_logs,
+            "take_screenshot": self.take_screenshot,
             "shutdown": self.shutdown,
             "close_workspace": self.close_workspace,
             "prepare_workspace": self.prepare_workspace,
