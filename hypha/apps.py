@@ -283,13 +283,17 @@ class ServerAppController:
             None,
             description="The source code of the application, URL to fetch the source, or None if using config. Can be raw HTML content, ImJoy/Hypha plugin code, or a URL to download the source from. URLs must be HTTPS or localhost/127.0.0.1."
         ),
-        source_hash: str = Field(
+        source_hash: Optional[str] = Field(
             None,
             description="Optional hash of the source for verification. Use this to ensure the downloaded source matches the expected content."
         ),
+        manifest: Optional[Dict[str, Any]] = Field(
+            None,
+            description="Application manifest dictionary containing app metadata and settings. Can include autoscaling config. MUTUALLY EXCLUSIVE with 'config' parameter - when manifest is provided, config must be None. The manifest is stored directly without conversion and must include 'entry_point' field."
+        ),
         config: Optional[Dict[str, Any]] = Field(
             None,
-            description="Application configuration dictionary containing app metadata and settings. Can include startup_config with default startup parameters like timeout, wait_for_service, and stop_after_inactive. Required fields: name, type, version. Optional fields: description, entry_point, requirements, etc."
+            description="Application configuration dictionary containing app metadata and settings. Can include startup_config with default startup parameters like timeout, wait_for_service, and stop_after_inactive. Required fields: name, type, version. Optional fields: description, entry_point, requirements, etc. MUTUALLY EXCLUSIVE with 'manifest' parameter - when config is provided, manifest must be None."
         ),
         workspace: Optional[str] = Field(
             None,
@@ -319,11 +323,15 @@ class ServerAppController:
         """Save a server app.
 
         Args:
-            source: The source code of the application, URL to fetch the source, or None if using config
+            source: The source code of the application, URL to fetch the source, or None if using manifest
             source_hash: Optional hash of the source for verification
+            manifest: Application manifest dictionary containing app metadata and settings.
+                     Mutually exclusive with config parameter. When provided, config must be None.
+                     The manifest is stored directly without conversion and must include 'entry_point' field.
             config: Application configuration dictionary containing app metadata and settings.
                    Can include startup_config with default startup parameters like timeout,
                    wait_for_service, and stop_after_inactive.
+                   Mutually exclusive with manifest parameter. When provided, manifest must be None.
             workspace: Target workspace for installation (defaults to current workspace)
             overwrite: Whether to overwrite existing app with same name
             timeout: Maximum time to wait for installation completion
@@ -342,142 +350,153 @@ class ServerAppController:
                 f" to install apps in workspace {workspace_info.id}"
             )
 
-        # Determine template type
-        if config and config.get("type"):
-            config["entry_point"] = config.get("entry_point", "index.html")
-            template = config.get("type") + "." + config["entry_point"]
+        if manifest:
+            artifact_obj = manifest
+            assert "entry_point" in artifact_obj, "entry_point is required in manifest"
+            file_path = artifact_obj["entry_point"]
+            assert config is None, "config should be None when manifest is provided"
+            # For manifest installations, we need to extract the source from the manifest
+            # and compute the hash from the script content
+            source = artifact_obj.get("script", "")
+            mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
+            mhash = mhash.encode("base58").decode("ascii")
         else:
-            template = "hypha"
-
-        # Handle different source types
-        if source.startswith("http"):
-            if not (
-                source.startswith("https://")
-                or source.startswith("http://localhost")
-                or source.startswith("http://127.0.0.1")
-            ):
-                raise Exception("Only secured https urls are allowed: " + source)
-            if source.startswith("https://") and (
-                source.split("?")[0].endswith(".imjoy.html")
-                or source.split("?")[0].endswith(".hypha.html")
-            ):
-                # download source with httpx
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(source)
-                    assert response.status_code == 200, f"Failed to download {source}"
-                    source = response.text
-            else:
-                template = None
-        elif is_raw_html_content(source):
-            # Handle raw HTML content
-            if not config:
-                config = {
-                    "name": "Raw HTML App",
-                    "version": "0.1.0",
-                    "type": "window",
-                    "entry_point": "index.html",
-                }
-            else:
+            # Determine template type
+            if config and config.get("type"):
                 config["entry_point"] = config.get("entry_point", "index.html")
-                config["type"] = config.get("type", "window")
-            template = "raw_html"
+                template = config.get("type") + "." + config["entry_point"]
+            else:
+                template = "hypha"
 
-        # Compute multihash of the source code
-        mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
-        mhash = mhash.encode("base58").decode("ascii")
-        # Verify the source code, useful for downloading from the web
-        if source_hash is not None:
-            target_mhash = multihash.decode(source_hash.encode("ascii"), "base58")
-            assert target_mhash.verify(
-                source.encode("utf-8")
-            ), f"App source code verification failed (source_hash: {source_hash})."
-
-        # Process based on template type
-        if template is None:
-            config = config or {}
-            config["entry_point"] = config.get("entry_point", source)
-            entry_point = config["entry_point"]
-        elif template == "raw_html":
-            # For raw HTML, we'll upload the content as-is
-            entry_point = config["entry_point"]
-        elif template == "hypha":
-            if not source:
-                raise Exception("Source should be provided for hypha app.")
-
-            try:
-                # Parse the template config
-                template_config = parse_imjoy_plugin(source)
-                template_config["source_hash"] = mhash
-                entry_point = template_config.get("entry_point", "index.html")
-                template_config["entry_point"] = entry_point
-
-                # Merge with provided config, giving priority to template config for app metadata
-                # but allowing additional config like startup_config to be provided
-                if config:
-                    merged_config = config.copy()
-                    merged_config.update(
-                        template_config
-                    )  # Template config overrides provided config
-                    config = merged_config
+            # Handle different source types
+            if source.startswith("http"):
+                if not (
+                    source.startswith("https://")
+                    or source.startswith("http://localhost")
+                    or source.startswith("http://127.0.0.1")
+                ):
+                    raise Exception("Only secured https urls are allowed: " + source)
+                if source.startswith("https://") and (
+                    source.split("?")[0].endswith(".imjoy.html")
+                    or source.split("?")[0].endswith(".hypha.html")
+                ):
+                    # download source with httpx
+                    async with httpx.AsyncClient() as client:
+                        response = await client.get(source)
+                        assert response.status_code == 200, f"Failed to download {source}"
+                        source = response.text
                 else:
-                    config = template_config
+                    template = None
+            elif is_raw_html_content(source):
+                # Handle raw HTML content
+                if not config:
+                    config = {
+                        "name": "Raw HTML App",
+                        "version": "0.1.0",
+                        "type": "window",
+                        "entry_point": "index.html",
+                    }
+                else:
+                    config["entry_point"] = config.get("entry_point", "index.html")
+                    config["type"] = config.get("type", "window")
+                template = "html"
 
-                temp = self.jinja_env.get_template(
-                    safe_join("apps", config["type"] + "." + entry_point)
-                )
+            # Compute multihash of the source code
+            mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
+            mhash = mhash.encode("base58").decode("ascii")
+            # Verify the source code, useful for downloading from the web
+            if source_hash is not None:
+                target_mhash = multihash.decode(source_hash.encode("ascii"), "base58")
+                assert target_mhash.verify(
+                    source.encode("utf-8")
+                ), f"App source code verification failed (source_hash: {source_hash})."
 
+            # Process based on template type
+            if template is None:
+                config = config or {}
+                config["entry_point"] = config.get("entry_point", source)
+                entry_point = config["entry_point"]
+            elif template == "html":
+                # For raw HTML, we'll upload the content as-is
+                entry_point = config["entry_point"]
+            elif template == "hypha":
+                if not source:
+                    raise Exception("Source should be provided for hypha app.")
+
+                try:
+                    # Parse the template config
+                    template_config = parse_imjoy_plugin(source)
+                    template_config["source_hash"] = mhash
+                    entry_point = template_config.get("entry_point", "index.html")
+                    template_config["entry_point"] = entry_point
+
+                    # Merge with provided config, giving priority to template config for app metadata
+                    # but allowing additional config like startup_config to be provided
+                    if config:
+                        merged_config = config.copy()
+                        merged_config.update(
+                            template_config
+                        )  # Template config overrides provided config
+                        config = merged_config
+                    else:
+                        config = template_config
+
+                    temp = self.jinja_env.get_template(
+                        safe_join("apps", config["type"] + "." + entry_point)
+                    )
+
+                    source = temp.render(
+                        hypha_main_version=main_version,
+                        hypha_rpc_websocket_mjs=self.local_base_url
+                        + "/assets/hypha-rpc-websocket.mjs",
+                        config={k: config[k] for k in config if k in PLUGIN_CONFIG_FIELDS},
+                        script=config["script"],
+                        requirements=config["requirements"],
+                        local_base_url=self.local_base_url,
+                    )
+                except Exception as err:
+                    raise Exception(
+                        f"Failed to parse or compile the hypha app {mhash}: {source[:100]}...",
+                    ) from err
+            elif template:
+                assert (
+                    "." in template
+                ), f"Invalid template name: {template}, should be a file name with extension."
+                # extract the last dash separated part as the file name
+                temp = self.jinja_env.get_template(safe_join("apps", template))
+                default_config = {
+                    "name": "Untitled App",
+                    "version": "0.1.0",
+                    "local_base_url": self.local_base_url,
+                }
+                default_config.update(config or {})
+                config = default_config
+                entry_point = config.get("entry_point", template)
+                config["entry_point"] = entry_point
                 source = temp.render(
                     hypha_main_version=main_version,
                     hypha_rpc_websocket_mjs=self.local_base_url
                     + "/assets/hypha-rpc-websocket.mjs",
-                    config={k: config[k] for k in config if k in PLUGIN_CONFIG_FIELDS},
-                    script=config["script"],
-                    requirements=config["requirements"],
-                    local_base_url=self.local_base_url,
+                    script=source,
+                    source_hash=mhash,
+                    config=config,
+                    requirements=config.get("requirements", []),
                 )
-            except Exception as err:
-                raise Exception(
-                    f"Failed to parse or compile the hypha app {mhash}: {source[:100]}...",
-                ) from err
-        elif template:
-            assert (
-                "." in template
-            ), f"Invalid template name: {template}, should be a file name with extension."
-            # extract the last dash separated part as the file name
-            temp = self.jinja_env.get_template(safe_join("apps", template))
-            default_config = {
-                "name": "Untitled App",
-                "version": "0.1.0",
-                "local_base_url": self.local_base_url,
-            }
-            default_config.update(config or {})
-            config = default_config
-            entry_point = config.get("entry_point", template)
-            config["entry_point"] = entry_point
-            source = temp.render(
-                hypha_main_version=main_version,
-                hypha_rpc_websocket_mjs=self.local_base_url
-                + "/assets/hypha-rpc-websocket.mjs",
-                script=source,
-                source_hash=mhash,
-                config=config,
-                requirements=config.get("requirements", []),
-            )
-        elif not source:
-            raise Exception("Source or template should be provided.")
+            elif not source:
+                raise Exception("Source or template should be provided.")
 
-        # Create artifact object first (with placeholder app_id)
-        placeholder_app_id = "temp_app_id"
-        if template and template != "raw_html":
-            # Use placeholder URLs that will be updated after we get the actual app_id
-            placeholder_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{placeholder_app_id}/files/{entry_point}"
-            artifact_obj = convert_config_to_artifact(config, placeholder_app_id, placeholder_url)
-        elif template == "raw_html":
-            # Use placeholder URLs that will be updated after we get the actual app_id
-            placeholder_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{placeholder_app_id}/files/{entry_point}"
-            artifact_obj = convert_config_to_artifact(config, placeholder_app_id, placeholder_url)
-        else:
-            artifact_obj = convert_config_to_artifact(config, placeholder_app_id, source)
+            # Create artifact object first (with placeholder app_id)
+            placeholder_app_id = "temp_app_id"
+            if template and template != "html":
+                # Use placeholder URLs that will be updated after we get the actual app_id
+                placeholder_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{placeholder_app_id}/files/{entry_point}"
+                artifact_obj = convert_config_to_artifact(config, placeholder_app_id, placeholder_url)
+            elif template == "html":
+                # Use placeholder URLs that will be updated after we get the actual app_id
+                placeholder_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{placeholder_app_id}/files/{entry_point}"
+                artifact_obj = convert_config_to_artifact(config, placeholder_app_id, placeholder_url)
+            else:
+                artifact_obj = convert_config_to_artifact(config, placeholder_app_id, source)
 
         # startup_config is now handled automatically by convert_config_to_artifact
         # if it exists in the config
@@ -516,22 +535,25 @@ class ServerAppController:
         
         # Update the artifact object with the correct app_id and URLs
         artifact_obj["id"] = app_id
-        if template and template != "raw_html":
-            public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}"
-            artifact_obj.update(
-                {
-                    "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}",
-                    "public_url": public_url,
-                }
-            )
-        elif template == "raw_html":
-            public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}"
-            artifact_obj.update(
-                {
-                    "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}",
-                    "public_url": public_url,
-                }
-            )
+        if config:
+            if template and template != "html":
+                public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}"
+                artifact_obj.update(
+                    {
+                        "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}",
+                        "public_url": public_url,
+                    }
+                )
+                file_path = config["entry_point"]
+            elif template == "html":
+                public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}"
+                artifact_obj.update(
+                    {
+                        "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}",
+                        "public_url": public_url,
+                    }
+                )
+                file_path = entry_point
         
         # Update the artifact with the correct app_id and URLs
         await self.artifact_manager.edit(
@@ -540,26 +562,12 @@ class ServerAppController:
             manifest=artifact_obj,
             context=context,
         )
-
-        # Upload files for template-based apps and raw HTML
-        if template and template != "raw_html":
-            # Upload the main source file
-            put_url = await self.artifact_manager.put_file(
-                artifact["id"], file_path=config["entry_point"], use_proxy=False, context=context
-            )
-            async with httpx.AsyncClient() as client:
-                response = await client.put(put_url, data=source)
-                assert (
-                    response.status_code == 200
-                ), f"Failed to upload {config['entry_point']}"
-        elif template == "raw_html":
-            # Upload the raw HTML content
-            put_url = await self.artifact_manager.put_file(
-                artifact["id"], file_path=entry_point, use_proxy=False, context=context
-            )
-            async with httpx.AsyncClient() as client:
-                response = await client.put(put_url, data=source)
-                assert response.status_code == 200, f"Failed to upload {entry_point}"
+        put_url = await self.artifact_manager.put_file(
+            artifact["id"], file_path=file_path, use_proxy=False, context=context
+        )
+        async with httpx.AsyncClient() as client:
+            response = await client.put(put_url, data=source)
+            assert response.status_code == 200, f"Failed to upload {file_path}"
 
         if not stage:
             # Commit the artifact if stage is not enabled
@@ -796,10 +804,6 @@ class ServerAppController:
             ...,
             description="The unique identifier of the application to start. This is typically the alias of the application."
         ),
-        client_id: str = Field(
-            None,
-            description="Optional client ID for the session. If not provided, a random ID will be generated."
-        ),
         timeout: float = Field(
             None,
             description="Maximum time to wait for start completion in seconds. If not provided, uses default timeout from app configuration."
@@ -843,10 +847,9 @@ class ServerAppController:
                 f" to run app {app_id} in workspace {workspace}."
             )
 
-        if client_id is None:
-            # Add "_rlb" suffix to enable load balancing metrics for app clients
-            # This allows the system to track load only for clients that may have multiple instances
-            client_id = random_id(readable=True) + "_rlb"
+        # Add "_rlb" suffix to enable load balancing metrics for app clients
+        # This allows the system to track load only for clients that may have multiple instances
+        client_id = random_id(readable=True) + "_rlb"
 
         # If stage is True, use stage version, otherwise use provided version
         read_version = "stage" if stage else version
@@ -855,6 +858,7 @@ class ServerAppController:
         )
         manifest = artifact_info.get("manifest", {})
         manifest = ApplicationManifest.model_validate(manifest)
+
 
         # Apply default startup config from manifest if not explicitly provided
         startup_config = manifest.startup_config or {}

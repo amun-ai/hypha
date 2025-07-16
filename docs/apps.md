@@ -442,7 +442,7 @@ app_info = await controller.install(
 
 ---
 
-### `start(app_id: str, client_id: str = None, timeout: float = None, version: str = None, wait_for_service: Union[str, bool] = None, stop_after_inactive: float = None, context: dict = None) -> AppSessionInfo`
+### `start(app_id: str, timeout: float = None, version: str = None, wait_for_service: Union[str, bool] = None, stop_after_inactive: float = None, context: dict = None) -> AppSessionInfo`
 
 Starts an installed application.
 

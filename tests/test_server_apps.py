@@ -1071,6 +1071,93 @@ async def test_service_selection_mode_with_multiple_instances(fastapi_server, te
     await api.disconnect()
 
 
+async def test_manifest_parameter_install(fastapi_server, test_user_token):
+    """Test installing apps using manifest parameter instead of config."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+    
+    # Test script for the manifest app
+    test_script = """
+    api.export({
+        async setup() {
+            console.log("Manifest app initialized");
+        },
+        async getMessage() {
+            return "Hello from manifest app!";
+        },
+        async calculate(a, b) {
+            return a * b;
+        }
+    });
+    """
+    
+    # Create a manifest directly (without config conversion)
+    manifest = {
+        "id": "manifest-test-app",
+        "name": "Manifest Test App", 
+        "description": "App installed using manifest parameter",
+        "version": "1.0.0",
+        "type": "application",
+        "entry_point": "index.html",
+        "script": test_script,
+        "requirements": [],
+        "singleton": False,
+        "daemon": False,
+        "config": {}
+    }
+    
+    # Test 1: Install with manifest parameter
+    app_info = await controller.install(
+        source=None,  # No source needed when using manifest
+        manifest=manifest,
+        overwrite=True,
+    )
+    
+    assert app_info["name"] == "Manifest Test App"
+    assert app_info["description"] == "App installed using manifest parameter"
+    assert app_info["version"] == "1.0.0"
+    assert app_info["entry_point"] == "index.html"
+    
+    # Test 2: Try to install with both manifest and config (should fail)
+    try:
+        await controller.install(
+            source=None,
+            manifest=manifest,
+            config={"name": "Should not work"},
+            overwrite=True,
+        )
+        assert False, "Should have failed when both manifest and config are provided"
+    except Exception as e:
+        assert "config should be None when manifest is provided" in str(e)
+    
+    # Test 3: Try to install with manifest without entry_point (should fail)
+    invalid_manifest = manifest.copy()
+    del invalid_manifest["entry_point"]
+    
+    try:
+        await controller.install(
+            source=None,
+            manifest=invalid_manifest,
+            overwrite=True,
+        )
+        assert False, "Should have failed when entry_point is missing from manifest"
+    except Exception as e:
+        assert "entry_point is required in manifest" in str(e)
+    
+    # Clean up
+    await controller.uninstall(app_info["id"])
+    
+    await api.disconnect()
+
+
 async def test_new_app_management_functions(fastapi_server, test_user_token):
     """Test new app management functions: get_app_info, read_file, validate_app_config, edit_app."""
     api = await connect_to_server(
