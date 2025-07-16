@@ -1072,7 +1072,7 @@ async def test_service_selection_mode_with_multiple_instances(fastapi_server, te
 
 
 async def test_new_app_management_functions(fastapi_server, test_user_token):
-    """Test new app management functions: get_app_info, get_file_content, validate_app_config, edit_app."""
+    """Test new app management functions: get_app_info, read_file, validate_app_config, edit_app."""
     api = await connect_to_server(
         {
             "name": "test client",
@@ -1137,28 +1137,28 @@ async def test_new_app_management_functions(fastapi_server, test_user_token):
     assert retrieved_app_info["manifest"]["version"] == "1.0.0"
     print("✓ get_app_info tests passed")
 
-    # Test get_file_content
-    print("Testing get_file_content...")
+    # Test read_file
+    print("Testing read_file...")
     
     # Get the content of the main file
-    file_content = await controller.get_file_content(app_id, "index.html", format="text")
+    file_content = await controller.read_file(app_id, "index.html", format="text")
     assert file_content is not None
     assert isinstance(file_content, str)
     assert len(file_content) > 0
     
     # Test JSON format (should work if the file contains JSON)
     try:
-        json_content = await controller.get_file_content(app_id, "index.html", format="json")
+        json_content = await controller.read_file(app_id, "index.html", format="json")
         # This might fail if the file is not JSON, which is fine
     except Exception:
         # Expected for HTML files
         pass
     
     # Test binary format
-    binary_content = await controller.get_file_content(app_id, "index.html", format="binary")
+    binary_content = await controller.read_file(app_id, "index.html", format="binary")
     assert binary_content is not None
     assert isinstance(binary_content, str)  # Base64 encoded
-    print("✓ get_file_content tests passed")
+    print("✓ read_file tests passed")
 
     # Test edit_app (basic functionality)
     print("Testing edit_app...")

@@ -1245,7 +1245,7 @@ class ServerAppController:
             raise Exception(f"Failed to get app info for {app_id}: {exp}") from exp
 
     @schema_method
-    async def get_file_content(
+    async def read_file(
         self,
         app_id: str = Field(
             ...,
@@ -1548,7 +1548,7 @@ class ServerAppController:
             "list_files": self.list_files,
             "commit_app": self.commit_app,
             "get_app_info": self.get_app_info,
-            "get_file_content": self.get_file_content,
+            "read_file": self.read_file,
             "validate_app_config": self.validate_app_config,
             "edit_app": self.edit_app,
         }
