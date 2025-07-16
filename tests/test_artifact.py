@@ -854,7 +854,7 @@ async def test_artifact_alias_pattern(minio_server, fastapi_server, test_user_to
     # Verify the alias pattern is correctly applied
     assert dataset["manifest"]["name"] == "My test data"
 
-
+@pytest.mark.xfail(reason="Zenodo sandbox token may not be available")
 async def test_publish_artifact(minio_server, fastapi_server, test_user_token):
     """Test publishing an artifact."""
     api = await connect_to_server(
