@@ -601,6 +601,53 @@ custom_worker = CustomWorker(server)
 await custom_worker.initialize()
 ```
 
+### Starting the Server with Startup Functions
+
+When you have created a `hypha_startup` function (either for custom workers or any other server initialization), you need to start the Hypha server with the `--startup-functions` option to load your custom code.
+
+**Using a Python File:**
+
+If your `hypha_startup` function is in a local Python file (e.g., `my_custom_worker.py`):
+
+```bash
+python -m hypha.server --host=0.0.0.0 --port=9527 \
+    --startup-functions=./my_custom_worker.py:hypha_startup
+```
+
+**Using an Installed Python Module:**
+
+If your `hypha_startup` function is in an installed Python package:
+
+```bash
+python -m hypha.server --host=0.0.0.0 --port=9527 \
+    --startup-functions=my_package.custom_worker:hypha_startup
+```
+
+**Multiple Startup Functions:**
+
+You can specify multiple startup functions by providing additional `--startup-functions` arguments:
+
+```bash
+python -m hypha.server --host=0.0.0.0 --port=9527 \
+    --startup-functions=./my_custom_worker.py:hypha_startup \
+    --startup-functions=./another_service.py:hypha_startup
+```
+
+**Example with Server Apps and S3:**
+
+For a complete server setup with Server Apps, built-in S3 storage, and custom workers:
+
+```bash
+python -m hypha.server --host=0.0.0.0 --port=9527 \
+    --start-minio-server \
+    --enable-server-apps \
+    --startup-functions=./my_custom_worker.py:hypha_startup
+```
+
+> **Note:** The `--startup-functions` option expects the format `<python_module_or_file>:<function_name>`, where the function should be named `hypha_startup` and accept a single `server` parameter.
+
+For more details on server startup options, see the [Getting Started documentation](getting-started.md#custom-initialization-and-service-integration-with-hypha-server).
+
 ### Worker Interface Requirements
 
 All custom workers must implement these methods:

@@ -301,7 +301,7 @@ class BrowserAppRunner:
         ]
         return sessions
 
-    async def logs(
+    async def get_logs(
         self,
         session_id: str,
         type: str = None,  # pylint: disable=redefined-builtin
