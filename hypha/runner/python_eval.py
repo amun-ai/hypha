@@ -29,6 +29,7 @@ class PythonEvalRunner:
         self._eval_sessions: Dict[str, Dict[str, Any]] = {}
         self.controller_id = str(PythonEvalRunner.instance_counter)
         PythonEvalRunner.instance_counter += 1
+        self.artifact_manager = None
     
     async def initialize(self) -> None:
         """Initialize the Python eval runner."""
