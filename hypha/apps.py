@@ -1001,8 +1001,9 @@ class ServerAppController:
             )
         # Get app type from config, fallback to manifest type
         app_type = manifest.type if manifest else None
-        logger.info(f"App type determined as: {app_type}")
-        
+        if app_type in ["application", None]:
+            raise ValueError("Application type should not be application or None")
+
         full_client_id = workspace + "/" + client_id
 
         # collecting services registered during the startup of the script
@@ -1047,6 +1048,7 @@ class ServerAppController:
         self.event_bus.on_local("service_added", service_added)
         if not wait_for_service:
             self.event_bus.on_local("client_connected", client_connected)
+
 
         try:
             # Start the app using the new start_by_type function

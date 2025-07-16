@@ -26,6 +26,7 @@ class PythonEvalRunner:
     def __init__(self, server):
         """Initialize the Python eval runner."""
         self.server = server
+        self.initialized = False
         self._eval_sessions: Dict[str, Dict[str, Any]] = {}
         self.controller_id = str(PythonEvalRunner.instance_counter)
         PythonEvalRunner.instance_counter += 1
@@ -33,8 +34,10 @@ class PythonEvalRunner:
     
     async def initialize(self) -> None:
         """Initialize the Python eval runner."""
-        await self.server.register_service(self.get_service())
-        self.artifact_manager = await self.server.get_service("public/artifact-manager")
+        if not self.initialized:
+            await self.server.register_service(self.get_service())
+            self.artifact_manager = await self.server.get_service("public/artifact-manager")
+            self.initialized = True
 
     async def start(
         self,
@@ -53,10 +56,9 @@ class PythonEvalRunner:
         session_id: Optional[str] = None,  # For backward compatibility
     ):
         """Start a Python eval session."""
-        # Handle backward compatibility
-        if url and session_id:
-            return await self._start_legacy(url, session_id, metadata)
-        
+        if not self.initialized:
+            await self.initialize()
+
         full_session_id = f"{workspace}/{client_id}"
         
         try:
@@ -135,37 +137,6 @@ class PythonEvalRunner:
             if full_session_id in self._eval_sessions:
                 await self.stop(full_session_id)
             raise
-
-    async def _start_legacy(
-        self,
-        url: str,
-        session_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ):
-        """Legacy start method for backward compatibility."""
-        if session_id is None:
-            session_id = str(uuid.uuid4())
-        
-        # For legacy support, we'll assume the URL contains Python code
-        # This is a simplified implementation
-        logs = []
-        
-        session_data = {
-            "session_id": session_id,
-            "status": "completed",
-            "logs": logs,
-            "error": None,
-            "metadata": metadata,
-            "app_type": "python-eval",
-        }
-        
-        self._eval_sessions[session_id] = session_data
-        
-        return {
-            "session_id": session_id,
-            "status": "completed",
-            "logs": logs,
-        }
 
     async def stop(self, session_id: str) -> None:
         """Stop a Python eval session."""

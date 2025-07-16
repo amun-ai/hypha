@@ -106,7 +106,7 @@ def convert_config_to_artifact(plugin_config, plugin_id, source_url=None):
     """Convert imjoy plugin config to Artifact format."""
     artifact = DefaultObjectProxy(
         {
-            "type": "application",
+            "type": None,
             "id": plugin_id,
         }
     )
@@ -114,7 +114,7 @@ def convert_config_to_artifact(plugin_config, plugin_id, source_url=None):
     fields = [
         field
         for field in ApplicationManifest.model_fields.keys()
-        if field not in ["id", "type", "config"]
+        if field not in ["id", "config"]
     ]
     for field in fields:
         if field in plugin_config:
