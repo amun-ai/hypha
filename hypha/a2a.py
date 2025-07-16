@@ -398,25 +398,17 @@ class A2ARoutingMiddleware:
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
             path = scope.get("path", "N/A")
-            logger.info(f"A2A Middleware: Processing HTTP request to {path}")
-
             # Check if the current request path matches the A2A route
             from starlette.routing import Match
 
             match, params = self.route.matches(scope)
             path_params = params.get("path_params", {})
-
-            logger.info(
-                f"A2A Middleware: checking path {path}, match: {match}, params: {path_params}"
-            )
-
             if match == Match.FULL:
                 # Extract workspace and service_id from the matched path
                 workspace = path_params["workspace"]
                 service_id_path = path_params[
                     "service_id"
                 ]  # This contains service_id and optional path
-
                 # Parse service_id and path from service_id_path
                 # service_id_path could be just "service_id" or "service_id/additional/path"
                 service_id_parts = service_id_path.split("/", 1)
@@ -424,7 +416,7 @@ class A2ARoutingMiddleware:
                 path = "/" + service_id_parts[1] if len(service_id_parts) > 1 else "/"
 
                 logger.info(
-                    f"A2A Middleware: Parsed - workspace='{workspace}', service_id='{service_id}', path='{path}'"
+                    f"Processing A2A request - workspace='{workspace}', service_id='{service_id}', path='{path}'"
                 )
 
                 try:
