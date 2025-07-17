@@ -1,34 +1,685 @@
 # Server Apps
 
-The **Server Apps** service is a core Hypha service that enables serverless computing and dynamic application management within the Hypha ecosystem. It provides a powerful platform for running various types of applications including web workers, web Python apps, ASGI web applications, and daemon services in a serverless fashion - meaning applications are only started on-demand and automatically scaled based on usage. The service supports features like lazy loading, automatic startup configuration, and HTTP access to applications, making it ideal for building modern serverless architectures.
+The **Server Apps** service is a core Hypha service that enables serverless computing and dynamic application management within the Hypha ecosystem. It provides a powerful platform for running various types of applications in a serverless fashion - meaning applications are only started on-demand and automatically scaled based on usage.
+
+> **Related Documentation:**
+> - [ASGI Applications](asgi-apps.md) - Serve FastAPI, Django, and other ASGI applications
+> - [Serverless Functions](serverless-functions.md) - Deploy HTTP endpoint functions
+> - [Autoscaling](autoscaling.md) - Automatic scaling based on load
+
+## Two Types of Applications
+
+The Server Apps service supports two distinct approaches for creating and deploying applications:
+
+### 1. Hypha Apps (Built-in Templates + Config)
+
+**Hypha Apps** use built-in templates combined with configuration to create standardized applications. This approach provides:
+
+- **Built-in Templates**: Pre-configured templates for common app types
+- **Supported Types**: `web-worker`, `web-python`, `iframe`, `window`
+- **Configuration-Based**: Apps are defined through configuration objects
+- **Template Rendering**: Source code is automatically generated from templates using Jinja2
+- **Simplified Development**: No need to write HTML boilerplate
+
+**Example Hypha App:**
+```python
+# Simple web-worker app using built-in template
+app_info = await controller.install(
+    source='''
+    api.export({
+        async add(a, b) { return a + b; },
+        async multiply(a, b) { return a * b; }
+    });
+    ''',
+    config={
+        "name": "Calculator",
+        "type": "web-worker",  # Built-in template type
+        "version": "1.0.0"
+    }
+)
+```
+
+### 2. Generic Apps (Custom Source + Manifest)
+
+**Generic Apps** allow complete control over the application structure and support custom application types through custom server-app-workers:
+
+- **Custom Source**: Full control over HTML, CSS, and JavaScript
+- **Custom Manifest**: Direct manifest specification without conversion
+- **Custom Types**: Support for any application type via custom workers
+- **Raw HTML**: Can include complete HTML documents
+- **Extensible**: New app types can be added through custom workers
+
+**Example Generic App:**
+```python
+# Custom HTML app with manifest
+app_info = await controller.install(
+    source='''
+    <!DOCTYPE html>
+    <html>
+    <head><title>Custom App</title></head>
+    <body>
+        <h1>Custom Application</h1>
+        <script>
+            // Custom application logic
+        </script>
+    </body>
+    </html>
+    ''',
+    manifest={
+        "name": "Custom App",
+        "type": "custom-html",  # Custom type
+        "version": "1.0.0",
+        "entry_point": "index.html"
+    }
+)
+```
 
 ## How It Works
 
-The Server Apps service operates by running a full-featured web browser (Chromium) on the server side, enabling it to execute web applications and JavaScript code in a controlled server environment. This unique architecture provides several key advantages:
+The Server Apps service operates by running a full-featured web browser (Chromium) on the server side for built-in types, or delegating to custom workers for specialized types. This architecture provides:
 
-- **Full Browser Environment**: Applications have access to standard web APIs, DOM manipulation, and modern JavaScript features just like in a regular browser
-- **Sandboxed Execution**: Each app runs in an isolated browser context for security and resource management
-- **Server-Side Rendering**: Web applications can perform server-side rendering and processing without client-side overhead
-- **WebWorker Support**: Dedicated web workers can run CPU-intensive tasks in parallel
-- **Native Performance**: Direct access to server resources while maintaining browser compatibility
-
-The service manages a pool of browser instances and automatically scales them based on demand. When a request comes in:
-
-1. The service checks if a browser instance is available for the requested app
-2. If needed, it spins up a new browser instance and loads the application
-3. The request is routed to the appropriate browser context
-4. Results are returned through the Hypha API layer
-
-This architecture enables true serverless operation - applications only consume resources when actively being used, while providing the full capabilities of a modern web browser runtime.
-
+- **Full Browser Environment**: Standard web APIs, DOM manipulation, modern JavaScript features
+- **Sandboxed Execution**: Isolated execution contexts for security
+- **Server-Side Rendering**: Processing without client-side overhead
+- **Custom Workers**: Extensible support for specialized application types
+- **Automatic Scaling**: Dynamic resource allocation based on demand
 
 **Key Features:**
 - **Dynamic App Installation**: Install apps from source code, URLs, or local files
-- **Multiple App Types**: Support for web workers, web Python, ASGI, daemon apps, and more
-- **Lazy Loading**: Apps can be started automatically when accessed
-- **Startup Configuration**: Configure default startup parameters for consistent behavior
-- **HTTP Access**: Direct HTTP access to web applications and services
-- **Lifecycle Management**: Complete control over app installation, starting, stopping, and uninstalling
+- **Multiple App Types**: Support for built-in types and custom types via workers
+- **Lazy Loading**: Apps start automatically when accessed
+- **Startup Configuration**: Configure default startup parameters
+- **HTTP Access**: Direct HTTP access to web applications
+- **Lifecycle Management**: Complete control over installation, starting, stopping, and uninstalling
+- **Autoscaling**: Automatic scaling based on load (see [Autoscaling documentation](autoscaling.md))
+
+For web applications that need HTTP endpoints, consider using [ASGI Applications](asgi-apps.md) for full web frameworks like FastAPI, or [Serverless Functions](serverless-functions.md) for simple HTTP endpoints.
+
+---
+
+## Hypha Apps (Built-in Templates)
+
+Hypha Apps use built-in templates and configuration to create standardized applications. The system automatically generates the necessary HTML, CSS, and JavaScript based on your configuration and source code.
+
+### Supported Built-in Types
+
+#### Web Worker Apps
+Run JavaScript in a web worker environment, suitable for CPU-intensive tasks:
+
+```python
+web_worker_source = '''
+api.export({
+    async processData(data) {
+        // CPU-intensive processing
+        return data.map(x => x * 2);
+    },
+    async fibonacci(n) {
+        if (n <= 1) return n;
+        return await this.fibonacci(n - 1) + await this.fibonacci(n - 2);
+    }
+});
+'''
+
+app_info = await controller.install(
+    source=web_worker_source,
+    config={
+        "name": "Data Processor",
+        "type": "web-worker",
+        "version": "1.0.0"
+    }
+)
+```
+
+#### Web Python Apps
+Run Python code in a web environment using Pyodide:
+
+```python
+web_python_source = '''
+<config lang="yaml">
+name: Python Data Processor
+type: web-python
+version: 1.0.0
+</config>
+
+<script lang="python">
+import numpy as np
+from hypha_rpc import api
+
+def process_array(arr):
+    return np.array(arr) ** 2
+
+def analyze_data(data):
+    arr = np.array(data)
+    return {
+        "mean": float(np.mean(arr)),
+        "std": float(np.std(arr)),
+        "min": float(np.min(arr)),
+        "max": float(np.max(arr))
+    }
+
+api.export({
+    "process_array": process_array,
+    "analyze_data": analyze_data
+})
+</script>
+'''
+
+app_info = await controller.install(
+    source=web_python_source,
+    config={"type": "web-python"}
+)
+```
+
+#### Window Apps
+Run applications in a window context with full DOM access:
+
+```python
+window_app_source = '''
+<config lang="yaml">
+name: Interactive Dashboard
+type: window
+version: 1.0.0
+</config>
+
+<script lang="javascript">
+class Dashboard {
+    constructor() {
+        this.setupUI();
+    }
+    
+    setupUI() {
+        document.body.innerHTML = `
+            <h1>Interactive Dashboard</h1>
+            <button id="updateBtn">Update Data</button>
+            <div id="dataDisplay"></div>
+        `;
+        
+        document.getElementById('updateBtn').onclick = () => {
+            this.updateData();
+        };
+    }
+    
+    updateData() {
+        const data = Math.random() * 100;
+        document.getElementById('dataDisplay').innerHTML = `Data: ${data.toFixed(2)}`;
+    }
+}
+
+api.export({
+    dashboard: new Dashboard()
+});
+</script>
+'''
+
+app_info = await controller.install(
+    source=window_app_source,
+    config={"type": "window"}
+)
+```
+
+### Template Configuration
+
+Built-in templates use Jinja2 for rendering and support various configuration options:
+
+```python
+app_info = await controller.install(
+    source=app_source,
+    config={
+        "name": "My App",
+        "type": "web-worker",
+        "version": "1.0.0",
+        "description": "A sample web worker application",
+        "requirements": ["numpy", "pandas"],  # For web-python apps
+        "entry_point": "index.html",  # Custom entry point
+        "startup_config": {
+            "timeout": 30,
+            "wait_for_service": "default",
+            "stop_after_inactive": 300
+        },
+        "autoscaling": {  # Enable autoscaling (see autoscaling.md)
+            "enabled": True,
+            "min_instances": 1,
+            "max_instances": 5,
+            "target_requests_per_instance": 100
+        }
+    }
+)
+```
+
+> **Note:** For autoscaling configuration and advanced scaling options, see the [Autoscaling documentation](autoscaling.md).
+
+---
+
+## Generic Apps (Custom Source + Manifest)
+
+Generic Apps provide complete control over the application structure and support custom application types through custom server-app-workers.
+
+### Custom HTML Applications
+
+You can install complete HTML applications with full control over structure:
+
+```python
+custom_html_app = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Custom Application</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        button { padding: 10px 20px; margin: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Custom Application</h1>
+        <button onclick="performAction()">Click Me</button>
+        <div id="result"></div>
+    </div>
+    
+    <script>
+        function performAction() {
+            document.getElementById('result').innerHTML = 
+                `Action performed at ${new Date().toLocaleTimeString()}`;
+        }
+    </script>
+</body>
+</html>
+'''
+
+app_info = await controller.install(
+    source=custom_html_app,
+    manifest={
+        "name": "Custom HTML App",
+        "type": "window",
+        "version": "1.0.0",
+        "entry_point": "index.html",
+        "description": "A custom HTML application with full control"
+    }
+)
+```
+
+### Custom Application Types
+
+With custom server-app-workers, you can support entirely new application types:
+
+```python
+# This would work with a custom worker that supports "python-eval" type
+app_info = await controller.install(
+    source='''
+    import os
+    import time
+    
+    print(f"Hello from Python eval at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Workspace: {os.environ.get('HYPHA_WORKSPACE', 'unknown')}")
+    print(f"App ID: {os.environ.get('HYPHA_APP_ID', 'unknown')}")
+    
+    # This is a simple Python script that runs and exits
+    result = 42 * 2
+    print(f"Calculation result: {result}")
+    ''',
+    manifest={
+        "name": "Python Eval Example",
+        "type": "python-eval",  # Custom type supported by python-eval worker
+        "version": "1.0.0",
+        "entry_point": "main.py"
+    }
+)
+```
+
+---
+
+## Application Types and Alternatives
+
+Depending on your use case, you might want to consider different approaches:
+
+### For Web Applications with HTTP Endpoints
+- **[ASGI Applications](asgi-apps.md)**: Full web frameworks like FastAPI, Django, Flask, and other ASGI web applications with full HTTP support, streaming responses, and utility functions
+- **[Serverless Functions](serverless-functions.md)**: Create simple HTTP endpoint functions for lightweight web services and API endpoints
+- **Server Apps**: For rich interactive applications with complex UI
+
+### For Scalable Applications
+- **[Autoscaling](autoscaling.md)**: Configure automatic scaling based on load for any application type, with detailed examples and best practices
+- **Load Balancing**: Distribute requests across multiple instances
+- **Service Selection**: Control how requests are routed to instances
+
+### For Different Programming Languages
+- **Web Python**: Python applications using Pyodide
+- **Web Worker**: JavaScript applications in worker context
+- **Custom Workers**: Support for any language or runtime
+
+---
+
+## Custom Server-App-Workers
+
+You can extend the Server Apps service with custom workers to support new application types. Custom workers handle the execution of specific application types and integrate seamlessly with the Server Apps system.
+
+### Creating a Custom Worker
+
+A custom worker must implement the required interface and register itself with the server. Here's how to create one:
+
+```python
+# custom_worker.py
+import asyncio
+import logging
+from typing import Any, Dict, List, Optional, Union
+
+class CustomWorker:
+    """Custom worker for handling specialized application types."""
+    
+    def __init__(self, server):
+        self.server = server
+        self.initialized = False
+        self._sessions: Dict[str, Dict[str, Any]] = {}
+        self.controller_id = "custom-worker-1"
+    
+    async def initialize(self) -> None:
+        """Initialize the custom worker."""
+        if not self.initialized:
+            await self.server.register_service(self.get_service())
+            self.initialized = True
+
+    async def start(
+        self,
+        client_id: str,
+        app_id: str,
+        server_url: str,
+        public_base_url: str,
+        local_base_url: str,
+        workspace: str,
+        version: str = None,
+        token: str = None,
+        entry_point: str = None,
+        app_type: str = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """Start a custom application session."""
+        full_session_id = f"{workspace}/{client_id}"
+        
+        # Your custom application startup logic here
+        # This is where you would:
+        # 1. Fetch the application source code
+        # 2. Set up the execution environment
+        # 3. Start the application
+        
+        # Example: Simple execution tracking
+        session_data = {
+            "session_id": full_session_id,
+            "app_id": app_id,
+            "status": "running",
+            "metadata": metadata,
+            "app_type": app_type,
+            "started_at": asyncio.get_event_loop().time()
+        }
+        
+        self._sessions[full_session_id] = session_data
+        
+        return {
+            "session_id": full_session_id,
+            "status": "started",
+            "app_type": app_type
+        }
+
+    async def stop(self, session_id: str) -> None:
+        """Stop a custom application session."""
+        if session_id in self._sessions:
+            # Your custom cleanup logic here
+            del self._sessions[session_id]
+
+    async def list(self, workspace: str) -> List[Dict[str, Any]]:
+        """List sessions for the current workspace."""
+        return [
+            session_info 
+            for session_id, session_info in self._sessions.items()
+            if session_id.startswith(workspace + "/")
+        ]
+
+    async def logs(
+        self,
+        session_id: str,
+        type: str = None,
+        offset: int = 0,
+        limit: Optional[int] = None,
+    ) -> Union[Dict[str, List[str]], List[str]]:
+        """Get logs for a session."""
+        if session_id not in self._sessions:
+            raise Exception(f"Session not found: {session_id}")
+        
+        # Return logs for the session
+        logs = self._sessions[session_id].get("logs", [])
+        return {"log": logs} if type is None else logs
+
+    async def close_workspace(self, workspace: str) -> None:
+        """Close all sessions for a workspace."""
+        session_ids = [
+            session_id for session_id in self._sessions.keys()
+            if session_id.startswith(workspace + "/")
+        ]
+        for session_id in session_ids:
+            await self.stop(session_id)
+
+    async def prepare_workspace(self, workspace: str) -> None:
+        """Prepare the workspace for the custom worker."""
+        # Any workspace preparation logic
+        pass
+
+    async def shutdown(self) -> None:
+        """Shutdown the custom worker."""
+        session_ids = list(self._sessions.keys())
+        for session_id in session_ids:
+            await self.stop(session_id)
+
+    def get_service(self):
+        """Get the service definition."""
+        return {
+            "id": f"custom-worker-{self.controller_id}",
+            "type": "server-app-worker",
+            "name": "Custom Worker",
+            "description": "A custom worker for specialized application types",
+            "config": {"visibility": "protected"},
+            "supported_types": ["my-custom-type", "another-type"],  # Your custom types
+            "start": self.start,
+            "stop": self.stop,
+            "list": self.list,
+            "get_logs": self.get_logs,
+            "shutdown": self.shutdown,
+            "close_workspace": self.close_workspace,
+            "prepare_workspace": self.prepare_workspace,
+        }
+
+# Register the worker as a startup function
+async def hypha_startup(server):
+    """Initialize the custom worker as a startup function."""
+    custom_worker = CustomWorker(server)
+    await custom_worker.initialize()
+    logging.info("Custom worker registered as startup function")
+```
+
+### Real Example: Python Eval Worker
+
+The `python_eval.py` file provides a complete example of a custom worker that supports Python script execution:
+
+```python
+class PythonEvalRunner:
+    """Python evaluation runner for simple Python code execution."""
+    
+    def __init__(self, server):
+        self.server = server
+        self._eval_sessions: Dict[str, Dict[str, Any]] = {}
+        self.controller_id = str(PythonEvalRunner.instance_counter)
+        PythonEvalRunner.instance_counter += 1
+    
+    async def start(self, client_id: str, app_id: str, **kwargs):
+        """Start a Python eval session."""
+        # Fetch Python code from entry point
+        get_url = await self.artifact_manager.get_file(
+            f"{workspace}/{app_id}", file_path=entry_point, version=version
+        )
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(get_url)
+            python_code = response.text
+
+        # Set up execution environment
+        logs = []
+        execution_globals = {
+            "__name__": "__main__",
+            "print": lambda *args: logs.append(" ".join(str(arg) for arg in args)),
+        }
+        
+        # Execute Python code
+        try:
+            exec(python_code, execution_globals)
+            status = "completed"
+        except Exception as e:
+            status = "error"
+            logs.append(f"Error: {traceback.format_exc()}")
+        
+        # Store session data
+        self._eval_sessions[full_session_id] = {
+            "session_id": full_session_id,
+            "status": status,
+            "logs": logs,
+            "metadata": metadata,
+        }
+        
+        return {"session_id": full_session_id, "status": status}
+
+    def get_service(self):
+        """Get the service definition."""
+        return {
+            "id": f"python-eval-worker-{self.controller_id}",
+            "type": "server-app-worker",
+            "name": "Python Eval Worker",
+            "description": "A worker for running Python evaluation apps",
+            "config": {"visibility": "protected"},
+            "supported_types": ["python-eval"],  # Supports python-eval type
+            "start": self.start,
+            "stop": self.stop,
+            "list": self.list,
+            "get_logs": self.get_logs,
+            "shutdown": self.shutdown,
+            "close_workspace": self.close_workspace,
+            "prepare_workspace": self.prepare_workspace,
+        }
+
+# Register as startup function
+async def hypha_startup(server):
+    """Initialize the Python eval runner as a startup function."""
+    python_eval_runner = PythonEvalRunner(server)
+    await python_eval_runner.initialize()
+```
+
+### Registering Custom Workers
+
+To register your custom worker, you need to:
+
+1. **Create the worker class** implementing the required interface
+2. **Add a startup function** that registers the worker with the server
+3. **Configure the server** to load your startup function
+
+**Method 1: Startup Function (Recommended)**
+
+Add your worker as a startup function in your Hypha server configuration:
+
+```python
+# In your server startup configuration
+async def hypha_startup(server):
+    """Initialize custom workers."""
+    custom_worker = CustomWorker(server)
+    await custom_worker.initialize()
+```
+
+**Method 2: Direct Registration**
+
+Register the worker directly after server startup:
+
+```python
+# After server is running
+server = await hypha_server.start()
+custom_worker = CustomWorker(server)
+await custom_worker.initialize()
+```
+
+### Starting the Server with Startup Functions
+
+When you have created a `hypha_startup` function (either for custom workers or any other server initialization), you need to start the Hypha server with the `--startup-functions` option to load your custom code.
+
+**Using a Python File:**
+
+If your `hypha_startup` function is in a local Python file (e.g., `my_custom_worker.py`):
+
+```bash
+python -m hypha.server --host=0.0.0.0 --port=9527 \
+    --startup-functions=./my_custom_worker.py:hypha_startup
+```
+
+**Using an Installed Python Module:**
+
+If your `hypha_startup` function is in an installed Python package:
+
+```bash
+python -m hypha.server --host=0.0.0.0 --port=9527 \
+    --startup-functions=my_package.custom_worker:hypha_startup
+```
+
+**Multiple Startup Functions:**
+
+You can specify multiple startup functions by providing additional `--startup-functions` arguments:
+
+```bash
+python -m hypha.server --host=0.0.0.0 --port=9527 \
+    --startup-functions=./my_custom_worker.py:hypha_startup \
+    --startup-functions=./another_service.py:hypha_startup
+```
+
+**Example with Server Apps and S3:**
+
+For a complete server setup with Server Apps, built-in S3 storage, and custom workers:
+
+```bash
+python -m hypha.server --host=0.0.0.0 --port=9527 \
+    --start-minio-server \
+    --enable-server-apps \
+    --startup-functions=./my_custom_worker.py:hypha_startup
+```
+
+> **Note:** The `--startup-functions` option expects the format `<python_module_or_file>:<function_name>`, where the function should be named `hypha_startup` and accept a single `server` parameter.
+
+For more details on server startup options, see the [Getting Started documentation](getting-started.md#custom-initialization-and-service-integration-with-hypha-server).
+
+### Worker Interface Requirements
+
+All custom workers must implement these methods:
+
+- `start(client_id, app_id, ...)`: Start an application session
+- `stop(session_id)`: Stop a session  
+- `list(workspace)`: List sessions in a workspace
+- `logs(session_id, ...)`: Get session logs
+- `close_workspace(workspace)`: Clean up workspace sessions
+- `prepare_workspace(workspace)`: Prepare workspace for use
+- `shutdown()`: Shutdown the worker
+- `get_service()`: Return service definition with `supported_types`
+
+### Using Custom Application Types
+
+Once a custom worker is registered, you can install applications of its supported types:
+
+```python
+# Install app with custom type
+app_info = await controller.install(
+    source=your_custom_source,
+    manifest={
+        "name": "My Custom App",
+        "type": "my-custom-type",  # Must match worker's supported_types
+        "version": "1.0.0",
+        "entry_point": "main.ext"
+    }
+)
+
+# Start the app - will automatically use your custom worker
+session = await controller.start(app_info.id)
+```
 
 ---
 
@@ -125,1073 +776,12 @@ await controller.uninstall(app_info.id)
 
 ---
 
-## Full Example: Web Python App with Startup Configuration
+## Related Documentation
 
-Here's a complete example showing how to install and run a web Python app with startup configuration.
+For more information on related Hypha features, see:
 
-```python
-import asyncio
-from hypha_rpc import connect_to_server
+- **[ASGI Applications](asgi-apps.md)**: Deploy FastAPI, Django, Flask, and other ASGI web applications with full HTTP support, streaming responses, and utility functions
+- **[Serverless Functions](serverless-functions.md)**: Create simple HTTP endpoint functions for lightweight web services and API endpoints
+- **[Autoscaling](autoscaling.md)**: Configure automatic scaling based on load for any application type, with detailed examples and best practices
 
-SERVER_URL = "https://hypha.aicell.io"
-
-async def main():
-    # Connect to the server
-    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
-    controller = await api.get_service("public/server-apps")
-    
-    # Define a web Python app
-    python_app_source = '''
-<config lang="yaml">
-name: Python Calculator
-type: web-python
-version: 0.1.0
-</config>
-
-<script lang="python">
-from hypha_rpc import api
-
-class PythonCalculator:
-    def __init__(self):
-        self.history = []
-    
-    async def calculate(self, expression):
-        try:
-            result = eval(expression)
-            self.history.append(f"{expression} = {result}")
-            return result
-        except Exception as e:
-            return f"Error: {str(e)}"
-    
-    async def get_history(self):
-        return self.history
-    
-    async def clear_history(self):
-        self.history = []
-        return "History cleared"
-
-# Export the service
-calculator = PythonCalculator()
-api.export({
-    "calculate": calculator.calculate,
-    "get_history": calculator.get_history,
-    "clear_history": calculator.clear_history,
-})
-</script>
-'''
-    
-    # Install app with startup configuration
-    app_info = await controller.install(
-        source=python_app_source,
-        config={
-            "startup_config": {
-                "timeout": 45,  # Startup timeout
-                "wait_for_service": "default",  # Service to wait for
-                "stop_after_inactive": 300,  # Auto-stop after 5 minutes of inactivity
-            }
-        },
-        overwrite=True
-    )
-    
-    print(f"Python app installed: {app_info.id}")
-    
-    # Start the app (uses startup_config defaults)
-    started_app = await controller.start(app_info.id)
-    print(f"App started: {started_app.id}")
-    
-    # Use the calculator
-    calc_service = await api.get_service(f"default@{app_info.id}")
-    
-    result1 = await calc_service.calculate("2 + 3 * 4")
-    print(f"Calculation result: {result1}")
-    
-    result2 = await calc_service.calculate("10 / 2")
-    print(f"Calculation result: {result2}")
-    
-    history = await calc_service.get_history()
-    print(f"Calculation history: {history}")
-    
-    # Clean up
-    await controller.stop(started_app.id)
-    await controller.uninstall(app_info.id)
-
-asyncio.run(main())
-```
-
----
-
-## Advanced Features
-
-### Lazy Loading
-
-The Server Apps service supports lazy loading, where apps are automatically started when their services are accessed, even if they haven't been explicitly started.
-
-```python
-# Install an app without starting it
-app_info = await controller.install(
-    source=app_source,
-    config={
-        "type": "web-worker",
-        "startup_config": {
-            "timeout": 30,
-            "wait_for_service": "echo",
-            "stop_after_inactive": 120,  # Auto-stop after 2 minutes
-        }
-    },
-    overwrite=True
-)
-
-# Access the service directly - this will trigger lazy loading
-service = await api.get_service(f"echo@{app_info.id}")
-result = await service.echo("Hello from lazy loaded app!")
-print(f"Lazy loading result: {result}")
-```
-
-### Daemon Apps
-
-Daemon apps are persistent applications that continue running even after the client disconnects.
-
-```python
-# Install a daemon app
-daemon_app_source = '''
-api.export({
-    async setup(){
-        console.log("Daemon app started");
-        // Set up periodic tasks, monitoring, etc.
-    },
-    async get_status(){
-        return {
-            uptime: Date.now(),
-            status: "running"
-        };
-    }
-})
-'''
-
-app_info = await controller.install(
-    source=daemon_app_source,
-    config={
-        "type": "web-worker",
-        "daemon": True,  # Mark as daemon
-        "singleton": True,  # Ensure only one instance
-    },
-    overwrite=True
-)
-
-# Start the daemon app
-daemon_app = await controller.start(app_info.id)
-print(f"Daemon app started: {daemon_app.id}")
-
-# The daemon will continue running even after client disconnects
-```
-
-### ASGI Web Applications
-
-You can run full web applications using ASGI frameworks like FastAPI.
-
-```python
-# Define a FastAPI app
-fastapi_app_source = '''
-<config lang="yaml">
-name: FastAPI Hello World
-type: web-python
-version: 0.1.0
-</config>
-
-<script lang="python">
-from hypha_rpc import api
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-
-# Create FastAPI app
-app = FastAPI(title="Hello World API")
-
-@app.get("/")
-async def root():
-    return {"message": "Hello World"}
-
-@app.get("/health")
-async def health():
-    return {"status": "healthy"}
-
-# Export as ASGI service
-api.export({
-    "type": "asgi",
-    "app": app,
-    "serve": lambda: app,  # Function to get the ASGI app
-})
-</script>
-'''
-
-# Install the ASGI app
-app_info = await controller.install(
-    source=fastapi_app_source,
-    config={
-        "startup_config": {
-            "timeout": 60,
-            "wait_for_service": "serve",
-            "stop_after_inactive": 600,  # 10 minutes
-        }
-    },
-    overwrite=True
-)
-
-print(f"FastAPI app installed: {app_info.id}")
-print(f"Access it at: {SERVER_URL}/{api.config['workspace']}/apps/serve@{app_info.id}/")
-```
-
-### Startup Configuration
-
-The `startup_config` parameter allows you to set default configurations that will be used when starting apps.
-
-**Configuration Options:**
-You can configure startup behavior in two ways:
-
-1. **In the app's HTML `<config>` section:**
-```html
-<config lang="json">
-{
-    "name": "My App",
-    "type": "web-python",
-    "startup_config": {
-        "timeout": 60,
-        "wait_for_service": "default",
-        "stop_after_inactive": 300
-    }
-}
-</config>
-```
-
-2. **As part of the `config` parameter in `install()`:**
-
-```python
-# Install app with comprehensive startup configuration
-app_info = await controller.install(
-    source=app_source,
-    config={
-        "startup_config": {
-            "timeout": 45,  # Maximum time to wait for app startup
-            "wait_for_service": "default",  # Service to wait for during startup
-            "stop_after_inactive": 300,  # Auto-stop after 5 minutes of inactivity
-        }
-    },
-    overwrite=True
-)
-
-```
-
-**Priority Order:**
-When the same startup parameter is specified in multiple places, the priority order is:
-1. **Explicit parameters in `start()` method** (highest priority)
-2. **`startup_config` in `config` parameter of `install()` method** (medium priority)  
-3. **`startup_config` in HTML `<config>` section** (lowest priority)
-
-```python
-# Start app - will use the startup_config defaults
-started_app = await controller.start(app_info.id)
-
-# You can still override defaults when starting
-started_app = await controller.start(
-    app_info.id,
-    timeout=60,  # Override the default timeout
-    stop_after_inactive=600  # Override the default inactivity timeout
-)
-```
-
----
-
-## API Reference
-
-### `install(source: str = None, source_hash: str = None, config: Dict[str, Any] = None, workspace: str = None, overwrite: bool = False, timeout: float = 60, version: str = None, context: dict = None) -> AppInfo`
-
-Installs an application from source code, URL, or configuration.
-
-**Parameters:**
-
-- `source`: The source code of the application, URL to fetch the source, or None if using config
-- `source_hash`: Optional hash of the source for verification
-- `config`: Application configuration dictionary containing app metadata and settings. Can include `startup_config` with default startup parameters:
-  - `startup_config.timeout`: Default timeout for starting the app
-  - `startup_config.wait_for_service`: Default service to wait for during startup
-  - `startup_config.stop_after_inactive`: Default inactivity timeout (seconds) for auto-stopping
-- `workspace`: Target workspace for installation (defaults to current workspace)
-- `overwrite`: Whether to overwrite existing app with same name
-- `timeout`: Maximum time to wait for installation completion
-- `version`: Version identifier for the app
-- `context`: Additional context information
-
-**Returns:** `AppInfo` object containing app details including `id`, `name`, `type`, etc.
-
-**Example:**
-
-```python
-app_info = await controller.install(
-    source=app_source,
-    config={
-        "type": "web-worker", 
-        "name": "My App",
-        "startup_config": {
-            "timeout": 30,
-            "wait_for_service": "default",
-            "stop_after_inactive": 180
-        }
-    },
-    overwrite=True
-)
-```
-
----
-
-### `start(app_id: str, client_id: str = None, timeout: float = None, version: str = None, wait_for_service: Union[str, bool] = None, stop_after_inactive: float = None, context: dict = None) -> AppSessionInfo`
-
-Starts an installed application.
-
-**Parameters:**
-
-- `app_id`: The ID of the app to start
-- `client_id`: Optional client identifier for the app session
-- `timeout`: Maximum time to wait for app startup (uses startup_config default if not specified)
-- `version`: Version of the app to start
-- `wait_for_service`: Service to wait for during startup (uses startup_config default if not specified)
-- `stop_after_inactive`: Seconds of inactivity before auto-stopping (uses startup_config default if not specified)
-- `context`: Additional context information
-
-**Returns:** `AppSessionInfo` object with session details including `id`, `app_id`, `service_id`, etc.
-
-**Example:**
-
-```python
-# Start with default startup_config
-session = await controller.start(app_info.id)
-
-# Start with custom parameters (overrides defaults)
-session = await controller.start(
-    app_info.id,
-    timeout=45,
-    wait_for_service="custom-service",
-    stop_after_inactive=300
-)
-```
-
----
-
-### `stop(session_id: str, context: dict = None) -> None`
-
-Stops a running application session.
-
-**Parameters:**
-
-- `session_id`: The session ID of the running app to stop
-- `context`: Additional context information
-
-**Example:**
-
-```python
-await controller.stop(session.id)
-```
-
----
-
-### `list_apps(workspace: str = None, context: dict = None) -> List[AppInfo]`
-
-Lists all installed applications.
-
-**Parameters:**
-
-- `workspace`: Workspace to list apps from (defaults to current workspace)
-- `context`: Additional context information
-
-**Returns:** List of `AppInfo` objects
-
-**Example:**
-
-```python
-apps = await controller.list_apps()
-for app in apps:
-    print(f"App: {app.name} (ID: {app.id})")
-```
-
----
-
-### `list_running(workspace: str = None, context: dict = None) -> List[AppSessionInfo]`
-
-Lists all currently running application sessions.
-
-**Parameters:**
-
-- `workspace`: Workspace to list running apps from (defaults to current workspace)
-- `context`: Additional context information
-
-**Returns:** List of `AppSessionInfo` objects
-
-**Example:**
-
-```python
-running_apps = await controller.list_running()
-for session in running_apps:
-    print(f"Running: {session.app_id} (Session: {session.id})")
-```
-
----
-
-### `uninstall(app_id: str, context: dict = None) -> None`
-
-Uninstalls an application and all its resources.
-
-**Parameters:**
-
-- `app_id`: The ID of the app to uninstall
-- `context`: Additional context information
-
-**Example:**
-
-```python
-await controller.uninstall(app_info.id)
-```
-
----
-
-### `get_log(session_id: str, type: str = None, offset: int = 0, limit: int = 100, context: dict = None) -> Union[Dict[str, List], List]`
-
-Retrieves logs from a running application session.
-
-**Parameters:**
-
-- `session_id`: The session ID to get logs from
-- `type`: Log type filter ("log", "error", "warn", etc.)
-- `offset`: Number of log entries to skip
-- `limit`: Maximum number of log entries to return
-- `context`: Additional context information
-
-**Returns:** Log entries as a list or dictionary grouped by type
-
-**Example:**
-
-```python
-# Get all logs
-logs = await controller.get_log(session.id)
-
-# Get only error logs
-errors = await controller.get_log(session.id, type="error")
-
-# Get recent logs with pagination
-recent_logs = await controller.get_log(session.id, offset=0, limit=50)
-```
-
----
-
-### `launch(source: str = None, config: Dict[str, Any] = None, wait_for_service: Union[str, bool] = None, timeout: float = 60, overwrite: bool = False, context: dict = None) -> AppSessionInfo`
-
-Installs and immediately starts an application in one operation.
-
-**Parameters:**
-
-- `source`: The source code of the application or URL
-- `config`: Application configuration dictionary
-- `wait_for_service`: Service to wait for during startup
-- `timeout`: Maximum time to wait for launch completion
-- `overwrite`: Whether to overwrite existing app
-- `context`: Additional context information
-
-**Returns:** `AppSessionInfo` object for the running app session
-
-**Example:**
-
-```python
-# Launch an app directly
-session = await controller.launch(
-    source=app_source,
-    config={"type": "web-worker"},
-    wait_for_service="default",
-    timeout=30
-)
-
-# Use the app immediately
-service = await api.get_service(session.service_id)
-result = await service.echo("Hello!")
-```
-
----
-
-## HTTP API for Accessing Apps
-
-The Server Apps service provides HTTP endpoints for accessing web applications directly through the browser.
-
-### App Access Endpoints
-
-#### Direct App Access
-
-- **`/{workspace}/apps/{service_name}@{app_id}/`**: Access the main endpoint of a web application
-- **`/{workspace}/apps/{service_name}@{app_id}/{path:path}`**: Access specific paths within a web application
-
-#### Service Function Access
-
-- **`/{workspace}/services/{service_name}@{app_id}/{function_name}`**: Call specific service functions via HTTP
-
-### Lazy Loading via HTTP
-
-Apps can be started automatically when accessed via HTTP endpoints, even if they haven't been explicitly started.
-
-```python
-import requests
-
-# Install an app without starting it
-app_info = await controller.install(
-    source=fastapi_app_source,
-    startup_config={
-        "timeout": 30,
-        "wait_for_service": "serve",
-        "stop_after_inactive": 300
-    },
-    overwrite=True
-)
-
-# Access the app via HTTP - this will trigger lazy loading
-workspace = api.config["workspace"]
-app_url = f"{SERVER_URL}/{workspace}/apps/serve@{app_info.id}/"
-
-# The app will be started automatically on first access
-response = requests.get(app_url)
-print(f"App response: {response.json()}")
-```
-
-### Authentication
-
-For private workspaces, include authentication headers:
-
-```python
-# Generate an access token
-token = await api.generate_token()
-
-# Access private app with authentication
-response = requests.get(
-    app_url,
-    headers={"Authorization": f"Bearer {token}"}
-)
-```
-
----
-
-## Application Types
-
-### Web Worker Apps
-
-Web Worker apps run JavaScript in a web worker environment and are suitable for CPU-intensive tasks.
-
-```python
-web_worker_source = '''
-// Web Worker App
-api.export({
-    async processData(data) {
-        // CPU-intensive processing
-        return data.map(x => x * 2);
-    },
-    async fibonacci(n) {
-        if (n <= 1) return n;
-        return await this.fibonacci(n - 1) + await this.fibonacci(n - 2);
-    }
-});
-'''
-
-app_info = await controller.install(
-    source=web_worker_source,
-    config={"type": "web-worker"}
-)
-```
-
-### Web Python Apps
-
-Web Python apps run Python code in a web environment using Pyodide.
-
-```python
-web_python_source = '''
-<config lang="yaml">
-name: Python Data Processor
-type: web-python
-</config>
-
-<script lang="python">
-import numpy as np
-from hypha_rpc import api
-
-def process_array(arr):
-    return np.array(arr) ** 2
-
-def analyze_data(data):
-    arr = np.array(data)
-    return {
-        "mean": float(np.mean(arr)),
-        "std": float(np.std(arr)),
-        "min": float(np.min(arr)),
-        "max": float(np.max(arr))
-    }
-
-api.export({
-    "process_array": process_array,
-    "analyze_data": analyze_data
-})
-</script>
-'''
-
-app_info = await controller.install(
-    source=web_python_source,
-    config={"type": "web-python"}
-)
-```
-
-### ASGI Web Apps
-
-ASGI apps are full web applications that can handle HTTP requests and WebSocket connections.
-
-```python
-asgi_app_source = '''
-<config lang="yaml">
-name: FastAPI Service
-type: web-python
-</config>
-
-<script lang="python">
-from hypha_rpc import api
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-
-app = FastAPI(title="Data Service")
-
-class DataItem(BaseModel):
-    name: str
-    value: float
-
-data_store = {}
-
-@app.get("/")
-async def root():
-    return {"message": "Data Service API"}
-
-@app.post("/data/{item_id}")
-async def create_data(item_id: str, item: DataItem):
-    data_store[item_id] = item.dict()
-    return {"message": f"Data {item_id} created"}
-
-@app.get("/data/{item_id}")
-async def get_data(item_id: str):
-    if item_id not in data_store:
-        raise HTTPException(status_code=404, detail="Item not found")
-    return data_store[item_id]
-
-# Export as ASGI service
-api.export({
-    "type": "asgi",
-    "serve": lambda: app
-})
-</script>
-'''
-
-app_info = await controller.install(
-    source=asgi_app_source,
-    startup_config={
-        "wait_for_service": "serve",
-        "stop_after_inactive": 600
-    }
-)
-```
-
----
-
-## Best Practices
-
-### 1. Use Startup Configuration
-
-Always define startup configuration for consistent app behavior:
-
-```python
-app_info = await controller.install(
-    source=app_source,
-    config={
-        "startup_config": {
-            "timeout": 45,  # Allow sufficient time for startup
-            "wait_for_service": "default",  # Wait for main service
-            "stop_after_inactive": 300  # Auto-cleanup after 5 minutes
-        }
-    }
-)
-```
-
-### 2. Handle App Lifecycle
-
-Properly manage app lifecycle with try-finally blocks:
-
-```python
-app_info = await controller.install(source=app_source)
-session = None
-try:
-    session = await controller.start(app_info.id)
-    # Use the app
-    service = await api.get_service(session.service_id)
-    result = await service.process_data(data)
-finally:
-    if session:
-        await controller.stop(session.id)
-    await controller.uninstall(app_info.id)
-```
-
-### 3. Use Appropriate App Types
-
-Choose the right app type for your use case:
-
-- **Web Worker**: For CPU-intensive JavaScript tasks
-- **Web Python**: For Python data processing and analysis
-- **ASGI**: For full web applications with HTTP/WebSocket support
-- **Daemon**: For persistent background services
-
-### 4. Implement Error Handling
-
-Always implement proper error handling:
-
-```python
-try:
-    app_info = await controller.install(source=app_source)
-    session = await controller.start(app_info.id, timeout=30)
-except Exception as e:
-    print(f"Failed to start app: {e}")
-    # Handle the error appropriately
-```
-
-### 5. Use Lazy Loading for On-Demand Apps
-
-For apps that are accessed infrequently, use lazy loading:
-
-```python
-# Install without starting
-app_info = await controller.install(
-    source=app_source,
-    config={
-        "startup_config": {
-            "stop_after_inactive": 60,  # Quick cleanup for on-demand apps
-            "timeout": 30
-        }
-    }
-)
-
-# App will start automatically when accessed
-service = await api.get_service(f"default@{app_info.id}")
-```
-
----
-
-## Examples
-
-### Example 1: Machine Learning Model Server
-
-```python
-ml_model_source = '''
-<config lang="yaml">
-name: ML Model Server
-type: web-python
-</config>
-
-<script lang="python">
-import numpy as np
-from hypha_rpc import api
-from sklearn.linear_model import LinearRegression
-import joblib
-
-class MLModelServer:
-    def __init__(self):
-        self.model = None
-        self.is_trained = False
-    
-    async def train(self, X, y):
-        """Train a simple linear regression model"""
-        self.model = LinearRegression()
-        self.model.fit(np.array(X), np.array(y))
-        self.is_trained = True
-        return {"status": "trained", "coefficients": self.model.coef_.tolist()}
-    
-    async def predict(self, X):
-        """Make predictions"""
-        if not self.is_trained:
-            raise ValueError("Model not trained")
-        predictions = self.model.predict(np.array(X))
-        return predictions.tolist()
-    
-    async def get_model_info(self):
-        """Get model information"""
-        if not self.is_trained:
-            return {"status": "not_trained"}
-        return {
-            "status": "trained",
-            "coefficients": self.model.coef_.tolist(),
-            "intercept": float(self.model.intercept_)
-        }
-
-ml_server = MLModelServer()
-api.export({
-    "train": ml_server.train,
-    "predict": ml_server.predict,
-    "get_model_info": ml_server.get_model_info
-})
-</script>
-'''
-
-# Install and start the ML model server
-app_info = await controller.install(
-    source=ml_model_source,
-    config={
-        "startup_config": {
-            "timeout": 60,  # ML models may take longer to start
-            "wait_for_service": "default",
-            "stop_after_inactive": 1800  # 30 minutes for ML workloads
-        }
-    }
-)
-
-session = await controller.start(app_info.id)
-ml_service = await api.get_service(session.service_id)
-
-# Train the model
-training_data = [[1], [2], [3], [4], [5]]
-labels = [2, 4, 6, 8, 10]
-result = await ml_service.train(training_data, labels)
-print(f"Training result: {result}")
-
-# Make predictions
-predictions = await ml_service.predict([[6], [7], [8]])
-print(f"Predictions: {predictions}")
-```
-
-### Example 2: Real-time Data Dashboard
-
-```python
-dashboard_source = '''
-<config lang="yaml">
-name: Real-time Dashboard
-type: web-python
-</config>
-
-<script lang="python">
-from hypha_rpc import api
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
-import json
-import asyncio
-import random
-from datetime import datetime
-
-app = FastAPI(title="Real-time Dashboard")
-
-# Store active WebSocket connections
-active_connections = []
-
-@app.get("/")
-async def dashboard():
-    return HTMLResponse("""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Real-time Dashboard</title>
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    </head>
-    <body>
-        <h1>Real-time Data Dashboard</h1>
-        <canvas id="chart" width="400" height="200"></canvas>
-        <script>
-            const ws = new WebSocket('ws://localhost:8000/ws');
-            const ctx = document.getElementById('chart').getContext('2d');
-            const chart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: [],
-                    datasets: [{
-                        label: 'Real-time Data',
-                        data: [],
-                        borderColor: 'rgb(75, 192, 192)',
-                        tension: 0.1
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    scales: {
-                        y: {
-                            beginAtZero: true
-                        }
-                    }
-                }
-            });
-
-            ws.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                chart.data.labels.push(data.time);
-                chart.data.datasets[0].data.push(data.value);
-                
-                // Keep only last 20 data points
-                if (chart.data.labels.length > 20) {
-                    chart.data.labels.shift();
-                    chart.data.datasets[0].data.shift();
-                }
-                
-                chart.update();
-            };
-        </script>
-    </body>
-    </html>
-    """)
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    active_connections.append(websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        active_connections.remove(websocket)
-
-async def generate_data():
-    """Generate random data and send to all connected clients"""
-    while True:
-        if active_connections:
-            data = {
-                "time": datetime.now().strftime("%H:%M:%S"),
-                "value": random.uniform(0, 100)
-            }
-            # Send to all connected clients
-            for connection in active_connections.copy():
-                try:
-                    await connection.send_text(json.dumps(data))
-                except:
-                    active_connections.remove(connection)
-        await asyncio.sleep(1)
-
-# Start data generation task
-asyncio.create_task(generate_data())
-
-# Export as ASGI service
-api.export({
-    "type": "asgi",
-    "serve": lambda: app
-})
-</script>
-'''
-
-app_info = await controller.install(
-    source=dashboard_source,
-    config={
-        "startup_config": {
-            "wait_for_service": "serve",
-            "stop_after_inactive": 3600  # 1 hour for dashboard
-        }
-    }
-)
-
-print(f"Dashboard available at: {SERVER_URL}/{api.config['workspace']}/apps/serve@{app_info.id}/")
-```
-
-### Example 3: File Processing Service
-
-```python
-file_processor_source = '''
-<config lang="yaml">
-name: File Processor
-type: web-python
-</config>
-
-<script lang="python">
-from hypha_rpc import api
-import csv
-import json
-import io
-import base64
-
-class FileProcessor:
-    def __init__(self):
-        self.processed_files = {}
-    
-    async def process_csv(self, file_content, filename):
-        """Process CSV file content"""
-        try:
-            # Decode base64 content
-            content = base64.b64decode(file_content).decode('utf-8')
-            
-            # Parse CSV
-            reader = csv.DictReader(io.StringIO(content))
-            data = list(reader)
-            
-            # Store result
-            self.processed_files[filename] = {
-                "type": "csv",
-                "rows": len(data),
-                "columns": list(data[0].keys()) if data else [],
-                "data": data[:10]  # Store first 10 rows
-            }
-            
-            return {
-                "status": "success",
-                "rows": len(data),
-                "columns": list(data[0].keys()) if data else []
-            }
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-    
-    async def process_json(self, file_content, filename):
-        """Process JSON file content"""
-        try:
-            # Decode base64 content
-            content = base64.b64decode(file_content).decode('utf-8')
-            
-            # Parse JSON
-            data = json.loads(content)
-            
-            # Store result
-            self.processed_files[filename] = {
-                "type": "json",
-                "data": data
-            }
-            
-            return {"status": "success", "type": type(data).__name__}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-    
-    async def get_processed_files(self):
-        """Get list of processed files"""
-        return list(self.processed_files.keys())
-    
-    async def get_file_info(self, filename):
-        """Get information about a processed file"""
-        if filename not in self.processed_files:
-            return {"status": "error", "message": "File not found"}
-        return self.processed_files[filename]
-
-processor = FileProcessor()
-api.export({
-    "process_csv": processor.process_csv,
-    "process_json": processor.process_json,
-    "get_processed_files": processor.get_processed_files,
-    "get_file_info": processor.get_file_info
-})
-</script>
-'''
-
-app_info = await controller.install(
-    source=file_processor_source,
-    config={
-        "startup_config": {
-            "timeout": 30,
-            "wait_for_service": "default",
-            "stop_after_inactive": 600
-        }
-    }
-)
-
-session = await controller.start(app_info.id)
-processor_service = await api.get_service(session.service_id)
-
-# Example usage
-csv_content = base64.b64encode(b"name,age,city\nJohn,30,NYC\nJane,25,LA").decode()
-result = await processor_service.process_csv(csv_content, "example.csv")
-print(f"CSV processing result: {result}")
-
-files = await processor_service.get_processed_files()
-print(f"Processed files: {files}")
-```
-
-The Server Apps service provides a powerful and flexible platform for running various types of applications in the Hypha ecosystem. With features like lazy loading, startup configuration, and comprehensive lifecycle management, it enables developers to build and deploy sophisticated applications with ease. 
+The Server Apps service provides a powerful and flexible platform for running various types of applications in the Hypha ecosystem. With support for both built-in templates and custom workers, it enables developers to build and deploy sophisticated applications with ease while maintaining extensibility for specialized use cases.
