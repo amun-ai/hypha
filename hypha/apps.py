@@ -515,6 +515,9 @@ class ServerAppController:
                 if config.get("type") == "mcp-server":
                     # Special handling for MCP server type - no source code needed
                     template = "mcp-server"
+                elif config.get("type") == "a2a-agent":
+                    # Special handling for A2A agent type - no source code needed
+                    template = "a2a-agent"
                 else:
                     config["entry_point"] = config.get("entry_point", "index.html")
                     template = config.get("type") + "." + config["entry_point"]
@@ -614,7 +617,7 @@ class ServerAppController:
                     raise Exception(
                         f"Failed to parse or compile the hypha app {mhash}: {source[:100]}...",
                     ) from err
-            elif template and template != "mcp-server":
+            elif template and template not in ["mcp-server", "a2a-agent"]:
                 assert (
                     "." in template
                 ), f"Invalid template name: {template}, should be a file name with extension."
@@ -672,7 +675,41 @@ class ServerAppController:
                 mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
                 mhash = mhash.encode("base58").decode("ascii")
                 
-            elif not source and template != "mcp-server":
+            elif template == "a2a-agent":
+                # Handle A2A agent type - no source code needed, config only
+                if not config:
+                    raise Exception("Config with a2aAgents is required for a2a-agent type.")
+                
+                a2a_agents = config.get("a2aAgents", {})
+                if not a2a_agents:
+                    raise Exception("a2aAgents configuration is required for a2a-agent type.")
+                
+                # Create default config for A2A agent
+                default_config = {
+                    "name": "A2A Agent",
+                    "version": "0.1.0",
+                    "type": "a2a-agent",
+                    "entry_point": "a2a-config.json",
+                    "a2aAgents": a2a_agents,
+                }
+                default_config.update(config or {})
+                config = default_config
+                entry_point = config["entry_point"]
+                
+                # Create a JSON configuration file content
+                source = json.dumps({
+                    "type": "a2a-agent",
+                    "a2aAgents": a2a_agents,
+                    "name": config.get("name", "A2A Agent"),
+                    "version": config.get("version", "0.1.0"),
+                    "description": config.get("description", "A2A Agent Application")
+                }, indent=2)
+                
+                # Compute multihash of the configuration
+                mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
+                mhash = mhash.encode("base58").decode("ascii")
+                
+            elif not source and template not in ["mcp-server", "a2a-agent"]:
                 raise Exception("Source or template should be provided.")
 
             # Create artifact object first (with placeholder app_id)
@@ -691,6 +728,10 @@ class ServerAppController:
             # For MCP server type, move mcpServers to root level for easier access
             if template == "mcp-server" and "mcpServers" in config:
                 artifact_obj["mcpServers"] = config["mcpServers"]
+            
+            # For A2A agent type, move a2aAgents to root level for easier access
+            if template == "a2a-agent" and "a2aAgents" in config:
+                artifact_obj["a2aAgents"] = config["a2aAgents"]
 
         # startup_config is now handled automatically by convert_config_to_artifact
         # if it exists in the config
@@ -1079,8 +1120,8 @@ class ServerAppController:
         
         # Get entry point from manifest
         entry_point = manifest.entry_point
-        # For MCP server type, entry point is not required in the traditional sense
-        if app_type != "mcp-server":
+        # For MCP server and A2A agent types, entry point is not required in the traditional sense
+        if app_type not in ["mcp-server", "a2a-agent"]:
             assert entry_point, f"Entry point not found for app {app_id}."
         
         # Prepare session metadata
@@ -1115,6 +1156,16 @@ class ServerAppController:
             if not mcp_servers and hasattr(manifest, 'config') and manifest.config:
                 mcp_servers = manifest.config.get("mcpServers", {})
             session_metadata["mcp_servers"] = mcp_servers
+        
+        # For A2A agent type, add A2A agents configuration to metadata
+        if app_type == "a2a-agent":
+            # Access a2aAgents from metadata or manifest config
+            a2a_agents = metadata.get("a2aAgents", {}) if metadata else {}
+            if not a2a_agents and hasattr(manifest, 'a2aAgents'):
+                a2a_agents = manifest.a2aAgents
+            if not a2a_agents and hasattr(manifest, 'config') and manifest.config:
+                a2a_agents = manifest.config.get("a2aAgents", {})
+            session_metadata["a2a_agents"] = a2a_agents
         
         # Start the app using the worker
         session_data = await worker.start(
@@ -1318,12 +1369,18 @@ class ServerAppController:
 
         try:
             # Prepare metadata, including MCP servers configuration for mcp-server apps
+            # and A2A agents configuration for a2a-agent apps
             metadata = {}
             if app_type == "mcp-server":
                 # Extract mcpServers from artifact_info (it should be at root level)
                 mcp_servers = artifact_info.get("mcpServers", {})
                 if mcp_servers:
                     metadata["mcpServers"] = mcp_servers
+            elif app_type == "a2a-agent":
+                # Extract a2aAgents from artifact_info (it should be at root level)
+                a2a_agents = artifact_info.get("a2aAgents", {})
+                if a2a_agents:
+                    metadata["a2aAgents"] = a2a_agents
                     
             # Start the app using the new start_by_type function
             session_data = await self.start_by_type(
@@ -1784,7 +1841,7 @@ class ServerAppController:
                 validation_result["errors"].append("Field 'name' must be a string")
                 validation_result["valid"] = False
             
-            if "type" in config and config["type"] not in ["window", "web-worker", "web-python", "mcp-server"]:
+            if "type" in config and config["type"] not in ["window", "web-worker", "web-python", "mcp-server", "a2a-agent"]:
                 validation_result["warnings"].append(f"Unusual application type: {config['type']}")
             
             # Special validation for mcp-server type
@@ -1816,6 +1873,39 @@ class ServerAppController:
                         
                         if server_config.get("type") not in ["streamable-http", "stdio"]:
                             validation_result["warnings"].append(f"MCP server '{server_name}' has unusual type: {server_config.get('type')}")
+            
+            # Special validation for a2a-agent type
+            if "type" in config and config["type"] == "a2a-agent":
+                if "a2aAgents" not in config:
+                    validation_result["errors"].append("A2A agent applications require 'a2aAgents' configuration")
+                    validation_result["valid"] = False
+                elif not isinstance(config["a2aAgents"], dict):
+                    validation_result["errors"].append("'a2aAgents' must be a dictionary")
+                    validation_result["valid"] = False
+                elif len(config["a2aAgents"]) == 0:
+                    validation_result["errors"].append("'a2aAgents' cannot be empty")
+                    validation_result["valid"] = False
+                else:
+                    # Validate each A2A agent configuration
+                    for agent_name, agent_config in config["a2aAgents"].items():
+                        if not isinstance(agent_config, dict):
+                            validation_result["errors"].append(f"A2A agent '{agent_name}' configuration must be a dictionary")
+                            validation_result["valid"] = False
+                            continue
+                        
+                        if "url" not in agent_config:
+                            validation_result["errors"].append(f"A2A agent '{agent_name}' missing required field 'url'")
+                            validation_result["valid"] = False
+                        
+                        # Check if URL looks like a valid A2A endpoint
+                        url = agent_config.get("url", "")
+                        if not url.startswith(("http://", "https://")):
+                            validation_result["warnings"].append(f"A2A agent '{agent_name}' URL should start with http:// or https://")
+                        
+                        # Check for optional headers
+                        if "headers" in agent_config and not isinstance(agent_config["headers"], dict):
+                            validation_result["errors"].append(f"A2A agent '{agent_name}' headers must be a dictionary")
+                            validation_result["valid"] = False
             
             if "version" in config and not isinstance(config["version"], str):
                 validation_result["errors"].append("Field 'version' must be a string")

@@ -1005,8 +1005,363 @@ A2A services inherit Hypha's capabilities:
 - **Logging**: Integrated with Hypha's logging system
 - **Metrics**: Tracked with Hypha's metrics collection
 
+## A2A Proxy System
+
+In addition to hosting A2A services, Hypha provides an A2A proxy system that enables reversible communication between Hypha services and external A2A agents. This system allows you to:
+
+- Connect to external A2A agents and use their skills as Hypha services
+- Create chains of A2A communication (Hypha → A2A → Hypha → A2A)
+- Enable full reversibility - any Hypha service can be exposed as an A2A agent and then re-imported as a Hypha service
+
+### A2A Agent Apps
+
+The A2A proxy system works through "A2A agent apps" that can be installed and managed through Hypha's app system. These apps automatically connect to external A2A agents and re-expose their skills as Hypha services.
+
+#### Configuration
+
+A2A agent apps are configured using the `a2a-agent` type with the following structure:
+
+```json
+{
+  "type": "a2a-agent",
+  "name": "My A2A Agent App",
+  "version": "1.0.0",
+  "description": "Connects to external A2A agents",
+  "a2aAgents": {
+    "agent-name": {
+      "url": "https://example.com/a2a/agent",
+      "headers": {
+        "Authorization": "Bearer token"
+      }
+    }
+  }
+}
+```
+
+#### Installation and Usage
+
+```python
+import asyncio
+from hypha_rpc import connect_to_server
+
+async def use_a2a_agent():
+    # Connect to Hypha server
+    api = await connect_to_server({"server_url": "https://hypha.aicell.io"})
+    
+    # Get the server apps controller
+    controller = await api.get_service("public/server-apps")
+    
+    # Install A2A agent app
+    app_config = {
+        "type": "a2a-agent",
+        "name": "External AI Agent",
+        "version": "1.0.0",
+        "description": "Connect to external A2A-compatible AI service",
+        "a2aAgents": {
+            "ai-assistant": {
+                "url": "https://ai-service.com/a2a/assistant",
+                "headers": {
+                    "Authorization": "Bearer your-token"
+                }
+            }
+        }
+    }
+    
+    app_info = await controller.install(config=app_config, overwrite=True)
+    
+    # Start the app
+    session = await controller.start(app_info["id"], wait_for_service="ai-assistant")
+    
+    # Use the A2A agent as a Hypha service
+    ai_service = await api.get_service(f"{session['id']}:ai-assistant")
+    
+    # Call the agent's skills
+    response = await ai_service.skills[0](text="Hello, how can you help me?")
+    print(f"AI Response: {response}")
+    
+    # Stop the session
+    await controller.stop(session["id"])
+
+asyncio.run(use_a2a_agent())
+```
+
+### Architecture
+
+The A2A proxy system consists of:
+
+1. **A2A Proxy Worker** (`hypha/workers/a2a_proxy.py`): Core worker that manages A2A client connections
+2. **Apps Integration** (`hypha/apps.py`): Handles "a2a-agent" type apps and configuration
+3. **Server Integration** (`hypha/server.py`): Automatically starts A2A proxy when `--enable-a2a` flag is used
+
+### Features
+
+- **Automatic Agent Discovery**: Resolves A2A agent cards from `/.well-known/agent.json` endpoints
+- **Skill Wrapping**: Converts A2A skills to callable Hypha functions with proper schemas
+- **Session Management**: Full lifecycle management with logging and error handling
+- **Reversible Communication**: Enables full round-trip communication chains
+- **Error Handling**: Graceful handling of connection failures and invalid configurations
+
+### Reversibility
+
+The A2A proxy system achieves full reversibility:
+
+1. **Hypha Service** → Register as A2A agent using `type="a2a"`
+2. **A2A Agent** → Connect via A2A proxy using `type="a2a-agent"`
+3. **Chain Communication** → Multiple proxy layers can be chained indefinitely
+4. **Skill Preservation** → Original skill functionality is maintained through the chain
+
+### Configuration Validation
+
+The system includes comprehensive validation:
+
+- **URL Validation**: Ensures proper HTTP/HTTPS URLs
+- **Connection Testing**: Validates agent card accessibility
+- **Schema Validation**: Ensures proper A2A agent configuration
+- **Error Reporting**: Detailed error messages for debugging
+
+### Usage Examples
+
+#### Basic A2A Agent Connection
+
+```python
+# Connect to a simple A2A agent
+config = {
+    "type": "a2a-agent",
+    "name": "Chat Agent",
+    "version": "1.0.0",
+    "a2aAgents": {
+        "chat": {
+            "url": "https://chat-service.com/a2a/agent"
+        }
+    }
+}
+```
+
+#### Multiple A2A Agents
+
+```python
+# Connect to multiple A2A agents in one app
+config = {
+    "type": "a2a-agent",
+    "name": "Multi-Agent System",
+    "version": "1.0.0",
+    "a2aAgents": {
+        "analyzer": {
+            "url": "https://analysis.com/a2a/agent",
+            "headers": {"API-Key": "key1"}
+        },
+        "generator": {
+            "url": "https://generator.com/a2a/agent",
+            "headers": {"API-Key": "key2"}
+        }
+    }
+}
+```
+
+#### Chained A2A Communication
+
+```python
+# Create a chain: Original Service → A2A Agent → Back to Hypha
+async def create_a2a_chain():
+    # Step 1: Original Hypha service with A2A interface
+    original_service = await api.register_service({
+        "type": "a2a",
+        "id": "original-service",
+        "agent_card": {...},
+        "run": my_agent_function
+    })
+    
+    # Step 2: A2A proxy connects to original service
+    a2a_config = {
+        "type": "a2a-agent",
+        "name": "A2A Proxy",
+        "version": "1.0.0",
+        "a2aAgents": {
+            "proxy": {
+                "url": f"http://localhost:9527/workspace/a2a/original-service"
+            }
+        }
+    }
+    
+    app_info = await controller.install(config=a2a_config)
+    session = await controller.start(app_info["id"], wait_for_service="proxy")
+    
+    # Step 3: Use the proxied service
+    proxy_service = await api.get_service(f"{session['id']}:proxy")
+    result = await proxy_service.skills[0](text="Hello through A2A proxy!")
+    
+    return result
+```
+
+## A2A Proxy System
+
+In addition to hosting A2A services, Hypha provides an **A2A proxy system** that enables reversible communication between Hypha services and external A2A agents. This system allows you to:
+
+- **Connect to external A2A agents** and use their skills as Hypha services
+- **Create chains of A2A communication** (Hypha → A2A → Hypha → A2A)
+- **Enable full reversibility** - any Hypha service can be exposed as an A2A agent, and any A2A agent can be accessed as a Hypha service
+
+### How the A2A Proxy Works
+
+The A2A proxy system consists of three main components:
+
+1. **A2A Proxy Worker** (`hypha/workers/a2a_proxy.py`): A worker that manages connections to external A2A agents
+2. **A2A Agent App Type** (`hypha/apps.py`): Support for "a2a-agent" type apps that can be configured to connect to A2A agents  
+3. **Server Integration** (`hypha/server.py`): Automatic startup of the A2A proxy worker when the `--enable-a2a` flag is used
+
+### Using the A2A Proxy
+
+#### 1. Enable A2A Proxy
+
+Start the Hypha server with the A2A proxy enabled:
+
+```bash
+python -m hypha.server --enable-a2a
+```
+
+#### 2. Create an A2A Agent App
+
+Create a configuration file for your A2A agent app:
+
+```json
+{
+  "type": "a2a-agent",
+  "name": "My A2A Agent",
+  "version": "1.0.0", 
+  "description": "Connects to external A2A agents",
+  "a2aAgents": {
+    "agent-name": {
+      "url": "https://example.com/a2a/agent",
+      "headers": {
+        "Authorization": "Bearer your-token"
+      }
+    }
+  }
+}
+```
+
+#### 3. Install and Start the App
+
+```python
+# Install the A2A agent app
+controller = await api.get_service("public/server-apps")
+app_info = await controller.install(config=a2a_config)
+
+# Start the app
+session_info = await controller.start(app_info["id"], wait_for_service="agent-name")
+
+# Get the proxied service
+service_id = f"{session_info['id']}:agent-name"
+a2a_service = await api.get_service(service_id)
+
+# Use the A2A agent's skills as Hypha services
+result = await a2a_service.skills[0](text="Hello, A2A agent!")
+```
+
+### Key Features
+
+- **Skill Wrapping**: A2A agent skills are automatically wrapped as callable Hypha services with proper JSON schemas
+- **Agent Card Resolution**: Automatic resolution of agent cards from `/.well-known/agent.json` endpoints
+- **Error Handling**: Graceful handling of connection failures and invalid configurations
+- **Session Management**: Full lifecycle management with proper cleanup and logging
+- **Reversibility**: Create chains of A2A communication where Hypha services can be exposed as A2A agents and vice versa
+
+### Example: Full Round-Trip Communication
+
+The A2A proxy system enables full reversibility, as demonstrated in this example:
+
+```python
+# 1. Create a Hypha service with A2A type
+@schema_function
+def echo_skill(text: str) -> str:
+    return f"A2A Echo: {text}"
+
+async def a2a_run(message, context=None):
+    # Extract text from A2A message
+    text_content = ""
+    if isinstance(message, dict) and "parts" in message:
+        for part in message["parts"]:
+            if part.get("kind") == "text":
+                text_content += part.get("text", "")
+    
+    # Route to skill
+    return echo_skill(text=text_content)
+
+# Register as A2A service
+await api.register_service({
+    "id": "my-a2a-service",
+    "type": "a2a",
+    "skills": [echo_skill],
+    "run": a2a_run,
+    "agent_card": {
+        "protocolVersion": "0.2.9",
+        "name": "My A2A Agent",
+        "description": "A reversible agent for testing",
+        "url": f"http://localhost:9527/workspace/a2a/my-a2a-service",
+        "version": "1.0.0",
+        "capabilities": {"streaming": False, "pushNotifications": False},
+        "skills": [{"id": "echo", "name": "Echo", "description": "Echoes text"}]
+    }
+})
+
+# 2. Create A2A agent app that connects to this service
+a2a_config = {
+    "type": "a2a-agent",
+    "name": "A2A Proxy App",
+    "version": "1.0.0",
+    "a2aAgents": {
+        "proxy-agent": {
+            "url": f"http://localhost:9527/workspace/a2a/my-a2a-service"
+        }
+    }
+}
+
+# 3. Install and start the proxy
+app_info = await controller.install(config=a2a_config)
+session_info = await controller.start(app_info["id"])
+
+# 4. Use the original service through the A2A proxy
+proxy_service = await api.get_service(f"{session_info['id']}:proxy-agent")
+result = await proxy_service.skills[0](text="Hello World!")
+# Result: "A2A Echo: Hello World!"
+```
+
+This demonstrates full reversibility: **Hypha service → A2A protocol → A2A proxy → Hypha service**, maintaining the original functionality throughout the chain.
+
+### Testing and Validation
+
+The A2A proxy system includes comprehensive tests that verify:
+
+- **Round-trip consistency**: Original services and their A2A proxies produce consistent results
+- **Error handling**: Graceful handling of invalid URLs, connection failures, and malformed configurations
+- **Configuration validation**: Proper validation of A2A agent configurations
+- **Session management**: Proper cleanup and lifecycle management
+
+Example test showing round-trip consistency:
+
+```python
+# Original service call
+original_result = await original_service.skills[0](text="Hello World")
+# Result: "A2A Echo: Hello World"
+
+# A2A proxy call  
+a2a_result = await a2a_service.skills[0](text="Hello World")
+# Result: "A2A Echo: Hello World" (same functionality)
+
+assert "Hello World" in both original_result and a2a_result
+```
+
 ## Conclusion
 
 Hypha's A2A service support enables you to create AI agents that seamlessly integrate with the broader A2A ecosystem. By following the A2A protocol specification and using Hypha's simplified registration process, you can build agents that are discoverable, interoperable, and ready for production use.
 
-The combination of Hypha's infrastructure capabilities with A2A's standardized protocol creates a powerful platform for building and deploying AI agents that can collaborate effectively with other systems and agents. 
+The combination of Hypha's infrastructure capabilities with A2A's standardized protocol creates a powerful platform for building and deploying AI agents that can collaborate effectively with other systems and agents. The **A2A proxy system** further extends this capability by enabling seamless integration with external A2A agents, creating a truly interoperable agent ecosystem with full reversibility between Hypha services and A2A agents.
+
+Key benefits of the A2A proxy system:
+
+- **Seamless Integration**: Connect to any A2A-compliant agent and use their skills as native Hypha services
+- **Full Reversibility**: Create chains of communication where Hypha services can be accessed as A2A agents and vice versa
+- **Production Ready**: Comprehensive error handling, session management, and testing ensure reliability
+- **Developer Friendly**: Simple configuration and automatic skill wrapping make integration effortless
+
+This creates a unified ecosystem where agents can communicate across platforms, protocols, and implementations, enabling truly collaborative AI agent networks. 

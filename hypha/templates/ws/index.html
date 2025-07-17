@@ -2041,6 +2041,99 @@
             );
         };
 
+        const A2AAgentModal = ({ onCreateA2AAgent, onClose }) => {
+            const [agentName, setAgentName] = React.useState('my-agent');
+            const [agentUrl, setAgentUrl] = React.useState('');
+            const [appName, setAppName] = React.useState('My A2A Agent');
+            const [appDescription, setAppDescription] = React.useState('Integration with external A2A agents');
+
+            const handleSubmit = async (event) => {
+                event.preventDefault();
+                
+                const a2aConfig = {
+                    type: "a2a-agent",
+                    name: appName,
+                    version: "1.0.0",
+                    description: appDescription,
+                    a2aAgents: {
+                        [agentName]: {
+                            url: agentUrl
+                        }
+                    }
+                };
+
+                await onCreateA2AAgent(a2aConfig);
+                onClose();
+            };
+
+            return (
+                <div className="modal">
+                    <div className="modal-content">
+                        <div className="modal-header">
+                            <h2 className="text-2xl font-bold">Add A2A Agent</h2>
+                            <button onClick={onClose} className="text-white text-2xl">&times;</button>
+                        </div>
+                        <div className="modal-body">
+                            <form onSubmit={handleSubmit}>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">App Name</label>
+                                    <input
+                                        type="text"
+                                        value={appName}
+                                        onChange={(e) => setAppName(e.target.value)}
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        required
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Description</label>
+                                    <input
+                                        type="text"
+                                        value={appDescription}
+                                        onChange={(e) => setAppDescription(e.target.value)}
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        required
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Agent Name</label>
+                                    <input
+                                        type="text"
+                                        value={agentName}
+                                        onChange={(e) => setAgentName(e.target.value)}
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        required
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">
+                                        Agent URL
+                                        <p className="text-gray-500 text-xs mt-1">
+                                            Base URL of the A2A agent (e.g., https://example.com/a2a-agent)
+                                        </p>
+                                    </label>
+                                    <input
+                                        type="url"
+                                        value={agentUrl}
+                                        onChange={(e) => setAgentUrl(e.target.value)}
+                                        placeholder="https://example.com/a2a-agent"
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        required
+                                    />
+                                </div>
+                                <button
+                                    type="submit"
+                                    className="bg-orange-600 text-white font-bold py-2 px-4 rounded"
+                                >
+                                    Add A2A Agent
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
         const CreateWorkspaceModal = ({
             onCreateWorkspace,
             onDeleteWorkspace,
@@ -2521,6 +2614,7 @@
             const [selectedApp, setSelectedApp] = React.useState(null);
             const [selectedRunningApp, setSelectedRunningApp] = React.useState(null);
             const [showMCPServerModal, setShowMCPServerModal] = React.useState(false);
+            const [showA2AAgentModal, setShowA2AAgentModal] = React.useState(false);
         
             // Centralized expandedDirs state
             const [expandedDirs, setExpandedDirs] = React.useState({});
@@ -2962,8 +3056,36 @@
                 }
             };
 
+            const handleCreateA2AAgent = async (a2aConfig) => {
+                try {
+                    window.showLoadingSpinner('Installing A2A Agent...');
+                    if (!ws || !ws.getService) {
+                        throw new Error('WebSocket connection not ready. Please wait for the connection to be established.');
+                    }
+                    const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
+                    const appInfo = await controller.install({
+                        config: a2aConfig,
+                        overwrite: true,
+                        _rkwargs: true
+                    });
+                    console.log('A2A Agent installed:', appInfo);
+                    
+                    // Refresh the apps list
+                    await refreshApps(ws);
+                } catch (error) {
+                    console.error('Failed to install A2A agent:', error);
+                    alert(`Failed to install A2A agent: ${error}`);
+                } finally {
+                    window.hideLoadingSpinner();
+                }
+            };
+
             const onAddMCPServer = () => {
                 setShowMCPServerModal(true);
+            };
+
+            const onAddA2AAgent = () => {
+                setShowA2AAgentModal(true);
             };
         
             return (
@@ -3173,36 +3295,40 @@
                                 Applications installed in workspace: <code>{workspaceId}</code>
                             </p>
                             <div className="flex gap-4 mt-6">
-                                <button
-                                    className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
-                                        isInstallingApp || !ws
-                                            ? 'bg-gray-700 cursor-not-allowed' 
-                                            : 'bg-green-600 hover:bg-green-500'
-                                    } text-white`}
-                                    onClick={() => window.loadCodeEditor(ws, refreshApps)}
-                                    disabled={isInstallingApp || !ws}
-                                >
-                                    <i className="fas fa-code mr-2"></i> New App
-                                </button>
-                                <button
-                                    className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
-                                        isInstallingApp || !ws
-                                            ? 'bg-gray-600 cursor-not-allowed' 
-                                            : 'bg-gray-600 hover:bg-gray-500'
-                                    } text-white`}
-                                    onClick={() => onInstallApp()}
-                                    disabled={isInstallingApp || !ws}
-                                >
-                                    {isInstallingApp ? (
-                                        <>
-                                            <i className="fas fa-spinner fa-spin mr-2"></i> Installing...
-                                        </>
-                                    ) : (
-                                        <>
-                                            <i className="fas fa-plus mr-2"></i> Install From URL
-                                        </>
-                                    )}
-                                </button>
+                                {/* Split button: Main area for New App, small icon for Install From URL */}
+                                <div className={`flex rounded-full overflow-hidden ${
+                                    isInstallingApp || !ws ? 'opacity-50' : ''
+                                }`}>
+                                    {/* Main button for New App */}
+                                    <button
+                                        className={`font-bold py-2 px-4 transition duration-300 flex items-center ${
+                                            isInstallingApp || !ws
+                                                ? 'bg-gray-700 cursor-not-allowed' 
+                                                : 'bg-green-600 hover:bg-green-500'
+                                        } text-white`}
+                                        onClick={() => window.loadCodeEditor(ws, refreshApps)}
+                                        disabled={isInstallingApp || !ws}
+                                    >
+                                        <i className="fas fa-code mr-2"></i> New App
+                                    </button>
+                                    {/* Small icon button for Install From URL */}
+                                    <button
+                                        className={`font-bold py-2 px-3 border-l border-gray-500 transition duration-300 flex items-center ${
+                                            isInstallingApp || !ws
+                                                ? 'bg-gray-600 cursor-not-allowed' 
+                                                : 'bg-gray-600 hover:bg-gray-500'
+                                        } text-white`}
+                                        onClick={() => onInstallApp()}
+                                        disabled={isInstallingApp || !ws}
+                                        title="Install From URL"
+                                    >
+                                        {isInstallingApp ? (
+                                            <i className="fas fa-spinner fa-spin"></i>
+                                        ) : (
+                                            <i className="fas fa-link"></i>
+                                        )}
+                                    </button>
+                                </div>
                                 <button
                                     className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
                                         isInstallingApp || !ws
@@ -3213,6 +3339,17 @@
                                     disabled={isInstallingApp || !ws}
                                 >
                                     <i className="fas fa-cogs mr-2"></i> Add MCP Server
+                                </button>
+                                <button
+                                    className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
+                                        isInstallingApp || !ws
+                                            ? 'bg-gray-700 cursor-not-allowed' 
+                                            : 'bg-orange-600 hover:bg-orange-500'
+                                    } text-white`}
+                                    onClick={() => onAddA2AAgent()}
+                                    disabled={isInstallingApp || !ws}
+                                >
+                                    <i className="fas fa-robot mr-2"></i> Add A2A Agent
                                 </button>
                                 <button
                                     className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
@@ -3485,6 +3622,13 @@
                         <MCPServerModal
                             onCreateMCPServer={handleCreateMCPServer}
                             onClose={() => setShowMCPServerModal(false)}
+                        />
+                    )}
+                    
+                    {showA2AAgentModal && (
+                        <A2AAgentModal
+                            onCreateA2AAgent={handleCreateA2AAgent}
+                            onClose={() => setShowA2AAgentModal(false)}
                         />
                     )}
                     
