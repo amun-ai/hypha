@@ -948,22 +948,73 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                             tool_name = params.get("name")
                             arguments = params.get("arguments", {})
                             
-                            # Find the tool function by name in service.tools
-                            tool_func = None
-                            for i, func in enumerate(service.tools):
-                                # Check the schema to get the function name
-                                if i < len(service_info.service_schema.tools):
-                                    tool_schema = service_info.service_schema.tools[i]
-                                    if hasattr(tool_schema, 'function') and tool_schema.function.name == tool_name:
-                                        tool_func = func
+                            # Find the matching tool schema and function
+                            target_tool_function = None
+                            target_tool_schema = None
+                            
+                            # Search through service tools
+                            if hasattr(service, 'tools') and service.tools:
+                                for i, tool_function in enumerate(service.tools):
+                                    # Get corresponding schema from service_info if available
+                                    tool_schema = None
+                                    if (hasattr(service_info, 'service_schema') and 
+                                        hasattr(service_info.service_schema, 'tools') and 
+                                        service_info.service_schema.tools and
+                                        i < len(service_info.service_schema.tools)):
+                                        tool_schema = service_info.service_schema.tools[i]
+                                    
+                                    # Extract tool name from schema - handle different structures
+                                    schema_tool_name = None
+                                    if tool_schema:
+                                        try:
+                                            # Try original service structure: tool_schema.function.name
+                                            if hasattr(tool_schema, 'function') and hasattr(tool_schema.function, 'name'):
+                                                schema_tool_name = tool_schema.function.name
+                                            # Try unified service structure: tool_schema.function has direct access
+                                            elif hasattr(tool_schema, 'function'):
+                                                # Check if function has a name attribute or if it's a dict
+                                                func_obj = tool_schema.function
+                                                if hasattr(func_obj, 'name'):
+                                                    schema_tool_name = func_obj.name
+                                                elif isinstance(func_obj, dict) and 'name' in func_obj:
+                                                    schema_tool_name = func_obj['name']
+                                                # Try to get from parameters description or other fields
+                                                elif hasattr(func_obj, 'description'):
+                                                    # Extract name from function object itself if available
+                                                    if hasattr(tool_function, '__name__'):
+                                                        schema_tool_name = tool_function.__name__
+                                                    elif hasattr(tool_function, '__schema__') and hasattr(tool_function.__schema__, 'function'):
+                                                        schema_func = tool_function.__schema__.function
+                                                        if hasattr(schema_func, 'name'):
+                                                            schema_tool_name = schema_func.name
+                                                        elif isinstance(schema_func, dict) and 'name' in schema_func:
+                                                            schema_tool_name = schema_func['name']
+                                        except (AttributeError, KeyError, TypeError):
+                                            # Fallback: try to extract from function itself
+                                            if hasattr(tool_function, '__name__'):
+                                                schema_tool_name = tool_function.__name__
+                                            elif hasattr(tool_function, '__schema__') and hasattr(tool_function.__schema__, 'function'):
+                                                try:
+                                                    schema_func = tool_function.__schema__.function
+                                                    if hasattr(schema_func, 'name'):
+                                                        schema_tool_name = schema_func.name
+                                                    elif isinstance(schema_func, dict) and 'name' in schema_func:
+                                                        schema_tool_name = schema_func['name']
+                                                except (AttributeError, KeyError, TypeError):
+                                                    pass
+                                    
+                                    # If we found a matching tool name, use this tool
+                                    if schema_tool_name == tool_name:
+                                        target_tool_function = tool_function
+                                        target_tool_schema = tool_schema
                                         break
                             
-                            if tool_func:
+                            if target_tool_function:
                                 # Call the schema function directly with unpacked arguments
-                                if inspect.iscoroutinefunction(tool_func):
-                                    result = await tool_func(**arguments)
+                                if inspect.iscoroutinefunction(target_tool_function):
+                                    result = await target_tool_function(**arguments)
                                 else:
-                                    result = tool_func(**arguments)
+                                    result = target_tool_function(**arguments)
                                     if asyncio.isfuture(result) or inspect.iscoroutine(result):
                                         result = await result
                             else:

@@ -828,6 +828,14 @@ For authenticated services, add custom headers:
 Implement comprehensive error handling:
 
 ```python
+import asyncio
+from typing import Dict, Any, List
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger("hypha.mcp")
+
 async def robust_call_tool(name: str, arguments: Dict[str, Any]) -> List[types.ContentBlock]:
     """Tool with robust error handling."""
     try:
@@ -858,6 +866,512 @@ async def robust_call_tool(name: str, arguments: Dict[str, Any]) -> List[types.C
         logger.exception(f"Unexpected error in tool {name}: {e}")
         return [types.TextContent(type="text", text="Internal server error")]
 ```
+
+## MCP Server Installation
+
+Hypha provides a powerful feature to **install external MCP servers as apps** and automatically expose them as unified services. This allows you to easily integrate existing MCP servers into your Hypha workspace and make them available to other services and clients.
+
+### Overview
+
+When you install an MCP server as a Hypha app:
+
+1. **Automatic Discovery**: Hypha connects to the external MCP server and discovers all available tools, resources, and prompts
+2. **Unified Service Creation**: A single unified service is created with all MCP components organized in arrays
+3. **Transparent Proxy**: The unified service acts as a transparent proxy to the original MCP server
+4. **MCP Endpoint Exposure**: The unified service is automatically exposed as an MCP endpoint for other clients to consume
+5. **Round-trip Consistency**: The exposed MCP endpoint maintains perfect fidelity with the original server
+
+### Installing MCP Servers
+
+#### Basic Installation
+
+Use the Hypha server-apps controller to install an MCP server:
+
+```python
+import asyncio
+from hypha_rpc import connect_to_server
+
+async def install_mcp_server():
+    """Install an external MCP server as a Hypha app."""
+    
+    # Connect to Hypha server
+    api = await connect_to_server({
+        "server_url": "https://hypha.aicell.io",
+        "token": "your-token-here"
+    })
+    
+    # Get the server-apps controller
+    controller = await api.get_service("public/server-apps")
+    
+    # Define MCP server configuration
+    mcp_config = {
+        "type": "mcp-server",
+        "name": "DeepWiki MCP Server",
+        "version": "1.0.0", 
+        "description": "External MCP server for documentation and search",
+        "mcpServers": {
+            "deepwiki": {
+                "type": "streamable-http",
+                "url": "https://mcp.deepwiki.com/mcp"
+            }
+        }
+    }
+    
+    # Install the MCP server app
+    app_info = await controller.install(
+        config=mcp_config,
+        overwrite=True
+    )
+    
+    print(f"MCP server app installed: {app_info['id']}")
+    
+    # Start the app
+    session_info = await controller.start(
+        app_info["id"], 
+        wait_for_service="deepwiki",  # Wait for the unified service
+        timeout=30
+    )
+    
+    print(f"MCP app started: {session_info['id']}")
+    
+    # The unified service is now available
+    service_id = f"{session_info['id']}:deepwiki"
+    unified_service = await api.get_service(service_id)
+    
+    print(f"Unified service available: {service_id}")
+    print(f"Tools: {len(unified_service.tools)}")
+    print(f"Resources: {len(unified_service.resources)}")
+    print(f"Prompts: {len(unified_service.prompts)}")
+    
+    # The service is also exposed as an MCP endpoint
+    mcp_endpoint_url = f"https://hypha.aicell.io/{api.config.workspace}/mcp/{service_id.split('/')[-1]}/"
+    print(f"MCP endpoint: {mcp_endpoint_url}")
+
+# Run the installation
+asyncio.run(install_mcp_server())
+```
+
+#### Configuration Options
+
+The MCP server configuration supports various options:
+
+```python
+mcp_config = {
+    "type": "mcp-server",  # Required: Must be "mcp-server"
+    "name": "My MCP Server",
+    "version": "1.0.0",  # Required
+    "description": "Description of the MCP server",
+    "mcpServers": {  # Required: Configuration for MCP servers
+        "server-name": {  # Unique name for the server
+            "type": "streamable-http",  # Server type
+            "url": "https://example.com/mcp",  # Server URL
+            "headers": {  # Optional: Custom headers
+                "Authorization": "Bearer token",
+                "Custom-Header": "value"
+            }
+        },
+        "another-server": {
+            "type": "streamable-http",
+            "url": "http://localhost:3000/mcp"
+        }
+    }
+}
+```
+
+#### Multiple Server Support
+
+You can install multiple MCP servers in a single app:
+
+```python
+multi_server_config = {
+    "type": "mcp-server",
+    "name": "Multi MCP Server App",
+    "version": "1.0.0",
+    "description": "App with multiple MCP servers",
+    "mcpServers": {
+        "search-server": {
+            "type": "streamable-http",
+            "url": "https://search.example.com/mcp"
+        },
+        "data-server": {
+            "type": "streamable-http", 
+            "url": "https://data.example.com/mcp"
+        },
+        "ai-server": {
+            "type": "streamable-http",
+            "url": "https://ai.example.com/mcp"
+        }
+    }
+}
+
+# Install and start
+app_info = await controller.install(config=multi_server_config, overwrite=True)
+session_info = await controller.start(app_info["id"], timeout=60)
+
+# Each server gets its own unified service
+search_service = await api.get_service(f"{session_info['id']}:search-server")
+data_service = await api.get_service(f"{session_info['id']}:data-server") 
+ai_service = await api.get_service(f"{session_info['id']}:ai-server")
+```
+
+### Unified Service Architecture
+
+When an MCP server is installed, Hypha creates a **unified service** with the following structure:
+
+```python
+# Example unified service structure
+unified_service = {
+    "id": "ws-user-1/session-id:server-name",
+    "name": "MCP Server-Name Service",
+    "type": "mcp",
+    "description": "MCP service for server-name with tools, resources, and prompts",
+    "tools": [
+        # Array of tool wrapper functions
+        # Each tool can be called directly: await unified_service.tools[0](...)
+    ],
+    "resources": [
+        # Array of resource objects
+        # Each resource has: {"uri", "name", "description", "read": function}
+    ],
+    "prompts": [
+        # Array of prompt objects  
+        # Each prompt has: {"name", "description", "read": function}
+    ]
+}
+```
+
+#### Using Unified Services
+
+Access and use the unified service like any Hypha service:
+
+```python
+async def use_unified_service():
+    """Example of using an installed MCP server."""
+    
+    # Get the unified service
+    service_id = "ws-user-1/session-id:deepwiki"
+    service = await api.get_service(service_id)
+    
+    # Use tools directly
+    if service.tools:
+        search_tool = service.tools[0]  # First tool
+        result = await search_tool(query="machine learning", limit=5)
+        print(f"Search result: {result}")
+    
+    # Read resources
+    if service.resources:
+        resource = service.resources[0]  # First resource
+        content = await resource["read"]()
+        print(f"Resource content: {content}")
+    
+    # Use prompts
+    if service.prompts:
+        prompt = service.prompts[0]  # First prompt
+        prompt_result = await prompt["read"](topic="AI", difficulty="advanced")
+        print(f"Prompt: {prompt_result}")
+```
+
+### MCP Endpoint Re-exposure
+
+Unified services are automatically exposed as MCP endpoints, creating a **transparent proxy** architecture:
+
+```
+Original MCP Server → Hypha MCP App → Unified Service → New MCP Endpoint
+```
+
+#### Accessing Re-exposed Endpoints
+
+```python
+# Original MCP server
+original_url = "https://external-server.com/mcp"
+
+# After installation, available as Hypha MCP endpoint
+hypha_url = f"https://hypha.aicell.io/{workspace}/mcp/{session_id}:{server_name}/"
+
+# Both endpoints provide identical functionality
+```
+
+#### Round-trip Consistency
+
+Hypha ensures **perfect round-trip consistency**:
+
+```python
+async def test_round_trip_consistency():
+    """Test that MCP endpoints maintain perfect consistency."""
+    
+    # Compare original vs. re-exposed endpoint responses
+    import httpx
+    
+    original_url = "https://external-server.com/mcp"
+    hypha_url = f"https://hypha.aicell.io/{workspace}/mcp/{service_id}/"
+    
+    tools_request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/list",
+        "params": {}
+    }
+    
+    async with httpx.AsyncClient() as client:
+        # Call both endpoints
+        original_response = await client.post(original_url, json=tools_request)
+        hypha_response = await client.post(hypha_url, json=tools_request)
+        
+        original_tools = original_response.json()["result"]["tools"]
+        hypha_tools = hypha_response.json()["result"]["tools"]
+        
+        # Should be identical
+        assert original_tools == hypha_tools
+        print("✅ Perfect round-trip consistency maintained!")
+```
+
+### Management Operations
+
+#### Listing Installed Apps
+
+```python
+# List all installed apps
+apps = await controller.list_apps()
+mcp_apps = [app for app in apps if app.get("type") == "mcp-server"]
+
+for app in mcp_apps:
+    print(f"MCP App: {app['name']} (ID: {app['id']})")
+```
+
+#### Starting and Stopping
+
+```python
+# Start an app
+session_info = await controller.start(app_id, wait_for_service="server-name")
+
+# Stop an app
+await controller.stop(session_info["id"])
+```
+
+#### Uninstalling
+
+```python
+# Uninstall an app
+await controller.uninstall(app_id)
+```
+
+### Authentication and Security
+
+#### Using Authenticated MCP Servers
+
+```python
+authenticated_config = {
+    "type": "mcp-server",
+    "name": "Authenticated MCP Server",
+    "version": "1.0.0",
+    "description": "MCP server requiring authentication",
+    "mcpServers": {
+        "secure-server": {
+            "type": "streamable-http",
+            "url": "https://secure.example.com/mcp",
+            "headers": {
+                "Authorization": "Bearer your-api-token",
+                "X-API-Key": "your-api-key"
+            }
+        }
+    }
+}
+```
+
+#### Security Considerations
+
+1. **Token Management**: Store sensitive tokens securely
+2. **Network Security**: Use HTTPS for production deployments
+3. **Access Control**: Configure proper workspace permissions
+4. **Rate Limiting**: Be aware of upstream server rate limits
+5. **Error Handling**: Implement proper error handling for authentication failures
+
+### Best Practices
+
+#### Configuration Management
+
+```python
+# Use environment variables for sensitive data
+import os
+
+def create_secure_config(server_name: str, server_url: str) -> dict:
+    """Create MCP config with secure token handling."""
+    return {
+        "type": "mcp-server",
+        "name": f"{server_name} MCP Server",
+        "version": "1.0.0",
+        "description": f"Secure MCP server: {server_name}",
+        "mcpServers": {
+            server_name: {
+                "type": "streamable-http",
+                "url": server_url,
+                "headers": {
+                    "Authorization": f"Bearer {os.getenv(f'{server_name.upper()}_TOKEN')}"
+                }
+            }
+        }
+    }
+```
+
+#### Error Handling
+
+```python
+async def robust_mcp_installation():
+    """Install MCP server with comprehensive error handling."""
+    try:
+        # Install the app
+        app_info = await controller.install(config=mcp_config, overwrite=True)
+        
+        # Start with timeout and service waiting
+        session_info = await controller.start(
+            app_info["id"],
+            wait_for_service="server-name",
+            timeout=30
+        )
+        
+        # Verify service is available
+        service = await api.get_service(f"{session_info['id']}:server-name")
+        
+        print(f"✅ Successfully installed and started MCP server")
+        return service
+        
+    except TimeoutError:
+        print("❌ Installation timed out - check server connectivity")
+        raise
+    except ConnectionError:
+        print("❌ Failed to connect to MCP server - check URL and credentials")
+        raise
+    except Exception as e:
+        print(f"❌ Installation failed: {e}")
+        # Clean up on failure
+        try:
+            await controller.uninstall(app_info["id"])
+        except:
+            pass
+        raise
+```
+
+#### Monitoring and Debugging
+
+```python
+async def monitor_mcp_service():
+    """Monitor MCP service health and performance."""
+    
+    # Check service availability
+    try:
+        service = await api.get_service(service_id)
+        print(f"✅ Service {service_id} is available")
+    except Exception as e:
+        print(f"❌ Service {service_id} is not available: {e}")
+        return
+    
+    # Test basic functionality
+    if service.tools:
+        try:
+            # Test first tool
+            result = await service.tools[0](test="ping")
+            print(f"✅ Tool test successful: {result}")
+        except Exception as e:
+            print(f"❌ Tool test failed: {e}")
+    
+    # Check MCP endpoint
+    try:
+        endpoint_url = f"https://hypha.aicell.io/{workspace}/mcp/{service_id}/"
+        async with httpx.AsyncClient() as client:
+            response = await client.post(endpoint_url, json={
+                "jsonrpc": "2.0", "id": "test", "method": "tools/list", "params": {}
+            })
+            if response.status_code == 200:
+                print(f"✅ MCP endpoint responding: {endpoint_url}")
+            else:
+                print(f"❌ MCP endpoint error: {response.status_code}")
+    except Exception as e:
+        print(f"❌ MCP endpoint test failed: {e}")
+```
+
+### Use Cases
+
+#### Development and Testing
+
+```python
+# Install a development MCP server locally
+dev_config = {
+    "type": "mcp-server",
+    "name": "Development MCP Server",
+    "version": "1.0.0",
+    "description": "Local development server for testing",
+    "mcpServers": {
+        "dev-server": {
+            "type": "streamable-http",
+            "url": "http://localhost:3000/mcp"
+        }
+    }
+}
+```
+
+#### Production Integration
+
+```python
+# Install production MCP servers with full configuration
+production_config = {
+    "type": "mcp-server",
+    "name": "Production Search Stack",
+    "version": "2.1.0",
+    "description": "Production-ready search and analytics MCP servers",
+    "mcpServers": {
+        "search-engine": {
+            "type": "streamable-http",
+            "url": "https://search-api.company.com/mcp",
+            "headers": {
+                "Authorization": f"Bearer {os.getenv('SEARCH_TOKEN')}",
+                "X-Service-Version": "v2"
+            }
+        },
+        "analytics": {
+            "type": "streamable-http", 
+            "url": "https://analytics-api.company.com/mcp",
+            "headers": {
+                "Authorization": f"Bearer {os.getenv('ANALYTICS_TOKEN')}"
+            }
+        }
+    }
+}
+```
+
+#### Multi-tenant Deployments
+
+```python
+async def deploy_tenant_mcp_servers(tenant_id: str, tenant_config: dict):
+    """Deploy MCP servers for a specific tenant."""
+    
+    # Create tenant-specific configuration
+    tenant_mcp_config = {
+        "type": "mcp-server",
+        "name": f"MCP Services for {tenant_id}",
+        "version": "1.0.0",
+        "description": f"Tenant-specific MCP services for {tenant_id}",
+        "mcpServers": {}
+    }
+    
+    # Add tenant-specific servers
+    for server_name, server_config in tenant_config.items():
+        tenant_mcp_config["mcpServers"][f"{tenant_id}-{server_name}"] = {
+            "type": "streamable-http",
+            "url": server_config["url"],
+            "headers": {
+                **server_config.get("headers", {}),
+                "X-Tenant-ID": tenant_id
+            }
+        }
+    
+    # Install and start
+    app_info = await controller.install(config=tenant_mcp_config, overwrite=True)
+    session_info = await controller.start(app_info["id"], timeout=60)
+    
+    return session_info
+```
+
+The MCP server installation feature provides a powerful way to integrate external MCP servers into your Hypha workspace, creating a unified ecosystem where services can be easily discovered, accessed, and re-exposed while maintaining perfect protocol compatibility and consistency. 
 
 ## Testing and Debugging
 
@@ -1067,8 +1581,48 @@ def validate_arguments(arguments: Dict[str, Any], name: str) -> None:
    - Verify SSL certificates for HTTPS
    - Test with local HTTP for development
 
+### MCP Server Installation Issues
+
+1. **App Installation Failures**:
+   - Check MCP server URL accessibility
+   - Verify authentication credentials
+   - Review server logs for connection errors
+
+2. **Service Registration Timeouts**:
+   - Increase timeout values
+   - Check upstream server response times
+   - Monitor network connectivity
+
+3. **Unified Service Access Issues**:
+   - Verify service ID format: `{session_id}:{server_name}`
+   - Check workspace permissions
+   - Ensure MCP app is running
+
 ## Conclusion
 
-Hypha's MCP service support provides a powerful way to expose your services to MCP-compatible clients. By following the MCP protocol specification and using Hypha's simplified registration process, you can create tools, prompts, and resources that integrate seamlessly with popular AI applications like Cursor, Claude Desktop, and Windsurf.
+Hypha's comprehensive MCP service support provides multiple powerful ways to work with the Model Context Protocol:
 
-The combination of Hypha's infrastructure capabilities with MCP's standardized protocol creates a robust platform for building and deploying AI-accessible services that can be discovered and used by a wide range of client applications. 
+1. **Native MCP Services**: Register services that implement MCP protocol functions directly
+2. **Inline Configuration**: Use simple configuration-based approach for static tools and resources
+3. **Schema Function Services**: Automatic tool extraction from `@schema_function` decorated functions
+4. **MCP Server Installation**: Install external MCP servers as apps with automatic unified service creation
+
+### Key Benefits
+
+- **Unified API**: All MCP services work through the same Hypha service interface
+- **Automatic Discovery**: Tools, resources, and prompts are automatically discovered and exposed
+- **Perfect Compatibility**: Full compliance with MCP protocol specification
+- **Transparent Proxy**: Round-trip consistency maintains perfect fidelity
+- **Client Integration**: Seamless integration with popular AI applications
+- **Flexible Deployment**: Support for development, staging, and production environments
+
+### Integration Ecosystem
+
+The combination of Hypha's infrastructure capabilities with MCP's standardized protocol creates a robust platform for:
+
+- **Building AI-accessible services** that can be discovered and used by a wide range of client applications
+- **Creating service ecosystems** where external MCP servers can be integrated and re-exposed
+- **Developing cross-platform tools** that work with Cursor, Claude Desktop, Windsurf, and other MCP clients
+- **Implementing enterprise-grade** MCP deployments with authentication, monitoring, and management
+
+Whether you're building a simple calculator service or integrating complex external MCP servers into your workspace, Hypha's MCP support provides the flexibility and power needed to create professional-grade AI-accessible services that integrate seamlessly with the growing MCP ecosystem. 

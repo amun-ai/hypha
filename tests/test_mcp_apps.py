@@ -16,7 +16,7 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_mcp_round_trip_service_consistency(fastapi_server, test_user_token):
-    """Test MCP round-trip: Hypha service -> MCP endpoint -> MCP app -> Hypha service consistency."""
+    """Test complete MCP double round-trip: Original Service -> MCP Endpoint 1 -> MCP App -> Unified Service -> MCP Endpoint 2 -> Consistency verification."""
     
     # Connect to the Hypha server
     api = await connect_to_server(
@@ -68,7 +68,7 @@ async def test_mcp_round_trip_service_consistency(fastapi_server, test_user_toke
                 }
             ]
         }
-
+    
     # Register the original MCP service
     original_service_info = await api.register_service(
         {
@@ -103,10 +103,10 @@ async def test_mcp_round_trip_service_consistency(fastapi_server, test_user_toke
     )
 
     print(f"✓ Original MCP service registered: {original_service_info['id']}")
-
+    
     # Step 2: Get the original service to save its function references
     original_service = await api.get_service(original_service_info["id"])
-    
+                
     # Verify the original service has the expected structure
     assert hasattr(original_service, "tools") and original_service.tools is not None
     assert hasattr(original_service, "resources") and original_service.resources is not None
@@ -114,9 +114,9 @@ async def test_mcp_round_trip_service_consistency(fastapi_server, test_user_toke
 
     print("✓ Original service has tools, resources, and prompts organized correctly")
 
-    # Step 3: Get the MCP endpoint URL for this service
-    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{original_service_info['id'].split('/')[-1]}/"
-    print(f"✓ MCP endpoint URL: {mcp_endpoint_url}")
+    # Step 3: Get the FIRST MCP endpoint URL for this service
+    mcp_endpoint_1_url = f"{SERVER_URL}/{workspace}/mcp/{original_service_info['id'].split('/')[-1]}/"
+    print(f"✓ MCP Endpoint 1 URL: {mcp_endpoint_1_url}")
 
     # Step 4: Create MCP server configuration and install as MCP app
     mcp_config = {
@@ -127,11 +127,11 @@ async def test_mcp_round_trip_service_consistency(fastapi_server, test_user_toke
         "mcpServers": {
             "round-trip-server": {
                 "type": "streamable-http",
-                "url": mcp_endpoint_url
+                "url": mcp_endpoint_1_url
             }
         }
     }
-
+    
     # Install the MCP server app
     mcp_app_info = await controller.install(
         config=mcp_config,
@@ -206,11 +206,163 @@ async def test_mcp_round_trip_service_consistency(fastapi_server, test_user_toke
     assert "messages" in original_prompt_content and "messages" in mcp_prompt_content
     print(f"    ✓ Both prompts have correct structure with messages")
     
-    print("✅ SUCCESS! MCP round-trip service consistency verified!")
-    print("   - Tools work identically between original and MCP services")
-    print("   - Resources are accessible and return the same content")
-    print("   - Prompts have the same structure and behavior")
-    print("   - The MCP service is a perfect proxy for the original service")
+    print("✅ FIRST ROUND-TRIP SUCCESS! Original service -> MCP service consistency verified!")
+    
+    # Step 8: CREATE SECOND MCP ENDPOINT from the unified service
+    print("\n🔄 STARTING SECOND ROUND-TRIP: Creating MCP Endpoint 2 from unified service...")
+    
+    # Get the SECOND MCP endpoint URL from the unified service
+    mcp_endpoint_2_url = f"{SERVER_URL}/{workspace}/mcp/{mcp_service_id.split('/')[-1]}/"
+    print(f"✓ MCP Endpoint 2 URL: {mcp_endpoint_2_url}")
+    
+    # Step 9: TEST MCP ENDPOINT CONSISTENCY using direct HTTP calls
+    print("🔍 Comparing MCP Endpoint 1 vs MCP Endpoint 2 for consistency...")
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # Test tools/list consistency
+        print("  Testing tools/list consistency...")
+        
+        tools_request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        }
+        
+        # Call both endpoints
+        endpoint1_tools_response = await client.post(mcp_endpoint_1_url, json=tools_request)
+        endpoint2_tools_response = await client.post(mcp_endpoint_2_url, json=tools_request)
+        
+        endpoint1_tools = endpoint1_tools_response.json()
+        endpoint2_tools = endpoint2_tools_response.json()
+        
+        # Compare tools lists
+        assert endpoint1_tools["result"]["tools"] == endpoint2_tools["result"]["tools"]
+        print(f"    ✓ Both endpoints return identical tools list: {len(endpoint1_tools['result']['tools'])} tools")
+        
+        # Test resources/list consistency
+        print("  Testing resources/list consistency...")
+        
+        resources_request = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "resources/list",
+            "params": {}
+        }
+        
+        endpoint1_resources_response = await client.post(mcp_endpoint_1_url, json=resources_request)
+        endpoint2_resources_response = await client.post(mcp_endpoint_2_url, json=resources_request)
+        
+        endpoint1_resources = endpoint1_resources_response.json()
+        endpoint2_resources = endpoint2_resources_response.json()
+        
+        # Compare resources lists
+        assert endpoint1_resources["result"]["resources"] == endpoint2_resources["result"]["resources"]
+        print(f"    ✓ Both endpoints return identical resources list: {len(endpoint1_resources['result']['resources'])} resources")
+        
+        # Test prompts/list consistency
+        print("  Testing prompts/list consistency...")
+        
+        prompts_request = {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "prompts/list",
+            "params": {}
+        }
+        
+        endpoint1_prompts_response = await client.post(mcp_endpoint_1_url, json=prompts_request)
+        endpoint2_prompts_response = await client.post(mcp_endpoint_2_url, json=prompts_request)
+        
+        endpoint1_prompts = endpoint1_prompts_response.json()
+        endpoint2_prompts = endpoint2_prompts_response.json()
+        
+        # Compare prompts lists
+        assert endpoint1_prompts["result"]["prompts"] == endpoint2_prompts["result"]["prompts"]
+        print(f"    ✓ Both endpoints return identical prompts list: {len(endpoint1_prompts['result']['prompts'])} prompts")
+        
+        # Test tool execution consistency
+        print("  Testing tool execution consistency...")
+        
+        tool_call_request = {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "calculate_tool",
+                "arguments": {
+                    "operation": "add",
+                    "a": 15,
+                    "b": 25
+                }
+            }
+        }
+        
+        endpoint1_tool_response = await client.post(mcp_endpoint_1_url, json=tool_call_request)
+        endpoint2_tool_response = await client.post(mcp_endpoint_2_url, json=tool_call_request)
+        
+        endpoint1_tool_result = endpoint1_tool_response.json()
+        endpoint2_tool_result = endpoint2_tool_response.json()
+        
+        # Compare tool execution results
+        assert endpoint1_tool_result["result"] == endpoint2_tool_result["result"]
+        print(f"    ✓ Both endpoints return identical tool results: {endpoint1_tool_result['result']['content'][0]['text']}")
+        
+        # Test resource reading consistency
+        print("  Testing resource reading consistency...")
+        
+        resource_read_request = {
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "resources/read",
+            "params": {
+                "uri": "resource://comprehensive-test"
+            }
+        }
+        
+        endpoint1_resource_response = await client.post(mcp_endpoint_1_url, json=resource_read_request)
+        endpoint2_resource_response = await client.post(mcp_endpoint_2_url, json=resource_read_request)
+        
+        endpoint1_resource_result = endpoint1_resource_response.json()
+        endpoint2_resource_result = endpoint2_resource_response.json()
+        
+        # Compare resource content
+        assert endpoint1_resource_result["result"] == endpoint2_resource_result["result"]
+        print(f"    ✓ Both endpoints return identical resource content: {endpoint1_resource_result['result']['contents'][0]['text'][:50]}...")
+        
+        # Test prompt reading consistency  
+        print("  Testing prompt reading consistency...")
+        
+        prompt_get_request = {
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "prompts/get",
+            "params": {
+                "name": "comprehensive_prompt",
+                "arguments": {
+                    "task": "testing",
+                    "difficulty": "medium"
+                }
+            }
+        }
+        
+        endpoint1_prompt_response = await client.post(mcp_endpoint_1_url, json=prompt_get_request)
+        endpoint2_prompt_response = await client.post(mcp_endpoint_2_url, json=prompt_get_request)
+        
+        endpoint1_prompt_result = endpoint1_prompt_response.json()
+        endpoint2_prompt_result = endpoint2_prompt_response.json()
+        
+        # Compare prompt results
+        assert endpoint1_prompt_result["result"] == endpoint2_prompt_result["result"]
+        print(f"    ✓ Both endpoints return identical prompt responses with same description and messages")
+    
+    print("\n🎉 **COMPLETE DOUBLE ROUND-TRIP SUCCESS!** 🎉")
+    print("✅ PERFECT MCP ECOSYSTEM DEMONSTRATED:")
+    print("   1. Original Service -> MCP Endpoint 1: ✓ CONSISTENT")
+    print("   2. MCP Endpoint 1 -> MCP App -> Unified Service: ✓ CONSISTENT") 
+    print("   3. Unified Service -> MCP Endpoint 2: ✓ CONSISTENT")
+    print("   4. MCP Endpoint 1 ≡ MCP Endpoint 2: ✓ IDENTICAL")
+    print("\n   🔄 The complete MCP round-trip preserves perfect fidelity!")
+    print("   🚀 Hypha's MCP implementation is a lossless, transparent proxy!")
     
     # Clean up - let errors explode!
     await controller.stop(session_info["id"])
