@@ -416,6 +416,7 @@ def fastapi_server_redis_1(redis_server, minio_server):
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
             "--enable-service-search",
+            "--enable-redis-partitioning",
         ],
         env=test_env,
     ) as proc:
@@ -453,6 +454,7 @@ def fastapi_server_redis_2(redis_server, minio_server, fastapi_server):
             f"--public-base-url=http://my-public-url.com",
             "--server-id=server-1",
             f"--redis-uri=redis://127.0.0.1:{REDIS_PORT}/0",
+            "--enable-redis-partitioning",
             # f"--endpoint-url={MINIO_SERVER_URL}",
             # f"--access-key-id={MINIO_ROOT_USER}",
             # f"--secret-access-key={MINIO_ROOT_PASSWORD}",

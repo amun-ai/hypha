@@ -507,6 +507,10 @@ class RedisRPCConnection:
         self._handle_disconnected = None
         self._handle_message = None
         self.manager_id = manager_id
+        
+        # Register this client with the event bus for partitioning
+        if hasattr(event_bus, 'add_local_client'):
+            event_bus.add_local_client(f"{workspace}/{client_id}")
 
     def on_disconnected(self, handler):
         """Register a disconnection event handler."""
@@ -577,9 +581,28 @@ class RedisRPCConnection:
         if self._is_load_balancing_enabled():
             self._update_load_metric()
         
-        await RedisRPCConnection._tracker.reset_timer(
-            self._workspace + "/" + self._client_id, "client"
-        )
+        # Reset tracker timer if available
+        if RedisRPCConnection._tracker:
+            await RedisRPCConnection._tracker.reset_timer(
+                self._workspace + "/" + self._client_id, "client"
+            )
+
+    async def disconnect(self):
+        """Disconnect the RPC connection and unregister from event bus."""
+        self._stop = True
+        
+        # Unregister this client from the event bus
+        if hasattr(self._event_bus, 'remove_local_client'):
+            self._event_bus.remove_local_client(f"{self._workspace}/{self._client_id}")
+        
+        # Remove from tracker if available
+        if RedisRPCConnection._tracker:
+            await RedisRPCConnection._tracker.remove_entity(
+                f"{self._workspace}/{self._client_id}", "client"
+            )
+        
+        if self._handle_disconnected:
+            await self._handle_disconnected()
 
     def _is_load_balancing_enabled(self):
         """Check if load balancing is enabled for this client."""
@@ -670,9 +693,11 @@ class RedisRPCConnection:
         if self._handle_disconnected:
             await self._handle_disconnected(reason)
 
-        await RedisRPCConnection._tracker.remove_entity(
-            self._workspace + "/" + self._client_id, "client"
-        )
+        # Remove from tracker if available
+        if RedisRPCConnection._tracker:
+            await RedisRPCConnection._tracker.remove_entity(
+                self._workspace + "/" + self._client_id, "client"
+            )
         
         # Clean up metrics for load balancing enabled clients only
         if self._is_load_balancing_enabled():
@@ -695,9 +720,12 @@ class RedisEventBus:
         "redis_pubsub_latency_seconds", "Redis pubsub latency in seconds"
     )
 
-    def __init__(self, redis) -> None:
+    def __init__(self, redis, server_id=None, enable_partitioning=False) -> None:
         """Initialize the event bus."""
         self._redis = redis
+        self._server_id = server_id
+        self._enable_partitioning = enable_partitioning
+        self._local_clients = set()  # Track clients connected to this server
         self._handle_connected = None
         self._stop = False
         self._local_event_bus = EventBus(logger)
@@ -712,6 +740,27 @@ class RedisEventBus:
         self._health_check_channel = "health_check:" + str(uuid.uuid4())
         self._health_check_pubsub = None
         self._pubsub_health_future = None
+
+    def add_local_client(self, client_id: str):
+        """Add a client to the local client set for partitioning."""
+        if self._enable_partitioning:
+            self._local_clients.add(client_id)
+            logger.info(f"Added local client {client_id} to server {self._server_id}")
+
+    def remove_local_client(self, client_id: str):
+        """Remove a client from the local client set for partitioning."""
+        if self._enable_partitioning:
+            self._local_clients.discard(client_id)
+            logger.info(f"Removed local client {client_id} from server {self._server_id}")
+
+    def get_subscription_pattern(self):
+        """Get the subscription pattern based on partitioning configuration."""
+        if self._enable_partitioning and self._server_id:
+            # Subscribe to server-specific events and health checks
+            return f"event:*:{self._server_id}"
+        else:
+            # Legacy behavior - subscribe to all events
+            return "event:*"
 
     async def init(self):
         """Setup the event bus."""
@@ -812,8 +861,31 @@ class RedisEventBus:
             assert data and isinstance(
                 data, (str, bytes)
             ), "Data must be a string or bytes"
+        
+        # Determine the target server for partitioned events
+        channel_name = "event:" + data_type + event_name
+        if self._enable_partitioning and self._server_id:
+            # For client messages, route to the appropriate server
+            if ":msg" in event_name:
+                client_part = event_name.replace(":msg", "")
+                if "/" in client_part:
+                    workspace, client_id = client_part.split("/", 1)
+                    full_client_id = f"{workspace}/{client_id}"
+                    # Check if this is a local client
+                    if full_client_id in self._local_clients:
+                        channel_name += f":{self._server_id}"
+                    else:
+                        # Route to all servers for non-local clients (broadcast)
+                        channel_name += ":broadcast"
+                else:
+                    # Broadcast messages (workspace/*)
+                    channel_name += ":broadcast"
+            else:
+                # Non-client messages are broadcast
+                channel_name += ":broadcast"
+        
         global_task = self._loop.create_task(
-            self._redis.publish("event:" + data_type + event_name, data)
+            self._redis.publish(channel_name, data)
         )
         tasks.append(global_task)
 
@@ -1002,8 +1074,10 @@ class RedisEventBus:
         """Handle Redis subscription with automatic reconnection."""
         cpu_count = os.cpu_count() or 1
         concurrent_tasks = cpu_count * 10
+        subscription_pattern = self.get_subscription_pattern()
         logger.info(
-            f"Starting Redis event bus with {concurrent_tasks} concurrent task processing"
+            f"Starting Redis event bus with {concurrent_tasks} concurrent task processing, "
+            f"pattern: {subscription_pattern}, partitioning: {self._enable_partitioning}"
         )
 
         while not self._stop:
@@ -1013,8 +1087,16 @@ class RedisEventBus:
                 self._stop = False
                 semaphore = asyncio.Semaphore(concurrent_tasks)
 
-                # Subscribe to both events and health check channel
-                await pubsub.psubscribe("event:*")
+                # Subscribe to events based on partitioning configuration
+                if self._enable_partitioning and self._server_id:
+                    # Subscribe to server-specific pattern and health check channel
+                    await pubsub.psubscribe(f"event:*:{self._server_id}")
+                    # Also subscribe to broadcast events (no server suffix)
+                    await pubsub.psubscribe("event:*:broadcast")
+                else:
+                    # Legacy behavior - subscribe to all events
+                    await pubsub.psubscribe("event:*")
+                
                 await pubsub.subscribe(self._health_check_channel)
 
                 self._ready.set_result(True) if not self._ready.done() else None
@@ -1068,32 +1150,48 @@ class RedisEventBus:
                 channel = msg["channel"].decode("utf-8")
                 RedisEventBus._counter.labels(event="*", status="processed").inc()
 
+                # Extract event type and server suffix if present
                 if channel.startswith("event:b:"):
                     event_type = channel[8:]
                     data = msg["data"]
-                    await self._redis_event_bus.emit(event_type, data)
-                    if ":" not in event_type:
-                        RedisEventBus._counter.labels(
-                            event=event_type, status="processed"
-                        ).inc()
                 elif channel.startswith("event:d:"):
                     event_type = channel[8:]
                     data = json.loads(msg["data"])
-                    await self._redis_event_bus.emit(event_type, data)
-                    if ":" not in event_type:
-                        RedisEventBus._counter.labels(
-                            event=event_type, status="processed"
-                        ).inc()
                 elif channel.startswith("event:s:"):
                     event_type = channel[8:]
                     data = msg["data"].decode("utf-8")
-                    await self._redis_event_bus.emit(event_type, data)
-                    if ":" not in event_type:
-                        RedisEventBus._counter.labels(
-                            event=event_type, status="processed"
-                        ).inc()
                 else:
                     logger.info("Unknown channel: %s", channel)
+                    return
+
+                # Remove server suffix if present for partitioned events
+                if self._enable_partitioning and ":" in event_type:
+                    parts = event_type.split(":")
+                    if len(parts) >= 2 and (parts[-1] == self._server_id or parts[-1] == "broadcast"):
+                        event_type = ":".join(parts[:-1])
+                    elif len(parts) >= 2 and parts[-1] != self._server_id:
+                        # Skip events not meant for this server
+                        return
+
+                # For partitioned mode, check if this event is for a local client
+                if self._enable_partitioning and self._server_id:
+                    # Extract client info from event_type if it's a client message
+                    if ":msg" in event_type:
+                        client_part = event_type.replace(":msg", "")
+                        if "/" in client_part:
+                            workspace, client_id = client_part.split("/", 1)
+                            full_client_id = f"{workspace}/{client_id}"
+                            # Only process if this client is local to this server
+                            if full_client_id not in self._local_clients and not event_type.endswith("/*:msg"):
+                                logger.debug(f"Skipping event for non-local client: {full_client_id}")
+                                return
+
+                await self._redis_event_bus.emit(event_type, data)
+                if ":" not in event_type:
+                    RedisEventBus._counter.labels(
+                        event=event_type, status="processed"
+                    ).inc()
+
             except Exception as exp:
                 logger.exception(f"Error processing message: {exp}")
                 RedisEventBus._counter.labels(

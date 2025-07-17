@@ -136,6 +136,7 @@ class RedisStore:
         enable_service_search=False,
         reconnection_token_life_time=2 * 24 * 60 * 60,
         activity_check_interval=10,
+        enable_redis_partitioning=False,
     ):
         """Initialize the redis store."""
         self._s3_controller = None
@@ -159,6 +160,7 @@ class RedisStore:
         self.reconnection_token_life_time = reconnection_token_life_time
         self._enable_service_search = enable_service_search
         self._activity_check_interval = activity_check_interval
+        self._enable_redis_partitioning = enable_redis_partitioning
         # Create a fixed HTTP anonymous user
         self._http_anonymous_user = UserInfo(
             id="http-anonymous",
@@ -242,7 +244,11 @@ class RedisStore:
         self._redis_cache = RedisCache(serializer=PickleSerializer())
         self._redis_cache.client = self._redis
         self._root_user = None
-        self._event_bus = RedisEventBus(self._redis)
+        self._event_bus = RedisEventBus(
+            self._redis, 
+            server_id=self._server_id, 
+            enable_partitioning=self._enable_redis_partitioning
+        )
 
         self._tracker = None
         self._tracker_task = None
