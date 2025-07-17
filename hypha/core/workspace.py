@@ -175,6 +175,24 @@ class WorkspaceManager:
             "active_clients", "Number of active clients", ["workspace"]
         )
         self._enable_service_search = enable_service_search
+        # Track which workspaces were counted by this instance
+        self._counted_workspaces: set = set()
+
+    def _increment_workspace_counter(self, workspace_id: str):
+        """Increment the workspace counter and track the workspace."""
+        if workspace_id not in self._counted_workspaces:
+            self._counted_workspaces.add(workspace_id)
+            self._active_ws.inc()
+            logger.debug(f"Incremented workspace counter for {workspace_id}")
+
+    def _decrement_workspace_counter(self, workspace_id: str):
+        """Decrement the workspace counter only if it was counted by this instance."""
+        if workspace_id in self._counted_workspaces:
+            self._counted_workspaces.remove(workspace_id)
+            self._active_ws.dec()
+            logger.debug(f"Decremented workspace counter for {workspace_id}")
+        else:
+            logger.debug(f"Workspace {workspace_id} was not counted by this instance, skipping decrement")
 
     async def _get_sql_session(self):
         """Return an async session for the database."""
@@ -618,7 +636,7 @@ class WorkspaceManager:
         await self._redis.hset("workspaces", workspace.id, workspace.model_dump_json())
 
         if not exists:
-            self._active_ws.inc()
+            self._increment_workspace_counter(workspace.id)
 
         # Skip S3 setup for anonymous users
         if (
@@ -1634,7 +1652,7 @@ class WorkspaceManager:
                 "workspaces", workspace_info.id, workspace_info.model_dump_json()
             )
             if increment_counter:
-                self._active_ws.inc()
+                self._increment_workspace_counter(workspace_info.id)
             return workspace_info
 
         logger.info(f"Workspace {workspace} not found in Redis, trying to load from S3")
@@ -1664,7 +1682,7 @@ class WorkspaceManager:
             task.add_done_callback(background_tasks.discard)
 
             if increment_counter:
-                self._active_ws.inc()
+                self._increment_workspace_counter(workspace_info.id)
 
             await self._s3_controller.setup_workspace(workspace_info)
             await self._event_bus.emit("workspace_loaded", workspace_info.model_dump())
@@ -2070,7 +2088,7 @@ class WorkspaceManager:
                         f"Skipping cleanup of persistent workspace {ws} because S3 controller is not available"
                     )
 
-            self._active_ws.dec()
+            self._decrement_workspace_counter(ws)
             try:
                 self._active_clients.remove(ws)
                 self._active_svc.remove(ws)

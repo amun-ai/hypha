@@ -14,6 +14,7 @@ import yaml
 from hypha_rpc.utils import ObjectProxy
 from hypha_rpc import connect_to_server
 from hypha.runner.browser import BrowserAppRunner
+from hypha.runner.mcp_client import MCPClientRunner
 
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -122,6 +123,19 @@ async def run_server_app_worker(server_config):
     await server.serve()
 
 
+async def run_mcp_client_worker(server_config):
+    """Run the MCP client worker."""
+    server = await connect_to_server(server_config)
+
+    mcr = MCPClientRunner(server)
+    await mcr.initialize()
+    svc = await server.register_service(mcr.get_service())
+    logger.info(
+        f"MCP client worker running at {server.config.public_base_url}/{server.config.workspace}/services/{svc['id'].split('/')[1]}"
+    )
+    await server.serve()
+
+
 async def start(args):
     """Run the app."""
     try:
@@ -132,6 +146,8 @@ async def start(args):
         }
         if args.app == "browser-worker":
             await run_server_app_worker(server_config)
+        elif args.app == "mcp-client-worker":
+            await run_mcp_client_worker(server_config)
         else:
             await run_app(args.app, server_config, quit_on_ready=args.quit_on_ready)
     except Exception:  # pylint: disable=broad-except

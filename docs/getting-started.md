@@ -183,6 +183,19 @@ pip install hypha-rpc
 
 The following code registers a service called "Hello World" with the ID "hello-world" and a function called `hello()`. The function takes a single argument, `name`, and prints "Hello" followed by the name. The function also returns a string containing "Hello" followed by the name.
 
+**Important: Connection Cleanup**
+
+When connecting to a Hypha server, it's important to properly clean up the connection when done. We recommend using the `async with` context manager pattern which automatically handles connection cleanup:
+
+```python
+async with connect_to_server({"server_url": server_url}) as server:
+    # Your code here
+    pass
+# Connection is automatically closed here
+```
+
+Alternatively, you can manually call `await server.disconnect()` when finished with the connection.
+
 We provide three versions of the code: an asynchronous version for native CPython or Pyodide-based Python in the browser (without thread support), a synchronous version for native Python with thread support (more details about the [synchronous wrapper](/hypha-rpc?id=synchronous-wrapper)), and a JavaScript version for web browsers:
 
 <!-- tabs:start -->
@@ -193,29 +206,28 @@ import asyncio
 from hypha_rpc import connect_to_server
 
 async def start_server(server_url):
-    server = await connect_to_server({"server_url": server_url})
-    
-    def hello(name):
-        print("Hello " + name)
-        return "Hello " + name
+    async with connect_to_server({"server_url": server_url}) as server:
+        def hello(name):
+            print("Hello " + name)
+            return "Hello " + name
 
-    svc = await server.register_service({
-        "name": "Hello World",
-        "id": "hello-world",
-        "config": {
-            "visibility": "public"
-        },
-        "hello": hello
-    })
-    
-    print(f"Hello world service registered at workspace: {server.config.workspace}, id: {svc.id}")
+        svc = await server.register_service({
+            "name": "Hello World",
+            "id": "hello-world",
+            "config": {
+                "visibility": "public"
+            },
+            "hello": hello
+        })
+        
+        print(f"Hello world service registered at workspace: {server.config.workspace}, id: {svc.id}")
 
-    print(f'You can use this service using the service id: {svc.id}')
+        print(f'You can use this service using the service id: {svc.id}')
 
-    print(f"You can also test the service via the HTTP proxy: {server_url}/{server.config.workspace}/services/{svc.id.split('/')[1]}/hello?name=John")
+        print(f"You can also test the service via the HTTP proxy: {server_url}/{server.config.workspace}/services/{svc.id.split('/')[1]}/hello?name=John")
 
-    # Keep the server running
-    await server.serve()
+        # Keep the server running
+        await server.serve()
 
 if __name__ == "__main__":
     server_url = "http://localhost:9527"
@@ -228,26 +240,25 @@ if __name__ == "__main__":
 from hypha_rpc.sync import connect_to_server
 
 def start_server(server_url):
-    server = connect_to_server({"server_url": server_url})
-    
-    def hello(name):
-        print("Hello " + name)
-        return "Hello " + name
+    with connect_to_server({"server_url": server_url}) as server:
+        def hello(name):
+            print("Hello " + name)
+            return "Hello " + name
 
-    svc = server.register_service({
-        "name": "Hello World",
-        "id": "hello-world",
-        "config": {
-            "visibility": "public"
-        },
-        "hello": hello
-    })
-    
-    print(f"Hello world service registered at workspace: {server.config.workspace}, id: {svc.id}")
+        svc = server.register_service({
+            "name": "Hello World",
+            "id": "hello-world",
+            "config": {
+                "visibility": "public"
+            },
+            "hello": hello
+        })
+        
+        print(f"Hello world service registered at workspace: {server.config.workspace}, id: {svc.id}")
 
-    print(f'You can use this service using the service id: {svc.id}')
+        print(f'You can use this service using the service id: {svc.id}')
 
-    print(f"You can also test the service via the HTTP proxy: {server_url}/{server.config.workspace}/services/{svc.id.split('/')[1]}/hello?name=John")
+        print(f"You can also test the service via the HTTP proxy: {server_url}/{server.config.workspace}/services/{svc.id.split('/')[1]}/hello?name=John")
 
 if __name__ == "__main__":
     server_url = "http://localhost:9527"
@@ -347,13 +358,13 @@ import asyncio
 from hypha_rpc import connect_to_server
 
 async def main():
-    server = await connect_to_server({"server_url": "http://localhost:9527"})
+    async with connect_to_server({"server_url": "http://localhost:9527"}) as server:
+        # Get an existing service
+        # NOTE: You need to replace the service id with the actual id you obtained when registering the service
+        svc = await server.get_service("ws-user-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
+        ret = await svc.hello("John")
+        print(ret)
 
-    # Get an existing service
-    # NOTE: You need to replace the service id with the actual id you obtained when registering the service
-    svc = await server.get_service("ws-user-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
-    ret = await svc.hello("John")
-    print(ret)
 if __name__ == "__main__":
     asyncio.run(main())
 ```
@@ -361,17 +372,15 @@ if __name__ == "__main__":
 #### ** Synchronous Client **
 
 ```python
-import asyncio
 from hypha_rpc.sync import connect_to_server
 
 def main():
-    server = connect_to_server({"server_url": "http://localhost:9527"})
-
-    # Get an existing service
-    # NOTE: You need to replace the service id with the actual id you obtained when registering the service
-    svc = server.get_service("ws-user-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
-    ret = svc.hello("John")
-    print(ret)
+    with connect_to_server({"server_url": "http://localhost:9527"}) as server:
+        # Get an existing service
+        # NOTE: You need to replace the service id with the actual id you obtained when registering the service
+        svc = server.get_service("ws-user-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
+        ret = svc.hello("John")
+        print(ret)
 
 if __name__ == "__main__":
     main()
@@ -408,6 +417,7 @@ async function main(){
     const svc = await server.getService("ws-user-scintillating-lawyer-94336986/YLNzuQvQHVqMAyDzmEpFgF:hello-world")
     const ret = await svc.hello("John")
     console.log(ret)
+    server.disconnect()
 }
 ```
 
@@ -441,8 +451,9 @@ token = await login({"server_url": "https://ai.imjoy.io"})
 # The user needs to open the URL in a browser and log in
 # Once the user logs in, the login function will return
 # with the token for connecting to the server
-server = await connect_to_server({"server_url": "https://ai.imjoy.io", "token": token})
-# ...use the server api...
+async with connect_to_server({"server_url": "https://ai.imjoy.io", "token": token}) as server:
+    # ...use the server api...
+    pass
 ```
 
 #### ** Synchronous Client **
@@ -451,9 +462,9 @@ server = await connect_to_server({"server_url": "https://ai.imjoy.io", "token": 
 from hypha_rpc.sync import login, connect_to_server
 
 token = login({"server_url": "https://ai.imjoy.io"})
-server = connect_to_server({"server_url": "https://ai.imjoy.io", "token": token})
-
-# ...use the server api...
+with connect_to_server({"server_url": "https://ai.imjoy.io", "token": token}) as server:
+    # ...use the server api...
+    pass
 ```
 <!-- tabs:end -->
 
@@ -463,6 +474,7 @@ async function main(){
     const token = await hyphaWebsocketClient.login({"server_url": "http://localhost:9527"})
     const server = await hyphaWebsocketClient.connectToServer({"server_url": "http://localhost:9527", "token": token})
     // ... use the server...
+    server.disconnect()
 }
 ```
 
@@ -487,7 +499,9 @@ token = await login(
 If a token is generated for a specific workspace, when calling `connect_to_server`, you need to specify the same workspace as well:
 
 ```python
-server = await connect_to_server({"server_url": "https://ai.imjoy.io", "token": token, "workspace": "my-workspace"})
+async with connect_to_server({"server_url": "https://ai.imjoy.io", "token": token, "workspace": "my-workspace"}) as server:
+    # ...use the server api...
+    pass
 ```
 
 The `login()` function also supports other additional arguments:
@@ -610,24 +624,23 @@ from hypha_rpc import connect_to_server
 
 async def main():
     # Connect with a token that has read_write permission
-    server = await connect_to_server({
+    async with connect_to_server({
         "server_url": "https://ai.imjoy.io",
         "token": "your-token-here"
-    })
-    
-    # Set environment variables
-    await server.set_env("DATABASE_URL", "postgres://localhost:5432/mydb")
-    await server.set_env("API_KEY", "your-secret-key")
-    # Remove an environment variable
-    await server.set_env("API_KEY", None)
-    
-    # Get a specific environment variable
-    db_url = await server.get_env("DATABASE_URL")
-    print(f"Database URL: {db_url}")
-    
-    # Get all environment variables
-    all_vars = await server.get_env()
-    print(f"All variables: {all_vars}")
+    }) as server:
+        # Set environment variables
+        await server.set_env("DATABASE_URL", "postgres://localhost:5432/mydb")
+        await server.set_env("API_KEY", "your-secret-key")
+        # Remove an environment variable
+        await server.set_env("API_KEY", None)
+        
+        # Get a specific environment variable
+        db_url = await server.get_env("DATABASE_URL")
+        print(f"Database URL: {db_url}")
+        
+        # Get all environment variables
+        all_vars = await server.get_env()
+        print(f"All variables: {all_vars}")
 
 if __name__ == "__main__":
     import asyncio
@@ -672,33 +685,32 @@ We create a convenient shortcut to register probes for monitoring services. Here
 from hypha_rpc import connect_to_server
 
 async def start_server(server_url):
-    server = await connect_to_server({"server_url": server_url})
+    async with connect_to_server({"server_url": server_url}) as server:
+        # Assuming you have some services registered already
+        # And you want to monitor the service status
 
-    # Assuming you have some services registered already
-    # And you want to monitor the service status
+        def check_readiness():
+            # Check if the service is ready
+            # Replace this with your own readiness check
+            return {"status": "ok"}
+        
+        def check_liveness():
+            # Check if the service is alive
+            # Replace this with your own liveness check
+            return {"status": "ok"}
 
-    def check_readiness():
-        # Check if the service is ready
-        # Replace this with your own readiness check
-        return {"status": "ok"}
-    
-    def check_liveness():
-        # Check if the service is alive
-        # Replace this with your own liveness check
-        return {"status": "ok"}
+        # Register probes for the service
+        await server.register_probes({
+            "readiness": check_readiness,
+            "liveness": check_liveness,
+        })
 
-    # Register probes for the service
-    await server.register_probes({
-        "readiness": check_readiness,
-        "liveness": check_liveness,
-    })
+        # This will register probes service where you can accessed via hypha or the HTTP proxy
+        print(f"Probes registered at workspace: {server.config.workspace}")
+        print(f"Test it with the HTTP proxy: {server_url}/{server.config.workspace}/services/probes/readiness")
 
-    # This will register probes service where you can accessed via hypha or the HTTP proxy
-    print(f"Probes registered at workspace: {server.config.workspace}")
-    print(f"Test it with the HTTP proxy: {server_url}/{server.config.workspace}/services/probes/readiness")
-
-    # Keep the server running
-    await server.serve()
+        # Keep the server running forever
+        await server.serve()
 
 if __name__ == "__main__":
     server_url = "https://my-hypha-server.org"
@@ -747,48 +759,47 @@ An application manifest defines the configuration and metadata for a group of re
 from hypha_rpc import connect_to_server
 
 async def create_application(server_url, token):
-    server = await connect_to_server({
+    async with connect_to_server({
         "server_url": server_url,
         "token": token
-    })
-    
-    # Get the artifact manager
-    artifact_manager = await server.get_service("public/artifact-manager")
-    
-    # Create an application manifest
-    app_manifest = {
-        "name": "my-distributed-app",
-        "description": "A distributed application with multiple service instances",
-        "type": "application",
-        "service_selection_mode": "random",  # How to select between multiple instances
-        "services": [
-            {
-                "id": "worker-service",
-                "name": "Worker Service",
-                "type": "compute",
-                "description": "A compute worker service"
-            },
-            {
-                "id": "storage-service", 
-                "name": "Storage Service",
-                "type": "storage",
-                "description": "A storage service"
-            }
-        ]
-    }
-    
-    # Create the application artifact
-    app_artifact = await artifact_manager.create(
-        type="application",
-        manifest=app_manifest,
-        alias="my-distributed-app"
-    )
-    
-    # Commit the artifact to make it available
-    await artifact_manager.commit(artifact_id=app_artifact.id)
-    
-    print(f"Application created with ID: {app_artifact.id}")
-    return app_artifact
+    }) as server:
+        # Get the artifact manager
+        artifact_manager = await server.get_service("public/artifact-manager")
+        
+        # Create an application manifest
+        app_manifest = {
+            "name": "my-distributed-app",
+            "description": "A distributed application with multiple service instances",
+            "type": "application",
+            "service_selection_mode": "random",  # How to select between multiple instances
+            "services": [
+                {
+                    "id": "worker-service",
+                    "name": "Worker Service",
+                    "type": "compute",
+                    "description": "A compute worker service"
+                },
+                {
+                    "id": "storage-service", 
+                    "name": "Storage Service",
+                    "type": "storage",
+                    "description": "A storage service"
+                }
+            ]
+        }
+        
+        # Create the application artifact
+        app_artifact = await artifact_manager.create(
+            type="application",
+            manifest=app_manifest,
+            alias="my-distributed-app"
+        )
+        
+        # Commit the artifact to make it available
+        await artifact_manager.commit(artifact_id=app_artifact.id)
+        
+        print(f"Application created with ID: {app_artifact.id}")
+        return app_artifact
 
 if __name__ == "__main__":
     import asyncio
@@ -860,37 +871,36 @@ Once you have created an application manifest, you can register services with th
 from hypha_rpc import connect_to_server
 
 async def register_worker_service(server_url, token, app_id):
-    server = await connect_to_server({
+    async with connect_to_server({
         "server_url": server_url,
         "token": token
-    })
-    
-    def process_task(task_data):
-        # Process the task
-        print(f"Processing task: {task_data}")
-        return f"Task completed: {task_data}"
-    
-    def get_status():
-        return {"status": "ready", "load": 0.5}
-    
-    # Register service with app_id
-    service_info = await server.register_service({
-        "id": "worker-service-instance-1",
-        "name": "Worker Service Instance 1",
-        "type": "compute",
-        "app_id": app_id,  # Associate with the application
-        "config": {
-            "visibility": "public"
-        },
-        "process_task": process_task,
-        "get_status": get_status
-    })
-    
-    print(f"Service registered: {service_info.id}")
-    print(f"Associated with app: {app_id}")
-    
-    # Keep the service running
-    await server.serve()
+    }) as server:
+        def process_task(task_data):
+            # Process the task
+            print(f"Processing task: {task_data}")
+            return f"Task completed: {task_data}"
+        
+        def get_status():
+            return {"status": "ready", "load": 0.5}
+        
+        # Register service with app_id
+        service_info = await server.register_service({
+            "id": "worker-service-instance-1",
+            "name": "Worker Service Instance 1",
+            "type": "compute",
+            "app_id": app_id,  # Associate with the application
+            "config": {
+                "visibility": "public"
+            },
+            "process_task": process_task,
+            "get_status": get_status
+        })
+        
+        print(f"Service registered: {service_info.id}")
+        print(f"Associated with app: {app_id}")
+        
+        # Keep the service running
+        await server.serve()
 
 if __name__ == "__main__":
     import asyncio
@@ -960,23 +970,22 @@ When you have multiple service instances registered with the same `app_id`, you 
 from hypha_rpc import connect_to_server
 
 async def use_distributed_service(server_url, token):
-    server = await connect_to_server({
+    async with connect_to_server({
         "server_url": server_url,
         "token": token
-    })
-    
-    # Access service by name with app_id
-    # Hypha will use the service_selection_mode from the application manifest
-    worker_service = await server.get_service("worker-service@my-distributed-app")
-    
-    # Call the service - Hypha will automatically select an instance
-    # based on the app's service_selection_mode (e.g., "random")
-    result = await worker_service.process_task("important-computation")
-    print(f"Result: {result}")
-    
-    # Check status of the selected instance
-    status = await worker_service.get_status()
-    print(f"Service status: {status}")
+    }) as server:
+        # Access service by name with app_id
+        # Hypha will use the service_selection_mode from the application manifest
+        worker_service = await server.get_service("worker-service@my-distributed-app")
+        
+        # Call the service - Hypha will automatically select an instance
+        # based on the app's service_selection_mode (e.g., "random")
+        result = await worker_service.process_task("important-computation")
+        print(f"Result: {result}")
+        
+        # Check status of the selected instance
+        status = await worker_service.get_status()
+        print(f"Service status: {status}")
 
 if __name__ == "__main__":
     import asyncio
@@ -1065,6 +1074,9 @@ async def hypha_startup(server):
             "test": test,
         }
     )
+
+    # Note: In startup functions, the server connection is managed by Hypha,
+    # so you don't need to use async with or call disconnect()
 ```
 
 Note that the startup function file will be loaded as a Python module. You can also specify an installed Python module by using the format `my_pip_module:hypha_startup`. In both cases, make sure to specify the entrypoint function name (`hypha_startup` in this case). The function should accept a single positional argument, `server`, which represents the server object used in the client script.

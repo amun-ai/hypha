@@ -1796,8 +1796,23 @@ async def test_autoscaling_apps(fastapi_server, test_user_token):
 
     # Create a test app that simulates load by responding to requests
     autoscaling_app_source = """
-    let requestCount = 0;
-    let startTime = Date.now();
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Autoscaling Test App</title>
+</head>
+<body>
+<script id="worker" type="javascript/worker">
+let requestCount = 0;
+let startTime = Date.now();
+
+self.onmessage = async function(e) {
+    const hyphaWebsocketClient = await import(e.data.server_url + '/assets/hypha-rpc-websocket.mjs');
+    const config = e.data;
+    
+    const api = await hyphaWebsocketClient.connectToServer(config);
     
     api.export({
         async setup() {
@@ -1826,6 +1841,24 @@ async def test_autoscaling_apps(fastapi_server, test_user_token):
             return "Heavy work completed";
         }
     });
+}
+</script>
+<script>
+window.onload = function() {
+    const blob = new Blob([
+        document.querySelector('#worker').textContent
+    ], { type: "text/javascript" })
+    const worker = new Worker(window.URL.createObjectURL(blob), {type: "module"});
+    worker.onerror = console.error
+    worker.onmessage = console.log
+    const config = {}
+    const cfg = Object.assign(config, Object.fromEntries(new URLSearchParams(window.location.search)));
+    if(!cfg.server_url) cfg.server_url = window.location.origin;
+    worker.postMessage(cfg); 
+}
+</script>
+</body>
+</html>
     """
 
     # Configure autoscaling with lower thresholds for testing

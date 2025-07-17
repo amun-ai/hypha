@@ -307,6 +307,7 @@ def fastapi_server_fixture(minio_server, postgres_server):
             "--enable-server-apps",
             "--enable-s3",
             "--enable-a2a",
+            "--enable-mcp",
             f"--database-uri={POSTGRES_URI}",
             "--migrate-database=head",
             "--reset-redis",
@@ -324,6 +325,7 @@ def fastapi_server_fixture(minio_server, postgres_server):
             "hypha.utils:_example_hypha_startup",
             "./tests/example-startup-function.py:hypha_startup",
             "hypha.runner.python_eval:hypha_startup",
+            "hypha.runner.mcp_client:hypha_startup",
         ],
         env=test_env,
     ) as proc:
