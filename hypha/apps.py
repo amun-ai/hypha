@@ -1400,7 +1400,7 @@ class ServerAppController:
             raise Exception(f"Server app instance not found: {session_id}")
 
     @schema_method
-    async def logs(
+    async def get_logs(
         self,
         session_id: str = Field(
             ...,
