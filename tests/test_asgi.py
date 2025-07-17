@@ -157,6 +157,9 @@ async def test_functions(fastapi_server, test_user_token):
 
     service = await api.get_service(f"{config.workspace}/hello-functions")
     assert "hello-world" in service
+    
+    # Commit the app so it appears in the apps list
+    await controller.commit_app(config.app_id)
 
     response = requests.get(
         f"{SERVER_URL}/{workspace}/apps",
