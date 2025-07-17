@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import asyncio
+import time
 
 import pytest
 import requests
@@ -52,14 +53,18 @@ async def test_metrics(fastapi_server, test_user_token):
     initial_active_workspaces = get_metric_value("active_workspaces", {})
     assert initial_active_workspaces is not None
 
+    # Create a unique workspace ID using timestamp to ensure it's always new
+    workspace_id = f"my-test-workspace-metrics-{int(time.time() * 1000)}"
+    
     # Create a new workspace
     await api.create_workspace(
         {
-            "name": "my-test-workspace-metrics",
+            "id": workspace_id,
+            "name": workspace_id,
             "description": "This is a test workspace",
             "owners": ["user1@imjoy.io", "user2@imjoy.io"],
         },
-        overwrite=True,
+        overwrite=False,  # Changed to False since we're using unique IDs
     )
     await asyncio.sleep(1)
 
@@ -71,7 +76,7 @@ async def test_metrics(fastapi_server, test_user_token):
 
     # Check if a service was added to the workspace
     active_services = get_metric_value(
-        "active_services", {"workspace": "my-test-workspace-metrics"}
+        "active_services", {"workspace": workspace_id}
     )
     assert active_services is None, "Expected no active services in the new workspace."
 
