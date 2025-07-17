@@ -17,17 +17,21 @@ With Hypha's A2A service support, you can:
 - **A2A SDK**: Install the optional A2A SDK dependency: `pip install a2a-sdk`
 - **Python 3.9+**: The A2A implementation requires Python 3.9 or higher
 
-## Installation and Setup
+## A2A Support in Hypha
 
-### Installing A2A SDK
+A2A support is now built into Hypha using a dedicated middleware-based approach. No additional server configuration is required - A2A services are automatically detected and handled by the `A2ARoutingMiddleware`.
+
+To use it, install the A2A SDK:
 
 ```bash
 pip install a2a-sdk
 ```
 
-### A2A Support in Hypha
+and start Hypha server with `--enable-a2a`:
 
-A2A support is now built into Hypha using a dedicated middleware-based approach. No additional server configuration is required - A2A services are automatically detected and handled by the `A2ARoutingMiddleware`.
+```bash
+python -m hypha.server --enable-a2a
+```
 
 When you register a service with `type="a2a"`, the middleware:
 1. Routes requests to the dedicated A2A URL namespace (`/{workspace}/a2a/{service_id}/`)

@@ -229,38 +229,35 @@ class MCPClientRunner:
         # Collect tools
         tools = []
         try:
-            logger.debug(f"Listing tools from MCP server {server_name}")
             tools_result = await mcp_session.list_tools()
             if tools_result and hasattr(tools_result, 'tools'):
                 tools = await self._create_tool_wrappers(session_info, server_name, tools_result.tools)
                 logger.info(f"Found {len(tools)} tools from {server_name}")
         except Exception as e:
-            logger.error(f"Failed to get tools from MCP server {server_name}: {e}", exc_info=True)
-            session_info["logs"]["error"].append(f"Failed to get tools from {server_name}: {e}")
+            logger.debug(f"No tools found in MCP server {server_name}: {e}", exc_info=True)
+            session_info["logs"]["log"].append(f"No tools found in {server_name}: {e}")
 
-        # Collect resources
+        # Collect resources  
         resources = []
         try:
-            logger.debug(f"Listing resources from MCP server {server_name}")
             resources_result = await mcp_session.list_resources()
             if resources_result and hasattr(resources_result, 'resources'):
                 resources = await self._create_resource_wrappers(session_info, server_name, resources_result.resources)
                 logger.info(f"Found {len(resources)} resources from {server_name}")
         except Exception as e:
-            logger.error(f"Failed to get resources from MCP server {server_name}: {e}", exc_info=True)
-            session_info["logs"]["error"].append(f"Failed to get resources from {server_name}: {e}")
+            logger.debug(f"No resources found in MCP server {server_name}: {e}", exc_info=True)
+            session_info["logs"]["log"].append(f"No resources found in {server_name}: {e}")
 
         # Collect prompts
         prompts = []
         try:
-            logger.debug(f"Listing prompts from MCP server {server_name}")
             prompts_result = await mcp_session.list_prompts()
             if prompts_result and hasattr(prompts_result, 'prompts'):
                 prompts = await self._create_prompt_wrappers(session_info, server_name, prompts_result.prompts)
                 logger.info(f"Found {len(prompts)} prompts from {server_name}")
         except Exception as e:
-            logger.error(f"Failed to get prompts from MCP server {server_name}: {e}", exc_info=True)
-            session_info["logs"]["error"].append(f"Failed to get prompts from {server_name}: {e}")
+            logger.debug(f"No prompts found in MCP server {server_name}: {e}", exc_info=True)
+            session_info["logs"]["log"].append(f"No prompts found in {server_name}: {e}")
 
         # Register the unified MCP service
         await self._register_unified_mcp_service(session_info, server_name, tools, resources, prompts)
@@ -320,6 +317,7 @@ class MCPClientRunner:
         # Set function name and schema
         tool_wrapper.__name__ = tool_name
         tool_wrapper.__schema__ = {
+            "name": tool_name,
             "description": tool_description,
             "parameters": tool_schema
         }
@@ -366,6 +364,7 @@ class MCPClientRunner:
         # Set function name and schema
         resource_read.__name__ = f"read_{resource_name.replace(' ', '_').replace('-', '_')}"
         resource_read.__schema__ = {
+            "name": resource_name,
             "description": f"Read {resource_description}",
             "parameters": {
                 "type": "object",
@@ -453,6 +452,7 @@ class MCPClientRunner:
         # Set function name and schema
         prompt_read.__name__ = f"read_{prompt_name.replace(' ', '_').replace('-', '_')}"
         prompt_read.__schema__ = {
+            "name": prompt_name,
             "description": prompt_description,
             "parameters": parameters
         }
@@ -572,6 +572,9 @@ class MCPClientRunner:
             
             session_info["logs"]["log"].append(f"Registered unified MCP service: {server_name}")
             session_info["logs"]["log"].append(f"  - Tools: {len(tools)}, Resources: {len(resources)}, Prompts: {len(prompts)}")
+            await session_info["_internal"]["user_api"].export({
+                "setup": lambda: logger.info(f"MCP server {server_name} setup complete")
+            })
 
         except Exception as e:
             logger.error(f"Failed to register unified MCP service for {server_name}: {e}", exc_info=True)

@@ -9,7 +9,13 @@ The MCP implementation in Hypha consists of two main components:
 1. **MCP Server** (`hypha/mcp.py`): Exposes Hypha services as MCP endpoints
 2. **MCP Client Proxy** (`hypha/workers/mcp_proxy.py`): Connects to external MCP servers and integrates them as Hypha services
 
-## Hypha as MCP Server (hypha2mcp)
+To enable MCP support, start Hypha server with `--enable-mcp`:
+
+```bash
+python -m hypha.server --enable-mcp
+```
+
+## Hypha Service as MCP Server
 
 Hypha can act as an MCP server, exposing its services to external MCP clients like Cursor, Claude Desktop, and other AI tools.
 
@@ -248,7 +254,7 @@ if __name__ == "__main__":
 
 ### MCP HTTP Endpoints
 
-When MCP is enabled (`--enable-mcp`), Hypha exposes MCP endpoints at:
+When MCP is enabled (starting Hypha server with `--enable-mcp`), Hypha exposes MCP endpoints at:
 
 ```
 /{workspace}/mcp/{service_id}/mcp        # Streamable HTTP transport
@@ -423,7 +429,7 @@ if __name__ == "__main__":
     asyncio.run(use_hypha_mcp())
 ```
 
-## MCP Client Proxy (mcp2hypha)
+## MCP Client Proxy
 
 The MCP Client Proxy allows Hypha to connect to external MCP servers and expose their tools, resources, and prompts as unified Hypha services.
 

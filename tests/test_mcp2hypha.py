@@ -115,7 +115,7 @@ async def test_mcp_streamable_http_round_trip_service_consistency(fastapi_server
     print("✓ Original service has tools, resources, and prompts organized correctly")
 
     # Step 3: Get the MCP endpoint URL for this service
-    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{original_service_info['id'].split('/')[-1]}/"
+    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{original_service_info['id'].split('/')[-1]}/mcp"
     print(f"✓ MCP Endpoint URL: {mcp_endpoint_url}")
 
     # Step 4: Create MCP server configuration with streamable-http transport
@@ -305,7 +305,7 @@ async def test_mcp_sse_round_trip_service_consistency(fastapi_server, test_user_
     print("✓ Original SSE service has tools, resources, and prompts organized correctly")
 
     # Step 3: Get the MCP endpoint URL for this service
-    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{original_service_info['id'].split('/')[-1]}/"
+    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{original_service_info['id'].split('/')[-1]}/mcp"
     print(f"✓ MCP Endpoint URL: {mcp_endpoint_url}")
 
     # Step 4: Create MCP server configuration with SSE transport
@@ -456,7 +456,7 @@ async def test_mcp_dual_transport_consistency(fastapi_server, test_user_token):
     print(f"✓ Original dual transport MCP service registered: {original_service_info['id']}")
     
     # Step 2: Get the MCP endpoint URL for this service
-    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{original_service_info['id'].split('/')[-1]}/"
+    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{original_service_info['id'].split('/')[-1]}/mcp"
     print(f"✓ MCP Endpoint URL: {mcp_endpoint_url}")
 
     # Step 3: Create MCP server configuration with BOTH transports
@@ -758,7 +758,7 @@ async def test_real_deepwiki_mcp_server_validation(fastapi_server, test_user_tok
     # Construct the MCP endpoint URL
     session_id = deepwiki_app["id"]
     service_name = "deepwiki"
-    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{session_id}:{service_name}/"
+    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{session_id}:{service_name}/mcp"
     
     # Test the MCP endpoint with HTTP requests
     async with httpx.AsyncClient(timeout=30.0) as client:

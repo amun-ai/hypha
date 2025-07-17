@@ -817,7 +817,28 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
             logger.debug(f"Parsed JSON-RPC request: {request_data}")
             
             # Handle JSON-RPC request
-            if request_data.get("method") == "tools/list":
+            if request_data.get("method") == "initialize":
+                logger.debug(f"Received initialize request: {request_data}")
+                # Return server capabilities and information
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_data.get("id"),
+                    "result": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {
+                            "tools": {},
+                            "resources": {},
+                            "prompts": {},
+                            "logging": {}
+                        },
+                        "serverInfo": {
+                            "name": "Hypha MCP Server",
+                            "version": "1.0.0"
+                        }
+                    }
+                }
+                
+            elif request_data.get("method") == "tools/list":
                 logger.debug(f"Received tools/list request: {request_data}")
                 # Check if service has list_tools function OR if MCP server has tools configured
                 has_list_tools = "list_tools" in service

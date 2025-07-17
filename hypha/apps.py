@@ -1275,7 +1275,7 @@ class ServerAppController:
             event_future = asyncio.Future()
             
             def service_added(info: dict):
-                logger.info(f"Service added: {info}")
+                logger.info(f"Service added: {info['id']}")
                 if info["id"].startswith(full_client_id + ":"):
                     sinfo = ServiceInfo.model_validate(info)
                     collected_services.append(sinfo)
