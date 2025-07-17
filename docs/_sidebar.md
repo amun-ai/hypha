@@ -11,6 +11,7 @@
  * [Operate Files](/operate-files)
  * [Zip Streaming](/zip-streaming)
  * [Artifact Manager](/artifact-manager)
- * [Agent2Agent](/agent2agent)
+ * [Agent2Agent](/a2a)
+ * [Model Context Protocol](/mcp)
  * [Vector Search](/vector-search)
  * [Development](/development)

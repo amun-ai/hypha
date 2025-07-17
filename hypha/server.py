@@ -138,6 +138,7 @@ def start_builtin_services(
         workspace_bucket=args.workspace_bucket,
         base_path=args.base_path,
         enable_a2a=args.enable_a2a,
+        enable_mcp=args.enable_mcp,
     )
 
 
@@ -561,6 +562,11 @@ def get_argparser(add_help=True):
         "--enable-a2a",
         action="store_true",
         help="enable A2A (Agent-to-Agent) protocol support",
+    )
+    parser.add_argument(
+        "--enable-mcp",
+        action="store_true",
+        help="enable MCP (Model Context Protocol) support",
     )
     parser.add_argument(
         "--interactive",

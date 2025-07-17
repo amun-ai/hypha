@@ -307,6 +307,7 @@ def fastapi_server_fixture(minio_server, postgres_server):
             "--enable-server-apps",
             "--enable-s3",
             "--enable-a2a",
+            "--enable-mcp",
             f"--database-uri={POSTGRES_URI}",
             "--migrate-database=head",
             "--reset-redis",

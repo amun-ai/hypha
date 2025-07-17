@@ -405,6 +405,7 @@ class HTTPProxy:
         workspace_bucket="hypha-workspaces",
         base_path="/",
         enable_a2a=False,
+        enable_mcp=False,
     ) -> None:
         """Initialize the http proxy."""
         # pylint: disable=broad-except
@@ -775,6 +776,28 @@ class HTTPProxy:
                 raise
         else:
             logger.info("A2A middleware not enabled (enable_a2a=False)")
+
+        # Add MCP middleware for MCP services if enabled
+        logger.info(f"enable_mcp = {enable_mcp}")
+        if enable_mcp:
+            try:
+                from hypha.mcp import MCPRoutingMiddleware
+
+                logger.info("Adding MCPRoutingMiddleware to the app")
+                app.add_middleware(
+                    MCPRoutingMiddleware,
+                    base_path=base_path,
+                    store=store,
+                )
+                logger.info("MCPRoutingMiddleware added successfully")
+            except ImportError as e:
+                logger.error(f"Failed to import MCPRoutingMiddleware: {e}")
+                raise
+            except Exception as e:
+                logger.error(f"Failed to add MCPRoutingMiddleware: {e}")
+                raise
+        else:
+            logger.info("MCP middleware not enabled (enable_mcp=False)")
 
         @app.get(norm_url("/{workspace}/apps/{service_id}"))
         async def get_app_info(

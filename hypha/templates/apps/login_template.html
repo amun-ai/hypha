@@ -131,23 +131,27 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             try {
-                await window.showUserProfile();
-                if (window.location.search.split('logout=')[1]) {
-                    logout();
+                // Check for logout parameter first
+                const urlParams = new URLSearchParams(window.location.search);
+                if (urlParams.get('logout') === 'true') {
+                    await logout();
+                    return;
                 }
+                
+                await window.showUserProfile();
             } catch (e) {
                 console.log("Not logged in, showing login button.");
             }
             
         });
 
-        const _generateToken = async (workspace, expires_in) =>{
+        const _generateToken = async (workspace, expires_in, accessToken) =>{
             const generate_token_url = "{{ generate_token_url }}";
-            if(!generate_token_url.startswith("http")){
+            if(!generate_token_url.startsWith("http")){
                 throw new Error("Invalid generate token URL");
             }
             // make a post request with {config: {expires_in, workspace}}
-            // add auth barier token to the request
+            // add auth bearer token to the request
             const response = await fetch(generate_token_url, {
                 method: "POST",
                 headers: {
@@ -170,18 +174,28 @@
             const workspace = document.getElementById("workspace").value || "";
             const accessToken = await auth0.getTokenSilently({ audience: AUTH0_AUDIENCE });
             try {
-                const token = await _generateToken(workspace, expires_in);
+                const token = await _generateToken(workspace, expires_in, accessToken);
                 document.getElementById("access-token").innerHTML = token;
                 document.getElementById("info-panel").style.display = "block";
-                document.getElementById("toast").innerHTML = "New access token generated successfully!";
-                document.getElementById("toast").style.display = "block";
+                const toastElement = document.getElementById("toast");
+                toastElement.innerHTML = "New access token generated successfully!";
+                toastElement.className = "toast mt-4 bg-green-100 border-t-4 border-green-500 rounded-b text-green-900 px-4 py-3 shadow-md";
+                toastElement.style.display = "block";
                 setTimeout(() => {
-                    document.getElementById("toast").style.display = "none";
+                    toastElement.style.display = "none";
                 }, 2000);
             }
             catch(e){
                 console.error(e);
-                document.getElementById("toast").innerHTML = `Failed to generate token. Please try again later. (${e})`;
+                const toastElement = document.getElementById("toast");
+                toastElement.innerHTML = `Failed to generate token. Please try again later. (${e})`;
+                toastElement.className = "toast mt-4 bg-red-100 border-t-4 border-red-500 rounded-b text-red-900 px-4 py-3 shadow-md";
+                toastElement.style.display = "block";
+                setTimeout(() => {
+                    toastElement.style.display = "none";
+                    // Reset back to success styling for next use
+                    toastElement.className = "toast mt-4 bg-green-100 border-t-4 border-green-500 rounded-b text-green-900 px-4 py-3 shadow-md";
+                }, 5000);
             }
         };
 
@@ -325,10 +339,12 @@
             el.select();
             document.execCommand('copy');
             document.body.removeChild(el);
-            document.getElementById("toast").innerHTML = "Access token copied to clipboard!";
-            document.getElementById("toast").style.display = "block";
+            const toastElement = document.getElementById("toast");
+            toastElement.innerHTML = "Access token copied to clipboard!";
+            toastElement.className = "toast mt-4 bg-green-100 border-t-4 border-green-500 rounded-b text-green-900 px-4 py-3 shadow-md";
+            toastElement.style.display = "block";
             setTimeout(() => {
-                document.getElementById("toast").style.display = "none";
+                toastElement.style.display = "none";
             }, 2000);
         };
     </script>
