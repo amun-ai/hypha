@@ -1652,7 +1652,7 @@ class WorkspaceManager:
                 "workspaces", workspace_info.id, workspace_info.model_dump_json()
             )
             if increment_counter:
-                self._increment_workspace_counter(workspace)
+                self._increment_workspace_counter(workspace_info.id)
             return workspace_info
 
         logger.info(f"Workspace {workspace} not found in Redis, trying to load from S3")
@@ -1682,7 +1682,7 @@ class WorkspaceManager:
             task.add_done_callback(background_tasks.discard)
 
             if increment_counter:
-                self._increment_workspace_counter(workspace)
+                self._increment_workspace_counter(workspace_info.id)
 
             await self._s3_controller.setup_workspace(workspace_info)
             await self._event_bus.emit("workspace_loaded", workspace_info.model_dump())
