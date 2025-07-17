@@ -508,7 +508,7 @@ class RedisRPCConnection:
         self._handle_message = None
         self.manager_id = manager_id
         
-        # Register this client with the event bus for partitioning
+        # Register this client with the event bus
         if hasattr(event_bus, 'add_local_client'):
             event_bus.add_local_client(f"{workspace}/{client_id}")
 
@@ -690,6 +690,11 @@ class RedisRPCConnection:
         logger.debug(
             f"Redis Connection Disconnected: {self._workspace}/{self._client_id}"
         )
+        
+        # Unregister this client from the event bus
+        if hasattr(self._event_bus, 'remove_local_client'):
+            self._event_bus.remove_local_client(f"{self._workspace}/{self._client_id}")
+        
         if self._handle_disconnected:
             await self._handle_disconnected(reason)
 
@@ -720,11 +725,11 @@ class RedisEventBus:
         "redis_pubsub_latency_seconds", "Redis pubsub latency in seconds"
     )
 
-    def __init__(self, redis, server_id=None, enable_partitioning=False) -> None:
+    def __init__(self, redis, server_id=None) -> None:
         """Initialize the event bus."""
         self._redis = redis
         self._server_id = server_id
-        self._enable_partitioning = enable_partitioning
+        self._enable_partitioning = redis is not None  # Enable partitioning only when Redis is available
         self._local_clients = set()  # Track clients connected to this server
         self._handle_connected = None
         self._stop = False
@@ -743,14 +748,14 @@ class RedisEventBus:
 
     def add_local_client(self, client_id: str):
         """Add a client to the local client set for partitioning."""
-        if self._enable_partitioning:
-            self._local_clients.add(client_id)
+        self._local_clients.add(client_id)
+        if self._server_id:
             logger.info(f"Added local client {client_id} to server {self._server_id}")
 
     def remove_local_client(self, client_id: str):
         """Remove a client from the local client set for partitioning."""
-        if self._enable_partitioning:
-            self._local_clients.discard(client_id)
+        self._local_clients.discard(client_id)
+        if self._server_id:
             logger.info(f"Removed local client {client_id} from server {self._server_id}")
 
     def get_subscription_pattern(self):
@@ -759,7 +764,7 @@ class RedisEventBus:
             # Subscribe to server-specific events and health checks
             return f"event:*:{self._server_id}"
         else:
-            # Legacy behavior - subscribe to all events
+            # Single node mode - subscribe to all events
             return "event:*"
 
     async def init(self):
@@ -768,12 +773,16 @@ class RedisEventBus:
         self._ready = loop.create_future()
         self._loop = loop
 
-        # Start the Redis subscription task
-        self._subscribe_task = loop.create_task(self._subscribe_redis())
-        self._health_check_task = loop.create_task(self._health_check())
+        if self._redis is not None:
+            # Start the Redis subscription task
+            self._subscribe_task = loop.create_task(self._subscribe_redis())
+            self._health_check_task = loop.create_task(self._health_check())
 
-        # Wait for readiness signal
-        await self._ready
+            # Wait for readiness signal
+            await self._ready
+        else:
+            # Single node mode - no Redis needed
+            self._ready.set_result(True)
 
     def on(self, event_name, func):
         """Register a callback for an event from Redis."""
@@ -884,10 +893,12 @@ class RedisEventBus:
                 # Non-client messages are broadcast
                 channel_name += ":broadcast"
         
-        global_task = self._loop.create_task(
-            self._redis.publish(channel_name, data)
-        )
-        tasks.append(global_task)
+        # Only publish to Redis if it's available (not single node mode)
+        if self._redis is not None:
+            global_task = self._loop.create_task(
+                self._redis.publish(channel_name, data)
+            )
+            tasks.append(global_task)
 
         if tasks:
             return asyncio.gather(*tasks)
@@ -900,30 +911,31 @@ class RedisEventBus:
         """Stop the event bus."""
         self._stop = True
 
-        # Cancel tasks first
-        if self._subscribe_task:
-            self._subscribe_task.cancel()
-        if self._health_check_task:
-            self._health_check_task.cancel()
+        if self._redis is not None:
+            # Cancel tasks first
+            if self._subscribe_task:
+                self._subscribe_task.cancel()
+            if self._health_check_task:
+                self._health_check_task.cancel()
 
-        # Clean up pubsub connections
-        if self._health_check_pubsub:
+            # Clean up pubsub connections
+            if self._health_check_pubsub:
+                try:
+                    await self._health_check_pubsub.unsubscribe()
+                    await self._health_check_pubsub.close()
+                    self._health_check_pubsub = None
+                except Exception as e:
+                    logger.warning(
+                        f"Error cleaning up health check pubsub during stop: {str(e)}"
+                    )
+
+            # Wait for tasks to complete
             try:
-                await self._health_check_pubsub.unsubscribe()
-                await self._health_check_pubsub.close()
-                self._health_check_pubsub = None
-            except Exception as e:
-                logger.warning(
-                    f"Error cleaning up health check pubsub during stop: {str(e)}"
+                await asyncio.gather(
+                    self._subscribe_task, self._health_check_task, return_exceptions=True
                 )
-
-        # Wait for tasks to complete
-        try:
-            await asyncio.gather(
-                self._subscribe_task, self._health_check_task, return_exceptions=True
-            )
-        except asyncio.CancelledError:
-            pass
+            except asyncio.CancelledError:
+                pass
 
     async def _check_pubsub_health(self):
         """Check if pubsub is working by sending and receiving a test message."""

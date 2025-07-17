@@ -300,7 +300,6 @@ def create_application(args):
             env.get("RECONNECTION_TOKEN_LIFE_TIME", str(2 * 24 * 60 * 60))
         ),
         activity_check_interval=float(env.get("ACTIVITY_CHECK_INTERVAL", str(10))),
-        enable_redis_partitioning=args.enable_redis_partitioning,
     )
     application.state.store = store
 
@@ -416,11 +415,6 @@ def get_argparser(add_help=True):
         "--reset-redis",
         action="store_true",
         help="reset and clear all the data in the redis database",
-    )
-    parser.add_argument(
-        "--enable-redis-partitioning",
-        action="store_true",
-        help="enable Redis event bus partitioning for better performance with multiple server instances",
     )
     parser.add_argument(
         "--public-base-url",

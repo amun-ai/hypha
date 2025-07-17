@@ -16,9 +16,26 @@ from redis.commands.search.field import (
     GeoField,
     VectorField,
 )
-from redis.commands.search.indexDefinition import IndexDefinition, IndexType
-from redis.commands.search.query import Query
-from redis.commands.search.query import Query
+try:
+    from redis.commands.search.indexDefinition import IndexDefinition, IndexType
+    from redis.commands.search.query import Query
+except ImportError:
+    # Fallback for older Redis versions
+    try:
+        from redis.commands.search import IndexDefinition, IndexType
+        from redis.commands.search import Query
+    except ImportError:
+        # If Redis search is not available, create dummy classes
+        class IndexDefinition:
+            def __init__(self, *args, **kwargs):
+                pass
+        
+        class IndexType:
+            HASH = "HASH"
+        
+        class Query:
+            def __init__(self, *args, **kwargs):
+                pass
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
