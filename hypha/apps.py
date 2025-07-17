@@ -317,7 +317,6 @@ class ServerAppController:
         
         # Fallback to public workers if no workspace workers found
         if not selected_svcs:
-            logger.info(f"No workspace workers found for app_type {app_type}, falling back to public workers")
             server = await self.store.get_public_api()
             public_svcs = await server.list_services({"type": "server-app-worker"})
             logger.info(f"Found {len(public_svcs)} server-app-worker services in public workspace: {[svc['id'] for svc in public_svcs]}")
@@ -1995,12 +1994,13 @@ class ServerAppController:
             }
             workers = await self.get_server_app_workers(context=context)
             for runner in workers:
-                try:
-                    await runner.prepare_workspace(workspace_info.id)
-                except Exception as exp:
-                    logger.warning(
-                        f"Worker failed to prepare workspace: {workspace_info.id}, error: {exp}"
-                    )
+                if runner.prepare_workspace:
+                    try:
+                        await runner.prepare_workspace(workspace_info.id)
+                    except Exception as exp:
+                        logger.warning(
+                            f"Worker {runner.id} failed to prepare workspace: {workspace_info.id}, error: {exp}"
+                        )
 
     async def close_workspace(self, workspace_info: WorkspaceInfo):
         """Archive the workspace."""
@@ -2017,12 +2017,13 @@ class ServerAppController:
         if not workers:
             return
         for runner in workers:
-            try:
-                await runner.close_workspace(workspace_info.id)
-            except Exception as exp:
-                logger.warning(
-                    f"Worker failed to close workspace: {workspace_info.id}, error: {exp}"
-                )
+            if runner.close_workspace:
+                try:
+                    await runner.close_workspace(workspace_info.id)
+                except Exception as exp:
+                    logger.warning(
+                        f"Worker failed to close workspace: {workspace_info.id}, error: {exp}"
+                    )
 
     def get_service_api(self) -> Dict[str, Any]:
         """Get a list of service API endpoints."""

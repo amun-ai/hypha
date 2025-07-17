@@ -14,7 +14,7 @@ import yaml
 from hypha_rpc.utils import ObjectProxy
 from hypha_rpc import connect_to_server
 from hypha.runner.browser import BrowserAppRunner
-from hypha.runner.mcp_client import MCPClientRunner
+from hypha.runner.mcp_proxy import MCPClientRunner
 
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
