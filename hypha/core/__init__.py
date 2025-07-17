@@ -1261,7 +1261,6 @@ class KafkaEventBus:
             key_serializer=lambda k: k.encode('utf-8') if isinstance(k, str) else k,
             retry_backoff_ms=100,
             request_timeout_ms=30000,
-            max_block_ms=30000,
         )
         await self._producer.start()
 
@@ -1505,6 +1504,8 @@ class KafkaEventBus:
                     bootstrap_servers=self._kafka_uri,
                     value_serializer=lambda v: v if isinstance(v, bytes) else v.encode('utf-8'),
                     key_serializer=lambda k: k.encode('utf-8') if isinstance(k, str) else k,
+                    retry_backoff_ms=100,
+                    request_timeout_ms=30000,
                 )
                 await self._producer.start()
 
