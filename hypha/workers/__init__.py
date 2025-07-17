@@ -13,13 +13,13 @@ import aiofiles
 import yaml
 from hypha_rpc.utils import ObjectProxy
 from hypha_rpc import connect_to_server
-from hypha.runner.browser import BrowserAppRunner
-from hypha.runner.mcp_proxy import MCPClientRunner
+from hypha.workers.browser import BrowserAppRunner
+from hypha.workers.mcp_proxy import MCPClientRunner
 
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("app-runner")
+logger = logging.getLogger("app-worker")
 logger.setLevel(LOGLEVEL)
 
 
@@ -158,7 +158,7 @@ async def start(args):
 
 
 def start_runner(args):
-    """Start the app runner."""
+    """Start the app worker."""
     loop = asyncio.get_event_loop()
     asyncio.ensure_future(start(args))
     loop.run_forever()

@@ -285,7 +285,7 @@ class ServerAppController:
                     full_svc = await workspace_server.get_service(svc['id'])
                     supported_types = full_svc.get("supported_types", [])
                     if not supported_types:
-                        # If no supported_types info, assume it's a legacy runner supporting default types
+                        # If no supported_types info, assume it's a legacy worker supporting default types
                         if app_type in ["web-python", "web-worker", "window", "iframe"]:
                             filtered_workspace_svcs.append(svc)
                     elif app_type in supported_types:
@@ -334,7 +334,7 @@ class ServerAppController:
                         full_svc = await server.get_service(svc['id'])
                         supported_types = full_svc.get("supported_types", [])
                         if not supported_types:
-                            # If no supported_types info, assume it's a legacy runner supporting default types
+                            # If no supported_types info, assume it's a legacy worker supporting default types
                             if app_type in ["web-python", "web-worker", "window", "iframe"]:
                                 filtered_public_svcs.append(svc)
                                 logger.info(f"Public service {svc['id']} assumed to support app_type {app_type} (legacy)")
@@ -1071,10 +1071,10 @@ class ServerAppController:
         metadata: dict = None,
         context: dict = None,
     ):
-        """Start the app by type using the appropriate runner."""
+        """Start the app by type using the appropriate worker."""
         # Get a random worker that supports this app type
-        runner = await self.get_server_app_workers(app_type, context, random_select=True)
-        if not runner:
+        worker = await self.get_server_app_workers(app_type, context, random_select=True)
+        if not worker:
             raise Exception(f"No server app worker found for type: {app_type}")
         
         # Get entry point from manifest
@@ -1116,8 +1116,8 @@ class ServerAppController:
                 mcp_servers = manifest.config.get("mcpServers", {})
             session_metadata["mcp_servers"] = mcp_servers
         
-        # Start the app using the runner
-        session_data = await runner.start(
+        # Start the app using the worker
+        session_data = await worker.start(
             client_id=client_id,
             app_id=app_id,
             server_url=server_url,
@@ -1134,7 +1134,7 @@ class ServerAppController:
         # Store session info
         self._sessions[full_client_id] = {
             **session_metadata,
-            "_worker": runner,
+            "_worker": worker,
         }
         
         # Python eval apps don't need to emit client_connected event since they execute immediately
@@ -1993,13 +1993,13 @@ class ServerAppController:
                 "user": self.store.get_root_user().model_dump(),
             }
             workers = await self.get_server_app_workers(context=context)
-            for runner in workers:
-                if runner.prepare_workspace:
+            for worker in workers:
+                if worker.prepare_workspace:
                     try:
-                        await runner.prepare_workspace(workspace_info.id)
+                        await worker.prepare_workspace(workspace_info.id)
                     except Exception as exp:
                         logger.warning(
-                            f"Worker {runner.id} failed to prepare workspace: {workspace_info.id}, error: {exp}"
+                            f"Worker {worker.id} failed to prepare workspace: {workspace_info.id}, error: {exp}"
                         )
 
     async def close_workspace(self, workspace_info: WorkspaceInfo):
@@ -2016,10 +2016,10 @@ class ServerAppController:
         workers = await self.get_server_app_workers(context=context)
         if not workers:
             return
-        for runner in workers:
-            if runner.close_workspace:
+        for worker in workers:
+            if worker.close_workspace:
                 try:
-                    await runner.close_workspace(workspace_info.id)
+                    await worker.close_workspace(workspace_info.id)
                 except Exception as exp:
                     logger.warning(
                         f"Worker failed to close workspace: {workspace_info.id}, error: {exp}"

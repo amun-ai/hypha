@@ -1,4 +1,4 @@
-"""Provide a browser runner."""
+"""Provide a browser worker."""
 
 import uuid
 import os
@@ -45,7 +45,7 @@ def _capture_logs_from_browser_tabs(page: Page, logs: dict) -> None:
 
 
 class BrowserAppRunner:
-    """Browser app runner."""
+    """Browser app worker."""
 
     instance_counter: int = 0
 
@@ -360,7 +360,7 @@ class BrowserAppRunner:
     def get_service(self):
         """Get the service."""
         return {
-            "id": f"browser-runner-{self.controller_id}",
+            "id": f"browser-worker-{self.controller_id}",
             "type": "server-app-worker",
             "name": "Browser Server App Worker",
             "description": "A worker for running server apps",

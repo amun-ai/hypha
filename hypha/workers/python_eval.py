@@ -1,4 +1,4 @@
-"""Provide a Python eval runner for simple Python code execution."""
+"""Provide a Python eval worker for simple Python code execution."""
 
 import asyncio
 import logging
@@ -20,12 +20,12 @@ MAXIMUM_LOG_ENTRIES = 2048
 
 
 class PythonEvalRunner:
-    """Python evaluation runner for simple Python code execution."""
+    """Python evaluation worker for simple Python code execution."""
 
     instance_counter: int = 0
 
     def __init__(self, server):
-        """Initialize the Python eval runner."""
+        """Initialize the Python eval worker."""
         self.server = server
         self.initialized = False
         self._eval_sessions: Dict[str, Dict[str, Any]] = {}
@@ -34,7 +34,7 @@ class PythonEvalRunner:
         self.artifact_manager = None
     
     async def initialize(self) -> None:
-        """Initialize the Python eval runner."""
+        """Initialize the Python eval worker."""
         if not self.initialized:
             await self.server.register_service(self.get_service())
             self.artifact_manager = await self.server.get_service("public/artifact-manager")
@@ -65,7 +65,7 @@ class PythonEvalRunner:
         try:
             # Get the Python code from the entry point
             if not entry_point or not entry_point.endswith('.py'):
-                raise Exception("Python eval runner requires a .py entry point")
+                raise Exception("Python eval worker requires a .py entry point")
             
             # Read the Python code from the artifact
             get_url = await self.artifact_manager.get_file(
@@ -288,19 +288,19 @@ class PythonEvalRunner:
             await self.stop(session_id)
     
     async def prepare_workspace(self, workspace: str) -> None:
-        """Prepare the workspace for the Python eval runner."""
+        """Prepare the workspace for the Python eval worker."""
         pass
 
     async def shutdown(self) -> None:
-        """Shutdown the Python eval runner."""
-        logger.info("Closing Python eval runner...")
+        """Shutdown the Python eval worker."""
+        logger.info("Closing Python eval worker...")
         try:
             session_ids = list(self._eval_sessions.keys())
             for session_id in session_ids:
                 await self.stop(session_id)
-            logger.info("Python eval runner closed successfully.")
+            logger.info("Python eval worker closed successfully.")
         except Exception as e:
-            logger.error("Error during Python eval runner shutdown: %s", str(e))
+            logger.error("Error during Python eval worker shutdown: %s", str(e))
             raise
 
     def get_service(self):
@@ -324,7 +324,7 @@ class PythonEvalRunner:
 
 
 async def hypha_startup(server):
-    """Initialize the Python eval runner as a startup function."""
+    """Initialize the Python eval worker as a startup function."""
     python_eval_runner = PythonEvalRunner(server)
     await python_eval_runner.initialize()
-    logger.info("Python eval runner registered as startup function")
+    logger.info("Python eval worker registered as startup function")

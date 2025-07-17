@@ -1,4 +1,4 @@
-"""Provide an MCP client runner."""
+"""Provide an MCP client worker."""
 
 import asyncio
 import logging
@@ -39,12 +39,12 @@ except ImportError:
 
 
 class MCPClientRunner:
-    """MCP client runner that connects to MCP servers and exposes tools as Hypha services."""
+    """MCP client worker that connects to MCP servers and exposes tools as Hypha services."""
 
     instance_counter: int = 0
 
     def __init__(self, server):
-        """Initialize the MCP client runner."""
+        """Initialize the MCP client worker."""
         self.server = server
         self.initialized = False
         self._mcp_sessions: Dict[str, Dict[str, Any]] = {}
@@ -52,7 +52,7 @@ class MCPClientRunner:
         MCPClientRunner.instance_counter += 1
 
     async def initialize(self) -> None:
-        """Initialize the MCP client runner."""
+        """Initialize the MCP client worker."""
         if not self.initialized:
             await self.server.register_service(self.get_service())
             self.initialized = True
@@ -646,11 +646,11 @@ class MCPClientRunner:
         ]
 
     def get_service(self) -> dict:
-        """Get the service definition for the MCP client runner."""
+        """Get the service definition for the MCP proxy worker."""
         return {
-            "id": f"mcp-client-runner-{self.controller_id}",
-            "name": "MCP Client Runner",
-            "description": "MCP client runner for connecting to MCP servers",
+            "id": f"mcp-proxy-worker-{self.controller_id}",
+            "name": "MCP Proxy Worker",
+            "description": "MCP proxy worker for connecting to MCP servers",
             "type": "server-app-worker",
             "config": {
                 "visibility": "public",
@@ -683,7 +683,7 @@ class MCPClientRunner:
             await self.stop(session_id)
 
 async def hypha_startup(server):
-    """Initialize the MCP client runner as a startup function."""
+    """Initialize the MCP client worker as a startup function."""
     mcp_client_runner = MCPClientRunner(server)
     await mcp_client_runner.initialize()
-    logger.info("MCP client runner registered as startup function")
+    logger.info("MCP client worker registered as startup function")

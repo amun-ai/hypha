@@ -501,7 +501,7 @@ The `python_eval.py` file provides a complete example of a custom worker that su
 
 ```python
 class PythonEvalRunner:
-    """Python evaluation runner for simple Python code execution."""
+    """Python evaluation worker for simple Python code execution."""
     
     def __init__(self, server):
         self.server = server
@@ -565,7 +565,7 @@ class PythonEvalRunner:
 
 # Register as startup function
 async def hypha_startup(server):
-    """Initialize the Python eval runner as a startup function."""
+    """Initialize the Python eval worker as a startup function."""
     python_eval_runner = PythonEvalRunner(server)
     await python_eval_runner.initialize()
 ```

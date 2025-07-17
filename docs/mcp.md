@@ -7,84 +7,445 @@ Hypha provides comprehensive support for the Model Context Protocol (MCP), enabl
 The MCP implementation in Hypha consists of two main components:
 
 1. **MCP Server** (`hypha/mcp.py`): Exposes Hypha services as MCP endpoints
-2. **MCP Client Proxy** (`hypha/runner/mcp_proxy.py`): Connects to external MCP servers and integrates them as Hypha services
+2. **MCP Client Proxy** (`hypha/workers/mcp_proxy.py`): Connects to external MCP servers and integrates them as Hypha services
 
-## MCP Client Proxy
+## Hypha as MCP Server (hypha2mcp)
 
-The MCP Client Runner allows Hypha to connect to external MCP servers and expose their tools, resources, and prompts as unified Hypha services.
+Hypha can act as an MCP server, exposing its services to external MCP clients like Cursor, Claude Desktop, and other AI tools.
 
-### Supported Transports
+### Registering Hypha Services for MCP
 
-#### Streamable HTTP
-- **Type**: `streamable-http`
-- **Usage**: Standard HTTP-based MCP communication
-- **Configuration**:
-  ```json
-  {
-    "type": "streamable-http",
-    "url": "http://localhost:8000/mcp"
-  }
-  ```
+There are three main approaches to create Hypha services that can be exposed as MCP endpoints:
 
+#### 1. Schema Function Approach (Recommended)
 
-#### mcp-remote Bridge
-- **Type**: `stdio-bridge`
-- **Usage**: Bridge to remote servers via mcp-remote package
-- **Configuration**:
-  ```json
-  {
-    "type": "stdio-bridge",
-    "command": "npx",
-    "args": [
-      "mcp-remote",
-      "https://remote.server.com/sse",
-      "--transport", "sse-first",
-      "--debug"
-    ],
-    "env": {
-      "AUTH_TOKEN": "your-token-here"
-    }
-  }
-  ```
+The most straightforward way using `@schema_function` decorators:
 
-#### mcp-remote Transport Strategies
-- **`http-first`** (default): Tries HTTP first, falls back to SSE
-- **`sse-first`**: Tries SSE first, falls back to HTTP
-- **`http-only`**: Only uses HTTP transport
-- **`sse-only`**: Only uses SSE transport
+```python
+from hypha_rpc import connect_to_server
+from hypha_rpc.utils.schema import schema_function
 
-#### mcp-remote Authentication
+async def main():
+    api = await connect_to_server({
+        "server_url": "ws://localhost:9527",
+        "workspace": "my-workspace"
+    })
+
+    @schema_function
+    def calculate_tool(operation: str, a: float, b: float) -> str:
+        """Perform basic arithmetic calculations."""
+        if operation == "add":
+            return f"Result: {a + b}"
+        elif operation == "subtract":
+            return f"Result: {a - b}"
+        elif operation == "multiply":
+            return f"Result: {a * b}"
+        elif operation == "divide":
+            if b == 0:
+                return "Error: Division by zero"
+            return f"Result: {a / b}"
+        else:
+            return f"Unknown operation: {operation}"
+
+    @schema_function
+    def resource_read() -> str:
+        """Read a test resource."""
+        return "This is comprehensive resource content with detailed information."
+
+    @schema_function
+    def prompt_read(task: str = "general", difficulty: str = "medium") -> dict:
+        """Read a test prompt with parameters."""
+        return {
+            "description": f"Test prompt for {task} at {difficulty} level",
+            "messages": [
+                {
+                    "role": "user", 
+                    "content": {
+                        "type": "text",
+                        "text": f"Help me with {task} at {difficulty} difficulty level"
+                    }
+                }
+            ]
+        }
+
+    # Register MCP service
+    service = await api.register_service({
+        "id": "my-calculator-service",
+        "name": "Calculator MCP Service",
+        "description": "A calculator service with tools, resources, and prompts",
+        "type": "mcp",
+        "config": {
+            "visibility": "public",
+            "run_in_executor": True,
+        },
+        "tools": [calculate_tool],
+        "resources": [
+            {
+                "uri": "resource://calculator",
+                "name": "Calculator Resource", 
+                "description": "Calculator help documentation",
+                "tags": ["calculator", "help"],
+                "mime_type": "text/plain",
+                "read": resource_read,
+            }
+        ],
+        "prompts": [
+            {
+                "name": "calculation_help",
+                "description": "Help with calculations",
+                "tags": ["calculator", "prompt"],
+                "read": prompt_read,
+            }
+        ],
+    })
+
+    print(f"MCP service registered: {service['id']}")
+    # MCP endpoint will be available at:
+    # http://localhost:9527/my-workspace/mcp/my-calculator-service/mcp
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+```
+
+#### 2. Direct MCP Function Approach
+
+Using direct MCP functions (requires MCP SDK):
+
+```python
+from hypha_rpc import connect_to_server
+import mcp.types as types
+
+async def main():
+    api = await connect_to_server({
+        "server_url": "ws://localhost:9527",
+        "workspace": "my-workspace"
+    })
+
+    async def list_tools() -> List[types.Tool]:
+        return [
+            types.Tool(
+                name="timestamp",
+                description="Get current timestamp",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "format": {
+                            "type": "string",
+                            "enum": ["unix", "iso"],
+                            "description": "Timestamp format"
+                        }
+                    },
+                    "required": ["format"]
+                }
+            )
+        ]
+
+    async def call_tool(name: str, arguments: dict) -> List[types.ContentBlock]:
+        if name == "timestamp":
+            format_type = arguments.get("format", "unix")
+            import time
+            if format_type == "unix":
+                result = str(int(time.time()))
+            elif format_type == "iso":
+                result = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            return [types.TextContent(type="text", text=result)]
+        else:
+            raise ValueError(f"Unknown tool: {name}")
+
+    # Register MCP service
+    service = await api.register_service({
+        "id": "timestamp-service",
+        "type": "mcp",
+        "config": {"visibility": "public"},
+        "list_tools": list_tools,
+        "call_tool": call_tool,
+    })
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+```
+
+#### 3. Inline Configuration Approach
+
+Define tools inline with handlers:
+
+```python
+from hypha_rpc import connect_to_server
+
+async def main():
+    api = await connect_to_server({
+        "server_url": "ws://localhost:9527",
+        "workspace": "my-workspace"
+    })
+
+    def simple_tool(operation: str, a: int, b: int) -> str:
+        """Simple arithmetic tool."""
+        if operation == "add":
+            return f"Result: {a + b}"
+        elif operation == "subtract":
+            return f"Result: {a - b}"
+        elif operation == "multiply":
+            return f"Result: {a * b}"
+        elif operation == "divide":
+            if b == 0:
+                return "Error: Division by zero"
+            return f"Result: {a / b}"
+        else:
+            return f"Unknown operation: {operation}"
+
+    def resource_read() -> str:
+        """Read a test resource."""
+        return "This is test resource content."
+
+    # Register MCP service with inline configuration
+    service = await api.register_service({
+        "id": "inline-mcp-service",
+        "name": "Inline MCP Service",
+        "description": "A service with inline MCP configuration",
+        "type": "mcp",
+        "config": {
+            "visibility": "public",
+            "run_in_executor": True,
+        },
+        "tools": [
+            {
+                "name": "simple_tool",
+                "description": "Simple arithmetic tool",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["add", "subtract", "multiply", "divide"],
+                            "description": "The operation to perform"
+                        },
+                        "a": {"type": "number", "description": "First number"},
+                        "b": {"type": "number", "description": "Second number"}
+                    },
+                    "required": ["operation", "a", "b"]
+                },
+                "handler": simple_tool
+            }
+        ],
+        "resources": [
+            {
+                "uri": "resource://test",
+                "name": "Test Resource",
+                "description": "A test resource",
+                "tags": ["test", "resource"],
+                "mime_type": "text/plain",
+                "read": resource_read,
+            }
+        ],
+    })
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+```
+
+### MCP HTTP Endpoints
+
+When MCP is enabled (`--enable-mcp`), Hypha exposes MCP endpoints at:
+
+```
+/{workspace}/mcp/{service_id}/mcp        # Streamable HTTP transport
+/{workspace}/mcp/{service_id}/sse        # Server-Sent Events transport (not yet implemented)
+/{workspace}/mcp/{service_id}            # Info endpoint (returns helpful 404)
+```
+
+#### Supported Methods
+
+- `tools/list` - List available tools
+- `tools/call` - Execute a tool
+- `resources/list` - List available resources
+- `resources/read` - Read a resource
+- `prompts/list` - List available prompts
+- `prompts/get` - Get a prompt
+
+### Testing MCP Endpoints
+
+You can test your MCP endpoints using curl:
+
+```bash
+# List tools
+curl -X POST http://localhost:9527/my-workspace/mcp/my-calculator-service/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "method": "tools/list", "id": 1}'
+
+# Call a tool
+curl -X POST http://localhost:9527/my-workspace/mcp/my-calculator-service/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "calculate_tool",
+      "arguments": {"operation": "add", "a": 5, "b": 3}
+    },
+    "id": 2
+  }'
+```
+
+## Using Hypha MCP Endpoints with AI Tools
+
+### Cursor IDE
+
+1. Open Cursor Settings (`⇧+⌘+J` on Mac, `Ctrl+Shift+J` on Windows/Linux)
+2. Navigate to "MCP Tools" and click "New MCP Server"
+3. Add this configuration:
+
 ```json
 {
-  "type": "stdio-bridge",
-  "command": "npx",
-  "args": [
-    "mcp-remote",
-    "https://api.example.com/sse",
-    "--header", "Authorization:Bearer ${API_TOKEN}",
-    "--header", "X-Custom-Header:${CUSTOM_VALUE}"
-  ],
-  "env": {
-    "API_TOKEN": "your-api-token",
-    "CUSTOM_VALUE": "custom-header-value"
+  "mcpServers": {
+    "Hypha Calculator": {
+      "url": "http://localhost:9527/my-workspace/mcp/my-calculator-service/mcp"
+    }
   }
 }
 ```
 
-### MCP Server App Configuration
+### Claude Desktop
+
+Add to your Claude Desktop configuration file:
+
+**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+**Windows**: `%APPDATA%/Claude/claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "hypha-calculator": {
+      "url": "http://localhost:9527/my-workspace/mcp/my-calculator-service/mcp"
+    }
+  }
+}
+```
+
+### OpenAI Python Library
+
+```python
+import openai
+from openai import OpenAI
+
+client = OpenAI()
+
+# Use with OpenAI's new responses API
+response = client.responses.create(
+    model="gpt-4o",
+    tools=[
+        {
+            "type": "mcp",
+            "server_label": "hypha",
+            "server_url": "http://localhost:9527/my-workspace/mcp/my-calculator-service/mcp",
+            "require_approval": "never"
+        }
+    ],
+    input="Calculate 15 * 24 using the calculator tool",
+    tool_choice="required"
+)
+
+print(response.content)
+```
+
+### LiteLLM Integration
+
+Add to your LiteLLM configuration:
+
+```yaml
+model_list:
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: sk-xxxxxxx
+
+mcp_servers:
+  hypha_calculator:
+    url: "http://localhost:9527/my-workspace/mcp/my-calculator-service/mcp"
+    description: "Hypha calculator service"
+```
+
+Then use with the LiteLLM proxy:
+
+```bash
+curl -X POST http://localhost:4000/v1/responses \
+  --header 'Content-Type: application/json' \
+  --header "Authorization: Bearer $LITELLM_API_KEY" \
+  --data '{
+    "model": "gpt-4o",
+    "tools": [
+      {
+        "type": "mcp",
+        "server_label": "litellm",
+        "server_url": "litellm_proxy",
+        "require_approval": "never",
+        "headers": {
+          "x-litellm-api-key": "Bearer YOUR_LITELLM_API_KEY",
+          "x-mcp-servers": "hypha_calculator"
+        }
+      }
+    ],
+    "input": "Calculate 100 / 4",
+    "tool_choice": "required"
+  }'
+```
+
+### Direct MCP Client Usage
+
+Using the official MCP SDK:
+
+```python
+import asyncio
+from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.session import ClientSession
+
+async def use_hypha_mcp():
+    base_url = "http://localhost:9527/my-workspace/mcp/my-calculator-service/mcp"
+    
+    async with streamablehttp_client(base_url) as (read_stream, write_stream, get_session_id):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            
+            # List tools
+            tools_result = await session.list_tools()
+            print(f"Available tools: {[tool.name for tool in tools_result.tools]}")
+            
+            # Call a tool
+            result = await session.call_tool(
+                name="calculate_tool",
+                arguments={"operation": "multiply", "a": 7, "b": 6}
+            )
+            print(f"Result: {result.content[0].text}")
+
+if __name__ == "__main__":
+    asyncio.run(use_hypha_mcp())
+```
+
+## MCP Client Proxy (mcp2hypha)
+
+The MCP Client Proxy allows Hypha to connect to external MCP servers and expose their tools, resources, and prompts as unified Hypha services.
+
+### Supported Transports
+
+- **Streamable HTTP** (`streamable-http`): Standard HTTP-based MCP communication
+- **Server-Sent Events** (`sse`): Real-time streaming MCP communication
+
+### Installing External MCP Servers
 
 To use external MCP servers, create an app configuration with type `mcp-server`:
 
 ```json
 {
   "type": "mcp-server",
-  "name": "My MCP Server",
+  "name": "External MCP Services",
   "version": "1.0.0",
-  "description": "Integration with external MCP server",
+  "description": "Integration with external MCP servers",
   "mcpServers": {
-    "github-server": {
+    "deepwiki": {
       "type": "streamable-http",
-      "url": "https://api.github.com/mcp"
+      "url": "https://mcp.deepwiki.com/mcp"
     },
     "weather-server": {
       "type": "sse",
@@ -101,45 +462,86 @@ To use external MCP servers, create an app configuration with type `mcp-server`:
 }
 ```
 
-### Popular MCP Server Configurations
+### Installing and Using External MCP Servers
 
-#### GitHub Server
+```python
+from hypha_rpc import connect_to_server
+
+async def install_mcp_server():
+    api = await connect_to_server({
+        "server_url": "ws://localhost:9527",
+        "workspace": "my-workspace"
+    })
+
+    # Get the server apps controller
+    controller = await api.get_service("public/server-apps")
+
+    # Install DeepWiki MCP server
+    app_info = await controller.install(
+        config={
+            "type": "mcp-server",
+            "name": "DeepWiki Integration",
+            "version": "1.0.0",
+            "description": "DeepWiki knowledge base access",
+            "mcpServers": {
+                "deepwiki": {
+                    "type": "streamable-http",
+                    "url": "https://mcp.deepwiki.com/mcp"
+                }
+            }
+        }
+    )
+
+    # Start the MCP server
+    session_info = await controller.start(app_info["id"], wait_for_service="deepwiki", timeout=30)
+
+    # Use the unified MCP service
+    deepwiki_service = await api.get_service(f"{session_info['id']}:deepwiki")
+
+    # Access tools, resources, and prompts
+    tools = deepwiki_service.tools
+    resources = deepwiki_service.resources
+    prompts = deepwiki_service.prompts
+
+    print(f"Available tools: {len(tools)}")
+    print(f"Available resources: {len(resources)}")
+    print(f"Available prompts: {len(prompts)}")
+
+    # Call a tool (example)
+    if tools:
+        result = await tools[0](query="Python programming")
+        print(f"Tool result: {result}")
+
+    # Read a resource (example)
+    if resources:
+        content = await resources[0]["read"]()
+        print(f"Resource content: {content[:100]}...")
+
+    # Get a prompt (example)
+    if prompts:
+        prompt_content = await prompts[0]["read"](topic="AI development")
+        print(f"Prompt: {prompt_content}")
+
+    await api.disconnect()
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(install_mcp_server())
+```
+
+### Popular MCP Server Examples
+
+#### DeepWiki (Knowledge Base)
 ```json
 {
   "type": "mcp-server",
-  "name": "GitHub Integration",
+  "name": "DeepWiki Knowledge Base",
   "version": "1.0.0",
-  "description": "GitHub repository and issue management",
+  "description": "Access to DeepWiki knowledge base",
   "mcpServers": {
-    "github": {
+    "deepwiki": {
       "type": "streamable-http",
-      "url": "https://api.github.com/mcp",
-      "headers": {
-        "Authorization": "Bearer github_pat_your_token_here"
-      }
-    }
-  }
-}
-```
-
-#### Weather Services
-```json
-{
-  "type": "mcp-server", 
-  "name": "Weather Services",
-  "version": "1.0.0",
-  "description": "Weather data and forecasts",
-  "mcpServers": {
-    "openweather": {
-      "type": "streamable-http",
-      "url": "https://api.openweathermap.org/mcp",
-      "headers": {
-        "X-API-Key": "your_openweather_api_key"
-      }
-    },
-    "national-weather": {
-      "type": "sse",
-      "url": "https://api.weather.gov/sse"
+      "url": "https://mcp.deepwiki.com/mcp"
     }
   }
 }
@@ -149,295 +551,34 @@ To use external MCP servers, create an app configuration with type `mcp-server`:
 ```json
 {
   "type": "mcp-server",
-  "name": "File Operations",
-  "version": "1.0.0", 
+  "name": "Filesystem Operations",
+  "version": "1.0.0",
   "description": "Cross-platform file system operations",
   "mcpServers": {
     "filesystem": {
       "type": "streamable-http",
-      "url": "https://files.myserver.com/mcp"
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/directory"]
     }
   }
 }
 ```
 
-#### Remote Server Bridge (mcp-remote)
-For servers that don't directly support HTTP/SSE, use the `mcp-remote` bridge:
-
+#### Puppeteer Automation
 ```json
 {
   "type": "mcp-server",
-  "name": "Remote Bridge Server",
+  "name": "Browser Automation",
   "version": "1.0.0",
-  "description": "Bridge to remote MCP servers via mcp-remote",
+  "description": "Browser automation via Puppeteer",
   "mcpServers": {
-    "remote-server": {
-      "type": "stdio-bridge",
+    "puppeteer": {
+      "type": "streamable-http",
       "command": "npx",
-      "args": [
-        "mcp-remote",
-        "https://remote.mcp.server/sse",
-        "--transport", "sse-first",
-        "--debug"
-      ],
-      "env": {
-        "AUTH_TOKEN": "your_auth_token_here"
-      }
+      "args": ["-y", "@modelcontextprotocol/server-puppeteer"]
     }
   }
 }
-```
-
-### MCP Server Providers
-
-#### Popular Remote MCP Servers
-
-| Provider | Service | Transport | Endpoint | Authentication |
-|----------|---------|-----------|----------|----------------|
-| **GitHub** | Repository Management | HTTP | `https://api.github.com/mcp` | Bearer Token |
-| **OpenWeatherMap** | Weather Data | HTTP | `https://api.openweathermap.org/mcp` | API Key |
-| **National Weather Service** | US Weather | SSE | `https://api.weather.gov/sse` | None |
-| **Filesystem** | File Operations | HTTP | `https://files.example.com/mcp` | Optional |
-| **DeepWiki** | Knowledge Base | HTTP | `https://mcp.deepwiki.com/mcp` | API Key |
-| **Cursor** | Code Editor | SSE | `https://cursor.example.com/sse` | OAuth |
-
-#### Community MCP Servers
-
-Many MCP servers from the community can be accessed via `mcp-remote`:
-
-```json
-{
-  "type": "mcp-server",
-  "name": "Community Servers",
-  "version": "1.0.0",
-  "description": "Community-hosted MCP servers",
-  "mcpServers": {
-    "playwright": {
-      "type": "stdio-bridge",
-      "command": "npx",
-      "args": ["mcp-remote", "https://playwright.example.com/sse"]
-    },
-    "notes": {
-      "type": "stdio-bridge", 
-      "command": "npx",
-      "args": ["mcp-remote", "https://notes.example.com/sse"]
-    },
-    "amazon-fresh": {
-      "type": "stdio-bridge",
-      "command": "npx", 
-      "args": ["mcp-remote", "https://amazon-fresh.example.com/sse"]
-    }
-  }
-}
-```
-
-### Features
-
-- **Unified Service Registration**: Each MCP server is registered as a single Hypha service containing all tools, resources, and prompts
-- **Transport Flexibility**: Supports both streamable HTTP and SSE transports
-- **Error Handling**: Comprehensive error handling with detailed logging
-- **Session Management**: Proper session lifecycle management with cleanup
-- **Debugging Support**: Extensive logging at different levels (INFO, DEBUG, ERROR)
-
-### Usage Examples
-
-#### Basic Remote HTTP Server
-```python
-from hypha_rpc import connect_to_server
-
-# Connect to Hypha
-api = await connect_to_server({
-    "server_url": "ws://localhost:9527",
-    "workspace": "my-workspace",
-    "token": "your-token"
-})
-
-# Get the server apps controller
-controller = await api.get_service("public/server-apps")
-
-# Install GitHub MCP server app
-app_info = await controller.install(
-    config={
-        "type": "mcp-server",
-        "name": "GitHub Integration",
-        "version": "1.0.0",
-        "description": "GitHub repository management",
-        "mcpServers": {
-            "github": {
-                "type": "streamable-http",
-                "url": "https://api.github.com/mcp",
-                "headers": {
-                    "Authorization": "Bearer github_pat_your_token_here"
-                }
-            }
-        }
-    }
-)
-
-# Start the MCP server
-session_info = await controller.start(app_info["id"])
-
-# Use the unified MCP service
-service_id = f"{session_info['id']}:github"
-github_service = await api.get_service(service_id)
-
-# Access tools, resources, and prompts
-tools = github_service.tools
-resources = github_service.resources
-prompts = github_service.prompts
-
-# Call a GitHub tool
-issues = await tools[0](repo="owner/repo", state="open")
-
-# Read a repository resource
-repo_info = await resources[0]["read"]()
-
-# Get a code review prompt
-review_prompt = await prompts[0]["read"](code="def hello(): pass")
-```
-
-#### Using mcp-remote Bridge
-```python
-# Install server with mcp-remote bridge
-app_info = await controller.install(
-    config={
-        "type": "mcp-server",
-        "name": "Remote Weather Server",
-        "version": "1.0.0",
-        "description": "Weather data via mcp-remote",
-        "mcpServers": {
-            "weather": {
-                "type": "stdio-bridge",
-                "command": "npx",
-                "args": [
-                    "mcp-remote",
-                    "https://weather.example.com/sse",
-                    "--transport", "sse-first",
-                    "--header", "Authorization:Bearer ${API_KEY}"
-                ],
-                "env": {
-                    "API_KEY": "your_weather_api_key"
-                }
-            }
-        }
-    }
-)
-
-# Start and use the bridged server
-session_info = await controller.start(app_info["id"])
-weather_service = await api.get_service(f"{session_info['id']}:weather")
-
-# Get weather forecast
-forecast = await weather_service.tools[0](location="New York", days=7)
-```
-
-#### Multiple Transport Types
-```python
-# Configure multiple servers with different transports
-app_info = await controller.install(
-    config={
-        "type": "mcp-server",
-        "name": "Multi-Transport Server",
-        "version": "1.0.0",
-        "description": "Multiple MCP servers with different transports",
-        "mcpServers": {
-            "github": {
-                "type": "streamable-http",
-                "url": "https://api.github.com/mcp",
-                "headers": {
-                    "Authorization": "Bearer github_pat_token"
-                }
-            },
-            "weather": {
-                "type": "sse",
-                "url": "https://weather.example.com/sse"
-            },
-            "filesystem": {
-                "type": "streamable-http",
-                "url": "https://files.example.com/mcp"
-            }
-        }
-    }
-)
-
-# Start and access all services
-session_info = await controller.start(app_info["id"])
-
-# Each server becomes a separate service
-github_service = await api.get_service(f"{session_info['id']}:github")
-weather_service = await api.get_service(f"{session_info['id']}:weather")
-files_service = await api.get_service(f"{session_info['id']}:filesystem")
-
-# Use tools from different services
-repos = await github_service.tools[0](query="python")
-forecast = await weather_service.tools[0](location="San Francisco")
-files = await files_service.tools[0](path="/home/user/projects")
-```
-
-## MCP Server (Hypha as MCP Provider)
-
-Hypha can also act as an MCP server, exposing its services to external MCP clients.
-
-### HTTP Endpoints
-
-When MCP is enabled (`--enable-mcp`), Hypha exposes MCP endpoints at:
-
-```
-/{workspace}/mcp/{service_id}/mcp        # Streamable HTTP transport
-/{workspace}/mcp/{service_id}/sse        # Server-Sent Events transport (future)
-/{workspace}/mcp/{service_id}            # Info endpoint (returns helpful 404)
-```
-
-#### Endpoint Structure
-
-- **Streamable HTTP**: `/{workspace}/mcp/{service_id}/mcp`
-  - Used for standard MCP JSON-RPC communication
-  - Supports all MCP methods (tools/list, tools/call, prompts/list, etc.)
-  - Content-Type: `application/json`
-
-- **Server-Sent Events**: `/{workspace}/mcp/{service_id}/sse` *(future)*
-  - Will be used for real-time streaming communication
-  - Content-Type: `text/event-stream`
-  - Currently returns 501 Not Implemented
-
-- **Info Endpoint**: `/{workspace}/mcp/{service_id}`
-  - Returns helpful 404 with available endpoint information
-  - Helps users discover the correct endpoint URLs
-  - Content-Type: `application/json`
-
-### Supported Methods
-
-- `tools/list` - List available tools
-- `tools/call` - Execute a tool
-- `resources/list` - List available resources
-- `resources/read` - Read a resource
-- `prompts/list` - List available prompts
-- `prompts/get` - Get a prompt
-
-### Example Usage
-
-```bash
-# List tools
-curl -X POST http://localhost:9527/my-workspace/mcp/my-service/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc": "2.0", "method": "tools/list", "id": 1}'
-
-# Call a tool
-curl -X POST http://localhost:9527/my-workspace/mcp/my-service/mcp \
-  -H "Content-Type: application/json" \
-  -d '{
-        "jsonrpc": "2.0",
-                "method": "tools/call",
-                "params": {
-      "name": "my_tool",
-      "arguments": {"param": "value"}
-    },
-    "id": 2
-  }'
-
-# Get helpful endpoint information
-curl -X GET http://localhost:9527/my-workspace/mcp/my-service \
-  -H "Content-Type: application/json"
 ```
 
 ## Error Handling and Debugging
@@ -472,47 +613,67 @@ pip install mcp[sse]
 **Error**: `Failed to connect to MCP server`
 **Solutions**:
 - Verify the server URL is correct
-- Check that the server is running
-- Ensure the transport type matches the server
+- Check that the Hypha server is running with `--enable-mcp`
+- Ensure the transport type matches the server capabilities
 - Review the error logs for specific details
 
-#### 4. Session Initialization Issues
-**Error**: `unhandled errors in a TaskGroup`
-**Solution**: This was a known issue that has been fixed by adding proper `await session.initialize()` calls
+#### 4. Service Registration Issues
+**Error**: `Schema function validation failed`
+**Solution**: Ensure all tool functions are decorated with `@schema_function`:
+```python
+from hypha_rpc.utils.schema import schema_function
+
+@schema_function
+def my_tool(param: str) -> str:
+    """Tool description."""
+    return f"Processed: {param}"
+```
 
 ### Debugging Tips
 
 1. **Enable Debug Logging**: Set `HYPHA_LOGLEVEL=DEBUG` to see detailed connection attempts
-2. **Check Session Logs**: Use `controller.get_logs(session_id)` to retrieve session-specific logs
-3. **Verify Transport Type**: Ensure the transport type in configuration matches the server capabilities
-4. **Test Connectivity**: Use curl or similar tools to test the MCP server endpoint directly
+2. **Test Endpoints**: Use curl to test your MCP endpoints directly
+3. **Verify Service Registration**: Check that your service appears in the Hypha service list
+4. **Check Function Schemas**: Ensure your `@schema_function` decorators are properly applied
 
-#### Remote Server Debugging
+#### Testing MCP Endpoints
 
-For remote HTTP/SSE servers:
 ```bash
-# Test streamable HTTP endpoint
-curl -X POST https://api.example.com/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc": "2.0", "method": "tools/list", "id": 1}'
+# Test if MCP is enabled and endpoint exists
+curl -X GET http://localhost:9527/my-workspace/mcp/my-service
 
-# Test SSE endpoint
-curl -N https://api.example.com/sse \
-  -H "Accept: text/event-stream" \
-  -H "Authorization: Bearer your-token"
-```
-
-For Hypha MCP endpoints:
-```bash
-# Test local MCP service streamable HTTP endpoint
+# Test tools listing
 curl -X POST http://localhost:9527/my-workspace/mcp/my-service/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "method": "tools/list", "id": 1}'
 
-# Get endpoint information
-curl -X GET http://localhost:9527/my-workspace/mcp/my-service
-
-# Test SSE endpoint (when implemented)
-curl -N http://localhost:9527/my-workspace/mcp/my-service/sse \
-  -H "Accept: text/event-stream"
+# Test tool calling
+curl -X POST http://localhost:9527/my-workspace/mcp/my-service/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "my_tool",
+      "arguments": {"param": "value"}
+    },
+    "id": 2
+  }'
 ```
+
+## Best Practices
+
+1. **Use Schema Functions**: Always use `@schema_function` decorators for better tool discovery and validation
+2. **Proper Error Handling**: Handle errors gracefully in your tool implementations
+3. **Resource Management**: Use context managers when connecting to external services
+4. **Security**: Validate inputs and sanitize outputs in your tools
+5. **Documentation**: Provide clear descriptions for all tools, resources, and prompts
+6. **Testing**: Test your MCP endpoints with curl before integrating with AI tools
+
+## Examples Repository
+
+For more examples and templates, see the Hypha examples directory which includes:
+- Complete MCP service implementations
+- Integration examples with popular AI tools
+- Best practices and patterns
+- Performance optimization techniques

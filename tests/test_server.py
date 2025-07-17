@@ -98,12 +98,12 @@ async def test_connect_to_server_two_client_same_id(fastapi_server):
 
 
 def test_plugin_runner(fastapi_server):
-    """Test the app runner."""
+    """Test the app worker."""
     with subprocess.Popen(
         [
             sys.executable,
             "-m",
-            "hypha.runner",
+            "hypha.workers",
             f"--server-url={WS_SERVER_URL}",
             "--quit-on-ready",
             os.path.join(os.path.dirname(__file__), "example_plugin.py"),
@@ -119,12 +119,12 @@ def test_plugin_runner(fastapi_server):
 
 
 async def test_plugin_runner_subpath(fastapi_subpath_server):
-    """Test the app runner with subpath server."""
+    """Test the app worker with subpath server."""
     with subprocess.Popen(
         [
             sys.executable,
             "-m",
-            "hypha.runner",
+            "hypha.workers",
             f"--server-url=ws://127.0.0.1:{SIO_PORT2}/my/engine/ws",
             "--quit-on-ready",
             os.path.join(os.path.dirname(__file__), "example_plugin.py"),
@@ -147,7 +147,7 @@ async def test_extra_mounts(fastapi_server):
 
 
 async def test_plugin_runner_workspace(fastapi_server):
-    """Test the app runner with workspace."""
+    """Test the app worker with workspace."""
     api = await connect_to_server(
         {
             "name": "my second app",
@@ -163,7 +163,7 @@ async def test_plugin_runner_workspace(fastapi_server):
         [
             sys.executable,
             "-m",
-            "hypha.runner",
+            "hypha.workers",
             f"--server-url={WS_SERVER_URL}",
             f"--workspace={api.config['workspace']}",
             # f"--token={token}",
@@ -184,7 +184,7 @@ async def test_plugin_runner_workspace(fastapi_server):
         [
             sys.executable,
             "-m",
-            "hypha.runner",
+            "hypha.workers",
             f"--server-url={WS_SERVER_URL}",
             f"--workspace={api.config['workspace']}",
             f"--token={token}",

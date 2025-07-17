@@ -118,7 +118,7 @@ def start_builtin_services(
         assert args.enable_s3, "Server apps require S3 to be enabled"
         # pylint: disable=import-outside-toplevel
         from hypha.apps import ServerAppController
-        from hypha.runner import BrowserAppRunner
+        from hypha.workers import BrowserAppRunner
 
         BrowserAppRunner(store, in_docker=args.in_docker)
         ServerAppController(
@@ -226,10 +226,17 @@ def create_application(args):
     else:
         args.allow_origins = env.get("ALLOW_ORIGINS", "*").split(",")
 
+    # Automatically add MCP proxy startup function if MCP is enabled
+    args.startup_functions = args.startup_functions or []
+    if args.enable_mcp:
+        mcp_startup_function = "hypha.workers.mcp_proxy:hypha_startup"
+        if mcp_startup_function not in args.startup_functions:
+            args.startup_functions.append(mcp_startup_function)
+            logger.info("Automatically added MCP proxy worker to startup functions")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Here we can register all the startup functions
-        args.startup_functions = args.startup_functions or []
         await store.init(args.reset_redis, startup_functions=args.startup_functions)
         yield
         # Emit the shutdown event
