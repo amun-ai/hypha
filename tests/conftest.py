@@ -27,6 +27,7 @@ from . import (
     MINIO_SERVER_URL,
     MINIO_SERVER_URL_PUBLIC,
     REDIS_PORT,
+    KAFKA_PORT,
     SIO_PORT,
     SIO_PORT2,
     SIO_PORT_REDIS_1,
@@ -295,6 +296,100 @@ def redis_server():
         time.sleep(1)
 
 
+@pytest_asyncio.fixture(name="kafka_server", scope="session")
+def kafka_server():
+    """Start a Kafka server as test fixture and tear down after test."""
+    try:
+        # Try to connect to existing Kafka server
+        from aiokafka import AIOKafkaProducer
+        import asyncio
+        
+        async def test_kafka():
+            producer = AIOKafkaProducer(bootstrap_servers=f"localhost:{KAFKA_PORT}")
+            await producer.start()
+            await producer.stop()
+        
+        asyncio.run(test_kafka())
+        yield f"localhost:{KAFKA_PORT}"
+    except Exception:
+        # Start Kafka using Docker Compose
+        compose_content = f"""
+version: '3.8'
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    hostname: zookeeper
+    container_name: zookeeper-test
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    hostname: kafka
+    container_name: kafka-test
+    depends_on:
+      - zookeeper
+    ports:
+      - "{KAFKA_PORT}:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:{KAFKA_PORT}
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+"""
+        
+        # Write docker-compose file
+        with open("/tmp/kafka-test-compose.yml", "w") as f:
+            f.write(compose_content)
+        
+        # Start Kafka cluster
+        subprocess.run([
+            "docker-compose", "-f", "/tmp/kafka-test-compose.yml", "up", "-d"
+        ], check=True)
+        
+        # Wait for Kafka to be ready
+        timeout = 60
+        while timeout > 0:
+            try:
+                from aiokafka import AIOKafkaProducer
+                import asyncio
+                
+                async def test_kafka():
+                    producer = AIOKafkaProducer(bootstrap_servers=f"localhost:{KAFKA_PORT}")
+                    await producer.start()
+                    await producer.stop()
+                
+                asyncio.run(test_kafka())
+                break
+            except Exception:
+                pass
+            timeout -= 1
+            time.sleep(1)
+        
+        if timeout <= 0:
+            raise RuntimeError("Kafka server failed to start within timeout")
+        
+        yield f"localhost:{KAFKA_PORT}"
+        
+        # Cleanup
+        subprocess.run([
+            "docker-compose", "-f", "/tmp/kafka-test-compose.yml", "down"
+        ], check=False)
+        subprocess.run([
+            "docker", "rm", "-f", "kafka-test", "zookeeper-test"
+        ], check=False)
+        os.remove("/tmp/kafka-test-compose.yml")
+
+
 @pytest_asyncio.fixture(name="fastapi_server", scope="session")
 def fastapi_server_fixture(minio_server, postgres_server):
     """Start server as test fixture and tear down after test."""
@@ -497,6 +592,90 @@ def fastapi_subpath_server_fixture(minio_server):
             try:
                 response = requests.get(
                     f"http://127.0.0.1:{SIO_PORT2}/my/engine/health/readiness"
+                )
+                if response.ok:
+                    break
+            except RequestException:
+                pass
+            timeout -= 0.1
+            time.sleep(0.1)
+        yield
+        proc.kill()
+        proc.terminate()
+
+
+@pytest_asyncio.fixture(name="fastapi_server_kafka_1", scope="session")
+def fastapi_server_kafka_1(kafka_server, minio_server):
+    """Start server with Kafka as test fixture and tear down after test."""
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "hypha.server",
+            f"--port={SIO_PORT_REDIS_1}",  # Reuse the same port as Redis test 1
+            "--enable-server-apps",
+            "--enable-s3",
+            f"--public-base-url=http://my-public-url.com",
+            "--server-id=kafka-server-0",
+            f"--kafka-uri={kafka_server}",
+            f"--endpoint-url={MINIO_SERVER_URL}",
+            f"--access-key-id={MINIO_ROOT_USER}",
+            f"--secret-access-key={MINIO_ROOT_PASSWORD}",
+            f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            "--enable-s3-proxy",
+            f"--workspace-bucket=my-workspaces",
+            "--s3-admin-type=minio",
+            "--cache-dir=./bin/cache",
+        ],
+        env=test_env,
+    ) as proc:
+        timeout = 10
+        while timeout > 0:
+            try:
+                response = requests.get(
+                    f"http://127.0.0.1:{SIO_PORT_REDIS_1}/health/readiness"
+                )
+                if response.ok:
+                    break
+            except RequestException:
+                pass
+            timeout -= 0.1
+            time.sleep(0.1)
+        yield
+        proc.kill()
+        proc.terminate()
+
+
+@pytest_asyncio.fixture(name="fastapi_server_kafka_2", scope="session")
+def fastapi_server_kafka_2(kafka_server, minio_server, fastapi_server_kafka_1):
+    """Start second server with Kafka as test fixture and tear down after test."""
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "hypha.server",
+            f"--port={SIO_PORT_REDIS_2}",  # Reuse the same port as Redis test 2
+            "--enable-server-apps",
+            "--enable-s3",
+            f"--public-base-url=http://my-public-url.com",
+            "--server-id=kafka-server-1",
+            f"--kafka-uri={kafka_server}",
+            f"--endpoint-url={MINIO_SERVER_URL}",
+            f"--access-key-id={MINIO_ROOT_USER}",
+            f"--secret-access-key={MINIO_ROOT_PASSWORD}",
+            f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            "--enable-s3-proxy",
+            f"--workspace-bucket=my-workspaces",
+            "--s3-admin-type=minio",
+            "--cache-dir=./bin/cache",
+        ],
+        env=test_env,
+    ) as proc:
+        timeout = 10
+        while timeout > 0:
+            try:
+                response = requests.get(
+                    f"http://127.0.0.1:{SIO_PORT_REDIS_2}/health/readiness"
                 )
                 if response.ok:
                     break

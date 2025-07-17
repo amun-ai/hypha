@@ -29,6 +29,13 @@ from hypha.core.activity import ActivityTracker
 
 from prometheus_client import Counter, Gauge
 
+try:
+    from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
+    from aiokafka.errors import KafkaError
+    KAFKA_AVAILABLE = True
+except ImportError:
+    KAFKA_AVAILABLE = False
+
 
 class AutoscalingConfig(BaseModel):
     """Represent autoscaling configuration for apps."""
@@ -1097,5 +1104,541 @@ class RedisEventBus:
             except Exception as exp:
                 logger.exception(f"Error processing message: {exp}")
                 RedisEventBus._counter.labels(
+                    event="message_processing", status="error"
+                ).inc()
+
+
+class KafkaRPCConnection:
+    """Represent a Kafka connection for handling RPC-like messaging."""
+
+    _counter = Counter("kafka_rpc_call", "Counts the Kafka RPC calls", ["workspace"])
+    _client_request_counter = Counter("kafka_client_requests_total", "Total requests from Kafka clients", ["workspace", "client_id"])
+    _client_load_gauge = Gauge("kafka_client_load", "Current load per Kafka client (requests per minute)", ["workspace", "client_id"])
+    _tracker = None
+
+    @classmethod
+    def set_activity_tracker(cls, tracker: ActivityTracker):
+        cls._tracker = tracker
+
+    def __init__(
+        self,
+        event_bus: EventBus,
+        workspace: str,
+        client_id: str,
+        user_info: UserInfo,
+        manager_id: str,
+    ):
+        """Initialize Kafka RPC Connection."""
+        assert workspace and "/" not in client_id, "Invalid workspace or client ID"
+        self._workspace = workspace
+        self._client_id = client_id
+        self._user_info = user_info.model_dump()
+        self._stop = False
+        self._event_bus = event_bus
+        self._handle_connected = None
+        self._handle_disconnected = None
+        self._handle_message = None
+        self.manager_id = manager_id
+
+    def on_disconnected(self, handler):
+        """Register a disconnection event handler."""
+        self._handle_disconnected = handler
+
+    def on_connected(self, handler):
+        """Register a connection open event handler."""
+        self._handle_connected = handler
+        assert inspect.iscoroutinefunction(
+            handler
+        ), "Connect handler must be a coroutine"
+
+    def on_message(self, handler: Callable):
+        """Set message handler."""
+        self._handle_message = handler
+        self._event_bus.on(f"{self._workspace}/{self._client_id}:msg", handler)
+        # for broadcast messages
+        self._event_bus.on(f"{self._workspace}/*:msg", handler)
+        if self._handle_connected:
+            task = asyncio.create_task(self._handle_connected(self))
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
+
+    async def emit_message(self, data: Union[dict, bytes]):
+        """Send message after packing additional info."""
+        assert isinstance(data, bytes), "Data must be bytes"
+        if self._stop:
+            raise ValueError(
+                f"Connection has already been closed (client: {self._workspace}/{self._client_id})"
+            )
+        unpacker = msgpack.Unpacker(io.BytesIO(data))
+        message = unpacker.unpack()
+        pos = unpacker.tell()
+        target_id = message.get("to")
+        if "/" not in target_id:
+            if "/ws-" in target_id:
+                raise ValueError(
+                    f"Invalid target ID: {target_id}, it appears that the target is a workspace manager (target_id should starts with */)"
+                )
+            target_id = f"{self._workspace}/{target_id}"
+
+        # Update metrics
+        self._counter.labels(workspace=self._workspace).inc()
+        self._client_request_counter.labels(
+            workspace=self._workspace, client_id=self._client_id
+        ).inc()
+
+        # Track activity
+        if self._tracker:
+            self._tracker.track_activity(
+                client_id=self._client_id,
+                workspace=self._workspace,
+                user_info=self._user_info,
+                activity_type="rpc_call",
+                data={"target_id": target_id, "method": message.get("method")},
+            )
+
+        # Emit the message
+        await self._event_bus.emit(f"{target_id}:msg", data[pos:])
+
+    async def disconnect(self):
+        """Disconnect the connection."""
+        if self._stop:
+            return
+        self._stop = True
+        if self._handle_disconnected:
+            try:
+                await self._handle_disconnected(self)
+            except Exception as exp:
+                logger.exception(
+                    f"Error handling disconnection for {self._workspace}/{self._client_id}: {exp}"
+                )
+
+
+class KafkaEventBus:
+    """Represent a Kafka event bus."""
+
+    _counter = Counter(
+        "kafka_event_bus", "Counts the events on the Kafka event bus", ["event", "status"]
+    )
+    _consumer_latency = Gauge(
+        "kafka_consumer_latency_seconds", "Kafka consumer latency in seconds"
+    )
+
+    def __init__(self, kafka_uri: str, server_id: str = None) -> None:
+        """Initialize the Kafka event bus."""
+        if not KAFKA_AVAILABLE:
+            raise ImportError("aiokafka is not installed. Please install it with: pip install aiokafka")
+        
+        self._kafka_uri = kafka_uri
+        self._server_id = server_id or str(uuid.uuid4())
+        self._producer = None
+        self._consumer = None
+        self._handle_connected = None
+        self._stop = False
+        self._local_event_bus = EventBus(logger)
+        self._kafka_event_bus = EventBus(logger)
+        self._reconnect_delay = 1  # Start with 1 second delay
+        self._max_reconnect_delay = 30  # Maximum delay between reconnection attempts
+        self._health_check_interval = 5  # Health check every 5 seconds
+        self._consecutive_failures = 0
+        self._max_failures = 3  # Circuit breaker threshold
+        self._circuit_breaker_open = False
+        self._last_successful_connection = None
+        self._health_check_topic = f"health_check_{self._server_id}"
+        self._subscribed_topics = set()
+        self._topic_prefix = "hypha_event_"
+
+    async def init(self):
+        """Setup the event bus."""
+        loop = asyncio.get_running_loop()
+        self._ready = loop.create_future()
+        self._loop = loop
+
+        # Initialize producer
+        self._producer = AIOKafkaProducer(
+            bootstrap_servers=self._kafka_uri,
+            value_serializer=lambda v: v if isinstance(v, bytes) else v.encode('utf-8'),
+            key_serializer=lambda k: k.encode('utf-8') if isinstance(k, str) else k,
+            retry_backoff_ms=100,
+            request_timeout_ms=30000,
+            max_block_ms=30000,
+        )
+        await self._producer.start()
+
+        # Initialize consumer
+        self._consumer = AIOKafkaConsumer(
+            bootstrap_servers=self._kafka_uri,
+            group_id=f"hypha_server_{self._server_id}",
+            value_deserializer=lambda m: m,
+            key_deserializer=lambda m: m.decode('utf-8') if m else None,
+            auto_offset_reset='latest',
+            enable_auto_commit=True,
+            auto_commit_interval_ms=1000,
+        )
+        await self._consumer.start()
+
+        # Start the Kafka subscription task
+        self._subscribe_task = loop.create_task(self._subscribe_kafka())
+        self._health_check_task = loop.create_task(self._health_check())
+
+        # Wait for readiness signal
+        await self._ready
+
+    def on(self, event_name, func):
+        """Register a callback for an event from Kafka."""
+        self._kafka_event_bus.on(event_name, func)
+        # Subscribe to the topic if not already subscribed
+        topic_name = f"{self._topic_prefix}{event_name}"
+        if topic_name not in self._subscribed_topics:
+            self._subscribed_topics.add(topic_name)
+            if self._consumer:
+                asyncio.create_task(self._subscribe_to_topic(topic_name))
+
+    def off(self, event_name, func=None):
+        """Unregister a callback for an event from Kafka."""
+        self._kafka_event_bus.off(event_name, func)
+
+    def once(self, event_name, func):
+        """Register a callback for an event and remove it once triggered."""
+        def once_wrapper(*args, **kwargs):
+            result = func(*args, **kwargs)
+            self._kafka_event_bus.off(event_name, once_wrapper)
+            return result
+
+        self._kafka_event_bus.on(event_name, once_wrapper)
+
+    async def wait_for(self, event_name, match=None, timeout=None):
+        """Wait for an event from either local or Kafka event bus."""
+        local_future = asyncio.create_task(
+            self._local_event_bus.wait_for(event_name, match, timeout)
+        )
+        kafka_future = asyncio.create_task(
+            self._kafka_event_bus.wait_for(event_name, match, timeout)
+        )
+        done, pending = await asyncio.wait(
+            [local_future, kafka_future], return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+        return done.pop().result()
+
+    def on_local(self, event_name, func):
+        """Register a callback for a local event."""
+        return self._local_event_bus.on(event_name, func)
+
+    def off_local(self, event_name, func=None):
+        """Unregister a callback for a local event."""
+        return self._local_event_bus.off(event_name, func)
+
+    def once_local(self, event_name, func):
+        """Register a callback for a local event and remove it once triggered."""
+        def once_wrapper(*args, **kwargs):
+            result = func(*args, **kwargs)
+            self._local_event_bus.off(event_name, once_wrapper)
+            return result
+
+        return self._local_event_bus.on(event_name, once_wrapper)
+
+    async def wait_for_local(self, event_name, match=None, timeout=None):
+        """Wait for local event."""
+        return await self._local_event_bus.wait_for(event_name, match, timeout)
+
+    async def emit_local(self, event_name, data=None):
+        """Emit a local event."""
+        if not self._ready.done():
+            self._ready.set_result(True)
+        local_task = self._local_event_bus.emit(event_name, data)
+        if asyncio.iscoroutine(local_task):
+            await local_task
+
+    def emit(self, event_name, data):
+        """Emit an event."""
+        if not self._ready.done():
+            self._ready.set_result(True)
+        tasks = []
+
+        # Emit locally
+        local_task = self._local_event_bus.emit(event_name, data)
+        if asyncio.iscoroutine(local_task):
+            tasks.append(local_task)
+
+        # Emit globally via Kafka
+        data_type = "b:"
+        if isinstance(data, dict):
+            data = json.dumps(data)
+            data_type = "d:"
+        elif isinstance(data, str):
+            data_type = "s:"
+            data = data.encode("utf-8")
+        else:
+            assert data and isinstance(
+                data, (str, bytes)
+            ), "Data must be a string or bytes"
+        
+        topic_name = f"{self._topic_prefix}{event_name}"
+        message_key = f"{data_type}{event_name}"
+        global_task = self._loop.create_task(
+            self._producer.send(topic_name, value=data, key=message_key)
+        )
+        tasks.append(global_task)
+
+        if tasks:
+            return asyncio.gather(*tasks)
+        else:
+            fut = asyncio.get_event_loop().create_future()
+            fut.set_result(None)
+            return fut
+
+    async def stop(self):
+        """Stop the event bus."""
+        self._stop = True
+
+        # Cancel tasks first
+        if self._subscribe_task:
+            self._subscribe_task.cancel()
+        if self._health_check_task:
+            self._health_check_task.cancel()
+
+        # Wait for tasks to complete
+        try:
+            await asyncio.gather(
+                self._subscribe_task, self._health_check_task, return_exceptions=True
+            )
+        except asyncio.CancelledError:
+            pass
+
+        # Stop Kafka producer and consumer
+        if self._producer:
+            await self._producer.stop()
+        if self._consumer:
+            await self._consumer.stop()
+
+    async def _subscribe_to_topic(self, topic_name):
+        """Subscribe to a specific Kafka topic."""
+        try:
+            # Get current subscription and add new topic
+            current_topics = list(self._consumer.subscription() or [])
+            if topic_name not in current_topics:
+                current_topics.append(topic_name)
+                self._consumer.subscribe(current_topics)
+                logger.info(f"Subscribed to Kafka topic: {topic_name}")
+        except Exception as e:
+            logger.error(f"Failed to subscribe to topic {topic_name}: {e}")
+
+    async def _check_kafka_health(self):
+        """Check if Kafka is working by sending and receiving a test message."""
+        try:
+            # Send test message with timestamp
+            test_message = str(time.time())
+            await self._producer.send(
+                self._health_check_topic,
+                value=test_message.encode('utf-8'),
+                key=f"health_check_{self._server_id}"
+            )
+            
+            self._counter.labels(event="kafka_health", status="success").inc()
+            return True
+
+        except Exception as e:
+            logger.error(f"Kafka health check failed: {str(e)}")
+            self._counter.labels(event="kafka_health", status="error").inc()
+            return False
+
+    async def _health_check(self):
+        """Periodically check Kafka health."""
+        while not self._stop:
+            try:
+                await asyncio.sleep(self._health_check_interval)
+                if self._circuit_breaker_open:
+                    continue
+
+                # Check Kafka functionality
+                kafka_healthy = await self._check_kafka_health()
+                if not kafka_healthy:
+                    self._consecutive_failures += 1
+                    if self._consecutive_failures >= self._max_failures:
+                        logger.error("Circuit breaker opened due to Kafka failures")
+                        self._circuit_breaker_open = True
+                        self._counter.labels(
+                            event="circuit_breaker", status="open"
+                        ).inc()
+                        await self._attempt_reconnection()
+                    continue
+
+                # Reset failure counter on successful health check
+                self._consecutive_failures = 0
+                self._last_successful_connection = asyncio.get_event_loop().time()
+                self._counter.labels(event="health_check", status="success").inc()
+
+            except Exception as e:
+                logger.warning(f"Kafka health check failed: {str(e)}")
+                self._counter.labels(event="health_check", status="failure").inc()
+                self._consecutive_failures += 1
+
+                if self._consecutive_failures >= self._max_failures:
+                    logger.error("Circuit breaker opened due to multiple failures")
+                    self._circuit_breaker_open = True
+                    await self._attempt_reconnection()
+
+    async def _attempt_reconnection(self):
+        """Attempt to reconnect with exponential backoff."""
+        while self._circuit_breaker_open and not self._stop:
+            try:
+                # Cancel existing subscription task
+                if self._subscribe_task:
+                    self._subscribe_task.cancel()
+                    try:
+                        await self._subscribe_task
+                    except asyncio.CancelledError:
+                        pass
+
+                await asyncio.sleep(self._reconnect_delay)
+
+                # Try to restart producer and consumer
+                if self._producer:
+                    await self._producer.stop()
+                if self._consumer:
+                    await self._consumer.stop()
+
+                # Reinitialize producer
+                self._producer = AIOKafkaProducer(
+                    bootstrap_servers=self._kafka_uri,
+                    value_serializer=lambda v: v if isinstance(v, bytes) else v.encode('utf-8'),
+                    key_serializer=lambda k: k.encode('utf-8') if isinstance(k, str) else k,
+                )
+                await self._producer.start()
+
+                # Reinitialize consumer
+                self._consumer = AIOKafkaConsumer(
+                    bootstrap_servers=self._kafka_uri,
+                    group_id=f"hypha_server_{self._server_id}",
+                    value_deserializer=lambda m: m,
+                    key_deserializer=lambda m: m.decode('utf-8') if m else None,
+                    auto_offset_reset='latest',
+                )
+                await self._consumer.start()
+
+                # Resubscribe to topics
+                if self._subscribed_topics:
+                    self._consumer.subscribe(list(self._subscribed_topics))
+
+                # If successful, reset circuit breaker and restart subscription
+                self._circuit_breaker_open = False
+                self._consecutive_failures = 0
+                self._reconnect_delay = 1
+                self._counter.labels(event="reconnection", status="success").inc()
+
+                self._subscribe_task = self._loop.create_task(self._subscribe_kafka())
+                logger.info("Successfully reconnected to Kafka")
+                return
+
+            except Exception as e:
+                logger.error(f"Reconnection attempt failed: {str(e)}")
+                self._counter.labels(event="reconnection", status="failure").inc()
+
+                # Exponential backoff with max delay
+                self._reconnect_delay = min(
+                    self._reconnect_delay * 2, self._max_reconnect_delay
+                )
+
+    async def _subscribe_kafka(self):
+        """Handle Kafka subscription with automatic reconnection."""
+        cpu_count = os.cpu_count() or 1
+        concurrent_tasks = cpu_count * 10
+        logger.info(
+            f"Starting Kafka event bus with {concurrent_tasks} concurrent task processing"
+        )
+
+        # Subscribe to all event topics (using pattern subscription)
+        # Note: We'll use pattern subscription to automatically handle new topics
+        topics_to_subscribe = [self._health_check_topic]
+        
+        # Add any manually subscribed topics
+        if self._subscribed_topics:
+            topics_to_subscribe.extend(list(self._subscribed_topics))
+        
+        if topics_to_subscribe:
+            self._consumer.subscribe(topics_to_subscribe)
+        
+        # Also subscribe to pattern for automatic topic discovery
+        # This might not work with explicit topic subscription, so we'll handle it differently
+        # For now, we'll rely on explicit topic subscription
+
+        self._ready.set_result(True) if not self._ready.done() else None
+        self._counter.labels(event="subscription", status="success").inc()
+
+        semaphore = asyncio.Semaphore(concurrent_tasks)
+
+        while not self._stop:
+            if self._circuit_breaker_open:
+                await asyncio.sleep(0.1)
+                continue
+
+            try:
+                # Get messages from Kafka
+                msg_pack = await self._consumer.getmany(timeout_ms=50, max_records=10)
+                
+                for topic_partition, messages in msg_pack.items():
+                    for message in messages:
+                        if not self._stop:
+                            task = asyncio.create_task(
+                                self._process_message(message, semaphore)
+                            )
+                            background_tasks.add(task)
+                            task.add_done_callback(background_tasks.discard)
+
+            except Exception as e:
+                logger.warning(f"Error getting Kafka messages: {str(e)}")
+                self._counter.labels(
+                    event="message_processing", status="failure"
+                ).inc()
+                await asyncio.sleep(0.1)  # Prevent tight loop on errors
+
+    async def _process_message(self, message, semaphore):
+        """Process a single Kafka message while respecting the semaphore."""
+        async with semaphore:
+            try:
+                topic = message.topic
+                key = message.key
+                value = message.value
+                
+                # Skip health check messages
+                if topic == self._health_check_topic:
+                    return
+
+                # Extract event name from topic
+                if topic.startswith(self._topic_prefix):
+                    event_name = topic[len(self._topic_prefix):]
+                else:
+                    logger.warning(f"Unknown topic: {topic}")
+                    return
+
+                self._counter.labels(event="*", status="processed").inc()
+
+                # Process message based on key prefix
+                if key and key.startswith("b:"):
+                    # Binary data
+                    data = value
+                    await self._kafka_event_bus.emit(event_name, data)
+                elif key and key.startswith("d:"):
+                    # Dictionary data
+                    data = json.loads(value.decode('utf-8'))
+                    await self._kafka_event_bus.emit(event_name, data)
+                elif key and key.startswith("s:"):
+                    # String data
+                    data = value.decode('utf-8')
+                    await self._kafka_event_bus.emit(event_name, data)
+                else:
+                    # Default to string
+                    data = value.decode('utf-8') if isinstance(value, bytes) else value
+                    await self._kafka_event_bus.emit(event_name, data)
+
+                if ":" not in event_name:
+                    self._counter.labels(
+                        event=event_name, status="processed"
+                    ).inc()
+
+            except Exception as exp:
+                logger.exception(f"Error processing Kafka message: {exp}")
+                self._counter.labels(
                     event="message_processing", status="error"
                 ).inc()
