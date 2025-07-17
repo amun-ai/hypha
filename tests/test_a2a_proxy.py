@@ -263,6 +263,10 @@ async def test_a2a_double_round_trip_reversibility(fastapi_server, test_user_tok
         """A skill that can be reversibly accessed through A2A proxy."""
         return f"Reversible: {text}"
     
+    # Create async run function
+    async def reversible_run(message, context=None):
+        return await _handle_a2a_message(message, [reversible_skill])
+
     original_service_info = await api.register_service(
         {
             "id": "reversible-test-service",
@@ -293,7 +297,7 @@ async def test_a2a_double_round_trip_reversibility(fastapi_server, test_user_tok
                 ],
             },
             "skills": [reversible_skill],
-            "run": lambda message, context=None: "Default reversible response",
+            "run": reversible_run,
         }
     )
 
@@ -466,7 +470,7 @@ async def test_a2a_error_handling_and_debugging(fastapi_server, test_user_token)
     await controller.uninstall(a2a_app_info["id"])
     print("✓ Invalid URL A2A app uninstalled")
     
-    # Test 2: Missing configuration
+    # Test 2: Missing configuration - should fail at install time
     print("🔍 Testing missing configuration...")
     a2a_config_missing = {
         "type": "a2a-agent",
@@ -476,38 +480,23 @@ async def test_a2a_error_handling_and_debugging(fastapi_server, test_user_token)
         "a2aAgents": {}  # Empty configuration
     }
     
-    # Install the A2A agent app with missing config
-    a2a_app_info = await controller.install(
-        config=a2a_config_missing,
-        overwrite=True,
-        stage=True,
-    )
-
-    print(f"✓ Missing config A2A app installed: {a2a_app_info['id']}")
-
-    # Start the app - should handle the error gracefully
+    # Install the A2A agent app with missing config - should fail
     try:
-        session_info = await controller.start(a2a_app_info["id"], wait_for_service="missing-agent", timeout=10)
-        print(f"⚠️ App started but likely with errors: {session_info}")
-        
-        # Check logs for error messages
-        logs = await controller.get_logs(session_info["id"])
-        print(f"✓ Logs retrieved: {logs}")
-        
-        # Should have error logs
-        assert "error" in logs
-        assert len(logs["error"]) > 0
-        print("✓ Error logs found as expected")
-        
-        # Stop the session
-        await controller.stop(session_info["id"])
-        
+        a2a_app_info = await controller.install(
+            config=a2a_config_missing,
+            overwrite=True,
+            stage=True,
+        )
+        print(f"⚠️ App installed unexpectedly: {a2a_app_info['id']}")
+        # Clean up if it somehow got installed
+        await controller.uninstall(a2a_app_info["id"])
+        assert False, "Expected installation to fail due to empty a2aAgents"
     except Exception as e:
-        print(f"✓ Expected error occurred: {e}")
+        # Should get validation error
+        assert "a2aAgents configuration is required" in str(e)
+        print(f"✓ Expected validation error occurred: {e}")
     
-    # Clean up
-    await controller.uninstall(a2a_app_info["id"])
-    print("✓ Missing config A2A app uninstalled")
+    print("✓ Missing config validation working correctly")
     
     print("✅ ERROR HANDLING AND DEBUGGING TESTS PASSED!")
     
