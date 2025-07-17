@@ -403,6 +403,151 @@ async def test_mcp_inline_config_service(fastapi_server, test_user_token):
     await api.disconnect()
 
 
+async def test_mcp_merged_approach(fastapi_server, test_user_token):
+    """Test MCP service with merged approach: inline tools/resources/prompts using schema functions."""
+    # Connect to the Hypha server
+    server = await connect_to_server(
+        {"name": "mcp-merged-test", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+
+    # Define a simple resource read function
+    @schema_function
+    def resource_read():
+        """Read a test resource."""
+        return "This is a test resource content"
+
+    # Define a simple prompt read function
+    @schema_function
+    def prompt_read(name: str = "general"):
+        """Read a test prompt."""
+        return f"This is a test prompt template, name: {name}"
+
+    # Create a simple tool function
+    @schema_function
+    def simple_tool(text: str = "hello") -> str:
+        """A simple tool that processes text."""
+        return f"Processed: {text}"
+
+    # Register the MCP service with tools, resources, and prompts
+    mcp_service_info = await server.register_service(
+        {
+            "id": "mcp-merged-features",
+            "name": "MCP Merged Features Service",
+            "description": "A service with merged MCP features",
+            "type": "mcp",
+            "config": {
+                "visibility": "public",
+                "run_in_executor": True,
+            },
+            "tools": [simple_tool],
+            "resources": [
+                {
+                    "uri": "resource://test",
+                    "name": "Test Resource",
+                    "description": "A test resource",
+                    "tags": ["test", "resource"],
+                    "mime_type": "text/plain",
+                    "read": resource_read,
+                }
+            ],
+            "prompts": [
+                {
+                    "name": "test_prompt",
+                    "description": "A test prompt template",
+                    "tags": ["test", "prompt"],
+                    "read": prompt_read,
+                }
+            ],
+        }
+    )
+
+    # Service should be registered successfully
+    assert mcp_service_info["type"] == "mcp"
+    assert "mcp-merged-features" in mcp_service_info["id"]
+    
+    print("✓ MCP service with merged approach registered successfully")
+
+    await server.disconnect()
+
+
+async def test_mcp_validation_errors(fastapi_server, test_user_token):
+    """Test that validation errors are properly raised for invalid configurations."""
+    server = await connect_to_server(
+        {"name": "mcp-validation-test", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+    
+    # Test direct validation by creating HyphaMCPServer directly with invalid configs
+    from hypha.mcp import HyphaMCPServer
+    
+    # Test 1: Tool that is not a schema function should raise error
+    def non_schema_tool(text: str) -> str:
+        return f"Processed: {text}"
+    
+    class MockServiceInfo:
+        def __init__(self, **kwargs):
+            self.id = "test-service"
+            self.type = "mcp"
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+    
+    service_info = MockServiceInfo(tools=[non_schema_tool])
+    
+    try:
+        HyphaMCPServer({}, service_info)
+        assert False, "Should have raised ValueError for non-schema tool"
+    except ValueError as e:
+        assert "must be a @schema_function decorated function" in str(e)
+        print("✓ Tool validation error properly raised")
+    
+    # Test 2: Resource without read function should raise error
+    service_info = MockServiceInfo(resources=[{
+        "uri": "resource://test",
+        "name": "Test Resource",
+        "description": "A test resource",
+    }])
+    
+    try:
+        HyphaMCPServer({}, service_info)
+        assert False, "Should have raised ValueError for resource without read"
+    except ValueError as e:
+        assert "must have a 'read' key" in str(e)
+        print("✓ Resource validation error properly raised")
+    
+    # Test 3: Resource with non-schema read function should raise error
+    def non_schema_read():
+        return "content"
+    
+    service_info = MockServiceInfo(resources=[{
+        "uri": "resource://test",
+        "name": "Test Resource",
+        "description": "A test resource",
+        "read": non_schema_read,
+    }])
+    
+    try:
+        HyphaMCPServer({}, service_info)
+        assert False, "Should have raised ValueError for non-schema read function"
+    except ValueError as e:
+        assert "must be a @schema_function decorated function" in str(e)
+        print("✓ Resource read validation error properly raised")
+    
+    # Test 4: Prompt without read function should raise error
+    service_info = MockServiceInfo(prompts=[{
+        "name": "test_prompt",
+        "description": "A test prompt",
+    }])
+    
+    try:
+        HyphaMCPServer({}, service_info)
+        assert False, "Should have raised ValueError for prompt without read"
+    except ValueError as e:
+        assert "must have a 'read' key" in str(e)
+        print("✓ Prompt validation error properly raised")
+    
+    print("✓ All validation errors properly raised")
+
+    await server.disconnect()
+
 
 async def test_mcp_http_endpoint_tools(fastapi_server, test_user_token):
     """Test MCP HTTP endpoint for tools functionality."""
@@ -993,136 +1138,3 @@ async def test_mcp_real_client_integration(fastapi_server, test_user_token):
     await api.disconnect()
 
 
-async def test_mcp_automatic_schema_function_service(fastapi_server, test_user_token):
-    """Test MCP service with automatic schema_function tool extraction."""
-    api = await connect_to_server(
-        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
-    )
-
-    workspace = api.config.workspace
-
-    # Define schema_function decorated tools
-    @schema_function
-    def simple_tool(operation: str, a: int, b: int) -> str:
-        """Simple arithmetic tool."""
-        if operation == "add":
-            return f"Result: {a + b}"
-        elif operation == "subtract":
-            return f"Result: {a - b}"
-        elif operation == "multiply":
-            return f"Result: {a * b}"
-        elif operation == "divide":
-            if b == 0:
-                return "Error: Division by zero"
-            return f"Result: {a / b}"
-        else:
-            return f"Unknown operation: {operation}"
-
-    @schema_function
-    def greet(name: str = "World") -> str:
-        """Generate a greeting message."""
-        return f"Hello, {name}!"
-
-    # Register MCP service with automatic schema function extraction
-    service = await api.register_service(
-        {
-            "id": "auto-schema-mcp-service",
-            "name": "Auto Schema MCP Service", 
-            "description": "A service with automatic schema function extraction",
-            "type": "mcp",
-            "config": {
-                "visibility": "public",
-            },
-            "simple_tool": simple_tool,  # Add the functions as service methods
-            "greet": greet,
-        }
-    )
-
-    # Service should be registered successfully
-    assert service["type"] == "mcp"
-    assert "auto-schema-mcp-service" in service["id"]
-    assert service["id"].startswith(workspace)
-
-    # Test MCP HTTP endpoint for schema function service
-    async with httpx.AsyncClient() as client:
-        # Test tools/list - should automatically extract schema functions
-        response = await client.post(
-            f"{SERVER_URL}/{workspace}/mcp/auto-schema-mcp-service/",
-            json={
-                "jsonrpc": "2.0",
-                "id": "test-1",
-                "method": "tools/list",
-                "params": {}
-            },
-            headers={"Content-Type": "application/json"},
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["jsonrpc"] == "2.0"
-        assert data["id"] == "test-1"
-        assert "result" in data
-        assert "tools" in data["result"]
-        assert len(data["result"]["tools"]) == 2  # simple_tool and greet
-
-        tool_names = [tool["name"] for tool in data["result"]["tools"]]
-        assert "simple_tool" in tool_names
-        assert "greet" in tool_names
-
-        # Check that the tools have proper schemas
-        simple_tool_def = next(tool for tool in data["result"]["tools"] if tool["name"] == "simple_tool")
-        assert simple_tool_def["description"] == "Simple arithmetic tool."
-        assert "inputSchema" in simple_tool_def
-        assert "properties" in simple_tool_def["inputSchema"]
-
-        # Test tools/call - should call schema function directly
-        response = await client.post(
-            f"{SERVER_URL}/{workspace}/mcp/auto-schema-mcp-service/",
-            json={
-                "jsonrpc": "2.0",
-                "id": "test-2",
-                "method": "tools/call",
-                "params": {
-                    "name": "simple_tool",
-                    "arguments": {"operation": "add", "a": 5, "b": 3}
-                }
-            },
-            headers={"Content-Type": "application/json"},
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["jsonrpc"] == "2.0"
-        assert data["id"] == "test-2"
-        assert "result" in data
-        assert "content" in data["result"]
-        assert len(data["result"]["content"]) == 1
-        assert data["result"]["content"][0]["type"] == "text"
-        assert "Result: 8" in data["result"]["content"][0]["text"]
-
-        # Test greet function
-        response = await client.post(
-            f"{SERVER_URL}/{workspace}/mcp/auto-schema-mcp-service/",
-            json={
-                "jsonrpc": "2.0",
-                "id": "test-3",
-                "method": "tools/call",
-                "params": {
-                    "name": "greet",
-                    "arguments": {"name": "Alice"}
-                }
-            },
-            headers={"Content-Type": "application/json"},
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["jsonrpc"] == "2.0"
-        assert data["id"] == "test-3"
-        assert "result" in data
-        assert "content" in data["result"]
-        assert len(data["result"]["content"]) == 1
-        assert data["result"]["content"][0]["type"] == "text"
-        assert "Hello, Alice!" in data["result"]["content"][0]["text"]
-
-    await api.disconnect()

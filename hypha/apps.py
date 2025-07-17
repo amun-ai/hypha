@@ -1,4 +1,5 @@
 import httpx
+import json
 import logging
 import os
 import sys
@@ -239,11 +240,6 @@ class ServerAppController:
         )
         self.templates_dir = Path(__file__).parent / "templates"
         self.autoscaling_manager = AutoscalingManager(self)
-        
-        # Cache for workers
-        self._workers_cache = None
-        self._workers_cache_timestamp = 0
-        self._workers_cache_timeout = 300  # 5 minutes in seconds
 
         def shutdown(_) -> None:
             asyncio.ensure_future(self.shutdown())
@@ -265,68 +261,131 @@ class ServerAppController:
         self.event_bus.on_local("client_disconnected", client_disconnected)
         store.set_server_app_controller(self)
 
-    async def get_server_app_workers(self, app_type: str = None):
-        current_time = time.time()
+    async def get_server_app_workers(self, app_type: str = None, context: dict = None, random_select: bool = False):
+        workspace = context.get("ws") if context else None
         
-        # Check if cache is valid
-        if (self._workers_cache is not None and 
-            current_time - self._workers_cache_timestamp < self._workers_cache_timeout):
-            logger.debug("Using cached workers")
-            workers_data = self._workers_cache
-        else:
-            # Cache is expired or doesn't exist, fetch fresh data
-            logger.info("Fetching fresh workers (cache expired or missing)")
-            server = await self.store.get_public_api()
-            # Search for all server-app-worker services (including ones with unique IDs)
-            svcs = await server.list_services({"type": "server-app-worker"})
-            logger.info(f"Found {len(svcs)} server-app-worker services: {[svc['id'] for svc in svcs]} for app_type {app_type}")
-            
-            if not svcs:
-                # Update cache with empty result
-                self._workers_cache = {"svcs": [], "workers": []}
-                self._workers_cache_timestamp = current_time
-                return []
-            
-            workers = [await server.get_service(svc["id"]) for svc in svcs]
-            
-            # Update cache
-            workers_data = {"svcs": svcs, "workers": workers}
-            self._workers_cache = workers_data
-            self._workers_cache_timestamp = current_time
+        # Get workspace service info first (fast, no get_service calls yet)
+        workspace_svcs = []
+        if context:
+            try:
+                workspace_svcs = await self.store._workspace_manager.list_services({"type": "server-app-worker"}, context=context)
+                logger.info(f"Found {len(workspace_svcs)} server-app-worker services in workspace {workspace}: {[svc['id'] for svc in workspace_svcs]}")
+            except Exception as e:
+                logger.warning(f"Failed to get workspace workers: {e}")
         
-        # Extract data from cache
-        svcs = workers_data["svcs"]
-        workers = workers_data["workers"]
-        
-        # Filter workers by supported types if app_type is specified
-        if app_type and workers:
-            filtered_workers = []
-            for i, runner in enumerate(workers):
+        # Filter workspace services by app_type if specified
+        if app_type and workspace_svcs:
+            filtered_workspace_svcs = []
+            for svc in workspace_svcs:
                 try:
-                    # Check if runner supports the requested app type
-                    # First try to get from service info, then fallback to runner attribute
-                    svc_info = svcs[i]
-                    supported_types = runner.supported_types
-                    logger.info(f"Runner {svc_info['id']} supports types: {supported_types}")
-                    if app_type in supported_types:
-                        filtered_workers.append(runner)
-                        logger.info(f"Runner {svc_info['id']} selected for app_type: {app_type}")
+                    # Get the full service info to access supported_types
+                    workspace_server = await self.store.get_workspace_interface(
+                        context.get("user"), context.get("ws"), context.get("from")
+                    )
+                    full_svc = await workspace_server.get_service(svc['id'])
+                    supported_types = full_svc.get("supported_types", [])
+                    if not supported_types:
+                        # If no supported_types info, assume it's a legacy runner supporting default types
+                        if app_type in ["web-python", "web-worker", "window", "iframe"]:
+                            filtered_workspace_svcs.append(svc)
+                    elif app_type in supported_types:
+                        filtered_workspace_svcs.append(svc)
+                        logger.info(f"Workspace service {svc['id']} supports app_type {app_type}")
                 except Exception as e:
-                    logger.warning(f"Error checking supported types for runner {svc_info['id']}: {e}")
-                    # If we can't check supported types, assume it's a legacy runner
-                    # that supports the default browser-based types
+                    logger.warning(f"Failed to get full workspace service info for {svc['id']}: {e}")
+                    # Fall back to assuming legacy support if we can't get the service info
                     if app_type in ["web-python", "web-worker", "window", "iframe"]:
-                        filtered_workers.append(runner)
-            logger.info(f"After filtering for app_type {app_type}: {len(filtered_workers)} workers selected")
-            return filtered_workers
+                        filtered_workspace_svcs.append(svc)
+                        logger.info(f"Workspace service {svc['id']} assumed to support app_type {app_type} (fallback)")
+            
+            # If we found workspace services for this app type, use them
+            if filtered_workspace_svcs:
+                logger.info(f"Found {len(filtered_workspace_svcs)} workspace services for app_type {app_type}")
+                selected_svcs = filtered_workspace_svcs
+                use_workspace = True
+            else:
+                selected_svcs = []
+                use_workspace = False
+        elif workspace_svcs:
+            # If no app_type specified, use all workspace services
+            logger.info(f"Found {len(workspace_svcs)} workspace services (no app_type filter)")
+            selected_svcs = workspace_svcs
+            use_workspace = True
+        else:
+            selected_svcs = []
+            use_workspace = False
         
-        return workers if workers else []
+        # Fallback to public workers if no workspace workers found
+        if not selected_svcs:
+            logger.info(f"No workspace workers found for app_type {app_type}, falling back to public workers")
+            server = await self.store.get_public_api()
+            public_svcs = await server.list_services({"type": "server-app-worker"})
+            logger.info(f"Found {len(public_svcs)} server-app-worker services in public workspace: {[svc['id'] for svc in public_svcs]}")
+            
+            if not public_svcs:
+                logger.warning("No public workers found either")
+                return [] if not random_select else None
+            
+            # Filter public services by app_type if specified
+            if app_type:
+                filtered_public_svcs = []
+                for svc in public_svcs:
+                    try:
+                        # Get the full service info to access supported_types
+                        full_svc = await server.get_service(svc['id'])
+                        supported_types = full_svc.get("supported_types", [])
+                        if not supported_types:
+                            # If no supported_types info, assume it's a legacy runner supporting default types
+                            if app_type in ["web-python", "web-worker", "window", "iframe"]:
+                                filtered_public_svcs.append(svc)
+                                logger.info(f"Public service {svc['id']} assumed to support app_type {app_type} (legacy)")
+                        elif app_type in supported_types:
+                            filtered_public_svcs.append(svc)
+                            logger.info(f"Public service {svc['id']} supports app_type {app_type}")
+                    except Exception as e:
+                        logger.warning(f"Failed to get full service info for {svc['id']}: {e}")
+                        # Fall back to assuming legacy support if we can't get the service info
+                        if app_type in ["web-python", "web-worker", "window", "iframe"]:
+                            filtered_public_svcs.append(svc)
+                            logger.info(f"Public service {svc['id']} assumed to support app_type {app_type} (fallback)")
+                
+                logger.info(f"After filtering public services for app_type {app_type}: {len(filtered_public_svcs)} services selected")
+                selected_svcs = filtered_public_svcs
+            else:
+                selected_svcs = public_svcs
+            
+            use_workspace = False
+        
+        if not selected_svcs:
+            return [] if not random_select else None
+        
+        # Random selection if requested
+        if random_select:
+            selected_svc = random.choice(selected_svcs)
+            logger.info(f"Randomly selected service: {selected_svc['id']}")
+            selected_svcs = [selected_svc]
+        
+        # Now get the actual worker objects (slow operation, but only for selected services)
+        workers = []
+        for svc in selected_svcs:
+            try:
+                if use_workspace:
+                    # For workspace services, get through workspace interface
+                    user_info = UserInfo.model_validate(context["user"])
+                    async with self.store.get_workspace_interface(user_info, workspace) as ws:
+                        worker = await ws.get_service(svc["id"])
+                else:
+                    # For public services, use public API
+                    worker = await server.get_service(svc["id"])
+                workers.append(worker)
+            except Exception as e:
+                logger.warning(f"Failed to get worker service {svc['id']}: {e}")
+        
+        if random_select:
+            return workers[0] if workers else None
+        else:
+            return workers
 
-    def clear_workers_cache(self):
-        """Clear the workers cache to force a fresh fetch on next get_server_app_workers call."""
-        self._workers_cache = None
-        self._workers_cache_timestamp = 0
-        logger.info("workers cache cleared")
 
     async def setup_applications_collection(self, overwrite=True, context=None):
         """Set up the workspace."""
@@ -454,13 +513,17 @@ class ServerAppController:
 
             # Determine template type
             if config and config.get("type"):
-                config["entry_point"] = config.get("entry_point", "index.html")
-                template = config.get("type") + "." + config["entry_point"]
+                if config.get("type") == "mcp-server":
+                    # Special handling for MCP server type - no source code needed
+                    template = "mcp-server"
+                else:
+                    config["entry_point"] = config.get("entry_point", "index.html")
+                    template = config.get("type") + "." + config["entry_point"]
             else:
                 template = "hypha"
 
             # Handle different source types
-            if source.startswith("http"):
+            if source and source.startswith("http"):
                 if not (
                     source.startswith("https://")
                     or source.startswith("http://localhost")
@@ -478,7 +541,7 @@ class ServerAppController:
                         source = response.text
                 else:
                     template = None
-            elif is_raw_html_content(source):
+            elif source and is_raw_html_content(source):
                 # Handle raw HTML content
                 if not config:
                     config = {
@@ -492,15 +555,18 @@ class ServerAppController:
                     config["type"] = config.get("type", "window")
                 template = "html"
 
-            # Compute multihash of the source code
-            mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
-            mhash = mhash.encode("base58").decode("ascii")
-            # Verify the source code, useful for downloading from the web
-            if source_hash is not None:
-                target_mhash = multihash.decode(source_hash.encode("ascii"), "base58")
-                assert target_mhash.verify(
-                    source.encode("utf-8")
-                ), f"App source code verification failed (source_hash: {source_hash})."
+            # Compute multihash of the source code if source exists
+            if source:
+                mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
+                mhash = mhash.encode("base58").decode("ascii")
+                # Verify the source code, useful for downloading from the web
+                if source_hash is not None:
+                    target_mhash = multihash.decode(source_hash.encode("ascii"), "base58")
+                    assert target_mhash.verify(
+                        source.encode("utf-8")
+                    ), f"App source code verification failed (source_hash: {source_hash})."
+            else:
+                mhash = None
 
             # Process based on template type
             if template is None:
@@ -549,7 +615,7 @@ class ServerAppController:
                     raise Exception(
                         f"Failed to parse or compile the hypha app {mhash}: {source[:100]}...",
                     ) from err
-            elif template:
+            elif template and template != "mcp-server":
                 assert (
                     "." in template
                 ), f"Invalid template name: {template}, should be a file name with extension."
@@ -573,7 +639,41 @@ class ServerAppController:
                     config=config,
                     requirements=config.get("requirements", []),
                 )
-            elif not source:
+            elif template == "mcp-server":
+                # Handle MCP server type - no source code needed, config only
+                if not config:
+                    raise Exception("Config with mcpServers is required for mcp-server type.")
+                
+                mcp_servers = config.get("mcpServers", {})
+                if not mcp_servers:
+                    raise Exception("mcpServers configuration is required for mcp-server type.")
+                
+                # Create default config for MCP server
+                default_config = {
+                    "name": "MCP Server",
+                    "version": "0.1.0",
+                    "type": "mcp-server",
+                    "entry_point": "mcp-config.json",
+                    "mcpServers": mcp_servers,
+                }
+                default_config.update(config or {})
+                config = default_config
+                entry_point = config["entry_point"]
+                
+                # Create a JSON configuration file content
+                source = json.dumps({
+                    "type": "mcp-server",
+                    "mcpServers": mcp_servers,
+                    "name": config.get("name", "MCP Server"),
+                    "version": config.get("version", "0.1.0"),
+                    "description": config.get("description", "MCP Server Application")
+                }, indent=2)
+                
+                # Compute multihash of the configuration
+                mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
+                mhash = mhash.encode("base58").decode("ascii")
+                
+            elif not source and template != "mcp-server":
                 raise Exception("Source or template should be provided.")
 
             # Create artifact object first (with placeholder app_id)
@@ -588,6 +688,10 @@ class ServerAppController:
                 artifact_obj = convert_config_to_artifact(config, placeholder_app_id, placeholder_url)
             else:
                 artifact_obj = convert_config_to_artifact(config, placeholder_app_id, source)
+            
+            # For MCP server type, move mcpServers to root level for easier access
+            if template == "mcp-server" and "mcpServers" in config:
+                artifact_obj["mcpServers"] = config["mcpServers"]
 
         # startup_config is now handled automatically by convert_config_to_artifact
         # if it exists in the config
@@ -969,17 +1073,16 @@ class ServerAppController:
         context: dict = None,
     ):
         """Start the app by type using the appropriate runner."""
-        # Get workers that support this app type
-        workers = await self.get_server_app_workers(app_type)
-        if not workers:
+        # Get a random worker that supports this app type
+        runner = await self.get_server_app_workers(app_type, context, random_select=True)
+        if not runner:
             raise Exception(f"No server app worker found for type: {app_type}")
-        
-        # Select a runner (random choice for now, could be improved with load balancing)
-        runner = random.choice(workers)
         
         # Get entry point from manifest
         entry_point = manifest.entry_point
-        assert entry_point, f"Entry point not found for app {app_id}."
+        # For MCP server type, entry point is not required in the traditional sense
+        if app_type != "mcp-server":
+            assert entry_point, f"Entry point not found for app {app_id}."
         
         # Prepare session metadata
         full_client_id = workspace + "/" + client_id
@@ -1003,6 +1106,16 @@ class ServerAppController:
         # Update with any additional metadata
         if metadata:
             session_metadata.update(metadata)
+        
+        # For MCP server type, add MCP servers configuration to metadata
+        if app_type == "mcp-server":
+            # Access mcpServers from metadata or manifest config
+            mcp_servers = metadata.get("mcpServers", {}) if metadata else {}
+            if not mcp_servers and hasattr(manifest, 'mcpServers'):
+                mcp_servers = manifest.mcpServers
+            if not mcp_servers and hasattr(manifest, 'config') and manifest.config:
+                mcp_servers = manifest.config.get("mcpServers", {})
+            session_metadata["mcp_servers"] = mcp_servers
         
         # Start the app using the runner
         session_data = await runner.start(
@@ -1205,6 +1318,14 @@ class ServerAppController:
             self.event_bus.on_local("service_added", service_added)
 
         try:
+            # Prepare metadata, including MCP servers configuration for mcp-server apps
+            metadata = {}
+            if app_type == "mcp-server":
+                # Extract mcpServers from artifact_info (it should be at root level)
+                mcp_servers = artifact_info.get("mcpServers", {})
+                if mcp_servers:
+                    metadata["mcpServers"] = mcp_servers
+                    
             # Start the app using the new start_by_type function
             session_data = await self.start_by_type(
                 app_id=app_id,
@@ -1217,6 +1338,7 @@ class ServerAppController:
                 version=version,
                 token=token,
                 manifest=manifest,
+                metadata=metadata,
                 context=context,
             )
             
@@ -1663,8 +1785,38 @@ class ServerAppController:
                 validation_result["errors"].append("Field 'name' must be a string")
                 validation_result["valid"] = False
             
-            if "type" in config and config["type"] not in ["window", "web-worker", "web-python"]:
+            if "type" in config and config["type"] not in ["window", "web-worker", "web-python", "mcp-server"]:
                 validation_result["warnings"].append(f"Unusual application type: {config['type']}")
+            
+            # Special validation for mcp-server type
+            if "type" in config and config["type"] == "mcp-server":
+                if "mcpServers" not in config:
+                    validation_result["errors"].append("MCP server applications require 'mcpServers' configuration")
+                    validation_result["valid"] = False
+                elif not isinstance(config["mcpServers"], dict):
+                    validation_result["errors"].append("'mcpServers' must be a dictionary")
+                    validation_result["valid"] = False
+                elif len(config["mcpServers"]) == 0:
+                    validation_result["errors"].append("'mcpServers' cannot be empty")
+                    validation_result["valid"] = False
+                else:
+                    # Validate each MCP server configuration
+                    for server_name, server_config in config["mcpServers"].items():
+                        if not isinstance(server_config, dict):
+                            validation_result["errors"].append(f"MCP server '{server_name}' configuration must be a dictionary")
+                            validation_result["valid"] = False
+                            continue
+                        
+                        if "type" not in server_config:
+                            validation_result["errors"].append(f"MCP server '{server_name}' missing required field 'type'")
+                            validation_result["valid"] = False
+                        
+                        if "url" not in server_config:
+                            validation_result["errors"].append(f"MCP server '{server_name}' missing required field 'url'")
+                            validation_result["valid"] = False
+                        
+                        if server_config.get("type") not in ["streamable-http", "stdio"]:
+                            validation_result["warnings"].append(f"MCP server '{server_name}' has unusual type: {server_config.get('type')}")
             
             if "version" in config and not isinstance(config["version"], str):
                 validation_result["errors"].append("Field 'version' must be a string")
@@ -1815,9 +1967,6 @@ class ServerAppController:
         for app_id in list(self.autoscaling_manager._autoscaling_tasks.keys()):
             await self.autoscaling_manager.stop_autoscaling(app_id)
         
-        # Clear workers cache
-        self.clear_workers_cache()
-        
         for app in self._sessions.values():
             await self.stop(app["id"], raise_exception=False)
 
@@ -1840,8 +1989,11 @@ class ServerAppController:
                     )
         
         if workspace_info.id not in ["ws-user-root", "public", "ws-anonymous"]:
-            server = await self.store.get_public_api()
-            workers = await self.get_server_app_workers()
+            context = {
+                "ws": workspace_info.id,
+                "user": self.store.get_root_user().model_dump(),
+            }
+            workers = await self.get_server_app_workers(context=context)
             for runner in workers:
                 try:
                     await runner.prepare_workspace(workspace_info.id)
@@ -1857,7 +2009,11 @@ class ServerAppController:
             if app["workspace"] == workspace_info.id:
                 await self._stop(app["id"], raise_exception=False)
         # Send to all workers
-        workers = await self.get_server_app_workers()
+        context = {
+            "ws": workspace_info.id,
+            "user": self.store.get_root_user().model_dump(),
+        }
+        workers = await self.get_server_app_workers(context=context)
         if not workers:
             return
         for runner in workers:

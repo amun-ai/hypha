@@ -233,46 +233,30 @@ class HyphaMCPServer:
         # Setup handlers based on service type
         self._setup_handlers()
     
-    def _has_schema_functions(self) -> bool:
-        """Check if service has @schema_function decorated functions."""
-        if not isinstance(self.service, dict):
-            return False
+    def _extract_tool_from_schema_function(self, func) -> Dict[str, Any]:
+        """Extract MCP tool definition from @schema_function decorated function."""
+        if not (callable(func) and hasattr(func, '__schema__')):
+            raise ValueError(f"Function {func} is not a schema function")
         
-        for key, func in self.service.items():
-            if callable(func) and hasattr(func, '__schema__'):
-                return True
-        return False
-    
-    def _extract_schema_functions(self) -> List[Dict[str, Any]]:
-        """Extract MCP tools from @schema_function decorated functions."""
-        tools = []
+        schema = getattr(func, '__schema__', {}) or {}
         
-        if not isinstance(self.service, dict):
-            return tools
+        # Create tool from schema function
+        # The schema contains the JSON schema for the function
+        tool_dict = {
+            "name": func.__name__,
+            "description": schema.get('description', func.__doc__ or f"Function {func.__name__}"),
+            "inputSchema": schema.get('parameters', schema)  # Use the full schema as inputSchema
+        }
         
-        for key, func in self.service.items():
-            if callable(func) and hasattr(func, '__schema__'):
-                schema = getattr(func, '__schema__', {}) or {}
-                
-                # Create tool from schema function
-                # The schema contains the JSON schema for the function
-                tool_dict = {
-                    "name": key,
-                    "description": schema.get('description', func.__doc__ or f"Function {key}"),
-                    "inputSchema": schema.get('parameters', schema)  # Use the full schema as inputSchema
-                }
-                
-                # Ensure inputSchema has the correct structure
-                if not isinstance(tool_dict["inputSchema"], dict) or "type" not in tool_dict["inputSchema"]:
-                    tool_dict["inputSchema"] = {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                
-                tools.append(tool_dict)
+        # Ensure inputSchema has the correct structure
+        if not isinstance(tool_dict["inputSchema"], dict) or "type" not in tool_dict["inputSchema"]:
+            tool_dict["inputSchema"] = {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
         
-        return tools
+        return tool_dict
     
     def _validate_service_config(self):
         """Validate MCP service configuration to prevent conflicts."""
@@ -290,15 +274,9 @@ class HyphaMCPServer:
         has_list_resource_templates = "list_resource_templates" in self.service
         has_read_resource = "read_resource" in self.service
         
-        # Check if service has schema functions (decorated with @schema_function)
-        has_schema_functions = self._has_schema_functions()
-        
         # Validate tools configuration
         if has_inline_tools and has_list_tools:
             raise ValueError("Cannot provide both 'tools' config and 'list_tools' function. Use one approach.")
-        
-        if has_schema_functions and (has_inline_tools or has_list_tools):
-            raise ValueError("Cannot mix schema_function decorated functions with other MCP approaches.")
         
         # Validate resources configuration
         if has_inline_resources and (has_list_resources or has_list_resource_templates or has_read_resource):
@@ -307,6 +285,34 @@ class HyphaMCPServer:
         # Validate prompts configuration
         if has_inline_prompts and (has_list_prompts or has_get_prompt):
             raise ValueError("Cannot provide both 'prompts' config and prompt functions. Use one approach.")
+        
+        # Validate inline tools are schema functions
+        if has_inline_tools:
+            for tool in self.service_info.tools:
+                if not (callable(tool) and hasattr(tool, '__schema__')):
+                    raise ValueError(f"Tool {tool} must be a @schema_function decorated function")
+        
+        # Validate inline resources have schema function readers
+        if has_inline_resources:
+            for resource in self.service_info.resources:
+                if not isinstance(resource, dict):
+                    raise ValueError(f"Resource {resource} must be a dictionary")
+                if 'read' not in resource:
+                    raise ValueError(f"Resource {resource} must have a 'read' key")
+                read_func = resource['read']
+                if not (callable(read_func) and hasattr(read_func, '__schema__')):
+                    raise ValueError(f"Resource read function {read_func} must be a @schema_function decorated function")
+        
+        # Validate inline prompts have schema function readers
+        if has_inline_prompts:
+            for prompt in self.service_info.prompts:
+                if not isinstance(prompt, dict):
+                    raise ValueError(f"Prompt {prompt} must be a dictionary")
+                if 'read' not in prompt:
+                    raise ValueError(f"Prompt {prompt} must have a 'read' key")
+                read_func = prompt['read']
+                if not (callable(read_func) and hasattr(read_func, '__schema__')):
+                    raise ValueError(f"Prompt read function {read_func} must be a @schema_function decorated function")
         
     def _setup_handlers(self):
         """Set up MCP protocol handlers."""
@@ -327,35 +333,19 @@ class HyphaMCPServer:
                     logger.exception("Error in list_tools")
                     return []
         
-        # Tools handlers - approach 2: using inline tools config
+        # Tools handlers - approach 2: using inline tools config (schema functions)
         elif hasattr(self.service_info, 'tools') and self.service_info.tools:
             @self.server.list_tools()
             async def list_tools() -> List[types.Tool]:
                 try:
                     tools = []
-                    for tool_config in self.service_info.tools:
-                        if isinstance(tool_config, dict):
-                            tools.append(types.Tool(**tool_config))
-                        else:
-                            # Assume it's already a Tool object
-                            tools.append(tool_config)
-                    return tools
-                except Exception as e:
-                    logger.exception("Error in inline tools list")
-                    return []
-        
-        # Tools handlers - approach 3: using schema functions
-        elif self._has_schema_functions():
-            @self.server.list_tools()
-            async def list_tools() -> List[types.Tool]:
-                try:
-                    schema_tools = self._extract_schema_functions()
-                    tools = []
-                    for tool_dict in schema_tools:
+                    for tool_func in self.service_info.tools:
+                        # Extract tool definition from schema function
+                        tool_dict = self._extract_tool_from_schema_function(tool_func)
                         tools.append(types.Tool(**tool_dict))
                     return tools
                 except Exception as e:
-                    logger.exception("Error in schema function tools list")
+                    logger.exception("Error in inline tools list")
                     return []
         
         if "call_tool" in self.service:
@@ -389,73 +379,26 @@ class HyphaMCPServer:
                     logger.exception("Error in call_tool")
                     return [types.TextContent(type="text", text=f"Error: {str(e)}")]
         
-        # Tool call handler - approach 2: using inline tools config
+        # Tool call handler - approach 2: using inline tools config (schema functions)
         elif hasattr(self.service_info, 'tools') and self.service_info.tools:
             @self.server.call_tool()
             async def call_tool(name: str, arguments: dict) -> List[types.ContentBlock]:
                 try:
                     # Find the tool by name
-                    tool_handler = None
-                    for tool_config in self.service_info.tools:
-                        if isinstance(tool_config, dict) and tool_config.get('name') == name:
-                            tool_handler = tool_config.get('handler')
-                            break
-                        elif hasattr(tool_config, 'name') and tool_config.name == name:
-                            tool_handler = getattr(tool_config, 'handler', None)
+                    tool_func = None
+                    for func in self.service_info.tools:
+                        if func.__name__ == name:
+                            tool_func = func
                             break
                     
-                    if not tool_handler:
+                    if not tool_func:
                         return [types.TextContent(type="text", text=f"Tool '{name}' not found")]
-                    
-                    # Call the tool handler
-                    if inspect.iscoroutinefunction(tool_handler):
-                        result = await tool_handler(**arguments)
-                    else:
-                        result = tool_handler(**arguments)
-                        if asyncio.isfuture(result) or inspect.iscoroutine(result):
-                            result = await result
-                    
-                    # Convert result to ContentBlock
-                    if isinstance(result, list) and result:
-                        content_blocks = []
-                        for item in result:
-                            if isinstance(item, dict):
-                                if item.get("type") == "text":
-                                    content_blocks.append(types.TextContent(**item))
-                                else:
-                                    content_blocks.append(types.TextContent(
-                                        type="text",
-                                        text=str(item)
-                                    ))
-                            else:
-                                content_blocks.append(types.TextContent(
-                                    type="text",
-                                    text=str(item)
-                                ))
-                        return content_blocks
-                    return [types.TextContent(type="text", text=str(result))]
-                except Exception as e:
-                    logger.exception(f"Error in inline tool call for {name}")
-                    return [types.TextContent(type="text", text=f"Error: {str(e)}")]
-        
-        # Tool call handler - approach 3: using schema functions
-        elif self._has_schema_functions():
-            @self.server.call_tool()
-            async def call_tool(name: str, arguments: dict) -> List[types.ContentBlock]:
-                try:
-                    # Find the schema function by name
-                    if name not in self.service:
-                        return [types.TextContent(type="text", text=f"Tool '{name}' not found")]
-                    
-                    func = self.service[name]
-                    if not (callable(func) and hasattr(func, '__schema__')):
-                        return [types.TextContent(type="text", text=f"Function '{name}' is not a schema function")]
                     
                     # Call the schema function directly with unpacked arguments
-                    if inspect.iscoroutinefunction(func):
-                        result = await func(**arguments)
+                    if inspect.iscoroutinefunction(tool_func):
+                        result = await tool_func(**arguments)
                     else:
-                        result = func(**arguments)
+                        result = tool_func(**arguments)
                         if asyncio.isfuture(result) or inspect.iscoroutine(result):
                             result = await result
                     
@@ -463,7 +406,7 @@ class HyphaMCPServer:
                     # For schema functions, always wrap the result as text content
                     return [types.TextContent(type="text", text=str(result))]
                 except Exception as e:
-                    logger.exception(f"Error in schema function call for {name}")
+                    logger.exception(f"Error in inline tool call for {name}")
                     return [types.TextContent(type="text", text=f"Error: {str(e)}")]
         
         # Prompts handlers - approach 1: using list_prompts/get_prompt functions
@@ -482,19 +425,37 @@ class HyphaMCPServer:
                     logger.exception("Error in list_prompts")
                     return []
         
-        # Prompts handlers - approach 2: using inline prompts config
+        # Prompts handlers - approach 2: using inline prompts config (schema functions)
         elif hasattr(self.service_info, 'prompts') and self.service_info.prompts:
             @self.server.list_prompts()
             async def list_prompts() -> List[types.Prompt]:
                 try:
                     prompts = []
                     for prompt_config in self.service_info.prompts:
-                        if isinstance(prompt_config, dict):
-                            # Extract prompt metadata without handler
-                            prompt_dict = {k: v for k, v in prompt_config.items() if k != 'read'}
-                            prompts.append(types.Prompt(**prompt_dict))
-                        else:
-                            prompts.append(prompt_config)
+                        # Extract prompt metadata without handler
+                        prompt_dict = {k: v for k, v in prompt_config.items() if k != 'read'}
+                        
+                        # Add arguments from the schema function if available
+                        if 'read' in prompt_config:
+                            read_func = prompt_config['read']
+                            if hasattr(read_func, '__schema__'):
+                                schema = getattr(read_func, '__schema__', {}) or {}
+                                parameters = schema.get('parameters', {})
+                                properties = parameters.get('properties', {})
+                                required = parameters.get('required', [])
+                                
+                                # Convert schema properties to prompt arguments
+                                arguments = []
+                                for prop_name, prop_info in properties.items():
+                                    arguments.append(types.PromptArgument(
+                                        name=prop_name,
+                                        description=prop_info.get('description', ''),
+                                        required=prop_name in required
+                                    ))
+                                
+                                prompt_dict['arguments'] = arguments
+                        
+                        prompts.append(types.Prompt(**prompt_dict))
                     return prompts
                 except Exception as e:
                     logger.exception("Error in inline prompts list")
@@ -554,7 +515,7 @@ class HyphaMCPServer:
                         )]
                     )
         
-        # Prompt handler - approach 2: using inline prompts config
+        # Prompt handler - approach 2: using inline prompts config (schema functions)
         elif hasattr(self.service_info, 'prompts') and self.service_info.prompts:
             @self.server.get_prompt()
             async def get_prompt(name: str, arguments: dict) -> types.GetPromptResult:
@@ -562,11 +523,8 @@ class HyphaMCPServer:
                     # Find the prompt by name
                     prompt_handler = None
                     for prompt_config in self.service_info.prompts:
-                        if isinstance(prompt_config, dict) and prompt_config.get('name') == name:
+                        if prompt_config.get('name') == name:
                             prompt_handler = prompt_config.get('read')
-                            break
-                        elif hasattr(prompt_config, 'name') and prompt_config.name == name:
-                            prompt_handler = getattr(prompt_config, 'read', None)
                             break
                     
                     if not prompt_handler:
@@ -578,7 +536,7 @@ class HyphaMCPServer:
                             )]
                         )
                     
-                    # Call the prompt handler
+                    # Call the schema function directly
                     if inspect.iscoroutinefunction(prompt_handler):
                         result = await prompt_handler(**arguments)
                     else:
@@ -586,10 +544,12 @@ class HyphaMCPServer:
                         if asyncio.isfuture(result) or inspect.iscoroutine(result):
                             result = await result
                     
-                    # Convert result to GetPromptResult
+                    # For schema functions, assume result is a simple string to be converted to a prompt
+                    # The schema function should return either a string or a properly structured dict
                     if isinstance(result, dict):
-                        # Convert messages if needed
+                        # If result is already a dict, try to use it as-is
                         if "messages" in result:
+                            # Convert messages if needed
                             messages = []
                             for msg in result["messages"]:
                                 if isinstance(msg, dict):
@@ -615,13 +575,15 @@ class HyphaMCPServer:
                                     ))
                             result["messages"] = messages
                         return types.GetPromptResult(**result)
-                    return types.GetPromptResult(
-                        description="No description",
-                        messages=[types.PromptMessage(
-                            role="user",
-                            content=types.TextContent(type="text", text=str(result))
-                        )]
-                    )
+                    else:
+                        # If result is a string, create a simple prompt
+                        return types.GetPromptResult(
+                            description=f"Prompt template for {name}",
+                            messages=[types.PromptMessage(
+                                role="user",
+                                content=types.TextContent(type="text", text=str(result))
+                            )]
+                        )
                 except Exception as e:
                     logger.exception(f"Error in inline prompt get for {name}")
                     return types.GetPromptResult(
@@ -648,24 +610,21 @@ class HyphaMCPServer:
                     logger.exception("Error in list_resource_templates")
                     return []
         
-        # Resources handlers - approach 2: using inline resources config
+        # Resources handlers - approach 2: using inline resources config (schema functions)
         elif hasattr(self.service_info, 'resources') and self.service_info.resources:
             @self.server.list_resource_templates()
             async def list_resource_templates() -> List[types.ResourceTemplate]:
                 try:
                     templates = []
                     for resource_config in self.service_info.resources:
-                        if isinstance(resource_config, dict):
-                            # Create ResourceTemplate from resource config
-                            template_dict = {
-                                "uriTemplate": resource_config.get("uri", ""),
-                                "name": resource_config.get("name", ""),
-                                "description": resource_config.get("description", ""),
-                                "mimeType": resource_config.get("mime_type", "text/plain")
-                            }
-                            templates.append(types.ResourceTemplate(**template_dict))
-                        else:
-                            templates.append(resource_config)
+                        # Create ResourceTemplate from resource config
+                        template_dict = {
+                            "uriTemplate": resource_config.get("uri", ""),
+                            "name": resource_config.get("name", ""),
+                            "description": resource_config.get("description", ""),
+                            "mimeType": resource_config.get("mime_type", "text/plain")
+                        }
+                        templates.append(types.ResourceTemplate(**template_dict))
                     return templates
                 except Exception as e:
                     logger.exception("Error in inline resources list_resource_templates")
@@ -686,24 +645,21 @@ class HyphaMCPServer:
                     logger.exception("Error in list_resources")
                     return []
         
-        # Resources list handler - approach 2: using inline resources config
+        # Resources list handler - approach 2: using inline resources config (schema functions)
         elif hasattr(self.service_info, 'resources') and self.service_info.resources:
             @self.server.list_resources()
             async def list_resources() -> List[types.Resource]:
                 try:
                     resources = []
                     for resource_config in self.service_info.resources:
-                        if isinstance(resource_config, dict):
-                            # Create Resource from resource config
-                            resource_dict = {
-                                "uri": resource_config.get("uri", ""),
-                                "name": resource_config.get("name", ""),
-                                "description": resource_config.get("description", ""),
-                                "mimeType": resource_config.get("mime_type", "text/plain")
-                            }
-                            resources.append(types.Resource(**resource_dict))
-                        else:
-                            resources.append(resource_config)
+                        # Create Resource from resource config
+                        resource_dict = {
+                            "uri": resource_config.get("uri", ""),
+                            "name": resource_config.get("name", ""),
+                            "description": resource_config.get("description", ""),
+                            "mimeType": resource_config.get("mime_type", "text/plain")
+                        }
+                        resources.append(types.Resource(**resource_dict))
                     return resources
                 except Exception as e:
                     logger.exception("Error in inline resources list_resources")
@@ -736,7 +692,7 @@ class HyphaMCPServer:
                         )]
                     )
         
-        # Resource read handler - approach 2: using inline resources config
+        # Resource read handler - approach 2: using inline resources config (schema functions)
         elif hasattr(self.service_info, 'resources') and self.service_info.resources:
             @self.server.read_resource()
             async def read_resource(uri: AnyUrl) -> types.ReadResourceResult:
@@ -744,11 +700,8 @@ class HyphaMCPServer:
                     # Find the resource by URI
                     resource_handler = None
                     for resource_config in self.service_info.resources:
-                        if isinstance(resource_config, dict) and resource_config.get('uri') == str(uri):
+                        if resource_config.get('uri') == str(uri):
                             resource_handler = resource_config.get('read')
-                            break
-                        elif hasattr(resource_config, 'uri') and resource_config.uri == str(uri):
-                            resource_handler = getattr(resource_config, 'read', None)
                             break
                     
                     if not resource_handler:
@@ -760,7 +713,7 @@ class HyphaMCPServer:
                             )]
                         )
                     
-                    # Call the resource handler
+                    # Call the schema function directly
                     if inspect.iscoroutinefunction(resource_handler):
                         result = await resource_handler()
                     else:
@@ -839,6 +792,9 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
     mcp_server = HyphaMCPServer(service, service_info)
     server = mcp_server.get_server()
     
+    # Get the actual service object to access tool functions
+    # The 'service' parameter is already the actual service object passed from the middleware
+    
     # Simple JSON-RPC handler for testing (no SSE for now)
     async def handle_mcp_request(scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -858,12 +814,72 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
         try:
             # Parse JSON-RPC request
             request_data = json.loads(body.decode("utf-8"))
+            logger.debug(f"Parsed JSON-RPC request: {request_data}")
             
             # Handle JSON-RPC request
             if request_data.get("method") == "tools/list":
-                if "list_tools" in service:
+                logger.debug(f"Received tools/list request: {request_data}")
+                # Check if service has list_tools function OR if MCP server has tools configured
+                has_list_tools = "list_tools" in service
+                # Check for tools in service.tools (actual functions) and service_info.service_schema.tools (schema)
+                has_inline_tools = (hasattr(service, 'tools') and service.tools and
+                                  hasattr(service_info, 'service_schema') and 
+                                  hasattr(service_info.service_schema, 'tools') and 
+                                  service_info.service_schema.tools and
+                                  len(service.tools) > 0)
+                has_tools = has_list_tools or has_inline_tools
+                
+                logger.debug(f"MCP tools/list check - has_list_tools: {has_list_tools}, has_inline_tools: {has_inline_tools}, has_tools: {has_tools}")
+                logger.debug(f"Service object type: {type(service)}")
+                logger.debug(f"Service object attributes: {[attr for attr in dir(service) if not attr.startswith('_')]}")
+                logger.debug(f"Service.tools: {service.tools if hasattr(service, 'tools') else 'None'}")
+                if hasattr(service, 'tools') and service.tools:
+                    logger.debug(f"Service tools type: {type(service.tools)}")
+                    logger.debug(f"Service tools content: {[str(tool) for tool in service.tools]}")
+                logger.debug(f"Service info service_schema: {service_info.service_schema if hasattr(service_info, 'service_schema') else 'None'}")
+                if hasattr(service_info, 'service_schema') and hasattr(service_info.service_schema, 'tools'):
+                    logger.debug(f"Service schema tools: {service_info.service_schema.tools}")
+                if has_inline_tools:
+                    logger.debug(f"Service has {len(service.tools)} tool functions")
+                
+                if has_tools:
+                    logger.debug(f"Has tools, processing tools/list request")
                     try:
-                        tools = await mcp_server._call_service_function("list_tools", {})
+                        logger.debug(f"Entered tools processing try block")
+                        # Use MCP server's list_tools handler which handles both approaches
+                        if "list_tools" in service:
+                            logger.debug("Using list_tools function")
+                            # Direct function call
+                            tools = await mcp_server._call_service_function("list_tools", {})
+                        else:
+                            logger.debug("Using inline tools extraction")
+                            # Use the actual tool functions from service.tools
+                            tools = []
+                            logger.debug(f"About to process {len(service.tools)} tools")
+                            # Iterate through both the actual functions and their schema
+                            for i, tool_func in enumerate(service.tools):
+                                logger.debug(f"Processing tool function #{i}: {tool_func}")
+                                try:
+                                    # Extract tool schema using the MCP server's method
+                                    tool_dict = mcp_server._extract_tool_from_schema_function(tool_func)
+                                    logger.debug(f"Extracted tool dict: {tool_dict}")
+                                    tools.append(tool_dict)
+                                except Exception as e:
+                                    logger.exception(f"Error extracting tool schema for function #{i}: {e}")
+                                    # Fallback: use schema from service_info if available
+                                    if i < len(service_info.service_schema.tools):
+                                        tool_schema = service_info.service_schema.tools[i]
+                                        if hasattr(tool_schema, 'function'):
+                                            func_info = tool_schema.function
+                                            tool_dict = {
+                                                "name": func_info.name,
+                                                "description": func_info.description,
+                                                "inputSchema": func_info.parameters
+                                            }
+                                            logger.debug(f"Fallback tool dict: {tool_dict}")
+                                            tools.append(tool_dict)
+                            logger.debug(f"Finished processing tools, got {len(tools)} tools")
+                        
                         logger.debug(f"Raw tools result: {tools}")
                         logger.debug(f"Tools type: {type(tools)}")
                         if tools:
@@ -896,27 +912,14 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                             "result": {"tools": tools_data}
                         }
                     except Exception as e:
-                        response = {
-                            "jsonrpc": "2.0",
-                            "id": request_data.get("id"),
-                            "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
-                        }
-                elif mcp_server._has_schema_functions():
-                    try:
-                        # Extract tools from schema functions
-                        schema_tools = mcp_server._extract_schema_functions()
-                        response = {
-                            "jsonrpc": "2.0",
-                            "id": request_data.get("id"),
-                            "result": {"tools": schema_tools}
-                        }
-                    except Exception as e:
+                        logger.exception("Error in tools/list handler")
                         response = {
                             "jsonrpc": "2.0",
                             "id": request_data.get("id"),
                             "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
                         }
                 else:
+                    logger.debug(f"No tools detected, returning empty list")
                     response = {
                         "jsonrpc": "2.0",
                         "id": request_data.get("id"),
@@ -924,10 +927,48 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                     }
             
             elif request_data.get("method") == "tools/call":
-                if "call_tool" in service:
+                # Check if service has call_tool function OR if MCP server has tools configured
+                has_call_tool = ("call_tool" in service or 
+                               (hasattr(service, 'tools') and service.tools and
+                                hasattr(service_info, 'service_schema') and 
+                                hasattr(service_info.service_schema, 'tools') and 
+                                service_info.service_schema.tools and
+                                len(service.tools) > 0))
+                
+                if has_call_tool:
                     try:
                         params = request_data.get("params", {})
-                        result = await mcp_server._call_service_function("call_tool", params)
+                        
+                        # Use appropriate call mechanism
+                        if "call_tool" in service:
+                            # Direct function call
+                            result = await mcp_server._call_service_function("call_tool", params)
+                        else:
+                            # Use inline tools - find and call the tool function directly
+                            tool_name = params.get("name")
+                            arguments = params.get("arguments", {})
+                            
+                            # Find the tool function by name in service.tools
+                            tool_func = None
+                            for i, func in enumerate(service.tools):
+                                # Check the schema to get the function name
+                                if i < len(service_info.service_schema.tools):
+                                    tool_schema = service_info.service_schema.tools[i]
+                                    if hasattr(tool_schema, 'function') and tool_schema.function.name == tool_name:
+                                        tool_func = func
+                                        break
+                            
+                            if tool_func:
+                                # Call the schema function directly with unpacked arguments
+                                if inspect.iscoroutinefunction(tool_func):
+                                    result = await tool_func(**arguments)
+                                else:
+                                    result = tool_func(**arguments)
+                                    if asyncio.isfuture(result) or inspect.iscoroutine(result):
+                                        result = await result
+                            else:
+                                result = f"Tool '{tool_name}' not found"
+                        
                         # Convert to proper JSON format
                         if isinstance(result, list) and result:
                             content_data = []
@@ -953,49 +994,7 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                             "result": {"content": content_data}
                         }
                     except Exception as e:
-                        response = {
-                            "jsonrpc": "2.0",
-                            "id": request_data.get("id"),
-                            "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
-                        }
-                elif mcp_server._has_schema_functions():
-                    try:
-                        params = request_data.get("params", {})
-                        name = params.get("name")
-                        arguments = params.get("arguments", {})
-                        
-                        # Find the schema function by name
-                        if name not in service:
-                            response = {
-                                "jsonrpc": "2.0",
-                                "id": request_data.get("id"),
-                                "error": {"code": -32602, "message": f"Tool '{name}' not found"}
-                            }
-                        else:
-                            func = service[name]
-                            if not (callable(func) and hasattr(func, '__schema__')):
-                                response = {
-                                    "jsonrpc": "2.0",
-                                    "id": request_data.get("id"),
-                                    "error": {"code": -32602, "message": f"Function '{name}' is not a schema function"}
-                                }
-                            else:
-                                # Call the schema function directly
-                                if inspect.iscoroutinefunction(func):
-                                    result = await func(**arguments)
-                                else:
-                                    result = func(**arguments)
-                                    if asyncio.isfuture(result) or inspect.iscoroutine(result):
-                                        result = await result
-                                
-                                # Convert result to proper format
-                                content_data = [{"type": "text", "text": str(result)}]
-                                response = {
-                                    "jsonrpc": "2.0",
-                                    "id": request_data.get("id"),
-                                    "result": {"content": content_data}
-                                }
-                    except Exception as e:
+                        logger.exception("Error in tools/call handler")
                         response = {
                             "jsonrpc": "2.0",
                             "id": request_data.get("id"),
@@ -1009,9 +1008,75 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                     }
             
             elif request_data.get("method") == "prompts/list":
-                if "list_prompts" in service:
+                # Check if service has list_prompts function OR if service has prompts configured
+                has_list_prompts = "list_prompts" in service
+                has_inline_prompts = (hasattr(service, 'prompts') and service.prompts and
+                                    hasattr(service_info, 'service_schema') and 
+                                    hasattr(service_info.service_schema, 'prompts') and 
+                                    service_info.service_schema.prompts and
+                                    len(service.prompts) > 0)
+                has_prompts = has_list_prompts or has_inline_prompts
+                
+                if has_prompts:
                     try:
-                        prompts = await mcp_server._call_service_function("list_prompts", {})
+                        if has_list_prompts:
+                            prompts = await mcp_server._call_service_function("list_prompts", {})
+                        else:
+                            # Extract prompts from service.prompts 
+                            prompts = []
+                            logger.debug(f"Service has {len(service.prompts)} prompt functions")
+                            logger.debug(f"Service schema has {len(service_info.service_schema.prompts)} prompt schemas")
+                            
+                            # Extract prompt metadata directly from service.prompts
+                            if hasattr(service, 'prompts') and service.prompts:
+                                logger.debug(f"Service.prompts: {service.prompts}")
+                                # Extract metadata from the actual prompt objects
+                                for i, prompt_obj in enumerate(service.prompts):
+                                    logger.debug(f"Processing prompt object #{i}: {prompt_obj}")
+                                    
+                                    # Get metadata from the prompt object
+                                    if hasattr(prompt_obj, 'name'):
+                                        name = prompt_obj.name
+                                    elif hasattr(prompt_obj, 'get'):
+                                        name = prompt_obj.get('name', f'prompt_{i}')
+                                    else:
+                                        name = f'prompt_{i}'
+                                        
+                                    if hasattr(prompt_obj, 'description'):
+                                        description = prompt_obj.description
+                                    elif hasattr(prompt_obj, 'get'):
+                                        description = prompt_obj.get('description', f'Prompt {i}')
+                                    else:
+                                        description = f'Prompt {i}'
+                                    
+                                    # Get arguments from the schema function if available
+                                    arguments = []
+                                    if hasattr(prompt_obj, 'read') or (hasattr(prompt_obj, 'get') and prompt_obj.get('read')):
+                                        read_func = prompt_obj.read if hasattr(prompt_obj, 'read') else prompt_obj.get('read')
+                                        if hasattr(read_func, '__schema__'):
+                                            schema = getattr(read_func, '__schema__', {}) or {}
+                                            parameters = schema.get('parameters', {})
+                                            properties = parameters.get('properties', {})
+                                            required = parameters.get('required', [])
+                                            
+                                            # Convert schema properties to prompt arguments
+                                            for prop_name, prop_info in properties.items():
+                                                arguments.append({
+                                                    "name": prop_name,
+                                                    "description": prop_info.get('description', ''),
+                                                    "required": prop_name in required
+                                                })
+                                    
+                                    prompt_dict = {
+                                        "name": name,
+                                        "description": description,
+                                        "arguments": arguments
+                                    }
+                                    logger.debug(f"Extracted prompt template: {prompt_dict}")
+                                    prompts.append(prompt_dict)
+                            else:
+                                logger.debug("No service.prompts found")
+                        
                         # Convert to proper JSON format
                         if isinstance(prompts, list) and prompts:
                             prompts_data = []
@@ -1037,6 +1102,7 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                             "result": {"prompts": prompts_data}
                         }
                     except Exception as e:
+                        logger.exception("Error in prompts/list handler")
                         response = {
                             "jsonrpc": "2.0",
                             "id": request_data.get("id"),
@@ -1050,7 +1116,15 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                     }
             
             elif request_data.get("method") == "prompts/get":
-                if "get_prompt" in service:
+                # Check if service has get_prompt function OR if service has inline prompts
+                has_get_prompt = "get_prompt" in service
+                has_inline_prompts = (hasattr(service, 'prompts') and service.prompts and
+                                    hasattr(service_info, 'service_schema') and 
+                                    hasattr(service_info.service_schema, 'prompts') and 
+                                    service_info.service_schema.prompts and
+                                    len(service.prompts) > 0)
+                
+                if has_get_prompt:
                     try:
                         params = request_data.get("params", {})
                         result = await mcp_server._call_service_function("get_prompt", params)
@@ -1075,6 +1149,84 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                             "id": request_data.get("id"),
                             "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
                         }
+                elif has_inline_prompts:
+                    try:
+                        params = request_data.get("params", {})
+                        prompt_name = params.get("name")
+                        arguments = params.get("arguments", {})
+                        
+                        # Find the prompt by name
+                        prompt_handler = None
+                        for prompt_obj in service.prompts:
+                            # Get name from prompt object
+                            if hasattr(prompt_obj, 'name'):
+                                name = prompt_obj.name
+                            elif hasattr(prompt_obj, 'get'):
+                                name = prompt_obj.get('name', '')
+                            else:
+                                name = ''
+                                
+                            if name == prompt_name:
+                                prompt_handler = prompt_obj.read if hasattr(prompt_obj, 'read') else prompt_obj.get('read')
+                                break
+                        
+                        if not prompt_handler:
+                            response = {
+                                "jsonrpc": "2.0",
+                                "id": request_data.get("id"),
+                                "error": {"code": -32602, "message": f"Prompt '{prompt_name}' not found"}
+                            }
+                        else:
+                            # Call the schema function directly
+                            if inspect.iscoroutinefunction(prompt_handler):
+                                result = await prompt_handler(**arguments)
+                            else:
+                                result = prompt_handler(**arguments)
+                                if asyncio.isfuture(result) or inspect.iscoroutine(result):
+                                    result = await result
+                            
+                            # Convert result to proper MCP format
+                            if isinstance(result, dict):
+                                # If result is already a dict with messages, use it as-is
+                                if "messages" in result:
+                                    response = {
+                                        "jsonrpc": "2.0",
+                                        "id": request_data.get("id"),
+                                        "result": result
+                                    }
+                                else:
+                                    # If result doesn't have messages, wrap it
+                                    response = {
+                                        "jsonrpc": "2.0",
+                                        "id": request_data.get("id"),
+                                        "result": {
+                                            "description": result.get("description", f"Prompt template for {prompt_name}"),
+                                            "messages": result.get("messages", [])
+                                        }
+                                    }
+                            else:
+                                # If result is a string, create a simple prompt response
+                                response = {
+                                    "jsonrpc": "2.0",
+                                    "id": request_data.get("id"),
+                                    "result": {
+                                        "description": f"Prompt template for {prompt_name}",
+                                        "messages": [{
+                                            "role": "user",
+                                            "content": {
+                                                "type": "text",
+                                                "text": str(result)
+                                            }
+                                        }]
+                                    }
+                                }
+                    except Exception as e:
+                        logger.exception(f"Error in inline prompts/get handler for {prompt_name}")
+                        response = {
+                            "jsonrpc": "2.0",
+                            "id": request_data.get("id"),
+                            "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
+                        }
                 else:
                     response = {
                         "jsonrpc": "2.0",
@@ -1083,23 +1235,111 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                     }
             
             elif request_data.get("method") == "resources/templates/list":
-                if "list_resource_templates" in service:
+                # Check if service has list_resource_templates function OR if service has resources configured
+                has_list_resource_templates = "list_resource_templates" in service
+                has_inline_resources = (hasattr(service, 'resources') and service.resources and
+                                      hasattr(service_info, 'service_schema') and 
+                                      hasattr(service_info.service_schema, 'resources') and 
+                                      service_info.service_schema.resources and
+                                      len(service.resources) > 0)
+                has_resources = has_list_resource_templates or has_inline_resources
+                
+                if has_resources:
                     try:
-                        templates = await mcp_server._call_service_function("list_resource_templates", {})
-                        # Convert to proper JSON format
-                        if isinstance(templates, list) and templates:
-                            templates_data = []
-                            for template in templates:
-                                # Handle ObjectProxy wrapping from Hypha RPC
-                                template_data = unwrap_object_proxy(template)
+                        if has_list_resource_templates:
+                            templates = await mcp_server._call_service_function("list_resource_templates", {})
+                        else:
+                            # Use MCP server's list_resource_templates method for inline resources
+                            templates = []
+                            # Extract resource templates from service.resources and service_info.service_schema.resources
+                            # Similar to how tools work
+                            logger.debug(f"Service has {len(service.resources)} resource functions")
+                            logger.debug(f"Service schema has {len(service_info.service_schema.resources)} resource schemas")
+                            logger.debug(f"Service_info attributes: {[attr for attr in dir(service_info) if not attr.startswith('_')]}")
+                            
+                            # Check if service_info has the original resource configuration
+                            if hasattr(service_info, 'resources') and service_info.resources:
+                                logger.debug(f"Found service_info.resources: {service_info.resources}")
+                                # Use the original resource configuration
+                                for resource_config in service_info.resources:
+                                    template_dict = {
+                                        "uriTemplate": resource_config.get("uri", "unknown"),
+                                        "name": resource_config.get("name", "unknown"),
+                                        "description": resource_config.get("description", "unknown"),
+                                        "mimeType": resource_config.get("mime_type", "text/plain")
+                                    }
+                                    logger.debug(f"Template from service_info.resources: {template_dict}")
+                                    templates.append(template_dict)
+                            else:
+                                logger.debug("No service_info.resources found, using fallback method")
+                                
+                                # Try to access the original resource configuration from various sources
+                                logger.debug(f"MCP server attributes: {[attr for attr in dir(mcp_server) if not attr.startswith('_')]}")
+                                
+                                # Check if service has original resource config as metadata
+                                if hasattr(service, '_original_resources'):
+                                    logger.debug(f"Service has _original_resources: {service._original_resources}")
+                                
+                                # Check if the service has resource metadata stored somewhere
+                                service_attrs = [attr for attr in dir(service) if not attr.startswith('_')]
+                                logger.debug(f"Service attributes: {service_attrs}")
+                                
+                                # Fallback: Create template from resource functions and schema
+                                if hasattr(service, 'resources') and service.resources and hasattr(service_info, 'service_schema') and service_info.service_schema.resources:
+                                    logger.debug("Using fallback: service.resources and service_info.service_schema.resources")
+                                    
+                                    # service.resources should contain resource objects
+                                    # service_info.service_schema.resources should contain schema info
+                                    for i, resource_obj in enumerate(service.resources):
+                                        logger.debug(f"Processing resource object #{i}: {resource_obj}")
+                                        
+                                        # Get corresponding schema if available
+                                        resource_schema = None
+                                        if i < len(service_info.service_schema.resources):
+                                            resource_schema = service_info.service_schema.resources[i]
+                                            logger.debug(f"Resource schema #{i}: {resource_schema}")
+                                        
+                                        # Extract metadata from resource object or schema
+                                        try:
+                                            # Try to get attributes from resource object
+                                            uri = getattr(resource_obj, 'uri', None) or getattr(resource_obj, 'get', lambda k, d: d)('uri', 'resource://unknown')
+                                            name = getattr(resource_obj, 'name', None) or getattr(resource_obj, 'get', lambda k, d: d)('name', f'Resource {i}')
+                                            description = getattr(resource_obj, 'description', None) or getattr(resource_obj, 'get', lambda k, d: d)('description', 'A resource')
+                                            mime_type = getattr(resource_obj, 'mime_type', None) or getattr(resource_obj, 'get', lambda k, d: d)('mime_type', 'text/plain')
+                                        except Exception as e:
+                                            logger.debug(f"Failed to extract metadata from resource object: {e}")
+                                            uri = 'resource://unknown'
+                                            name = f'Resource {i}'
+                                            description = 'A resource'
+                                            mime_type = 'text/plain'
+                                        
+                                        template_dict = {
+                                            "uriTemplate": uri,
+                                            "name": name,
+                                            "description": description,
+                                            "mimeType": mime_type
+                                        }
+                                        logger.debug(f"Extracted template dict: {template_dict}")
+                                        templates.append(template_dict)
+                        
+                        # Convert to final format
+                        templates_data = []
+                        if templates:
+                            logger.debug(f"Templates type: {type(templates)}")
+                            logger.debug(f"First template type: {type(templates[0])}")
+                            logger.debug(f"First template: {templates[0]}")
+                            
+                            for template_data in templates:
+                                # Unwrap ObjectProxy first
+                                unwrapped_template = unwrap_object_proxy(template_data)
                                 
                                 # Convert to dict if it's an MCP object
-                                if hasattr(template_data, 'model_dump'):
-                                    template_dict = template_data.model_dump()
-                                elif isinstance(template_data, dict):
-                                    template_dict = template_data
+                                if hasattr(unwrapped_template, 'model_dump'):
+                                    template_dict = unwrapped_template.model_dump()
+                                elif isinstance(unwrapped_template, dict):
+                                    template_dict = unwrapped_template
                                 else:
-                                    template_dict = {"uriTemplate": str(template_data), "name": str(template_data)}
+                                    template_dict = {"uriTemplate": str(unwrapped_template), "name": str(unwrapped_template)}
                                 
                                 templates_data.append(template_dict)
                         else:
@@ -1111,6 +1351,7 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                             "result": {"resourceTemplates": templates_data}
                         }
                     except Exception as e:
+                        logger.exception("Error in resources/templates/list handler")
                         response = {
                             "jsonrpc": "2.0",
                             "id": request_data.get("id"),
@@ -1122,7 +1363,172 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                         "id": request_data.get("id"),
                         "result": {"resourceTemplates": []}
                     }
+
+            elif request_data.get("method") == "resources/list":
+                # Handle resources/list method - this is what many MCP clients call
+                # We can reuse the same logic as resources/templates/list but return "resources" instead of "resourceTemplates"
+                has_list_resource_templates = "list_resource_templates" in service
+                has_inline_resources = (hasattr(service, 'resources') and service.resources and
+                                      hasattr(service_info, 'service_schema') and 
+                                      hasattr(service_info.service_schema, 'resources') and 
+                                      service_info.service_schema.resources and
+                                      len(service.resources) > 0)
+                has_resources = has_list_resource_templates or has_inline_resources
+                
+                if has_resources:
+                    try:
+                        if has_list_resource_templates:
+                            resources = await mcp_server._call_service_function("list_resource_templates", {})
+                        else:
+                            # Extract resources from service.resources and service_info.service_schema.resources
+                            resources = []
+                            logger.debug(f"Service has {len(service.resources)} resource functions")
+                            logger.debug(f"Service schema has {len(service_info.service_schema.resources)} resource schemas")
+                            
+                            # Check if service_info has the original resource configuration
+                            if hasattr(service_info, 'resources') and service_info.resources:
+                                logger.debug(f"Found service_info.resources: {service_info.resources}")
+                                # Use the original resource configuration
+                                for resource_config in service_info.resources:
+                                    resource_dict = {
+                                        "uri": resource_config.get("uri", "unknown"),
+                                        "name": resource_config.get("name", "unknown"),
+                                        "description": resource_config.get("description", "unknown"),
+                                        "mimeType": resource_config.get("mime_type", "text/plain")
+                                    }
+                                    logger.debug(f"Resource from service_info.resources: {resource_dict}")
+                                    resources.append(resource_dict)
+                            else:
+                                # Fallback: Create resource from resource functions and schema
+                                if hasattr(service, 'resources') and service.resources and hasattr(service_info, 'service_schema') and service_info.service_schema.resources:
+                                    logger.debug("Using fallback: service.resources and service_info.service_schema.resources")
+                                    
+                                    for i, resource_obj in enumerate(service.resources):
+                                        logger.debug(f"Processing resource object #{i}: {resource_obj}")
+                                        
+                                        # Extract metadata from resource object
+                                        try:
+                                            # Try to get attributes from resource object
+                                            uri = getattr(resource_obj, 'uri', None) or getattr(resource_obj, 'get', lambda k, d: d)('uri', 'resource://unknown')
+                                            name = getattr(resource_obj, 'name', None) or getattr(resource_obj, 'get', lambda k, d: d)('name', f'Resource {i}')
+                                            description = getattr(resource_obj, 'description', None) or getattr(resource_obj, 'get', lambda k, d: d)('description', 'A resource')
+                                            mime_type = getattr(resource_obj, 'mime_type', None) or getattr(resource_obj, 'get', lambda k, d: d)('mime_type', 'text/plain')
+                                        except Exception as e:
+                                            logger.debug(f"Failed to extract metadata from resource object: {e}")
+                                            uri = 'resource://unknown'
+                                            name = f'Resource {i}'
+                                            description = 'A resource'
+                                            mime_type = 'text/plain'
+                                        
+                                        resource_dict = {
+                                            "uri": uri,
+                                            "name": name,
+                                            "description": description,
+                                            "mimeType": mime_type
+                                        }
+                                        logger.debug(f"Extracted resource dict: {resource_dict}")
+                                        resources.append(resource_dict)
+                        
+                        # Convert to final format
+                        resources_data = []
+                        if resources:
+                            logger.debug(f"Resources type: {type(resources)}")
+                            logger.debug(f"First resource type: {type(resources[0])}")
+                            logger.debug(f"First resource: {resources[0]}")
+                            
+                            for resource_data in resources:
+                                # Convert to dict if it's an MCP object
+                                if hasattr(resource_data, 'model_dump'):
+                                    resource_dict = resource_data.model_dump()
+                                elif isinstance(resource_data, dict):
+                                    resource_dict = resource_data
+                                else:
+                                    resource_dict = {"uri": str(resource_data), "name": str(resource_data)}
+                                
+                                resources_data.append(resource_dict)
+                        else:
+                            resources_data = []
+                        
+                        response = {
+                            "jsonrpc": "2.0",
+                            "id": request_data.get("id"),
+                            "result": {"resources": resources_data}
+                        }
+                    except Exception as e:
+                        logger.exception("Error in resources/list handler")
+                        response = {
+                            "jsonrpc": "2.0",
+                            "id": request_data.get("id"),
+                            "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
+                        }
+                else:
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_data.get("id"),
+                        "result": {"resources": []}
+                    }
             
+            elif request_data.get("method") == "resources/read":
+                # Handle reading a specific resource
+                params = request_data.get("params", {})
+                uri = params.get("uri")
+                
+                if not uri:
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_data.get("id"),
+                        "error": {"code": -32602, "message": "Invalid params: uri is required"}
+                    }
+                else:
+                    logger.debug(f"Reading resource with URI: {uri}")
+                    
+                    # Find the resource by URI
+                    resource_to_read = None
+                    for resource in service.resources:
+                        if resource.get("uri") == uri:
+                            resource_to_read = resource
+                            break
+                    
+                    if not resource_to_read:
+                        response = {
+                            "jsonrpc": "2.0",
+                            "id": request_data.get("id"),
+                            "error": {"code": -32602, "message": f"Resource not found: {uri}"}
+                        }
+                    else:
+                        # Call the resource's read function
+                        read_function = resource_to_read.get("read")
+                        if not read_function:
+                            response = {
+                                "jsonrpc": "2.0",
+                                "id": request_data.get("id"),
+                                "error": {"code": -32601, "message": f"Resource {uri} has no read function"}
+                            }
+                        else:
+                            try:
+                                content = await read_function()
+                                response = {
+                                    "jsonrpc": "2.0",
+                                    "id": request_data.get("id"),
+                                    "result": {
+                                        "contents": [
+                                            {
+                                                "type": "text",
+                                                "text": str(content),
+                                                "uri": uri  # Add the required uri field
+                                            }
+                                        ]
+                                    }
+                                }
+                                logger.debug(f"Final JSON-RPC response: {response}")
+                            except Exception as e:
+                                logger.error(f"Error reading resource {uri}: {e}")
+                                response = {
+                                    "jsonrpc": "2.0",
+                                    "id": request_data.get("id"),
+                                    "error": {"code": -32603, "message": f"Internal error reading resource: {str(e)}"}
+                                }
+                
             elif "method" not in request_data:
                 logger.debug(f"Invalid request: {request_data}")
                 response = {
@@ -1151,6 +1557,7 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
             }
         
         # Send response
+        logger.debug(f"Final JSON-RPC response: {response}")
         response_body = json.dumps(response).encode("utf-8")
         await send({
             "type": "http.response.start",
@@ -1160,10 +1567,12 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                 [b"content-length", str(len(response_body)).encode()],
             ],
         })
-        await send({
-            "type": "http.response.body",
-            "body": response_body,
-        })
+        await send(
+            {
+                "type": "http.response.body",
+                "body": response_body,
+            }
+        )
     
     # Create Starlette app
     app = Starlette(
@@ -1181,8 +1590,7 @@ def is_mcp_compatible_service(service) -> bool:
     A service is MCP compatible if:
     1. It has type="mcp", OR
     2. It has MCP protocol functions (list_tools, call_tool, etc.), OR
-    3. It has inline tools/resources/prompts config (via service_info), OR
-    4. It has @schema_function decorated functions
+    3. It has inline tools/resources/prompts config (via service_info)
     """
     # Check for explicit MCP type in service
     if hasattr(service, "type") and service.type == "mcp":
@@ -1208,15 +1616,7 @@ def is_mcp_compatible_service(service) -> bool:
     # For object services, check attributes
     has_mcp_functions = any(hasattr(service, func) for func in mcp_functions)
     
-    # Check for schema functions (decorated with @schema_function)
-    has_schema_functions = False
-    if isinstance(service, dict):
-        for key, func in service.items():
-            if callable(func) and hasattr(func, '__schema__'):
-                has_schema_functions = True
-                break
-    
-    return has_mcp_functions or has_schema_functions
+    return has_mcp_functions
 
 
 class MCPRoutingMiddleware:
