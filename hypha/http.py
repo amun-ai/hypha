@@ -252,7 +252,7 @@ class ASGIRoutingMiddleware:
                         # intercept the request if it's an ASGI service
                         # Check multiple possible ways the service type might be stored
                         service_type = getattr(service, "type", None)
-                        if service_type == "asgi":
+                        if service_type in ["asgi", "ASGI"]:
                             # Call the ASGI app with manually provided receive and send
                             await service.serve(
                                 {

@@ -607,6 +607,7 @@ class ArtifactController:
             zip_file_path: str,
             path: str = "",
             version: str = None,
+            stage: bool = False,
             token: str = None,
             user_info: store.login_optional = Depends(store.login_optional),
         ) -> Response:
@@ -624,6 +625,10 @@ class ArtifactController:
                 session = await self._get_session(read_only=True)
                 if token:
                     user_info = await self.store.parse_user_token(token)
+
+                if stage:
+                    assert version is None or version == "stage", "You cannot specify a version when using stage mode."
+                    version = "stage"
 
                 if "/~/" in zip_file_path:
                     assert (
@@ -717,6 +722,7 @@ class ArtifactController:
             path: str = "",
             silent: bool = False,
             version: str = None,
+            stage: bool = False,
             token: str = None,
             limit: int = 1000,
             use_proxy: bool = False,
@@ -727,6 +733,9 @@ class ArtifactController:
                 artifact_id = self._validate_artifact_id(
                     artifact_alias, {"ws": workspace}
                 )
+                if stage:
+                    assert version is None or version == "stage", "You cannot specify a version when using stage mode."
+                    version = "stage"
                 session = await self._get_session(read_only=True)
                 if token:
                     user_info = await self.store.parse_user_token(token)
@@ -2102,6 +2111,7 @@ class ArtifactController:
         artifact_id,
         silent=False,
         version: str = None,
+        stage: bool = False,
         context: dict = None,
     ):
         """Read the artifact's data including manifest and config."""
@@ -2109,6 +2119,12 @@ class ArtifactController:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
         user_info = UserInfo.model_validate(context["user"])
+        
+        # Handle stage parameter
+        if stage:
+            assert version is None or version == "stage", "You cannot specify a version when using stage mode."
+            version = "stage"
+        
         session = await self._get_session()
         try:
             async with session.begin():
@@ -2242,18 +2258,47 @@ class ArtifactController:
                         if "_intent" in file_info:
                             continue
 
-                        # Determine target version based on intent (same logic as put_file)
+                        # Files are always placed at staging version index by put_file
+                        staging_version = len(artifact.versions or [])
+                        
+                        # Determine final target version based on intent
                         if has_new_version_intent:
-                            # Files are in new version index
-                            target_version = len(versions)
+                            # Files will be moved to new version index
+                            final_target_version = len(versions)
                         else:
-                            # Files are in existing latest version index
-                            target_version = max(0, len(versions) - 1)
+                            # Files will be moved to existing latest version index
+                            final_target_version = max(0, len(versions) - 1)
 
-                        file_key = safe_join(
+                        # Check if file exists at staging location
+                        staging_file_key = safe_join(
                             s3_config["prefix"],
-                            f"{artifact.id}/v{target_version}/{file_info['path']}",
+                            f"{artifact.id}/v{staging_version}/{file_info['path']}",
                         )
+                        
+                        # Check if we need to move the file to a different location
+                        if staging_version != final_target_version:
+                            # Move file from staging to final location
+                            final_file_key = safe_join(
+                                s3_config["prefix"],
+                                f"{artifact.id}/v{final_target_version}/{file_info['path']}",
+                            )
+                            
+                            # Copy file from staging to final location
+                            await s3_client.copy_object(
+                                Bucket=s3_config["bucket"],
+                                CopySource={'Bucket': s3_config["bucket"], 'Key': staging_file_key},
+                                Key=final_file_key
+                            )
+                            
+                            # Delete the staging file
+                            await s3_client.delete_object(
+                                Bucket=s3_config["bucket"], Key=staging_file_key
+                            )
+                            
+                            file_key = final_file_key
+                        else:
+                            # File is already in the right place
+                            file_key = staging_file_key
                         try:
                             await s3_client.head_object(
                                 Bucket=s3_config["bucket"], Key=file_key
@@ -2401,6 +2446,35 @@ class ArtifactController:
                 user_info, artifact_id, "delete", session
             )
 
+            # Handle version="stage" - check if artifact is in staging and warn user to use discard instead
+            if version == "stage":
+                if artifact.staging is not None:
+                    raise ValueError(
+                        "Cannot delete staged version. The artifact is in staging mode. "
+                        "Please use the 'discard' function instead to remove staged changes."
+                    )
+                else:
+                    raise ValueError(
+                        "Cannot delete staged version. The artifact is not in staging mode."
+                    )
+
+            # If a specific version is requested, validate it exists
+            if version is not None and version not in ["latest"]:
+                versions = artifact.versions or []
+                if isinstance(version, str):
+                    # Check if version exists in versions history
+                    version_exists = any(v["version"] == version for v in versions)
+                    if not version_exists and not version.isdigit():
+                        existing_versions = [v["version"] for v in versions]
+                        raise ValueError(
+                            f"Version '{version}' does not exist. Available versions: {existing_versions}"
+                        )
+                elif isinstance(version, int):
+                    if version < 0 or version >= len(versions):
+                        raise ValueError(
+                            f"Version index {version} is out of range. Available indices: 0-{len(versions)-1}"
+                        )
+
             if artifact.type == "vector-collection":
                 s3_config = self._get_s3_config(artifact, parent_artifact)
                 async with self._create_client_async(
@@ -2419,6 +2493,7 @@ class ArtifactController:
 
             s3_config = self._get_s3_config(artifact, parent_artifact)
             if version is None:
+                # Delete all versions and the entire artifact
                 # Handle recursive deletion first
                 if recursive:
                     children = await self.list_children(artifact_id, context=context)
@@ -2446,12 +2521,13 @@ class ArtifactController:
                 await session.flush()
                 await session.delete(artifact)
             else:
+                # Delete specific version
                 version_index = self._get_version_index(artifact, version)
                 artifact.versions.pop(version_index)
                 flag_modified(artifact, "versions")
                 session.add(artifact)
                 # Delete the version from S3
-                self._delete_version_files_from_s3(
+                await self._delete_version_files_from_s3(
                     version_index, artifact, s3_config, delete_files=delete_files
                 )
             await session.commit()
@@ -2687,19 +2763,15 @@ class ArtifactController:
                 )
                 assert artifact.staging is not None, "Artifact must be in staging mode."
 
-                # Check if there's intent to create a new version
+                # For staging mode, always use the staging version index
+                # This ensures files are properly staged and can be found by list_files
+                target_version_index = len(artifact.versions or [])
+                
+                # Check if there's intent to create a new version for commit behavior
                 staging_list = artifact.staging or []
                 has_new_version_intent = any(
                     item.get("_intent") == "new_version" for item in staging_list
                 )
-
-                # Determine target version based on intent
-                if has_new_version_intent:
-                    # Creating new version - files go to new version index
-                    target_version_index = len(artifact.versions or [])
-                else:
-                    # Updating existing version - files go to existing latest version index
-                    target_version_index = max(0, len(artifact.versions or []) - 1)
 
                 # The staging area index for manifest operations
                 version_index = self._get_version_index(artifact, "stage")
@@ -2755,7 +2827,7 @@ class ArtifactController:
         finally:
             await session.close()
 
-    async def remove_file(self, artifact_id, file_path, context: dict):
+    async def remove_file(self, artifact_id, file_path, context: dict = None):
         """Remove a file from the artifact and update the staged manifest."""
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
@@ -2777,19 +2849,9 @@ class ArtifactController:
                 session.add(artifact)
                 await session.commit()
 
-                # Check if there's intent to create a new version
-                staging_list = artifact.staging or []
-                has_new_version_intent = any(
-                    item.get("_intent") == "new_version" for item in staging_list
-                )
-
-                # Determine target version based on intent
-                if has_new_version_intent:
-                    # Creating new version - files are in new version index
-                    target_version_index = len(artifact.versions or [])
-                else:
-                    # Updating existing version - files are in existing latest version index
-                    target_version_index = max(0, len(artifact.versions or []) - 1)
+                # For staging mode, files are always at the staging version index
+                # This matches the behavior of put_file
+                target_version_index = len(artifact.versions or [])
 
                 s3_config = self._get_s3_config(artifact, parent_artifact)
                 async with self._create_client_async(
@@ -2799,9 +2861,24 @@ class ArtifactController:
                         s3_config["prefix"],
                         f"{artifact.id}/v{target_version_index}/{file_path}",
                     )
-                    await s3_client.delete_object(
-                        Bucket=s3_config["bucket"], Key=file_key
-                    )
+                    try:
+                        await s3_client.delete_object(
+                            Bucket=s3_config["bucket"], Key=file_key
+                        )
+                    except ClientError as e:
+                        # Handle the case where the file doesn't exist in S3
+                        if e.response.get("Error", {}).get("Code") == "NoSuchKey":
+                            logger.warning(
+                                f"File '{file_path}' not found in S3 for artifact {artifact_id}, but removing from staging manifest"
+                            )
+                        else:
+                            # Re-raise other S3 errors
+                            raise
+                    except Exception as e:
+                        # Log other unexpected errors but don't fail the operation
+                        logger.warning(
+                            f"Error deleting file '{file_path}' from S3 for artifact {artifact_id}: {e}"
+                        )
 
                 logger.info(
                     f"Removed file '{file_path}' from artifact with ID: {artifact_id}"
@@ -2817,6 +2894,7 @@ class ArtifactController:
         file_path,
         silent=False,
         version=None,
+        stage: bool = False,
         use_proxy=None,
         context: dict = None,
     ):
@@ -2825,6 +2903,12 @@ class ArtifactController:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
         user_info = UserInfo.model_validate(context["user"])
+        
+        # Handle stage parameter
+        if stage:
+            assert version is None or version == "stage", "You cannot specify a version when using stage mode."
+            version = "stage"
+        
         session = await self._get_session()
         try:
             async with session.begin():
@@ -2889,6 +2973,8 @@ class ArtifactController:
         dir_path: str = None,
         limit: int = 1000,
         version: str = None,
+        stage: bool = False,
+        include_pending: bool = False,
         context: dict = None,
     ):
         """List files in the specified artifact's S3 path."""
@@ -2896,6 +2982,12 @@ class ArtifactController:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
         user_info = UserInfo.model_validate(context["user"])
+        
+        # Handle stage parameter
+        if stage:
+            assert version is None or version == "stage", "You cannot specify a version when using stage mode."
+            version = "stage"
+        
         session = await self._get_session()
         try:
             async with session.begin():
@@ -2903,20 +2995,9 @@ class ArtifactController:
                     user_info, artifact_id, "list_files", session
                 )
 
-                # Handle staging version with new approach
-                if version == "stage" and artifact.staging is not None:
-                    # Determine where staged files are actually located
-                    staging_list = artifact.staging or []
-                    has_new_version_intent = any(
-                        item.get("_intent") == "new_version" for item in staging_list
-                    )
-
-                    if has_new_version_intent:
-                        # Files are in new version index
-                        version_index = len(artifact.versions or [])
-                    else:
-                        # Files are in existing latest version index
-                        version_index = max(0, len(artifact.versions or []) - 1)
+                # Handle staging version - always use len(versions) for stage
+                if version == "stage":
+                    version_index = len(artifact.versions or [])
                 else:
                     version_index = self._get_version_index(artifact, version)
 
@@ -2946,6 +3027,45 @@ class ArtifactController:
                         full_path,
                         max_length=limit,
                     )
+                    
+                    # If include_pending is True and we're in staging mode, add pending files from staging manifest
+                    if include_pending and version == "stage" and artifact.staging is not None:
+                        staging_files = [f for f in artifact.staging if "path" in f]
+                        pending_files = []
+                        
+                        for file_info in staging_files:
+                            file_path = file_info["path"]
+                            # Filter by dir_path if specified
+                            if dir_path:
+                                if not file_path.startswith(dir_path + "/"):
+                                    continue
+                                # Remove dir_path prefix for display
+                                display_path = file_path[len(dir_path) + 1:]
+                            else:
+                                display_path = file_path
+                            
+                            # Check if this file is already in the S3 items list
+                            if not any(item["name"] == display_path for item in items):
+                                pending_files.append({
+                                    "name": display_path,
+                                    "type": "file",
+                                    "size": 0,  # We don't know the size yet
+                                    "last_modified": None,
+                                    "etag": None,
+                                    "pending": True,  # Mark as pending
+                                    "download_weight": file_info.get("download_weight", 0)
+                                })
+                        
+                        # Add pending files to the items list
+                        items.extend(pending_files)
+                        
+                        # Sort items by name for consistent ordering
+                        items.sort(key=lambda x: x["name"])
+                        
+                        # Limit the results if needed
+                        if len(items) > limit:
+                            items = items[:limit]
+                    
             return items
         except Exception as e:
             raise e
