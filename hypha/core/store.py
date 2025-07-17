@@ -21,6 +21,8 @@ from hypha import __version__
 from hypha.core import (
     RedisEventBus,
     RedisRPCConnection,
+    KafkaEventBus,
+    KafkaRPCConnection,
     ServiceInfo,
     ServiceTypeInfo,
     UserInfo,
@@ -129,6 +131,7 @@ class RedisStore:
         public_base_url=None,
         local_base_url=None,
         redis_uri=None,
+        kafka_uri=None,
         database_uri=None,
         ollama_host=None,
         openai_config=None,
@@ -242,7 +245,12 @@ class RedisStore:
         self._redis_cache = RedisCache(serializer=PickleSerializer())
         self._redis_cache.client = self._redis
         self._root_user = None
-        self._event_bus = RedisEventBus(self._redis)
+        
+        # Initialize event bus based on configuration
+        if kafka_uri:
+            self._event_bus = KafkaEventBus(kafka_uri, server_id=self._server_id)
+        else:
+            self._event_bus = RedisEventBus(self._redis)
 
         self._tracker = None
         self._tracker_task = None
@@ -503,6 +511,7 @@ class RedisStore:
         self._tracker = ActivityTracker(check_interval=self._activity_check_interval)
         self._tracker_task = asyncio.create_task(self._tracker.monitor_entities())
         RedisRPCConnection.set_activity_tracker(self._tracker)
+        KafkaRPCConnection.set_activity_tracker(self._tracker)
         self._tracker.register_entity_removed_callback(self._remove_tracker_entity)
 
         await self.setup_root_user()
@@ -864,13 +873,23 @@ class RedisStore:
         assert "/" not in client_id
         logger.debug("Creating RPC for client %s", client_id)
         assert user_info is not None, "User info is required"
-        connection = RedisRPCConnection(
-            self._event_bus,
-            workspace,
-            client_id,
-            user_info,
-            manager_id=self._manager_id,
-        )
+        # Choose connection type based on event bus type
+        if isinstance(self._event_bus, KafkaEventBus):
+            connection = KafkaRPCConnection(
+                self._event_bus,
+                workspace,
+                client_id,
+                user_info,
+                manager_id=self._manager_id,
+            )
+        else:
+            connection = RedisRPCConnection(
+                self._event_bus,
+                workspace,
+                client_id,
+                user_info,
+                manager_id=self._manager_id,
+            )
         rpc = RPC(
             connection,
             client_id=client_id,

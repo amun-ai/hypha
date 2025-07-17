@@ -282,12 +282,17 @@ def create_application(args):
     else:
         public_base_url = local_base_url
 
+    # Validate that only one event bus type is configured
+    if args.redis_uri and args.kafka_uri:
+        raise ValueError("Cannot use both Redis and Kafka at the same time. Please specify only one.")
+
     store = RedisStore(
         application,
         server_id=args.server_id or env.get("HYPHA_SERVER_ID"),
         public_base_url=public_base_url,
         local_base_url=local_base_url,
         redis_uri=args.redis_uri,
+        kafka_uri=args.kafka_uri,
         database_uri=args.database_uri,
         ollama_host=args.ollama_host,
         cache_dir=args.cache_dir,
@@ -410,6 +415,12 @@ def get_argparser(add_help=True):
         type=str,
         default=None,
         help="the URI (a URL or database file path) for the redis database",
+    )
+    parser.add_argument(
+        "--kafka-uri",
+        type=str,
+        default=None,
+        help="the URI for the Kafka server (e.g., localhost:9092)",
     )
     parser.add_argument(
         "--reset-redis",

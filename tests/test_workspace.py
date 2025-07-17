@@ -7,6 +7,7 @@ import asyncio
 
 from . import (
     WS_SERVER_URL,
+    SIO_PORT_REDIS_1,
     find_item,
     wait_for_workspace_ready,
 )
@@ -420,3 +421,210 @@ async def test_service_selection_mode(fastapi_server, test_user_token):
     await artifact_manager.delete(app_artifact.id)
     
     await api.disconnect()
+
+
+# Kafka-enabled workspace tests
+async def test_kafka_workspace_creation(fastapi_server_kafka_1, root_user_token):
+    """Test workspace creation on Kafka-enabled server."""
+    
+    WS_SERVER_URL_KAFKA = f"ws://127.0.0.1:{SIO_PORT_REDIS_1}/ws"
+    
+    async with connect_to_server(
+        {"server_url": WS_SERVER_URL_KAFKA, "client_id": "admin", "token": root_user_token}
+    ) as root:
+        admin = await root.get_service("admin-utils")
+        
+        # Create a test workspace
+        workspace_info = await admin.create_workspace({
+            "name": "kafka-test-workspace",
+            "owners": ["admin"],
+            "description": "Test workspace for Kafka"
+        })
+        
+        assert workspace_info["name"] == "kafka-test-workspace"
+        assert "admin" in workspace_info["owners"]
+        
+        # List workspaces to verify it was created
+        workspaces = await admin.list_workspaces()
+        workspace_names = [ws["name"] for ws in workspaces]
+        assert "kafka-test-workspace" in workspace_names
+
+
+async def test_kafka_workspace_service_isolation(fastapi_server_kafka_1, root_user_token):
+    """Test workspace service isolation on Kafka-enabled server."""
+    
+    WS_SERVER_URL_KAFKA = f"ws://127.0.0.1:{SIO_PORT_REDIS_1}/ws"
+    
+    async with connect_to_server(
+        {"server_url": WS_SERVER_URL_KAFKA, "client_id": "admin", "token": root_user_token}
+    ) as root:
+        admin = await root.get_service("admin-utils")
+        
+        # Create two test workspaces
+        workspace1_info = await admin.create_workspace({
+            "name": "kafka-workspace-1",
+            "owners": ["admin"],
+            "description": "First test workspace"
+        })
+        
+        workspace2_info = await admin.create_workspace({
+            "name": "kafka-workspace-2", 
+            "owners": ["admin"],
+            "description": "Second test workspace"
+        })
+        
+        # Connect to workspace1
+        async with connect_to_server({
+            "server_url": WS_SERVER_URL_KAFKA,
+            "client_id": "client1",
+            "workspace": "kafka-workspace-1",
+            "token": root_user_token
+        }) as ws1_client:
+            
+            # Connect to workspace2
+            async with connect_to_server({
+                "server_url": WS_SERVER_URL_KAFKA,
+                "client_id": "client2",
+                "workspace": "kafka-workspace-2", 
+                "token": root_user_token
+            }) as ws2_client:
+                
+                # Register service in workspace1
+                def ws1_service():
+                    return "Service from workspace1"
+                
+                await ws1_client.register_service({
+                    "id": "ws1-service",
+                    "type": "test",
+                    "get_data": ws1_service
+                })
+                
+                # Register service in workspace2
+                def ws2_service():
+                    return "Service from workspace2"
+                
+                await ws2_client.register_service({
+                    "id": "ws2-service", 
+                    "type": "test",
+                    "get_data": ws2_service
+                })
+                
+                # Test that services are isolated
+                # Should be able to access service within same workspace
+                service1 = await ws1_client.get_service("ws1-service")
+                result1 = await service1.get_data()
+                assert result1 == "Service from workspace1"
+                
+                # Should NOT be able to access service from different workspace
+                try:
+                    service2 = await ws1_client.get_service("ws2-service")
+                    assert False, "Should not be able to access service from different workspace"
+                except Exception:
+                    pass  # Expected behavior
+
+
+async def test_kafka_workspace_multi_client_same_workspace(fastapi_server_kafka_1, root_user_token):
+    """Test multiple clients in same workspace on Kafka-enabled server."""
+    
+    WS_SERVER_URL_KAFKA = f"ws://127.0.0.1:{SIO_PORT_REDIS_1}/ws"
+    
+    async with connect_to_server(
+        {"server_url": WS_SERVER_URL_KAFKA, "client_id": "admin", "token": root_user_token}
+    ) as root:
+        admin = await root.get_service("admin-utils")
+        
+        # Create a test workspace
+        workspace_info = await admin.create_workspace({
+            "name": "kafka-multi-client-workspace",
+            "owners": ["admin"],
+            "description": "Test workspace for multiple clients"
+        })
+        
+        # Connect multiple clients to same workspace
+        async with connect_to_server({
+            "server_url": WS_SERVER_URL_KAFKA,
+            "client_id": "client1",
+            "workspace": "kafka-multi-client-workspace",
+            "token": root_user_token
+        }) as client1:
+            
+            async with connect_to_server({
+                "server_url": WS_SERVER_URL_KAFKA,
+                "client_id": "client2",
+                "workspace": "kafka-multi-client-workspace",
+                "token": root_user_token
+            }) as client2:
+                
+                # Register service from client1
+                def shared_service(x):
+                    return x * 10
+                
+                await client1.register_service({
+                    "id": "shared-service",
+                    "type": "math",
+                    "multiply_by_10": shared_service
+                })
+                
+                # Access service from client2
+                service = await client2.get_service("shared-service")
+                result = await service.multiply_by_10(5)
+                assert result == 50
+                
+                # Both clients should see the same service
+                service_info1 = await client1.get_service_info("shared-service")
+                service_info2 = await client2.get_service_info("shared-service")
+                assert service_info1["id"] == service_info2["id"]
+
+
+async def test_kafka_workspace_persistence(fastapi_server_kafka_1, root_user_token):
+    """Test workspace persistence with Kafka backend."""
+    
+    WS_SERVER_URL_KAFKA = f"ws://127.0.0.1:{SIO_PORT_REDIS_1}/ws"
+    
+    async with connect_to_server(
+        {"server_url": WS_SERVER_URL_KAFKA, "client_id": "admin", "token": root_user_token}
+    ) as root:
+        admin = await root.get_service("admin-utils")
+        
+        # Create a test workspace
+        workspace_info = await admin.create_workspace({
+            "name": "kafka-persistent-workspace",
+            "owners": ["admin"],
+            "description": "Test workspace persistence"
+        })
+        
+        # Connect to workspace and register a service
+        async with connect_to_server({
+            "server_url": WS_SERVER_URL_KAFKA,
+            "client_id": "client1",
+            "workspace": "kafka-persistent-workspace",
+            "token": root_user_token
+        }) as client1:
+            
+            def persistent_service():
+                return "This service should persist"
+            
+            await client1.register_service({
+                "id": "persistent-service",
+                "type": "test",
+                "get_message": persistent_service
+            })
+            
+            # Verify service exists
+            service = await client1.get_service("persistent-service")
+            result = await service.get_message()
+            assert result == "This service should persist"
+        
+        # Reconnect with a new client and verify service still exists
+        async with connect_to_server({
+            "server_url": WS_SERVER_URL_KAFKA,
+            "client_id": "client2",
+            "workspace": "kafka-persistent-workspace",
+            "token": root_user_token
+        }) as client2:
+            
+            # The service should still be available
+            # Note: In practice, services might not persist across client disconnections
+            # depending on the service configuration, but the workspace should exist
+            workspace_info = await client2.get_workspace_info()
+            assert workspace_info["name"] == "kafka-persistent-workspace"

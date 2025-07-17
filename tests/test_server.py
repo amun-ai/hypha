@@ -389,3 +389,177 @@ async def test_server_scalability(
     await api.disconnect()
     await api77.disconnect()
     await api88.disconnect()
+
+
+# Kafka-enabled tests
+async def test_connect_to_kafka_server(fastapi_server_kafka_1):
+    """Test connecting to a Kafka-enabled server."""
+    
+    class HyphaApp:
+        """Represent a test app."""
+
+        def __init__(self, ws):
+            self._ws = ws
+
+        async def setup(self):
+            """Set up the app."""
+            await self._ws.log("initialized")
+
+        async def run(self, ctx):
+            """Run the app."""
+            await self._ws.log("hello world")
+
+    WS_SERVER_URL_KAFKA = f"ws://127.0.0.1:{SIO_PORT_REDIS_1}/ws"
+    
+    api = await connect_to_server(
+        {
+            "name": "my app",
+            "workspace": "public",
+            "server_url": WS_SERVER_URL_KAFKA,
+            "app_id": "my-app",
+        }
+    )
+    
+    assert api.config["workspace"] == "public"
+    assert api.config["app_id"] == "my-app"
+    
+    await api.disconnect()
+
+
+async def test_kafka_server_service_registration(fastapi_server_kafka_1):
+    """Test service registration on Kafka-enabled server."""
+    
+    WS_SERVER_URL_KAFKA = f"ws://127.0.0.1:{SIO_PORT_REDIS_1}/ws"
+    
+    api = await connect_to_server(
+        {
+            "name": "my app",
+            "workspace": "public", 
+            "server_url": WS_SERVER_URL_KAFKA,
+            "app_id": "my-app",
+        }
+    )
+    
+    def add_function(x, y):
+        return x + y
+    
+    await api.register_service(
+        {
+            "id": "add-service",
+            "type": "math",
+            "add": add_function,
+        }
+    )
+    
+    # Get the service and test it
+    service = await api.get_service("add-service")
+    result = await service.add(3, 4)
+    assert result == 7
+    
+    await api.disconnect()
+
+
+async def test_kafka_server_multi_client_communication(fastapi_server_kafka_1):
+    """Test communication between multiple clients on Kafka-enabled server."""
+    
+    WS_SERVER_URL_KAFKA = f"ws://127.0.0.1:{SIO_PORT_REDIS_1}/ws"
+    
+    # Connect first client
+    api1 = await connect_to_server(
+        {
+            "name": "client1",
+            "workspace": "public",
+            "server_url": WS_SERVER_URL_KAFKA,
+            "app_id": "client1",
+        }
+    )
+    
+    # Connect second client
+    api2 = await connect_to_server(
+        {
+            "name": "client2", 
+            "workspace": "public",
+            "server_url": WS_SERVER_URL_KAFKA,
+            "app_id": "client2",
+        }
+    )
+    
+    # Register service on client1
+    def multiply_function(x, y):
+        return x * y
+    
+    await api1.register_service(
+        {
+            "id": "multiply-service",
+            "type": "math",
+            "multiply": multiply_function,
+        }
+    )
+    
+    # Access service from client2
+    service = await api2.get_service("multiply-service")
+    result = await service.multiply(6, 7)
+    assert result == 42
+    
+    await api1.disconnect()
+    await api2.disconnect()
+
+
+async def test_kafka_vs_redis_server_compatibility(fastapi_server_kafka_1, fastapi_server):
+    """Test that Kafka and Redis servers provide similar functionality."""
+    
+    WS_SERVER_URL_KAFKA = f"ws://127.0.0.1:{SIO_PORT_REDIS_1}/ws"
+    
+    # Connect to Kafka server
+    api_kafka = await connect_to_server(
+        {
+            "name": "kafka-client",
+            "workspace": "public",
+            "server_url": WS_SERVER_URL_KAFKA,
+            "app_id": "kafka-client",
+        }
+    )
+    
+    # Connect to Redis server
+    api_redis = await connect_to_server(
+        {
+            "name": "redis-client",
+            "workspace": "public", 
+            "server_url": WS_SERVER_URL,
+            "app_id": "redis-client",
+        }
+    )
+    
+    # Test similar functionality on both servers
+    def test_function(x):
+        return x * 2
+    
+    # Register service on Kafka server
+    await api_kafka.register_service(
+        {
+            "id": "test-service-kafka",
+            "type": "test",
+            "double": test_function,
+        }
+    )
+    
+    # Register service on Redis server
+    await api_redis.register_service(
+        {
+            "id": "test-service-redis",
+            "type": "test", 
+            "double": test_function,
+        }
+    )
+    
+    # Test services work similarly
+    kafka_service = await api_kafka.get_service("test-service-kafka")
+    redis_service = await api_redis.get_service("test-service-redis")
+    
+    kafka_result = await kafka_service.double(21)
+    redis_result = await redis_service.double(21)
+    
+    assert kafka_result == redis_result == 42
+    
+    await api_kafka.disconnect()
+    await api_redis.disconnect()
