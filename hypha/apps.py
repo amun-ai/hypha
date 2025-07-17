@@ -938,6 +938,7 @@ class ServerAppController:
             timeout=timeout,
             overwrite=overwrite,
             stage=True,
+            detached=detached,
             context=context,
         )
         app_id = app_info["id"]

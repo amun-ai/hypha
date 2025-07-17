@@ -1528,6 +1528,7 @@ async def test_detached_mode_apps(fastapi_server, test_user_token):
         source=detached_script,
         config={"type": "window", "name": "Detached Script Install"},
         overwrite=True,
+        detached=True,
     )
     
     # Start in detached mode
