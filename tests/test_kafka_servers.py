@@ -6,7 +6,6 @@ import sys
 import asyncio
 import pytest
 from hypha_rpc import connect_to_server
-from hypha.core import KAFKA_AVAILABLE
 
 from . import (
     SERVER_URL_REDIS_1,
@@ -20,7 +19,6 @@ from . import (
 pytestmark = pytest.mark.asyncio
 
 
-@pytest.mark.skipif(not KAFKA_AVAILABLE, reason="Kafka not available")
 async def test_kafka_server_communication(fastapi_server_kafka_1, fastapi_server_kafka_2, root_user_token):
     """Test communication between multiple Kafka servers."""
     # Connect to first server
@@ -60,7 +58,6 @@ async def test_kafka_server_communication(fastapi_server_kafka_1, fastapi_server
                 pass
 
 
-@pytest.mark.skipif(not KAFKA_AVAILABLE, reason="Kafka not available")
 async def test_kafka_event_communication(fastapi_server_kafka_1, fastapi_server_kafka_2, root_user_token):
     """Test event communication between multiple Kafka servers."""
     WS_SERVER_URL_1 = f"ws://127.0.0.1:{SIO_PORT_REDIS_1}/ws"
@@ -106,7 +103,6 @@ async def test_kafka_event_communication(fastapi_server_kafka_1, fastapi_server_
                 pass
 
 
-@pytest.mark.skipif(not KAFKA_AVAILABLE, reason="Kafka not available")
 async def test_kafka_workspace_isolation(fastapi_server_kafka_1, fastapi_server_kafka_2, root_user_token):
     """Test workspace isolation with Kafka."""
     WS_SERVER_URL_1 = f"ws://127.0.0.1:{SIO_PORT_REDIS_1}/ws"
@@ -189,7 +185,6 @@ async def test_kafka_workspace_isolation(fastapi_server_kafka_1, fastapi_server_
                     print(f"Failed to access service within same workspace: {e}")
 
 
-@pytest.mark.skipif(not KAFKA_AVAILABLE, reason="Kafka not available")
 async def test_kafka_server_scaling(fastapi_server_kafka_1, fastapi_server_kafka_2, root_user_token):
     """Test basic server scaling with Kafka."""
     WS_SERVER_URL_1 = f"ws://127.0.0.1:{SIO_PORT_REDIS_1}/ws"
@@ -253,7 +248,6 @@ async def test_kafka_server_scaling(fastapi_server_kafka_1, fastapi_server_kafka
                 pass
 
 
-@pytest.mark.skipif(not KAFKA_AVAILABLE, reason="Kafka not available")
 async def test_kafka_message_delivery_guarantee():
     """Test that Kafka provides better message delivery guarantees than Redis."""
     # This is more of a conceptual test - Kafka provides at-least-once delivery

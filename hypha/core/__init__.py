@@ -33,7 +33,11 @@ try:
     from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
     from aiokafka.errors import KafkaError
     KAFKA_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    # For tests, we want to fail hard if Kafka is not available
+    import os
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        raise ImportError(f"aiokafka is required for tests: {e}")
     KAFKA_AVAILABLE = False
 
 
@@ -1225,9 +1229,6 @@ class KafkaEventBus:
 
     def __init__(self, kafka_uri: str, server_id: str = None) -> None:
         """Initialize the Kafka event bus."""
-        if not KAFKA_AVAILABLE:
-            raise ImportError("aiokafka is not installed. Please install it with: pip install aiokafka")
-        
         self._kafka_uri = kafka_uri
         self._server_id = server_id or str(uuid.uuid4())
         self._producer = None

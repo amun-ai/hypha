@@ -311,6 +311,9 @@ def kafka_server():
         
         asyncio.run(test_kafka())
         yield f"localhost:{KAFKA_PORT}"
+    except ImportError:
+        # If aiokafka is not available, fail hard
+        raise
     except Exception:
         # Start Kafka using Docker Compose
         compose_content = f"""
@@ -352,12 +355,18 @@ services:
             f.write(compose_content)
         
         # Start Kafka cluster
-        subprocess.run([
-            "docker-compose", "-f", "/tmp/kafka-test-compose.yml", "up", "-d"
-        ], check=True)
+        try:
+            result = subprocess.run([
+                "docker-compose", "-f", "/tmp/kafka-test-compose.yml", "up", "-d"
+            ], check=True, capture_output=True, text=True)
+            print(f"Docker Compose output: {result.stdout}")
+        except subprocess.CalledProcessError as e:
+            print(f"Docker Compose failed: {e.stderr}")
+            raise
         
         # Wait for Kafka to be ready
         timeout = 60
+        last_error = None
         while timeout > 0:
             try:
                 from aiokafka import AIOKafkaProducer
@@ -370,13 +379,17 @@ services:
                 
                 asyncio.run(test_kafka())
                 break
-            except Exception:
-                pass
+            except ImportError:
+                # If aiokafka is not available, fail hard
+                raise
+            except Exception as e:
+                last_error = e
+                print(f"Kafka not ready yet (timeout={timeout}): {e}")
             timeout -= 1
             time.sleep(1)
         
         if timeout <= 0:
-            raise RuntimeError("Kafka server failed to start within timeout")
+            raise RuntimeError(f"Kafka server failed to start within timeout. Last error: {last_error}")
         
         yield f"localhost:{KAFKA_PORT}"
         

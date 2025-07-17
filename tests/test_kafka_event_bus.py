@@ -2,7 +2,7 @@ import pytest
 import asyncio
 import json
 import pytest_asyncio
-from hypha.core import KafkaEventBus, KAFKA_AVAILABLE
+from hypha.core import KafkaEventBus
 
 pytestmark = pytest.mark.asyncio
 
@@ -10,9 +10,6 @@ pytestmark = pytest.mark.asyncio
 @pytest_asyncio.fixture
 async def kafka_event_bus(kafka_server):
     """Create a Kafka event bus for testing."""
-    if not KAFKA_AVAILABLE:
-        pytest.skip("Kafka not available")
-    
     bus = KafkaEventBus(kafka_uri=kafka_server, server_id="test-server")
     await bus.init()
     yield bus
@@ -158,8 +155,5 @@ async def test_kafka_once_event_handling(kafka_event_bus):
 
 async def test_kafka_multiple_servers():
     """Test multiple Kafka event buses communicating."""
-    if not KAFKA_AVAILABLE:
-        pytest.skip("Kafka not available")
-    
     # This test will be run with the server fixtures
     pass  # The actual multi-server test will be in test_kafka_servers.py
