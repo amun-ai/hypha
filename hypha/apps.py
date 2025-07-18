@@ -211,9 +211,7 @@ def is_raw_html_content(source: str) -> bool:
 
     # Check for basic HTML structure
     source_lower = source.lower().strip()
-    return source_lower.startswith(("<!doctype html", "<html", "<head", "<body")) or (
-        "<html" in source_lower and "</html>" in source_lower
-    )
+    return source_lower.startswith(("<!doctype html", "<html")) 
 
 
 class ServerAppController:
