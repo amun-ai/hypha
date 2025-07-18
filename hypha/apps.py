@@ -25,6 +25,7 @@ from hypha.plugin_parser import convert_config_to_artifact, parse_imjoy_plugin
 from hypha.core import WorkspaceInfo
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
+from hypha.workers.base import WorkerConfig
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "INFO").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -210,9 +211,7 @@ def is_raw_html_content(source: str) -> bool:
 
     # Check for basic HTML structure
     source_lower = source.lower().strip()
-    return source_lower.startswith(("<!doctype html", "<html", "<head", "<body")) or (
-        "<html" in source_lower and "</html>" in source_lower
-    )
+    return source_lower.startswith(("<!doctype html", "<html")) 
 
 
 class ServerAppController:
@@ -284,19 +283,13 @@ class ServerAppController:
                     )
                     full_svc = await workspace_server.get_service(svc['id'])
                     supported_types = full_svc.get("supported_types", [])
-                    if not supported_types:
-                        # If no supported_types info, assume it's a legacy runner supporting default types
-                        if app_type in ["web-python", "web-worker", "window", "iframe"]:
-                            filtered_workspace_svcs.append(svc)
-                    elif app_type in supported_types:
+                    if app_type in supported_types:
                         filtered_workspace_svcs.append(svc)
                         logger.info(f"Workspace service {svc['id']} supports app_type {app_type}")
                 except Exception as e:
                     logger.warning(f"Failed to get full workspace service info for {svc['id']}: {e}")
-                    # Fall back to assuming legacy support if we can't get the service info
-                    if app_type in ["web-python", "web-worker", "window", "iframe"]:
-                        filtered_workspace_svcs.append(svc)
-                        logger.info(f"Workspace service {svc['id']} assumed to support app_type {app_type} (fallback)")
+                    # Skip services we can't get info for
+                    continue
             
             # If we found workspace services for this app type, use them
             if filtered_workspace_svcs:
@@ -317,7 +310,6 @@ class ServerAppController:
         
         # Fallback to public workers if no workspace workers found
         if not selected_svcs:
-            logger.info(f"No workspace workers found for app_type {app_type}, falling back to public workers")
             server = await self.store.get_public_api()
             public_svcs = await server.list_services({"type": "server-app-worker"})
             logger.info(f"Found {len(public_svcs)} server-app-worker services in public workspace: {[svc['id'] for svc in public_svcs]}")
@@ -334,20 +326,13 @@ class ServerAppController:
                         # Get the full service info to access supported_types
                         full_svc = await server.get_service(svc['id'])
                         supported_types = full_svc.get("supported_types", [])
-                        if not supported_types:
-                            # If no supported_types info, assume it's a legacy runner supporting default types
-                            if app_type in ["web-python", "web-worker", "window", "iframe"]:
-                                filtered_public_svcs.append(svc)
-                                logger.info(f"Public service {svc['id']} assumed to support app_type {app_type} (legacy)")
-                        elif app_type in supported_types:
+                        if app_type in supported_types:
                             filtered_public_svcs.append(svc)
                             logger.info(f"Public service {svc['id']} supports app_type {app_type}")
                     except Exception as e:
                         logger.warning(f"Failed to get full service info for {svc['id']}: {e}")
-                        # Fall back to assuming legacy support if we can't get the service info
-                        if app_type in ["web-python", "web-worker", "window", "iframe"]:
-                            filtered_public_svcs.append(svc)
-                            logger.info(f"Public service {svc['id']} assumed to support app_type {app_type} (fallback)")
+                        # Skip services we can't get info for
+                        continue
                 
                 logger.info(f"After filtering public services for app_type {app_type}: {len(filtered_public_svcs)} services selected")
                 selected_svcs = filtered_public_svcs
@@ -516,6 +501,9 @@ class ServerAppController:
                 if config.get("type") == "mcp-server":
                     # Special handling for MCP server type - no source code needed
                     template = "mcp-server"
+                elif config.get("type") == "a2a-agent":
+                    # Special handling for A2A agent type - no source code needed
+                    template = "a2a-agent"
                 else:
                     config["entry_point"] = config.get("entry_point", "index.html")
                     template = config.get("type") + "." + config["entry_point"]
@@ -615,7 +603,7 @@ class ServerAppController:
                     raise Exception(
                         f"Failed to parse or compile the hypha app {mhash}: {source[:100]}...",
                     ) from err
-            elif template and template != "mcp-server":
+            elif template and template not in ["mcp-server", "a2a-agent"]:
                 assert (
                     "." in template
                 ), f"Invalid template name: {template}, should be a file name with extension."
@@ -673,7 +661,41 @@ class ServerAppController:
                 mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
                 mhash = mhash.encode("base58").decode("ascii")
                 
-            elif not source and template != "mcp-server":
+            elif template == "a2a-agent":
+                # Handle A2A agent type - no source code needed, config only
+                if not config:
+                    raise Exception("Config with a2aAgents is required for a2a-agent type.")
+                
+                a2a_agents = config.get("a2aAgents", {})
+                if not a2a_agents:
+                    raise Exception("a2aAgents configuration is required for a2a-agent type.")
+                
+                # Create default config for A2A agent
+                default_config = {
+                    "name": "A2A Agent",
+                    "version": "0.1.0",
+                    "type": "a2a-agent",
+                    "entry_point": "a2a-config.json",
+                    "a2aAgents": a2a_agents,
+                }
+                default_config.update(config or {})
+                config = default_config
+                entry_point = config["entry_point"]
+                
+                # Create a JSON configuration file content
+                source = json.dumps({
+                    "type": "a2a-agent",
+                    "a2aAgents": a2a_agents,
+                    "name": config.get("name", "A2A Agent"),
+                    "version": config.get("version", "0.1.0"),
+                    "description": config.get("description", "A2A Agent Application")
+                }, indent=2)
+                
+                # Compute multihash of the configuration
+                mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
+                mhash = mhash.encode("base58").decode("ascii")
+                
+            elif not source and template not in ["mcp-server", "a2a-agent"]:
                 raise Exception("Source or template should be provided.")
 
             # Create artifact object first (with placeholder app_id)
@@ -692,6 +714,10 @@ class ServerAppController:
             # For MCP server type, move mcpServers to root level for easier access
             if template == "mcp-server" and "mcpServers" in config:
                 artifact_obj["mcpServers"] = config["mcpServers"]
+            
+            # For A2A agent type, move a2aAgents to root level for easier access
+            if template == "a2a-agent" and "a2aAgents" in config:
+                artifact_obj["a2aAgents"] = config["a2aAgents"]
 
         # startup_config is now handled automatically by convert_config_to_artifact
         # if it exists in the config
@@ -1072,16 +1098,16 @@ class ServerAppController:
         metadata: dict = None,
         context: dict = None,
     ):
-        """Start the app by type using the appropriate runner."""
+        """Start the app by type using the appropriate worker."""
         # Get a random worker that supports this app type
-        runner = await self.get_server_app_workers(app_type, context, random_select=True)
-        if not runner:
+        worker = await self.get_server_app_workers(app_type, context, random_select=True)
+        if not worker:
             raise Exception(f"No server app worker found for type: {app_type}")
         
         # Get entry point from manifest
         entry_point = manifest.entry_point
-        # For MCP server type, entry point is not required in the traditional sense
-        if app_type != "mcp-server":
+        # For MCP server and A2A agent types, entry point is not required in the traditional sense
+        if app_type not in ["mcp-server", "a2a-agent"]:
             assert entry_point, f"Entry point not found for app {app_id}."
         
         # Prepare session metadata
@@ -1117,25 +1143,36 @@ class ServerAppController:
                 mcp_servers = manifest.config.get("mcpServers", {})
             session_metadata["mcp_servers"] = mcp_servers
         
-        # Start the app using the runner
-        session_data = await runner.start(
-            client_id=client_id,
-            app_id=app_id,
-            server_url=server_url,
-            public_base_url=public_base_url,
-            local_base_url=local_base_url,
-            workspace=workspace,
-            version=version,
-            token=token,
-            entry_point=entry_point,
-            app_type=app_type,
-            metadata=session_metadata,
-        )
+        # For A2A agent type, add A2A agents configuration to metadata
+        if app_type == "a2a-agent":
+            # Access a2aAgents from metadata or manifest config
+            a2a_agents = metadata.get("a2aAgents", {}) if metadata else {}
+            if not a2a_agents and hasattr(manifest, 'a2aAgents'):
+                a2a_agents = manifest.a2aAgents
+            if not a2a_agents and hasattr(manifest, 'config') and manifest.config:
+                a2a_agents = manifest.config.get("a2aAgents", {})
+            session_metadata["a2a_agents"] = a2a_agents
+        
+        # Start the app using the worker
+        # Use the new API with WorkerConfig
+        session_data = await worker.start({
+            "client_id": client_id,
+            "app_id": app_id,
+            "server_url": server_url,
+            "public_base_url": public_base_url,
+            "local_base_url": local_base_url,
+            "workspace": workspace,
+            "version": version,
+            "token": token,
+            "entry_point": entry_point,
+            "app_type": app_type,
+            "metadata": session_metadata,
+        })
         
         # Store session info
         self._sessions[full_client_id] = {
             **session_metadata,
-            "_worker": runner,
+            "_worker": worker,
         }
         
         # Python eval apps don't need to emit client_connected event since they execute immediately
@@ -1276,7 +1313,7 @@ class ServerAppController:
             event_future = asyncio.Future()
             
             def service_added(info: dict):
-                logger.info(f"Service added: {info}")
+                logger.info(f"Service added: {info['id']}")
                 if info["id"].startswith(full_client_id + ":"):
                     sinfo = ServiceInfo.model_validate(info)
                     collected_services.append(sinfo)
@@ -1319,12 +1356,18 @@ class ServerAppController:
 
         try:
             # Prepare metadata, including MCP servers configuration for mcp-server apps
+            # and A2A agents configuration for a2a-agent apps
             metadata = {}
             if app_type == "mcp-server":
                 # Extract mcpServers from artifact_info (it should be at root level)
                 mcp_servers = artifact_info.get("mcpServers", {})
                 if mcp_servers:
                     metadata["mcpServers"] = mcp_servers
+            elif app_type == "a2a-agent":
+                # Extract a2aAgents from artifact_info (it should be at root level)
+                a2a_agents = artifact_info.get("a2aAgents", {})
+                if a2a_agents:
+                    metadata["a2aAgents"] = a2a_agents
                     
             # Start the app using the new start_by_type function
             session_data = await self.start_by_type(
@@ -1377,7 +1420,8 @@ class ServerAppController:
                 # In detached mode, give a brief moment for services to be registered
                 # but don't wait for them
                 logger.info(f"Started app in detached mode: {full_client_id}")
-                await asyncio.sleep(0.1)  # Brief delay to allow service registration
+
+            await asyncio.sleep(0.1)  # Brief delay to allow service registration
 
             # save the services
             manifest.name = manifest.name or app_info.get("name", "Untitled App")
@@ -1785,7 +1829,7 @@ class ServerAppController:
                 validation_result["errors"].append("Field 'name' must be a string")
                 validation_result["valid"] = False
             
-            if "type" in config and config["type"] not in ["window", "web-worker", "web-python", "mcp-server"]:
+            if "type" in config and config["type"] not in ["window", "web-worker", "web-python", "mcp-server", "a2a-agent"]:
                 validation_result["warnings"].append(f"Unusual application type: {config['type']}")
             
             # Special validation for mcp-server type
@@ -1817,6 +1861,39 @@ class ServerAppController:
                         
                         if server_config.get("type") not in ["streamable-http", "stdio"]:
                             validation_result["warnings"].append(f"MCP server '{server_name}' has unusual type: {server_config.get('type')}")
+            
+            # Special validation for a2a-agent type
+            if "type" in config and config["type"] == "a2a-agent":
+                if "a2aAgents" not in config:
+                    validation_result["errors"].append("A2A agent applications require 'a2aAgents' configuration")
+                    validation_result["valid"] = False
+                elif not isinstance(config["a2aAgents"], dict):
+                    validation_result["errors"].append("'a2aAgents' must be a dictionary")
+                    validation_result["valid"] = False
+                elif len(config["a2aAgents"]) == 0:
+                    validation_result["errors"].append("'a2aAgents' cannot be empty")
+                    validation_result["valid"] = False
+                else:
+                    # Validate each A2A agent configuration
+                    for agent_name, agent_config in config["a2aAgents"].items():
+                        if not isinstance(agent_config, dict):
+                            validation_result["errors"].append(f"A2A agent '{agent_name}' configuration must be a dictionary")
+                            validation_result["valid"] = False
+                            continue
+                        
+                        if "url" not in agent_config:
+                            validation_result["errors"].append(f"A2A agent '{agent_name}' missing required field 'url'")
+                            validation_result["valid"] = False
+                        
+                        # Check if URL looks like a valid A2A endpoint
+                        url = agent_config.get("url", "")
+                        if not url.startswith(("http://", "https://")):
+                            validation_result["warnings"].append(f"A2A agent '{agent_name}' URL should start with http:// or https://")
+                        
+                        # Check for optional headers
+                        if "headers" in agent_config and not isinstance(agent_config["headers"], dict):
+                            validation_result["errors"].append(f"A2A agent '{agent_name}' headers must be a dictionary")
+                            validation_result["valid"] = False
             
             if "version" in config and not isinstance(config["version"], str):
                 validation_result["errors"].append("Field 'version' must be a string")
@@ -1994,13 +2071,14 @@ class ServerAppController:
                 "user": self.store.get_root_user().model_dump(),
             }
             workers = await self.get_server_app_workers(context=context)
-            for runner in workers:
-                try:
-                    await runner.prepare_workspace(workspace_info.id)
-                except Exception as exp:
-                    logger.warning(
-                        f"Worker failed to prepare workspace: {workspace_info.id}, error: {exp}"
-                    )
+            for worker in workers:
+                if worker.prepare_workspace:
+                    try:
+                        await worker.prepare_workspace(workspace_info.id)
+                    except Exception as exp:
+                        logger.warning(
+                            f"Worker {worker.id} failed to prepare workspace: {workspace_info.id}, error: {exp}"
+                        )
 
     async def close_workspace(self, workspace_info: WorkspaceInfo):
         """Archive the workspace."""
@@ -2016,13 +2094,14 @@ class ServerAppController:
         workers = await self.get_server_app_workers(context=context)
         if not workers:
             return
-        for runner in workers:
-            try:
-                await runner.close_workspace(workspace_info.id)
-            except Exception as exp:
-                logger.warning(
-                    f"Worker failed to close workspace: {workspace_info.id}, error: {exp}"
-                )
+        for worker in workers:
+            if worker.close_workspace:
+                try:
+                    await worker.close_workspace(workspace_info.id)
+                except Exception as exp:
+                    logger.warning(
+                        f"Worker failed to close workspace: {workspace_info.id}, error: {exp}"
+                    )
 
     def get_service_api(self) -> Dict[str, Any]:
         """Get a list of service API endpoints."""

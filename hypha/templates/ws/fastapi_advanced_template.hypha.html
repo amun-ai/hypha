@@ -1,0 +1,560 @@
+<config lang="json">
+{
+    "name": "Advanced FastAPI App",
+    "type": "web-python",
+    "version": "0.1.0",
+    "description": "An advanced FastAPI web application with database integration, authentication, and real-time features.",
+    "tags": ["web", "api", "fastapi", "advanced", "database", "auth"],
+    "ui": "",
+    "cover": "",
+    "icon": "🚀",
+    "api_version": "0.1.8",
+    "requirements": ["fastapi==0.112.1", "pydantic==2.5.0", "passlib==1.7.4", "python-jose==3.3.0"],
+    "dependencies": [],
+    "startup_config": {
+        "timeout": 60,
+        "wait_for_service": "advanced-fastapi",
+        "stop_after_inactive": 600
+    }
+}
+</config>
+
+<script lang="python">
+from hypha_rpc import api
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+from typing import List, Optional
+import json
+from datetime import datetime, timedelta
+import hashlib
+import uuid
+
+# Pydantic models for API
+class User(BaseModel):
+    id: str
+    username: str
+    email: str
+    created_at: datetime
+    
+class UserCreate(BaseModel):
+    username: str
+    email: str
+    password: str
+    
+class Task(BaseModel):
+    id: str
+    title: str
+    description: str
+    completed: bool = False
+    created_at: datetime
+    user_id: str
+    
+class TaskCreate(BaseModel):
+    title: str
+    description: str
+    
+class TaskUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    completed: Optional[bool] = None
+
+# In-memory database simulation
+users_db = {}
+tasks_db = {}
+sessions_db = {}
+
+# Security
+security = HTTPBearer()
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(password: str, hashed: str) -> bool:
+    return hash_password(password) == hashed
+
+def create_session(user_id: str) -> str:
+    session_id = str(uuid.uuid4())
+    sessions_db[session_id] = {
+        "user_id": user_id,
+        "created_at": datetime.now(),
+        "expires_at": datetime.now() + timedelta(hours=24)
+    }
+    return session_id
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    session = sessions_db.get(token)
+    
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials"
+        )
+    
+    if session["expires_at"] < datetime.now():
+        del sessions_db[token]
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session expired"
+        )
+    
+    user = users_db.get(session["user_id"])
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found"
+        )
+    
+    return user
+
+def create_advanced_fastapi_app():
+    app = FastAPI(
+        title="Advanced FastAPI App",
+        description="A comprehensive FastAPI application with authentication, CRUD operations, and real-time features",
+        version="2.0.0",
+        docs_url="/docs",
+        redoc_url="/redoc"
+    )
+
+    @app.get("/", response_class=HTMLResponse)
+    async def home():
+        return """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Advanced FastAPI App</title>
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                    max-width: 1200px;
+                    margin: 0 auto;
+                    padding: 20px;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    min-height: 100vh;
+                }
+                .container {
+                    background: white;
+                    padding: 40px;
+                    border-radius: 15px;
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+                }
+                .header {
+                    text-align: center;
+                    margin-bottom: 40px;
+                }
+                .header h1 {
+                    color: #2c3e50;
+                    font-size: 2.5em;
+                    margin: 0;
+                }
+                .features {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                    gap: 30px;
+                    margin-top: 40px;
+                }
+                .feature-card {
+                    background: #f8f9fa;
+                    padding: 30px;
+                    border-radius: 10px;
+                    border-left: 4px solid #3498db;
+                    transition: transform 0.2s;
+                }
+                .feature-card:hover {
+                    transform: translateY(-5px);
+                    box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+                }
+                .feature-card h3 {
+                    color: #2c3e50;
+                    margin-bottom: 15px;
+                }
+                .feature-card p {
+                    color: #7f8c8d;
+                    margin-bottom: 15px;
+                }
+                .feature-card a {
+                    color: #3498db;
+                    text-decoration: none;
+                    font-weight: 500;
+                }
+                .feature-card a:hover {
+                    text-decoration: underline;
+                }
+                .demo-section {
+                    margin-top: 40px;
+                    padding: 30px;
+                    background: #f1f2f6;
+                    border-radius: 10px;
+                }
+                .demo-form {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                    gap: 20px;
+                    margin-top: 20px;
+                }
+                .demo-form input {
+                    padding: 12px;
+                    border: 2px solid #ddd;
+                    border-radius: 5px;
+                    font-size: 14px;
+                }
+                .demo-form button {
+                    background: #3498db;
+                    color: white;
+                    border: none;
+                    padding: 12px 20px;
+                    border-radius: 5px;
+                    cursor: pointer;
+                    font-size: 14px;
+                    transition: background 0.2s;
+                }
+                .demo-form button:hover {
+                    background: #2980b9;
+                }
+                .demo-result {
+                    margin-top: 20px;
+                    padding: 15px;
+                    background: white;
+                    border-radius: 5px;
+                    border: 1px solid #ddd;
+                    font-family: monospace;
+                    white-space: pre-wrap;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>🚀 Advanced FastAPI App</h1>
+                    <p>A comprehensive web application with authentication, CRUD operations, and real-time features</p>
+                </div>
+                
+                <div class="features">
+                    <div class="feature-card">
+                        <h3>🔐 Authentication</h3>
+                        <p>Secure user registration and login system with session management</p>
+                        <a href="/auth/register">POST /auth/register</a><br>
+                        <a href="/auth/login">POST /auth/login</a>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <h3>👥 User Management</h3>
+                        <p>Complete user profile management and administration</p>
+                        <a href="/users/me">GET /users/me</a><br>
+                        <a href="/users/">GET /users/</a>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <h3>✅ Task Management</h3>
+                        <p>Full CRUD operations for task management system</p>
+                        <a href="/tasks/">GET /tasks/</a><br>
+                        <a href="/tasks/">POST /tasks/</a>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <h3>📊 Analytics</h3>
+                        <p>Real-time statistics and analytics dashboard</p>
+                        <a href="/analytics/stats">GET /analytics/stats</a><br>
+                        <a href="/analytics/health">GET /analytics/health</a>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <h3>🔧 API Documentation</h3>
+                        <p>Interactive API documentation with OpenAPI/Swagger</p>
+                        <a href="/docs">Interactive Docs</a><br>
+                        <a href="/redoc">ReDoc</a>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <h3>🚀 Real-time Features</h3>
+                        <p>WebSocket connections and real-time updates</p>
+                        <a href="/ws">WebSocket Endpoint</a><br>
+                        <a href="/events">Server-Sent Events</a>
+                    </div>
+                </div>
+                
+                <div class="demo-section">
+                    <h3>🎮 Interactive Demo</h3>
+                    <p>Try out the API endpoints directly:</p>
+                    
+                    <div class="demo-form">
+                        <input type="text" id="username" placeholder="Username" value="testuser">
+                        <input type="email" id="email" placeholder="Email" value="test@example.com">
+                        <input type="password" id="password" placeholder="Password" value="password123">
+                        <button onclick="registerUser()">Register User</button>
+                    </div>
+                    
+                    <div class="demo-form">
+                        <input type="text" id="login-username" placeholder="Username" value="testuser">
+                        <input type="password" id="login-password" placeholder="Password" value="password123">
+                        <button onclick="loginUser()">Login</button>
+                        <button onclick="getStats()">Get Stats</button>
+                    </div>
+                    
+                    <div id="demo-result" class="demo-result" style="display: none;"></div>
+                </div>
+            </div>
+            
+            <script>
+                let authToken = null;
+                
+                async function apiCall(endpoint, method = 'GET', data = null) {
+                    const options = {
+                        method: method,
+                        headers: {
+                            'Content-Type': 'application/json',
+                        }
+                    };
+                    
+                    if (authToken) {
+                        options.headers['Authorization'] = 'Bearer ' + authToken;
+                    }
+                    
+                    if (data) {
+                        options.body = JSON.stringify(data);
+                    }
+                    
+                    try {
+                        const response = await fetch(endpoint, options);
+                        const result = await response.json();
+                        return result;
+                    } catch (error) {
+                        return { error: error.message };
+                    }
+                }
+                
+                async function registerUser() {
+                    const username = document.getElementById('username').value;
+                    const email = document.getElementById('email').value;
+                    const password = document.getElementById('password').value;
+                    
+                    const result = await apiCall('/auth/register', 'POST', {
+                        username: username,
+                        email: email,
+                        password: password
+                    });
+                    
+                    showResult(result);
+                }
+                
+                async function loginUser() {
+                    const username = document.getElementById('login-username').value;
+                    const password = document.getElementById('login-password').value;
+                    
+                    const result = await apiCall('/auth/login', 'POST', {
+                        username: username,
+                        password: password
+                    });
+                    
+                    if (result.access_token) {
+                        authToken = result.access_token;
+                    }
+                    
+                    showResult(result);
+                }
+                
+                async function getStats() {
+                    const result = await apiCall('/analytics/stats');
+                    showResult(result);
+                }
+                
+                function showResult(result) {
+                    const resultDiv = document.getElementById('demo-result');
+                    resultDiv.style.display = 'block';
+                    resultDiv.textContent = JSON.stringify(result, null, 2);
+                }
+            </script>
+        </body>
+        </html>
+        """
+
+    # Authentication endpoints
+    @app.post("/auth/register")
+    async def register(user_data: UserCreate):
+        # Check if user already exists
+        for user in users_db.values():
+            if user["username"] == user_data.username or user["email"] == user_data.email:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="User already exists"
+                )
+        
+        # Create new user
+        user_id = str(uuid.uuid4())
+        user = {
+            "id": user_id,
+            "username": user_data.username,
+            "email": user_data.email,
+            "password": hash_password(user_data.password),
+            "created_at": datetime.now()
+        }
+        users_db[user_id] = user
+        
+        # Remove password from response
+        user_response = {k: v for k, v in user.items() if k != "password"}
+        return {"message": "User created successfully", "user": user_response}
+
+    @app.post("/auth/login")
+    async def login(credentials: dict):
+        username = credentials.get("username")
+        password = credentials.get("password")
+        
+        # Find user
+        user = None
+        for u in users_db.values():
+            if u["username"] == username:
+                user = u
+                break
+        
+        if not user or not verify_password(password, user["password"]):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials"
+            )
+        
+        # Create session
+        session_id = create_session(user["id"])
+        
+        return {
+            "access_token": session_id,
+            "token_type": "bearer",
+            "user": {k: v for k, v in user.items() if k != "password"}
+        }
+
+    # User endpoints
+    @app.get("/users/me")
+    async def get_current_user_info(current_user: dict = Depends(get_current_user)):
+        return current_user
+
+    @app.get("/users/")
+    async def get_users(current_user: dict = Depends(get_current_user)):
+        return [
+            {k: v for k, v in user.items() if k != "password"}
+            for user in users_db.values()
+        ]
+
+    # Task endpoints
+    @app.get("/tasks/")
+    async def get_tasks(current_user: dict = Depends(get_current_user)):
+        user_tasks = [
+            task for task in tasks_db.values()
+            if task["user_id"] == current_user["id"]
+        ]
+        return user_tasks
+
+    @app.post("/tasks/")
+    async def create_task(task_data: TaskCreate, current_user: dict = Depends(get_current_user)):
+        task_id = str(uuid.uuid4())
+        task = {
+            "id": task_id,
+            "title": task_data.title,
+            "description": task_data.description,
+            "completed": False,
+            "created_at": datetime.now(),
+            "user_id": current_user["id"]
+        }
+        tasks_db[task_id] = task
+        return task
+
+    @app.get("/tasks/{task_id}")
+    async def get_task(task_id: str, current_user: dict = Depends(get_current_user)):
+        task = tasks_db.get(task_id)
+        if not task or task["user_id"] != current_user["id"]:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Task not found"
+            )
+        return task
+
+    @app.put("/tasks/{task_id}")
+    async def update_task(
+        task_id: str,
+        task_data: TaskUpdate,
+        current_user: dict = Depends(get_current_user)
+    ):
+        task = tasks_db.get(task_id)
+        if not task or task["user_id"] != current_user["id"]:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Task not found"
+            )
+        
+        # Update task
+        if task_data.title is not None:
+            task["title"] = task_data.title
+        if task_data.description is not None:
+            task["description"] = task_data.description
+        if task_data.completed is not None:
+            task["completed"] = task_data.completed
+        
+        task["updated_at"] = datetime.now()
+        return task
+
+    @app.delete("/tasks/{task_id}")
+    async def delete_task(task_id: str, current_user: dict = Depends(get_current_user)):
+        task = tasks_db.get(task_id)
+        if not task or task["user_id"] != current_user["id"]:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Task not found"
+            )
+        
+        del tasks_db[task_id]
+        return {"message": "Task deleted successfully"}
+
+    # Analytics endpoints
+    @app.get("/analytics/stats")
+    async def get_analytics():
+        total_users = len(users_db)
+        total_tasks = len(tasks_db)
+        completed_tasks = sum(1 for task in tasks_db.values() if task["completed"])
+        active_sessions = len(sessions_db)
+        
+        return {
+            "total_users": total_users,
+            "total_tasks": total_tasks,
+            "completed_tasks": completed_tasks,
+            "pending_tasks": total_tasks - completed_tasks,
+            "active_sessions": active_sessions,
+            "completion_rate": (completed_tasks / total_tasks * 100) if total_tasks > 0 else 0,
+            "timestamp": datetime.now().isoformat()
+        }
+
+    @app.get("/analytics/health")
+    async def health_check():
+        return {
+            "status": "healthy",
+            "service": "advanced-fastapi",
+            "version": "2.0.0",
+            "timestamp": datetime.now().isoformat(),
+            "database": {
+                "users": len(users_db),
+                "tasks": len(tasks_db),
+                "sessions": len(sessions_db)
+            }
+        }
+
+    return app
+
+async def setup():
+    # Register advanced FastAPI app
+    fastapi_app = create_advanced_fastapi_app()
+
+    async def serve_fastapi(args):
+        await fastapi_app(args["scope"], args["receive"], args["send"])
+
+    await api.register_service({
+        "id": "advanced-fastapi",
+        "type": "asgi",
+        "serve": serve_fastapi,
+        "config": {
+            "visibility": "public"
+        }
+    }, {"overwrite": True})
+
+api.export({"setup": setup})
+</script> 

@@ -1,4 +1,4 @@
-"""Plugin runner."""
+"""Plugin worker."""
 
 from . import start_runner
 

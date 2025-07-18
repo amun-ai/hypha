@@ -817,7 +817,28 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
             logger.debug(f"Parsed JSON-RPC request: {request_data}")
             
             # Handle JSON-RPC request
-            if request_data.get("method") == "tools/list":
+            if request_data.get("method") == "initialize":
+                logger.debug(f"Received initialize request: {request_data}")
+                # Return server capabilities and information
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_data.get("id"),
+                    "result": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {
+                            "tools": {},
+                            "resources": {},
+                            "prompts": {},
+                            "logging": {}
+                        },
+                        "serverInfo": {
+                            "name": "Hypha MCP Server",
+                            "version": "1.0.0"
+                        }
+                    }
+                }
+                
+            elif request_data.get("method") == "tools/list":
                 logger.debug(f"Received tools/list request: {request_data}")
                 # Check if service has list_tools function OR if MCP server has tools configured
                 has_list_tools = "list_tools" in service
@@ -1678,10 +1699,23 @@ class MCPRoutingMiddleware:
         self.base_path = base_path.rstrip("/") if base_path else ""
         self.store = store
         
-        # MCP route pattern: /{workspace}/mcp/{service_id}/{path:path}
-        route = self.base_path.rstrip("/") + "/{workspace}/mcp/{service_id:path}"
-        self.route = Route(route, endpoint=None)
-        logger.info(f"MCP middleware initialized with route pattern: {self.route.path}")
+        # MCP route patterns
+        # Main route for streamable HTTP: /{workspace}/mcp/{service_id}/mcp
+        mcp_route = self.base_path.rstrip("/") + "/{workspace}/mcp/{service_id:path}/mcp"
+        self.mcp_route = Route(mcp_route, endpoint=None)
+        
+        # Info route for helpful 404: /{workspace}/mcp/{service_id}
+        info_route = self.base_path.rstrip("/") + "/{workspace}/mcp/{service_id:path}"
+        self.info_route = Route(info_route, endpoint=None)
+        
+        # Future SSE route: /{workspace}/mcp/{service_id}/sse
+        sse_route = self.base_path.rstrip("/") + "/{workspace}/mcp/{service_id:path}/sse"
+        self.sse_route = Route(sse_route, endpoint=None)
+        
+        logger.info(f"MCP middleware initialized with route patterns:")
+        logger.info(f"  - Streamable HTTP: {self.mcp_route.path}")
+        logger.info(f"  - Info (404): {self.info_route.path}")
+        logger.info(f"  - SSE (future): {self.sse_route.path}")
     
     def _get_authorization_header(self, scope):
         """Extract the Authorization header from the scope."""
@@ -1714,106 +1748,158 @@ class MCPRoutingMiddleware:
             path = scope.get("path", "")
             logger.debug(f"MCP Middleware: Processing HTTP request to {path}")
             
-            # Check if the current request path matches the MCP route
+            # Check if the current request path matches any MCP route
             from starlette.routing import Match
             
-            match, params = self.route.matches(scope)
-            path_params = params.get("path_params", {})
-            
-            if match == Match.FULL:
-                # Extract workspace and service_id from the matched path
+            # Check SSE route first (/{workspace}/mcp/{service_id}/sse) - most specific
+            sse_match, sse_params = self.sse_route.matches(scope)
+            if sse_match == Match.FULL:
+                path_params = sse_params.get("path_params", {})
                 workspace = path_params["workspace"]
-                service_id_path = path_params["service_id"]
+                service_id = path_params["service_id"]
                 
-                # Parse service_id and path from service_id_path
-                service_id_parts = service_id_path.split("/", 1)
-                service_id = service_id_parts[0]
-                path = "/" + service_id_parts[1] if len(service_id_parts) > 1 else "/"
+                logger.debug(f"MCP Middleware: SSE route match - workspace='{workspace}', service_id='{service_id}'")
                 
-                logger.debug(f"MCP Middleware: Parsed - workspace='{workspace}', service_id='{service_id}', path='{path}'")
+                # Return not implemented for now
+                await self._send_error_response(send, 501, "SSE transport not yet implemented")
+                return
+            
+            # Check MCP route (/{workspace}/mcp/{service_id}/mcp) - specific
+            mcp_match, mcp_params = self.mcp_route.matches(scope)
+            if mcp_match == Match.FULL:
+                path_params = mcp_params.get("path_params", {})
+                workspace = path_params["workspace"]
+                service_id = path_params["service_id"]
                 
-                try:
-                    # Prepare scope for the MCP service
-                    scope = {
-                        k: scope[k]
-                        for k in scope
-                        if isinstance(
-                            scope[k],
-                            (str, int, float, bool, tuple, list, dict, bytes),
-                        )
-                    }
-                    if not path.startswith("/"):
-                        path = "/" + path
-                    scope["path"] = path
-                    scope["raw_path"] = path.encode("latin-1")
-                    
-                    # Get _mode from query string
-                    query = scope.get("query_string", b"").decode("utf-8")
-                    if query:
-                        _mode = dict([q.split("=") for q in query.split("&")]).get("_mode")
-                    else:
-                        _mode = None
-                    
-                    # Get authentication info
-                    access_token = self._get_access_token_from_cookies(scope)
-                    authorization = self._get_authorization_header(scope)
-                    
-                    # Login and get user info
-                    user_info = await self.store.login_optional(
-                        authorization=authorization, access_token=access_token
-                    )
-                    
-                    # Get the MCP service
-                    async with self.store.get_workspace_interface(
-                        user_info, workspace
-                    ) as api:
-                        try:
-                            service_info = await api.get_service_info(
-                                service_id, {"mode": _mode}
-                            )
-                            logger.debug(f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'")
-                        except (KeyError, Exception) as e:
-                            logger.error(f"MCP Middleware: Service lookup failed: {e}")
-                            if "Service not found" in str(e):
-                                await self._send_error_response(
-                                    send, 404, f"Service {service_id} not found"
-                                )
-                                return
-                            else:
-                                raise
-                        
-                        if service_info.type != "mcp":
-                            await self._send_error_response(
-                                send, 400, f"Service {service_id} is not MCP compatible"
-                            )
-                            return
-                        
-                        service = await api.get_service(service_info.id)
-                        
-                        # Check if it's MCP compatible
-                        if not is_mcp_compatible_service(service):
-                            await self._send_error_response(
-                                send, 400, f"Service {service_id} is not MCP compatible"
-                            )
-                            return
-                        
-                        mcp_app = await create_mcp_app_from_service(
-                            service, service_info, self.store.get_redis()
-                        )
-                        
-                        # Handle the request with the MCP app
-                        await mcp_app(scope, receive, send)
-                        return
+                logger.debug(f"MCP Middleware: MCP route match - workspace='{workspace}', service_id='{service_id}'")
                 
-                except Exception as exp:
-                    logger.exception(f"Error in MCP service: {exp}")
-                    await self._send_error_response(
-                        send, 500, f"Internal Server Error: {exp}"
-                    )
-                    return
+                # Handle MCP streamable HTTP request
+                await self._handle_mcp_request(scope, receive, send, workspace, service_id)
+                return
+            
+            # Check info route last (/{workspace}/mcp/{service_id}) - most general
+            info_match, info_params = self.info_route.matches(scope)
+            if info_match == Match.FULL:
+                path_params = info_params.get("path_params", {})
+                workspace = path_params["workspace"]
+                service_id = path_params["service_id"]
+                
+                logger.debug(f"MCP Middleware: Info route match - workspace='{workspace}', service_id='{service_id}'")
+                
+                # Return helpful 404 message
+                await self._send_helpful_404(send, workspace, service_id)
+                return
         
         # Continue to next middleware if not an MCP route
         await self.app(scope, receive, send)
+    
+    async def _send_helpful_404(self, send, workspace, service_id):
+        """Send a helpful 404 message with endpoint information."""
+        message = {
+            "error": "MCP endpoint not found",
+            "message": f"The MCP service '{service_id}' endpoint was not found at this path.",
+            "available_endpoints": {
+                "streamable_http": f"/{workspace}/mcp/{service_id}/mcp",
+                "sse": f"/{workspace}/mcp/{service_id}/sse (not yet implemented)"
+            },
+            "help": "Use the streamable HTTP endpoint for MCP communication."
+        }
+        response_body = json.dumps(message, indent=2).encode()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 404,
+                "headers": [
+                    [b"content-type", b"application/json"],
+                    [b"content-length", str(len(response_body)).encode()],
+                ],
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": response_body,
+            }
+        )
+    
+    async def _handle_mcp_request(self, scope, receive, send, workspace, service_id):
+        """Handle MCP streamable HTTP requests."""
+        try:
+            # Prepare scope for the MCP service
+            scope = {
+                k: scope[k]
+                for k in scope
+                if isinstance(
+                    scope[k],
+                    (str, int, float, bool, tuple, list, dict, bytes),
+                )
+            }
+                        # Set path to root for MCP service
+            scope["path"] = "/"
+            scope["raw_path"] = b"/"
+            
+            # Get _mode from query string
+            query = scope.get("query_string", b"").decode("utf-8")
+            if query:
+                _mode = dict([q.split("=") for q in query.split("&")]).get("_mode")
+            else:
+                _mode = None
+            
+            # Get authentication info
+            access_token = self._get_access_token_from_cookies(scope)
+            authorization = self._get_authorization_header(scope)
+            
+            # Login and get user info
+            user_info = await self.store.login_optional(
+                authorization=authorization, access_token=access_token
+            )
+            
+            # Get the MCP service
+            async with self.store.get_workspace_interface(
+                user_info, workspace
+            ) as api:
+                try:
+                    service_info = await api.get_service_info(
+                        service_id, {"mode": _mode}
+                    )
+                    logger.debug(f"MCP Middleware: Found service '{service_id}' of type '{service_info.type}'")
+                except (KeyError, Exception) as e:
+                    logger.error(f"MCP Middleware: Service lookup failed: {e}")
+                    if "Service not found" in str(e):
+                        await self._send_error_response(
+                            send, 404, f"Service {service_id} not found"
+                        )
+                        return
+                    else:
+                        raise
+                
+                if service_info.type != "mcp":
+                    await self._send_error_response(
+                        send, 400, f"Service {service_id} is not MCP compatible"
+                    )
+                    return
+                
+                service = await api.get_service(service_info.id)
+                
+                # Check if it's MCP compatible
+                if not is_mcp_compatible_service(service):
+                    await self._send_error_response(
+                        send, 400, f"Service {service_id} is not MCP compatible"
+                    )
+                    return
+                
+                mcp_app = await create_mcp_app_from_service(
+                    service, service_info, self.store.get_redis()
+                )
+                
+                # Handle the request with the MCP app
+                await mcp_app(scope, receive, send)
+        
+        except Exception as exp:
+            logger.exception(f"Error in MCP service: {exp}")
+            await self._send_error_response(
+                send, 500, f"Internal Server Error: {exp}"
+            )
     
     async def _send_error_response(self, send, status_code, message):
         """Send an error response."""

@@ -1042,9 +1042,7 @@ This feature is particularly useful for:
 
 Hypha's flexibility allows services to be registered from scripts running on the same host as the server or on a different one. To further accommodate complex applications, Hypha supports the initiation of "built-in" services in conjunction with server startup. This can be achieved using the `--startup-functions` option.
 
-The `--startup-functions` option allows you to provide a URI pointing to a Python function intended for custom
-
- server initialization tasks. The specified function can perform various tasks, such as registering services, configuring the server, or launching additional processes. The URI should follow the format `<python module or script file>:<entrypoint function name>`, providing a straightforward way to customize your server's startup behavior.
+The `--startup-functions` option allows you to provide a URI pointing to a Python function intended for custom server initialization tasks. The specified function can perform various tasks, such as registering services, configuring the server, or launching additional processes. The URI should follow the format `<python module or script file>:<entrypoint function name>`, providing a straightforward way to customize your server's startup behavior.
 
 For example, to start the server with a custom startup function, use the following command:
 
@@ -1086,4 +1084,213 @@ Multiple startup functions can be specified by providing additional `--startup-f
 ```bash
 python -m hypha.server --host=0.0.0.0 --port=9527 --startup-functions=./example-startup-function.py:hypha_startup ./example-startup-function2.py:hypha_startup
 ```
+
+### Creating Custom Workers
+
+You can also create custom workers that extend Hypha's capabilities to run different types of applications. Workers can be implemented in Python or JavaScript and registered as services.
+
+#### Python Worker Example
+
+Here's a simple Python worker that can be registered as a startup function:
+
+```python
+"""Custom worker example for Hypha."""
+
+from hypha.workers.base import BaseWorker, WorkerConfig, SessionInfo, SessionStatus
+from typing import List, Dict, Any, Optional, Union
+import logging
+
+logger = logging.getLogger(__name__)
+
+class CustomWorker(BaseWorker):
+    """Custom worker for executing tasks."""
+    
+    def __init__(self, server=None):
+        super().__init__(server)
+        self.running_tasks = {}
+    
+    @property
+    def supported_types(self) -> List[str]:
+        return ["custom-task", "background-job"]
+    
+    @property
+    def worker_name(self) -> str:
+        return "Custom Worker"
+    
+    @property
+    def worker_description(self) -> str:
+        return "A custom worker for executing tasks"
+    
+    async def _initialize_worker(self) -> None:
+        """Initialize the custom worker."""
+        logger.info("Custom worker initialized")
+    
+    async def _start_session(self, config: WorkerConfig) -> Dict[str, Any]:
+        """Start a custom worker session."""
+        logger.info(f"Starting custom session for app {config.app_id}")
+        
+        # Your custom session logic here
+        task_info = {
+            "status": "running",
+            "logs": [f"Started task for {config.app_id}"],
+            "result": None
+        }
+        
+        return {
+            "task_info": task_info,
+            "local_url": f"http://localhost:8000/tasks/{config.app_id}",
+            "public_url": f"{config.public_base_url}/tasks/{config.app_id}",
+        }
+    
+    async def _stop_session(self, session_id: str) -> None:
+        """Stop a custom worker session."""
+        logger.info(f"Stopping custom session {session_id}")
+        # Your cleanup logic here
+    
+    async def _get_session_logs(
+        self, 
+        session_id: str, 
+        log_type: Optional[str] = None,
+        offset: int = 0,
+        limit: Optional[int] = None
+    ) -> Union[Dict[str, List[str]], List[str]]:
+        """Get logs for a custom worker session."""
+        session_data = self._session_data.get(session_id, {})
+        logs = session_data.get("task_info", {}).get("logs", [])
+        
+        if log_type:
+            return logs[offset:offset+limit] if limit else logs[offset:]
+        else:
+            return {"log": logs[offset:offset+limit] if limit else logs[offset:]}
+
+async def hypha_startup(server):
+    """Hypha startup function to register the custom worker."""
+    
+    # Create and initialize the custom worker
+    custom_worker = CustomWorker(server)
+    await custom_worker.initialize()
+    
+    logger.info("Custom worker registered successfully")
+```
+
+#### JavaScript Worker Example
+
+For JavaScript workers, you can create a simple standalone script:
+
+```javascript
+// custom-worker.js
+import { connectToServer } from 'hypha-rpc';
+
+// Worker functions
+async function start(config) {
+    const sessionId = `${config.workspace}/${config.client_id}`;
+    console.log(`Starting session ${sessionId} for app ${config.app_id}`);
+    
+    // Your custom session startup logic here
+    const sessionData = {
+        status: "running",
+        created_at: new Date().toISOString(),
+        logs: [`Session ${sessionId} started`]
+    };
+    
+    // Store session data (use proper storage in production)
+    global.sessionStorage = global.sessionStorage || {};
+    global.sessionStorage[sessionId] = sessionData;
+    
+    return {
+        session_id: sessionId,
+        app_id: config.app_id,
+        workspace: config.workspace,
+        client_id: config.client_id,
+        status: "running",
+        app_type: config.app_type,
+        created_at: sessionData.created_at,
+        metadata: config.metadata
+    };
+}
+
+async function stop(sessionId) {
+    console.log(`Stopping session ${sessionId}`);
+    if (global.sessionStorage[sessionId]) {
+        global.sessionStorage[sessionId].status = "stopped";
+    }
+}
+
+async function listSessions(workspace) {
+    const sessions = [];
+    for (const [sessionId, sessionData] of Object.entries(global.sessionStorage || {})) {
+        if (sessionId.startsWith(workspace + "/")) {
+            sessions.push({
+                session_id: sessionId,
+                status: sessionData.status,
+                created_at: sessionData.created_at
+            });
+        }
+    }
+    return sessions;
+}
+
+async function getLogs(sessionId) {
+    const sessionData = global.sessionStorage[sessionId];
+    if (!sessionData) {
+        throw new Error(`Session ${sessionId} not found`);
+    }
+    return { log: sessionData.logs || [], error: [] };
+}
+
+// Register the worker
+async function registerWorker() {
+    try {
+        const server = await connectToServer({
+            server_url: "http://localhost:9527"
+        });
+        
+        const workerService = await server.registerService({
+            name: "JavaScript Custom Worker",
+            description: "A custom worker implemented in JavaScript",
+            type: "server-app-worker",
+            config: {
+                visibility: "protected",
+                run_in_executor: true,
+            },
+            supported_types: ["javascript-custom", "js-worker"],
+            start: start,
+            stop: stop,
+            list_sessions: listSessions,
+            get_logs: getLogs,
+            get_session_info: async (sessionId) => {
+                const sessionData = global.sessionStorage[sessionId];
+                if (!sessionData) throw new Error(`Session ${sessionId} not found`);
+                return { session_id: sessionId, status: sessionData.status };
+            },
+            prepare_workspace: async (workspace) => console.log(`Preparing workspace ${workspace}`),
+            close_workspace: async (workspace) => console.log(`Closing workspace ${workspace}`),
+        });
+        
+        console.log(`JavaScript worker registered: ${workerService.id}`);
+        return server;
+        
+    } catch (error) {
+        console.error("Failed to register worker:", error);
+        throw error;
+    }
+}
+
+// Start the worker
+registerWorker().then(server => {
+    console.log("JavaScript worker is running...");
+}).catch(error => {
+    console.error("Worker startup failed:", error);
+    process.exit(1);
+});
+```
+
+Run the JavaScript worker with:
+
+```bash
+npm install hypha-rpc
+node custom-worker.js
+```
+
+This approach makes it simple to create custom workers without complex wrapper classes - you just implement the required functions and register them as a service.
 

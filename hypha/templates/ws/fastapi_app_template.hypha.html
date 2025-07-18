@@ -3,11 +3,11 @@
     "name": "FastAPI Web App",
     "type": "web-python",
     "version": "0.1.0",
-    "description": "A FastAPI web application with ASGI service endpoints.",
-    "tags": ["web", "api", "fastapi"],
+    "description": "A modern FastAPI web application with elegant styling and interactive features.",
+    "tags": ["web", "api", "fastapi", "modern"],
     "ui": "",
     "cover": "",
-    "icon": "extension",
+    "icon": "🚀",
     "api_version": "0.1.8",
     "requirements": ["fastapi==0.112.1"],
     "dependencies": [],
@@ -21,28 +21,136 @@
 
 <script lang="python">
 from hypha_rpc import api
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+import time
+import json
+from datetime import datetime
 
 def create_fastapi_app():
-    app = FastAPI()
+    app = FastAPI(
+        title="Modern FastAPI App",
+        description="A stylish FastAPI application with interactive features",
+        version="1.0.0"
+    )
 
-    @app.get("/")
-    async def root():
-        return {"message": "Hello World"}
+    @app.get("/", response_class=HTMLResponse)
+    async def home():
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return f"""
+        <html>
+        <head>
+            <title>Modern FastAPI App</title>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>🚀 Modern FastAPI App</h1>
+                    <div class="subtitle">A stylish web application with interactive features</div>
+                </div>
+                
+                <div class="status">
+                    <strong>Status:</strong> ✅ Service Running<br>
+                    <strong>Time:</strong> {current_time}<br>
+                    <strong>Service:</strong> hello-fastapi
+                </div>
+
+                <div class="api-grid">
+                    <div class="api-card">
+                        <h3>🏠 Home</h3>
+                        <p>Welcome page with API overview</p>
+                        <a href="/">GET /</a>
+                    </div>
+                    <div class="api-card">
+                        <h3>💓 Health Check</h3>
+                        <p>Service health and status information</p>
+                        <a href="/health">GET /health</a>
+                    </div>
+                    <div class="api-card">
+                        <h3>🧮 Calculator</h3>
+                        <p>Add two numbers together</p>
+                        <a href="/api/add/15/25">GET /api/add/15/25</a>
+                    </div>
+                    <div class="api-card">
+                        <h3>🎲 Random Number</h3>
+                        <p>Generate a random number in range</p>
+                        <a href="/api/random?min=1&max=100">GET /api/random?min=1&max=100</a>
+                    </div>
+                    <div class="api-card">
+                        <h3>📊 Statistics</h3>
+                        <p>Get app statistics and metrics</p>
+                        <a href="/api/stats">GET /api/stats</a>
+                    </div>
+                    <div class="api-card">
+                        <h3>🔧 API Docs</h3>
+                        <p>Interactive API documentation</p>
+                        <a href="/docs">GET /docs</a>
+                    </div>
+                </div>
+
+                <div class="demo-section">
+                    <h3>🎮 Interactive Demo</h3>
+                    <p>Test the API endpoints directly:</p>
+                    <button class="demo-button" onclick="testAPI('/health')">Test Health</button>
+                    <button class="demo-button" onclick="testAPI('/api/add/42/8')">Test Calculator</button>
+                    <button class="demo-button" onclick="testAPI('/api/random?min=1&max=10')">Test Random</button>
+                    <button class="demo-button" onclick="testAPI('/api/stats')">Test Stats</button>
+                    <div id="demo-result" class="demo-result" style="display: none;"></div>
+                </div>
+            </div>
+
+        </body>
+        </html>
+        """
 
     @app.get("/health")
     async def health():
-        return {"status": "healthy", "service": "hello-fastapi"}
+        return {
+            "status": "healthy",
+            "service": "hello-fastapi",
+            "timestamp": datetime.now().isoformat(),
+            "uptime": "running"
+        }
 
     @app.get("/api/add/{a}/{b}")
     async def add_numbers(a: int, b: int):
-        return {"result": a + b}
+        result = a + b
+        return {
+            "operation": "addition",
+            "inputs": {"a": a, "b": b},
+            "result": result,
+            "timestamp": datetime.now().isoformat()
+        }
+
+    @app.get("/api/random")
+    async def get_random(min: int = 1, max: int = 100):
+        import random
+        if min >= max:
+            raise HTTPException(status_code=400, detail="min must be less than max")
+        
+        number = random.randint(min, max)
+        return {
+            "random_number": number,
+            "range": {"min": min, "max": max},
+            "timestamp": datetime.now().isoformat()
+        }
+
+    @app.get("/api/stats")
+    async def get_stats():
+        return {
+            "app_name": "Modern FastAPI App",
+            "version": "1.0.0",
+            "framework": "FastAPI",
+            "python_version": "3.x",
+            "endpoints": 6,
+            "status": "active",
+            "timestamp": datetime.now().isoformat()
+        }
 
     return app
 
-
 async def setup():
-    # Registering fastapi app
+    # Registering FastAPI app
     fastapi_app = create_fastapi_app()
 
     async def serve_fastapi(args):

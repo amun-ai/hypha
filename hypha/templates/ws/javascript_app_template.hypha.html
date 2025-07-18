@@ -1,13 +1,13 @@
 <config lang="json">
 {
-    "name": "JavaScript Test App",
+    "name": "JavaScript Interactive App",
     "type": "window",
-    "tags": [],
+    "tags": ["javascript", "interactive", "modern"],
     "ui": "",
     "version": "0.1.0",
     "cover": "",
-    "description": "A simple JavaScript test app with basic arithmetic functions.",
-    "icon": "extension",
+    "description": "A modern JavaScript app with interactive features and beautiful UI components.",
+    "icon": "⚡",
     "api_version": "0.1.8",
     "requirements": [],
     "dependencies": [],
@@ -21,24 +21,462 @@
 
 <script lang="javascript">
 async function setup() {
-    await api.log('JavaScript Test app connected!');
+    await api.log('🚀 JavaScript Interactive App initializing...');
+    
+    // Initialize the UI
+    initializeUI();
+    
+    await api.log('✅ JavaScript Interactive App ready!');
+}
+
+function initializeUI() {
+    // Create modern UI with styling
+    document.body.innerHTML = `
+        <div class="app-container">
+            <div class="header">
+                <h1>⚡ JavaScript Interactive App</h1>
+                <p class="subtitle">A modern JavaScript application with interactive features</p>
+            </div>
+            
+            <div class="features-grid">
+                <div class="feature-card">
+                    <h3>🧮 Calculator</h3>
+                    <div class="input-group">
+                        <input type="number" id="num1" placeholder="First number" value="15">
+                        <input type="number" id="num2" placeholder="Second number" value="25">
+                        <button onclick="performCalculation()">Calculate</button>
+                    </div>
+                    <div id="calc-result" class="result"></div>
+                </div>
+                
+                <div class="feature-card">
+                    <h3>🎲 Random Generator</h3>
+                    <div class="input-group">
+                        <input type="number" id="min" placeholder="Min" value="1">
+                        <input type="number" id="max" placeholder="Max" value="100">
+                        <button onclick="generateRandom()">Generate</button>
+                    </div>
+                    <div id="random-result" class="result"></div>
+                </div>
+                
+                <div class="feature-card">
+                    <h3>📊 Data Processor</h3>
+                    <div class="input-group">
+                        <input type="text" id="data-input" placeholder="Enter numbers (1,2,3,4,5)" value="10,20,30,40,50">
+                        <button onclick="processData()">Process</button>
+                    </div>
+                    <div id="data-result" class="result"></div>
+                </div>
+                
+                <div class="feature-card">
+                    <h3>🔍 Text Analyzer</h3>
+                    <div class="input-group">
+                        <textarea id="text-input" placeholder="Enter text to analyze...">Hello, this is a sample text for analysis!</textarea>
+                        <button onclick="analyzeText()">Analyze</button>
+                    </div>
+                    <div id="text-result" class="result"></div>
+                </div>
+            </div>
+            
+            <div class="api-section">
+                <h3>🔧 API Functions</h3>
+                <div class="api-grid">
+                    <button onclick="testAdd()" class="api-button">Test Add Function</button>
+                    <button onclick="testInfo()" class="api-button">Test Info Function</button>
+                    <button onclick="testProcessList()" class="api-button">Test Process List</button>
+                    <button onclick="testAnalyze()" class="api-button">Test Analyze Function</button>
+                </div>
+                <div id="api-result" class="api-result"></div>
+            </div>
+            
+            <div class="status-section">
+                <h3>📈 Status</h3>
+                <div id="status-display">
+                    <div class="status-item">
+                        <span class="status-label">Status:</span>
+                        <span class="status-value">✅ Running</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Time:</span>
+                        <span class="status-value" id="current-time"></span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Operations:</span>
+                        <span class="status-value" id="operation-count">0</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Add modern styling
+    const style = document.createElement('style');
+    style.textContent = `
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .app-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .subtitle {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+        
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 25px;
+            padding: 30px;
+        }
+        
+        .feature-card {
+            background: #f8f9fa;
+            padding: 25px;
+            border-radius: 10px;
+            border-left: 4px solid #3498db;
+            transition: transform 0.2s;
+        }
+        
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        
+        .feature-card h3 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+        }
+        
+        .input-group {
+            margin-bottom: 15px;
+        }
+        
+        .input-group input, .input-group textarea {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            margin-bottom: 10px;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+        
+        .input-group input:focus, .input-group textarea:focus {
+            outline: none;
+            border-color: #3498db;
+        }
+        
+        .input-group textarea {
+            min-height: 60px;
+            resize: vertical;
+        }
+        
+        .input-group button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+            width: 100%;
+        }
+        
+        .input-group button:hover {
+            background: #2980b9;
+        }
+        
+        .result {
+            background: white;
+            padding: 15px;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+            font-family: monospace;
+            white-space: pre-wrap;
+            margin-top: 10px;
+        }
+        
+        .api-section {
+            background: #f1f2f6;
+            padding: 30px;
+            border-top: 1px solid #ddd;
+        }
+        
+        .api-section h3 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .api-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .api-button {
+            background: #27ae60;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        
+        .api-button:hover {
+            background: #219a52;
+        }
+        
+        .api-result {
+            background: white;
+            padding: 20px;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+        
+        .status-section {
+            padding: 30px;
+            border-top: 1px solid #ddd;
+        }
+        
+        .status-section h3 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .status-label {
+            font-weight: 600;
+            color: #7f8c8d;
+        }
+        
+        .status-value {
+            color: #2c3e50;
+            font-weight: 500;
+        }
+    `;
+    document.head.appendChild(style);
+    
+    // Start the time update
+    updateTime();
+    setInterval(updateTime, 1000);
+}
+
+let operationCount = 0;
+
+function updateTime() {
+    const now = new Date();
+    document.getElementById('current-time').textContent = now.toLocaleString();
+}
+
+function incrementCounter() {
+    operationCount++;
+    document.getElementById('operation-count').textContent = operationCount;
+}
+
+async function performCalculation() {
+    const num1 = parseFloat(document.getElementById('num1').value) || 0;
+    const num2 = parseFloat(document.getElementById('num2').value) || 0;
+    
+    try {
+        const result = await add(num1, num2);
+        document.getElementById('calc-result').textContent = `Result: ${result}`;
+        incrementCounter();
+    } catch (error) {
+        document.getElementById('calc-result').textContent = `Error: ${error.message}`;
+    }
+}
+
+async function generateRandom() {
+    const min = parseInt(document.getElementById('min').value) || 1;
+    const max = parseInt(document.getElementById('max').value) || 100;
+    
+    try {
+        const result = await generateRandomNumber(min, max);
+        document.getElementById('random-result').textContent = `Random: ${result}`;
+        incrementCounter();
+    } catch (error) {
+        document.getElementById('random-result').textContent = `Error: ${error.message}`;
+    }
+}
+
+async function processData() {
+    const dataInput = document.getElementById('data-input').value;
+    
+    try {
+        const numbers = dataInput.split(',').map(n => parseFloat(n.trim())).filter(n => !isNaN(n));
+        const result = await processNumbers(numbers);
+        document.getElementById('data-result').textContent = JSON.stringify(result, null, 2);
+        incrementCounter();
+    } catch (error) {
+        document.getElementById('data-result').textContent = `Error: ${error.message}`;
+    }
+}
+
+async function analyzeText() {
+    const text = document.getElementById('text-input').value;
+    
+    try {
+        const result = await analyzeTextContent(text);
+        document.getElementById('text-result').textContent = JSON.stringify(result, null, 2);
+        incrementCounter();
+    } catch (error) {
+        document.getElementById('text-result').textContent = `Error: ${error.message}`;
+    }
+}
+
+async function testAdd() {
+    try {
+        const result = await add(42, 8);
+        document.getElementById('api-result').textContent = `add(42, 8) = ${result}`;
+        incrementCounter();
+    } catch (error) {
+        document.getElementById('api-result').textContent = `Error: ${error.message}`;
+    }
+}
+
+async function testInfo() {
+    try {
+        const result = await info();
+        document.getElementById('api-result').textContent = JSON.stringify(result, null, 2);
+        incrementCounter();
+    } catch (error) {
+        document.getElementById('api-result').textContent = `Error: ${error.message}`;
+    }
+}
+
+async function testProcessList() {
+    try {
+        const result = await processNumbers([1, 2, 3, 4, 5]);
+        document.getElementById('api-result').textContent = JSON.stringify(result, null, 2);
+        incrementCounter();
+    } catch (error) {
+        document.getElementById('api-result').textContent = `Error: ${error.message}`;
+    }
+}
+
+async function testAnalyze() {
+    try {
+        const result = await analyzeTextContent("Hello, this is a test!");
+        document.getElementById('api-result').textContent = JSON.stringify(result, null, 2);
+        incrementCounter();
+    } catch (error) {
+        document.getElementById('api-result').textContent = `Error: ${error.message}`;
+    }
 }
 
 async function add(a, b) {
     return a + b;
 }
 
+async function generateRandomNumber(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+async function processNumbers(numbers) {
+    const sum = numbers.reduce((acc, num) => acc + num, 0);
+    const average = sum / numbers.length;
+    const min = Math.min(...numbers);
+    const max = Math.max(...numbers);
+    
+    return {
+        input: numbers,
+        sum: sum,
+        average: average,
+        min: min,
+        max: max,
+        count: numbers.length,
+        doubled: numbers.map(n => n * 2),
+        processed_at: new Date().toISOString()
+    };
+}
+
+async function analyzeTextContent(text) {
+    const words = text.split(/\s+/).filter(word => word.length > 0);
+    const wordCount = words.length;
+    const charCount = text.length;
+    const charCountNoSpaces = text.replace(/\s/g, '').length;
+    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0);
+    
+    return {
+        text: text,
+        word_count: wordCount,
+        character_count: charCount,
+        character_count_no_spaces: charCountNoSpaces,
+        sentence_count: sentences.length,
+        average_word_length: wordCount > 0 ? (charCountNoSpaces / wordCount).toFixed(2) : 0,
+        analyzed_at: new Date().toISOString()
+    };
+}
+
 async function info() {
     return {
-        name: "JS Test App", 
+        name: "JavaScript Interactive App", 
         type: "javascript", 
-        status: "ok"
+        version: "1.0.0",
+        status: "running",
+        operations_performed: operationCount,
+        features: [
+            "Calculator",
+            "Random Number Generator", 
+            "Data Processor",
+            "Text Analyzer"
+        ],
+        started_at: new Date().toISOString()
     };
 }
 
 api.export({
     setup,
     add,
+    generateRandomNumber,
+    processNumbers, 
+    analyzeTextContent,
     info,
 })
 </script> 

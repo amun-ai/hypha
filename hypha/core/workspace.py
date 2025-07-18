@@ -1422,15 +1422,37 @@ class WorkspaceManager:
             workspace != "*"
         ), "You must specify a workspace for the service query, otherwise please call list_services to find the service."
         logger.info("Getting service: %s", service_id)
-
+        config = config or {}
+        mode = config.get("mode")
+        read_app_manifest = config.get("read_app_manifest", False)
         user_info = UserInfo.model_validate(context["user"])
         key = f"services:*|*:{service_id}@{app_id}"
         keys = await self._redis.keys(key)
         if not keys:
-            # If no services found in Redis, raise KeyError to trigger lazy loading
+            # If no services found in Redis, try to get from artifact manifest if app_id is provided
+            if app_id != "*" and read_app_manifest and self._artifact_manager:
+                try:
+                    artifact = await self._artifact_manager.read(app_id, context=context)
+                    if artifact and artifact.get("manifest") and artifact["manifest"].get("services"):
+                        # Extract service name from service_id (format: workspace/client_id:service_name)
+                        service_name = service_id.split(":")[1] if ":" in service_id else service_id
+                        
+                        # Look for the service in the manifest services
+                        for svc in artifact["manifest"]["services"]:
+                            svc_info = ServiceInfo.model_validate(svc)
+                            # The stored service ID is like "workspace/*:service_name"
+                            if svc_info.id.endswith(":" + service_name):
+                                # Check if workspace matches
+                                stored_workspace = svc_info.id.split("/")[0]
+                                if stored_workspace == workspace:
+                                    return svc_info
+                                        
+                except Exception as e:
+                    logger.warning(f"Failed to read artifact {app_id} for service lookup: {e}")
+            
+            # If no services found in Redis and not found in artifact, raise KeyError to trigger lazy loading
             raise KeyError(f"Service not found: {service_id}@{app_id}")
-        config = config or {}
-        mode = config.get("mode")
+
         if mode is None:
             # If app_id is provided, try to get service_selection_mode directly from artifact
             if app_id != "*" and self._artifact_manager:
@@ -1585,7 +1607,7 @@ class WorkspaceManager:
             {
                 "name": "pydantic-model",
                 "type": BaseModel,
-                "encoder": lambda x: x.model_dump(),
+                "encoder": lambda x: x.model_dump(mode="json"),
             }
         )
         return rpc

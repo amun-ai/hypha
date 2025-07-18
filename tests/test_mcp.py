@@ -608,7 +608,7 @@ async def test_mcp_http_endpoint_tools(fastapi_server, test_user_token):
     async with httpx.AsyncClient() as client:
         # Test tools/list
         response = await client.post(
-            f"{SERVER_URL}/{workspace}/mcp/timestamp-service/",
+            f"{SERVER_URL}/{workspace}/mcp/timestamp-service/mcp",
             json={
                 "jsonrpc": "2.0",
                 "id": "test-1",
@@ -629,7 +629,7 @@ async def test_mcp_http_endpoint_tools(fastapi_server, test_user_token):
 
         # Test tools/call
         response = await client.post(
-            f"{SERVER_URL}/{workspace}/mcp/timestamp-service/",
+            f"{SERVER_URL}/{workspace}/mcp/timestamp-service/mcp",
             json={
                 "jsonrpc": "2.0",
                 "id": "test-2",
@@ -722,7 +722,7 @@ async def test_mcp_http_endpoint_prompts(fastapi_server, test_user_token):
     async with httpx.AsyncClient() as client:
         # Test prompts/list
         response = await client.post(
-            f"{SERVER_URL}/{workspace}/mcp/code-review-service/",
+            f"{SERVER_URL}/{workspace}/mcp/code-review-service/mcp",
             json={
                 "jsonrpc": "2.0",
                 "id": "test-1",
@@ -743,7 +743,7 @@ async def test_mcp_http_endpoint_prompts(fastapi_server, test_user_token):
 
         # Test prompts/get
         response = await client.post(
-            f"{SERVER_URL}/{workspace}/mcp/code-review-service/",
+            f"{SERVER_URL}/{workspace}/mcp/code-review-service/mcp",
             json={
                 "jsonrpc": "2.0",
                 "id": "test-2",
@@ -808,7 +808,7 @@ async def test_mcp_http_endpoint_resources(fastapi_server, test_user_token):
     async with httpx.AsyncClient() as client:
         # Test resources/templates/list
         response = await client.post(
-            f"{SERVER_URL}/{workspace}/mcp/docs-service/",
+            f"{SERVER_URL}/{workspace}/mcp/docs-service/mcp",
             json={
                 "jsonrpc": "2.0",
                 "id": "test-1",
@@ -880,7 +880,7 @@ async def test_mcp_error_handling(fastapi_server, test_user_token):
     async with httpx.AsyncClient() as client:
         # Test 1: Invalid JSON-RPC request
         response = await client.post(
-            f"{SERVER_URL}/{workspace}/mcp/error-service/",
+            f"{SERVER_URL}/{workspace}/mcp/error-service/mcp",
             json={"invalid": "request"},
             headers={"Content-Type": "application/json"},
         )
@@ -891,7 +891,7 @@ async def test_mcp_error_handling(fastapi_server, test_user_token):
 
         # Test 2: Method not found
         response = await client.post(
-            f"{SERVER_URL}/{workspace}/mcp/error-service/",
+            f"{SERVER_URL}/{workspace}/mcp/error-service/mcp",
             json={
                 "jsonrpc": "2.0",
                 "id": "test-2",
@@ -907,7 +907,7 @@ async def test_mcp_error_handling(fastapi_server, test_user_token):
 
         # Test 3: Tool runtime error
         response = await client.post(
-            f"{SERVER_URL}/{workspace}/mcp/error-service/",
+            f"{SERVER_URL}/{workspace}/mcp/error-service/mcp",
             json={
                 "jsonrpc": "2.0",
                 "id": "test-3",
@@ -932,7 +932,7 @@ async def test_mcp_nonexistent_service(fastapi_server, test_user_token):
     async with httpx.AsyncClient() as client:
         # Try to access nonexistent service
         response = await client.post(
-            f"{SERVER_URL}/ws-user-user-1/mcp/nonexistent/",
+            f"{SERVER_URL}/ws-user-user-1/mcp/nonexistent/mcp",
             json={
                 "jsonrpc": "2.0",
                 "id": "test-1",
@@ -942,6 +942,78 @@ async def test_mcp_nonexistent_service(fastapi_server, test_user_token):
             headers={"Content-Type": "application/json"},
         )
         assert response.status_code == 404
+
+
+async def test_mcp_helpful_404_message(fastapi_server, test_user_token):
+    """Test that accessing MCP service without /mcp suffix returns helpful 404."""
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+
+    workspace = api.config.workspace
+
+    # Register a simple MCP service
+    await api.register_service(
+        {
+            "id": "test-service",
+            "type": "mcp",
+            "config": {
+                "visibility": "public",
+            },
+        }
+    )
+
+    async with httpx.AsyncClient() as client:
+        # Try to access service without /mcp suffix
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/mcp/test-service",
+            headers={"Content-Type": "application/json"},
+        )
+        
+        assert response.status_code == 404
+        data = response.json()
+        assert "error" in data
+        assert data["error"] == "MCP endpoint not found"
+        assert "available_endpoints" in data
+        assert data["available_endpoints"]["streamable_http"] == f"/{workspace}/mcp/test-service/mcp"
+        assert "sse" in data["available_endpoints"]["sse"]
+        assert "help" in data
+
+    await api.disconnect()
+
+
+async def test_mcp_sse_not_implemented(fastapi_server, test_user_token):
+    """Test that SSE endpoint returns not implemented message."""
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+
+    workspace = api.config.workspace
+
+    # Register a simple MCP service
+    await api.register_service(
+        {
+            "id": "test-service",
+            "type": "mcp",
+            "config": {
+                "visibility": "public",
+            },
+        }
+    )
+
+    async with httpx.AsyncClient() as client:
+        # Try to access SSE endpoint
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/mcp/test-service/sse",
+            headers={"Content-Type": "application/json"},
+        )
+        
+        assert response.status_code == 501
+        data = response.json()
+        assert "error" in data
+        assert "not yet implemented" in data["error"]
+
+    await api.disconnect()
 
 
 async def test_mcp_real_client_integration(fastapi_server, test_user_token):
@@ -1066,74 +1138,70 @@ async def test_mcp_real_client_integration(fastapi_server, test_user_token):
         }
     )
 
-    # Now test with real MCP client
-    try:
-        from mcp.client.streamable_http import streamablehttp_client
-        from mcp.client.session import ClientSession
-        
-        # Create MCP client session
-        base_url = f"{SERVER_URL}/{workspace}/mcp/weather-service"
-        
-        async with streamablehttp_client(base_url) as (read_stream, write_stream, get_session_id):
-            async with ClientSession(read_stream, write_stream) as session:
-                # Test 1: List tools
-                tools_result = await session.list_tools()
-                assert tools_result is not None
-                assert hasattr(tools_result, 'tools')
-                assert len(tools_result.tools) == 2
-                
-                tool_names = [tool.name for tool in tools_result.tools]
-                assert "weather" in tool_names
-                assert "time" in tool_names
-                
-                # Find weather tool
-                weather_tool = next(tool for tool in tools_result.tools if tool.name == "weather")
-                assert weather_tool.description == "Get weather information for a location"
-                assert "location" in weather_tool.inputSchema["properties"]
-                
-                # Test 2: Call weather tool
-                weather_result = await session.call_tool(
-                    name="weather",
-                    arguments={"location": "New York", "units": "fahrenheit"}
-                )
-                assert weather_result is not None
-                assert hasattr(weather_result, 'content')
-                assert len(weather_result.content) == 1
-                assert weather_result.content[0].type == "text"
-                assert "New York" in weather_result.content[0].text
-                assert "°F" in weather_result.content[0].text
-                
-                # Test 3: Call time tool
-                time_result = await session.call_tool(
-                    name="time",
-                    arguments={"timezone": "EST"}
-                )
-                assert time_result is not None
-                assert hasattr(time_result, 'content')
-                assert len(time_result.content) == 1
-                assert "EST" in time_result.content[0].text
-                
-                # Test 4: List prompts
-                prompts_result = await session.list_prompts()
-                assert prompts_result is not None
-                assert hasattr(prompts_result, 'prompts')
-                assert len(prompts_result.prompts) == 1
-                assert prompts_result.prompts[0].name == "travel_planner"
-                
-                # Test 5: Get prompt
-                prompt_result = await session.get_prompt(
-                    name="travel_planner",
-                    arguments={"destination": "Tokyo", "duration": "7"}
-                )
-                assert prompt_result is not None
-                assert hasattr(prompt_result, 'messages')
-                assert len(prompt_result.messages) == 1
-                assert prompt_result.messages[0].role == "user"
-                assert "Tokyo" in prompt_result.messages[0].content.text
-                assert "7-day" in prompt_result.messages[0].content.text
-                
-    except ImportError:
-        pytest.skip("MCP client dependencies not available")
+    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.client.session import ClientSession
+    
+    # Create MCP client session
+    base_url = f"{SERVER_URL}/{workspace}/mcp/weather-service/mcp"
+    
+    async with streamablehttp_client(base_url) as (read_stream, write_stream, get_session_id):
+        async with ClientSession(read_stream, write_stream) as session:
+            # Test 1: List tools
+            tools_result = await session.list_tools()
+            assert tools_result is not None
+            assert hasattr(tools_result, 'tools')
+            assert len(tools_result.tools) == 2
+            
+            tool_names = [tool.name for tool in tools_result.tools]
+            assert "weather" in tool_names
+            assert "time" in tool_names
+            
+            # Find weather tool
+            weather_tool = next(tool for tool in tools_result.tools if tool.name == "weather")
+            assert weather_tool.description == "Get weather information for a location"
+            assert "location" in weather_tool.inputSchema["properties"]
+            
+            # Test 2: Call weather tool
+            weather_result = await session.call_tool(
+                name="weather",
+                arguments={"location": "New York", "units": "fahrenheit"}
+            )
+            assert weather_result is not None
+            assert hasattr(weather_result, 'content')
+            assert len(weather_result.content) == 1
+            assert weather_result.content[0].type == "text"
+            assert "New York" in weather_result.content[0].text
+            assert "°F" in weather_result.content[0].text
+            
+            # Test 3: Call time tool
+            time_result = await session.call_tool(
+                name="time",
+                arguments={"timezone": "EST"}
+            )
+            assert time_result is not None
+            assert hasattr(time_result, 'content')
+            assert len(time_result.content) == 1
+            assert "EST" in time_result.content[0].text
+            
+            # Test 4: List prompts
+            prompts_result = await session.list_prompts()
+            assert prompts_result is not None
+            assert hasattr(prompts_result, 'prompts')
+            assert len(prompts_result.prompts) == 1
+            assert prompts_result.prompts[0].name == "travel_planner"
+            
+            # Test 5: Get prompt
+            prompt_result = await session.get_prompt(
+                name="travel_planner",
+                arguments={"destination": "Tokyo", "duration": "7"}
+            )
+            assert prompt_result is not None
+            assert hasattr(prompt_result, 'messages')
+            assert len(prompt_result.messages) == 1
+            assert prompt_result.messages[0].role == "user"
+            assert "Tokyo" in prompt_result.messages[0].content.text
+            assert "7-day" in prompt_result.messages[0].content.text
+            
 
     await api.disconnect()
 

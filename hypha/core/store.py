@@ -883,7 +883,7 @@ class RedisStore:
             {
                 "name": "pydantic-model",
                 "type": BaseModel,
-                "encoder": lambda x: x.model_dump(),
+                "encoder": lambda x: x.model_dump(mode="json"),
             }
         )
         return rpc

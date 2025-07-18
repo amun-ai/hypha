@@ -263,6 +263,11 @@
                             url: window.location.origin + "/ws/fastapi_app_template.hypha.html",
                             lang: 'python',
                         },
+                        {
+                            name: "MCP Server",
+                            url: window.location.origin + "/ws/mcp_server_template.hypha.html",
+                            lang: 'json',
+                        },
                     ],
                     ui_elements: {
                          install: {
@@ -431,6 +436,8 @@
         const AppCard = ({ app, onUninstall, onShowDetails, onStart }) => {
             const [showServices, setShowServices] = React.useState(false);
             const [copiedServiceId, setCopiedServiceId] = React.useState('');
+            const [isDisabled, setIsDisabled] = React.useState(app.disabled || false);
+            const [isToggling, setIsToggling] = React.useState(false);
             
             const services = app.services || [];
             const serverUrl = window.location.origin;
@@ -455,6 +462,35 @@
                     setTimeout(() => setCopiedServiceId(''), 2000);
                 }
             };
+
+            const handleToggleDisabled = async () => {
+                if (isToggling) return;
+                
+                setIsToggling(true);
+                try {
+                    window.showLoadingSpinner(isDisabled ? 'Enabling app...' : 'Disabling app...');
+                    
+                    if (!window.remoteServer) {
+                        throw new Error('Server connection not ready');
+                    }
+                    
+                    const controller = await window.remoteServer.getService('public/server-apps');
+                    await controller.edit_app(app.id, { disabled: !isDisabled });
+                    
+                    // Update local state
+                    setIsDisabled(!isDisabled);
+                    
+                    // Update the app object for future renders
+                    app.disabled = !isDisabled;
+                    
+                } catch (error) {
+                    console.error('Failed to toggle app status:', error);
+                    alert(`Failed to ${isDisabled ? 'enable' : 'disable'} app: ${error.message}`);
+                } finally {
+                    setIsToggling(false);
+                    window.hideLoadingSpinner();
+                }
+            };
             
             const getServiceUrl = (service) => {
                 // For installed apps: [workspace]/apps/[service_id]@[app_id]/
@@ -469,13 +505,43 @@
             };
             
             return (
-                <div className="flex flex-col items-start p-6 bg-gray-800 rounded-lg shadow-lg mb-6 w-full">
+                <div className={`flex flex-col items-start p-6 rounded-lg shadow-lg mb-6 w-full transition-all duration-300 ${
+                    isDisabled ? 'bg-gray-900 border-2 border-red-600 opacity-75' : 'bg-gray-800'
+                }`}>
                     <div className="flex items-center mb-4 w-full">
                         <i className={`fas fa-th-large fa-3x text-white mr-4`}></i>
                         <div className="flex-1">
-                            <h3 className="text-xl font-bold">{app.name || 'Untitled App'}</h3>
+                            <div className="flex items-center justify-between mb-2">
+                                <h3 className={`text-xl font-bold ${isDisabled ? 'text-gray-500' : 'text-white'}`}>
+                                    {app.name || 'Untitled App'}
+                                </h3>
+                                <div className="flex items-center space-x-2">
+                                    <span className={`text-sm ${isDisabled ? 'text-red-400' : 'text-green-400'}`}>
+                                        {isDisabled ? 'Disabled' : 'Enabled'}
+                                    </span>
+                                    <label className="flex items-center cursor-pointer">
+                                        <div className="relative">
+                                            <input
+                                                type="checkbox"
+                                                className="sr-only"
+                                                checked={!isDisabled}
+                                                onChange={handleToggleDisabled}
+                                                disabled={isToggling}
+                                            />
+                                            <div className={`block w-10 h-6 rounded-full transition-colors ${
+                                                isDisabled ? 'bg-red-600' : 'bg-green-600'
+                                            } ${isToggling ? 'opacity-50' : ''}`}></div>
+                                            <div className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${
+                                                isDisabled ? 'transform translate-x-0' : 'transform translate-x-4'
+                                            }`}></div>
+                                        </div>
+                                    </label>
+                                </div>
+                            </div>
                             <p className="text-gray-400 text-sm">ID: <code className="bg-gray-700 px-1 rounded">{app.id}</code></p>
-                            <p className="text-gray-400 mt-2">{app.description || 'No description available'}</p>
+                            <p className={`mt-2 ${isDisabled ? 'text-gray-500' : 'text-gray-400'}`}>
+                                {app.description || 'No description available'}
+                            </p>
                             <div className="flex flex-wrap gap-2 mt-2">
                                 <span className="bg-blue-600 text-white px-2 py-1 rounded text-xs">
                                     {app.type || 'Unknown'}
@@ -496,6 +562,11 @@
                                 {services.length > 0 && (
                                     <span className="bg-orange-600 text-white px-2 py-1 rounded text-xs">
                                         {services.length} Service{services.length > 1 ? 's' : ''}
+                                    </span>
+                                )}
+                                {isDisabled && (
+                                    <span className="bg-red-600 text-white px-2 py-1 rounded text-xs">
+                                        <i className="fas fa-ban mr-1"></i> Disabled
                                     </span>
                                 )}
                             </div>
@@ -593,10 +664,17 @@
                     
                     <div className="flex gap-2 w-full justify-end">
                         <button
-                            className="bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded transition duration-300 flex items-center"
-                            onClick={() => onStart(app.id)}
+                            className={`font-bold py-2 px-4 rounded transition duration-300 flex items-center ${
+                                isDisabled 
+                                    ? 'bg-gray-600 cursor-not-allowed text-gray-400' 
+                                    : 'bg-green-600 hover:bg-green-500 text-white'
+                            }`}
+                            onClick={() => !isDisabled && onStart(app.id)}
+                            disabled={isDisabled}
+                            title={isDisabled ? 'App is disabled' : 'Start app'}
                         >
-                            <i className="fas fa-play mr-2"></i> Start
+                            <i className={`fas ${isDisabled ? 'fa-ban' : 'fa-play'} mr-2`}></i> 
+                            {isDisabled ? 'Disabled' : 'Start'}
                         </button>
                         <button
                             className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded transition duration-300 flex items-center"
@@ -1835,6 +1913,227 @@
                 </div>
             );
         };
+        const MCPServerModal = ({ onCreateMCPServer, onClose }) => {
+            const [serverName, setServerName] = React.useState('my-server');
+            const [serverUrl, setServerUrl] = React.useState('');
+            const [serverType, setServerType] = React.useState('streamable-http');
+            const [appName, setAppName] = React.useState('My MCP Server');
+            const [appDescription, setAppDescription] = React.useState('Integration with external MCP servers');
+            const [authHeaders, setAuthHeaders] = React.useState('');
+
+            const handleSubmit = async (event) => {
+                event.preventDefault();
+                
+                const mcpConfig = {
+                    type: "mcp-server",
+                    name: appName,
+                    version: "1.0.0",
+                    description: appDescription,
+                    mcpServers: {
+                        [serverName]: {
+                            type: serverType,
+                            url: serverUrl
+                        }
+                    }
+                };
+
+                // Add auth headers if provided
+                if (authHeaders.trim()) {
+                    try {
+                        const headers = JSON.parse(authHeaders);
+                        mcpConfig.mcpServers[serverName].headers = headers;
+                    } catch (e) {
+                        alert('Invalid JSON in auth headers');
+                        return;
+                    }
+                }
+
+                await onCreateMCPServer(mcpConfig);
+                onClose();
+            };
+
+            return (
+                <div className="modal">
+                    <div className="modal-content">
+                        <div className="modal-header">
+                            <h2 className="text-2xl font-bold">Add MCP Server</h2>
+                            <button onClick={onClose} className="text-white text-2xl">&times;</button>
+                        </div>
+                        <div className="modal-body">
+                            <form onSubmit={handleSubmit}>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">App Name</label>
+                                    <input
+                                        type="text"
+                                        value={appName}
+                                        onChange={(e) => setAppName(e.target.value)}
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        required
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Description</label>
+                                    <input
+                                        type="text"
+                                        value={appDescription}
+                                        onChange={(e) => setAppDescription(e.target.value)}
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        required
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Server Name</label>
+                                    <input
+                                        type="text"
+                                        value={serverName}
+                                        onChange={(e) => setServerName(e.target.value)}
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        required
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Server URL</label>
+                                    <input
+                                        type="url"
+                                        value={serverUrl}
+                                        onChange={(e) => setServerUrl(e.target.value)}
+                                        placeholder="https://example.com/mcp"
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        required
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Transport Type</label>
+                                    <select
+                                        value={serverType}
+                                        onChange={(e) => setServerType(e.target.value)}
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                    >
+                                        <option value="streamable-http">Streamable HTTP</option>
+                                        <option value="sse">Server-Sent Events</option>
+                                    </select>
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">
+                                        Auth Headers (JSON, optional)
+                                        <p className="text-gray-500 text-xs mt-1">
+                                            {'e.g., {"Authorization": "Bearer token"}'}
+                                        </p>
+                                    </label>
+                                    <textarea
+                                        value={authHeaders}
+                                        onChange={(e) => setAuthHeaders(e.target.value)}
+                                        placeholder='{"Authorization": "Bearer your-token-here"}'
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        rows="3"
+                                    />
+                                </div>
+                                <button
+                                    type="submit"
+                                    className="bg-purple-600 text-white font-bold py-2 px-4 rounded"
+                                >
+                                    Add MCP Server
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const A2AAgentModal = ({ onCreateA2AAgent, onClose }) => {
+            const [agentName, setAgentName] = React.useState('my-agent');
+            const [agentUrl, setAgentUrl] = React.useState('');
+            const [appName, setAppName] = React.useState('My A2A Agent');
+            const [appDescription, setAppDescription] = React.useState('Integration with external A2A agents');
+
+            const handleSubmit = async (event) => {
+                event.preventDefault();
+                
+                const a2aConfig = {
+                    type: "a2a-agent",
+                    name: appName,
+                    version: "1.0.0",
+                    description: appDescription,
+                    a2aAgents: {
+                        [agentName]: {
+                            url: agentUrl
+                        }
+                    }
+                };
+
+                await onCreateA2AAgent(a2aConfig);
+                onClose();
+            };
+
+            return (
+                <div className="modal">
+                    <div className="modal-content">
+                        <div className="modal-header">
+                            <h2 className="text-2xl font-bold">Add A2A Agent</h2>
+                            <button onClick={onClose} className="text-white text-2xl">&times;</button>
+                        </div>
+                        <div className="modal-body">
+                            <form onSubmit={handleSubmit}>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">App Name</label>
+                                    <input
+                                        type="text"
+                                        value={appName}
+                                        onChange={(e) => setAppName(e.target.value)}
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        required
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Description</label>
+                                    <input
+                                        type="text"
+                                        value={appDescription}
+                                        onChange={(e) => setAppDescription(e.target.value)}
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        required
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">Agent Name</label>
+                                    <input
+                                        type="text"
+                                        value={agentName}
+                                        onChange={(e) => setAgentName(e.target.value)}
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        required
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-200">
+                                        Agent URL
+                                        <p className="text-gray-500 text-xs mt-1">
+                                            Base URL of the A2A agent (e.g., https://example.com/a2a-agent)
+                                        </p>
+                                    </label>
+                                    <input
+                                        type="url"
+                                        value={agentUrl}
+                                        onChange={(e) => setAgentUrl(e.target.value)}
+                                        placeholder="https://example.com/a2a-agent"
+                                        className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                                        required
+                                    />
+                                </div>
+                                <button
+                                    type="submit"
+                                    className="bg-orange-600 text-white font-bold py-2 px-4 rounded"
+                                >
+                                    Add A2A Agent
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
         const CreateWorkspaceModal = ({
             onCreateWorkspace,
             onDeleteWorkspace,
@@ -2314,6 +2613,8 @@
             const [fileList, setFileList] = React.useState(files);
             const [selectedApp, setSelectedApp] = React.useState(null);
             const [selectedRunningApp, setSelectedRunningApp] = React.useState(null);
+            const [showMCPServerModal, setShowMCPServerModal] = React.useState(false);
+            const [showA2AAgentModal, setShowA2AAgentModal] = React.useState(false);
         
             // Centralized expandedDirs state
             const [expandedDirs, setExpandedDirs] = React.useState({});
@@ -2730,6 +3031,62 @@
                     console.error('Failed to refresh running apps:', error);
                 }
             };
+
+            const handleCreateMCPServer = async (mcpConfig) => {
+                try {
+                    window.showLoadingSpinner('Installing MCP Server...');
+                    if (!ws || !ws.getService) {
+                        throw new Error('WebSocket connection not ready. Please wait for the connection to be established.');
+                    }
+                    const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
+                    const appInfo = await controller.install({
+                        config: mcpConfig,
+                        overwrite: true,
+                        _rkwargs: true
+                    });
+                    console.log('MCP Server installed:', appInfo);
+                    
+                    // Refresh the apps list
+                    await refreshApps(ws);
+                } catch (error) {
+                    console.error('Failed to install MCP server:', error);
+                    alert(`Failed to install MCP server: ${error}`);
+                } finally {
+                    window.hideLoadingSpinner();
+                }
+            };
+
+            const handleCreateA2AAgent = async (a2aConfig) => {
+                try {
+                    window.showLoadingSpinner('Installing A2A Agent...');
+                    if (!ws || !ws.getService) {
+                        throw new Error('WebSocket connection not ready. Please wait for the connection to be established.');
+                    }
+                    const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
+                    const appInfo = await controller.install({
+                        config: a2aConfig,
+                        overwrite: true,
+                        _rkwargs: true
+                    });
+                    console.log('A2A Agent installed:', appInfo);
+                    
+                    // Refresh the apps list
+                    await refreshApps(ws);
+                } catch (error) {
+                    console.error('Failed to install A2A agent:', error);
+                    alert(`Failed to install A2A agent: ${error}`);
+                } finally {
+                    window.hideLoadingSpinner();
+                }
+            };
+
+            const onAddMCPServer = () => {
+                setShowMCPServerModal(true);
+            };
+
+            const onAddA2AAgent = () => {
+                setShowA2AAgentModal(true);
+            };
         
             return (
                 <div
@@ -2938,35 +3295,61 @@
                                 Applications installed in workspace: <code>{workspaceId}</code>
                             </p>
                             <div className="flex gap-4 mt-6">
+                                {/* Split button: Main area for New App, small icon for Install From URL */}
+                                <div className={`flex rounded-full overflow-hidden ${
+                                    isInstallingApp || !ws ? 'opacity-50' : ''
+                                }`}>
+                                    {/* Main button for New App */}
+                                    <button
+                                        className={`font-bold py-2 px-4 transition duration-300 flex items-center ${
+                                            isInstallingApp || !ws
+                                                ? 'bg-gray-700 cursor-not-allowed' 
+                                                : 'bg-green-600 hover:bg-green-500'
+                                        } text-white`}
+                                        onClick={() => window.loadCodeEditor(ws, refreshApps)}
+                                        disabled={isInstallingApp || !ws}
+                                    >
+                                        <i className="fas fa-code mr-2"></i> New App
+                                    </button>
+                                    {/* Small icon button for Install From URL */}
+                                    <button
+                                        className={`font-bold py-2 px-3 border-l border-gray-500 transition duration-300 flex items-center ${
+                                            isInstallingApp || !ws
+                                                ? 'bg-gray-600 cursor-not-allowed' 
+                                                : 'bg-gray-600 hover:bg-gray-500'
+                                        } text-white`}
+                                        onClick={() => onInstallApp()}
+                                        disabled={isInstallingApp || !ws}
+                                        title="Install From URL"
+                                    >
+                                        {isInstallingApp ? (
+                                            <i className="fas fa-spinner fa-spin"></i>
+                                        ) : (
+                                            <i className="fas fa-link"></i>
+                                        )}
+                                    </button>
+                                </div>
                                 <button
                                     className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
                                         isInstallingApp || !ws
                                             ? 'bg-gray-700 cursor-not-allowed' 
-                                            : 'bg-green-600 hover:bg-green-500'
+                                            : 'bg-purple-600 hover:bg-purple-500'
                                     } text-white`}
-                                    onClick={() => window.loadCodeEditor(ws, refreshApps)}
+                                    onClick={() => onAddMCPServer()}
                                     disabled={isInstallingApp || !ws}
                                 >
-                                    <i className="fas fa-code mr-2"></i> New App
+                                    <i className="fas fa-cogs mr-2"></i> Add MCP Server
                                 </button>
                                 <button
                                     className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
                                         isInstallingApp || !ws
-                                            ? 'bg-gray-600 cursor-not-allowed' 
-                                            : 'bg-gray-600 hover:bg-gray-500'
+                                            ? 'bg-gray-700 cursor-not-allowed' 
+                                            : 'bg-orange-600 hover:bg-orange-500'
                                     } text-white`}
-                                    onClick={() => onInstallApp()}
+                                    onClick={() => onAddA2AAgent()}
                                     disabled={isInstallingApp || !ws}
                                 >
-                                    {isInstallingApp ? (
-                                        <>
-                                            <i className="fas fa-spinner fa-spin mr-2"></i> Installing...
-                                        </>
-                                    ) : (
-                                        <>
-                                            <i className="fas fa-plus mr-2"></i> Install From URL
-                                        </>
-                                    )}
+                                    <i className="fas fa-robot mr-2"></i> Add A2A Agent
                                 </button>
                                 <button
                                     className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
@@ -3232,6 +3615,20 @@
                         <AppDetailsModal
                             app={selectedRunningApp}
                             onClose={() => setSelectedRunningApp(null)}
+                        />
+                    )}
+                    
+                    {showMCPServerModal && (
+                        <MCPServerModal
+                            onCreateMCPServer={handleCreateMCPServer}
+                            onClose={() => setShowMCPServerModal(false)}
+                        />
+                    )}
+                    
+                    {showA2AAgentModal && (
+                        <A2AAgentModal
+                            onCreateA2AAgent={handleCreateA2AAgent}
+                            onClose={() => setShowA2AAgentModal(false)}
                         />
                     )}
                     
