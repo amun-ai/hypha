@@ -354,146 +354,176 @@ Depending on your use case, you might want to consider different approaches:
 
 You can extend the Server Apps service with custom workers to support new application types. Custom workers handle the execution of specific application types and integrate seamlessly with the Server Apps system.
 
+> **Detailed Worker Documentation:**
+> For comprehensive documentation on the worker API, interface specifications, and implementation examples, see the [Worker API Documentation](workers.md).
+
 ### Creating a Custom Worker
 
-A custom worker must implement the required interface and register itself with the server. Here's how to create one:
+Creating a custom worker is simple - you just need to implement a few functions and register them as a service. No classes or complex inheritance needed!
+
+**Simple Function-Based Worker:**
 
 ```python
 # custom_worker.py
 import asyncio
-import logging
-from typing import Any, Dict, List, Optional, Union
+from hypha_rpc import connect_to_server
 
-class CustomWorker:
-    """Custom worker for handling specialized application types."""
+# Simple storage for demo (use proper storage in production)
+worker_sessions = {}
+
+async def start(config):
+    """Start a new worker session."""
+    session_id = f"{config['workspace']}/{config['client_id']}"
     
-    def __init__(self, server):
-        self.server = server
-        self.initialized = False
-        self._sessions: Dict[str, Dict[str, Any]] = {}
-        self.controller_id = "custom-worker-1"
+    print(f"Starting custom session {session_id} for app {config['app_id']}")
     
-    async def initialize(self) -> None:
-        """Initialize the custom worker."""
-        if not self.initialized:
-            await self.server.register_service(self.get_service())
-            self.initialized = True
+    # Your custom application startup logic here
+    # This is where you would:
+    # 1. Fetch the application source code
+    # 2. Set up the execution environment  
+    # 3. Start the application
+    
+    # Example implementation:
+    app_source = await fetch_app_source(config)
+    execution_env = await create_environment(config)
+    result = await execute_app(app_source, execution_env)
+    
+    # Store session data
+    session_data = {
+        "session_id": session_id,
+        "app_id": config["app_id"],
+        "workspace": config["workspace"],
+        "client_id": config["client_id"],
+        "status": "running",
+        "app_type": config.get("app_type", "unknown"),
+        "created_at": "2024-01-01T00:00:00Z",
+        "logs": [f"Custom session {session_id} started"],
+        "execution_env": execution_env,
+        "result": result
+    }
+    
+    worker_sessions[session_id] = session_data
+    return session_data
 
-    async def start(
-        self,
-        client_id: str,
-        app_id: str,
-        server_url: str,
-        public_base_url: str,
-        local_base_url: str,
-        workspace: str,
-        version: str = None,
-        token: str = None,
-        entry_point: str = None,
-        app_type: str = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ):
-        """Start a custom application session."""
-        full_session_id = f"{workspace}/{client_id}"
+async def stop(session_id):
+    """Stop a custom worker session."""
+    print(f"Stopping custom session {session_id}")
+    
+    if session_id in worker_sessions:
+        session_data = worker_sessions[session_id]
+        execution_env = session_data.get("execution_env")
         
-        # Your custom application startup logic here
-        # This is where you would:
-        # 1. Fetch the application source code
-        # 2. Set up the execution environment
-        # 3. Start the application
+        # Clean up the execution environment
+        if execution_env:
+            await cleanup_environment(execution_env)
         
-        # Example: Simple execution tracking
-        session_data = {
-            "session_id": full_session_id,
-            "app_id": app_id,
-            "status": "running",
-            "metadata": metadata,
-            "app_type": app_type,
-            "started_at": asyncio.get_event_loop().time()
-        }
-        
-        self._sessions[full_session_id] = session_data
-        
-        return {
-            "session_id": full_session_id,
-            "status": "started",
-            "app_type": app_type
-        }
+        session_data["status"] = "stopped"
+        session_data["logs"].append(f"Session {session_id} stopped")
+        print(f"Custom session {session_id} stopped")
+    else:
+        print(f"Session {session_id} not found")
 
-    async def stop(self, session_id: str) -> None:
-        """Stop a custom application session."""
-        if session_id in self._sessions:
-            # Your custom cleanup logic here
-            del self._sessions[session_id]
+async def list_sessions(workspace):
+    """List all sessions for a workspace."""
+    workspace_sessions = []
+    for session_id, session_data in worker_sessions.items():
+        if session_data["workspace"] == workspace:
+            workspace_sessions.append(session_data)
+    return workspace_sessions
 
-    async def list(self, workspace: str) -> List[Dict[str, Any]]:
-        """List sessions for the current workspace."""
-        return [
-            session_info 
-            for session_id, session_info in self._sessions.items()
-            if session_id.startswith(workspace + "/")
-        ]
+async def get_logs(session_id, log_type=None, offset=0, limit=None):
+    """Get logs for a session."""
+    if session_id not in worker_sessions:
+        raise Exception(f"Session {session_id} not found")
+    
+    logs = worker_sessions[session_id]["logs"]
+    
+    # Apply offset and limit
+    if limit:
+        logs = logs[offset:offset+limit]
+    else:
+        logs = logs[offset:]
+    
+    if log_type:
+        return logs
+    else:
+        return {"log": logs, "error": []}
 
-    async def logs(
-        self,
-        session_id: str,
-        type: str = None,
-        offset: int = 0,
-        limit: Optional[int] = None,
-    ) -> Union[Dict[str, List[str]], List[str]]:
-        """Get logs for a session."""
-        if session_id not in self._sessions:
-            raise Exception(f"Session not found: {session_id}")
-        
-        # Return logs for the session
-        logs = self._sessions[session_id].get("logs", [])
-        return {"log": logs} if type is None else logs
+async def get_session_info(session_id):
+    """Get information about a session."""
+    if session_id not in worker_sessions:
+        raise Exception(f"Session {session_id} not found")
+    return worker_sessions[session_id]
 
-    async def close_workspace(self, workspace: str) -> None:
-        """Close all sessions for a workspace."""
-        session_ids = [
-            session_id for session_id in self._sessions.keys()
-            if session_id.startswith(workspace + "/")
-        ]
-        for session_id in session_ids:
-            await self.stop(session_id)
+async def prepare_workspace(workspace):
+    """Prepare workspace for worker operations."""
+    print(f"Preparing workspace {workspace} for custom worker")
 
-    async def prepare_workspace(self, workspace: str) -> None:
-        """Prepare the workspace for the custom worker."""
-        # Any workspace preparation logic
-        pass
+async def close_workspace(workspace):
+    """Close workspace and cleanup sessions."""
+    print(f"Closing workspace {workspace} for custom worker")
+    
+    # Stop all sessions for this workspace
+    sessions_to_stop = [
+        session_id for session_id, session_data in worker_sessions.items()
+        if session_data["workspace"] == workspace
+    ]
+    
+    for session_id in sessions_to_stop:
+        await stop(session_id)
 
-    async def shutdown(self) -> None:
-        """Shutdown the custom worker."""
-        session_ids = list(self._sessions.keys())
-        for session_id in session_ids:
-            await self.stop(session_id)
+# Helper functions for your custom logic
+async def fetch_app_source(config):
+    """Fetch application source code."""
+    # Implementation depends on your storage backend
+    # This is a placeholder
+    return "# Custom app source code"
 
-    def get_service(self):
-        """Get the service definition."""
-        return {
-            "id": f"custom-worker-{self.controller_id}",
-            "type": "server-app-worker",
-            "name": "Custom Worker",
-            "description": "A custom worker for specialized application types",
-            "config": {"visibility": "protected"},
-            "supported_types": ["my-custom-type", "another-type"],  # Your custom types
-            "start": self.start,
-            "stop": self.stop,
-            "list": self.list,
-            "get_logs": self.get_logs,
-            "shutdown": self.shutdown,
-            "close_workspace": self.close_workspace,
-            "prepare_workspace": self.prepare_workspace,
-        }
+async def create_environment(config):
+    """Create an execution environment."""
+    return {
+        "workspace": config["workspace"], 
+        "app_id": config["app_id"],
+        "env_vars": {}
+    }
+
+async def execute_app(source, env):
+    """Execute application source code."""
+    # Your custom execution logic here
+    return {"status": "executed", "result": "success"}
+
+async def cleanup_environment(env):
+    """Clean up an execution environment."""
+    # Clean up any resources
+    pass
 
 # Register the worker as a startup function
 async def hypha_startup(server):
     """Initialize the custom worker as a startup function."""
-    custom_worker = CustomWorker(server)
-    await custom_worker.initialize()
-    logging.info("Custom worker registered as startup function")
+    
+    # Register the worker service
+    service = await server.register_service({
+        "name": "Custom Worker",
+        "description": "A custom worker for specialized application types",
+        "type": "server-app-worker",
+        "config": {
+            "visibility": "protected",
+            "run_in_executor": True,
+        },
+        "supported_types": ["my-custom-type", "another-type"],
+        "start": start,
+        "stop": stop,
+        "list_sessions": list_sessions,
+        "get_logs": get_logs,
+        "get_session_info": get_session_info,
+        "prepare_workspace": prepare_workspace,
+        "close_workspace": close_workspace,
+    })
+    
+    print(f"Custom worker registered: {service.id}")
 ```
+
+
 
 ### Real Example: Python Eval Worker
 
@@ -501,7 +531,7 @@ The `python_eval.py` file provides a complete example of a custom worker that su
 
 ```python
 class PythonEvalRunner:
-    """Python evaluation runner for simple Python code execution."""
+    """Python evaluation worker for simple Python code execution."""
     
     def __init__(self, server):
         self.server = server
@@ -565,7 +595,7 @@ class PythonEvalRunner:
 
 # Register as startup function
 async def hypha_startup(server):
-    """Initialize the Python eval runner as a startup function."""
+    """Initialize the Python eval worker as a startup function."""
     python_eval_runner = PythonEvalRunner(server)
     await python_eval_runner.initialize()
 ```
@@ -650,16 +680,20 @@ For more details on server startup options, see the [Getting Started documentati
 
 ### Worker Interface Requirements
 
-All custom workers must implement these methods:
+All custom workers must implement these simple functions:
 
-- `start(client_id, app_id, ...)`: Start an application session
+- `start(config)`: Start an application session
 - `stop(session_id)`: Stop a session  
-- `list(workspace)`: List sessions in a workspace
-- `logs(session_id, ...)`: Get session logs
+- `list_sessions(workspace)`: List sessions in a workspace
+- `get_logs(session_id, ...)`: Get session logs
+- `get_session_info(session_id)`: Get session information
 - `close_workspace(workspace)`: Clean up workspace sessions
 - `prepare_workspace(workspace)`: Prepare workspace for use
-- `shutdown()`: Shutdown the worker
-- `get_service()`: Return service definition with `supported_types`
+
+That's it! Just implement these functions and register them as a service with:
+- `supported_types`: List of application types your worker supports
+- `type`: Must be `"server-app-worker"`
+- `visibility`: Usually `"protected"`
 
 ### Using Custom Application Types
 
