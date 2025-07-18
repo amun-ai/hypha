@@ -122,14 +122,27 @@ class BrowserAppRunner(BaseWorker):
         if not self.browser:
             await self.initialize()
 
+        # Get app type from manifest
+        app_type = config.manifest.get("type")
+        if app_type not in self.supported_types:
+            raise Exception(f"Browser worker only supports {self.supported_types}, got {app_type}")
+
         # Create URLs for the app
         entry_point = config.entry_point
         if not entry_point.startswith("http"):
-            entry_point = f"{config.local_base_url}/{config.workspace}/artifacts/{config.app_id}/files/{entry_point}"
+            # Use local_url from manifest if available
+            local_url = config.manifest.get('local_url', '')
+            if local_url:
+                entry_point = local_url
+            else:
+                # Fallback to constructing from artifact_id
+                # artifact_id is in format "workspace/app_id", need to split it
+                workspace_id, app_id = config.artifact_id.split('/', 1)
+                entry_point = f"{config.server_url}/{workspace_id}/artifacts/{app_id}/files/{config.entry_point}"
         
         # Create local and public URLs
-        local_url = self._build_app_url(config, entry_point, config.local_base_url)
-        public_url = self._build_app_url(config, entry_point, config.public_base_url)
+        local_url = self._build_app_url(config, entry_point)
+        public_url = self._build_app_url(config, entry_point)
 
         # Create a new context for isolation
         context = await self.browser.new_context(
@@ -166,10 +179,10 @@ class BrowserAppRunner(BaseWorker):
             "logs": logs,
         }
 
-    def _build_app_url(self, config: WorkerConfig, entry_point: str, base_url: str) -> str:
+    def _build_app_url(self, config: WorkerConfig, entry_point: str) -> str:
         """Build the app URL with parameters."""
         params = [
-            f"server_url={base_url}",
+            f"server_url={config.server_url}",
             f"client_id={config.client_id}",
             f"workspace={config.workspace}",
             f"app_id={config.app_id}",
@@ -178,8 +191,6 @@ class BrowserAppRunner(BaseWorker):
         
         if config.token:
             params.append(f"token={config.token}")
-        if config.version:
-            params.append(f"version={config.version}")
         
         return f"{entry_point}?{'&'.join(params)}"
 

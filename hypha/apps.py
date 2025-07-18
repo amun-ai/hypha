@@ -1095,7 +1095,6 @@ class ServerAppController:
         version: str = None,
         token: str = None,
         manifest: dict = None,
-        metadata: dict = None,
         context: dict = None,
     ):
         """Start the app by type using the appropriate worker."""
@@ -1106,67 +1105,37 @@ class ServerAppController:
         
         # Get entry point from manifest
         entry_point = manifest.entry_point
-        # For MCP server and A2A agent types, entry point is not required in the traditional sense
-        if app_type not in ["mcp-server", "a2a-agent"]:
-            assert entry_point, f"Entry point not found for app {app_id}."
         
-        # Prepare session metadata
+        # Prepare minimal session metadata - only store what's actually needed
         full_client_id = workspace + "/" + client_id
         session_metadata = {
             "id": full_client_id,
             "app_id": app_id,
             "workspace": workspace,
             "client_id": client_id,
-            "server_url": server_url,
-            "public_base_url": public_base_url,
-            "local_base_url": local_base_url,
-            "version": version,
-            "token": token,
             "app_type": app_type,
             "entry_point": entry_point,
-            "source_hash": manifest.source_hash,
             "name": manifest.name,
             "description": manifest.description,
         }
         
-        # Update with any additional metadata
-        if metadata:
-            session_metadata.update(metadata)
+        # Add optional fields only if they exist
+        if version:
+            session_metadata["version"] = version
+        if manifest.source_hash:
+            session_metadata["source_hash"] = manifest.source_hash
         
-        # For MCP server type, add MCP servers configuration to metadata
-        if app_type == "mcp-server":
-            # Access mcpServers from metadata or manifest config
-            mcp_servers = metadata.get("mcpServers", {}) if metadata else {}
-            if not mcp_servers and hasattr(manifest, 'mcpServers'):
-                mcp_servers = manifest.mcpServers
-            if not mcp_servers and hasattr(manifest, 'config') and manifest.config:
-                mcp_servers = manifest.config.get("mcpServers", {})
-            session_metadata["mcp_servers"] = mcp_servers
-        
-        # For A2A agent type, add A2A agents configuration to metadata
-        if app_type == "a2a-agent":
-            # Access a2aAgents from metadata or manifest config
-            a2a_agents = metadata.get("a2aAgents", {}) if metadata else {}
-            if not a2a_agents and hasattr(manifest, 'a2aAgents'):
-                a2a_agents = manifest.a2aAgents
-            if not a2a_agents and hasattr(manifest, 'config') and manifest.config:
-                a2a_agents = manifest.config.get("a2aAgents", {})
-            session_metadata["a2a_agents"] = a2a_agents
-        
-        # Start the app using the worker
-        # Use the new API with WorkerConfig
-        session_data = await worker.start({
-            "client_id": client_id,
+        # Start the app using the worker with reorganized config
+        session_id = await worker.start({
+            "id": full_client_id,
             "app_id": app_id,
-            "server_url": server_url,
-            "public_base_url": public_base_url,
-            "local_base_url": local_base_url,
             "workspace": workspace,
-            "version": version,
+            "client_id": client_id,
+            "server_url": server_url,
             "token": token,
             "entry_point": entry_point,
-            "app_type": app_type,
-            "metadata": session_metadata,
+            "artifact_id": f"{workspace}/{app_id}",
+            "manifest": manifest,
         })
         
         # Store session info
@@ -1175,10 +1144,7 @@ class ServerAppController:
             "_worker": worker,
         }
         
-        # Python eval apps don't need to emit client_connected event since they execute immediately
-        # and we skip the wait logic for them
-        
-        return session_data
+        return {"session_id": session_id}
 
     @schema_method
     async def start(
@@ -1303,7 +1269,7 @@ class ServerAppController:
             "workspace": workspace,
             "client_id": client_id,
             "config": {},
-            "session_data": {},  # Will be updated after start_by_type
+            "session_id": None,  # Will be updated after start_by_type
         }
 
         # Only set up event waiting if not in detached mode
@@ -1355,22 +1321,8 @@ class ServerAppController:
             self.event_bus.on_local("service_added", service_added)
 
         try:
-            # Prepare metadata, including MCP servers configuration for mcp-server apps
-            # and A2A agents configuration for a2a-agent apps
-            metadata = {}
-            if app_type == "mcp-server":
-                # Extract mcpServers from artifact_info (it should be at root level)
-                mcp_servers = artifact_info.get("mcpServers", {})
-                if mcp_servers:
-                    metadata["mcpServers"] = mcp_servers
-            elif app_type == "a2a-agent":
-                # Extract a2aAgents from artifact_info (it should be at root level)
-                a2a_agents = artifact_info.get("a2aAgents", {})
-                if a2a_agents:
-                    metadata["a2aAgents"] = a2a_agents
-                    
             # Start the app using the new start_by_type function
-            session_data = await self.start_by_type(
+            session_result = await self.start_by_type(
                 app_id=app_id,
                 app_type=app_type,
                 client_id=client_id,
@@ -1381,12 +1333,14 @@ class ServerAppController:
                 version=version,
                 token=token,
                 manifest=manifest,
-                metadata=metadata,
                 context=context,
             )
             
+            # Extract session_id from the result
+            session_id = session_result["session_id"]
+            
             # Update app_info with session data
-            app_info["session_data"] = session_data
+            app_info["session_id"] = session_id
 
             # Set up activity tracker after starting the app
             tracker = self.store.get_activity_tracker()

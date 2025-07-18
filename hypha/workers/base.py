@@ -24,17 +24,15 @@ class SessionStatus(Enum):
 
 class WorkerConfig(BaseModel):
     """Configuration for starting a worker session."""
-    client_id: str
+    id: str
     app_id: str
-    server_url: str
-    public_base_url: str
-    local_base_url: str
     workspace: str
-    version: Optional[str] = None
+    client_id: str
+    server_url: str
     token: Optional[str] = None
     entry_point: Optional[str] = None
-    app_type: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
+    artifact_id: str
+    manifest: Dict[str, Any]
 
 
 class SessionInfo(BaseModel):
@@ -79,7 +77,7 @@ class WorkerProtocol(Protocol):
         """Return list of supported application types."""
         ...
     
-    async def start(self, config: WorkerConfig) -> SessionInfo:
+    async def start(self, config: WorkerConfig) -> str:
         """Start a new worker session."""
         ...
     
@@ -155,7 +153,7 @@ class BaseWorker(ABC):
         """Worker-specific initialization."""
         pass
     
-    async def start(self, config: Union[WorkerConfig, Dict[str, Any]]) -> SessionInfo:
+    async def start(self, config: Union[WorkerConfig, Dict[str, Any]]) -> str:
         """Start a new worker session."""
         if not self.initialized:
             await self.initialize()
@@ -164,7 +162,7 @@ class BaseWorker(ABC):
         if isinstance(config, dict):
             config = WorkerConfig(**config)
         
-        session_id = self._create_session_id(config.workspace, config.client_id)
+        session_id = config.id  # Use the provided session ID
         
         if session_id in self._sessions:
             raise WorkerError(f"Session {session_id} already exists")
@@ -176,10 +174,10 @@ class BaseWorker(ABC):
             workspace=config.workspace,
             client_id=config.client_id,
             status=SessionStatus.STARTING,
-            app_type=config.app_type,
+            app_type=config.manifest.get("type", "unknown"),
             entry_point=config.entry_point,
             created_at=datetime.now().isoformat(),
-            metadata=config.metadata
+            metadata=config.manifest
         )
         
         self._sessions[session_id] = session_info
@@ -193,7 +191,7 @@ class BaseWorker(ABC):
             session_info.status = SessionStatus.RUNNING
             logger.info(f"Started session {session_id}")
             
-            return session_info
+            return session_id
             
         except Exception as e:
             session_info.status = SessionStatus.FAILED
