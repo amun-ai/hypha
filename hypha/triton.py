@@ -5,7 +5,15 @@ from typing import Any, List
 
 import httpx
 from fastapi import APIRouter, Depends, Request, Response
-from pyotritonclient import execute, get_config
+try:
+    from pyotritonclient import execute, get_config
+except ImportError:
+    # Create dummy functions if pyotritonclient is not available
+    def execute(*args, **kwargs):
+        raise ImportError("pyotritonclient is not available")
+    
+    def get_config(*args, **kwargs):
+        raise ImportError("pyotritonclient is not available")
 
 from hypha.core.store import RedisStore
 

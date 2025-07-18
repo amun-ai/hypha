@@ -353,7 +353,7 @@ class WebsocketServer:
             raise e
         finally:
             _gauge.labels(workspace=workspace).dec()
-            await conn.disconnect("disconnected")
+            await conn.disconnect()
             event_bus.off_local(f"unload:{workspace}", force_disconnect)
             if (
                 workspace

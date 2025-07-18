@@ -242,7 +242,10 @@ class RedisStore:
         self._redis_cache = RedisCache(serializer=PickleSerializer())
         self._redis_cache.client = self._redis
         self._root_user = None
-        self._event_bus = RedisEventBus(self._redis)
+        self._event_bus = RedisEventBus(
+            self._redis, 
+            server_id=self._server_id
+        )
 
         self._tracker = None
         self._tracker_task = None
