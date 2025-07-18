@@ -1,0 +1,855 @@
+<config lang="json">
+{
+    "name": "Advanced JavaScript App",
+    "type": "window",
+    "tags": ["javascript", "advanced", "realtime", "charts"],
+    "ui": "",
+    "version": "0.1.0",
+    "cover": "",
+    "description": "An advanced JavaScript application with real-time data visualization, WebSocket integration, and complex UI components.",
+    "icon": "⚡",
+    "api_version": "0.1.8",
+    "requirements": [],
+    "dependencies": [],
+    "startup_config": {
+        "timeout": 60,
+        "wait_for_service": "default",
+        "stop_after_inactive": 600
+    }
+}
+</config>
+
+<script lang="javascript">
+// Advanced JavaScript App with real-time features
+class AdvancedJavaScriptApp {
+    constructor() {
+        this.connections = new Map();
+        this.dataStore = new Map();
+        this.eventHandlers = new Map();
+        this.startTime = new Date();
+        this.operationCount = 0;
+        this.realTimeData = [];
+        this.charts = {};
+        this.websocket = null;
+        
+        // Initialize event system
+        this.initEventSystem();
+    }
+    
+    initEventSystem() {
+        // Custom event system for real-time updates
+        this.eventHandlers.set('data-update', []);
+        this.eventHandlers.set('connection-change', []);
+        this.eventHandlers.set('error', []);
+    }
+    
+    addEventListener(event, handler) {
+        if (!this.eventHandlers.has(event)) {
+            this.eventHandlers.set(event, []);
+        }
+        this.eventHandlers.get(event).push(handler);
+    }
+    
+    removeEventListener(event, handler) {
+        if (this.eventHandlers.has(event)) {
+            const handlers = this.eventHandlers.get(event);
+            const index = handlers.indexOf(handler);
+            if (index > -1) {
+                handlers.splice(index, 1);
+            }
+        }
+    }
+    
+    emit(event, data) {
+        if (this.eventHandlers.has(event)) {
+            this.eventHandlers.get(event).forEach(handler => handler(data));
+        }
+    }
+    
+    async setup() {
+        await api.log('⚡ Advanced JavaScript App initializing...');
+        
+        // Initialize UI
+        this.initializeAdvancedUI();
+        
+        // Set up real-time data generation
+        this.startRealTimeDataGeneration();
+        
+        // Initialize charts
+        this.initializeCharts();
+        
+        // Set up WebSocket connection simulation
+        this.setupWebSocketSimulation();
+        
+        await api.log('✅ Advanced JavaScript App ready!');
+    }
+    
+    initializeAdvancedUI() {
+        document.body.innerHTML = `
+            <div class="advanced-app">
+                <div class="app-header">
+                    <h1>⚡ Advanced JavaScript App</h1>
+                    <div class="status-indicators">
+                        <span class="indicator" id="connection-status">🔴 Disconnected</span>
+                        <span class="indicator" id="data-status">📊 Ready</span>
+                    </div>
+                </div>
+                
+                <div class="main-content">
+                    <div class="sidebar">
+                        <div class="nav-section">
+                            <h3>🎛️ Controls</h3>
+                            <button class="nav-btn active" data-section="dashboard">Dashboard</button>
+                            <button class="nav-btn" data-section="charts">Charts</button>
+                            <button class="nav-btn" data-section="data">Data Management</button>
+                            <button class="nav-btn" data-section="realtime">Real-time</button>
+                            <button class="nav-btn" data-section="api">API Testing</button>
+                        </div>
+                        
+                        <div class="stats-section">
+                            <h3>📊 Statistics</h3>
+                            <div class="stat-item">
+                                <span>Operations:</span>
+                                <span id="operation-counter">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span>Connections:</span>
+                                <span id="connection-counter">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span>Data Points:</span>
+                                <span id="data-counter">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span>Uptime:</span>
+                                <span id="uptime-counter">0s</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="content-area">
+                        <div class="section active" id="dashboard">
+                            <h2>📈 Dashboard</h2>
+                            <div class="dashboard-grid">
+                                <div class="dashboard-card">
+                                    <h3>🔄 Real-time Data</h3>
+                                    <div id="realtime-display" class="data-display"></div>
+                                    <button onclick="app.generateRealTimeData()">Generate Data</button>
+                                </div>
+                                
+                                <div class="dashboard-card">
+                                    <h3>📊 Quick Stats</h3>
+                                    <div id="quick-stats" class="stats-display"></div>
+                                    <button onclick="app.refreshStats()">Refresh</button>
+                                </div>
+                                
+                                <div class="dashboard-card">
+                                    <h3>🎯 Performance</h3>
+                                    <div id="performance-metrics" class="metrics-display"></div>
+                                    <button onclick="app.runPerformanceTest()">Run Test</button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="section" id="charts">
+                            <h2>📊 Data Visualization</h2>
+                            <div class="chart-controls">
+                                <button onclick="app.createLineChart()">Line Chart</button>
+                                <button onclick="app.createBarChart()">Bar Chart</button>
+                                <button onclick="app.createPieChart()">Pie Chart</button>
+                                <button onclick="app.clearCharts()">Clear All</button>
+                            </div>
+                            <div class="chart-container">
+                                <canvas id="main-chart" width="800" height="400"></canvas>
+                            </div>
+                        </div>
+                        
+                        <div class="section" id="data">
+                            <h2>💾 Data Management</h2>
+                            <div class="data-controls">
+                                <div class="input-group">
+                                    <input type="text" id="data-key" placeholder="Data Key">
+                                    <input type="text" id="data-value" placeholder="Data Value">
+                                    <button onclick="app.storeData()">Store</button>
+                                </div>
+                                <div class="input-group">
+                                    <input type="text" id="retrieve-key" placeholder="Key to Retrieve">
+                                    <button onclick="app.retrieveData()">Retrieve</button>
+                                    <button onclick="app.listAllData()">List All</button>
+                                </div>
+                            </div>
+                            <div id="data-display" class="data-output"></div>
+                        </div>
+                        
+                        <div class="section" id="realtime">
+                            <h2>🔄 Real-time Features</h2>
+                            <div class="realtime-controls">
+                                <button onclick="app.startRealTimeStream()">Start Stream</button>
+                                <button onclick="app.stopRealTimeStream()">Stop Stream</button>
+                                <button onclick="app.simulateWebSocket()">Simulate WebSocket</button>
+                            </div>
+                            <div class="realtime-display">
+                                <div id="stream-data" class="stream-output"></div>
+                            </div>
+                        </div>
+                        
+                        <div class="section" id="api">
+                            <h2>🔧 API Testing</h2>
+                            <div class="api-controls">
+                                <div class="input-group">
+                                    <input type="text" id="api-endpoint" placeholder="API Endpoint" value="/api/test">
+                                    <select id="api-method">
+                                        <option value="GET">GET</option>
+                                        <option value="POST">POST</option>
+                                        <option value="PUT">PUT</option>
+                                        <option value="DELETE">DELETE</option>
+                                    </select>
+                                    <button onclick="app.testAPI()">Test</button>
+                                </div>
+                                <textarea id="api-payload" placeholder="Request Payload (JSON)"></textarea>
+                            </div>
+                            <div id="api-response" class="api-output"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Add advanced styling
+        const style = document.createElement('style');
+        style.textContent = `
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+                background: #1a1a1a;
+                color: #ffffff;
+                overflow-x: hidden;
+            }
+            
+            .advanced-app {
+                min-height: 100vh;
+                display: flex;
+                flex-direction: column;
+            }
+            
+            .app-header {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                padding: 20px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            }
+            
+            .app-header h1 {
+                font-size: 2em;
+                margin: 0;
+            }
+            
+            .status-indicators {
+                display: flex;
+                gap: 15px;
+            }
+            
+            .indicator {
+                padding: 8px 16px;
+                background: rgba(255,255,255,0.1);
+                border-radius: 20px;
+                font-size: 0.9em;
+                backdrop-filter: blur(10px);
+            }
+            
+            .main-content {
+                display: flex;
+                flex: 1;
+            }
+            
+            .sidebar {
+                width: 300px;
+                background: #2d2d2d;
+                padding: 20px;
+                border-right: 1px solid #444;
+            }
+            
+            .nav-section, .stats-section {
+                margin-bottom: 30px;
+            }
+            
+            .nav-section h3, .stats-section h3 {
+                color: #888;
+                margin-bottom: 15px;
+                font-size: 1.1em;
+            }
+            
+            .nav-btn {
+                display: block;
+                width: 100%;
+                padding: 12px;
+                background: transparent;
+                border: none;
+                color: #ccc;
+                text-align: left;
+                border-radius: 5px;
+                cursor: pointer;
+                transition: all 0.2s;
+                margin-bottom: 5px;
+            }
+            
+            .nav-btn:hover, .nav-btn.active {
+                background: #3498db;
+                color: white;
+            }
+            
+            .stat-item {
+                display: flex;
+                justify-content: space-between;
+                padding: 8px 0;
+                border-bottom: 1px solid #444;
+            }
+            
+            .content-area {
+                flex: 1;
+                padding: 30px;
+                background: #1e1e1e;
+            }
+            
+            .section {
+                display: none;
+            }
+            
+            .section.active {
+                display: block;
+            }
+            
+            .section h2 {
+                margin-bottom: 25px;
+                color: #3498db;
+            }
+            
+            .dashboard-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                gap: 25px;
+            }
+            
+            .dashboard-card {
+                background: #2d2d2d;
+                padding: 25px;
+                border-radius: 10px;
+                border: 1px solid #444;
+            }
+            
+            .dashboard-card h3 {
+                margin-bottom: 15px;
+                color: #3498db;
+            }
+            
+            .data-display, .stats-display, .metrics-display {
+                background: #1a1a1a;
+                padding: 15px;
+                border-radius: 5px;
+                margin-bottom: 15px;
+                font-family: monospace;
+                white-space: pre-wrap;
+                max-height: 200px;
+                overflow-y: auto;
+            }
+            
+            .chart-controls, .data-controls, .realtime-controls, .api-controls {
+                margin-bottom: 20px;
+            }
+            
+            .input-group {
+                display: flex;
+                gap: 10px;
+                margin-bottom: 10px;
+            }
+            
+            .input-group input, .input-group select, .input-group textarea {
+                padding: 10px;
+                border: 1px solid #444;
+                border-radius: 5px;
+                background: #2d2d2d;
+                color: #fff;
+                font-size: 14px;
+            }
+            
+            .input-group input {
+                flex: 1;
+            }
+            
+            button {
+                padding: 10px 20px;
+                background: #3498db;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+                font-size: 14px;
+                transition: background 0.2s;
+            }
+            
+            button:hover {
+                background: #2980b9;
+            }
+            
+            .chart-container {
+                background: #2d2d2d;
+                padding: 20px;
+                border-radius: 10px;
+                text-align: center;
+            }
+            
+            .data-output, .stream-output, .api-output {
+                background: #1a1a1a;
+                padding: 20px;
+                border-radius: 5px;
+                font-family: monospace;
+                white-space: pre-wrap;
+                max-height: 400px;
+                overflow-y: auto;
+                border: 1px solid #444;
+            }
+            
+            #api-payload {
+                width: 100%;
+                min-height: 100px;
+                resize: vertical;
+            }
+        `;
+        document.head.appendChild(style);
+        
+        // Set up navigation
+        this.setupNavigation();
+        
+        // Update counters
+        this.updateCounters();
+        setInterval(() => this.updateCounters(), 1000);
+    }
+    
+    setupNavigation() {
+        const navButtons = document.querySelectorAll('.nav-btn');
+        const sections = document.querySelectorAll('.section');
+        
+        navButtons.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const targetSection = e.target.dataset.section;
+                
+                // Update active button
+                navButtons.forEach(b => b.classList.remove('active'));
+                e.target.classList.add('active');
+                
+                // Show target section
+                sections.forEach(s => s.classList.remove('active'));
+                document.getElementById(targetSection).classList.add('active');
+            });
+        });
+    }
+    
+    updateCounters() {
+        const uptime = Math.floor((new Date() - this.startTime) / 1000);
+        document.getElementById('operation-counter').textContent = this.operationCount;
+        document.getElementById('connection-counter').textContent = this.connections.size;
+        document.getElementById('data-counter').textContent = this.dataStore.size;
+        document.getElementById('uptime-counter').textContent = uptime + 's';
+    }
+    
+    async generateRealTimeData() {
+        this.operationCount++;
+        const data = {
+            timestamp: new Date().toISOString(),
+            value: Math.random() * 100,
+            category: ['A', 'B', 'C'][Math.floor(Math.random() * 3)],
+            trend: Math.random() > 0.5 ? 'up' : 'down'
+        };
+        
+        this.realTimeData.push(data);
+        if (this.realTimeData.length > 50) {
+            this.realTimeData.shift();
+        }
+        
+        document.getElementById('realtime-display').textContent = JSON.stringify(data, null, 2);
+        this.emit('data-update', data);
+        
+        return data;
+    }
+    
+    async refreshStats() {
+        this.operationCount++;
+        const stats = {
+            totalOperations: this.operationCount,
+            dataPoints: this.realTimeData.length,
+            averageValue: this.realTimeData.reduce((sum, d) => sum + d.value, 0) / this.realTimeData.length || 0,
+            uptime: Math.floor((new Date() - this.startTime) / 1000),
+            memoryUsage: this.calculateMemoryUsage()
+        };
+        
+        document.getElementById('quick-stats').textContent = JSON.stringify(stats, null, 2);
+        return stats;
+    }
+    
+    calculateMemoryUsage() {
+        // Simulated memory usage calculation
+        return {
+            dataStore: this.dataStore.size * 100, // bytes
+            realTimeData: this.realTimeData.length * 50,
+            connections: this.connections.size * 200
+        };
+    }
+    
+    async runPerformanceTest() {
+        this.operationCount++;
+        const startTime = performance.now();
+        
+        // Simulate some intensive operations
+        for (let i = 0; i < 10000; i++) {
+            Math.sqrt(i);
+        }
+        
+        const endTime = performance.now();
+        const metrics = {
+            executionTime: endTime - startTime,
+            operationsPerSecond: 10000 / ((endTime - startTime) / 1000),
+            timestamp: new Date().toISOString()
+        };
+        
+        document.getElementById('performance-metrics').textContent = JSON.stringify(metrics, null, 2);
+        return metrics;
+    }
+    
+    createLineChart() {
+        const canvas = document.getElementById('main-chart');
+        const ctx = canvas.getContext('2d');
+        
+        // Clear canvas
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Draw line chart
+        ctx.strokeStyle = '#3498db';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        
+        const data = this.realTimeData.slice(-20);
+        const width = canvas.width - 40;
+        const height = canvas.height - 40;
+        
+        data.forEach((point, index) => {
+            const x = 20 + (index / (data.length - 1)) * width;
+            const y = height - (point.value / 100) * height + 20;
+            
+            if (index === 0) {
+                ctx.moveTo(x, y);
+            } else {
+                ctx.lineTo(x, y);
+            }
+        });
+        
+        ctx.stroke();
+        
+        // Draw axes
+        ctx.strokeStyle = '#666';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(20, 20);
+        ctx.lineTo(20, height + 20);
+        ctx.lineTo(width + 20, height + 20);
+        ctx.stroke();
+        
+        this.operationCount++;
+    }
+    
+    createBarChart() {
+        const canvas = document.getElementById('main-chart');
+        const ctx = canvas.getContext('2d');
+        
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        const data = this.realTimeData.slice(-10);
+        const width = canvas.width - 40;
+        const height = canvas.height - 40;
+        const barWidth = width / data.length - 5;
+        
+        data.forEach((point, index) => {
+            const x = 20 + index * (barWidth + 5);
+            const barHeight = (point.value / 100) * height;
+            const y = height - barHeight + 20;
+            
+            ctx.fillStyle = '#3498db';
+            ctx.fillRect(x, y, barWidth, barHeight);
+        });
+        
+        this.operationCount++;
+    }
+    
+    createPieChart() {
+        const canvas = document.getElementById('main-chart');
+        const ctx = canvas.getContext('2d');
+        
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        const categories = ['A', 'B', 'C'];
+        const data = categories.map(cat => 
+            this.realTimeData.filter(d => d.category === cat).length
+        );
+        
+        const total = data.reduce((sum, val) => sum + val, 0);
+        const centerX = canvas.width / 2;
+        const centerY = canvas.height / 2;
+        const radius = Math.min(centerX, centerY) - 50;
+        
+        let currentAngle = 0;
+        const colors = ['#3498db', '#e74c3c', '#2ecc71'];
+        
+        data.forEach((value, index) => {
+            const sliceAngle = (value / total) * 2 * Math.PI;
+            
+            ctx.fillStyle = colors[index];
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius, currentAngle, currentAngle + sliceAngle);
+            ctx.lineTo(centerX, centerY);
+            ctx.fill();
+            
+            currentAngle += sliceAngle;
+        });
+        
+        this.operationCount++;
+    }
+    
+    clearCharts() {
+        const canvas = document.getElementById('main-chart');
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        this.operationCount++;
+    }
+    
+    storeData() {
+        const key = document.getElementById('data-key').value;
+        const value = document.getElementById('data-value').value;
+        
+        if (key && value) {
+            this.dataStore.set(key, {
+                value: value,
+                timestamp: new Date().toISOString(),
+                type: typeof value
+            });
+            
+            document.getElementById('data-display').textContent = `Stored: ${key} = ${value}`;
+            this.operationCount++;
+        }
+    }
+    
+    retrieveData() {
+        const key = document.getElementById('retrieve-key').value;
+        const data = this.dataStore.get(key);
+        
+        if (data) {
+            document.getElementById('data-display').textContent = JSON.stringify(data, null, 2);
+        } else {
+            document.getElementById('data-display').textContent = `Key "${key}" not found`;
+        }
+        
+        this.operationCount++;
+    }
+    
+    listAllData() {
+        const allData = {};
+        this.dataStore.forEach((value, key) => {
+            allData[key] = value;
+        });
+        
+        document.getElementById('data-display').textContent = JSON.stringify(allData, null, 2);
+        this.operationCount++;
+    }
+    
+    startRealTimeStream() {
+        if (this.streamInterval) {
+            clearInterval(this.streamInterval);
+        }
+        
+        this.streamInterval = setInterval(() => {
+            const data = this.generateRealTimeData();
+            const display = document.getElementById('stream-data');
+            display.textContent += `${JSON.stringify(data)}\n`;
+            
+            // Keep only last 20 entries
+            const lines = display.textContent.split('\n');
+            if (lines.length > 20) {
+                display.textContent = lines.slice(-20).join('\n');
+            }
+        }, 1000);
+        
+        document.getElementById('connection-status').textContent = '🟢 Streaming';
+    }
+    
+    stopRealTimeStream() {
+        if (this.streamInterval) {
+            clearInterval(this.streamInterval);
+            this.streamInterval = null;
+        }
+        
+        document.getElementById('connection-status').textContent = '🔴 Stopped';
+    }
+    
+    simulateWebSocket() {
+        // Simulate WebSocket connection
+        const connectionId = Date.now().toString();
+        this.connections.set(connectionId, {
+            id: connectionId,
+            status: 'connected',
+            created: new Date()
+        });
+        
+        // Simulate receiving messages
+        setTimeout(() => {
+            this.emit('connection-change', {
+                type: 'message',
+                connectionId: connectionId,
+                data: { message: 'Hello from WebSocket!', timestamp: new Date().toISOString() }
+            });
+        }, 1000);
+        
+        this.operationCount++;
+    }
+    
+    async testAPI() {
+        const endpoint = document.getElementById('api-endpoint').value;
+        const method = document.getElementById('api-method').value;
+        const payload = document.getElementById('api-payload').value;
+        
+        try {
+            const response = {
+                endpoint: endpoint,
+                method: method,
+                payload: payload ? JSON.parse(payload) : null,
+                timestamp: new Date().toISOString(),
+                status: 'success',
+                data: { message: 'API test successful', requestId: Date.now() }
+            };
+            
+            document.getElementById('api-response').textContent = JSON.stringify(response, null, 2);
+            this.operationCount++;
+            
+            return response;
+        } catch (error) {
+            const errorResponse = {
+                endpoint: endpoint,
+                method: method,
+                error: error.message,
+                timestamp: new Date().toISOString(),
+                status: 'error'
+            };
+            
+            document.getElementById('api-response').textContent = JSON.stringify(errorResponse, null, 2);
+            return errorResponse;
+        }
+    }
+    
+    startRealTimeDataGeneration() {
+        // Generate some initial data
+        for (let i = 0; i < 10; i++) {
+            this.generateRealTimeData();
+        }
+    }
+    
+    setupWebSocketSimulation() {
+        // Set up event listeners for real-time updates
+        this.addEventListener('data-update', (data) => {
+            document.getElementById('data-status').textContent = '📊 Updated';
+            setTimeout(() => {
+                document.getElementById('data-status').textContent = '📊 Ready';
+            }, 1000);
+        });
+        
+        this.addEventListener('connection-change', (data) => {
+            console.log('Connection change:', data);
+        });
+    }
+    
+    initializeCharts() {
+        // Initialize canvas
+        const canvas = document.getElementById('main-chart');
+        if (canvas) {
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#2d2d2d';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+    }
+    
+    async getAdvancedInfo() {
+        return {
+            name: "Advanced JavaScript App",
+            version: "2.0.0",
+            type: "javascript-advanced",
+            status: "running",
+            features: [
+                "Real-time Data Streaming",
+                "Interactive Charts",
+                "Data Management",
+                "WebSocket Simulation",
+                "API Testing Framework",
+                "Performance Monitoring"
+            ],
+            statistics: {
+                operations: this.operationCount,
+                connections: this.connections.size,
+                dataPoints: this.realTimeData.length,
+                uptime: Math.floor((new Date() - this.startTime) / 1000)
+            },
+            timestamp: new Date().toISOString()
+        };
+    }
+}
+
+// Create global app instance
+const app = new AdvancedJavaScriptApp();
+
+// API exports
+async function setup() {
+    await app.setup();
+}
+
+async function generateData() {
+    return await app.generateRealTimeData();
+}
+
+async function getStats() {
+    return await app.refreshStats();
+}
+
+async function runPerformanceTest() {
+    return await app.runPerformanceTest();
+}
+
+async function info() {
+    return await app.getAdvancedInfo();
+}
+
+// Export all functions
+api.export({
+    setup,
+    generateData,
+    getStats,
+    runPerformanceTest,
+    info,
+    // Advanced features
+    storeData: (key, value) => {
+        app.dataStore.set(key, { value, timestamp: new Date().toISOString() });
+        return { success: true, key, value };
+    },
+    retrieveData: (key) => {
+        return app.dataStore.get(key) || null;
+    },
+    listData: () => {
+        const result = {};
+        app.dataStore.forEach((value, key) => {
+            result[key] = value;
+        });
+        return result;
+    }
+});
+</script> 

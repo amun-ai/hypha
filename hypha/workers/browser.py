@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Union
 from playwright.async_api import Page, async_playwright, Browser, BrowserContext
 
 from hypha.core.store import RedisStore
+from hypha.workers.base import BaseWorker, WorkerConfig, SessionStatus
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -44,7 +45,7 @@ def _capture_logs_from_browser_tabs(page: Page, logs: dict) -> None:
     page.on("pageerror", lambda target: _app_error(str(target)))
 
 
-class BrowserAppRunner:
+class BrowserAppRunner(BaseWorker):
     """Browser app worker."""
 
     instance_counter: int = 0
@@ -55,14 +56,32 @@ class BrowserAppRunner:
         in_docker: bool = False,
     ):
         """Initialize the class."""
+        super().__init__(store)
         self.browser: Optional[Browser] = None
-        self._browser_sessions: Dict[str, Dict[str, Any]] = {}
         self.controller_id = str(BrowserAppRunner.instance_counter)
         BrowserAppRunner.instance_counter += 1
         store.register_public_service(self.get_service())
         self.in_docker = in_docker
-        self._initialized = False
         self._playwright = None
+
+    @property
+    def supported_types(self) -> List[str]:
+        """Return list of supported application types."""
+        return ["web-python", "web-worker", "window", "iframe"]
+
+    @property
+    def worker_name(self) -> str:
+        """Return the worker name."""
+        return "Browser Worker"
+
+    @property
+    def worker_description(self) -> str:
+        """Return the worker description."""
+        return "A worker for running web applications in browser environments"
+
+    async def _initialize_worker(self) -> None:
+        """Initialize the browser worker."""
+        await self.initialize()
 
     async def initialize(self) -> Browser:
         """Initialize the app controller."""
@@ -81,247 +100,133 @@ class BrowserAppRunner:
         self.browser = await self._playwright.chromium.launch(
             args=args, handle_sigint=True, handle_sigterm=True, handle_sighup=True
         )
-        self._initialized = True
         return self.browser
 
-    async def shutdown(self) -> None:
-        """Close the app controller."""
-        logger.info("Closing the browser app controller...")
+    async def _shutdown_worker(self) -> None:
+        """Close the browser worker."""
+        logger.info("Closing the browser worker...")
         try:
-            # Close all active sessions first
-            session_ids = list(self._browser_sessions.keys())
-            for session_id in session_ids:
-                await self.stop(session_id)
-
             if self.browser:
                 await self.browser.close()
 
             if self._playwright:
                 await self._playwright.stop()
 
-            self._initialized = False
-            logger.info("Browser app controller closed successfully.")
+            logger.info("Browser worker closed successfully.")
         except Exception as e:
             logger.error("Error during browser shutdown: %s", str(e))
             raise
 
-    async def start(
-        self,
-        client_id: str,
-        app_id: str,
-        server_url: str,
-        public_base_url: str,
-        local_base_url: str,
-        workspace: str,
-        version: str = None,
-        token: str = None,
-        entry_point: str = None,
-        app_type: str = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        url: str = None,  # For backward compatibility
-        session_id: Optional[str] = None,  # For backward compatibility
-    ):
-        """Start a browser app instance."""
-        # Handle backward compatibility
-        if url and session_id:
-            return await self._start_legacy(url, session_id, metadata)
-        
-        # New logic for type-based starting
-        full_session_id = f"{workspace}/{client_id}"
-        
+    async def _start_session(self, config: WorkerConfig) -> Dict[str, Any]:
+        """Start a browser app session."""
         if not self.browser:
             await self.initialize()
 
-        try:
-            # Create URLs for the app
-            if not entry_point.startswith("http"):
-                entry_point = f"{local_base_url}/{workspace}/artifacts/{app_id}/files/{entry_point}"
-            
-            # Create local and public URLs
-            local_url = (
-                f"{entry_point}?"
-                + f"server_url={server_url}&client_id={client_id}&workspace={workspace}"
-                + f"&app_id={app_id}"
-                + f"&server_url={server_url}"
-                + (f"&token={token}" if token else "")
-                + (f"&version={version}" if version else "")
-                + (f"&use_proxy=true")
-            )
-            
-            public_url = (
-                f"{public_base_url}/{workspace}/artifacts/{app_id}/files/{entry_point}?"
-                + f"client_id={client_id}&workspace={workspace}"
-                + f"&app_id={app_id}"
-                + f"&server_url={public_base_url}"
-                + (f"&token={token}" if token else "")
-                + (f"&version={version}" if version else "")
-                + (f"&use_proxy=true")
-            )
+        # Create URLs for the app
+        entry_point = config.entry_point
+        if not entry_point.startswith("http"):
+            entry_point = f"{config.local_base_url}/{config.workspace}/artifacts/{config.app_id}/files/{entry_point}"
+        
+        # Create local and public URLs
+        local_url = self._build_app_url(config, entry_point, config.local_base_url)
+        public_url = self._build_app_url(config, entry_point, config.public_base_url)
 
-            # Create a new context for isolation
-            context = await self.browser.new_context(
-                viewport={"width": 1280, "height": 720}, accept_downloads=True
-            )
+        # Create a new context for isolation
+        context = await self.browser.new_context(
+            viewport={"width": 1280, "height": 720}, accept_downloads=True
+        )
 
-            # Create a new page in the context
-            page = await context.new_page()
+        # Create a new page in the context
+        page = await context.new_page()
 
-            logs = {}
-            session_data = {
-                "session_id": full_session_id,
-                "url": local_url,
-                "local_url": local_url,
-                "public_url": public_url,
-                "status": "connecting",
-                "page": page,
-                "context": context,
-                "logs": logs,
-                "metadata": metadata,
-                "app_type": app_type,
-            }
-            
-            self._browser_sessions[full_session_id] = session_data
+        logs = {}
+        _capture_logs_from_browser_tabs(page, logs)
 
-            _capture_logs_from_browser_tabs(page, logs)
+        logger.info("Loading browser app: %s", local_url)
+        response = await page.goto(local_url, timeout=60000, wait_until="load")
 
-            logger.info("Loading browser app: %s", local_url)
-            response = await page.goto(local_url, timeout=60000, wait_until="load")
+        if not response:
+            await context.close()
+            raise Exception(f"Failed to load URL: {local_url}")
 
-            if not response:
-                raise Exception(f"Failed to load URL: {local_url}")
-
-            if response.status != 200:
-                raise Exception(
-                    f"Failed to start browser app instance, "
-                    f"status: {response.status}, url: {local_url}"
-                )
-
-            logger.info("Browser app loaded successfully: %s", local_url)
-            self._browser_sessions[full_session_id]["status"] = "connected"
-
-            return {
-                "session_id": full_session_id,
-                "status": "connected",
-                "url": local_url,
-                "local_url": local_url,
-                "public_url": public_url,
-            }
-
-        except Exception as e:
-            logger.error("Error starting browser session: %s", str(e))
-            if full_session_id in self._browser_sessions:
-                await self.stop(full_session_id)
-            raise
-
-    async def _start_legacy(
-        self,
-        url: str,
-        session_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ):
-        """Legacy start method for backward compatibility."""
-        if session_id is None:
-            session_id = str(uuid.uuid4())
-
-        if not self.browser:
-            await self.initialize()
-
-        try:
-            # Create a new context for isolation
-            context = await self.browser.new_context(
-                viewport={"width": 1280, "height": 720}, accept_downloads=True
+        if response.status != 200:
+            await context.close()
+            raise Exception(
+                f"Failed to start browser app instance, "
+                f"status: {response.status}, url: {local_url}"
             )
 
-            # Create a new page in the context
-            page = await context.new_page()
+        logger.info("Browser app loaded successfully: %s", local_url)
 
-            logs = {}
-            self._browser_sessions[session_id] = {
-                "url": url,
-                "status": "connecting",
-                "page": page,
-                "context": context,
-                "logs": logs,
-                "metadata": metadata,
-            }
+        return {
+            "local_url": local_url,
+            "public_url": public_url,
+            "page": page,
+            "context": context,
+            "logs": logs,
+        }
 
-            _capture_logs_from_browser_tabs(page, logs)
+    def _build_app_url(self, config: WorkerConfig, entry_point: str, base_url: str) -> str:
+        """Build the app URL with parameters."""
+        params = [
+            f"server_url={base_url}",
+            f"client_id={config.client_id}",
+            f"workspace={config.workspace}",
+            f"app_id={config.app_id}",
+            "use_proxy=true"
+        ]
+        
+        if config.token:
+            params.append(f"token={config.token}")
+        if config.version:
+            params.append(f"version={config.version}")
+        
+        return f"{entry_point}?{'&'.join(params)}"
 
-            logger.info("Loading browser app: %s", url)
-            response = await page.goto(url, timeout=60000, wait_until="load")
 
-            if not response:
-                raise Exception(f"Failed to load URL: {url}")
 
-            if response.status != 200:
-                raise Exception(
-                    f"Failed to start browser app instance, "
-                    f"status: {response.status}, url: {url}"
-                )
-
-            logger.info("Browser app loaded successfully: %s", url)
-            self._browser_sessions[session_id]["status"] = "connected"
-
-            return {
-                "session_id": session_id,
-                "status": "connected",
-                "url": url,
-            }
-
-        except Exception as e:
-            logger.error("Error starting browser session: %s", str(e))
-            if session_id in self._browser_sessions:
-                await self.stop(session_id)
-            raise
-
-    async def stop(self, session_id: str) -> None:
+    async def _stop_session(self, session_id: str) -> None:
         """Stop a browser app instance."""
-        if session_id not in self._browser_sessions:
-            logger.warning(f"Browser app instance not found: {session_id}")
+        session_data = self._session_data.get(session_id)
+        if not session_data:
             return
 
         try:
-            session = self._browser_sessions[session_id]
-            if "page" in session:
-                await session["page"].close()
-            if "context" in session:
-                await session["context"].close()
-            del self._browser_sessions[session_id]
+            if "page" in session_data:
+                await session_data["page"].close()
+            if "context" in session_data:
+                await session_data["context"].close()
             logger.info(f"Successfully stopped browser session: {session_id}")
         except Exception as e:
             logger.error(f"Error stopping browser session {session_id}: {str(e)}")
             raise
 
-    async def list(self, workspace) -> List[Dict[str, Any]]:
-        """List the browser apps for the current user."""
-        sessions = [
-            {k: v for k, v in page_info.items() if k not in ["page", "context"]}
-            for session_id, page_info in self._browser_sessions.items()
-            if session_id.startswith(workspace + "/")
-        ]
-        return sessions
-
-    async def get_logs(
-        self,
-        session_id: str,
-        type: str = None,  # pylint: disable=redefined-builtin
+    async def _get_session_logs(
+        self, 
+        session_id: str, 
+        log_type: Optional[str] = None,
         offset: int = 0,
-        limit: Optional[int] = None,
+        limit: Optional[int] = None
     ) -> Union[Dict[str, List[str]], List[str]]:
-        """Get the logs for a browser app instance."""
-        if session_id not in self._browser_sessions:
-            raise Exception(f"Browser app instance not found: {session_id}")
+        """Get logs for a browser session."""
+        session_data = self._session_data.get(session_id)
+        if not session_data:
+            return {} if log_type is None else []
 
-        if type is None:
-            return self._browser_sessions[session_id]["logs"]
+        logs = session_data.get("logs", {})
+        
+        if log_type:
+            target_logs = logs.get(log_type, [])
+            end_idx = len(target_logs) if limit is None else min(offset + limit, len(target_logs))
+            return target_logs[offset:end_idx]
+        else:
+            result = {}
+            for log_type_key, log_entries in logs.items():
+                end_idx = len(log_entries) if limit is None else min(offset + limit, len(log_entries))
+                result[log_type_key] = log_entries[offset:end_idx]
+            return result
 
-        if type not in self._browser_sessions[session_id]["logs"]:
-            return []
-
-        if limit is None:
-            limit = MAXIMUM_LOG_ENTRIES
-
-        return self._browser_sessions[session_id]["logs"][type][offset : offset + limit]
+    # get_logs method is now inherited from BaseWorker
 
     async def take_screenshot(
         self,
@@ -329,11 +234,14 @@ class BrowserAppRunner:
         format: str = "png",
     ) -> str:
         """Take a screenshot of a browser app instance."""
-        if session_id not in self._browser_sessions:
+        if session_id not in self._sessions:
             raise Exception(f"Browser app instance not found: {session_id}")
 
-        session = self._browser_sessions[session_id]
-        page = session["page"]
+        session_data = self._session_data.get(session_id)
+        if not session_data:
+            raise Exception(f"Browser app session data not found: {session_id}")
+
+        page = session_data["page"]
         
         # Validate format
         if format not in ["png", "jpeg"]:
@@ -343,35 +251,18 @@ class BrowserAppRunner:
         screenshot = await page.screenshot(type=format)
         return screenshot
 
-    async def close_workspace(self, workspace: str) -> None:
+    async def _close_workspace(self, workspace: str) -> None:
         """Close all browser app instances for a workspace."""
-        session_ids = [
-            session_id
-            for session_id in self._browser_sessions.keys()
-            if session_id.startswith(workspace + "/")
-        ]
-        for session_id in session_ids:
-            await self.stop(session_id)
+        # This is now handled by the base class
+        pass
 
-    async def prepare_workspace(self, workspace: str) -> None:
+    async def _prepare_workspace(self, workspace: str) -> None:
         """Prepare the workspace for the browser app."""
         pass
 
     def get_service(self):
         """Get the service."""
-        return {
-            "id": f"browser-worker-{self.controller_id}",
-            "type": "server-app-worker",
-            "name": "Browser Server App Worker",
-            "description": "A worker for running server apps",
-            "config": {"visibility": "protected"},
-            "supported_types": ["web-python", "web-worker", "window", "iframe"],
-            "start": self.start,
-            "stop": self.stop,
-            "list": self.list,
-            "get_logs": self.get_logs,
-            "take_screenshot": self.take_screenshot,
-            "shutdown": self.shutdown,
-            "prepare_workspace": self.prepare_workspace,
-            "close_workspace": self.close_workspace,
-        }
+        service_config = self.get_service_config()
+        # Add browser-specific methods
+        service_config["take_screenshot"] = self.take_screenshot
+        return service_config

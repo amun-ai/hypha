@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from hypha_rpc import connect_to_server
 from hypha_rpc.utils.schema import schema_function
+from hypha.workers.base import BaseWorker, WorkerConfig, SessionStatus
 
 # Compatibility for asyncio.timeout (Python 3.11+)
 try:
@@ -60,18 +61,35 @@ except ImportError:
     SSE_CLIENT_AVAILABLE = False
 
 
-class MCPClientRunner:
+class MCPClientRunner(BaseWorker):
     """MCP client worker that connects to MCP servers and exposes tools as Hypha services."""
 
     instance_counter: int = 0
 
     def __init__(self, server):
         """Initialize the MCP client worker."""
-        self.server = server
-        self.initialized = False
-        self._mcp_sessions: Dict[str, Dict[str, Any]] = {}
+        super().__init__(server)
         self.controller_id = str(MCPClientRunner.instance_counter)
         MCPClientRunner.instance_counter += 1
+
+    @property
+    def supported_types(self) -> List[str]:
+        """Return list of supported application types."""
+        return ["mcp-server"]
+
+    @property
+    def worker_name(self) -> str:
+        """Return the worker name."""
+        return "MCP Proxy Worker"
+
+    @property
+    def worker_description(self) -> str:
+        """Return the worker description."""
+        return "MCP proxy worker for connecting to MCP servers"
+
+    async def _initialize_worker(self) -> None:
+        """Initialize the MCP client worker."""
+        pass
 
     async def initialize(self) -> None:
         """Initialize the MCP client worker."""
@@ -79,86 +97,46 @@ class MCPClientRunner:
             await self.server.register_service(self.get_service())
             self.initialized = True
 
-    async def start(
-        self,
-        client_id: str,
-        app_id: str,
-        server_url: str,
-        public_base_url: str,
-        local_base_url: str,
-        workspace: str,
-        version: str = None,
-        token: str = None,
-        entry_point: str = None,
-        app_type: str = None,
-        metadata: dict = None,
-    ) -> dict:
+    async def _start_session(self, config: WorkerConfig) -> Dict[str, Any]:
         """Start an MCP client session."""
         if not MCP_SDK_AVAILABLE:
             raise RuntimeError("MCP SDK not available. Install with: pip install mcp")
 
-        full_client_id = workspace + "/" + client_id
-        if full_client_id in self._mcp_sessions:
-            logger.warning(f"MCP client session already exists: {full_client_id}")
-            return self._mcp_sessions[full_client_id]
-
         # Get the MCP servers configuration from metadata
-        mcp_servers = metadata.get("mcp_servers", {})
+        mcp_servers = config.metadata.get("mcp_servers", {})
         if not mcp_servers:
             raise ValueError("No MCP servers configuration found in metadata")
 
         # Create user API connection for service registration in user workspace
         user_api = await connect_to_server({
-            "server_url": server_url,
-            "client_id": client_id,
-            "workspace": workspace,
-            "token": token,
+            "server_url": config.server_url,
+            "client_id": config.client_id,
+            "workspace": config.workspace,
+            "token": config.token,
             "method_timeout": 30,
         })
         
-        # Store user_api separately to avoid serialization issues
-        session_info = {
-            "id": full_client_id,
-            "app_id": app_id,
-            "workspace": workspace,
-            "client_id": client_id,
-            "server_url": server_url,
-            "public_base_url": public_base_url,
-            "local_base_url": local_base_url,
-            "version": version,
-            "token": token,
-            "app_type": app_type,
-            "entry_point": entry_point,
-            "metadata": metadata,
+        # Store session data
+        session_data = {
             "mcp_servers": mcp_servers,
             "logs": {"log": [], "error": []},
             "mcp_clients": {},
-            "registered_services": []
-        }
-
-        # Store user_api separately to avoid serialization issues
-        session_info["_internal"] = {
-            "user_api": user_api
+            "registered_services": [],
+            "_internal": {
+                "user_api": user_api
+            }
         }
 
         # Connect to each MCP server and register unified services
         for server_name, server_config in mcp_servers.items():
-            await self._connect_and_register_mcp_service(session_info, server_name, server_config)
+            await self._connect_and_register_mcp_service(session_data, server_name, server_config)
 
-        # Register the session
-        self._mcp_sessions[full_client_id] = session_info
-        
         # Log successful startup
-        session_info["logs"]["log"].append(f"MCP client session started with {len(mcp_servers)} servers")
+        session_data["logs"]["log"].append(f"MCP client session started with {len(mcp_servers)} servers")
         
-        # Return session info without internal objects that can't be serialized
-        return_info = session_info.copy()
-        if "_internal" in return_info:
-            del return_info["_internal"]
-        
-        return return_info
+        return session_data
 
-    async def _connect_and_register_mcp_service(self, session_info: dict, server_name: str, server_config: dict):
+    async def _connect_and_register_mcp_service(self, session_data: dict, server_name: str, server_config: dict):
         """Connect to MCP server and register a single unified service."""
         try:
             server_type = server_config.get("type", "streamable-http")
@@ -171,17 +149,17 @@ class MCPClientRunner:
             
             # Support both streamable-http and sse transport types
             if server_type == "streamable-http":
-                await self._connect_streamable_http(session_info, server_name, server_config)
+                await self._connect_streamable_http(session_data, server_name, server_config)
             elif server_type == "sse":
-                await self._connect_sse(session_info, server_name, server_config)
+                await self._connect_sse(session_data, server_name, server_config)
             else:
                 raise ValueError(f"Unsupported MCP server type: {server_type}")
                 
         except Exception as e:
             logger.error(f"Failed to connect to MCP server {server_name}: {e}", exc_info=True)
-            session_info["logs"]["error"].append(f"Failed to connect to {server_name}: {e}")
+            session_data["logs"]["error"].append(f"Failed to connect to {server_name}: {e}")
 
-    async def _connect_streamable_http(self, session_info: dict, server_name: str, server_config: dict):
+    async def _connect_streamable_http(self, session_data: dict, server_name: str, server_config: dict):
         """Connect to MCP server using streamable HTTP transport."""
         server_url = server_config.get("url")
         headers = server_config.get("headers", {})
@@ -201,20 +179,20 @@ class MCPClientRunner:
                     await mcp_session.initialize()
                     
                     # Store session info
-                    session_info["mcp_clients"][server_name] = {
+                    session_data["mcp_clients"][server_name] = {
                         "config": server_config,
                         "session_id": get_session_id(),
                         "url": server_url,
                         "transport": "streamable-http"
                     }
                     
-                    await self._collect_and_register_capabilities(session_info, server_name, mcp_session)
+                    await self._collect_and_register_capabilities(session_data, server_name, mcp_session)
                     
         except Exception as e:
             logger.error(f"Failed to connect to streamable HTTP server {server_name}: {e}", exc_info=True)
             raise
 
-    async def _connect_sse(self, session_info: dict, server_name: str, server_config: dict):
+    async def _connect_sse(self, session_data: dict, server_name: str, server_config: dict):
         """Connect to MCP server using SSE transport."""
         if not SSE_CLIENT_AVAILABLE:
             raise RuntimeError("SSE client not available. Install with: pip install mcp[sse]")
@@ -235,14 +213,14 @@ class MCPClientRunner:
                         await mcp_session.initialize()
                         
                         # Store session info
-                        session_info["mcp_clients"][server_name] = {
+                        session_data["mcp_clients"][server_name] = {
                             "config": server_config,
                             "session_id": f"sse-{uuid.uuid4().hex[:8]}",
                             "url": server_url,
                             "transport": "sse"
                         }
                         
-                        await self._collect_and_register_capabilities(session_info, server_name, mcp_session)
+                        await self._collect_and_register_capabilities(session_data, server_name, mcp_session)
                         
         except asyncio.TimeoutError:
             logger.error(f"Timeout connecting to SSE server {server_name} at {server_url}")
@@ -254,49 +232,49 @@ class MCPClientRunner:
                 raise RuntimeError(f"SSE transport not supported by server at {server_url}")
             raise
 
-    async def _collect_and_register_capabilities(self, session_info: dict, server_name: str, mcp_session):
+    async def _collect_and_register_capabilities(self, session_data: dict, server_name: str, mcp_session):
         """Collect tools, resources, and prompts from MCP session and register unified service."""
         # Collect tools
         tools = []
         try:
             tools_result = await mcp_session.list_tools()
             if tools_result and hasattr(tools_result, 'tools'):
-                tools = await self._create_tool_wrappers(session_info, server_name, tools_result.tools)
+                tools = await self._create_tool_wrappers(session_data, server_name, tools_result.tools)
                 logger.info(f"Found {len(tools)} tools from {server_name}")
         except Exception as e:
             logger.debug(f"No tools found in MCP server {server_name}: {e}", exc_info=True)
-            session_info["logs"]["log"].append(f"No tools found in {server_name}: {e}")
+            session_data["logs"]["log"].append(f"No tools found in {server_name}: {e}")
 
         # Collect resources  
         resources = []
         try:
             resources_result = await mcp_session.list_resources()
             if resources_result and hasattr(resources_result, 'resources'):
-                resources = await self._create_resource_wrappers(session_info, server_name, resources_result.resources)
+                resources = await self._create_resource_wrappers(session_data, server_name, resources_result.resources)
                 logger.info(f"Found {len(resources)} resources from {server_name}")
         except Exception as e:
             logger.debug(f"No resources found in MCP server {server_name}: {e}", exc_info=True)
-            session_info["logs"]["log"].append(f"No resources found in {server_name}: {e}")
+            session_data["logs"]["log"].append(f"No resources found in {server_name}: {e}")
 
         # Collect prompts
         prompts = []
         try:
             prompts_result = await mcp_session.list_prompts()
             if prompts_result and hasattr(prompts_result, 'prompts'):
-                prompts = await self._create_prompt_wrappers(session_info, server_name, prompts_result.prompts)
+                prompts = await self._create_prompt_wrappers(session_data, server_name, prompts_result.prompts)
                 logger.info(f"Found {len(prompts)} prompts from {server_name}")
         except Exception as e:
             logger.debug(f"No prompts found in MCP server {server_name}: {e}", exc_info=True)
-            session_info["logs"]["log"].append(f"No prompts found in {server_name}: {e}")
+            session_data["logs"]["log"].append(f"No prompts found in {server_name}: {e}")
 
         # Register the unified MCP service
-        await self._register_unified_mcp_service(session_info, server_name, tools, resources, prompts)
+        await self._register_unified_mcp_service(session_data, server_name, tools, resources, prompts)
 
-    def _create_mcp_client_context(self, session_info: dict, server_name: str):
+    def _create_mcp_client_context(self, session_data: dict, server_name: str):
         """Create appropriate MCP client context based on transport type."""
-        server_config = session_info["mcp_clients"][server_name]["config"]
+        server_config = session_data["mcp_clients"][server_name]["config"]
         server_url = server_config.get("url")
-        transport = session_info["mcp_clients"][server_name]["transport"]
+        transport = session_data["mcp_clients"][server_name]["transport"]
         
         if transport == "streamable-http":
             return streamablehttp_client(server_url)
@@ -307,15 +285,15 @@ class MCPClientRunner:
         else:
             raise ValueError(f"Unsupported transport type: {transport}")
 
-    def _wrap_tool(self, session_info: dict, server_name: str, tool_name: str, tool_description: str, tool_schema: dict):
+    def _wrap_tool(self, session_data: dict, server_name: str, tool_name: str, tool_description: str, tool_schema: dict):
         """Create a tool wrapper function with proper closure."""
         async def tool_wrapper(**kwargs):
             """Wrapper function to call MCP tool."""
             logger.debug(f"Calling MCP tool {server_name}.{tool_name} with args: {kwargs}")
             try:
                 # Get the appropriate client context
-                client_context = self._create_mcp_client_context(session_info, server_name)
-                transport = session_info["mcp_clients"][server_name]["transport"]
+                client_context = self._create_mcp_client_context(session_data, server_name)
+                transport = session_data["mcp_clients"][server_name]["transport"]
                 
                 # Connect and call tool
                 if transport == "streamable-http":
@@ -360,15 +338,15 @@ class MCPClientRunner:
         
         return tool_wrapper
 
-    def _wrap_resource(self, session_info: dict, server_name: str, resource_uri: str, resource_name: str, resource_description: str, resource_mime_type: str):
+    def _wrap_resource(self, session_data: dict, server_name: str, resource_uri: str, resource_name: str, resource_description: str, resource_mime_type: str):
         """Create a resource wrapper function with proper closure."""
         async def resource_read():
             """Wrapper function to read MCP resource."""
             logger.debug(f"Reading MCP resource {server_name}.{resource_uri}")
             try:
                 # Get the appropriate client context
-                client_context = self._create_mcp_client_context(session_info, server_name)
-                transport = session_info["mcp_clients"][server_name]["transport"]
+                client_context = self._create_mcp_client_context(session_data, server_name)
+                transport = session_data["mcp_clients"][server_name]["transport"]
                 
                 # Connect and read resource
                 if transport == "streamable-http":
@@ -424,7 +402,7 @@ class MCPClientRunner:
             "read": resource_read,
         }
 
-    def _wrap_prompt(self, session_info: dict, server_name: str, prompt_name: str, prompt_description: str, prompt_args: list):
+    def _wrap_prompt(self, session_data: dict, server_name: str, prompt_name: str, prompt_description: str, prompt_args: list):
         """Create a prompt wrapper function with proper closure."""
         # Build parameters schema from prompt arguments
         parameters = {
@@ -452,8 +430,8 @@ class MCPClientRunner:
             logger.debug(f"Reading MCP prompt {server_name}.{prompt_name} with args: {kwargs}")
             try:
                 # Get the appropriate client context
-                client_context = self._create_mcp_client_context(session_info, server_name)
-                transport = session_info["mcp_clients"][server_name]["transport"]
+                client_context = self._create_mcp_client_context(session_data, server_name)
+                transport = session_data["mcp_clients"][server_name]["transport"]
                 
                 # Connect and get prompt
                 if transport == "streamable-http":
@@ -512,7 +490,7 @@ class MCPClientRunner:
             "read": prompt_read,
         }
 
-    async def _create_tool_wrappers(self, session_info: dict, server_name: str, tools: List) -> List:
+    async def _create_tool_wrappers(self, session_data: dict, server_name: str, tools: List) -> List:
         """Create tool wrapper functions with __schema__ property."""
         tool_wrappers = []
         
@@ -530,19 +508,19 @@ class MCPClientRunner:
                     tool_schema = tool_schema.dict()
 
                 # Create wrapper function using dedicated method
-                tool_wrapper = self._wrap_tool(session_info, server_name, tool_name, tool_description, tool_schema)
+                tool_wrapper = self._wrap_tool(session_data, server_name, tool_name, tool_description, tool_schema)
                 tool_wrappers.append(tool_wrapper)
                 
                 logger.info(f"Created tool wrapper: {server_name}.{tool_name}")
-                session_info["logs"]["log"].append(f"Created tool wrapper: {server_name}.{tool_name}")
+                session_data["logs"]["log"].append(f"Created tool wrapper: {server_name}.{tool_name}")
 
             except Exception as e:
                 logger.error(f"Failed to create tool wrapper for {tool.name}: {e}", exc_info=True)
-                session_info["logs"]["error"].append(f"Failed to create tool wrapper for {tool.name}: {e}")
+                session_data["logs"]["error"].append(f"Failed to create tool wrapper for {tool.name}: {e}")
         
         return tool_wrappers
 
-    async def _create_resource_wrappers(self, session_info: dict, server_name: str, resources: List) -> List:
+    async def _create_resource_wrappers(self, session_data: dict, server_name: str, resources: List) -> List:
         """Create resource wrapper configurations with read functions."""
         resource_configs = []
         
@@ -555,19 +533,19 @@ class MCPClientRunner:
                 resource_mime_type = str(getattr(resource, 'mimeType', 'text/plain'))
 
                 # Create resource config using dedicated method
-                resource_config = self._wrap_resource(session_info, server_name, resource_uri, resource_name, resource_description, resource_mime_type)
+                resource_config = self._wrap_resource(session_data, server_name, resource_uri, resource_name, resource_description, resource_mime_type)
                 resource_configs.append(resource_config)
                 
                 logger.info(f"Created resource wrapper: {server_name}.{resource_name}")
-                session_info["logs"]["log"].append(f"Created resource wrapper: {server_name}.{resource_name}")
+                session_data["logs"]["log"].append(f"Created resource wrapper: {server_name}.{resource_name}")
 
             except Exception as e:
                 logger.error(f"Failed to create resource wrapper for {resource.name}: {e}", exc_info=True)
-                session_info["logs"]["error"].append(f"Failed to create resource wrapper for {resource.name}: {e}")
+                session_data["logs"]["error"].append(f"Failed to create resource wrapper for {resource.name}: {e}")
         
         return resource_configs
 
-    async def _create_prompt_wrappers(self, session_info: dict, server_name: str, prompts: List) -> List:
+    async def _create_prompt_wrappers(self, session_data: dict, server_name: str, prompts: List) -> List:
         """Create prompt wrapper configurations with read functions."""
         prompt_configs = []
         
@@ -579,19 +557,19 @@ class MCPClientRunner:
                 prompt_args = getattr(prompt, 'arguments', [])
 
                 # Create prompt config using dedicated method
-                prompt_config = self._wrap_prompt(session_info, server_name, prompt_name, prompt_description, prompt_args)
+                prompt_config = self._wrap_prompt(session_data, server_name, prompt_name, prompt_description, prompt_args)
                 prompt_configs.append(prompt_config)
                 
                 logger.info(f"Created prompt wrapper: {server_name}.{prompt_name}")
-                session_info["logs"]["log"].append(f"Created prompt wrapper: {server_name}.{prompt_name}")
+                session_data["logs"]["log"].append(f"Created prompt wrapper: {server_name}.{prompt_name}")
 
             except Exception as e:
                 logger.error(f"Failed to create prompt wrapper for {prompt.name}: {e}", exc_info=True)
-                session_info["logs"]["error"].append(f"Failed to create prompt wrapper for {prompt.name}: {e}")
+                session_data["logs"]["error"].append(f"Failed to create prompt wrapper for {prompt.name}: {e}")
         
         return prompt_configs
 
-    async def _register_unified_mcp_service(self, session_info: dict, server_name: str, tools: List, resources: List, prompts: List):
+    async def _register_unified_mcp_service(self, session_data: dict, server_name: str, tools: List, resources: List, prompts: List):
         """Register a unified MCP service with tools, resources, and prompts."""
         try:
             # Create service configuration
@@ -610,131 +588,114 @@ class MCPClientRunner:
             }
 
             # Register the service
-            registered_service = await session_info["_internal"]["user_api"].register_service(service_info)
-            session_info["registered_services"].append(registered_service)
+            registered_service = await session_data["_internal"]["user_api"].register_service(service_info)
+            session_data["registered_services"].append(registered_service)
             
             logger.info(f"Registered unified MCP service: {server_name}")
             logger.info(f"  - Tools: {len(tools)}")
             logger.info(f"  - Resources: {len(resources)}")
             logger.info(f"  - Prompts: {len(prompts)}")
             
-            session_info["logs"]["log"].append(f"Registered unified MCP service: {server_name}")
-            session_info["logs"]["log"].append(f"  - Tools: {len(tools)}, Resources: {len(resources)}, Prompts: {len(prompts)}")
-            await session_info["_internal"]["user_api"].export({
+            session_data["logs"]["log"].append(f"Registered unified MCP service: {server_name}")
+            session_data["logs"]["log"].append(f"  - Tools: {len(tools)}, Resources: {len(resources)}, Prompts: {len(prompts)}")
+            await session_data["_internal"]["user_api"].export({
                 "setup": lambda: logger.info(f"MCP server {server_name} setup complete")
             })
 
         except Exception as e:
             logger.error(f"Failed to register unified MCP service for {server_name}: {e}", exc_info=True)
-            session_info["logs"]["error"].append(f"Failed to register unified MCP service for {server_name}: {e}")
+            session_data["logs"]["error"].append(f"Failed to register unified MCP service for {server_name}: {e}")
 
-    async def stop(self, session_id: str) -> None:
+    async def _stop_session(self, session_id: str) -> None:
         """Stop an MCP client session."""
-        if session_id in self._mcp_sessions:
-            session_info = self._mcp_sessions.pop(session_id)
+        session_data = self._session_data.get(session_id)
+        if not session_data:
+            return
             
-            # Unregister services using the user API
-            user_api = session_info.get("_internal", {}).get("user_api")
-            for service in session_info.get("registered_services", []):
-                try:
-                    if user_api:
-                        await user_api.unregister_service(service["id"])
-                    else:
-                        # Fallback to server instance
-                        await self.server.unregister_service(service["id"])
-                except Exception as e:
-                    logger.warning(f"Failed to unregister service {service['id']}: {e}")
-            
-            # Disconnect the user API
-            if user_api:
-                try:
-                    await user_api.disconnect()
-                except Exception as e:
-                    logger.warning(f"Failed to disconnect user API for session {session_id}: {e}")
-            
-            logger.info(f"Stopped MCP client session: {session_id}")
-        else:
-            logger.warning(f"MCP client session not found: {session_id}")
+        # Unregister services using the user API
+        user_api = session_data.get("_internal", {}).get("user_api")
+        for service in session_data.get("registered_services", []):
+            try:
+                if user_api:
+                    await user_api.unregister_service(service["id"])
+                else:
+                    # Fallback to server instance
+                    await self.server.unregister_service(service["id"])
+            except Exception as e:
+                logger.warning(f"Failed to unregister service {service['id']}: {e}")
+        
+        # Disconnect the user API
+        if user_api:
+            try:
+                await user_api.disconnect()
+            except Exception as e:
+                logger.warning(f"Failed to disconnect user API for session {session_id}: {e}")
+        
+        logger.info(f"Stopped MCP client session: {session_id}")
 
-    async def get_logs(
-        self,
-        session_id: str,
-        type: str = None,
+    async def _get_session_logs(
+        self, 
+        session_id: str, 
+        log_type: Optional[str] = None,
         offset: int = 0,
         limit: Optional[int] = None
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get logs for an MCP client session."""
-        if session_id not in self._mcp_sessions:
-            raise ValueError(f"Session {session_id} not found")
+        session_data = self._session_data.get(session_id)
+        if not session_data:
+            return {} if log_type is None else []
+
+        logs = session_data.get("logs", {"log": [], "error": []})
         
-        session_info = self._mcp_sessions[session_id]
-        logs = session_info["logs"]
-        
-        if type:
+        if log_type:
             # Return specific log type
-            target_logs = logs.get(type, [])
+            target_logs = logs.get(log_type, [])
             end_idx = len(target_logs) if limit is None else min(offset + limit, len(target_logs))
             return target_logs[offset:end_idx]
         else:
             # Return all logs
             result = {}
-            for log_type, log_entries in logs.items():
+            for log_type_key, log_entries in logs.items():
                 end_idx = len(log_entries) if limit is None else min(offset + limit, len(log_entries))
-                result[log_type] = log_entries[offset:end_idx]
+                result[log_type_key] = log_entries[offset:end_idx]
             return result
 
-    async def list_sessions(self) -> List[dict]:
-        """List all active MCP client sessions."""
-        return [
-            {
-                "id": session_id,
-                "app_id": session_info["app_id"],
-                "workspace": session_info["workspace"],
-                "mcp_servers": list(session_info["mcp_servers"].keys()),
-                "registered_services": len(session_info["registered_services"])
-            }
-            for session_id, session_info in self._mcp_sessions.items()
-        ]
+    # list_sessions method is now inherited from BaseWorker
 
     def get_service(self) -> dict:
         """Get the service definition for the MCP proxy worker."""
-        return {
-            "id": f"mcp-proxy-worker-{self.controller_id}",
-            "name": "MCP Proxy Worker",
-            "description": "MCP proxy worker for connecting to MCP servers",
-            "type": "server-app-worker",
-            "config": {
-                "visibility": "public",
-                "run_in_executor": True,
-            },
-            "supported_types": ["mcp-server"],
-            "start": self.start,
-            "stop": self.stop,
-            "get_logs": self.get_logs,
-            "list_sessions": self.list_sessions,
-            "prepare_workspace": self.prepare_workspace,
-            "close_workspace": self.close_workspace,
-        }
+        return self.get_service_config()
 
-    async def prepare_workspace(self, workspace_id: str) -> None:
+    async def _prepare_workspace(self, workspace_id: str) -> None:
         """Prepare workspace for MCP client operations."""
         logger.info(f"Preparing workspace {workspace_id} for MCP client operations")
 
-    async def close_workspace(self, workspace_id: str) -> None:
+    async def _close_workspace(self, workspace_id: str) -> None:
         """Close workspace and cleanup MCP client sessions."""
         logger.info(f"Closing workspace {workspace_id} and cleaning up MCP client sessions")
-        
-        # Stop all sessions for this workspace
-        sessions_to_stop = [
-            session_id for session_id, session_info in self._mcp_sessions.items()
-            if session_info["workspace"] == workspace_id
-        ]
-        
-        for session_id in sessions_to_stop:
-            await self.stop(session_id)
+        # This is now handled by the base class
 
 async def hypha_startup(server):
     """Initialize the MCP client worker as a startup function."""
     mcp_client_runner = MCPClientRunner(server)
     await mcp_client_runner.initialize()
     logger.info("MCP client worker registered as startup function")
+
+
+async def start_worker(server_url, workspace, token):
+    """Start the MCP client worker."""
+    from hypha_rpc import connect_to_server
+    async with connect_to_server(server_url) as server:
+        mcp_client_runner = MCPClientRunner(server)
+        await mcp_client_runner.initialize()
+        logger.info("MCP client worker registered as startup function")
+        await server.serve()
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--server-url", type=str, required=True)
+    parser.add_argument("--workspace", type=str, required=True)
+    parser.add_argument("--token", type=str, required=True)
+    args = parser.parse_args()
+    asyncio.run(start_worker(args.server_url, args.workspace, args.token))

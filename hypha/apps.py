@@ -25,6 +25,7 @@ from hypha.plugin_parser import convert_config_to_artifact, parse_imjoy_plugin
 from hypha.core import WorkspaceInfo
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
+from hypha.workers.base import WorkerConfig
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "INFO").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -284,19 +285,13 @@ class ServerAppController:
                     )
                     full_svc = await workspace_server.get_service(svc['id'])
                     supported_types = full_svc.get("supported_types", [])
-                    if not supported_types:
-                        # If no supported_types info, assume it's a legacy worker supporting default types
-                        if app_type in ["web-python", "web-worker", "window", "iframe"]:
-                            filtered_workspace_svcs.append(svc)
-                    elif app_type in supported_types:
+                    if app_type in supported_types:
                         filtered_workspace_svcs.append(svc)
                         logger.info(f"Workspace service {svc['id']} supports app_type {app_type}")
                 except Exception as e:
                     logger.warning(f"Failed to get full workspace service info for {svc['id']}: {e}")
-                    # Fall back to assuming legacy support if we can't get the service info
-                    if app_type in ["web-python", "web-worker", "window", "iframe"]:
-                        filtered_workspace_svcs.append(svc)
-                        logger.info(f"Workspace service {svc['id']} assumed to support app_type {app_type} (fallback)")
+                    # Skip services we can't get info for
+                    continue
             
             # If we found workspace services for this app type, use them
             if filtered_workspace_svcs:
@@ -333,20 +328,13 @@ class ServerAppController:
                         # Get the full service info to access supported_types
                         full_svc = await server.get_service(svc['id'])
                         supported_types = full_svc.get("supported_types", [])
-                        if not supported_types:
-                            # If no supported_types info, assume it's a legacy worker supporting default types
-                            if app_type in ["web-python", "web-worker", "window", "iframe"]:
-                                filtered_public_svcs.append(svc)
-                                logger.info(f"Public service {svc['id']} assumed to support app_type {app_type} (legacy)")
-                        elif app_type in supported_types:
+                        if app_type in supported_types:
                             filtered_public_svcs.append(svc)
                             logger.info(f"Public service {svc['id']} supports app_type {app_type}")
                     except Exception as e:
                         logger.warning(f"Failed to get full service info for {svc['id']}: {e}")
-                        # Fall back to assuming legacy support if we can't get the service info
-                        if app_type in ["web-python", "web-worker", "window", "iframe"]:
-                            filtered_public_svcs.append(svc)
-                            logger.info(f"Public service {svc['id']} assumed to support app_type {app_type} (fallback)")
+                        # Skip services we can't get info for
+                        continue
                 
                 logger.info(f"After filtering public services for app_type {app_type}: {len(filtered_public_svcs)} services selected")
                 selected_svcs = filtered_public_svcs
@@ -1168,19 +1156,20 @@ class ServerAppController:
             session_metadata["a2a_agents"] = a2a_agents
         
         # Start the app using the worker
-        session_data = await worker.start(
-            client_id=client_id,
-            app_id=app_id,
-            server_url=server_url,
-            public_base_url=public_base_url,
-            local_base_url=local_base_url,
-            workspace=workspace,
-            version=version,
-            token=token,
-            entry_point=entry_point,
-            app_type=app_type,
-            metadata=session_metadata,
-        )
+        # Use the new API with WorkerConfig
+        session_data = await worker.start({
+            "client_id": client_id,
+            "app_id": app_id,
+            "server_url": server_url,
+            "public_base_url": public_base_url,
+            "local_base_url": local_base_url,
+            "workspace": workspace,
+            "version": version,
+            "token": token,
+            "entry_point": entry_point,
+            "app_type": app_type,
+            "metadata": session_metadata,
+        })
         
         # Store session info
         self._sessions[full_client_id] = {
@@ -1434,7 +1423,7 @@ class ServerAppController:
                 # but don't wait for them
                 logger.info(f"Started app in detached mode: {full_client_id}")
 
-            await asyncio.sleep(0.3)  # Brief delay to allow service registration
+            await asyncio.sleep(0.1)  # Brief delay to allow service registration
 
             # save the services
             manifest.name = manifest.name or app_info.get("name", "Untitled App")

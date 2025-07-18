@@ -11,6 +11,8 @@ import json
 import traceback
 import io
 
+from hypha.workers.base import BaseWorker, WorkerConfig, SessionStatus
+
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("python_eval")
@@ -19,171 +21,127 @@ logger.setLevel(LOGLEVEL)
 MAXIMUM_LOG_ENTRIES = 2048
 
 
-class PythonEvalRunner:
+class PythonEvalRunner(BaseWorker):
     """Python evaluation worker for simple Python code execution."""
 
     instance_counter: int = 0
 
     def __init__(self, server):
         """Initialize the Python eval worker."""
-        self.server = server
-        self.initialized = False
-        self._eval_sessions: Dict[str, Dict[str, Any]] = {}
+        super().__init__(server)
         self.controller_id = str(PythonEvalRunner.instance_counter)
         PythonEvalRunner.instance_counter += 1
         self.artifact_manager = None
-    
-    async def initialize(self) -> None:
+
+    @property
+    def supported_types(self) -> List[str]:
+        """Return list of supported application types."""
+        return ["python-eval"]
+
+    @property
+    def worker_name(self) -> str:
+        """Return the worker name."""
+        return "Python Eval Worker"
+
+    @property
+    def worker_description(self) -> str:
+        """Return the worker description."""
+        return "A worker for running Python evaluation apps"
+
+    async def _initialize_worker(self) -> None:
         """Initialize the Python eval worker."""
-        if not self.initialized:
-            await self.server.register_service(self.get_service())
-            self.artifact_manager = await self.server.get_service("public/artifact-manager")
-            self.initialized = True
-
-    async def start(
-        self,
-        client_id: str,
-        app_id: str,
-        server_url: str,
-        public_base_url: str,
-        local_base_url: str,
-        workspace: str,
-        version: str = None,
-        token: str = None,
-        entry_point: str = None,
-        app_type: str = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        url: str = None,  # For backward compatibility
-        session_id: Optional[str] = None,  # For backward compatibility
-    ):
+        self.artifact_manager = await self.server.get_service("public/artifact-manager")
+    
+    async def _start_session(self, config: WorkerConfig) -> Dict[str, Any]:
         """Start a Python eval session."""
-        if not self.initialized:
-            await self.initialize()
-
-        full_session_id = f"{workspace}/{client_id}"
+        # Get the Python code from the entry point
+        if not config.entry_point or not config.entry_point.endswith('.py'):
+            raise Exception("Python eval worker requires a .py entry point")
         
+        # Read the Python code from the artifact
+        get_url = await self.artifact_manager.get_file(
+            f"{config.workspace}/{config.app_id}", file_path=config.entry_point, version=config.version
+        )
+        
+        # Fetch the Python code
+        async with httpx.AsyncClient() as client:
+            response = await client.get(get_url)
+            if response.status_code != 200:
+                raise Exception(f"Failed to fetch Python code: {response.status_code}")
+            python_code = response.text
+
+        # Create execution environment with custom os module
+        logs = []
+        # Create a custom os module with injected environment variables
+        import os as original_os
+
+        # Convert all values to strings to avoid type errors
+        env_vars = {
+            "HYPHA_SERVER_URL": str(config.server_url),
+            "HYPHA_WORKSPACE": str(config.workspace), 
+            "HYPHA_CLIENT_ID": str(config.client_id),
+            "HYPHA_TOKEN": str(config.token or ""),
+            "HYPHA_APP_ID": str(config.app_id),
+            "HYPHA_PUBLIC_BASE_URL": str(config.public_base_url),
+            "HYPHA_LOCAL_BASE_URL": str(config.local_base_url),
+            "HYPHA_VERSION": str(config.version or ""),
+            "HYPHA_ENTRY_POINT": str(config.entry_point or "")
+        }
+        original_os.environ.update(env_vars)
+        execution_globals = {
+            "__name__": "__main__",
+            "print": lambda *args, **kwargs: logs.append(" ".join(str(arg) for arg in args)),
+        }
+        
+        # Execute the Python code in a separate thread
+        loop = asyncio.get_event_loop()
+        error = None
         try:
-            # Get the Python code from the entry point
-            if not entry_point or not entry_point.endswith('.py'):
-                raise Exception("Python eval worker requires a .py entry point")
-            
-            # Read the Python code from the artifact
-            get_url = await self.artifact_manager.get_file(
-                f"{workspace}/{app_id}", file_path=entry_point, version=version
-            )
-            
-            # Fetch the Python code
-            async with httpx.AsyncClient() as client:
-                response = await client.get(get_url)
-                if response.status_code != 200:
-                    raise Exception(f"Failed to fetch Python code: {response.status_code}")
-                python_code = response.text
-
-            # Create execution environment with custom os module
-            logs = []
-            # Create a custom os module with injected environment variables
-            import os as original_os
-
-            # Convert all values to strings to avoid type errors
-            env_vars = {
-                "HYPHA_SERVER_URL": str(server_url),
-                "HYPHA_WORKSPACE": str(workspace), 
-                "HYPHA_CLIENT_ID": str(client_id),
-                "HYPHA_TOKEN": str(token or ""),
-                "HYPHA_APP_ID": str(app_id),
-                "HYPHA_PUBLIC_BASE_URL": str(public_base_url),
-                "HYPHA_LOCAL_BASE_URL": str(local_base_url),
-                "HYPHA_VERSION": str(version or ""),
-                "HYPHA_ENTRY_POINT": str(entry_point or "")
-            }
-            original_os.environ.update(env_vars)
-            execution_globals = {
-                "__name__": "__main__",
-                "print": lambda *args, **kwargs: logs.append(" ".join(str(arg) for arg in args)),
-            }
-            
-            # Execute the Python code in a separate thread
-            loop = asyncio.get_event_loop()
-            try:
-                await loop.run_in_executor(None, exec, python_code, execution_globals)
-                status = "completed"
-                error = None
-            except Exception as e:
-                status = "error" 
-                error = traceback.format_exc()
-                logs.append(f"Error: {error}")
-            # Store session data
-            session_data = {
-                "session_id": full_session_id,
-                "status": status,
-                "logs": logs,
-                "error": error,
-                "metadata": metadata,
-                "app_type": app_type,
-            }
-            
-            self._eval_sessions[full_session_id] = session_data
-            
-            logger.info(f"Python eval session started: {full_session_id}")
-            
-            return {
-                "session_id": full_session_id,
-                "status": status,
-                "logs": logs,
-                "error": error,
-            }
-        
+            await loop.run_in_executor(None, exec, python_code, execution_globals)
+            status = "completed"
         except Exception as e:
-            logger.error(f"Error starting Python eval session: {str(e)}")
-            if full_session_id in self._eval_sessions:
-                await self.stop(full_session_id)
-            raise
+            status = "error" 
+            error = traceback.format_exc()
+            logs.append(f"Error: {error}")
+        
+        return {
+            "status": status,
+            "logs": {"log": logs, "error": [] if not error else [error]},
+            "error": error,
+            "execution_globals": execution_globals,
+        }
 
-    async def stop(self, session_id: str) -> None:
+    async def _stop_session(self, session_id: str) -> None:
         """Stop a Python eval session."""
-        if session_id not in self._eval_sessions:
-            logger.warning(f"Python eval session not found: {session_id}")
-            return
-        
-        try:
-            del self._eval_sessions[session_id]
-            logger.info(f"Successfully stopped Python eval session: {session_id}")
-        except Exception as e:
-            logger.error(f"Error stopping Python eval session {session_id}: {str(e)}")
-            raise
+        # Python eval sessions are stateless, so nothing to clean up
+        pass
 
-    async def list(self, workspace) -> List[Dict[str, Any]]:
-        """List Python eval sessions for the current workspace."""
-        sessions = [
-            {k: v for k, v in session_info.items() if k not in ["execution_globals", "python_code"]}
-            for session_id, session_info in self._eval_sessions.items()
-            if session_id.startswith(workspace + "/")
-        ]
-        return sessions
+    # list_sessions method is now inherited from BaseWorker
 
-    async def get_logs(
-        self,
-        session_id: str,
-        type: str = None,  # pylint: disable=redefined-builtin
+    async def _get_session_logs(
+        self, 
+        session_id: str, 
+        log_type: Optional[str] = None,
         offset: int = 0,
-        limit: Optional[int] = None,
+        limit: Optional[int] = None
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get logs for a Python eval session."""
-        if session_id not in self._eval_sessions:
-            raise Exception(f"Python eval session not found: {session_id}")
+        session_data = self._session_data.get(session_id)
+        if not session_data:
+            return {} if log_type is None else []
+
+        logs = session_data.get("logs", {"log": [], "error": []})
         
-        session = self._eval_sessions[session_id]
-        logs = session.get("logs", [])
-        
-        if type is None:
-            return {"log": logs}
-        
-        if type == "log":
-            if limit is None:
-                limit = MAXIMUM_LOG_ENTRIES
-            return logs[offset:offset + limit]
-        
-        return []
+        if log_type:
+            target_logs = logs.get(log_type, [])
+            end_idx = len(target_logs) if limit is None else min(offset + limit, len(target_logs))
+            return target_logs[offset:end_idx]
+        else:
+            result = {}
+            for log_type_key, log_entries in logs.items():
+                end_idx = len(log_entries) if limit is None else min(offset + limit, len(log_entries))
+                result[log_type_key] = log_entries[offset:end_idx]
+            return result
 
     async def take_screenshot(
         self,
@@ -191,15 +149,17 @@ class PythonEvalRunner:
         format: str = "png",
     ) -> bytes:
         """Take a screenshot for a Python eval session."""
-        if session_id not in self._eval_sessions:
+        if session_id not in self._sessions:
             raise Exception(f"Python eval session not found: {session_id}")
+        
         from PIL import Image, ImageDraw, ImageFont
 
         # Validate format
         if format not in ["png", "jpeg"]:
             raise ValueError(f"Invalid format '{format}'. Must be 'png' or 'jpeg'")
         
-        session = self._eval_sessions[session_id]
+        session_info = self._sessions[session_id]
+        session_data = self._session_data.get(session_id, {})
         
         try:
             # Try to capture the desktop screen
@@ -254,21 +214,21 @@ class PythonEvalRunner:
                 font = ImageFont.load_default()
             
             # Draw session information
-            session_info = [
+            info_lines = [
                 f"Python Eval Session: {session_id}",
-                f"Status: {session.get('status', 'unknown')}",
-                f"App Type: {session.get('app_type', 'unknown')}",
+                f"Status: {session_info.status.value}",
+                f"App Type: {session_info.app_type}",
                 "",
                 "Logs:",
             ]
             
             # Add recent logs
-            logs = session.get('logs', [])
+            logs = session_data.get('logs', {}).get('log', [])
             recent_logs = logs[-5:] if logs else ["No logs available"]
-            session_info.extend(recent_logs)
+            info_lines.extend(recent_logs)
             
             y_position = 50
-            for line in session_info:
+            for line in info_lines:
                 draw.text((50, y_position), line, fill='black', font=font)
                 y_position += 30
             
@@ -277,50 +237,27 @@ class PythonEvalRunner:
             img.save(img_buffer, format=format.upper())
             return img_buffer.getvalue()
 
-    async def close_workspace(self, workspace: str) -> None:
+    async def _close_workspace(self, workspace: str) -> None:
         """Close all Python eval sessions for a workspace."""
-        session_ids = [
-            session_id
-            for session_id in self._eval_sessions.keys()
-            if session_id.startswith(workspace + "/")
-        ]
-        for session_id in session_ids:
-            await self.stop(session_id)
+        # This is now handled by the base class
+        pass
     
-    async def prepare_workspace(self, workspace: str) -> None:
+    async def _prepare_workspace(self, workspace: str) -> None:
         """Prepare the workspace for the Python eval worker."""
         pass
 
-    async def shutdown(self) -> None:
+    async def _shutdown_worker(self) -> None:
         """Shutdown the Python eval worker."""
-        logger.info("Closing Python eval worker...")
-        try:
-            session_ids = list(self._eval_sessions.keys())
-            for session_id in session_ids:
-                await self.stop(session_id)
-            logger.info("Python eval worker closed successfully.")
-        except Exception as e:
-            logger.error("Error during Python eval worker shutdown: %s", str(e))
-            raise
+        logger.info("Python eval worker shutdown complete.")
+        # No specific cleanup needed for Python eval worker
+        pass
 
     def get_service(self):
         """Get the service."""
-        return {
-            "id": f"python-eval-worker-{self.controller_id}",
-            "type": "server-app-worker",
-            "name": "Python Eval Worker",
-            "description": "A worker for running Python evaluation apps",
-            "config": {"visibility": "protected"},
-            "supported_types": ["python-eval"],
-            "start": self.start,
-            "stop": self.stop,
-            "list": self.list,
-            "get_logs": self.get_logs,
-            "take_screenshot": self.take_screenshot,
-            "shutdown": self.shutdown,
-            "close_workspace": self.close_workspace,
-            "prepare_workspace": self.prepare_workspace,
-        }
+        service_config = self.get_service_config()
+        # Add Python eval specific methods
+        service_config["take_screenshot"] = self.take_screenshot
+        return service_config
 
 
 async def hypha_startup(server):
@@ -328,3 +265,21 @@ async def hypha_startup(server):
     python_eval_runner = PythonEvalRunner(server)
     await python_eval_runner.initialize()
     logger.info("Python eval worker registered as startup function")
+
+async def start_worker(server_url, workspace, token):
+    """Start the Python eval worker."""
+    from hypha_rpc import connect_to_server
+    async with connect_to_server(server_url) as server:
+        python_eval_runner = PythonEvalRunner(server)
+        await python_eval_runner.initialize()
+        logger.info("Python eval worker registered as startup function")
+        await server.serve()
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--server-url", type=str, required=True)
+    parser.add_argument("--workspace", type=str, required=True)
+    parser.add_argument("--token", type=str, required=True)
+    args = parser.parse_args()
+    asyncio.run(start_worker(args.server_url, args.workspace, args.token))

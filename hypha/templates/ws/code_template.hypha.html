@@ -1,13 +1,13 @@
 <config lang="json">
 {
-    "name": "Untitled App",
+    "name": "My App",
     "type": "web-worker",
-    "tags": [],
+    "tags": ["basic", "template"],
     "ui": "",
     "version": "0.1.0",
     "cover": "",
-    "description": "[TODO: describe this app with one sentence.]",
-    "icon": "extension",
+    "description": "A clean, minimal app template to get started quickly.",
+    "icon": "⚡",
     "api_version": "0.1.8",
     "requirements": [],
     "dependencies": [],
@@ -21,10 +21,36 @@
 
 <script lang="javascript">
 async function setup() {
-    await api.log("initialized")
+    await api.log("⚡ App initialized successfully!");
+    
+    // Your initialization code here
 }
 
+async function hello(name = "World") {
+    await api.log(`Hello function called with: ${name}`);
+    return `Hello, ${name}!`;
+}
+
+async function add(a, b) {
+    const result = a + b;
+    await api.log(`Adding ${a} + ${b} = ${result}`);
+    return result;
+}
+
+async function getInfo() {
+    return {
+        name: "My App",
+        version: "0.1.0",
+        status: "running",
+        timestamp: new Date().toISOString()
+    };
+}
+
+// Export your functions
 api.export({
     setup,
-})
+    hello,
+    add,
+    getInfo,
+});
 </script> 
