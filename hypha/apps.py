@@ -1433,7 +1433,8 @@ class ServerAppController:
                 # In detached mode, give a brief moment for services to be registered
                 # but don't wait for them
                 logger.info(f"Started app in detached mode: {full_client_id}")
-                await asyncio.sleep(0.1)  # Brief delay to allow service registration
+
+            await asyncio.sleep(0.3)  # Brief delay to allow service registration
 
             # save the services
             manifest.name = manifest.name or app_info.get("name", "Untitled App")

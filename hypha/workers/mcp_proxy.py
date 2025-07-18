@@ -10,6 +10,28 @@ from typing import Any, Dict, List, Optional, Union
 from hypha_rpc import connect_to_server
 from hypha_rpc.utils.schema import schema_function
 
+# Compatibility for asyncio.timeout (Python 3.11+)
+try:
+    from asyncio import timeout as asyncio_timeout
+except ImportError:
+    # Fallback for Python < 3.11
+    import asyncio
+    from contextlib import asynccontextmanager
+    
+    @asynccontextmanager
+    async def asyncio_timeout(delay):
+        """Fallback timeout implementation for Python < 3.11."""
+        task = asyncio.current_task()
+        handle = asyncio.get_event_loop().call_later(delay, task.cancel)
+        try:
+            yield
+        except asyncio.CancelledError:
+            if not handle.cancelled():
+                handle.cancel()
+                raise asyncio.TimeoutError() from None
+        finally:
+            handle.cancel()
+
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("mcp_client")
@@ -204,24 +226,32 @@ class MCPClientRunner:
         
         # Connect to MCP server and collect tools, resources, prompts
         try:
-            async with sse_client(url=server_url) as streams:
-                async with ClientSession(*streams) as mcp_session:
-                    # CRITICAL: Initialize the session
-                    logger.debug(f"Initializing MCP SSE session for {server_name}")
-                    await mcp_session.initialize()
-                    
-                    # Store session info
-                    session_info["mcp_clients"][server_name] = {
-                        "config": server_config,
-                        "session_id": f"sse-{uuid.uuid4().hex[:8]}",
-                        "url": server_url,
-                        "transport": "sse"
-                    }
-                    
-                    await self._collect_and_register_capabilities(session_info, server_name, mcp_session)
-                    
+            # Add timeout to prevent hanging on connection issues
+            async with asyncio_timeout(10):  # 10 second timeout
+                async with sse_client(url=server_url) as streams:
+                    async with ClientSession(*streams) as mcp_session:
+                        # CRITICAL: Initialize the session
+                        logger.debug(f"Initializing MCP SSE session for {server_name}")
+                        await mcp_session.initialize()
+                        
+                        # Store session info
+                        session_info["mcp_clients"][server_name] = {
+                            "config": server_config,
+                            "session_id": f"sse-{uuid.uuid4().hex[:8]}",
+                            "url": server_url,
+                            "transport": "sse"
+                        }
+                        
+                        await self._collect_and_register_capabilities(session_info, server_name, mcp_session)
+                        
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout connecting to SSE server {server_name} at {server_url}")
+            raise RuntimeError(f"Connection to SSE server {server_name} timed out after 10 seconds")
         except Exception as e:
             logger.error(f"Failed to connect to SSE server {server_name}: {e}", exc_info=True)
+            # Check if this is a 501 error or similar HTTP error
+            if "501" in str(e) or "not implemented" in str(e).lower():
+                raise RuntimeError(f"SSE transport not supported by server at {server_url}")
             raise
 
     async def _collect_and_register_capabilities(self, session_info: dict, server_name: str, mcp_session):
@@ -294,10 +324,16 @@ class MCPClientRunner:
                             await session.initialize()
                             result = await session.call_tool(name=tool_name, arguments=kwargs)
                 elif transport == "sse":
-                    async with client_context as streams:
-                        async with ClientSession(*streams) as session:
-                            await session.initialize()
-                            result = await session.call_tool(name=tool_name, arguments=kwargs)
+                    # Add timeout to prevent hanging on SSE connection issues
+                    try:
+                        async with asyncio_timeout(10):  # 10 second timeout
+                            async with client_context as streams:
+                                async with ClientSession(*streams) as session:
+                                    await session.initialize()
+                                    result = await session.call_tool(name=tool_name, arguments=kwargs)
+                    except asyncio.TimeoutError:
+                        logger.error(f"Timeout calling SSE tool {server_name}.{tool_name}")
+                        raise RuntimeError(f"SSE tool call timed out after 10 seconds")
                 else:
                     raise ValueError(f"Unsupported transport: {transport}")
                 
@@ -341,10 +377,16 @@ class MCPClientRunner:
                             await session.initialize()
                             result = await session.read_resource(uri=resource_uri)
                 elif transport == "sse":
-                    async with client_context as streams:
-                        async with ClientSession(*streams) as session:
-                            await session.initialize()
-                            result = await session.read_resource(uri=resource_uri)
+                    # Add timeout to prevent hanging on SSE connection issues
+                    try:
+                        async with asyncio_timeout(10):  # 10 second timeout
+                            async with client_context as streams:
+                                async with ClientSession(*streams) as session:
+                                    await session.initialize()
+                                    result = await session.read_resource(uri=resource_uri)
+                    except asyncio.TimeoutError:
+                        logger.error(f"Timeout reading SSE resource {server_name}.{resource_uri}")
+                        raise RuntimeError(f"SSE resource read timed out after 10 seconds")
                 else:
                     raise ValueError(f"Unsupported transport: {transport}")
                 
@@ -420,10 +462,16 @@ class MCPClientRunner:
                             await session.initialize()
                             result = await session.get_prompt(name=prompt_name, arguments=kwargs)
                 elif transport == "sse":
-                    async with client_context as streams:
-                        async with ClientSession(*streams) as session:
-                            await session.initialize()
-                            result = await session.get_prompt(name=prompt_name, arguments=kwargs)
+                    # Add timeout to prevent hanging on SSE connection issues
+                    try:
+                        async with asyncio_timeout(10):  # 10 second timeout
+                            async with client_context as streams:
+                                async with ClientSession(*streams) as session:
+                                    await session.initialize()
+                                    result = await session.get_prompt(name=prompt_name, arguments=kwargs)
+                    except asyncio.TimeoutError:
+                        logger.error(f"Timeout reading SSE prompt {server_name}.{prompt_name}")
+                        raise RuntimeError(f"SSE prompt read timed out after 10 seconds")
                 else:
                     raise ValueError(f"Unsupported transport: {transport}")
                 
