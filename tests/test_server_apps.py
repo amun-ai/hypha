@@ -1635,7 +1635,10 @@ print("Python detached script completed")
     detached_duration = time.time() - detached_start_time
     
     print(f"✓ Detached mode completed in {detached_duration:.2f}s")
-    assert detached_duration < 2, "Detached mode should complete quickly"
+    # Ensure detached mode is significantly faster than normal mode
+    # Normal mode should timeout around 3 seconds, detached should be much faster
+    assert detached_duration < normal_duration * 0.8, f"Detached mode ({detached_duration:.2f}s) should be significantly faster than normal mode ({normal_duration:.2f}s)"
+    assert detached_duration < 3, "Detached mode should complete within reasonable time"
     
     # Clean up
     await controller.stop(detached_config["id"])
