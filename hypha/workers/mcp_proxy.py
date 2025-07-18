@@ -102,10 +102,15 @@ class MCPClientRunner(BaseWorker):
         if not MCP_SDK_AVAILABLE:
             raise RuntimeError("MCP SDK not available. Install with: pip install mcp")
 
-        # Get the MCP servers configuration from metadata
-        mcp_servers = config.metadata.get("mcp_servers", {})
+        # Get app type from manifest
+        app_type = config.manifest.get("type")
+        if app_type != "mcp-server":
+            raise Exception(f"MCP proxy worker only supports mcp-server type, got {app_type}")
+
+        # Get the MCP servers configuration from manifest
+        mcp_servers = config.manifest.get("mcpServers", {})
         if not mcp_servers:
-            raise ValueError("No MCP servers configuration found in metadata")
+            raise ValueError("No MCP servers configuration found in manifest")
 
         # Create user API connection for service registration in user workspace
         user_api = await connect_to_server({

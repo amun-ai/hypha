@@ -8,12 +8,92 @@ Hypha workers are responsible for executing different types of applications with
 
 A worker needs to implement these basic functions:
 
-- `start(config)` - Start a new session
+- `start(config)` - Start a new session and return the session_id
 - `stop(session_id)` - Stop a session  
 - `list_sessions(workspace)` - List sessions for a workspace
 - `get_logs(session_id)` - Get logs for a session
+- `get_session_info(session_id)` - Get detailed session information
 
 That's it! No classes or complex inheritance needed.
+
+## Worker Configuration
+
+When the `start(config)` function is called, the `config` parameter contains:
+
+```python
+{
+    "id": "workspace/client_id",           # Full session ID
+    "app_id": "my-app",                    # Application ID
+    "workspace": "my-workspace",           # Workspace name
+    "client_id": "unique-client-id",       # Client ID
+    "server_url": "http://localhost:9527", # Server URL
+    "token": "auth-token",                 # Authentication token
+    "entry_point": "index.html",           # Entry point file
+    "artifact_id": "workspace/app_id",     # Artifact ID for file access
+    "manifest": {                          # Full application manifest
+        "type": "python-eval",             # Application type
+        "name": "My App",                  # Application name
+        "version": "1.0.0",                # Application version
+        "entry_point": "index.html",       # Entry point file
+        "description": "My application",   # Application description
+        # ... other manifest fields
+    }
+}
+```
+
+## Accessing Application Files
+
+Workers can access application files using the `artifact_id` and connecting to the artifact manager:
+
+```python
+async def start(config):
+    # Connect to the artifact manager
+    server = await connect_to_server({"server_url": config["server_url"]})
+    artifact_manager = await server.get_service("public/artifact-manager")
+    
+    # Read a file from the application
+    get_url = await artifact_manager.get_file(
+        config["artifact_id"], 
+        file_path="my-script.py"
+    )
+    
+    # Download the file content
+    async with httpx.AsyncClient() as client:
+        response = await client.get(get_url)
+        if response.status_code == 200:
+            file_content = response.text
+            # Use the file content...
+        else:
+            raise Exception(f"Failed to download file: {response.status_code}")
+```
+
+## Reading App Type and Settings
+
+Workers should read the application type and settings from the manifest:
+
+```python
+async def start(config):
+    # Get app type from manifest
+    app_type = config["manifest"]["type"]
+    
+    # Validate the app type
+    if app_type not in ["python-eval", "web-python", "window"]:
+        raise Exception(f"Unsupported app type: {app_type}")
+    
+    # Get app-specific settings from manifest
+    app_name = config["manifest"]["name"]
+    app_version = config["manifest"]["version"]
+    
+    # For MCP servers, get MCP configuration
+    if app_type == "mcp-server":
+        mcp_servers = config["manifest"].get("mcpServers", {})
+        # Process MCP servers...
+    
+    # For A2A agents, get A2A configuration  
+    if app_type == "a2a-agent":
+        a2a_agents = config["manifest"].get("a2aAgents", {})
+        # Process A2A agents...
+```
 
 ## Python Worker Example
 
@@ -22,6 +102,7 @@ Here's a complete Python worker using only functions and dictionaries:
 ```python
 """Simple Python worker example."""
 import asyncio
+import httpx
 from hypha_rpc import connect_to_server
 
 # Simple storage for demo (use proper storage in production)
@@ -29,9 +110,34 @@ sessions = {}
 
 async def start(config):
     """Start a new worker session."""
-    session_id = f"{config['workspace']}/{config['client_id']}"
+    session_id = config["id"]  # Already includes workspace/client_id
     
     print(f"Starting session {session_id} for app {config['app_id']}")
+    
+    # Get app type from manifest
+    app_type = config["manifest"]["type"]
+    
+    # Connect to artifact manager to access files
+    server = await connect_to_server({"server_url": config["server_url"]})
+    artifact_manager = await server.get_service("public/artifact-manager")
+    
+    # Example: Read a configuration file from the application
+    try:
+        get_url = await artifact_manager.get_file(
+            config["artifact_id"], 
+            file_path="config.json"
+        )
+        async with httpx.AsyncClient() as client:
+            response = await client.get(get_url)
+            if response.status_code == 200:
+                app_config = response.json()
+                print(f"Loaded app config: {app_config}")
+            else:
+                print(f"No config file found, using defaults")
+                app_config = {}
+    except Exception as e:
+        print(f"Error loading config: {e}")
+        app_config = {}
     
     # Your custom session startup logic here
     session_data = {
@@ -40,16 +146,18 @@ async def start(config):
         "workspace": config["workspace"],
         "client_id": config["client_id"],
         "status": "running",
-        "app_type": config.get("app_type", "unknown"),
+        "app_type": app_type,
         "created_at": "2024-01-01T00:00:00Z",
         "logs": [f"Session {session_id} started"],
-        "metadata": config.get("metadata", {})
+        "manifest": config["manifest"],
+        "app_config": app_config
     }
     
     # Store session data
     sessions[session_id] = session_data
     
-    return session_data
+    # Return just the session_id - other data can be retrieved via get_session_info
+    return session_id
 
 async def stop(session_id):
     """Stop a worker session."""
@@ -155,17 +263,46 @@ if __name__ == "__main__":
 
 Here's a complete JavaScript worker using only functions and objects:
 
+```html
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.66/dist/hypha-rpc-websocket.min.js"></script>
+```
+    
 ```javascript
 // simple-worker.js
-import { connectToServer } from 'hypha-rpc';
+const { connectToServer } = hyphaWebsocketClient;
 
 // Simple storage for demo (use proper storage in production)
 const sessions = {};
 
 async function start(config) {
-    const sessionId = `${config.workspace}/${config.client_id}`;
+    const sessionId = config.id;  // Already includes workspace/client_id
     
     console.log(`Starting session ${sessionId} for app ${config.app_id}`);
+    
+    // Get app type from manifest
+    const appType = config.manifest.type;
+    
+    // Connect to artifact manager to access files
+    const server = await connectToServer({server_url: config.server_url});
+    const artifactManager = await server.getService("public/artifact-manager");
+    
+    // Example: Read a configuration file from the application
+    let appConfig = {};
+    try {
+        const getUrl = await artifactManager.getFile(
+            config.artifact_id, 
+            {file_path: "config.json"}
+        );
+        const response = await fetch(getUrl);
+        if (response.ok) {
+            appConfig = await response.json();
+            console.log(`Loaded app config:`, appConfig);
+        } else {
+            console.log(`No config file found, using defaults`);
+        }
+    } catch (error) {
+        console.log(`Error loading config:`, error);
+    }
     
     // Your custom session startup logic here
     const sessionData = {
@@ -174,16 +311,18 @@ async function start(config) {
         workspace: config.workspace,
         client_id: config.client_id,
         status: "running",
-        app_type: config.app_type || "unknown",
+        app_type: appType,
         created_at: new Date().toISOString(),
         logs: [`Session ${sessionId} started`],
-        metadata: config.metadata || {}
+        manifest: config.manifest,
+        app_config: appConfig
     };
     
     // Store session data
     sessions[sessionId] = sessionData;
     
-    return sessionData;
+    // Return just the session_id - other data can be retrieved via get_session_info
+    return sessionId;
 }
 
 async function stop(sessionId) {
@@ -318,9 +457,44 @@ registerWorker().then(server => {
 3. **Register as service**: Call `register_service()` with your functions
 4. **That's it!** Your worker is now available to handle app requests
 
-## Configuration
+## Worker Workflow
 
-The `config` parameter in the `start()` function contains:
+When a worker's `start()` function is called:
+
+1. **Parse configuration**: Extract app type and settings from the manifest
+2. **Connect to artifact manager**: Access the application's files using the artifact_id
+3. **Download required files**: Use the artifact manager to get configuration files, scripts, or other assets
+4. **Initialize session**: Set up the application environment based on the manifest and downloaded files
+5. **Start the app**: Launch the application process (browser, Python script, proxy, etc.)
+6. **Return session data**: Provide session information back to the controller
+
+This workflow ensures that workers have access to all application files and can configure themselves based on the application's manifest rather than hard-coded app types.
+
+## Return Values and Session Management
+
+The worker interface is designed to be simple and consistent:
+
+- `start(config)` returns just the `session_id` (string)
+- To get detailed session information, use `get_session_info(session_id)`
+- This separation keeps the interface clean and allows for lazy loading of session data
+
+Example:
+```python
+# Start a session
+session_id = await start(config)
+
+# Later, get detailed session information when needed
+session_info = await get_session_info(session_id)
+```
+
+This design allows workers to:
+1. Start sessions quickly with minimal data transfer
+2. Retrieve detailed session information only when needed
+3. Maintain a consistent interface across all worker types
+
+## Legacy Configuration Reference
+
+For reference, the old `config` parameter structure was:
 
 ```python
 {
@@ -337,6 +511,8 @@ The `config` parameter in the `start()` function contains:
     "version": "1.0.0"
 }
 ```
+
+The new structure is simpler and more focused on the essential information workers need.
 
 ## Session Data
 

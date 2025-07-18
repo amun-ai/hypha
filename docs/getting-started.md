@@ -1177,9 +1177,13 @@ async def hypha_startup(server):
 
 For JavaScript workers, you can create a simple standalone script:
 
+```html
+<script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.66/dist/hypha-rpc-websocket.min.js"></script>
+```
+    
 ```javascript
 // custom-worker.js
-import { connectToServer } from 'hypha-rpc';
+const { connectToServer } = hyphaWebsocketClient;
 
 // Worker functions
 async function start(config) {

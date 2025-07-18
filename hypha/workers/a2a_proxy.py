@@ -71,10 +71,15 @@ class A2AClientRunner(BaseWorker):
         if not A2A_SDK_AVAILABLE:
             raise RuntimeError("A2A SDK not available. Install with: pip install a2a")
 
-        # Get the A2A agents configuration from metadata
-        a2a_agents = config.metadata.get("a2a_agents", {})
+        # Get app type from manifest
+        app_type = config.manifest.get("type")
+        if app_type != "a2a-agent":
+            raise Exception(f"A2A proxy worker only supports a2a-agent type, got {app_type}")
+
+        # Get the A2A agents configuration from manifest
+        a2a_agents = config.manifest.get("a2aAgents", {})
         if not a2a_agents:
-            raise ValueError("No A2A agents configuration found in metadata")
+            raise ValueError("No A2A agents configuration found in manifest")
 
         # Create user API connection for service registration in user workspace
         user_api = await connect_to_server({

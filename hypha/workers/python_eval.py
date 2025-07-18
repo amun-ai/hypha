@@ -54,13 +54,18 @@ class PythonEvalRunner(BaseWorker):
     
     async def _start_session(self, config: WorkerConfig) -> Dict[str, Any]:
         """Start a Python eval session."""
+        # Get app type from manifest
+        app_type = config.manifest.get("type")
+        if app_type != "python-eval":
+            raise Exception(f"Python eval worker only supports python-eval type, got {app_type}")
+        
         # Get the Python code from the entry point
         if not config.entry_point or not config.entry_point.endswith('.py'):
             raise Exception("Python eval worker requires a .py entry point")
         
-        # Read the Python code from the artifact
+        # Read the Python code from the artifact using artifact_id
         get_url = await self.artifact_manager.get_file(
-            f"{config.workspace}/{config.app_id}", file_path=config.entry_point, version=config.version
+            config.artifact_id, file_path=config.entry_point
         )
         
         # Fetch the Python code
@@ -82,9 +87,6 @@ class PythonEvalRunner(BaseWorker):
             "HYPHA_CLIENT_ID": str(config.client_id),
             "HYPHA_TOKEN": str(config.token or ""),
             "HYPHA_APP_ID": str(config.app_id),
-            "HYPHA_PUBLIC_BASE_URL": str(config.public_base_url),
-            "HYPHA_LOCAL_BASE_URL": str(config.local_base_url),
-            "HYPHA_VERSION": str(config.version or ""),
             "HYPHA_ENTRY_POINT": str(config.entry_point or "")
         }
         original_os.environ.update(env_vars)
@@ -104,6 +106,7 @@ class PythonEvalRunner(BaseWorker):
             error = traceback.format_exc()
             logs.append(f"Error: {error}")
         
+        # Return session data for storage in base worker
         return {
             "status": status,
             "logs": {"log": logs, "error": [] if not error else [error]},
