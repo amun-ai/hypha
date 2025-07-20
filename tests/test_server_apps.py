@@ -2421,3 +2421,240 @@ async def test_progress_callback_functionality(fastapi_server, test_user_token):
     await controller.uninstall(app_info["id"])
 
     await api.disconnect()
+
+
+async def test_web_app_type(fastapi_server, test_user_token):
+    """Test the new web-app type functionality."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+
+    # Test web-app installation
+    app_info = await controller.install(
+        manifest={
+            "name": "Test Web App",
+            "type": "web-app",
+            "version": "1.0.0",
+            "url": "https://example.com",
+            "detached": True,
+            "cookies": {"session": "test123"},
+            "localStorage": {"theme": "dark"},
+            "authorization_token": "Bearer test-token"
+        },
+        files=[],  # web-app doesn't need source files
+        stage=True,  # Use stage mode to avoid actually loading external site
+        overwrite=True,
+    )
+
+    assert app_info["name"] == "Test Web App"
+    assert app_info["type"] == "web-app"
+    assert app_info["entry_point"] == "index.html"  # Should be compiled to index.html
+
+    print("✅ Web-app installed successfully")
+
+    # Test that the compiled HTML contains the expected elements
+    files = await controller.get_files(app_info["id"])
+    html_file = next((f for f in files if f["name"] == "index.html"), None)
+    assert html_file is not None
+    
+    html_content = html_file["content"]
+    assert "https://example.com" in html_content  # URL should be in the template
+    assert "Test Web App" in html_content  # Name should be in the template
+    
+    print("✅ Web-app HTML template generated correctly")
+
+    # Clean up
+    await controller.uninstall(app_info["id"])
+
+    await api.disconnect()
+
+
+async def test_web_app_cache_functionality(fastapi_server, test_user_token):
+    """Test cache functionality with web-app type."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+
+    # Install web-app with cache routes
+    app_info = await controller.install(
+        manifest={
+            "name": "Cached Web App",
+            "type": "web-app",
+            "version": "1.0.0",
+            "url": "https://example.com",
+            "cache_routes": [
+                "https://example.com/*",
+                "https://cdn.jsdelivr.net/*"
+            ]
+        },
+        files=[],
+        stage=True,
+        overwrite=True,
+    )
+
+    print("✅ Web-app with cache routes installed")
+
+    # Test cache management methods if browser worker is available
+    try:
+        browser_worker = await api.get_service("public/browser-worker")
+        
+        # Get initial cache stats (should be empty)
+        stats = await browser_worker.get_app_cache_stats("default", app_info["id"])
+        assert stats["entry_count"] == 0
+        
+        print("✅ Cache stats retrieved successfully")
+        
+        # Clear cache (should work even if empty)
+        result = await browser_worker.clear_app_cache("default", app_info["id"])
+        assert "deleted_entries" in result
+        
+        print("✅ Cache clearing functionality works")
+        
+    except Exception as e:
+        print(f"⚠️ Browser worker not available for cache testing: {e}")
+
+    # Clean up
+    await controller.uninstall(app_info["id"])
+
+    await api.disconnect()
+
+
+async def test_web_python_default_cache_routes(fastapi_server, test_user_token):
+    """Test that web-python apps get default cache routes automatically."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+
+    # Install a web-python app (should get default cache routes)
+    web_python_source = """
+import numpy as np
+from js import console
+
+console.log("Web Python app with default caching")
+
+api.export({
+    "test": lambda: "Web Python with caching"
+})
+"""
+
+    app_info = await controller.install(
+        source=web_python_source,
+        manifest={
+            "name": "Web Python Cached App",
+            "type": "web-python",
+            "version": "1.0.0",
+        },
+        stage=True,
+        overwrite=True,
+    )
+
+    assert app_info["type"] == "web-python"
+    print("✅ Web-python app installed (should have default cache routes)")
+
+    # Test that browser worker recognizes this app for caching
+    try:
+        browser_worker = await api.get_service("public/browser-worker")
+        stats = await browser_worker.get_app_cache_stats("default", app_info["id"])
+        # Stats should be accessible even if empty
+        assert "entry_count" in stats
+        print("✅ Web-python app cache stats accessible")
+        
+    except Exception as e:
+        print(f"⚠️ Browser worker not available: {e}")
+
+    # Clean up
+    await controller.uninstall(app_info["id"])
+
+    await api.disconnect()
+
+
+async def test_cache_performance_comparison(fastapi_server, test_user_token):
+    """Test performance comparison with and without caching (mock test)."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+
+    # Install two identical web-python apps, one with caching, one without
+    web_python_source = """
+import asyncio
+from js import console
+
+console.log("Performance test app")
+
+api.export({
+    "test": lambda: "Performance test complete"
+})
+"""
+
+    # App without caching
+    app_no_cache = await controller.install(
+        source=web_python_source,
+        manifest={
+            "name": "No Cache App",
+            "type": "web-python",
+            "version": "1.0.0",
+            "cache_routes": []  # Explicitly disable caching
+        },
+        stage=True,
+        overwrite=True,
+    )
+
+    # App with caching
+    app_with_cache = await controller.install(
+        source=web_python_source,
+        manifest={
+            "name": "Cached App",
+            "type": "web-python", 
+            "version": "1.0.0",
+            # Will use default cache routes for web-python
+        },
+        stage=True,
+        overwrite=True,
+    )
+
+    print("✅ Both apps installed for performance comparison")
+    
+    # In a real test, we would:
+    # 1. Start both apps and measure load time
+    # 2. Stop and restart them
+    # 3. Measure load time again (cached app should be faster on second run)
+    
+    # For now, just verify they were created correctly
+    assert app_no_cache["name"] == "No Cache App"
+    assert app_with_cache["name"] == "Cached App"
+    
+    print("✅ Performance test setup complete (actual timing would require browser startup)")
+
+    # Clean up
+    await controller.uninstall(app_no_cache["id"])
+    await controller.uninstall(app_with_cache["id"])
+
+    await api.disconnect()

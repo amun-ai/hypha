@@ -10,6 +10,7 @@ from playwright.async_api import Page, async_playwright, Browser
 from jinja2 import Environment, PackageLoader, select_autoescape
 
 from hypha.workers.base import BaseWorker, WorkerConfig, SessionStatus, SessionInfo, SessionNotFoundError, WorkerError
+from hypha.workers.browser_cache import BrowserCache
 from hypha.plugin_parser import parse_imjoy_plugin
 from hypha import main_version
 from hypha.utils import PLUGIN_CONFIG_FIELDS, safe_join
@@ -75,6 +76,11 @@ class BrowserAppRunner(BaseWorker):
         self._session_data: Dict[str, Dict[str, Any]] = {}
         self.initialized = False
         
+        # Initialize cache manager
+        self.cache_manager = None
+        if store and hasattr(store, '_redis'):
+            self.cache_manager = BrowserCache(store._redis)
+        
         # Register service with store since browser worker is created directly by server
         if store:
             store.register_public_service(self.get_service())
@@ -82,7 +88,7 @@ class BrowserAppRunner(BaseWorker):
     @property
     def supported_types(self) -> List[str]:
         """Return list of supported application types."""
-        return ["web-python", "web-worker", "window", "iframe", "hypha"]
+        return ["web-python", "web-worker", "window", "iframe", "hypha", "web-app"]
 
     @property
     def worker_name(self) -> str:
@@ -196,6 +202,21 @@ class BrowserAppRunner(BaseWorker):
         page.on("requestfailed", lambda request: logger.error(f"Request failed: {request.url} - {request.failure}"))
         page.on("response", lambda response: logger.info(f"Response: {response.url} - {response.status}") if response.status != 200 else None)
 
+        # Setup caching if enabled
+        cache_enabled = False
+        if self.cache_manager:
+            cache_routes = config.manifest.get("cache_routes", [])
+            app_type = config.manifest.get("type")
+            
+            # Add default cache routes for web-python apps
+            if app_type == "web-python" and not cache_routes:
+                cache_routes = self.cache_manager.get_default_cache_routes_for_type(app_type)
+                
+            if cache_routes:
+                cache_enabled = True
+                await self._setup_route_caching(page, config.workspace, config.app_id, cache_routes)
+                await self.cache_manager.start_recording(config.workspace, config.app_id)
+
         config.progress_callback({"type": "info", "message": "Loading application..."})
 
         try:
@@ -203,8 +224,13 @@ class BrowserAppRunner(BaseWorker):
             entry_point = config.manifest.get("entry_point", "index.html")
             logger.info(f"Browser worker starting session with entry_point: {entry_point}, app_type: {app_type}")
             
-            # Generate URLs for the app
-            local_url, public_url = self._generate_app_urls(config, entry_point)
+            # For web-app type, handle differently - it should directly navigate to the external URL
+            if app_type == "web-app":
+                # For web-app, we first load our template, then it will handle the external URL
+                local_url, public_url = self._generate_app_urls(config, entry_point)
+            else:
+                # Generate URLs for the app
+                local_url, public_url = self._generate_app_urls(config, entry_point)
 
             logger.info(f"Loading browser app from URL: {local_url} with timeout {timeout_ms}ms")
             response = await page.goto(local_url, timeout=timeout_ms, wait_until="load")
@@ -235,6 +261,7 @@ class BrowserAppRunner(BaseWorker):
                 "page": page,
                 "context": context,
                 "logs": logs,
+                "cache_enabled": cache_enabled,
             }
             
         except Exception as e:
@@ -253,6 +280,10 @@ class BrowserAppRunner(BaseWorker):
         try:
             session_data = self._session_data.get(session_id)
             if session_data:
+                # Stop cache recording if it was enabled
+                if session_data.get("cache_enabled") and self.cache_manager:
+                    await self.cache_manager.stop_recording(session_info.workspace, session_info.app_id)
+                    
                 if "page" in session_data:
                     await session_data["page"].close()
                 if "context" in session_data:
@@ -332,6 +363,15 @@ class BrowserAppRunner(BaseWorker):
                 await self.stop(session_id)
             except Exception as e:
                 logger.warning(f"Failed to stop browser session {session_id}: {e}")
+        
+        # Clear all cache entries for this workspace if cache manager is available
+        if self.cache_manager:
+            try:
+                # Note: This is a simplified approach. In a production system,
+                # you might want to be more selective about cache clearing
+                logger.info(f"Cache cleanup for workspace {workspace} would be handled by app uninstall")
+            except Exception as e:
+                logger.warning(f"Failed to clear cache for workspace {workspace}: {e}")
 
     async def shutdown(self) -> None:
         """Shutdown the browser worker."""
@@ -422,6 +462,32 @@ class BrowserAppRunner(BaseWorker):
             raise Exception(f"Browser worker only supports {self.supported_types}, got {app_type}")
         if app_type is None:
             logger.warning("No app type found in manifest, using default app type")
+            
+        # Handle web-app type specially - it doesn't need source files, just manifest
+        if app_type == "web-app":
+            progress_callback({"type": "info", "message": "Processing web-app configuration..."})
+            
+            # Validate required fields for web-app
+            if not manifest.get("url"):
+                raise Exception("web-app type requires 'url' field in manifest")
+            
+            # Create the compiled HTML using the template
+            compiled_config, compiled_html = await self._compile_source_to_html("", app_type, manifest, config)
+            
+            new_manifest = manifest.copy()
+            new_manifest.update(compiled_config)
+            new_manifest["entry_point"] = "index.html"
+            new_manifest["type"] = "web-app"
+            
+            # Create files list with compiled HTML
+            new_files = [{
+                "name": "index.html",
+                "content": compiled_html,
+                "format": "text"
+            }]
+            
+            progress_callback({"type": "success", "message": "Web-app configuration processed successfully"})
+            return new_manifest, new_files
             
         progress_callback({"type": "info", "message": f"Compiling {app_type} application..."})
         
@@ -598,6 +664,17 @@ class BrowserAppRunner(BaseWorker):
         # Render the template with actual URLs
         template_config = {k: final_config[k] for k in final_config if k in PLUGIN_CONFIG_FIELDS}
         template_config["server_url"] = server_url
+        
+        # For web-app type, include additional fields needed by the template
+        if app_type == "web-app":
+            template_config.update({
+                "url": final_config.get("url", ""),
+                "name": final_config.get("name", "Web App"),
+                "cookies": final_config.get("cookies", {}),
+                "localStorage": final_config.get("localStorage", {}),
+                "authorization_token": final_config.get("authorization_token", "")
+            })
+        
         compiled_html = template.render(
             hypha_main_version=main_version,
             hypha_rpc_websocket_mjs=f"{server_url}/assets/hypha-rpc-websocket.mjs",
@@ -634,9 +711,74 @@ class BrowserAppRunner(BaseWorker):
         screenshot = await page.screenshot(type=format)
         return screenshot
 
+    async def _setup_route_caching(self, page: Page, workspace: str, app_id: str, cache_routes: List[str]) -> None:
+        """Setup route interception for caching."""
+        async def handle_route(route):
+            """Handle intercepted routes for caching."""
+            request = route.request
+            url = request.url
+            
+            # Check if this URL should be cached
+            if await self.cache_manager.should_cache_url(workspace, app_id, url, cache_routes):
+                # Try to get cached response first
+                cached_entry = await self.cache_manager.get_cached_response(workspace, app_id, url)
+                
+                if cached_entry:
+                    # Serve from cache
+                    logger.info(f"Serving cached response for {url}")
+                    await route.fulfill(
+                        status=cached_entry.status,
+                        headers=cached_entry.headers,
+                        body=cached_entry.body
+                    )
+                    return
+                
+                # Not in cache, fetch and cache the response
+                logger.info(f"Fetching and caching response for {url}")
+                response = await route.fetch()
+                
+                # Cache the response
+                body = await response.body()
+                headers = dict(response.headers)
+                
+                await self.cache_manager.cache_response(
+                    workspace, app_id, url, response.status, headers, body
+                )
+                
+                # Fulfill the request with the fetched response
+                await route.fulfill(
+                    status=response.status,
+                    headers=headers,
+                    body=body
+                )
+            else:
+                # Not a cached route, continue normally
+                await route.continue_()
+        
+        # Setup route interception for all requests
+        await page.route("**/*", handle_route)
+        logger.info(f"Setup route caching for {len(cache_routes)} patterns")
+
+    async def clear_app_cache(self, workspace: str, app_id: str) -> Dict[str, Any]:
+        """Clear cache for an app."""
+        if not self.cache_manager:
+            return {"error": "Cache manager not available"}
+        
+        deleted_count = await self.cache_manager.clear_app_cache(workspace, app_id)
+        return {"deleted_entries": deleted_count}
+
+    async def get_app_cache_stats(self, workspace: str, app_id: str) -> Dict[str, Any]:
+        """Get cache statistics for an app."""
+        if not self.cache_manager:
+            return {"error": "Cache manager not available"}
+        
+        return await self.cache_manager.get_cache_stats(workspace, app_id)
+
     def get_service(self):
         """Get the service."""
         service_config = self.get_service_config()
         # Add browser-specific methods
         service_config["take_screenshot"] = self.take_screenshot
+        service_config["clear_app_cache"] = self.clear_app_cache
+        service_config["get_app_cache_stats"] = self.get_app_cache_stats
         return service_config
