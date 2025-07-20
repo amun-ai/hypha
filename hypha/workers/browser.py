@@ -205,13 +205,21 @@ class BrowserAppRunner(BaseWorker):
         page.on("requestfailed", lambda request: logger.error(f"Request failed: {request.url} - {request.failure}"))
         page.on("response", lambda response: logger.info(f"Response: {response.url} - {response.status}") if response.status != 200 else None)
 
+        # Setup authentication BEFORE navigation
+        app_type = config.manifest.get("type")
+        if app_type == "web-app":
+            # For web-app, setup authentication before navigating to external URL
+            await self._setup_page_authentication(page, config.manifest, entry_point)
+        else:
+            # For other types, setup authentication for local URL
+            await self._setup_page_authentication(page, config.manifest, None)
+
         # Setup caching if enabled
         cache_enabled = False
         if self.cache_manager:
             # Check if caching is explicitly enabled
             enable_cache = config.manifest.get("enable_cache", True)  # Default to True
             cache_routes = config.manifest.get("cache_routes", [])
-            app_type = config.manifest.get("type")
             
             # Add default cache routes for web-python apps if caching is enabled
             if enable_cache and app_type == "web-python" and not cache_routes:
@@ -232,11 +240,9 @@ class BrowserAppRunner(BaseWorker):
             # Generate URLs for the app
             local_url, public_url = self._generate_app_urls(config, entry_point)
 
-            # For web-app type, navigate directly to the external URL
+            # For web-app type, navigate directly to the entry_point URL
             if app_type == "web-app":
-                external_url = config.manifest.get("url")
-                if not external_url:
-                    raise Exception("web-app type requires 'url' field in manifest")
+                external_url = entry_point  # Use entry_point as the external URL
                 logger.info(f"Loading web-app from external URL: {external_url} with timeout {timeout_ms}ms")
                 response = await page.goto(external_url, timeout=timeout_ms, wait_until="load")
             else:
@@ -254,9 +260,12 @@ class BrowserAppRunner(BaseWorker):
                     f"status: {response.status}, url: {local_url}"
                 )
 
-            # Apply cookies and localStorage after successful navigation
-            final_url = external_url if app_type == "web-app" else local_url
-            await self._apply_pending_page_setup(page, final_url)
+            # Apply localStorage after navigation (requires loaded page)
+            if hasattr(page, '_pending_local_storage') and page._pending_local_storage:
+                for key, value in page._pending_local_storage.items():
+                    await page.evaluate(f"localStorage.setItem({repr(key)}, {repr(str(value))})")
+                logger.info(f"Applied {len(page._pending_local_storage)} localStorage items")
+                delattr(page, '_pending_local_storage')
 
             logger.info("Browser app loaded successfully")
             
@@ -723,6 +732,46 @@ class BrowserAppRunner(BaseWorker):
         if auth_token:
             # Set authorization header for all requests
             await page.set_extra_http_headers({"Authorization": auth_token})
+
+    async def _setup_page_authentication(self, page, manifest, target_url):
+        """Setup authentication (cookies, localStorage, headers) before navigation."""
+        # Setup cookies
+        cookies_config = manifest.get("cookies", {})
+        if cookies_config:
+            # Convert to Playwright cookie format
+            cookies = []
+            if target_url:
+                from urllib.parse import urlparse
+                parsed = urlparse(target_url)
+                domain = parsed.netloc
+                for name, value in cookies_config.items():
+                    cookies.append({
+                        "name": name,
+                        "value": str(value),
+                        "domain": domain,
+                        "path": "/"
+                    })
+            else:
+                # For local apps, use localhost
+                for name, value in cookies_config.items():
+                    cookies.append({
+                        "name": name,
+                        "value": str(value),
+                        "domain": "localhost",
+                        "path": "/"
+                    })
+            
+            await page.context.add_cookies(cookies)
+            logger.info(f"Setup {len(cookies)} cookies before navigation")
+        
+        # Setup authorization header
+        auth_token = manifest.get("authorization_token")
+        if auth_token:
+            await page.set_extra_http_headers({"Authorization": auth_token})
+            logger.info("Setup Authorization header before navigation")
+        
+        # localStorage will be set after navigation since it requires the page to be loaded
+        page._pending_local_storage = manifest.get("localStorage", {})
 
     async def _apply_pending_page_setup(self, page: Page, url: str) -> None:
         """Apply cookies and localStorage after page navigation."""

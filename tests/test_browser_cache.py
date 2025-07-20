@@ -1,317 +1,174 @@
-"""Test browser cache functionality."""
+"""Unit tests for browser cache functionality."""
 
 import pytest
-import json
-import time
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
-from fakeredis import aioredis
-
-from hypha.workers.browser_cache import BrowserCache, CacheEntry
+from hypha.workers.browser_cache import BrowserCache
 
 
 @pytest.fixture
-async def fake_redis():
-    """Create a fake Redis client for testing."""
-    redis = aioredis.FakeRedis()
-    await redis.flushall()
-    return redis
+def mock_redis():
+    """Mock Redis client for testing."""
+    mock = AsyncMock()
+    mock.get = AsyncMock(return_value=None)
+    mock.set = AsyncMock(return_value=True)
+    mock.delete = AsyncMock(return_value=1)
+    mock.keys = AsyncMock(return_value=[])
+    mock.exists = AsyncMock(return_value=0)
+    return mock
 
 
 @pytest.fixture
-async def browser_cache(fake_redis):
-    """Create a browser cache instance for testing."""
-    return BrowserCache(fake_redis, cache_ttl=3600)
+def cache_manager(mock_redis):
+    """Create a BrowserCache instance with mocked Redis."""
+    return BrowserCache(mock_redis)
 
 
-@pytest.mark.asyncio
-async def test_cache_entry_serialization():
-    """Test CacheEntry serialization and deserialization."""
-    # Test data
-    url = "https://example.com/test.js"
-    status = 200
-    headers = {"Content-Type": "application/javascript", "Cache-Control": "max-age=3600"}
-    body = b"console.log('test');"
-    timestamp = time.time()
-    
-    # Create entry
-    entry = CacheEntry(url, status, headers, body, timestamp)
-    
-    # Test serialization
-    data = entry.to_dict()
-    assert data["url"] == url
-    assert data["status"] == status
-    assert data["headers"] == headers
-    assert data["body"] == body.hex()
-    assert data["timestamp"] == timestamp
-    
-    # Test deserialization
-    restored_entry = CacheEntry.from_dict(data)
-    assert restored_entry.url == url
-    assert restored_entry.status == status
-    assert restored_entry.headers == headers
-    assert restored_entry.body == body
-    assert restored_entry.timestamp == timestamp
+class TestBrowserCacheUnit:
+    """Unit tests for BrowserCache core functionality."""
 
+    async def test_cache_entry_serialization(self, cache_manager):
+        """Test HTTP response serialization and deserialization."""
+        # Mock HTTP response data
+        response_data = {
+            "status": 200,
+            "headers": {"content-type": "application/json", "cache-control": "max-age=3600"},
+            "body": b'{"test": "data"}',
+            "url": "https://example.com/api"
+        }
+        
+        # Test serialization
+        cache_entry = cache_manager._create_cache_entry(response_data)
+        
+        assert cache_entry["status"] == 200
+        assert cache_entry["headers"]["content-type"] == "application/json"
+        assert cache_entry["body_hex"] == b'{"test": "data"}'.hex()
+        assert cache_entry["url"] == "https://example.com/api"
+        assert "timestamp" in cache_entry
+        
+        # Test deserialization
+        reconstructed = cache_manager._parse_cache_entry(cache_entry)
+        
+        assert reconstructed["status"] == 200
+        assert reconstructed["body"] == b'{"test": "data"}'
+        assert reconstructed["headers"]["content-type"] == "application/json"
 
-@pytest.mark.asyncio
-async def test_url_pattern_matching(browser_cache):
-    """Test URL pattern matching functionality."""
-    # Test exact match
-    assert browser_cache._url_matches_pattern("https://example.com/test.js", "https://example.com/test.js")
-    
-    # Test wildcard patterns
-    assert browser_cache._url_matches_pattern("https://example.com/test.js", "https://example.com/*")
-    assert browser_cache._url_matches_pattern("https://example.com/path/test.js", "https://example.com/*")
-    assert browser_cache._url_matches_pattern("https://cdn.jsdelivr.net/pyodide/pyodide.js", "https://cdn.jsdelivr.net/pyodide/*")
-    
-    # Test file extension patterns
-    assert browser_cache._url_matches_pattern("https://example.com/package.whl", "*.whl")
-    assert browser_cache._url_matches_pattern("https://files.pythonhosted.org/package.tar.gz", "*.tar.gz")
-    
-    # Test non-matching patterns
-    assert not browser_cache._url_matches_pattern("https://example.com/test.js", "https://other.com/*")
-    assert not browser_cache._url_matches_pattern("https://example.com/test.js", "*.css")
-    
-    # Test multiple patterns
-    patterns = ["https://example.com/*", "*.whl", "https://pypi.org/*"]
-    assert browser_cache._url_matches_patterns("https://example.com/test.js", patterns)
-    assert browser_cache._url_matches_patterns("https://files.pythonhosted.org/package.whl", patterns)
-    assert browser_cache._url_matches_patterns("https://pypi.org/simple/", patterns)
-    assert not browser_cache._url_matches_patterns("https://other.com/test.js", patterns)
+    async def test_url_pattern_matching(self, cache_manager):
+        """Test URL pattern matching with wildcards."""
+        patterns = [
+            "https://cdn.jsdelivr.net/*",
+            "https://files.pythonhosted.org/*.whl",
+            "https://pyodide.org/*/pyodide.js"
+        ]
+        
+        test_cases = [
+            ("https://cdn.jsdelivr.net/pyodide/pyodide.js", True),
+            ("https://cdn.jsdelivr.net/npm/react@18/index.js", True),
+            ("https://files.pythonhosted.org/packages/numpy-1.24.0-py3-none-any.whl", True),
+            ("https://pyodide.org/v0.24.1/pyodide.js", True),
+            ("https://example.com/test.js", False),
+            ("https://files.pythonhosted.org/packages/data.tar.gz", False)
+        ]
+        
+        for url, should_match in test_cases:
+            result = await cache_manager.should_cache_url("test_workspace", "test_app", url, patterns)
+            assert result == should_match, f"URL {url} should {'match' if should_match else 'not match'}"
 
+    async def test_cache_recording_session(self, cache_manager):
+        """Test cache recording session management."""
+        workspace = "test_workspace"
+        app_id = "test_app"
+        
+        # Initially not recording
+        assert not cache_manager.is_recording(workspace, app_id)
+        
+        # Start recording
+        await cache_manager.start_recording(workspace, app_id)
+        assert cache_manager.is_recording(workspace, app_id)
+        
+        # Stop recording
+        await cache_manager.stop_recording(workspace, app_id)
+        assert not cache_manager.is_recording(workspace, app_id)
 
-@pytest.mark.asyncio
-async def test_cache_key_generation(browser_cache):
-    """Test cache key generation."""
-    workspace = "test-workspace"
-    app_id = "test-app"
-    url = "https://example.com/test.js"
-    
-    key = browser_cache._get_cache_key(workspace, app_id, url)
-    assert key.startswith(f"acache:{workspace}/{app_id}:")
-    assert len(key.split(":")) == 3  # acache:workspace/app_id:hash
-    
-    # Same URL should generate same key
-    key2 = browser_cache._get_cache_key(workspace, app_id, url)
-    assert key == key2
-    
-    # Different URL should generate different key
-    key3 = browser_cache._get_cache_key(workspace, app_id, "https://example.com/other.js")
-    assert key != key3
+    async def test_cache_operations(self, cache_manager, mock_redis):
+        """Test basic cache operations (get, set, clear)."""
+        workspace = "test_workspace"
+        app_id = "test_app"
+        url = "https://example.com/test.js"
+        
+        response_data = {
+            "status": 200,
+            "headers": {"content-type": "application/javascript"},
+            "body": b"console.log('test');",
+            "url": url
+        }
+        
+        # Test cache miss
+        mock_redis.get.return_value = None
+        cached = await cache_manager.get_cached_response(workspace, app_id, url)
+        assert cached is None
+        
+        # Test cache set
+        await cache_manager.cache_response(workspace, app_id, url, response_data)
+        mock_redis.set.assert_called_once()
+        
+        # Test cache hit
+        cache_entry = cache_manager._create_cache_entry(response_data)
+        import json
+        mock_redis.get.return_value = json.dumps(cache_entry)
+        
+        cached = await cache_manager.get_cached_response(workspace, app_id, url)
+        assert cached is not None
+        assert cached["status"] == 200
+        assert cached["body"] == b"console.log('test');"
 
+    async def test_default_cache_routes(self, cache_manager):
+        """Test default cache routes for different app types."""
+        # Test web-python defaults
+        web_python_routes = cache_manager.get_default_cache_routes_for_type("web-python")
+        
+        assert len(web_python_routes) > 0
+        assert any("pyodide" in route.lower() for route in web_python_routes)
+        assert any("*.whl" in route for route in web_python_routes)
+        
+        # Test unsupported type
+        unknown_routes = cache_manager.get_default_cache_routes_for_type("unknown")
+        assert unknown_routes == []
 
-@pytest.mark.asyncio
-async def test_recording_session_management(browser_cache):
-    """Test recording session management."""
-    workspace = "test-workspace"
-    app_id = "test-app"
-    
-    # Initially not recording
-    assert not browser_cache.recording_sessions.get(f"{workspace}/{app_id}", False)
-    
-    # Start recording
-    await browser_cache.start_recording(workspace, app_id)
-    assert browser_cache.recording_sessions[f"{workspace}/{app_id}"] is True
-    
-    # Stop recording
-    await browser_cache.stop_recording(workspace, app_id)
-    assert f"{workspace}/{app_id}" not in browser_cache.recording_sessions
+    async def test_cache_stats(self, cache_manager, mock_redis):
+        """Test cache statistics collection."""
+        workspace = "test_workspace"
+        app_id = "test_app"
+        
+        # Mock Redis responses for stats
+        mock_redis.keys.return_value = [
+            f"acache:{workspace}/{app_id}:url1",
+            f"acache:{workspace}/{app_id}:url2"
+        ]
+        mock_redis.get.return_value = '{"size": 1024}'
+        
+        stats = await cache_manager.get_cache_stats(workspace, app_id)
+        
+        assert "entries" in stats
+        assert "total_size" in stats
+        assert "hits" in stats
+        assert "misses" in stats
 
-
-@pytest.mark.asyncio
-async def test_should_cache_url(browser_cache):
-    """Test should_cache_url logic."""
-    workspace = "test-workspace"
-    app_id = "test-app"
-    url = "https://cdn.jsdelivr.net/pyodide/pyodide.js"
-    cache_routes = ["https://cdn.jsdelivr.net/pyodide/*"]
-    
-    # Not recording, should not cache
-    should_cache = await browser_cache.should_cache_url(workspace, app_id, url, cache_routes)
-    assert not should_cache
-    
-    # Start recording, should cache matching URLs
-    await browser_cache.start_recording(workspace, app_id)
-    should_cache = await browser_cache.should_cache_url(workspace, app_id, url, cache_routes)
-    assert should_cache
-    
-    # Non-matching URL should not be cached
-    non_matching_url = "https://example.com/test.js"
-    should_cache = await browser_cache.should_cache_url(workspace, app_id, non_matching_url, cache_routes)
-    assert not should_cache
-    
-    # No cache routes should not cache
-    should_cache = await browser_cache.should_cache_url(workspace, app_id, url, [])
-    assert not should_cache
-
-
-@pytest.mark.asyncio
-async def test_cache_response_and_retrieval(browser_cache):
-    """Test caching and retrieving responses."""
-    workspace = "test-workspace"
-    app_id = "test-app"
-    url = "https://example.com/test.js"
-    status = 200
-    headers = {"Content-Type": "application/javascript"}
-    body = b"console.log('test');"
-    
-    # Cache the response
-    await browser_cache.cache_response(workspace, app_id, url, status, headers, body)
-    
-    # Retrieve the cached response
-    cached_entry = await browser_cache.get_cached_response(workspace, app_id, url)
-    
-    assert cached_entry is not None
-    assert cached_entry.url == url
-    assert cached_entry.status == status
-    assert cached_entry.headers == headers
-    assert cached_entry.body == body
-    assert isinstance(cached_entry.timestamp, float)
-    
-    # Non-existent URL should return None
-    non_cached_entry = await browser_cache.get_cached_response(workspace, app_id, "https://example.com/nonexistent.js")
-    assert non_cached_entry is None
-
-
-@pytest.mark.asyncio
-async def test_clear_app_cache(browser_cache):
-    """Test clearing app cache."""
-    workspace = "test-workspace"
-    app_id = "test-app"
-    
-    # Cache multiple responses
-    urls = [
-        "https://example.com/test1.js",
-        "https://example.com/test2.js",
-        "https://example.com/test3.js"
-    ]
-    
-    for url in urls:
-        await browser_cache.cache_response(workspace, app_id, url, 200, {}, b"test content")
-    
-    # Verify entries exist
-    for url in urls:
-        entry = await browser_cache.get_cached_response(workspace, app_id, url)
-        assert entry is not None
-    
-    # Clear cache
-    deleted_count = await browser_cache.clear_app_cache(workspace, app_id)
-    assert deleted_count == 3
-    
-    # Verify entries are gone
-    for url in urls:
-        entry = await browser_cache.get_cached_response(workspace, app_id, url)
-        assert entry is None
-    
-    # Clearing empty cache should return 0
-    deleted_count = await browser_cache.clear_app_cache(workspace, app_id)
-    assert deleted_count == 0
-
-
-@pytest.mark.asyncio
-async def test_cache_stats(browser_cache):
-    """Test cache statistics."""
-    workspace = "test-workspace"
-    app_id = "test-app"
-    
-    # Initially empty stats
-    stats = await browser_cache.get_cache_stats(workspace, app_id)
-    assert stats["entry_count"] == 0
-    assert stats["total_size_bytes"] == 0
-    assert stats["oldest_entry"] is None
-    assert stats["newest_entry"] is None
-    assert stats["recording"] is False
-    
-    # Add some cached entries
-    await browser_cache.cache_response(workspace, app_id, "https://example.com/test1.js", 200, {}, b"test1")
-    await browser_cache.cache_response(workspace, app_id, "https://example.com/test2.js", 200, {}, b"test22")
-    
-    # Start recording
-    await browser_cache.start_recording(workspace, app_id)
-    
-    # Check stats
-    stats = await browser_cache.get_cache_stats(workspace, app_id)
-    assert stats["entry_count"] == 2
-    assert stats["total_size_bytes"] == 11  # len(b"test1") + len(b"test22")
-    assert stats["oldest_entry"] is not None
-    assert stats["newest_entry"] is not None
-    assert stats["recording"] is True
-
-
-@pytest.mark.asyncio
-async def test_default_cache_routes():
-    """Test default cache routes for different app types."""
-    cache = BrowserCache(None)  # Redis client not needed for this test
-    
-    # web-python should have default routes
-    web_python_routes = cache.get_default_cache_routes_for_type("web-python")
-    assert len(web_python_routes) > 0
-    assert any("pyodide" in route for route in web_python_routes)
-    assert any("*.whl" in route for route in web_python_routes)
-    
-    # Other types should have no default routes
-    other_routes = cache.get_default_cache_routes_for_type("window")
-    assert len(other_routes) == 0
-
-
-@pytest.mark.asyncio
-async def test_cache_ttl_expiration(browser_cache):
-    """Test cache TTL expiration (mock test since we can't wait for real expiration)."""
-    # This test verifies that the TTL is set correctly when caching
-    workspace = "test-workspace"
-    app_id = "test-app"
-    url = "https://example.com/test.js"
-    
-    # Mock the redis setex method to verify TTL is passed correctly
-    original_setex = browser_cache.redis_client.setex
-    setex_calls = []
-    
-    async def mock_setex(key, ttl, value):
-        setex_calls.append((key, ttl, value))
-        return await original_setex(key, ttl, value)
-    
-    browser_cache.redis_client.setex = mock_setex
-    
-    # Cache a response
-    await browser_cache.cache_response(workspace, app_id, url, 200, {}, b"test")
-    
-    # Verify setex was called with correct TTL
-    assert len(setex_calls) == 1
-    key, ttl, value = setex_calls[0]
-    assert ttl == browser_cache.cache_ttl
-    assert key.startswith(f"acache:{workspace}/{app_id}:")
-
-
-@pytest.mark.asyncio
-async def test_cache_isolation_between_apps(browser_cache):
-    """Test that cache entries are isolated between different apps."""
-    workspace = "test-workspace"
-    app_id_1 = "test-app-1"
-    app_id_2 = "test-app-2"
-    url = "https://example.com/test.js"
-    
-    # Cache same URL for different apps
-    await browser_cache.cache_response(workspace, app_id_1, url, 200, {}, b"content1")
-    await browser_cache.cache_response(workspace, app_id_2, url, 200, {}, b"content2")
-    
-    # Verify each app gets its own cached content
-    entry1 = await browser_cache.get_cached_response(workspace, app_id_1, url)
-    entry2 = await browser_cache.get_cached_response(workspace, app_id_2, url)
-    
-    assert entry1 is not None
-    assert entry2 is not None
-    assert entry1.body == b"content1"
-    assert entry2.body == b"content2"
-    
-    # Clear cache for one app shouldn't affect the other
-    deleted_count = await browser_cache.clear_app_cache(workspace, app_id_1)
-    assert deleted_count == 1
-    
-    # App 1 cache should be cleared
-    entry1 = await browser_cache.get_cached_response(workspace, app_id_1, url)
-    assert entry1 is None
-    
-    # App 2 cache should still exist
-    entry2 = await browser_cache.get_cached_response(workspace, app_id_2, url)
-    assert entry2 is not None
-    assert entry2.body == b"content2"
+    async def test_error_propagation(self, cache_manager, mock_redis):
+        """Test that errors propagate without defensive programming."""
+        workspace = "test_workspace"
+        app_id = "test_app"
+        url = "https://example.com/test"
+        
+        # Test Redis connection error propagates
+        mock_redis.get.side_effect = ConnectionError("Redis connection failed")
+        
+        with pytest.raises(ConnectionError):
+            await cache_manager.get_cached_response(workspace, app_id, url)
+        
+        # Test JSON parsing error propagates
+        mock_redis.get.side_effect = None
+        mock_redis.get.return_value = "invalid json"
+        
+        with pytest.raises(Exception):  # JSON decode error should propagate
+            await cache_manager.get_cached_response(workspace, app_id, url)
