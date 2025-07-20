@@ -46,7 +46,7 @@ from zipfile import ZipFile
 import zlib
 from hypha.utils import zip_utils
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import (
     RedirectResponse,
     StreamingResponse,
@@ -66,6 +66,9 @@ from sqlmodel import SQLModel, Field, Relationship, UniqueConstraint
 from typing import Optional, Union, List, Any, Dict
 import asyncio
 import struct
+import mimetypes
+import aiohttp
+from jinja2 import Template
 
 # Logger setup
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -726,6 +729,8 @@ class ArtifactController:
             token: str = None,
             limit: int = 1000,
             use_proxy: bool = False,
+            expires_in: int = 3600,
+            use_local_url: bool = False,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """Retrieve a file within an artifact or list files in a directory."""
@@ -802,8 +807,13 @@ class ArtifactController:
                                     "Bucket": s3_config["bucket"],
                                     "Key": file_key,
                                 },
+                                ExpiresIn=expires_in,
                             )
-                            if s3_config["public_endpoint_url"]:
+                            if use_local_url:
+                                # Use local URL (endpoint_url is already local for S3)
+                                # No replacement needed for direct S3 access
+                                pass
+                            elif s3_config["public_endpoint_url"]:
                                 # replace the endpoint with the proxy base URL
                                 presigned_url = presigned_url.replace(
                                     s3_config["endpoint_url"],
@@ -821,6 +831,193 @@ class ArtifactController:
                 logger.error(f"Unhandled exception in http get_file: {str(e)}")
                 raise HTTPException(
                     status_code=500, detail=f"Internal server error: {str(e)}"
+                )
+            finally:
+                await session.close()
+
+        # HTTP endpoint for serving static sites
+        @router.get("/{workspace}/site/{artifact_alias}/")
+        @router.get("/{workspace}/site/{artifact_alias}/{file_path:path}")
+        async def serve_site_file(
+            request: Request,
+            workspace: str,
+            artifact_alias: str,
+            file_path: str = "index.html",
+            stage: bool = False,
+            token: str = None,
+            version: str = None,
+            user_info: self.store.login_optional = Depends(self.store.login_optional),
+        ):
+            """Serve files from a static site artifact with optional Jinja2 template rendering."""
+            try:
+                artifact_id = self._validate_artifact_id(
+                    artifact_alias, {"ws": workspace}
+                )
+                
+                if stage:
+                    assert version is None or version == "stage", "You cannot specify a version when using stage mode."
+                    version = "stage"
+                    
+                session = await self._get_session(read_only=True)
+                if token:
+                    user_info = await self.store.parse_user_token(token)
+                
+                async with session.begin():
+                    # Fetch artifact and check permissions
+                    (
+                        artifact,
+                        parent_artifact,
+                    ) = await self._get_artifact_with_permission(
+                        user_info, artifact_id, "get_file", session
+                    )
+                    
+                    # Verify this is a site artifact
+                    if artifact.type != "site":
+                        raise HTTPException(
+                            status_code=400, 
+                            detail="This artifact is not a site artifact"
+                        )
+                    
+                    # Default to index.html if file_path is empty or just "/"
+                    if not file_path or file_path == "/":
+                        file_path = "index.html"
+                    
+                    # Increment view count for the artifact
+                    await self._increment_stat(session, artifact.id, "view_count")
+                    await session.commit()
+                    
+                    # Get artifact configuration
+                    config = artifact.config or {}
+                    templates = config.get("templates", [])
+                    template_engine = config.get("template_engine")
+                    custom_headers = config.get("headers", {})
+                    
+                    version_index = self._get_version_index(artifact, version)
+                    s3_config = self._get_s3_config(artifact, parent_artifact)
+                    file_key = safe_join(
+                        s3_config["prefix"],
+                        f"{artifact.id}/v{version_index}",
+                        file_path,
+                    )
+                    
+                    # Check if file needs template rendering
+                    if (template_engine and 
+                        template_engine == "jinja2" and 
+                        file_path in templates):
+                        
+                        # Get file content for template rendering
+                        async with self._create_client_async(s3_config) as s3_client:
+                            try:
+                                obj_info = await s3_client.get_object(
+                                    Bucket=s3_config["bucket"], Key=file_key
+                                )
+                                content = await obj_info["Body"].read()
+                                content = content.decode('utf-8')
+                            except ClientError:
+                                raise HTTPException(
+                                    status_code=404, 
+                                    detail=f"File not found: {file_path}"
+                                )
+                        
+                        # Prepare Jinja2 template context
+                        artifact_data = self._generate_artifact_data(artifact, parent_artifact)
+                        
+                        # Exclude secrets from config for template context
+                        config_for_template = {k: v for k, v in config.items() if k != "secrets"}
+                        
+                        template_context = {
+                            "PUBLIC_BASE_URL": self.store.public_base_url,
+                            "LOCAL_BASE_URL": self.store.local_base_url,
+                            "BASE_URL": f"/{workspace}/site/{artifact_alias}/",
+                            "VIEW_COUNT": artifact_data.get("view_count", 0),
+                            "DOWNLOAD_COUNT": artifact_data.get("download_count", 0),
+                            "MANIFEST": artifact_data.get("manifest", {}),
+                            "CONFIG": config_for_template,
+                            "WORKSPACE": workspace,
+                            "USER": user_info.model_dump() if user_info and not user_info.is_anonymous else None,
+                        }
+                        
+                        # Render template
+                        try:
+                            rendered = Template(content).render(**template_context)
+                        except Exception as e:
+                            logger.error(f"Template rendering error: {e}")
+                            raise HTTPException(
+                                status_code=500,
+                                detail=f"Template rendering failed: {str(e)}"
+                            )
+                        
+                        # Get MIME type
+                        mime_type, _ = mimetypes.guess_type(file_path)
+                        mime_type = mime_type or "text/html"
+                        
+                        # Prepare headers
+                        response_headers = {}
+                        
+                        # Add custom headers from config
+                        if custom_headers:
+                            for key, value in custom_headers.items():
+                                # Special handling for CORS origin
+                                if key == "Access-Control-Allow-Origin" and value == "*":
+                                    response_headers[key] = value
+                                else:
+                                    response_headers[key] = value
+                        
+                        return Response(
+                            content=rendered,
+                            media_type=mime_type,
+                            headers=response_headers
+                        )
+                    
+                    else:
+                        # Regular file (non-templated) - stream through proxy 
+                        try:
+                            # Use S3 proxy streaming for proper content delivery
+                            s3_client = self._create_client_async(s3_config)
+                            
+                            # Get MIME type for proper content-type header
+                            mime_type, _ = mimetypes.guess_type(file_path)
+                            mime_type = mime_type or "application/octet-stream"
+                            
+                            # Prepare custom headers
+                            response_headers = {}
+                            if custom_headers:
+                                for key, value in custom_headers.items():
+                                    # Special handling for CORS origin
+                                    if key == "Access-Control-Allow-Origin" and value == "*":
+                                        response_headers[key] = value
+                                    else:
+                                        response_headers[key] = value
+                            
+                            # Set content-type header
+                            response_headers["Content-Type"] = mime_type
+                            
+                            # Return streaming response using FSFileResponse for proper range support
+                            return FSFileResponse(
+                                s3_client, 
+                                s3_config["bucket"], 
+                                file_key,
+                                media_type=mime_type,
+                                headers=response_headers
+                            )
+                            
+                        except ClientError:
+                            raise HTTPException(
+                                status_code=404, 
+                                detail=f"File not found: {file_path}"
+                            )
+                
+            except HTTPException:
+                raise
+            except KeyError:
+                raise HTTPException(status_code=404, detail="Artifact not found")
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Permission denied")
+            except Exception as e:
+                logger.error(f"Unhandled exception in serve_site_file: {str(e)}")
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Internal server error: {str(e)}"
                 )
             finally:
                 await session.close()
@@ -2235,12 +2432,6 @@ class ArtifactController:
                 has_new_version_intent = any(
                     item.get("_intent") == "new_version" for item in staging_list
                 )
-
-                logger.info(
-                    f"Checking for new version intent in staging: {staging_list}"
-                )
-                logger.info(f"Has new version intent: {has_new_version_intent}")
-
                 # Remove intent markers from staging list
                 staging_list = [
                     item for item in staging_list if not item.get("_intent")
@@ -2747,6 +2938,8 @@ class ArtifactController:
         file_path,
         download_weight: float = 0,
         use_proxy=None,
+        use_local_url=False,
+        expires_in: int = 3600,
         context: dict = None,
     ):
         """Generate a pre-signed URL to upload a file to an artifact in S3."""
@@ -2791,17 +2984,28 @@ class ArtifactController:
                     presigned_url = await s3_client.generate_presigned_url(
                         "put_object",
                         Params={"Bucket": s3_config["bucket"], "Key": file_key},
-                        ExpiresIn=3600,
+                        ExpiresIn=expires_in,
                     )
                     # Use proxy based on use_proxy parameter (None means use server config)
                     if use_proxy is None:
                         use_proxy = self.s3_controller.enable_s3_proxy
 
-                    if s3_config["public_endpoint_url"] and use_proxy:
-                        # replace the endpoint with the proxy base URL
-                        presigned_url = presigned_url.replace(
-                            s3_config["endpoint_url"], s3_config["public_endpoint_url"]
-                        )
+                    if use_proxy:
+                        if use_local_url:
+                            # Use local URL for proxy within cluster
+                            local_proxy_url = f"{self.store.local_base_url}/s3"
+                            presigned_url = presigned_url.replace(
+                                s3_config["endpoint_url"], local_proxy_url
+                            )
+                        elif s3_config["public_endpoint_url"]:
+                            # Use public proxy URL
+                            presigned_url = presigned_url.replace(
+                                s3_config["endpoint_url"], s3_config["public_endpoint_url"]
+                            )
+                    elif use_local_url and not use_proxy:
+                        # For S3 direct access with local URL, use the endpoint_url as-is
+                        # (no replacement needed since endpoint_url is already the local/internal endpoint)
+                        pass
                     artifact.staging = artifact.staging or []
                     # Filter out intent markers when checking for existing files
                     staging_files = [f for f in artifact.staging if "path" in f]
@@ -2896,6 +3100,8 @@ class ArtifactController:
         version=None,
         stage: bool = False,
         use_proxy=None,
+        use_local_url=False,
+        expires_in: int = 3600,
         context: dict = None,
     ):
         """Generate a pre-signed URL to download a file from an artifact in S3."""
@@ -2935,17 +3141,28 @@ class ArtifactController:
                     presigned_url = await s3_client.generate_presigned_url(
                         "get_object",
                         Params={"Bucket": s3_config["bucket"], "Key": file_key},
-                        ExpiresIn=3600,
+                        ExpiresIn=expires_in,
                     )
                     # Use proxy based on use_proxy parameter (None means use server config)
                     if use_proxy is None:
                         use_proxy = self.s3_controller.enable_s3_proxy
 
-                    if s3_config["public_endpoint_url"] and use_proxy:
-                        # replace the endpoint with the proxy base URL
-                        presigned_url = presigned_url.replace(
-                            s3_config["endpoint_url"], s3_config["public_endpoint_url"]
-                        )
+                    if use_proxy:
+                        if use_local_url:
+                            # Use local URL for proxy within cluster
+                            local_proxy_url = f"{self.store.local_base_url}/s3"
+                            presigned_url = presigned_url.replace(
+                                s3_config["endpoint_url"], local_proxy_url
+                            )
+                        elif s3_config["public_endpoint_url"]:
+                            # Use public proxy URL
+                            presigned_url = presigned_url.replace(
+                                s3_config["endpoint_url"], s3_config["public_endpoint_url"]
+                            )
+                    elif use_local_url and not use_proxy:
+                        # For S3 direct access with local URL, use the endpoint_url as-is
+                        # (no replacement needed since endpoint_url is already the local/internal endpoint)
+                        pass
                 # Increment download count unless silent
                 if not silent:
                     if artifact.config and "download_weights" in artifact.config:

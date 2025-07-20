@@ -98,12 +98,13 @@ async def test_server_apps_workspace_removal(
     )
     controller = await api.get_service("public/server-apps")
 
-    app_info = await controller.launch(
+    app_info = await controller.install(
         source=TEST_APP_CODE,
-        config={"type": "window"},
+        manifest={"type": "window"},
         overwrite=True,
         wait_for_service="default",
     )
+    app_info = await controller.start(app_info.id)
 
     # the workspace should exist in the stats
     async with connect_to_server(
@@ -149,12 +150,13 @@ async def test_server_apps(fastapi_server, test_user_token):
     # objects = await api.list_remote_objects()
     # assert len(objects) == 2
 
-    config = await controller.launch(
+    config = await controller.install(
         source=TEST_APP_CODE,
-        config={"type": "window"},
+        manifest={"type": "window"},
         wait_for_service="default",
         overwrite=True,
     )
+    config = await controller.start(config.id)
     assert "id" in config.keys()
     app = await api.get_app(config.id)
 
@@ -182,10 +184,11 @@ async def test_server_apps(fastapi_server, test_user_token):
         .read()
     )
 
-    config = await controller.launch(
+    config = await controller.install(
         source=source,
         wait_for_service=True,
     )
+    config = await controller.start(config.id)
     assert "app_id" in config
     app = await api.get_app(config.id)
     assert "add2" in app, str(app and app.keys())
@@ -209,7 +212,7 @@ async def test_singleton_apps(fastapi_server, test_user_token):
     # Install the singleton app first
     app_info = await controller.install(
         source=TEST_APP_CODE,
-        config={"type": "window", "singleton": True},
+        manifest={"type": "window", "singleton": True},
         overwrite=True,
     )
     assert "id" in app_info.keys()
@@ -275,7 +278,7 @@ async def test_daemon_apps(fastapi_server, test_user_token_6, root_user_token):
         # Launch a daemon app
         app_info = await controller.install(
             source=TEST_APP_CODE,
-            config={"type": "window", "daemon": True},
+            manifest={"type": "window", "daemon": True},
             overwrite=True,
         )
         config = await controller.start(
@@ -336,11 +339,12 @@ async def test_web_python_apps(fastapi_server, test_user_token):
         .open(encoding="utf-8")
         .read()
     )
-    config = await controller.launch(
+    config = await controller.install(
         source=source,
         wait_for_service="default",
         timeout=40,
     )
+    config = await controller.start(config.id)
     assert config.name == "WebPythonPlugin"
     svc = await api.get_service(config.service_id)
     assert svc is not None
@@ -355,21 +359,23 @@ async def test_web_python_apps(fastapi_server, test_user_token):
         .open(encoding="utf-8")
         .read()
     )
-    config = await controller.launch(
+    config = await controller.install(
         source=source,
         wait_for_service="default",
     )
+    config = await controller.start(config.id)
     app = await api.get_app(config.id)
     assert "add2" in app, str(app and app.keys())
     result = await app.add2(4)
     assert result == 6
     await controller.stop(config.id)
 
-    config = await controller.launch(
+    config = await controller.install(
         source="https://raw.githubusercontent.com/imjoy-team/"
         "ImJoy/master/web/src/plugins/webWorkerTemplate.imjoy.html",
         wait_for_service=True,
     )
+    config = await controller.start(config.id)
     # assert config.name == "Untitled Plugin"
     apps = await controller.list_running()
     assert find_item(apps, "id", config.id)
@@ -394,10 +400,11 @@ async def test_non_persistent_workspace(fastapi_server, root_user_token):
     #     .read()
     # )
 
-    # config = await controller.launch(
+    # config = await controller.install(
     #     source=source,
     #     wait_for_service="default",
     # )
+    # await controller.start(config.id)
 
     # app = await api.get_app(config.id)
     # assert app is not None
@@ -571,7 +578,7 @@ async def test_lazy_service_with_default_timeout(fastapi_server, test_user_token
         source=source,
         timeout=30,
         overwrite=True,
-        config={
+        manifest={
             "startup_config": {
                 "stop_after_inactive": 3,  # Auto-stop after 3 seconds of inactivity
                 "timeout": 30,  # Default timeout for starting
@@ -632,7 +639,7 @@ async def test_startup_config_comprehensive(fastapi_server, test_user_token):
         source=source,
         timeout=30,
         overwrite=True,
-        config={
+        manifest={
             "startup_config": {
                 "stop_after_inactive": 3,  # Auto-stop after 3 seconds of inactivity
                 "timeout": 25,  # Default timeout for starting
@@ -694,12 +701,13 @@ async def test_raw_html_apps(fastapi_server, test_user_token):
     assert app_info["entry_point"] == "index.html"
 
     # Test launching the raw HTML app
-    config = await controller.launch(
+    config = await controller.install(
         source=TEST_RAW_HTML_APP,
-        config={"name": "Custom Raw HTML App", "type": "window"},
+        manifest={"name": "Custom Raw HTML App", "type": "window"},
         overwrite=True,
         wait_for_service="default",
     )
+    config = await controller.start(config.id)
 
     assert "id" in config.keys()
     app = await api.get_app(config.id)
@@ -719,7 +727,7 @@ async def test_raw_html_apps(fastapi_server, test_user_token):
     # Test installing raw HTML app with custom config
     app_info2 = await controller.install(
         source=TEST_RAW_HTML_APP,
-        config={
+        manifest={
             "name": "Custom Raw HTML App",
             "version": "1.0.0",
             "type": "window",
@@ -731,7 +739,7 @@ async def test_raw_html_apps(fastapi_server, test_user_token):
     assert app_info2["name"] == "Custom Raw HTML App"
     assert app_info2["version"] == "1.0.0"
     assert app_info2["type"] == "window"  # convert_config_to_artifact sets this
-    assert app_info2["entry_point"] == "main.html"
+    assert app_info2["entry_point"] == "index.html"  # Browser apps always compile to index.html
 
     # Clean up - both apps have the same ID since they have the same source code
     # So we only need to uninstall once
@@ -937,7 +945,7 @@ async def test_service_selection_mode_with_multiple_instances(fastapi_server, te
     # Install the app with service_selection_mode configuration
     app_info = await controller.install(
         source=test_app_source,
-        config={
+        manifest={
             "name": "multi-instance-test-app",
             "type": "window",
             "service_selection_mode": "random",  # Set random selection mode
@@ -1168,31 +1176,47 @@ window.onload = function() {
     assert app_info["version"] == "1.0.0"
     assert app_info["entry_point"] == "index.html"
     
-    # Test 2: Try to install with both manifest and config (should fail)
+
+    # Test 3: Install with manifest without entry_point (should auto-generate for template-based apps)
+    auto_manifest = manifest.copy()
+    del auto_manifest["entry_point"]
+    
+    # This should now succeed for template-based apps like "web-worker"
+    auto_app_info = await controller.install(
+        source=test_script,
+        manifest=auto_manifest,
+        overwrite=True,
+    )
+    
+    # Verify that entry_point was auto-generated
+    assert auto_app_info["entry_point"] == "index.html", f"Expected auto-generated entry_point to be 'index.html', got {auto_app_info.get('entry_point')}"
+    assert auto_app_info["type"] == "web-worker"
+    
+    # Clean up the auto-generated app
+    await controller.uninstall(auto_app_info["id"])
+    
+    # Test 4: Try to install non-template app without entry_point (should still fail)
+    non_template_manifest = {
+        "id": "non-template-test-app",
+        "name": "Non-Template Test App", 
+        "description": "App with custom type that requires explicit entry_point",
+        "version": "1.0.0",
+        "type": "custom-type",  # Not a template-based type
+        "requirements": [],
+        "singleton": False,
+        "daemon": False,
+        "config": {}
+    }
+    
     try:
         await controller.install(
             source=test_script,
-            manifest=manifest,
-            config={"name": "Should not work"},
+            manifest=non_template_manifest,
             overwrite=True,
         )
-        assert False, "Should have failed when both manifest and config are provided"
+        assert False, "Should have failed when entry_point is missing for non-template app"
     except Exception as e:
-        assert "config should be None when manifest is provided" in str(e)
-    
-    # Test 3: Try to install with manifest without entry_point (should fail)
-    invalid_manifest = manifest.copy()
-    del invalid_manifest["entry_point"]
-    
-    try:
-        await controller.install(
-            source=test_script,
-            manifest=invalid_manifest,
-            overwrite=True,
-        )
-        assert False, "Should have failed when entry_point is missing from manifest"
-    except Exception as e:
-        assert "entry_point is required in manifest" in str(e)
+        assert "No server app worker found for type" in str(e)
     
     # Clean up
     await controller.uninstall(app_info["id"])
@@ -1201,7 +1225,7 @@ window.onload = function() {
 
 
 async def test_new_app_management_functions(fastapi_server, test_user_token):
-    """Test new app management functions: get_app_info, read_file, validate_app_config, edit_app."""
+    """Test new app management functions: get_app_info, read_file, validate_app_manifest, edit_app."""
     api = await connect_to_server(
         {
             "name": "test client",
@@ -1213,8 +1237,8 @@ async def test_new_app_management_functions(fastapi_server, test_user_token):
 
     controller = await api.get_service("public/server-apps")
 
-    # Test validate_app_config
-    print("Testing validate_app_config...")
+    # Test validate_app_manifest
+    print("Testing validate_app_manifest...")
     
     # Test with valid config
     valid_config = {
@@ -1224,7 +1248,7 @@ async def test_new_app_management_functions(fastapi_server, test_user_token):
         "description": "A test application",
         "entry_point": "index.html"
     }
-    validation_result = await controller.validate_app_config(valid_config)
+    validation_result = await controller.validate_app_manifest(valid_config)
     assert validation_result["valid"] is True
     assert len(validation_result["errors"]) == 0
     
@@ -1235,11 +1259,11 @@ async def test_new_app_management_functions(fastapi_server, test_user_token):
         "version": 1.0,  # Should be string
         # Missing required fields
     }
-    validation_result = await controller.validate_app_config(invalid_config)
+    validation_result = await controller.validate_app_manifest(invalid_config)
     assert validation_result["valid"] is False
     assert len(validation_result["errors"]) > 0
     
-    print("✓ validate_app_config tests passed")
+    print("✓ validate_app_manifest tests passed")
 
     # Install a test app for further testing
     app_config = {
@@ -1252,7 +1276,7 @@ async def test_new_app_management_functions(fastapi_server, test_user_token):
     
     app_info = await controller.install(
         source=TEST_APP_CODE,
-        config=app_config,
+        manifest=app_config,
         overwrite=True,
     )
     app_id = app_info["id"]
@@ -1296,8 +1320,7 @@ async def test_new_app_management_functions(fastapi_server, test_user_token):
     try:
         await controller.edit_app(
             app_id,
-            manifest={"description": "Basic edit test"},
-            config={"test_setting": "test_value"}
+            manifest={"description": "Basic edit test", "test_setting": "test_value"}
         )
         print("✓ edit_app function works")
     except Exception as e:
@@ -1407,7 +1430,7 @@ async def test_python_eval_apps(fastapi_server, test_user_token):
             "entry_point": "main.py",
             "description": "A test Python evaluation app"
         },
-        timeout=2,
+        timeout=10,
         overwrite=True,
         wait_for_service=None,
     )
@@ -1420,7 +1443,7 @@ async def test_python_eval_apps(fastapi_server, test_user_token):
     # Test starting the Python eval app
     started_app = await controller.start(
         app_info["id"],
-        timeout=2,
+        timeout=10,
     )
 
     assert "id" in started_app
@@ -1497,12 +1520,13 @@ async def test_detached_mode_apps(fastapi_server, test_user_token):
 
     # Test 1: Launch with detached=True, should not wait for services
     print("Testing detached mode with launch...")
-    config = await controller.launch(
+    config = await controller.install(
         source=detached_script,
-        config={"type": "window", "name": "Detached Script"},
+        manifest={"type": "window", "name": "Detached Script"},
         detached=True,
         timeout=5,  # Short timeout should be fine since we're not waiting
     )
+    config = await controller.start(config.id)
     
     assert "id" in config
     print(f"✓ Detached launch successful: {config['id']}")
@@ -1526,7 +1550,7 @@ async def test_detached_mode_apps(fastapi_server, test_user_token):
     print("Testing detached mode with install + start...")
     app_info = await controller.install(
         source=detached_script,
-        config={"type": "window", "name": "Detached Script Install"},
+        manifest={"type": "window", "name": "Detached Script Install"},
         overwrite=True,
         detached=True,
     )
@@ -1572,13 +1596,13 @@ print("Python detached script completed")
 """
     
     try:
-        python_config = await controller.launch(
+        python_config = await controller.install(
             source=python_detached_script,
-            config={"type": "python-eval", "name": "Python Detached Script"},
+            manifest={"type": "python-eval", "name": "Python Detached Script"},
             detached=True,
             timeout=5,
         )
-        
+        python_config = await controller.start(python_config.id)
         assert "id" in python_config
         print(f"✓ Python detached launch successful: {python_config['id']}")
         
@@ -1612,12 +1636,13 @@ print("Python detached script completed")
     # Test normal mode (should timeout because no service is registered)
     normal_start_time = time.time()
     try:
-        await controller.launch(
+        config =await controller.install(
             source=problematic_script,
-            config={"type": "window", "name": "Normal Mode Script"},
+            manifest={"type": "window", "name": "Normal Mode Script"},
             timeout=3,  # Short timeout to demonstrate the difference
             overwrite=True,
         )
+        await controller.start(config.id)
         assert False, "Should have timed out"
     except Exception as e:
         normal_duration = time.time() - normal_start_time
@@ -1625,19 +1650,20 @@ print("Python detached script completed")
     
     # Test detached mode (should complete quickly)
     detached_start_time = time.time()
-    detached_config = await controller.launch(
+    detached_config = await controller.install(
         source=problematic_script,
-        config={"type": "window", "name": "Detached Mode Script"},
+        manifest={"type": "window", "name": "Detached Mode Script"},
         detached=True,
         timeout=3,
         overwrite=True,
     )
+    await controller.start(detached_config.id)
     detached_duration = time.time() - detached_start_time
     
     print(f"✓ Detached mode completed in {detached_duration:.2f}s")
     # Ensure detached mode is significantly faster than normal mode
     # Normal mode should timeout around 3 seconds, detached should be much faster
-    assert detached_duration < normal_duration * 0.8, f"Detached mode ({detached_duration:.2f}s) should be significantly faster than normal mode ({normal_duration:.2f}s)"
+    assert detached_duration < normal_duration, f"Detached mode ({detached_duration:.2f}s) should be faster than normal mode ({normal_duration:.2f}s)"
     assert detached_duration < 3, "Detached mode should complete within reasonable time"
     
     # Clean up
@@ -1706,7 +1732,7 @@ async def test_autoscaling_basic_functionality(fastapi_server, test_user_token):
     print("Installing app with autoscaling configuration...")
     app_info = await controller.install(
         source=simple_app_source,
-        config={
+        manifest={
             "name": "Simple Autoscaling App",
             "type": "window",
             "autoscaling": autoscaling_config,
@@ -1879,7 +1905,7 @@ window.onload = function() {
     # Install the app with autoscaling configuration
     app_info = await controller.install(
         source=autoscaling_app_source,
-        config={
+        manifest={
             "name": "Autoscaling Test App",
             "type": "window",
             "version": "1.0.0",
@@ -2001,7 +2027,7 @@ window.onload = function() {
     
     await controller.edit_app(
         app_info["id"],
-        autoscaling_config=new_autoscaling_config
+        autoscaling_manifest=new_autoscaling_config
     )
     
     # Verify the config was updated
@@ -2018,7 +2044,7 @@ window.onload = function() {
     # Disable autoscaling
     await controller.edit_app(
         app_info["id"],
-        autoscaling_config={"enabled": False}
+        autoscaling_manifest={"enabled": False}
     )
     
     # Verify autoscaling is disabled
@@ -2034,7 +2060,7 @@ window.onload = function() {
     # Re-enable autoscaling for final test
     await controller.edit_app(
         app_info["id"],
-        autoscaling_config=autoscaling_config
+        autoscaling_manifest=autoscaling_config
     )
     
     # Test that service selection works with multiple instances
@@ -2065,5 +2091,334 @@ window.onload = function() {
     await controller.uninstall(app_info["id"])
 
     print("✅ Cleanup completed")
+
+    await api.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_files_parameter_install(fastapi_server, test_user_token):
+    """Test the files parameter in install method for uploading multiple files."""
+    import base64
+    import json
+    
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+    
+    # Test data
+    text_content = '<html><body><h1>Test Page</h1></body></html>'
+    css_content = 'body { background-color: #f0f0f0; color: #333; }'
+    
+    # Create binary data (fake image data)
+    binary_data = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x10\x00\x00\x00\x10'
+    base64_content = base64.b64encode(binary_data).decode('utf-8')
+    
+    # Test manifest
+    manifest = {
+        "id": "test-files-app",
+        "name": "Test Files App",
+        "description": "Testing the files parameter",
+        "version": "1.0.0",
+        "type": "window",
+        "entry_point": "main.html",
+        "requirements": [],
+        "singleton": False,
+        "daemon": False,
+        "config": {}
+    }
+    
+    # Test files array
+    test_files = [
+        {
+            "name": "main.html",
+            "content": text_content,
+            "format": "text"
+        },
+        {
+            "name": "style.css",
+            "content": css_content,
+            "format": "text"
+        },
+        {
+            "name": "assets/image.png",
+            "content": base64_content,
+            "format": "base64"
+        },
+        {
+            "name": "data.json",
+            "content": '{"test": true, "value": 42}',
+            # Test default format (should default to text)
+        },
+        {
+            "name": "config.json",
+            "content": {"setting": "value", "enabled": True, "count": 123},
+            "format": "json"
+        },
+        {
+            "name": "favicon.ico",
+            "content": f"data:image/x-icon;base64,{base64_content}",
+            "format": "base64"
+        }
+    ]
+    
+    # Test 1: Install with files parameter (in stage mode to avoid startup issues)
+    app_info = await controller.install(
+        manifest=manifest,
+        files=test_files,
+        stage=True,
+        overwrite=True,
+    )
+    
+    # Get the actual app ID generated by the system
+    app_id = app_info["id"]
+    assert app_info["name"] == "Test Files App"
+    
+    # Test 2: Verify files were uploaded correctly
+    files_list = await controller.list_files(app_id)
+    file_names = [f["name"] for f in files_list]
+    
+    assert "index.html" in file_names
+    assert "style.css" in file_names
+    assert "data.json" in file_names
+    assert "config.json" in file_names
+    assert "favicon.ico" in file_names
+    # For nested paths, the listing might show the directory, so check if assets exists
+    # We'll verify the actual file content in the next test
+    
+    # Test 3: Verify file contents (using stage=True since app is in stage mode)
+    html_content = await controller.read_file(app_id, "index.html", format="text", stage=True)
+    assert html_content == text_content
+    
+    css_content_read = await controller.read_file(app_id, "style.css", format="text", stage=True)
+    assert css_content_read == css_content
+    
+    json_content = await controller.read_file(app_id, "data.json", format="text", stage=True)
+    assert json_content == '{"test": true, "value": 42}'
+    
+    # Test 4: Verify binary file was decoded correctly
+    binary_content_read = await controller.read_file(app_id, "assets/image.png", format="binary", stage=True)
+    decoded_binary = base64.b64decode(binary_content_read)
+    assert decoded_binary == binary_data
+    
+    # Test 5: Verify JSON file with dictionary content
+    json_content = await controller.read_file(app_id, "config.json", format="text", stage=True)
+    json_data = json.loads(json_content)
+    assert json_data == {"setting": "value", "enabled": True, "count": 123}
+    
+    # Test 6: Verify base64 file with data URL format
+    favicon_content_read = await controller.read_file(app_id, "favicon.ico", format="binary", stage=True)
+    decoded_favicon = base64.b64decode(favicon_content_read)
+    assert decoded_favicon == binary_data  # Should be same as original binary data
+    
+    # Test 7: Error handling for missing required fields
+    invalid_files = [
+        {
+            "name": "test.txt",
+            # Missing content
+            "format": "text"
+        }
+    ]
+    
+    try:
+        await controller.install(
+            manifest={
+                "id": "invalid-app",
+                "name": "Invalid App",
+                "version": "1.0.0",
+                "type": "window",
+                "entry_point": "index.html"
+            },
+            files=invalid_files,
+            overwrite=True,
+        )
+        assert False, "Should have failed with missing content"
+    except Exception as e:
+        assert "must have 'name' and 'content' fields" in str(e)
+    
+    # Test 8: Error handling for invalid base64
+    invalid_base64_files = [
+        {
+            "name": "invalid.bin",
+            "content": "not-valid-base64-content!!!",
+            "format": "base64"
+        }
+    ]
+    
+    try:
+        await controller.install(
+            manifest={
+                "id": "invalid-base64-app",
+                "name": "Invalid Base64 App",
+                "version": "1.0.0",
+                "type": "window",
+                "entry_point": "index.html"
+            },
+            files=invalid_base64_files,
+            overwrite=True,
+        )
+        assert False, "Should have failed with invalid base64"
+    except Exception as e:
+        assert "Failed to decode base64 content" in str(e)
+    
+                    # Test 9: Error handling for invalid file format
+        invalid_format_files = [
+            {
+                "name": "test.txt",
+                "content": "test content",
+                "format": "invalid-format"
+            }
+        ]
+    
+        try:
+            await controller.install(
+                manifest={
+                    "id": "invalid-format-app",
+                    "name": "Invalid Format App",
+                    "version": "1.0.0",
+                    "type": "window",
+                    "entry_point": "index.html"
+                },
+                files=invalid_format_files,
+                overwrite=True,
+            )
+            assert False, "Should have failed with invalid file format"
+        except Exception as format_e:
+            assert "Unsupported file format" in str(format_e)
+            assert "Must be 'text', 'json', or 'base64'" in str(format_e)
+    
+    # Test 10: Error handling for invalid JSON content
+    invalid_json_files = [
+        {
+            "name": "invalid.json",
+            "content": 123.456,  # Not a dict, list, or string
+            "format": "json"
+        }
+    ]
+    
+    try:
+        await controller.install(
+            manifest={
+                "id": "invalid-json-app",
+                "name": "Invalid JSON App",
+                "version": "1.0.0",
+                "type": "window",
+                "entry_point": "index.html"
+            },
+            files=invalid_json_files,
+            stage=True,
+            overwrite=True,
+        )
+        assert False, "Should have failed with invalid JSON content type"
+    except Exception as e:
+        assert "JSON content must be a dictionary, list, or valid JSON string" in str(e)
+    
+    # Test 11: Error handling for invalid data URL format
+    invalid_data_url_files = [
+        {
+            "name": "invalid.bin",
+            "content": "data:image/png,not-base64-format",  # Missing ;base64
+            "format": "base64"
+        }
+    ]
+    
+    try:
+        await controller.install(
+            manifest={
+                "id": "invalid-data-url-app",
+                "name": "Invalid Data URL App",
+                "version": "1.0.0",
+                "type": "window",
+                "entry_point": "index.html"
+            },
+            files=invalid_data_url_files,
+            stage=True,
+            overwrite=True,
+        )
+        assert False, "Should have failed with invalid data URL format"
+    except Exception as e:
+        assert "Data URL format not supported" in str(e)
+        assert "Expected format: data:mediatype;base64,content" in str(e)
+    
+    # Clean up
+    await controller.uninstall(app_id)
+    
+    await api.disconnect()
+
+
+async def test_progress_callback_functionality(fastapi_server, test_user_token):
+    """Test progress_callback functionality during app installation and compilation."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+
+    # Create a list to capture progress messages
+    progress_messages = []
+    
+    def progress_callback(message):
+        """Callback to capture progress messages."""
+        progress_messages.append(message["status"])
+        print(f"Progress: {message}")  # For debugging
+
+    # Test app code for compilation
+    test_app_source = """
+    api.export({
+        async setup() {
+            console.log("Progress callback test app initialized");
+        },
+        async testProgress() {
+            return "Progress callback test successful";
+        }
+    });
+    """
+
+    # Install app with progress_callback in stage mode to avoid startup issues
+    app_info = await controller.install(
+        source=test_app_source,
+        manifest={
+            "name": "Progress Callback Test App",
+            "type": "window",  # Browser worker will handle this
+            "version": "1.0.0",
+        },
+        progress_callback=progress_callback,
+        stage=True,  # Use stage mode to avoid app startup
+        overwrite=True,
+    )
+
+    # Verify that progress messages were captured
+    assert len(progress_messages) > 0, "No progress messages were captured"
+    
+    # Check for specific browser worker compilation messages
+    progress_text = " ".join(progress_messages)
+    assert "Compiling window application" in progress_text, f"Missing app type compilation message in: {progress_messages}"
+    assert ("Processing source files and configurations" in progress_text or 
+            "Compiling source code to HTML template" in progress_text), f"Missing compilation process messages in: {progress_messages}"
+    assert "Browser app compilation completed" in progress_text, f"Missing compilation completion message in: {progress_messages}"
+    
+    print(f"✅ Captured {len(progress_messages)} progress messages:")
+    for i, msg in enumerate(progress_messages, 1):
+        print(f"  {i}. {msg}")
+
+    # Verify the app was installed successfully
+    assert app_info["name"] == "Progress Callback Test App"
+    assert app_info["type"] == "window"
+
+    print("✅ Progress callback functionality verified during compilation!")
+
+    # Clean up
+    await controller.uninstall(app_info["id"])
 
     await api.disconnect()

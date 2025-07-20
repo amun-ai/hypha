@@ -706,7 +706,7 @@ vectors = await artifact_manager.list_vectors(artifact_id="example-id", limit=20
 
 ---
 
-### `put_file(artifact_id: str, file_path: str, download_weight: float = 0, use_proxy: bool = None) -> str`
+### `put_file(artifact_id: str, file_path: str, download_weight: float = 0, use_proxy: bool = None, use_local_url: bool = False, expires_in: float = 3600) -> str`
 
 Generates a pre-signed URL to upload a file to the artifact in S3. The URL can be used with an HTTP `PUT` request to upload the file. 
 
@@ -721,6 +721,11 @@ Generates a pre-signed URL to upload a file to the artifact in S3. The URL can b
 - `file_path`: The relative path of the file to upload within the artifact (e.g., `"data.csv"`).
 - `download_weight`: A float value representing the file's impact on download count when downloaded via any endpoint. Defaults to `0`. Files with weight `0` don't increment download count when accessed.
 - `use_proxy`: A boolean to control whether to use the S3 proxy for the generated URL. If `None` (default), follows the server configuration. If `True`, forces the use of the proxy. If `False`, bypasses the proxy and returns a direct S3 URL.
+- `use_local_url`: A boolean to control whether to generate URLs for local/cluster-internal access. Defaults to `False`. When `True`, generates URLs suitable for access within the cluster:
+  - **With proxy (`use_proxy=True`)**: Uses `local_base_url/s3` instead of the public proxy URL for cluster-internal access
+  - **Direct S3 (`use_proxy=False`)**: Uses the S3 endpoint URL as-is (already configured for local access)
+  - **Use case**: Useful when services within a cluster need to access files but public URLs are not accessible from within the cluster network
+- `expires_in`: A float number for the expiration time of the S3 presigned url
 
 **Returns:** A pre-signed URL for uploading the file.
 
@@ -739,6 +744,12 @@ put_url = await artifact_manager.put_file(artifact_id="other_workspace/example-d
 
 # Upload with proxy bypassed (useful for direct S3 access)
 put_url = await artifact_manager.put_file(artifact_id="example-dataset", file_path="data.csv", use_proxy=False)
+
+# Upload using local/cluster-internal URLs (useful within cluster networks)
+put_url = await artifact_manager.put_file(artifact_id="example-dataset", file_path="data.csv", use_local_url=True)
+
+# Upload using local proxy URL for cluster-internal access
+put_url = await artifact_manager.put_file(artifact_id="example-dataset", file_path="data.csv", use_proxy=True, use_local_url=True)
 
 # Upload the file using an HTTP PUT request
 with open("path/to/local/data.csv", "rb") as f:
@@ -778,7 +789,7 @@ await artifact_manager.remove_file(artifact_id="other_workspace/example-dataset"
 
 ---
 
-### `get_file(artifact_id: str, file_path: str, silent: bool = False, version: str = None, use_proxy: bool = None) -> str`
+### `get_file(artifact_id: str, file_path: str, silent: bool = False, version: str = None, use_proxy: bool = None, use_local_url: bool = False, expires_in: float = 3600) -> str`
 
 Generates a pre-signed URL to download a file from the artifact stored in S3.
 
@@ -789,6 +800,11 @@ Generates a pre-signed URL to download a file from the artifact stored in S3.
 - `silent`: A boolean to suppress the download count increment. Default is `False`.
 - `version`: The version of the artifact to download the file from. By default, it downloads from the latest version. If you want to download from a staged version, you can set it to `"stage"`.
 - `use_proxy`: A boolean to control whether to use the S3 proxy for the generated URL. If `None` (default), follows the server configuration. If `True`, forces the use of the proxy. If `False`, bypasses the proxy and returns a direct S3 URL.
+- `use_local_url`: A boolean to control whether to generate URLs for local/cluster-internal access. Defaults to `False`. When `True`, generates URLs suitable for access within the cluster:
+  - **With proxy (`use_proxy=True`)**: Uses `local_base_url/s3` instead of the public proxy URL for cluster-internal access
+  - **Direct S3 (`use_proxy=False`)**: Uses the S3 endpoint URL as-is (already configured for local access)
+  - **Use case**: Useful when services within a cluster need to access files but public URLs are not accessible from within the cluster network
+- `expires_in`: A float number for the expiration time of the S3 presigned url
 
 **Returns:** A pre-signed URL for downloading the file.
 
@@ -808,6 +824,12 @@ get_url = await artifact_manager.get_file(artifact_id="example-dataset", file_pa
 
 # Get a file bypassing the S3 proxy (useful for publishing to external services)
 get_url = await artifact_manager.get_file(artifact_id="example-dataset", file_path="data.csv", use_proxy=False)
+
+# Get a file using local/cluster-internal URLs (useful within cluster networks)
+get_url = await artifact_manager.get_file(artifact_id="example-dataset", file_path="data.csv", use_local_url=True)
+
+# Get a file using local proxy URL for cluster-internal access
+get_url = await artifact_manager.get_file(artifact_id="example-dataset", file_path="data.csv", use_proxy=True, use_local_url=True)
 ```
 
 ---
@@ -1252,6 +1274,9 @@ The `Artifact Manager` provides an HTTP API for retrieving artifact manifests, d
       - `all`: Return both staged and committed artifacts
 - `/{workspace}/artifacts/{artifact_alias}/files`: List all files in the artifact.
 - `/{workspace}/artifacts/{artifact_alias}/files/{file_path:path}`: Download a file from the artifact (redirects to a pre-signed URL).
+  - **Query Parameters**:
+    - `use_proxy`: (Optional) Boolean to control whether to use the S3 proxy
+    - `use_local_url`: (Optional) Boolean to generate local/cluster-internal URLs
 
 #### Request Format:
 

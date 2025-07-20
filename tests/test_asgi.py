@@ -117,11 +117,12 @@ async def test_asgi_serverapp(fastapi_server, test_user_token):
         .open(encoding="utf-8")
         .read()
     )
-    config = await controller.launch(
+    config = await controller.install(
         source=source,
         wait_for_service="hello-fastapi",
         timeout=30,
     )
+    config = await controller.start(config.id)
     service = await api.get_service(f"{config.workspace}/hello-fastapi")
     assert "serve" in service
 
@@ -149,11 +150,12 @@ async def test_functions(fastapi_server, test_user_token):
         .open(encoding="utf-8")
         .read()
     )
-    config = await controller.launch(
+    config = await controller.install(
         source=source,
         wait_for_service="hello-functions",
         timeout=30,
     )
+    config = await controller.start(config.id)
 
     service = await api.get_service(f"{config.workspace}/hello-functions")
     assert "hello-world" in service

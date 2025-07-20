@@ -5376,3 +5376,170 @@ async def test_list_files_with_actual_and_pending_files(minio_server, fastapi_se
     assert files[0]["name"] == "update_file.txt"
     assert files[0]["pending"] is True
     assert files[0]["download_weight"] == 0.3
+
+
+async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_token):
+    """Test static site serving functionality."""
+    # Create an artifact with type "site"
+    api = await connect_to_server(
+        {"name": "test-client", "token": test_user_token, "server_url": SERVER_URL}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    token = test_user_token
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    # Create a site artifact
+    manifest = {
+        "name": "Test Static Site",
+        "description": "A test static website",
+        "type": "site"
+    }
+    
+    config = {
+        "templates": ["index.html", "about.html"],  
+        "template_engine": "jinja2",
+        "headers": {
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "max-age=3600"
+        }
+    }
+    
+    # Create artifact
+    ws = api.config.workspace  # Use the actual workspace from the API connection
+    artifact_alias = "my-static-site"
+    
+    # Create and commit an artifact with actual files
+    artifact = await artifact_manager.create(
+        type="site",
+        alias=artifact_alias,
+        manifest=manifest,
+        config=config,
+        stage=True,
+    )
+    
+    # Add files to the artifact
+    # Regular HTML file (non-templated)
+    html_content = """<!DOCTYPE html>
+<html>
+<head><title>Test Site</title></head>
+<body><h1>Welcome to Test Site</h1></body>
+</html>"""
+    
+    file_url = await artifact_manager.put_file(artifact.id, "static.html")
+    response = requests.put(file_url, data=html_content.encode(), headers={"Content-Type": "text/html"})
+    assert response.ok
+    
+    
+    # Templated HTML file (with Jinja2)
+    template_content = """<!DOCTYPE html>
+<html>
+<head><title>{{ MANIFEST.name }}</title></head>
+<body>
+    <h1>{{ MANIFEST.name }}</h1>
+    <p>{{ MANIFEST.description }}</p>
+    <p>Base URL: {{ BASE_URL }}</p>
+    <p>Public URL: {{ PUBLIC_BASE_URL }}</p>
+    <p>Workspace: {{ WORKSPACE }}</p>
+    <p>User: {{ USER.id if USER else 'Anonymous' }}</p>
+    <p>View Count: {{ VIEW_COUNT }}</p>
+</body>
+</html>"""
+    
+    file_url = await artifact_manager.put_file(artifact.id, "index.html")
+    response = requests.put(file_url, data=template_content.encode(), headers={"Content-Type": "text/html"})
+    assert response.ok
+    
+    # CSS file
+    css_content = "body { font-family: Arial, sans-serif; }"
+    file_url = await artifact_manager.put_file(artifact.id, "style.css")
+    response = requests.put(file_url, data=css_content.encode(), headers={"Content-Type": "text/css"})
+    assert response.ok
+    
+    # JSON data file
+    json_content = '{"message": "Hello from JSON"}'
+    file_url = await artifact_manager.put_file(artifact.id, "data.json")
+    response = requests.put(file_url, data=json_content.encode(), headers={"Content-Type": "application/json"})
+    assert response.ok
+    
+    # Commit the artifact
+    await artifact_manager.commit(artifact.id)
+    
+    async with httpx.AsyncClient() as client:
+        # Test serving regular static file (non-templated)
+        r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/static.html", headers=headers)
+        assert r.status_code == 200  # Should stream content directly
+        assert "text/html" in r.headers.get("content-type", "")
+        assert "Welcome to Test Site" in r.text
+        
+        # Test serving CSS file with correct mime type
+        r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/style.css", headers=headers)
+        assert r.status_code == 200  # Should stream content directly
+        assert "text/css" in r.headers.get("content-type", "")
+        assert "font-family: Arial" in r.text
+        
+        # Test serving JSON file
+        r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/data.json", headers=headers)
+        assert r.status_code == 200  # Should stream content directly
+        assert "application/json" in r.headers.get("content-type", "")
+        assert "Hello from JSON" in r.text
+        
+        # Test serving templated file (should render template)
+        r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/index.html", headers=headers)
+        assert r.status_code == 200
+        assert "text/html" in r.headers.get("content-type", "")
+        
+        # Check template rendering
+        content = r.text
+        assert "Test Static Site" in content  # From MANIFEST.name
+        assert "A test static website" in content  # From MANIFEST.description
+        assert f"/{ws}/site/{artifact_alias}/" in content  # BASE_URL
+        assert ws in content  # WORKSPACE (use actual workspace name)
+        assert "View Count:" in content  # VIEW_COUNT should be present
+        
+        # Test default index.html serving
+        r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/", headers=headers)
+        assert r.status_code == 200
+        assert "Test Static Site" in r.text
+        
+        # Test CORS headers
+        r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/index.html", headers=headers)
+        assert r.headers.get("Access-Control-Allow-Origin") == "*"
+        assert r.headers.get("Cache-Control") == "max-age=3600"
+        
+        # Test non-existent file
+        r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/nonexistent.html", headers=headers)
+        assert r.status_code == 404
+        
+        # Test artifact with wrong type
+        regular_artifact = await artifact_manager.create(
+            type="generic",
+            alias="regular-artifact", 
+            manifest={"name": "Regular"},
+        )
+        
+        # Should fail for non-site artifact
+        r = await client.get(f"{SERVER_URL}/{ws}/site/regular-artifact/index.html", headers=headers)
+        assert r.status_code == 400
+        assert "not a site artifact" in r.text.lower()
+        
+        # Test stage parameter (create staged version)
+        staged_artifact = await artifact_manager.create(
+            type="site",
+            alias="staged-site", 
+            manifest={"name": "Staged Site"},
+            config={"template_engine": "jinja2", "templates": ["index.html"]},
+            stage=True,
+        )
+        
+        file_url = await artifact_manager.put_file(staged_artifact.id, "index.html")
+        response = requests.put(file_url, data="<h1>Staged content</h1>", headers={"Content-Type": "text/html"})
+        assert response.ok
+        
+        r = await client.get(f"{SERVER_URL}/{ws}/site/staged-site/index.html?stage=true", headers=headers)
+        assert r.status_code == 200
+        
+        # Test default index.html serving when path is empty
+        r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/", headers=headers)
+        assert r.status_code == 200
+        assert "Test Static Site" in r.text
