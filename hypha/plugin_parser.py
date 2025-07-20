@@ -11,7 +11,7 @@ from lxml import etree
 from hypha_rpc.utils import DefaultObjectProxy
 from hypha.core import ApplicationManifest
 
-tag_types = ["config", "script", "link", "window", "style", "docs", "attachment", "file"]
+tag_types = ["config", "script", "link", "window", "style", "docs", "attachment", "file", "manifest"]
 
 CONFIGURABLE_FIELDS = [
     "env",
@@ -199,7 +199,7 @@ def extract_files_from_source(source):
         plugin_comp[tag_type] = values
     
     # Extract manifest files
-    for manifest_elm in plugin_comp.manifest:
+    for manifest_elm in plugin_comp.manifest or []:
         lang = manifest_elm.attrs.get('lang', 'json').lower()
         content = manifest_elm.content
         
@@ -227,7 +227,7 @@ def extract_files_from_source(source):
         })
     
     # Extract file elements
-    for file_elm in plugin_comp.file:
+    for file_elm in plugin_comp.file or []:
         name = file_elm.attrs.get('name')
         format = file_elm.attrs.get('format', 'text').lower()
         content = file_elm.content
@@ -241,7 +241,7 @@ def extract_files_from_source(source):
     remaining_source = source
     
     # Remove manifest tags
-    for manifest_elm in plugin_comp.manifest:
+    for manifest_elm in plugin_comp.manifest or []:
         lang = manifest_elm.attrs.get('lang', 'json')
         content = manifest_elm.content or ""
         # Create regex pattern to match the tag
@@ -253,7 +253,7 @@ def extract_files_from_source(source):
         remaining_source = re.sub(pattern, '', remaining_source, flags=re.DOTALL | re.IGNORECASE)
     
     # Remove file tags
-    for file_elm in plugin_comp.file:
+    for file_elm in plugin_comp.file or []:
         name = file_elm.attrs.get('name', '')
         content = file_elm.content or ""
         # Create regex pattern to match the tag

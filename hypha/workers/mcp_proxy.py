@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 import httpx
+from hypha_rpc import connect_to_server
 from hypha.core import UserInfo
 from hypha.workers.base import BaseWorker, WorkerConfig, SessionStatus, SessionInfo, SessionNotFoundError, WorkerError
 
@@ -133,7 +134,7 @@ class MCPClientRunner(BaseWorker):
                     logger.warning(f"Failed to parse source as JSON: {e}")
             
             # Create final configuration
-            final_config = {
+            final_manifest = {
                 "type": "mcp-server",
                 "mcpServers": mcp_servers,
                 "name": manifest.get("name", "MCP Server"),
@@ -143,11 +144,11 @@ class MCPClientRunner(BaseWorker):
             
             # Merge any additional manifest fields
             for key, value in manifest.items():
-                if key not in final_config:
-                    final_config[key] = value
+                if key not in final_manifest:
+                    final_manifest[key] = value
             
             # Generate source file with final configuration
-            source_content = json.dumps(final_config, indent=2)
+            source_content = json.dumps(final_manifest, indent=2)
             
             # Create new files list, replacing or adding source
             new_files = [f for f in files if f.get("name") != "source"]
@@ -156,8 +157,8 @@ class MCPClientRunner(BaseWorker):
                 "content": source_content,
                 "format": "text"
             })
-            
-            return final_config, new_files
+            final_manifest["wait_for_service"] = "default"
+            return final_manifest, new_files
         
         # Not an MCP server type, return unchanged
         return manifest, files
@@ -214,6 +215,9 @@ class MCPClientRunner(BaseWorker):
         if not MCP_AVAILABLE:
             raise Exception("MCP library not available")
 
+        # Call progress callback if provided
+        config.progress_callback({"type": "info", "message": "Initializing MCP proxy worker..."})
+
         # Extract MCP servers configuration from manifest
         manifest = config.manifest
         mcp_servers = manifest.get("mcpServers", {})
@@ -226,40 +230,84 @@ class MCPClientRunner(BaseWorker):
             "logs": {"info": [], "error": [], "debug": []},
             "services": []
         }
+        
+        config.progress_callback({"type": "info", "message": "Connecting to Hypha server..."})
+        
+        client = await connect_to_server({
+            "server_url": config.server_url,
+            "client_id": config.client_id,
+            "token": config.token,
+            "workspace": config.workspace,
+        })
+
+        config.progress_callback({"type": "info", "message": f"Connecting to {len(mcp_servers)} MCP server(s)..."})
 
         # Connect to each MCP server
         for server_name, server_config in mcp_servers.items():
             try:
+                config.progress_callback({"type": "info", "message": f"Connecting to MCP server: {server_name}..."})
                 logger.info(f"Connecting to MCP server: {server_name}")
-                await self._connect_and_register_mcp_service(session_data, server_name, server_config)
+                
+                await self._connect_and_register_mcp_service(session_data, server_name, server_config, client, config)
                 
                 session_data["logs"]["info"].append(f"Successfully connected to MCP server: {server_name}")
                 logger.info(f"Successfully connected to MCP server: {server_name}")
+                config.progress_callback({"type": "info", "message": f"Successfully connected to MCP server: {server_name}"})
                 
             except Exception as e:
-                error_msg = f"Failed to connect to MCP server {server_name}: {e}"
+                error_msg = f"Failed to connect to MCP server {server_name}: {str(e)}"
                 session_data["logs"]["error"].append(error_msg)
                 logger.error(error_msg)
+                config.progress_callback({"type": "error", "message": error_msg})
+                # For single server configs, fail fast instead of continuing
+                if len(mcp_servers) == 1:
+                    raise Exception(error_msg)
                 # Continue with other servers even if one fails
                 continue
+        
+        config.progress_callback({"type": "info", "message": "Registering default service..."})
+
+        # register the default service
+        await client.register_service(
+            {
+                "id": "default",
+                "name": "default",
+                "description": "Default service",
+                "setup": lambda: None,
+            }
+        )
 
         if not session_data["connections"]:
-            raise Exception("Failed to connect to any MCP servers")
+            # Provide more specific error message
+            all_errors = session_data["logs"]["error"]
+            if all_errors:
+                last_error = all_errors[-1]
+                error_msg = f"Failed to connect to any MCP servers. Last error: {last_error}"
+                config.progress_callback({"type": "error", "message": error_msg})
+                raise Exception(error_msg)
+            else:
+                error_msg = "Failed to connect to any MCP servers"
+                config.progress_callback({"type": "error", "message": error_msg})
+                raise Exception(error_msg)
 
+        config.progress_callback({"type": "success", "message": f"MCP proxy initialized successfully with {len(session_data['connections'])} server(s)"})
         return session_data
 
-    async def _connect_and_register_mcp_service(self, session_data: dict, server_name: str, server_config: dict):
+    async def _connect_and_register_mcp_service(self, session_data: dict, server_name: str, server_config: dict, client, config: WorkerConfig = None):
         """Connect to an MCP server and register its capabilities as Hypha services."""
         server_type = server_config.get("type", "stdio")
         
+        if config:
+            config.progress_callback({"type": "info", "message": f"Establishing connection to {server_type} MCP server: {server_name}..."})
+        
         if server_type == "streamable-http":
-            await self._connect_streamable_http(session_data, server_name, server_config)
+            await self._connect_streamable_http(session_data, server_name, server_config, client, config)
         elif server_type == "sse":
-            await self._connect_sse(session_data, server_name, server_config)
+            await self._connect_sse(session_data, server_name, server_config, client, config)
         else:
             raise Exception(f"Unsupported MCP server type: {server_type}")
 
-    async def _connect_streamable_http(self, session_data: dict, server_name: str, server_config: dict):
+    async def _connect_streamable_http(self, session_data: dict, server_name: str, server_config: dict, client, config: WorkerConfig = None):
         """Connect to a streamable HTTP MCP server."""
         url = server_config.get("url")
         if not url:
@@ -279,9 +327,9 @@ class MCPClientRunner(BaseWorker):
         }
         
         # Collect and register server capabilities
-        await self._collect_and_register_capabilities(session_data, server_name, None)
+        await self._collect_and_register_capabilities(session_data, server_name, None, client, config)
 
-    async def _connect_sse(self, session_data: dict, server_name: str, server_config: dict):
+    async def _connect_sse(self, session_data: dict, server_name: str, server_config: dict, client, config: WorkerConfig = None):
         """Connect to an SSE (Server-Sent Events) MCP server."""
         url = server_config.get("url")
         if not url:
@@ -305,16 +353,19 @@ class MCPClientRunner(BaseWorker):
                 }
                 
                 # Collect and register server capabilities
-                await self._collect_and_register_capabilities(session_data, server_name, mcp_session)
+                await self._collect_and_register_capabilities(session_data, server_name, mcp_session, client, config)
                 
         except Exception as e:
             logger.error(f"Failed to connect to SSE server {server_name}: {e}")
             raise
 
-    async def _collect_and_register_capabilities(self, session_data: dict, server_name: str, mcp_session):
+    async def _collect_and_register_capabilities(self, session_data: dict, server_name: str, mcp_session, client, config: WorkerConfig = None):
         """Collect server capabilities and register them as Hypha services."""
         connection_info = session_data["connections"][server_name]
         server_type = connection_info["type"]
+        
+        if config:
+            config.progress_callback({"type": "info", "message": f"Discovering capabilities from {server_name}..."})
         
         tools = []
         resources = []
@@ -333,8 +384,14 @@ class MCPClientRunner(BaseWorker):
                         "method": "tools/list"
                     })
                     tools = tools_response.get("result", {}).get("tools", [])
+                    
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 404:
+                        logger.warning(f"Tools not found in {server_name}")
+                    else:
+                        raise e
                 except Exception as e:
-                    logger.warning(f"Failed to list tools from {server_name}: {e}")
+                    raise e
                 
                 # List resources
                 try:
@@ -344,9 +401,13 @@ class MCPClientRunner(BaseWorker):
                         "method": "resources/list"
                     })
                     resources = resources_response.get("result", {}).get("resources", [])
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 404:
+                        logger.warning(f"Resources not found in {server_name}")
+                    else:
+                        raise e
                 except Exception as e:
-                    logger.warning(f"Failed to list resources from {server_name}: {e}")
-                
+                    raise e
                 # List prompts
                 try:
                     prompts_response = await transport.send_request({
@@ -355,9 +416,13 @@ class MCPClientRunner(BaseWorker):
                         "method": "prompts/list"
                     })
                     prompts = prompts_response.get("result", {}).get("prompts", [])
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 404:
+                        logger.warning(f"Tools not found in {server_name}")
+                    else:
+                        raise e
                 except Exception as e:
-                    logger.warning(f"Failed to list prompts from {server_name}: {e}")
-                    
+                    raise e
             else:
                 # For other types (SSE, stdio), use MCP session
                 if mcp_session:
@@ -384,8 +449,12 @@ class MCPClientRunner(BaseWorker):
             
             logger.info(f"Server {server_name}: Found {len(tools)} tools, {len(resources)} resources, {len(prompts)} prompts")
             
+            if config:
+                config.progress_callback({"type": "info", "message": f"Found {len(tools)} tools, {len(resources)} resources, {len(prompts)} prompts from {server_name}"})
+                config.progress_callback({"type": "info", "message": f"Registering services for {server_name}..."})
+            
             # Register unified service for this server
-            await self._register_unified_mcp_service(session_data, server_name, tools, resources, prompts)
+            await self._register_unified_mcp_service(session_data, server_name, tools, resources, prompts, client)
             
         except Exception as e:
             logger.error(f"Failed to collect capabilities from {server_name}: {e}")
@@ -728,15 +797,15 @@ class MCPClientRunner(BaseWorker):
         
         return prompt_wrappers
 
-    async def _register_unified_mcp_service(self, session_data: dict, server_name: str, tools: List, resources: List, prompts: List):
+    async def _register_unified_mcp_service(self, session_data: dict, server_name: str, tools: List, resources: List, prompts: List, client):
         """Register a unified service that exposes all MCP server capabilities."""
         # Create wrappers for all capabilities
         tool_wrappers = await self._create_tool_wrappers(session_data, server_name, tools)
         resource_wrappers = await self._create_resource_wrappers(session_data, server_name, resources)  
         prompt_wrappers = await self._create_prompt_wrappers(session_data, server_name, prompts)
         
-        # Create the service definition
         service_def = {
+            "id": server_name,
             "name": f"MCP Server: {server_name}",
             "description": f"Unified service exposing tools, resources, and prompts from MCP server {server_name}",
             "type": "mcp-server-proxy",
@@ -756,10 +825,15 @@ class MCPClientRunner(BaseWorker):
             service_def[f"prompt_{prompt_wrapper['name']}"] = prompt_wrapper["function"]
         
         # Register the service
-        if self.server:
-            await self.server.register_service(service_def)
+        try:
+            await client.register_service(service_def, overwrite=True)
             session_data["services"].append(service_def["name"])
-            logger.info(f"Registered unified MCP service: {service_def['name']}")
+            logger.info(f"Registered unified MCP service: {service_def['name']} with ID: {server_name}")
+        except Exception as e:
+            error_msg = f"Failed to register MCP service for {server_name}: {e}"
+            session_data["logs"]["error"].append(error_msg)
+            logger.error(error_msg)
+            raise Exception(error_msg)
 
     async def stop(self, session_id: str) -> None:
         """Stop an MCP session."""
@@ -773,6 +847,16 @@ class MCPClientRunner(BaseWorker):
         try:
             session_data = self._session_data.get(session_id)
             if session_data:
+                # Unregister services
+                services = session_data.get("services", [])
+                for service_name in services:
+                    try:
+                        if self.server:
+                            await self.server.unregister_service(service_name)
+                            logger.info(f"Unregistered service: {service_name}")
+                    except Exception as e:
+                        logger.warning(f"Error unregistering service {service_name}: {e}")
+
                 # Close all MCP connections
                 connections = session_data.get("connections", {})
                 for server_name, connection_info in connections.items():

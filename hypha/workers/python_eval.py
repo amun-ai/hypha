@@ -1,10 +1,9 @@
 """Python Evaluation Worker for simple Python code execution."""
 
 import asyncio
-import json
+import httpx
 import logging
 import os
-import subprocess
 import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
@@ -79,8 +78,16 @@ class PythonEvalRunner(BaseWorker):
         
         self._sessions[session_id] = session_info
         
+        script_url = f"{config.app_files_base_url}/{config.manifest['entry_point']}?use_proxy=true"
+        # use httpx to get artifact files
+        async with httpx.AsyncClient() as client:
+            response = await client.get(script_url, headers={"Authorization": f"Bearer {config.token}"})
+            # raise error if response is not 200
+            response.raise_for_status()
+            script = response.content
+        
         try:
-            session_data = await self._start_python_session(config)
+            session_data = await self._start_python_session(script, config)
             self._session_data[session_id] = session_data
             
             # Update session status
@@ -97,39 +104,32 @@ class PythonEvalRunner(BaseWorker):
             self._sessions.pop(session_id, None)
             raise
 
-    async def _start_python_session(self, config: WorkerConfig) -> Dict[str, Any]:
+    async def _start_python_session(self, script: str, config: WorkerConfig) -> Dict[str, Any]:
         """Start a Python evaluation session."""
-        app_type = config.manifest.get("type")
-        if app_type not in self.supported_types:
-            raise Exception(f"Python eval worker only supports {self.supported_types}, got {app_type}")
-
-        # Extract Python code from the entry point or manifest
-        python_code = config.manifest.get("script", "")
-        if not python_code:
-            # Try to get from files if available through server
-            try:
-                # For now, use a simple default script
-                python_code = "print('Hello from Python eval worker!')"
-            except Exception as e:
-                logger.warning(f"Could not retrieve Python code: {e}")
-                python_code = "print('No code provided')"
+        assert script is not None, "Script is not found"
 
         # Execute Python code in subprocess
         try:
             process = await asyncio.create_subprocess_exec(
                 sys.executable, 
                 "-c", 
-                python_code,
+                script,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=os.getcwd()
+                cwd=os.getcwd(),
+                env={
+                    "HYPHA_SERVER_URL": config.server_url,
+                    "HYPHA_WORKSPACE": config.workspace,
+                    "HYPHA_CLIENT_ID": config.client_id,
+                    "HYPHA_TOKEN": config.token,
+                }
             )
             
             # Wait for completion with timeout
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(), 
-                    timeout=config.timeout or 30
+                    timeout=config.timeout
                 )
             except asyncio.TimeoutError:
                 process.kill()
@@ -151,7 +151,7 @@ class PythonEvalRunner(BaseWorker):
                 "process_id": process.pid,
                 "return_code": process.returncode,
                 "logs": logs,
-                "python_code": python_code
+                "python_code": script
             }
             
         except Exception as e:
@@ -163,7 +163,7 @@ class PythonEvalRunner(BaseWorker):
                 "process_id": None,
                 "return_code": -1,
                 "logs": logs,
-                "python_code": python_code
+                "python_code": script
             }
 
     async def stop(self, session_id: str) -> None:

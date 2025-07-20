@@ -467,6 +467,8 @@ class ServerAppController:
         """
         if not workspace:
             workspace = context["ws"]
+            
+        progress_callback = progress_callback or (lambda x: None)
 
         user_info = UserInfo.model_validate(context["user"])
         assert not user_info.is_anonymous, "Anonymous users cannot install apps"
@@ -563,14 +565,14 @@ class ServerAppController:
             # If there's remaining source content, add it as source file
             if remaining_source and remaining_source.strip():
                 app_files.append({
-                    "name": "source",
+                    "name": artifact_obj["entry_point"],
                     "content": remaining_source,
                     "format": "text"
                 })
-        else:
+        elif source:
             # Fall back to treating source as single file
             app_files.append({
-                "name": "source",
+                "name": artifact_obj["entry_point"],
                 "content": source,
                 "format": "text"
             })
@@ -617,6 +619,7 @@ class ServerAppController:
             "ws": context["ws"],
             "user": context["user"]
         }
+        detached = artifact_obj.get("detached", detached)
         
         # Create startup_config from the arguments if any are provided
         startup_config = {}
@@ -902,9 +905,9 @@ class ServerAppController:
         except Exception as exp:
             logger.error("Failed to start the app: %s during installation, error: %s", app_id, exp)
             await self.uninstall(app_id, context=context)
-            raise Exception(
-                f"Failed to start the app: {app_id} during installation, error: {exp}"
-            )
+            # Extract core error without chaining traceback
+            core_error = self._extract_core_error(exp)
+            raise Exception(f"Failed to install app '{app_id}': {core_error}") from None
         await self.artifact_manager.commit(
             app_id, version=version, context=context
         )
@@ -913,8 +916,6 @@ class ServerAppController:
             app_id, version=version, context=context
         )
         return updated_artifact_info.get("manifest", {})
-
-
 
     @schema_method
     async def uninstall(
@@ -960,10 +961,20 @@ class ServerAppController:
         context: dict = None,
     ):
         """Start the app by type using the appropriate worker."""
+        progress_callback({
+            "type": "info",
+            "message": f"Initializing {app_type} worker..."
+        })
+            
         # Get a random worker that supports this app type
         worker = await self.get_server_app_workers(app_type, context, random_select=True)
         if not worker:
             raise Exception(f"No server app worker found for type: {app_type}")
+        
+        progress_callback({
+            "type": "info",
+            "message": f"Starting {app_type} application..."
+        })
         
         # Get entry point from manifest
         entry_point = manifest.entry_point
@@ -976,6 +987,7 @@ class ServerAppController:
             "workspace": workspace,
             "client_id": client_id,
             "server_url": server_url,
+            "app_files_base_url": f"{server_url}/{workspace}/artifacts/{app_id}/files",
             "token": token,
             "entry_point": entry_point,
             "artifact_id": f"{workspace}/{app_id}",
@@ -1000,6 +1012,29 @@ class ServerAppController:
         }
         
         return session_id
+
+    def _extract_core_error(self, error, logs=None):
+        """Extract the core error message from worker logs or exception."""
+        # First try to get meaningful error from worker logs
+        if logs:
+            try:
+                if isinstance(logs, dict) and logs.get('error'):
+                    error_list = logs['error']
+                    if isinstance(error_list, list) and error_list:
+                        return error_list[0]
+                    else:
+                        return str(error_list)
+                elif isinstance(logs, str):
+                    return logs
+            except (KeyError, IndexError, TypeError, AttributeError):
+                pass
+        
+        # Handle specific exception types
+        if isinstance(error, asyncio.TimeoutError):
+            return "Application startup timed out"
+        
+        # For other exceptions, just return the message without chaining
+        return str(error)
 
     @schema_method
     async def start(
@@ -1045,6 +1080,8 @@ class ServerAppController:
         # When detached=True, ignore wait_for_service to avoid waiting
         if detached:
             wait_for_service = None
+        
+        progress_callback = progress_callback or (lambda x: None)
 
         workspace = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
@@ -1146,22 +1183,45 @@ class ServerAppController:
                 if info["id"].startswith(full_client_id + ":"):
                     sinfo = ServiceInfo.model_validate(info)
                     collected_services.append(sinfo)
+                    # Report service registration progress
+                    service_name = info["id"].split(":")[-1]
+                    progress_callback({
+                        "type": "success",
+                        "message": f"Service '{service_name}' registered successfully"
+                    })
+                        
                 if info["id"] == full_client_id + ":default":
                     for key in ["config", "name", "description"]:
                         if info.get(key):
                             app_info[key] = info[key]
+                    progress_callback({
+                        "type": "success",
+                        "message": "Default service configured"
+                    })
                 
                 # Check if this is the target service we're waiting for
                 if wait_for_service and isinstance(wait_for_service, str) and info["id"] == full_client_id + ":" + wait_for_service:
                     if not event_future.done():
+                        progress_callback({
+                            "type": "success",
+                            "message": f"Target service '{wait_for_service}' found"
+                        })
                         event_future.set_result(info)
                         logger.info(f"Target service found: {info['id']}")
 
             def client_connected(info: dict):
                 logger.info(f"Client connected: {info}")
+                progress_callback({
+                    "type": "success",
+                    "message": "Client connection established"
+                })
                 # Check if this is the target client we're waiting for
                 if not wait_for_service and info["id"] == full_client_id:
                     if not event_future.done():
+                        progress_callback({
+                            "type": "success",
+                            "message": "Application ready"
+                        })
                         event_future.set_result(info)
                         logger.info(f"Target client connected: {info['id']}")
 
@@ -1169,19 +1229,6 @@ class ServerAppController:
             self.event_bus.on_local("service_added", service_added)
             if not wait_for_service:
                 self.event_bus.on_local("client_connected", client_connected)
-        else:
-            # In detached mode, still collect services but don't wait for them
-            def service_added(info: dict):
-                logger.info(f"Service added (detached): {info}")
-                if info["id"].startswith(full_client_id + ":"):
-                    sinfo = ServiceInfo.model_validate(info)
-                    collected_services.append(sinfo)
-                if info["id"] == full_client_id + ":default":
-                    for key in ["config", "name", "description"]:
-                        if info.get(key):
-                            app_info[key] = info[key]
-
-            self.event_bus.on_local("service_added", service_added)
 
         try:
             # Start the app using the new start_by_type function
@@ -1203,6 +1250,24 @@ class ServerAppController:
             
             # Update app_info with session data
             app_info["session_id"] = session_id
+            
+            # Progress update after worker starts but before waiting for services
+            if not detached:
+                if wait_for_service:
+                    progress_callback({
+                        "type": "info",
+                        "message": f"Waiting for service '{wait_for_service}'..."
+                    })
+                else:
+                    progress_callback({
+                        "type": "info",
+                        "message": "Waiting for client connection..."
+                    })
+            else:
+                progress_callback({
+                    "type": "success",
+                    "message": "Application started in detached mode"
+                })
 
             # Set up activity tracker after starting the app
             tracker = self.store.get_activity_tracker()
@@ -1233,13 +1298,23 @@ class ServerAppController:
                 await asyncio.wait_for(event_future, timeout=timeout)
                 logger.info(f"Successfully received event for starting app: {full_client_id}")
                 await asyncio.sleep(0.1)  # Brief delay to allow service registration
-            else:
+            
+                progress_callback({
+                    "type": "info",
+                    "message": "Finalizing application startup..."
+                })
+            elif detached:
                 # In detached mode, give a brief moment for services to be registered
                 # but don't wait for them
                 logger.info(f"Started app in detached mode: {full_client_id}")
 
 
             # save the services
+            # service_count = len(collected_services)
+            progress_callback({
+                "type": "info",
+                "message": "Updating application manifest..."
+            })
             manifest.name = manifest.name or app_info.get("name", "Untitled App")
             manifest.description = manifest.description or app_info.get(
                 "description", ""
@@ -1269,51 +1344,39 @@ class ServerAppController:
                 manifest=manifest.model_dump(mode="json"),
                 context=context,
             )
+            
+            progress_callback({
+                "type": "success",
+                "message": "Application manifest updated successfully"
+            })
 
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, Exception) as exp:
+            # Get worker logs for debugging
+            logs = None
             try:
                 session_info = self._sessions.get(full_client_id)
                 if session_info and "_worker" in session_info:
                     logs = await session_info["_worker"].get_logs(full_client_id)
-                else:
-                    logs = "No logs available (session not found)"
             except Exception:
-                logs = "No logs available (session not found)"
+                pass  # Ignore log retrieval errors
+            
+            # Clean up session
             try:
                 session_info = self._sessions.get(full_client_id)
                 if session_info and "_worker" in session_info:
                     await session_info["_worker"].stop(full_client_id)
             except Exception:
-                pass  # Session might not exist or already stopped
-            raise Exception(
-                f"Failed to start the app: {workspace}/{app_id}, timeout reached ({timeout}s), worker logs:\n{logs}"
-            )
-        except Exception as exp:
-            try:
-                session_info = self._sessions.get(full_client_id)
-                if session_info and "_worker" in session_info:
-                    logs = await session_info["_worker"].get_logs(full_client_id)
-                else:
-                    logs = "No logs available (session not found)"
-            except Exception:
-                logs = "No logs available (session not found)"
-            try:
-                session_info = self._sessions.get(full_client_id)
-                if session_info and "_worker" in session_info:
-                    await session_info["_worker"].stop(full_client_id)
-            except Exception:
-                pass  # Session might not exist or already stopped
-            raise Exception(
-                f"Failed to start the app: {workspace}/{app_id}, error: {exp}, browser logs:\n{logs}"
-            ) from exp
+                pass  # Ignore cleanup errors
+            
+            # Extract core error message
+            core_error = self._extract_core_error(exp, logs)
+            raise Exception(f"Failed to start app '{app_id}': {core_error}") from None
         finally:
             # Clean up event listeners
             if not detached:
                 self.event_bus.off_local("service_added", service_added)
                 if not wait_for_service:
                     self.event_bus.off_local("client_connected", client_connected)
-            else:
-                self.event_bus.off_local("service_added", service_added)
 
         if wait_for_service:
             app_info["service_id"] = (
@@ -1330,9 +1393,24 @@ class ServerAppController:
         
         # Start autoscaling if enabled
         if manifest.autoscaling and manifest.autoscaling.enabled:
+            progress_callback({
+                "type": "info",
+                "message": "Configuring autoscaling..."
+            })
             await self.autoscaling_manager.start_autoscaling(
                 app_id, manifest.autoscaling, context
             )
+            progress_callback({
+                "type": "success",
+                "message": "Autoscaling enabled"
+            })
+        
+        # Final completion message
+        progress_callback({
+            "type": "success",
+            "message": "Application startup completed successfully"
+        })
+        
         return app_info
 
     @schema_method

@@ -278,31 +278,54 @@
                              icon: "file-download-outline",
                              callback: async (source, config) => {
                                  try {
-                                     // Show full page spinner
-                                     window.showInstallSpinner?.();
+                                     // Show progress spinner with logs
+                                     window.showProgressSpinner('Installing Application...', { 
+                                         showLogs: true,
+                                         title: "Installing Application"
+                                     });
+                                     window.addProgressLog('Starting application installation...', 'info');
                                      
                                      if (!ws || !ws.getService) {
                                          throw new Error('WebSocket connection not ready');
                                      }
+                                     
+                                     window.addProgressLog('Connecting to server...', 'info');
                                      const controller = await ws.getService("public/server-apps");
+                                     
+                                     // Create progress callback
+                                     const progressCallback = window.createProgressCallback();
+                                     
+                                     window.addProgressLog('Installing application...', 'info');
                                      const appInfo = await controller.install(source, {
                                          config: config,
                                          overwrite: true,
+                                         progress_callback: progressCallback,
                                          _rkwargs: true
                                      });
+                                     
+                                     window.addProgressLog('Application installed successfully!', 'success');
                                      console.log("App installed successfully:", appInfo);
                                      
-                                     // Refresh the apps list
+                                     window.updateProgressSpinner('Refreshing application list...');
                                      await refreshApps(ws);
+                                     window.addProgressLog('Application list refreshed.', 'success');
+                                     
+                                     // Allow user to close the dialog
+                                     setTimeout(() => {
+                                         window.enableProgressClose();
+                                         window.updateProgressSpinner('Installation completed successfully!');
+                                     }, 1000);
+                                     
                                      return appInfo;
                                  } catch (error) {
                                      console.error("Failed to install app:", error);
-                                     // For errors, we still show an alert since it's important feedback
-                                     alert(`Failed to install app: ${error}`);
+                                     window.addProgressLog(`Installation failed: ${error.message}`, 'error');
+                                     
+                                     // Allow user to close after error
+                                     window.enableProgressClose();
+                                     window.updateProgressSpinner('Installation failed');
+                                     
                                      throw error;
-                                 } finally {
-                                     // Hide spinner
-                                     window.hideInstallSpinner?.();
                                  }
                              }
                          }
@@ -1084,15 +1107,106 @@
             );
         };
 
-        const SpinnerOverlay = ({ isVisible, message = "Loading..." }) => {
+        const SpinnerOverlay = ({ isVisible, message = "Loading...", showLogs = false, logs = [], onClose = null, closeEnabled = false, title = "Operation Progress" }) => {
+            const [isExpanded, setIsExpanded] = React.useState(false);
+            
             if (!isVisible) return null;
             
             return (
                 <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
-                    <div className="bg-gray-800 rounded-lg p-8 flex flex-col items-center">
-                        <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-white mb-4"></div>
-                        <p className="text-white text-lg font-medium">{message}</p>
-                        <p className="text-gray-400 text-sm mt-2">Please wait...</p>
+                    <div className={`bg-gray-800 rounded-lg p-6 flex flex-col relative ${showLogs ? 'w-11/12 max-w-4xl' : 'items-center'}`}>
+                        {/* Close X button in upper right corner - always visible */}
+                        {onClose && (
+                            <button 
+                                onClick={onClose}
+                                className="absolute top-4 right-4 text-gray-400 hover:text-white text-2xl leading-none z-10"
+                                title="Close"
+                            >
+                                ×
+                            </button>
+                        )}
+                        
+                        {/* Header */}
+                        {showLogs && (
+                            <div className="mb-6 pr-8">
+                                <h2 className="text-xl font-bold text-white">{title}</h2>
+                            </div>
+                        )}
+                        
+                        {/* Loading section - centered */}
+                        <div className="flex flex-col items-center mb-6">
+                            {!closeEnabled && (
+                                <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-white mb-4"></div>
+                            )}
+                            {closeEnabled && (
+                                <div className="flex items-center justify-center h-16 w-16 mb-4">
+                                    <i className={`fas fa-2x ${message.includes('failed') || message.includes('Error') ? 'fa-times-circle text-red-400' : 'fa-check-circle text-green-400'}`}></i>
+                                </div>
+                            )}
+                            <p className="text-white text-lg font-medium text-center">{message}</p>
+                            {!closeEnabled && (
+                                <p className="text-gray-400 text-sm mt-2">Please wait...</p>
+                            )}
+                        </div>
+                        
+                        {/* Log window section - below spinner */}
+                        {showLogs && (
+                            <div className="w-full mb-6">
+                                <div className="flex items-center justify-between mb-2">
+                                    <h3 className="text-white font-medium">Progress Log</h3>
+                                    <button
+                                        onClick={() => setIsExpanded(!isExpanded)}
+                                        className="text-gray-400 hover:text-white text-sm"
+                                    >
+                                        {isExpanded ? 'Collapse' : 'Expand'}
+                                    </button>
+                                </div>
+                                <div className={`bg-gray-900 rounded border border-gray-700 p-3 font-mono text-sm overflow-y-auto ${
+                                    isExpanded ? 'h-96' : 'h-32'
+                                }`}>
+                                    {logs.length === 0 ? (
+                                        <div className="text-gray-500 italic">Waiting for progress updates...</div>
+                                    ) : (
+                                        logs.map((log, index) => (
+                                            <div key={index} className="mb-1 text-gray-300">
+                                                <span className="text-gray-500 mr-2">
+                                                    {new Date(log.timestamp).toLocaleTimeString()}
+                                                </span>
+                                                <span className={`whitespace-pre-wrap ${
+                                                    log.type === 'error' ? 'text-red-400' : 
+                                                      log.type === 'warning' ? 'text-yellow-400' :
+                                                      log.type === 'success' ? 'text-green-400' : 'text-gray-300'
+                                                }`}>
+                                                    {log.message}
+                                                </span>
+                                            </div>
+                                        ))
+                                    )}
+                                    {/* Auto-scroll to bottom */}
+                                    {logs.length > 0 && (
+                                        <div ref={el => el?.scrollIntoView({ behavior: 'smooth' })} />
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                        
+                        {/* Close button at bottom */}
+                        {(onClose && showLogs) && (
+                            <div className="flex justify-center">
+                                <button
+                                    onClick={closeEnabled ? onClose : undefined}
+                                    disabled={!closeEnabled}
+                                    className={`px-6 py-2 rounded-lg font-medium transition-all duration-300 ${
+                                        closeEnabled 
+                                            ? 'bg-blue-600 hover:bg-blue-500 text-white cursor-pointer' 
+                                            : 'bg-gray-600 text-gray-400 cursor-not-allowed opacity-50'
+                                    }`}
+                                    title={closeEnabled ? "Close dialog" : "Please wait for operation to complete"}
+                                >
+                                    {closeEnabled ? 'OK' : 'Please wait...'}
+                                </button>
+                            </div>
+                        )}
                     </div>
                 </div>
             );
@@ -2948,39 +3062,91 @@
                     return;
                 }
                 try {
-                    window.showLoadingSpinner('Uninstalling Application...');
+                                         // Show progress spinner with logs for uninstall
+                     window.showProgressSpinner('Uninstalling Application...', { 
+                         showLogs: true,
+                         title: "Uninstalling Application"
+                     });
+                    window.addProgressLog(`Starting uninstall for app: ${appId}`, 'info');
+                    
                     if (!ws || !ws.getService) {
                         throw new Error('WebSocket connection not ready. Please wait for the connection to be established.');
                     }
+                    
+                    window.addProgressLog('Connecting to server...', 'info');
                     const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
+                    
+                    window.addProgressLog('Uninstalling application...', 'info');
                     await controller.uninstall(appId);
+                    window.addProgressLog('Application uninstalled successfully!', 'success');
+                    
+                    window.updateProgressSpinner('Refreshing application list...');
                     await refreshApps(ws);
+                    window.addProgressLog('Application list refreshed.', 'success');
+                    
+                                         // Allow user to close the dialog
+                     setTimeout(() => {
+                         window.enableProgressClose();
+                         window.updateProgressSpinner('Uninstall completed successfully!');
+                     }, 1000);
+                    
                 } catch (error) {
                     console.error('Failed to uninstall app:', error);
-                    alert(`Failed to uninstall app: ${error}`);
-                } finally {
-                    window.hideLoadingSpinner();
+                    window.addProgressLog(`Uninstall failed: ${error.message}`, 'error');
+                    
+                                         // Allow user to close after error
+                     window.enableProgressClose();
+                     window.updateProgressSpinner('Uninstall failed');
                 }
             };
 
             const handleStartApp = async (appId) => {
                 try {
-                    window.showLoadingSpinner('Starting Application...');
+                                         // Show progress spinner with logs
+                     window.showProgressSpinner('Starting Application...', { 
+                         showLogs: true,
+                         title: "Starting Application"
+                     });
+                    window.addProgressLog(`Initializing startup for app: ${appId}`, 'info');
+                    
                     if (!ws || !ws.getService) {
                         throw new Error('WebSocket connection not ready. Please wait for the connection to be established.');
                     }
+                    
+                    window.addProgressLog('Connecting to server...', 'info');
                     const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
-                    const appInfo = await controller.start(appId);
+                    
+                    // Create progress callback
+                    const progressCallback = window.createProgressCallback();
+                    
+                    window.addProgressLog('Starting application with progress tracking...', 'info');
+                    const appInfo = await controller.start(appId, {
+                        progress_callback: progressCallback,
+                        _rkwargs: true
+                    });
+                    
+                    window.addProgressLog('Application started successfully!', 'success');
                     console.log('App started:', appInfo);
+                    
+                    window.updateProgressSpinner('Refreshing application lists...');
                     // Refresh both apps and running apps lists
                     await refreshApps(ws);
                     await refreshRunningApps(ws);
+                    window.addProgressLog('Application lists refreshed.', 'success');
+                    
+                                         // Allow user to close the dialog
+                     setTimeout(() => {
+                         window.enableProgressClose();
+                         window.updateProgressSpinner('Application started successfully!');
+                     }, 1000);
+                    
                 } catch (error) {
                     console.error('Failed to start app:', error);
-                    // Still show alert for errors since it's important feedback
-                    alert(`Failed to start app: ${error}`);
-                } finally {
-                    window.hideLoadingSpinner();
+                    window.addProgressLog(`Failed to start app: ${error.message}`, 'error');
+                    
+                                         // Allow user to close after error
+                     window.enableProgressClose();
+                     window.updateProgressSpinner('Application startup failed');
                 }
             };
 
@@ -3034,49 +3200,101 @@
 
             const handleCreateMCPServer = async (mcpConfig) => {
                 try {
-                    window.showLoadingSpinner('Installing MCP Server...');
+                                         // Show progress spinner with logs
+                     window.showProgressSpinner('Installing MCP Server...', { 
+                         showLogs: true,
+                         title: "Installing MCP Server"
+                     });
+                    window.addProgressLog('Starting MCP server installation...', 'info');
+                    
                     if (!ws || !ws.getService) {
                         throw new Error('WebSocket connection not ready. Please wait for the connection to be established.');
                     }
+                    
+                    window.addProgressLog('Connecting to server...', 'info');
                     const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
+                    
+                    // Create progress callback
+                    const progressCallback = window.createProgressCallback();
+                    
+                    window.addProgressLog('Installing MCP server with progress tracking...', 'info');
                     const appInfo = await controller.install({
                         config: mcpConfig,
                         overwrite: true,
+                        progress_callback: progressCallback,
                         _rkwargs: true
                     });
+                    
+                    window.addProgressLog('MCP server installed successfully!', 'success');
                     console.log('MCP Server installed:', appInfo);
                     
-                    // Refresh the apps list
+                    window.updateProgressSpinner('Refreshing application list...');
                     await refreshApps(ws);
+                    window.addProgressLog('Application list refreshed.', 'success');
+                    
+                                         // Allow user to close the dialog
+                     setTimeout(() => {
+                         window.enableProgressClose();
+                         window.updateProgressSpinner('MCP Server installation completed!');
+                     }, 1000);
+                    
                 } catch (error) {
                     console.error('Failed to install MCP server:', error);
-                    alert(`Failed to install MCP server: ${error}`);
-                } finally {
-                    window.hideLoadingSpinner();
+                    window.addProgressLog(`MCP server installation failed: ${error.message}`, 'error');
+                    
+                                         // Allow user to close after error
+                     window.enableProgressClose();
+                     window.updateProgressSpinner('MCP server installation failed');
                 }
             };
 
             const handleCreateA2AAgent = async (a2aConfig) => {
                 try {
-                    window.showLoadingSpinner('Installing A2A Agent...');
+                                         // Show progress spinner with logs
+                     window.showProgressSpinner('Installing A2A Agent...', { 
+                         showLogs: true,
+                         title: "Installing A2A Agent"
+                     });
+                    window.addProgressLog('Starting A2A agent installation...', 'info');
+                    
                     if (!ws || !ws.getService) {
                         throw new Error('WebSocket connection not ready. Please wait for the connection to be established.');
                     }
+                    
+                    window.addProgressLog('Connecting to server...', 'info');
                     const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
+                    
+                    // Create progress callback
+                    const progressCallback = window.createProgressCallback();
+                    
+                    window.addProgressLog('Installing A2A agent with progress tracking...', 'info');
                     const appInfo = await controller.install({
                         config: a2aConfig,
                         overwrite: true,
+                        progress_callback: progressCallback,
                         _rkwargs: true
                     });
+                    
+                    window.addProgressLog('A2A agent installed successfully!', 'success');
                     console.log('A2A Agent installed:', appInfo);
                     
-                    // Refresh the apps list
+                    window.updateProgressSpinner('Refreshing application list...');
                     await refreshApps(ws);
+                    window.addProgressLog('Application list refreshed.', 'success');
+                    
+                                         // Allow user to close the dialog
+                     setTimeout(() => {
+                         window.enableProgressClose();
+                         window.updateProgressSpinner('A2A Agent installation completed!');
+                     }, 1000);
+                    
                 } catch (error) {
                     console.error('Failed to install A2A agent:', error);
-                    alert(`Failed to install A2A agent: ${error}`);
-                } finally {
-                    window.hideLoadingSpinner();
+                    window.addProgressLog(`A2A agent installation failed: ${error.message}`, 'error');
+                    
+                                         // Allow user to close after error
+                     window.enableProgressClose();
+                     window.updateProgressSpinner('A2A agent installation failed');
                 }
             };
 
@@ -3667,25 +3885,122 @@
             const [isInstallingApp, setIsInstallingApp] = React.useState(false);
             const [isLoadingSpinnerVisible, setIsLoadingSpinnerVisible] = React.useState(true); // Show loading initially
             const [loadingMessage, setLoadingMessage] = React.useState('Connecting to Hypha server...');
+            const [showSpinnerLogs, setShowSpinnerLogs] = React.useState(false);
+            const [spinnerLogs, setSpinnerLogs] = React.useState([]);
+            const [spinnerCloseEnabled, setSpinnerCloseEnabled] = React.useState(false);
+            const [spinnerTitle, setSpinnerTitle] = React.useState("Operation Progress");
         
             // Expose spinner control functions globally for code editor and other components
             window.showLoadingSpinner = (message = 'Loading...') => {
                 setLoadingMessage(message);
+                setShowSpinnerLogs(false);
+                setSpinnerLogs([]);
+                setSpinnerCloseEnabled(false);
+                setSpinnerTitle("Operation Progress");
                 setIsLoadingSpinnerVisible(true);
             };
             
             window.hideLoadingSpinner = () => {
                 setIsLoadingSpinnerVisible(false);
                 setLoadingMessage('Loading...');
+                setShowSpinnerLogs(false);
+                setSpinnerLogs([]);
+                setSpinnerCloseEnabled(false);
+                setSpinnerTitle("Operation Progress");
+            };
+            
+            // Enhanced spinner with log functionality
+            window.showProgressSpinner = (message = 'Processing...', options = {}) => {
+                const { showLogs = true, clearLogs = true, title = "Operation Progress" } = options;
+                setLoadingMessage(message);
+                setShowSpinnerLogs(showLogs);
+                setSpinnerCloseEnabled(false); // Always start disabled
+                setSpinnerTitle(title);
+                if (clearLogs) {
+                    setSpinnerLogs([]);
+                }
+                setIsLoadingSpinnerVisible(true);
+            };
+            
+            window.addProgressLog = (message, type = 'info') => {
+                const logEntry = {
+                    message,
+                    type, // 'info', 'success', 'warning', 'error'
+                    timestamp: new Date().toISOString()
+                };
+                setSpinnerLogs(prev => [...prev, logEntry]);
+            };
+            
+            window.updateProgressSpinner = (message) => {
+                setLoadingMessage(message);
+            };
+            
+            window.enableProgressClose = () => {
+                setSpinnerCloseEnabled(true);
+            };
+            
+            window.hideProgressSpinner = () => {
+                setIsLoadingSpinnerVisible(false);
+                setLoadingMessage('Loading...');
+                setShowSpinnerLogs(false);
+                setSpinnerLogs([]);
+                setSpinnerCloseEnabled(false);
+                setSpinnerTitle("Operation Progress");
+            };
+            
+            // Helper to create a progress callback function
+            window.createProgressCallback = () => {
+                return (progress) => {
+                    console.log('Progress callback received:', progress);
+                    
+                    // Handle the new simplified format: {type, message}
+                    if (progress.message) {
+                        const type = progress.type || 'info';
+                        window.addProgressLog(progress.message, type);
+                        
+                        // Update the main spinner message for important updates
+                        if (type === 'success' || type === 'error') {
+                            window.updateProgressSpinner(progress.message);
+                        }
+                    }
+                    
+                    // Legacy support for other properties (if any)
+                    if (progress.step) {
+                        window.addProgressLog(`Step: ${progress.step}`, 'info');
+                    }
+                    
+                    if (progress.progress !== undefined) {
+                        window.addProgressLog(`Progress: ${progress.progress}%`, 'info');
+                    }
+                    
+                    if (progress.error) {
+                        window.addProgressLog(`Error: ${progress.error}`, 'error');
+                    }
+                    
+                    if (progress.warning) {
+                        window.addProgressLog(`Warning: ${progress.warning}`, 'warning');
+                    }
+                    
+                    if (progress.success) {
+                        window.addProgressLog(`Success: ${progress.success}`, 'success');
+                    }
+                    
+                    // For debugging: log the entire progress object if it has unexpected properties
+                    const knownProps = ['message', 'type', 'step', 'progress', 'error', 'warning', 'success'];
+                    const unknownProps = Object.keys(progress).filter(key => !knownProps.includes(key));
+                    if (unknownProps.length > 0) {
+                        window.addProgressLog(`Additional info: ${JSON.stringify(Object.fromEntries(unknownProps.map(key => [key, progress[key]])))}`, 'info');
+                    }
+                };
             };
             
             // Keep backward compatibility
             window.showInstallSpinner = (message = 'Installing Application...') => {
-                window.showLoadingSpinner(message);
+                window.showProgressSpinner(message, { showLogs: true, title: "Installing Application" });
             };
             
             window.hideInstallSpinner = () => {
-                window.hideLoadingSpinner();
+                window.hideProgressSpinner();
             };
 
             React.useEffect(() => {
@@ -3881,7 +4196,15 @@
                         setRunningApps={setRunningApps}
                     />
                     {selectedService && <Modal serviceInfo={selectedService} onClose={() => setSelectedService(null)} />}
-                    <SpinnerOverlay isVisible={isLoadingSpinnerVisible} message={loadingMessage} />
+                    <SpinnerOverlay 
+                    isVisible={isLoadingSpinnerVisible} 
+                    message={loadingMessage}
+                    showLogs={showSpinnerLogs}
+                    logs={spinnerLogs}
+                    onClose={window.hideProgressSpinner}
+                    closeEnabled={spinnerCloseEnabled}
+                    title={spinnerTitle}
+                />
                 </div>
             );
         };

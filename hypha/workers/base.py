@@ -33,6 +33,7 @@ class WorkerConfig(BaseModel):
     artifact_id: str
     manifest: Dict[str, Any]
     timeout: Optional[int] = None
+    app_files_base_url: Optional[str] = None
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
 
     class Config:

@@ -169,8 +169,7 @@ class BrowserAppRunner(BaseWorker):
         """Start a browser app session."""
         timeout_ms = config.timeout * 1000 if config.timeout else 60000
         # Call progress callback if provided
-        if config.progress_callback:
-            config.progress_callback({"status": "Initializing browser worker..."})
+        config.progress_callback({"type": "info", "message": "Initializing browser worker..."})
             
         if not self.browser:
             await self.initialize()
@@ -180,8 +179,7 @@ class BrowserAppRunner(BaseWorker):
         if app_type not in self.supported_types:
             raise Exception(f"Browser worker only supports {self.supported_types}, got {app_type}")
 
-        if config.progress_callback:
-            config.progress_callback({"status": "Creating browser context..."})
+        config.progress_callback({"type": "info", "message": "Creating browser context..."})
 
         # Create a new context for isolation
         context = await self.browser.new_context(
@@ -198,8 +196,7 @@ class BrowserAppRunner(BaseWorker):
         page.on("requestfailed", lambda request: logger.error(f"Request failed: {request.url} - {request.failure}"))
         page.on("response", lambda response: logger.info(f"Response: {response.url} - {response.status}") if response.status != 200 else None)
 
-        if config.progress_callback:
-            config.progress_callback({"status": "Loading application..."})
+        config.progress_callback({"type": "info", "message": "Loading application..."})
 
         try:
             # Get the entry point from manifest - this should be a compiled HTML file uploaded to artifact manager
@@ -230,8 +227,7 @@ class BrowserAppRunner(BaseWorker):
             await page.wait_for_timeout(1000)  # Wait 1 second for JS initialization
             logger.info("JavaScript initialization wait completed")
 
-            if config.progress_callback:
-                config.progress_callback({"status": "Application loaded successfully"})
+            config.progress_callback({"type": "success", "message": "Application loaded successfully"})
 
             return {
                 "local_url": local_url,
@@ -418,8 +414,7 @@ class BrowserAppRunner(BaseWorker):
         # Extract progress_callback from config
         progress_callback = config.get("progress_callback") if config else None
         
-        if progress_callback:
-            progress_callback({"status": "Starting browser app compilation..."})
+        progress_callback({"type": "info", "message": "Starting browser app compilation..."})
         
         app_type = manifest.get("type")
         if app_type and app_type not in self.supported_types:
@@ -428,8 +423,7 @@ class BrowserAppRunner(BaseWorker):
         if app_type is None:
             logger.warning("No app type found in manifest, using default app type")
             
-        if progress_callback:
-            progress_callback({"status": f"Compiling {app_type} application..."})
+        progress_callback({"type": "info", "message": f"Compiling {app_type} application..."})
         
         # Look for different types of source files
         source_file = None
@@ -439,21 +433,23 @@ class BrowserAppRunner(BaseWorker):
         
         files_by_name = {f.get("name"): f for f in files}
         
+        entry_point = manifest["entry_point"]
         # Check for source file (traditional approach)
-        if "source" in files_by_name:
-            source_file = files_by_name["source"]
-            source_content = source_file.get("content", "")
+        if entry_point in files_by_name:
+            source_file = files_by_name[entry_point]
+            if source_file.get("content") is None:
+                raise Exception(f"Source file {source_file.get('name')} is empty")
+            source_content = source_file.get("content") or ""
         
         # Only process config/script files for compilation if there's a source file
         # This indicates they were extracted from XML, not provided directly by user
         if source_file:
-            if progress_callback:
-                progress_callback({"status": "Processing source files and configurations..."})
+            progress_callback({"type": "info", "message": "Processing source files and configurations..."})
         else:
             # No source file, but we still need to ensure all browser apps have index.html as entry_point
             # This handles cases where files are provided directly (not as source)
             updated_manifest = manifest.copy()
-            updated_manifest["entry_point"] = "index.html"
+            updated_manifest["entry_point"] = manifest.get("entry_point", "index.html")
             updated_manifest["type"] = app_type
             
             # Check if there are any HTML files that need to be renamed to index.html
@@ -474,8 +470,7 @@ class BrowserAppRunner(BaseWorker):
             
             return updated_manifest, updated_files
         
-        if progress_callback:
-            progress_callback({"status": "Compiling source code to HTML template..."})
+        progress_callback({"type": "info", "message": "Compiling source code to HTML template..."})
             
         # Compile the source to HTML
         compiled_config, compiled_html = await self._compile_source_to_html(source_content, app_type, manifest, config)
@@ -483,8 +478,7 @@ class BrowserAppRunner(BaseWorker):
         new_manifest.update(compiled_config)
         app_type = new_manifest.get("type")
         
-        if progress_callback:
-            progress_callback({"status": "Updating manifest and preparing files..."})
+        progress_callback({"type": "info", "message": "Updating manifest and preparing files..."})
         
         # All browser apps should compile to index.html as the entry point
         # This ensures consistency and that the browser worker can find the file
@@ -498,7 +492,7 @@ class BrowserAppRunner(BaseWorker):
         
         
         # Create new files list without the source/config/script files and add compiled file
-        files_to_remove = set(["source"])
+        files_to_remove = set([entry_point])
         if config_file:
             files_to_remove.add(config_file["name"])
         if script_file:
@@ -518,14 +512,13 @@ class BrowserAppRunner(BaseWorker):
             del new_manifest["script"]
         if "code" in new_manifest:
             new_files.append({
-                "name": "source",
+                "name": entry_point,
                 "content": new_manifest["code"],
                 "format": "text"
             })
             del new_manifest["code"]
         
-        if progress_callback:
-            progress_callback({"status": f"Browser app compilation completed. Generated {compiled_entry_point}"})
+        progress_callback({"type": "success", "message": f"Browser app compilation completed. Generated {compiled_entry_point}"})
             
         return new_manifest, new_files
     
