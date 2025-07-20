@@ -208,14 +208,16 @@ class BrowserAppRunner(BaseWorker):
         # Setup caching if enabled
         cache_enabled = False
         if self.cache_manager:
+            # Check if caching is explicitly enabled
+            enable_cache = config.manifest.get("enable_cache", True)  # Default to True
             cache_routes = config.manifest.get("cache_routes", [])
             app_type = config.manifest.get("type")
             
-            # Add default cache routes for web-python apps
-            if app_type == "web-python" and not cache_routes:
+            # Add default cache routes for web-python apps if caching is enabled
+            if enable_cache and app_type == "web-python" and not cache_routes:
                 cache_routes = self.cache_manager.get_default_cache_routes_for_type(app_type)
                 
-            if cache_routes:
+            if enable_cache and cache_routes:
                 cache_enabled = True
                 await self._setup_route_caching(page, config.workspace, config.app_id, cache_routes)
                 await self.cache_manager.start_recording(config.workspace, config.app_id)
@@ -227,19 +229,19 @@ class BrowserAppRunner(BaseWorker):
             entry_point = config.manifest.get("entry_point", "index.html")
             logger.info(f"Browser worker starting session with entry_point: {entry_point}, app_type: {app_type}")
             
+            # Generate URLs for the app
+            local_url, public_url = self._generate_app_urls(config, entry_point)
+
             # For web-app type, navigate directly to the external URL
             if app_type == "web-app":
                 external_url = config.manifest.get("url")
                 if not external_url:
                     raise Exception("web-app type requires 'url' field in manifest")
-                local_url = external_url
-                public_url = external_url
+                logger.info(f"Loading web-app from external URL: {external_url} with timeout {timeout_ms}ms")
+                response = await page.goto(external_url, timeout=timeout_ms, wait_until="load")
             else:
-                # Generate URLs for the app
-                local_url, public_url = self._generate_app_urls(config, entry_point)
-
-            logger.info(f"Loading browser app from URL: {local_url} with timeout {timeout_ms}ms")
-            response = await page.goto(local_url, timeout=timeout_ms, wait_until="load")
+                logger.info(f"Loading browser app from URL: {local_url} with timeout {timeout_ms}ms")
+                response = await page.goto(local_url, timeout=timeout_ms, wait_until="load")
 
             if not response:
                 await context.close()
@@ -253,7 +255,8 @@ class BrowserAppRunner(BaseWorker):
                 )
 
             # Apply cookies and localStorage after successful navigation
-            await self._apply_pending_page_setup(page, local_url)
+            final_url = external_url if app_type == "web-app" else local_url
+            await self._apply_pending_page_setup(page, final_url)
 
             logger.info("Browser app loaded successfully")
             

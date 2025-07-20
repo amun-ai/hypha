@@ -2442,11 +2442,12 @@ async def test_web_app_type(fastapi_server, test_user_token):
             "name": "Test Web App",
             "type": "web-app",
             "version": "1.0.0",
-            "url": "https://example.com",
+            "url": "https://httpbin.org/get",  # Use a real URL that works
             "detached": True,
             "cookies": {"session": "test123"},
             "localStorage": {"theme": "dark"},
-            "authorization_token": "Bearer test-token"
+            "authorization_token": "Bearer test-token",
+            "enable_cache": True
         },
         files=[],  # web-app doesn't need source files
         stage=True,  # Use stage mode to avoid actually loading external site
@@ -2490,9 +2491,10 @@ async def test_web_app_cache_functionality(fastapi_server, test_user_token):
             "name": "Cached Web App",
             "type": "web-app",
             "version": "1.0.0",
-            "url": "https://example.com",
+            "url": "https://httpbin.org/json",
+            "enable_cache": True,
             "cache_routes": [
-                "https://example.com/*",
+                "https://httpbin.org/*",
                 "https://cdn.jsdelivr.net/*"
             ]
         },
@@ -2555,6 +2557,7 @@ api.export({
             "name": "Web Python Cached App",
             "type": "web-python",
             "version": "1.0.0",
+            "enable_cache": True,
         },
         stage=True,
         overwrite=True,
@@ -2608,7 +2611,7 @@ api.export({
             "name": "No Cache App",
             "type": "web-python",
             "version": "1.0.0",
-            "cache_routes": []  # Explicitly disable caching
+            "enable_cache": False  # Explicitly disable caching
         },
         stage=True,
         overwrite=True,
@@ -2621,6 +2624,7 @@ api.export({
             "name": "Cached App",
             "type": "web-python", 
             "version": "1.0.0",
+            "enable_cache": True,
             # Will use default cache routes for web-python
         },
         stage=True,

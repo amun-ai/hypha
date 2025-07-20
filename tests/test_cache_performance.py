@@ -43,13 +43,13 @@ api.export({
     # Test 1: App WITHOUT explicit cache routes (baseline)
     print("\n📊 Phase 1: Installing app WITHOUT cache routes...")
     
-    app_no_cache = await controller.install(
+             app_no_cache = await controller.install(
         source=web_python_source,
         manifest={
             "name": "No Cache Performance Test",
             "type": "web-python",
             "version": "1.0.0",
-            "cache_routes": []  # Explicitly disable caching
+            "enable_cache": False  # Explicitly disable caching
         },
         stage=False,  # Actually start the app
         overwrite=True,
@@ -86,12 +86,13 @@ api.export({
     # Test 2: App WITH cache routes (should be similar first time)
     print("\n📊 Phase 2: Installing app WITH cache routes...")
     
-    app_with_cache = await controller.install(
+             app_with_cache = await controller.install(
         source=web_python_source,
         manifest={
             "name": "Cached Performance Test",
             "type": "web-python",
             "version": "1.0.0",
+            "enable_cache": True,
             # Use default cache routes for web-python
         },
         stage=False,  # Actually start the app
@@ -225,13 +226,14 @@ async def test_web_app_performance(fastapi_server, test_user_token):
     print("\n🧪 Testing Web-App Performance")
     print("=" * 40)
 
-    # Test web-app with httpbin.org (simple, reliable test endpoint)
+             # Test web-app with httpbin.org (simple, reliable test endpoint)
     app_info = await controller.install(
         manifest={
             "name": "HTTPBin Test App",
             "type": "web-app",
             "version": "1.0.0",
             "url": "https://httpbin.org/get",
+            "enable_cache": True,
             "cache_routes": [
                 "https://httpbin.org/*"
             ]
@@ -341,19 +343,20 @@ async def test_cache_route_patterns_performance(fastapi_server, test_user_token)
         print(f"\n📊 Testing Pattern {i+1}: {pattern_config['name']}")
         print(f"   Routes: {pattern_config['routes']}")
 
-        # Install app with this cache pattern
-        app_info = await controller.install(
-            manifest={
-                "name": f"Cache Pattern Test {i+1}",
-                "type": "web-app",
-                "version": "1.0.0",
-                "url": "https://httpbin.org/json",
-                "cache_routes": pattern_config['routes']
-            },
-            files=[],
-            stage=False,
-            overwrite=True,
-        )
+                 # Install app with this cache pattern
+         app_info = await controller.install(
+             manifest={
+                 "name": f"Cache Pattern Test {i+1}",
+                 "type": "web-app",
+                 "version": "1.0.0",
+                 "url": "https://httpbin.org/json",
+                 "enable_cache": len(pattern_config['routes']) > 0,  # Enable cache only if routes provided
+                 "cache_routes": pattern_config['routes']
+             },
+             files=[],
+             stage=False,
+             overwrite=True,
+         )
 
         # Measure startup time
         start_time = time.time()
