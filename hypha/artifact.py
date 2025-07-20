@@ -8,6 +8,7 @@ import random
 import re
 import json
 import math
+import asyncio
 from io import BytesIO
 import zipfile
 from sqlalchemy import (
@@ -835,17 +836,181 @@ class ArtifactController:
             finally:
                 await session.close()
 
+        # HTTP endpoint for uploading files to an artifact
+        @router.put("/{workspace}/artifacts/{artifact_alias}/files/{path:path}")
+        async def put_file(
+            request: Request,
+            workspace: str,
+            artifact_alias: str,
+            path: str,
+            download_weight: float = 0,
+            token: str = None,
+            user_info: self.store.login_optional = Depends(self.store.login_optional),
+        ):
+            """Upload a file to an artifact using streaming multipart upload."""
+            try:
+                artifact_id = self._validate_artifact_id(
+                    artifact_alias, {"ws": workspace}
+                )
+                
+                session = await self._get_session()
+                if token:
+                    user_info = await self.store.parse_user_token(token)
+                
+                assert download_weight >= 0, "Download weight must be a non-negative number."
+                
+                async with session.begin():
+                    # Fetch artifact and check permissions
+                    (
+                        artifact,
+                        parent_artifact,
+                    ) = await self._get_artifact_with_permission(
+                        user_info, artifact_id, "put_file", session
+                    )
+                    
+                    assert artifact.staging is not None, "Artifact must be in staging mode."
+
+                    # For staging mode, always use the target version index
+                    # This ensures files are properly staged and can be found by list_files
+                    target_version_index = len(artifact.versions or [])
+                    
+                    # Check if there's intent to create a new version for commit behavior
+                    staging_list = artifact.staging or []
+                    has_new_version_intent = any(
+                        item.get("_intent") == "new_version" for item in staging_list
+                    )
+
+                    # The staging area index for manifest operations
+                    version_index = self._get_version_index(artifact, "stage")
+
+                    logger.info(
+                        f"Uploading file '{path}' directly to target version {target_version_index} (has_new_version_intent: {has_new_version_intent})"
+                    )
+
+                    s3_config = self._get_s3_config(artifact, parent_artifact)
+                    
+                    # Stream upload the file to S3
+                    async with self._create_client_async(s3_config) as s3_client:
+                        file_key = safe_join(
+                            s3_config["prefix"],
+                            f"{artifact.id}/v{target_version_index}/{path}",
+                        )
+                        
+                        # Create multipart upload
+                        mpu = await s3_client.create_multipart_upload(
+                            Bucket=s3_config["bucket"], Key=file_key
+                        )
+                        
+                        parts_info = {}
+                        futures = []
+                        count = 0
+                        current_chunk = b""
+                        
+                        # Stream the incoming request data in chunks
+                        async for chunk in request.stream():
+                            current_chunk += chunk
+                            # When chunk reaches 5MB, upload it as a part
+                            if len(current_chunk) > 5 * 1024 * 1024:
+                                count += 1
+                                part_fut = s3_client.upload_part(
+                                    Bucket=s3_config["bucket"],
+                                    ContentLength=len(current_chunk),
+                                    Key=file_key,
+                                    PartNumber=count,
+                                    UploadId=mpu["UploadId"],
+                                    Body=current_chunk,
+                                )
+                                futures.append(part_fut)
+                                current_chunk = b""
+                        
+                        # Handle multipart upload completion
+                        if len(futures) > 0:
+                            if len(current_chunk) > 0:
+                                # Upload the last chunk
+                                count += 1
+                                part_fut = s3_client.upload_part(
+                                    Bucket=s3_config["bucket"],
+                                    ContentLength=len(current_chunk),
+                                    Key=file_key,
+                                    PartNumber=count,
+                                    UploadId=mpu["UploadId"],
+                                    Body=current_chunk,
+                                )
+                                futures.append(part_fut)
+
+                            parts = await asyncio.gather(*futures)
+                            parts_info["Parts"] = [
+                                {"PartNumber": i + 1, "ETag": part["ETag"]}
+                                for i, part in enumerate(parts)
+                            ]
+
+                            response = await s3_client.complete_multipart_upload(
+                                Bucket=s3_config["bucket"],
+                                Key=file_key,
+                                UploadId=mpu["UploadId"],
+                                MultipartUpload=parts_info,
+                            )
+                        else:
+                            # For small files, use simple put_object
+                            response = await s3_client.put_object(
+                                Body=current_chunk,
+                                Bucket=s3_config["bucket"],
+                                Key=file_key,
+                                ContentLength=len(current_chunk),
+                            )
+
+                        assert "ETag" in response
+                        
+                        # Update artifact staging information
+                        artifact.staging = artifact.staging or []
+                        # Filter out intent markers when checking for existing files
+                        staging_files = [f for f in artifact.staging if "path" in f]
+                        if not any(f["path"] == path for f in staging_files):
+                            artifact.staging.append(
+                                {
+                                    "path": path,
+                                    "download_weight": download_weight,
+                                }
+                            )
+                            flag_modified(artifact, "staging")
+
+                        # Save the artifact to s3
+                        await self._save_version_to_s3(version_index, artifact, s3_config)
+                        session.add(artifact)
+                        await session.commit()
+                        
+                        logger.info(
+                            f"Successfully uploaded file '{path}' to artifact with ID: {artifact_id} (target version: {target_version_index})"
+                        )
+                        
+                        return {"message": "File uploaded successfully", "etag": response["ETag"]}
+
+            except KeyError:
+                raise HTTPException(status_code=404, detail="Artifact not found")
+            except AssertionError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Permission denied")
+            except HTTPException as e:
+                raise e  # Re-raise HTTPExceptions to be handled by FastAPI
+            except Exception as e:
+                logger.error(f"Unhandled exception in http put_file: {str(e)}")
+                raise HTTPException(
+                    status_code=500, detail=f"Internal server error: {str(e)}"
+                )
+            finally:
+                await session.close()
+
         # HTTP endpoint for serving static sites
-        @router.get("/{workspace}/site/{artifact_alias}/")
         @router.get("/{workspace}/site/{artifact_alias}/{file_path:path}")
         async def serve_site_file(
             request: Request,
             workspace: str,
             artifact_alias: str,
-            file_path: str = "index.html",
-            stage: bool = False,
-            token: str = None,
-            version: str = None,
+            file_path: Optional[str] = None,
+            stage: Optional[bool] = False,
+            token: Optional[str] = None,
+            version: Optional[str] = None,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """Serve files from a static site artifact with optional Jinja2 template rendering."""

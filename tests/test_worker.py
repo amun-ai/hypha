@@ -119,7 +119,7 @@ async def test_browser_worker_integration(fastapi_server, test_user_token):
     # Install and run app (this will use the browser worker for window type)
     config = await controller.install(
         source=test_app_code,
-        config={"type": "window", "name": "Browser Worker Test"},
+        manifest={"type": "window", "name": "Browser Worker Test"},
         wait_for_service="default",
         timeout=15,  # Reduced from 30
         overwrite=True,
@@ -185,7 +185,7 @@ print("Python worker test app registered successfully")
         # Install and run Python app (this will use the python worker for python-eval type)
         config = await controller.install(
             source=test_python_code,
-            config={"type": "python-eval", "name": "Python Worker Test"},
+            manifest={"type": "python-eval", "name": "Python Worker Test"},
             timeout=5,  # Reduced from 10
             overwrite=True,
         )
@@ -252,7 +252,7 @@ async def test_mcp_worker_integration(fastapi_server, test_user_token):
     
     # Install MCP app
     app_info = await controller.install(
-        config=mcp_config,
+        manifest=mcp_config,
         overwrite=True,
     )
     
@@ -335,7 +335,7 @@ async def test_a2a_worker_integration(fastapi_server, test_user_token):
     
     # Install A2A app
     app_info = await controller.install(
-        config=a2a_config,
+        manifest=a2a_config,
         overwrite=True,
     )
     
@@ -513,7 +513,7 @@ async def test_worker_selection_by_type(fastapi_server, test_user_token):
         # Install the app (worker selection happens automatically)
         app_info = await controller.install(
             source=f"<html><body><script>{test_code}</script></body></html>",
-            config=app_config,
+            manifest=app_config,
             timeout=5,
             detached=True,
             overwrite=True,
@@ -561,7 +561,7 @@ async def test_worker_concurrent_sessions(fastapi_server, test_user_token):
         for i in range(3):
             config = await controller.install(
                 source=test_app_code,
-                config={"type": "window", "name": f"Concurrent Test App {i}"},
+                manifest={"type": "window", "name": f"Concurrent Test App {i}"},
                 wait_for_service="default",
                 timeout=10,  # Reduced from 30
                 overwrite=True,
@@ -627,7 +627,7 @@ async def test_worker_error_handling(fastapi_server, test_user_token):
     try:
         config = await controller.install(
             source=bad_app_code,
-            config={"type": "window", "name": "Bad App"},
+            manifest={"type": "window", "name": "Bad App"},
             timeout=5,
             overwrite=True,
         )
@@ -653,7 +653,7 @@ async def test_worker_error_handling(fastapi_server, test_user_token):
     try:
         config = await controller.install(
             source=slow_app_code,
-            config={"type": "window", "name": "Slow App"},
+            manifest={"type": "window", "name": "Slow App"},
             timeout=2,  # Short timeout
             overwrite=True,
         )
@@ -696,7 +696,7 @@ async def test_worker_lifecycle_management(fastapi_server, test_user_token):
     # 1. Install app
     app_info = await controller.install(
         source=test_app_code,
-        config={"type": "window", "name": "Lifecycle Test App"},
+        manifest={"type": "window", "name": "Lifecycle Test App"},
         overwrite=True,
     )
     
@@ -793,7 +793,7 @@ async def test_worker_workspace_isolation(fastapi_server, test_user_token, test_
     
     config1 = await controller1.install(
         source=test_app_code,
-        config={"type": "window", "name": "Workspace 1 App"},
+        manifest={"type": "window", "name": "Workspace 1 App"},
         wait_for_service="default",
         timeout=10,  # Reduced from 30
         overwrite=True,
@@ -802,7 +802,7 @@ async def test_worker_workspace_isolation(fastapi_server, test_user_token, test_
     
     config2 = await controller2.install(
         source=test_app_code,
-        config={"type": "window", "name": "Workspace 2 App"},
+        manifest={"type": "window", "name": "Workspace 2 App"},
         wait_for_service="default",
         timeout=10,  # Reduced from 30
         overwrite=True,

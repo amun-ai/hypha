@@ -2421,3 +2421,213 @@ async def test_progress_callback_functionality(fastapi_server, test_user_token):
     await controller.uninstall(app_info["id"])
 
     await api.disconnect()
+
+
+async def test_custom_app_id_installation(fastapi_server, test_user_token):
+    """Test installing apps with custom app_id and overwrite behavior."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+
+    # Test app source
+    test_app_source = """
+    api.export({
+        async setup() {
+            console.log("Custom app_id test app initialized");
+        },
+        async getMessage() {
+            return "Hello from custom app_id app!";
+        },
+        async getVersion() {
+            return "v1.0";
+        }
+    });
+    """
+
+    custom_app_id = "my-custom-test-app-id"
+
+    # Test 1: Install with custom app_id
+    print(f"Testing installation with custom app_id: {custom_app_id}")
+    
+    app_info = await controller.install(
+        source=test_app_source,
+        app_id=custom_app_id,
+        manifest={
+            "name": "Custom App ID Test",
+            "type": "window",
+            "version": "1.0.0",
+            "description": "Testing custom app_id functionality",
+        },
+        overwrite=True,
+    )
+
+    # Verify the app was installed with the specified app_id
+    assert app_info["id"] == custom_app_id, f"Expected app_id '{custom_app_id}', got '{app_info['id']}'"
+    assert app_info["name"] == "Custom App ID Test"
+    assert app_info["version"] == "1.0.0"
+
+    print(f"✅ App installed successfully with custom app_id: {app_info['id']}")
+
+    # Test 2: Try to install with same app_id without overwrite=True (should fail)
+    print("Testing installation with existing app_id without overwrite...")
+    
+    updated_app_source = """
+    api.export({
+        async setup() {
+            console.log("Updated custom app_id test app initialized");
+        },
+        async getMessage() {
+            return "Hello from updated custom app_id app!";
+        },
+        async getVersion() {
+            return "v2.0";  // Different version
+        }
+    });
+    """
+    
+    try:
+        await controller.install(
+            source=updated_app_source,
+            app_id=custom_app_id,  # Same app_id
+            manifest={
+                "name": "Updated Custom App ID Test",
+                "type": "window",
+                "version": "2.0.0",  # Different version
+                "description": "Updated version should not install without overwrite",
+            },
+            overwrite=False,  # Explicitly set to False
+        )
+        assert False, "Should have failed when trying to install with existing app_id without overwrite=True"
+    except Exception as e:
+        print(f"✅ Expected failure occurred: {e}")
+        assert "already exists" in str(e).lower() or "overwrite" in str(e).lower(), f"Error should mention existing app or overwrite requirement: {e}"
+
+    # Test 3: Install with same app_id but with overwrite=True (should succeed)
+    print("Testing installation with existing app_id with overwrite=True...")
+    
+    updated_app_info = await controller.install(
+        source=updated_app_source,
+        app_id=custom_app_id,  # Same app_id
+        manifest={
+            "name": "Updated Custom App ID Test",
+            "type": "window",
+            "version": "2.0.0",  # Different version
+            "description": "Updated version should install with overwrite=True",
+        },
+        overwrite=True,  # This should allow overwriting
+    )
+
+    # Verify the app was updated
+    assert updated_app_info["id"] == custom_app_id, f"Expected app_id '{custom_app_id}', got '{updated_app_info['id']}'"
+    assert updated_app_info["name"] == "Updated Custom App ID Test"
+    assert updated_app_info["version"] == "2.0.0"
+    assert updated_app_info["description"] == "Updated version should install with overwrite=True"
+
+    print(f"✅ App overwritten successfully with same app_id: {updated_app_info['id']}")
+
+    # Test 4: Verify the updated app works correctly
+    print("Testing the updated app functionality...")
+    
+    config = await controller.start(
+        custom_app_id,
+        wait_for_service="default",
+    )
+    
+    app = await api.get_app(config.id)
+    
+    # Test the updated functionality
+    message = await app.getMessage()
+    assert message == "Hello from updated custom app_id app!", f"Expected updated message, got: {message}"
+    
+    version = await app.getVersion()
+    assert version == "v2.0", f"Expected updated version 'v2.0', got: {version}"
+    
+    print("✅ Updated app functionality verified")
+
+    # Stop the app
+    await controller.stop(config.id)
+
+    # Test 5: Verify app list contains our custom app_id
+    print("Testing app listing contains custom app_id...")
+    
+    apps = await controller.list_apps()
+    custom_app = next((app for app in apps if app["id"] == custom_app_id), None)
+    
+    assert custom_app is not None, f"Custom app with id '{custom_app_id}' not found in app list"
+    assert custom_app["name"] == "Updated Custom App ID Test"
+    assert custom_app["version"] == "2.0.0"
+    
+    print("✅ Custom app found in app list")
+
+    # Test 6: Test with different custom app_id to ensure no conflicts
+    print("Testing with different custom app_id...")
+    
+    another_custom_id = "another-custom-app-id"
+    
+    another_app_info = await controller.install(
+        source=test_app_source,  # Original source
+        app_id=another_custom_id,
+        manifest={
+            "name": "Another Custom App",
+            "type": "window",
+            "version": "1.0.0",
+        },
+        overwrite=True,
+    )
+    
+    assert another_app_info["id"] == another_custom_id
+    assert another_app_info["name"] == "Another Custom App"
+    
+    print(f"✅ Another app installed with different custom app_id: {another_app_info['id']}")
+
+    # Test 7: Verify both apps exist independently
+    apps = await controller.list_apps()
+    app_ids = [app["id"] for app in apps]
+    
+    assert custom_app_id in app_ids, f"First custom app '{custom_app_id}' not found"
+    assert another_custom_id in app_ids, f"Second custom app '{another_custom_id}' not found"
+    
+    print("✅ Both custom apps exist independently")
+
+    # Test 8: Test invalid app_id formats (optional - depends on validation rules)
+    print("Testing invalid app_id format...")
+    
+    try:
+        await controller.install(
+            source=test_app_source,
+            app_id="Invalid App ID With Spaces!",  # Invalid format
+            manifest={
+                "name": "Invalid App ID Test",
+                "type": "window",
+                "version": "1.0.0",
+            },
+            overwrite=True,
+        )
+        # If this succeeds, the system allows spaces and special chars in app_id
+        print("⚠️  System allows spaces and special characters in app_id")
+    except Exception as e:
+        print(f"✅ System properly validates app_id format: {e}")
+
+    print("✅ All custom app_id installation tests completed successfully!")
+
+    # Clean up
+    try:
+        await controller.uninstall(custom_app_id)
+        print(f"✅ Cleaned up app: {custom_app_id}")
+    except Exception as e:
+        print(f"⚠️  Failed to clean up {custom_app_id}: {e}")
+    
+    try:
+        await controller.uninstall(another_custom_id)
+        print(f"✅ Cleaned up app: {another_custom_id}")
+    except Exception as e:
+        print(f"⚠️  Failed to clean up {another_custom_id}: {e}")
+
+    await api.disconnect()

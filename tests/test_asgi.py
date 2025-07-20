@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import asyncio
+import json
 import time
 
 import pytest
@@ -641,4 +642,382 @@ async def test_asgi_auth_context(fastapi_server, test_user_token):
         print("✓ Protected ASGI service accepts authenticated access")
 
     print("\nAll ASGI authentication context tests completed! ✓")
+    await api.disconnect()
+
+
+def test_find_nested_function():
+    """Test the _find_nested_function helper method."""
+    from hypha.http import ASGIRoutingMiddleware
+    
+    # Create a mock ASGIRoutingMiddleware instance to test the method
+    middleware = ASGIRoutingMiddleware.__new__(ASGIRoutingMiddleware)  # Create without calling __init__
+    
+    # Test service with nested functions
+    service = {
+        "hello": lambda event: {"message": "hello"},
+        "api": {
+            "v1": {
+                "users": lambda event: {"users": []},
+                "posts": lambda event: {"posts": []}
+            },
+            "v2": {
+                "users": lambda event: {"users": [], "version": "v2"}
+            }
+        },
+        "default": lambda event: {"message": "default"}
+    }
+    
+    # Test direct function access
+    func = middleware._find_nested_function(service, ["hello"])
+    assert func is not None
+    assert callable(func)
+    
+    # Test nested function access
+    func = middleware._find_nested_function(service, ["api", "v1", "users"])
+    assert func is not None
+    assert callable(func)
+    
+    func = middleware._find_nested_function(service, ["api", "v2", "users"])
+    assert func is not None
+    assert callable(func)
+    
+    # Test non-existent path
+    func = middleware._find_nested_function(service, ["api", "v3", "users"])
+    assert func is None
+    
+    # Test partial path that exists but isn't callable
+    func = middleware._find_nested_function(service, ["api"])
+    assert func is None  # api is a dict, not callable
+    
+    # Test default function access
+    func = middleware._find_nested_function(service, ["default"])
+    assert func is not None
+    assert callable(func)
+    
+    print("✓ _find_nested_function works correctly")
+
+
+async def test_nested_functions(fastapi_server, test_user_token):
+    """Test nested functions service."""
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+    workspace = api.config["workspace"]
+    token = await api.generate_token()
+
+    # Get controller for app installation
+    controller = await api.get_service("public/server-apps")
+
+    # Install function service app with nested functions
+    source = """
+<config lang="json">
+{
+    "name": "Nested Functions Test", 
+    "type": "web-worker",
+    "version": "0.1.0"
+}
+</config>
+
+<script lang="javascript">
+class HyphaApp {
+    async setup() {
+        await api.registerService({
+            "id": "nested-test-functions",
+            "type": "functions", 
+            "config": {
+                "visibility": "public"
+            },
+            "api": {
+                "v1": {
+                    "users": async function(event) {
+                        return {
+                            status: 200,
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({message: "User API v1", path: event.raw_path || ""})
+                        };
+                    },
+                    "posts": async function(event) {
+                        return {
+                            status: 200,
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({message: "Post API v1", method: event.method || "GET"})
+                        };
+                    }
+                },
+                "v2": {
+                    "users": async function(event) {
+                        return {
+                            status: 200,
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({message: "User API v2", version: "2.0"})
+                        };
+                    }
+                }
+            }
+        });
+    }
+}
+api.export(new HyphaApp());
+</script>
+    """
+
+    config = await controller.install(
+        source=source.strip(),
+        wait_for_service="nested-test-functions",
+        timeout=30,
+        overwrite=True
+    )
+
+    # Wait a brief moment for HTTP routes to be ready
+    await asyncio.sleep(0.5)
+
+    # Test nested API v1 users
+    response = requests.get(
+        f"{SERVER_URL}/{workspace}/apps/nested-test-functions/api/v1/users",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.ok, f"Expected 200, got {response.status_code}: {response.text}"
+    ret = response.json()
+    assert ret["message"] == "User API v1"
+
+    # Test nested API v1 posts  
+    response = requests.post(
+        f"{SERVER_URL}/{workspace}/apps/nested-test-functions/api/v1/posts",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.ok, f"Expected 200, got {response.status_code}: {response.text}"
+    ret = response.json()
+    assert ret["message"] == "Post API v1"
+    assert ret["method"] == "POST"
+
+    # Test nested API v2 users
+    response = requests.get(
+        f"{SERVER_URL}/{workspace}/apps/nested-test-functions/api/v2/users",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.ok, f"Expected 200, got {response.status_code}: {response.text}"
+    ret = response.json()
+    assert ret["message"] == "User API v2"
+    assert ret["version"] == "2.0"
+
+    # Test non-existent nested path (should return 404)
+    response = requests.get(
+        f"{SERVER_URL}/{workspace}/apps/nested-test-functions/api/v3/users",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 404
+
+    # Stop the app
+    await controller.stop(config["id"])
+    await api.disconnect()
+
+
+async def test_default_fallback_function(fastapi_server, test_user_token):
+    """Test default fallback function."""
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+    workspace = api.config["workspace"]
+    token = await api.generate_token()
+
+    # Get controller for app installation
+    controller = await api.get_service("public/server-apps")
+
+    # Install function service app with default fallback
+    source = """
+<config lang="json">
+{
+    "name": "Fallback Functions Test",
+    "type": "web-worker", 
+    "version": "0.1.0"
+}
+</config>
+
+<script lang="javascript">
+class HyphaApp {
+    async setup() {
+        await api.registerService({
+            "id": "fallback-test-functions",
+            "type": "functions",
+            "config": {
+                "visibility": "public"
+            },
+            "hello": async function(event) {
+                return {
+                    status: 200,
+                    body: "Hello from specific function"
+                };
+            },
+            "default": async function(event) {
+                const path = event.function_path || "/";
+                return {
+                    status: 200,
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        message: "Default handler",
+                        path: path,
+                        method: event.method || "GET"
+                    })
+                };
+            }
+        });
+    }
+}
+api.export(new HyphaApp());
+</script>
+    """
+
+    config = await controller.install(
+        source=source.strip(),
+        wait_for_service="fallback-test-functions",
+        timeout=30,
+        overwrite=True
+    )
+
+    # Wait a brief moment for HTTP routes to be ready
+    await asyncio.sleep(0.5)
+
+    # Test specific function
+    response = requests.get(
+        f"{SERVER_URL}/{workspace}/apps/fallback-test-functions/hello",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.ok, f"Expected 200, got {response.status_code}: {response.text}"
+    assert response.text == "Hello from specific function"
+
+    # Test fallback for non-existent path
+    response = requests.get(
+        f"{SERVER_URL}/{workspace}/apps/fallback-test-functions/unknown-path",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.ok, f"Expected 200, got {response.status_code}: {response.text}"
+    ret = response.json()
+    assert ret["message"] == "Default handler"
+    assert ret["path"] == "/unknown-path"
+    assert ret["method"] == "GET"
+
+    # Test fallback with POST method
+    response = requests.post(
+        f"{SERVER_URL}/{workspace}/apps/fallback-test-functions/some/deep/path",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.ok, f"Expected 200, got {response.status_code}: {response.text}"
+    ret = response.json()
+    assert ret["message"] == "Default handler"
+    assert ret["path"] == "/some/deep/path"
+    assert ret["method"] == "POST"
+
+    # Test fallback for root path
+    response = requests.get(
+        f"{SERVER_URL}/{workspace}/apps/fallback-test-functions/",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.ok, f"Expected 200, got {response.status_code}: {response.text}"
+    ret = response.json()
+    assert ret["message"] == "Default handler"
+    assert ret["path"] == "/"
+
+    # Stop the app
+    await controller.stop(config["id"])
+    await api.disconnect()
+
+
+async def test_nested_functions_with_default(fastapi_server, test_user_token):
+    """Test combining nested functions with default fallback."""
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+    workspace = api.config["workspace"]
+    token = await api.generate_token()
+
+    # Get controller for app installation
+    controller = await api.get_service("public/server-apps")
+
+    # Install function service app with nested functions and default fallback
+    source = """
+<config lang="json">
+{
+    "name": "Complex Functions Test",
+    "type": "web-worker",
+    "version": "0.1.0"
+}
+</config>
+
+<script lang="javascript">
+class HyphaApp {
+    async setup() {
+        await api.registerService({
+            "id": "complex-test-functions",
+            "type": "functions",
+            "config": {
+                "visibility": "public"
+            },
+            "api": {
+                "users": async function(event) {
+                    return {
+                        status: 200,
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({users: ["alice", "bob"]})
+                    };
+                }
+            },
+            "default": async function(event) {
+                const path = event.function_path || "/";
+                return {
+                    status: 200,
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        message: "Fallback handler for complex service",
+                        requested_path: path
+                    })
+                };
+            }
+        });
+    }
+}
+api.export(new HyphaApp());
+</script>
+    """
+
+    config = await controller.install(
+        source=source.strip(),
+        wait_for_service="complex-test-functions",
+        timeout=30,
+        overwrite=True
+    )
+
+    # Wait a brief moment for HTTP routes to be ready
+    await asyncio.sleep(0.5)
+
+    # Test specific nested function
+    response = requests.get(
+        f"{SERVER_URL}/{workspace}/apps/complex-test-functions/api/users",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.ok, f"Expected 200, got {response.status_code}: {response.text}"
+    ret = response.json()
+    assert ret["users"] == ["alice", "bob"]
+
+    # Test fallback for non-existent nested path
+    response = requests.get(
+        f"{SERVER_URL}/{workspace}/apps/complex-test-functions/api/nonexistent",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.ok, f"Expected 200, got {response.status_code}: {response.text}"
+    ret = response.json()
+    assert ret["message"] == "Fallback handler for complex service"
+    assert ret["requested_path"] == "/api/nonexistent"
+
+    # Test fallback for completely different path
+    response = requests.get(
+        f"{SERVER_URL}/{workspace}/apps/complex-test-functions/other/path",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.ok, f"Expected 200, got {response.status_code}: {response.text}"
+    ret = response.json()
+    assert ret["message"] == "Fallback handler for complex service"
+    assert ret["requested_path"] == "/other/path"
+
+    # Stop the app
+    await controller.stop(config["id"])
     await api.disconnect()

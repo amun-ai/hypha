@@ -1067,7 +1067,7 @@ async def use_a2a_agent():
         }
     }
     
-    app_info = await controller.install(config=app_config, overwrite=True)
+    app_info = await controller.install(manifest=app_config, overwrite=True)
     
     # Start the app
     session = await controller.start(app_info["id"], wait_for_service="ai-assistant")
@@ -1183,7 +1183,7 @@ async def create_a2a_chain():
         }
     }
     
-    app_info = await controller.install(config=a2a_config)
+    app_info = await controller.install(manifest=a2a_config)
     session = await controller.start(app_info["id"], wait_for_service="proxy")
     
     # Step 3: Use the proxied service
@@ -1245,7 +1245,7 @@ Create a configuration file for your A2A agent app:
 ```python
 # Install the A2A agent app
 controller = await api.get_service("public/server-apps")
-app_info = await controller.install(config=a2a_config)
+app_info = await controller.install(manifest=a2a_config)
 
 # Start the app
 session_info = await controller.start(app_info["id"], wait_for_service="agent-name")
@@ -1317,7 +1317,7 @@ a2a_config = {
 }
 
 # 3. Install and start the proxy
-app_info = await controller.install(config=a2a_config)
+app_info = await controller.install(manifest=a2a_config)
 session_info = await controller.start(app_info["id"])
 
 # 4. Use the original service through the A2A proxy

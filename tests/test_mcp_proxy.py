@@ -351,7 +351,7 @@ async def test_real_deepwiki_mcp_server_validation(fastapi_server, test_user_tok
     }
     
     # Validate the configuration
-    validation_result = await controller.validate_app_config(deepwiki_config)
+    validation_result = await controller.validate_app_manifest(deepwiki_config)
     assert validation_result["valid"] is True
     
     # Install the real MCP server app - connect to actual external service

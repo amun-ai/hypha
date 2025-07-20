@@ -5543,3 +5543,418 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
         r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/", headers=headers)
         assert r.status_code == 200
         assert "Test Static Site" in r.text
+
+
+async def test_put_file_endpoint_small_file(minio_server, fastapi_server, test_user_token):
+    """Test the HTTP PUT file endpoint with a small file."""
+
+    # Connect and get the artifact manager service
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a dataset artifact
+    dataset_manifest = {
+        "name": "test-dataset-put",
+        "description": "A test dataset for PUT endpoint",
+    }
+    dataset = await artifact_manager.create(
+        type="dataset",
+        manifest=dataset_manifest,
+        config={"permissions": {"*": "r", "@": "rw+"}},
+        version="stage",
+    )
+
+    # Small file content
+    file_contents = "This is a small test file for PUT endpoint testing."
+    file_path = "test_file.txt"
+
+    # Upload file using the new PUT endpoint
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.put(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/{file_path}",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            data=file_contents,
+        )
+        assert response.status_code == 200
+        response_data = response.json()
+        assert response_data["message"] == "File uploaded successfully"
+        assert "etag" in response_data
+
+    # Verify the file was uploaded correctly by listing files
+    files = await artifact_manager.list_files(artifact_id=dataset.id, stage=True)
+    assert len(files) == 1
+    assert files[0]["name"] == file_path
+
+    # Commit and verify file can be downloaded
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Download and verify content
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/{file_path}",
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+        assert response.text == file_contents
+
+
+async def test_put_file_endpoint_large_file_multipart(minio_server, fastapi_server, test_user_token):
+    """Test the HTTP PUT file endpoint with a large file to trigger multipart upload."""
+
+    # Connect and get the artifact manager service
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a dataset artifact
+    dataset_manifest = {
+        "name": "test-dataset-large-put",
+        "description": "A test dataset for large file PUT endpoint",
+    }
+    dataset = await artifact_manager.create(
+        type="dataset",
+        manifest=dataset_manifest,
+        config={"permissions": {"*": "r", "@": "rw+"}},
+        version="stage",
+    )
+
+    # Create large file content (>5MB to trigger multipart upload)
+    large_content = "A" * (6 * 1024 * 1024)  # 6MB of 'A' characters
+    file_path = "large_test_file.txt"
+
+    # Upload large file using the new PUT endpoint
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.put(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/{file_path}",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            data=large_content,
+        )
+        assert response.status_code == 200
+        response_data = response.json()
+        assert response_data["message"] == "File uploaded successfully"
+        assert "etag" in response_data
+
+    # Verify the file was uploaded correctly
+    files = await artifact_manager.list_files(artifact_id=dataset.id, stage=True)
+    assert len(files) == 1
+    assert files[0]["name"] == file_path
+
+    # Commit and verify file can be downloaded
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Download and verify content (partial check to avoid memory issues)
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/{file_path}",
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+        # Verify file size and start/end content
+        assert len(response.content) == len(large_content)
+        assert response.text.startswith("AAAA")
+        assert response.text.endswith("AAAA")
+
+
+async def test_put_file_endpoint_streaming_chunked(minio_server, fastapi_server, test_user_token):
+    """Test the HTTP PUT file endpoint with streaming chunked upload."""
+
+    # Connect and get the artifact manager service
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a dataset artifact
+    dataset_manifest = {
+        "name": "test-dataset-streaming",
+        "description": "A test dataset for streaming upload",
+    }
+    dataset = await artifact_manager.create(
+        type="dataset",
+        manifest=dataset_manifest,
+        config={"permissions": {"*": "r", "@": "rw+"}},
+        version="stage",
+    )
+
+    # Create chunked content (simulate streaming)
+    def generate_chunks():
+        """Generator that yields chunks of data."""
+        for i in range(100):
+            yield f"Chunk {i:03d}: " + "X" * 100 + "\n"
+
+    file_path = "streaming_test_file.txt"
+    expected_content = "".join(generate_chunks())
+
+    # Upload using streaming with chunked transfer encoding
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.put(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/{file_path}",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            data=expected_content,
+        )
+        assert response.status_code == 200
+        response_data = response.json()
+        assert response_data["message"] == "File uploaded successfully"
+        assert "etag" in response_data
+
+    # Verify the file was uploaded correctly
+    files = await artifact_manager.list_files(artifact_id=dataset.id, stage=True)
+    assert len(files) == 1
+    assert files[0]["name"] == file_path
+
+    # Commit and verify content
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Download and verify content
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/{file_path}",
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+        assert response.text == expected_content
+
+
+async def test_put_file_endpoint_nested_directories(minio_server, fastapi_server, test_user_token):
+    """Test the HTTP PUT file endpoint with nested directory structure."""
+
+    # Connect and get the artifact manager service
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a dataset artifact
+    dataset_manifest = {
+        "name": "test-dataset-nested",
+        "description": "A test dataset for nested directory uploads",
+    }
+    dataset = await artifact_manager.create(
+        type="dataset",
+        manifest=dataset_manifest,
+        config={"permissions": {"*": "r", "@": "rw+"}},
+        version="stage",
+    )
+
+    # Test files with nested paths
+    test_files = {
+        "root_file.txt": "Root level file content",
+        "level1/file1.txt": "Level 1 file content",
+        "level1/level2/file2.txt": "Level 2 file content", 
+        "level1/level2/level3/deep_file.txt": "Deep nested file content",
+    }
+
+    # Upload all files
+    for file_path, content in test_files.items():
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.put(
+                f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/{file_path}",
+                headers={"Authorization": f"Bearer {test_user_token}"},
+                data=content,
+            )
+            assert response.status_code == 200
+            response_data = response.json()
+            assert response_data["message"] == "File uploaded successfully"
+
+    # Verify all files were uploaded
+    files = await artifact_manager.list_files(artifact_id=dataset.id, stage=True)
+    assert len(files) == len(test_files)
+    uploaded_paths = {f["name"] for f in files}
+    assert uploaded_paths == set(test_files.keys())
+
+    # Commit and verify files can be downloaded
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Test downloading each file
+    for file_path, expected_content in test_files.items():
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/{file_path}",
+                follow_redirects=True,
+            )
+            assert response.status_code == 200
+            assert response.text == expected_content
+
+
+async def test_put_file_endpoint_download_weight(minio_server, fastapi_server, test_user_token):
+    """Test the HTTP PUT file endpoint with download weight parameter."""
+
+    # Connect and get the artifact manager service
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a dataset artifact
+    dataset_manifest = {
+        "name": "test-dataset-download-weight",
+        "description": "A test dataset for download weight testing",
+    }
+    dataset = await artifact_manager.create(
+        type="dataset",
+        manifest=dataset_manifest,
+        config={"permissions": {"*": "r", "@": "rw+"}},
+        version="stage",
+    )
+
+    file_contents = "File with download weight"
+    file_path = "weighted_file.txt"
+    download_weight = 5.5
+
+    # Upload file with download weight
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.put(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/{file_path}?download_weight={download_weight}",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            data=file_contents,
+        )
+        assert response.status_code == 200
+
+    # Commit the artifact
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    # Verify download weight is recorded correctly
+    artifact = await artifact_manager.read(artifact_id=dataset.id)
+    assert artifact["config"]["download_weights"][file_path] == download_weight
+
+
+async def test_put_file_endpoint_error_handling(minio_server, fastapi_server, test_user_token, test_user_token_2):
+    """Test the HTTP PUT file endpoint error handling."""
+
+    # Connect and get the artifact manager service
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a dataset artifact with restrictive permissions
+    dataset_manifest = {
+        "name": "test-dataset-restricted",
+        "description": "A test dataset with restricted access",
+    }
+    dataset = await artifact_manager.create(
+        type="dataset",
+        manifest=dataset_manifest,
+        config={"permissions": {"@": "rw+"}},  # Only owner has write access
+        version="stage",
+    )
+
+    file_contents = "Test file content"
+    file_path = "test_file.txt"
+
+    # Test 1: Unauthorized access (no token)
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.put(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/{file_path}",
+            data=file_contents,
+        )
+        assert response.status_code == 403
+
+    # Test 2: Permission denied (different user)
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.put(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/{file_path}",
+            headers={"Authorization": f"Bearer {test_user_token_2}"},
+            data=file_contents,
+        )
+        assert response.status_code == 403
+
+    # Test 3: Non-existent artifact
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.put(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/non-existent-artifact/files/{file_path}",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            data=file_contents,
+        )
+        assert response.status_code == 404
+
+    # Test 4: Invalid download weight
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.put(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/{file_path}?download_weight=-1",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            data=file_contents,
+        )
+        assert response.status_code == 400
+
+    # Test 5: Try to upload to committed artifact (not in staging)
+    committed_dataset = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "committed-dataset", "description": "Committed dataset"},
+        config={"permissions": {"@": "rw+"}},
+    )
+    
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.put(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{committed_dataset.alias}/files/{file_path}",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            data=file_contents,
+        )
+        assert response.status_code == 400
+        assert "Artifact must be in staging mode" in response.text
+
+
+async def test_put_file_endpoint_overwrite_existing(minio_server, fastapi_server, test_user_token):
+    """Test the HTTP PUT file endpoint overwriting existing files."""
+
+    # Connect and get the artifact manager service
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a dataset artifact
+    dataset_manifest = {
+        "name": "test-dataset-overwrite",
+        "description": "A test dataset for file overwriting",
+    }
+    dataset = await artifact_manager.create(
+        type="dataset",
+        manifest=dataset_manifest,
+        config={"permissions": {"*": "r", "@": "rw+"}},
+        version="stage",
+    )
+
+    file_path = "overwrite_test.txt"
+    
+    # Upload initial file
+    initial_content = "Initial file content"
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.put(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/{file_path}",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            data=initial_content,
+        )
+        assert response.status_code == 200
+
+    # Verify initial file
+    files = await artifact_manager.list_files(artifact_id=dataset.id, stage=True)
+    assert len(files) == 1
+
+    # Overwrite with new content
+    new_content = "New file content that overwrites the old one"
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.put(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/{file_path}",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            data=new_content,
+        )
+        assert response.status_code == 200
+
+    # Still should have only 1 file (overwritten)
+    files = await artifact_manager.list_files(artifact_id=dataset.id, stage=True)
+    assert len(files) == 1
+
+    # Commit and verify the new content
+    await artifact_manager.commit(artifact_id=dataset.id)
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(
+            f"{SERVER_URL}/{api.config.workspace}/artifacts/{dataset.alias}/files/{file_path}",
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+        assert response.text == new_content
