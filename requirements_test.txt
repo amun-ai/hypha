@@ -7,3 +7,4 @@ websocket-client==1.6.1
 nvidia-pytriton==0.2.1; python_version == '3.8'
 simpervisor==1.0.0
 psutil>=5.9.0
+a2a-sdk>=0.2.11

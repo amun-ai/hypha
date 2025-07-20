@@ -5,65 +5,60 @@ import json
 import logging
 import os
 import sys
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
-import httpx
 from hypha_rpc import connect_to_server
 from hypha.core import UserInfo
 from hypha.workers.base import BaseWorker, WorkerConfig, SessionStatus, SessionInfo, SessionNotFoundError, WorkerError
+
+# Compatibility for asyncio.timeout (Python 3.11+)
+try:
+    from asyncio import timeout as asyncio_timeout
+except ImportError:
+    # Fallback for Python < 3.11
+    import asyncio
+    
+    @asynccontextmanager
+    async def asyncio_timeout(delay):
+        """Fallback timeout implementation for Python < 3.11."""
+        task = asyncio.current_task()
+        handle = asyncio.get_event_loop().call_later(delay, task.cancel)
+        try:
+            yield
+        except asyncio.CancelledError:
+            if not handle.cancelled():
+                handle.cancel()
+                raise asyncio.TimeoutError() from None
+        finally:
+            handle.cancel()
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "INFO").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("mcp_proxy")
 logger.setLevel(LOGLEVEL)
 
+# Try to import MCP SDK
 try:
-    import mcp
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
-    from mcp.client.sse import sse_client
-    from mcp.types import CallToolRequest, ListToolsRequest, ReadResourceRequest, GetPromptRequest
-    MCP_AVAILABLE = True
+    import mcp.types as mcp_types
+    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.client.session import ClientSession
+    MCP_SDK_AVAILABLE = True
+    
+    # Try to import SSE client
+    try:
+        from mcp.client.sse import sse_client
+        SSE_CLIENT_AVAILABLE = True
+    except ImportError:
+        logger.warning("SSE client not available. Install with: pip install mcp[sse]")
+        SSE_CLIENT_AVAILABLE = False
+        
 except ImportError:
-    logger.warning("MCP not available, MCP proxy worker will not function")
-    MCP_AVAILABLE = False
-
-if not MCP_AVAILABLE:
-    @asynccontextmanager
-    async def asyncio_timeout(delay):
-        """Fallback timeout manager when MCP is not available."""
-        yield
-else:
-    from asyncio import timeout as asyncio_timeout
-
-
-# MCP-specific exceptions and schemas
-class StreamableHTTPTransport:
-    """A transport for HTTP-based streamable MCP servers."""
-    
-    def __init__(self, url: str, headers: Dict[str, str] = None):
-        self.url = url
-        self.headers = headers or {}
-        self.client = httpx.AsyncClient()
-    
-    async def __aenter__(self):
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.client.aclose()
-    
-    async def send_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Send a request to the MCP server."""
-        response = await self.client.post(
-            self.url,
-            json=request_data,
-            headers={**self.headers, "Content-Type": "application/json"},
-            timeout=30
-        )
-        response.raise_for_status()
-        return response.json()
+    logger.warning("MCP SDK not available. Install with: pip install mcp")
+    MCP_SDK_AVAILABLE = False
+    SSE_CLIENT_AVAILABLE = False
 
 
 class MCPClientRunner(BaseWorker):
@@ -72,7 +67,7 @@ class MCPClientRunner(BaseWorker):
     instance_counter: int = 0
 
     def __init__(self, server):
-        """Initialize the MCP client runner."""
+        """Initialize the MCP client worker."""
         super().__init__(server)
         self.controller_id = str(MCPClientRunner.instance_counter)
         MCPClientRunner.instance_counter += 1
@@ -165,8 +160,8 @@ class MCPClientRunner(BaseWorker):
 
     async def start(self, config: Union[WorkerConfig, Dict[str, Any]]) -> str:
         """Start a new MCP client session."""
-        if not MCP_AVAILABLE:
-            raise WorkerError("MCP library not available")
+        if not MCP_SDK_AVAILABLE:
+            raise WorkerError("MCP SDK not available. Install with: pip install mcp")
         
         # Handle both pydantic model and dict input for RPC compatibility
         if isinstance(config, dict):
@@ -212,8 +207,8 @@ class MCPClientRunner(BaseWorker):
 
     async def _start_mcp_session(self, config: WorkerConfig) -> Dict[str, Any]:
         """Start MCP client session and connect to configured servers."""
-        if not MCP_AVAILABLE:
-            raise Exception("MCP library not available")
+        if not MCP_SDK_AVAILABLE:
+            raise Exception("MCP SDK not available. Install with: pip install mcp")
 
         # Call progress callback if provided
         config.progress_callback({"type": "info", "message": "Initializing MCP proxy worker..."})
@@ -226,8 +221,9 @@ class MCPClientRunner(BaseWorker):
             raise Exception("No MCP servers configured in manifest")
 
         session_data = {
-            "connections": {},
+            "mcp_servers": mcp_servers,
             "logs": {"info": [], "error": [], "debug": []},
+            "mcp_clients": {},
             "services": []
         }
         
@@ -277,7 +273,7 @@ class MCPClientRunner(BaseWorker):
             }
         )
 
-        if not session_data["connections"]:
+        if not session_data["mcp_clients"]:
             # Provide more specific error message
             all_errors = session_data["logs"]["error"]
             if all_errors:
@@ -290,79 +286,81 @@ class MCPClientRunner(BaseWorker):
                 config.progress_callback({"type": "error", "message": error_msg})
                 raise Exception(error_msg)
 
-        config.progress_callback({"type": "success", "message": f"MCP proxy initialized successfully with {len(session_data['connections'])} server(s)"})
+        config.progress_callback({"type": "success", "message": f"MCP proxy initialized successfully with {len(session_data['mcp_clients'])} server(s)"})
         return session_data
 
     async def _connect_and_register_mcp_service(self, session_data: dict, server_name: str, server_config: dict, client, config: WorkerConfig = None):
-        """Connect to an MCP server and register its capabilities as Hypha services."""
-        server_type = server_config.get("type", "stdio")
-        
-        if config:
-            config.progress_callback({"type": "info", "message": f"Establishing connection to {server_type} MCP server: {server_name}..."})
-        
-        if server_type == "streamable-http":
-            await self._connect_streamable_http(session_data, server_name, server_config, client, config)
-        elif server_type == "sse":
-            await self._connect_sse(session_data, server_name, server_config, client, config)
-        else:
-            raise Exception(f"Unsupported MCP server type: {server_type}")
+        """Connect to MCP server and register a single unified service."""
+        try:
+            server_type = server_config.get("type", "streamable-http")
+            server_url = server_config.get("url")
+            
+            if not server_url:
+                raise ValueError(f"Missing URL for MCP server: {server_name}")
+
+            logger.info(f"Connecting to MCP server {server_name} ({server_type}) at {server_url}")
+            
+            # Support both streamable-http and sse transport types
+            if server_type == "streamable-http":
+                await self._connect_streamable_http(session_data, server_name, server_config, client, config)
+            elif server_type == "sse":
+                await self._connect_sse(session_data, server_name, server_config, client, config)
+            else:
+                raise ValueError(f"Unsupported MCP server type: {server_type}")
+                
+        except Exception as e:
+            logger.error(f"Failed to connect to MCP server {server_name}: {e}", exc_info=True)
+            session_data["logs"]["error"].append(f"Failed to connect to {server_name}: {e}")
+            raise
 
     async def _connect_streamable_http(self, session_data: dict, server_name: str, server_config: dict, client, config: WorkerConfig = None):
-        """Connect to a streamable HTTP MCP server."""
-        url = server_config.get("url")
-        if not url:
-            raise Exception(f"No URL specified for streamable-http server {server_name}")
-        
+        """Connect to MCP server using streamable HTTP transport."""
+        server_url = server_config.get("url")
         headers = server_config.get("headers", {})
         
-        # Create transport
-        transport = StreamableHTTPTransport(url, headers)
+        logger.debug(f"Connecting to streamable HTTP server {server_name} at {server_url}")
         
-        # For streamable HTTP, we don't have persistent sessions like stdio/sse
-        # Instead, we make direct HTTP calls for each operation
-        session_data["connections"][server_name] = {
-            "transport": transport,
-            "type": "streamable-http",
-            "config": server_config
+        # Note: Custom headers are not currently supported by streamablehttp_client
+        if headers:
+            logger.warning(f"Custom headers specified for {server_name} but not supported by streamablehttp_client: {headers}")
+        
+        # Store session info for later use
+        session_data["mcp_clients"][server_name] = {
+            "config": server_config,
+            "session_id": f"streamable-http-{uuid.uuid4().hex[:8]}",
+            "url": server_url,
+            "transport": "streamable-http"
         }
         
         # Collect and register server capabilities
-        await self._collect_and_register_capabilities(session_data, server_name, None, client, config)
+        await self._collect_and_register_capabilities(session_data, server_name, client, config)
 
     async def _connect_sse(self, session_data: dict, server_name: str, server_config: dict, client, config: WorkerConfig = None):
-        """Connect to an SSE (Server-Sent Events) MCP server."""
-        url = server_config.get("url")
-        if not url:
-            raise Exception(f"No URL specified for SSE server {server_name}")
-        
+        """Connect to MCP server using SSE transport."""
+        if not SSE_CLIENT_AVAILABLE:
+            raise RuntimeError("SSE client not available. Install with: pip install mcp[sse]")
+            
+        server_url = server_config.get("url")
         headers = server_config.get("headers", {})
         
-        try:
-            # Use the SSE client from MCP library
-            async with sse_client(url, headers=headers) as (read, write):
-                mcp_session = ClientSession(read, write)
-                await mcp_session.initialize()
-                
-                # Store connection info
-                session_data["connections"][server_name] = {
-                    "session": mcp_session,
-                    "read": read,
-                    "write": write,
-                    "type": "sse",
-                    "config": server_config
-                }
-                
-                # Collect and register server capabilities
-                await self._collect_and_register_capabilities(session_data, server_name, mcp_session, client, config)
-                
-        except Exception as e:
-            logger.error(f"Failed to connect to SSE server {server_name}: {e}")
-            raise
+        logger.debug(f"Connecting to SSE server {server_name} at {server_url}")
+        
+        # Store session info for later use
+        session_data["mcp_clients"][server_name] = {
+            "config": server_config,
+            "session_id": f"sse-{uuid.uuid4().hex[:8]}",
+            "url": server_url,
+            "transport": "sse"
+        }
+        
+        # Collect and register server capabilities
+        await self._collect_and_register_capabilities(session_data, server_name, client, config)
 
-    async def _collect_and_register_capabilities(self, session_data: dict, server_name: str, mcp_session, client, config: WorkerConfig = None):
-        """Collect server capabilities and register them as Hypha services."""
-        connection_info = session_data["connections"][server_name]
-        server_type = connection_info["type"]
+    async def _collect_and_register_capabilities(self, session_data: dict, server_name: str, client, config: WorkerConfig = None):
+        """Collect tools, resources, and prompts from MCP session and register unified service."""
+        server_config = session_data["mcp_clients"][server_name]["config"]
+        server_url = server_config.get("url")
+        transport = session_data["mcp_clients"][server_name]["transport"]
         
         if config:
             config.progress_callback({"type": "info", "message": f"Discovering capabilities from {server_name}..."})
@@ -372,80 +370,103 @@ class MCPClientRunner(BaseWorker):
         prompts = []
         
         try:
-            if server_type == "streamable-http":
-                # For streamable HTTP, make direct HTTP calls
-                transport = connection_info["transport"]
-                
-                # List tools
-                try:
-                    tools_response = await transport.send_request({
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "tools/list"
-                    })
-                    tools = tools_response.get("result", {}).get("tools", [])
-                    
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code == 404:
-                        logger.warning(f"Tools not found in {server_name}")
-                    else:
-                        raise e
-                except Exception as e:
-                    raise e
-                
-                # List resources
-                try:
-                    resources_response = await transport.send_request({
-                        "jsonrpc": "2.0", 
-                        "id": 2,
-                        "method": "resources/list"
-                    })
-                    resources = resources_response.get("result", {}).get("resources", [])
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code == 404:
-                        logger.warning(f"Resources not found in {server_name}")
-                    else:
-                        raise e
-                except Exception as e:
-                    raise e
-                # List prompts
-                try:
-                    prompts_response = await transport.send_request({
-                        "jsonrpc": "2.0",
-                        "id": 3, 
-                        "method": "prompts/list"
-                    })
-                    prompts = prompts_response.get("result", {}).get("prompts", [])
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code == 404:
-                        logger.warning(f"Tools not found in {server_name}")
-                    else:
-                        raise e
-                except Exception as e:
-                    raise e
+            # Get the appropriate client context
+            if transport == "streamable-http":
+                client_context = streamablehttp_client(server_url)
+            elif transport == "sse":
+                if not SSE_CLIENT_AVAILABLE:
+                    raise RuntimeError("SSE client not available. Install with: pip install mcp[sse]")
+                client_context = sse_client(url=server_url)
             else:
-                # For other types (SSE, stdio), use MCP session
-                if mcp_session:
-                    # List tools
-                    try:
-                        tools_result = await mcp_session.list_tools()
-                        tools = tools_result.tools if hasattr(tools_result, 'tools') else []
-                    except Exception as e:
-                        logger.warning(f"Failed to list tools from {server_name}: {e}")
-                    
-                    # List resources  
-                    try:
-                        resources_result = await mcp_session.list_resources()
-                        resources = resources_result.resources if hasattr(resources_result, 'resources') else []
-                    except Exception as e:
-                        logger.warning(f"Failed to list resources from {server_name}: {e}")
-                    
-                    # List prompts
-                    try:
-                        prompts_result = await mcp_session.list_prompts()
-                        prompts = prompts_result.prompts if hasattr(prompts_result, 'prompts') else []
-                    except Exception as e:
-                        logger.warning(f"Failed to list prompts from {server_name}: {e}")
+                raise ValueError(f"Unsupported transport type: {transport}")
+
+            # Connect and collect capabilities
+            if transport == "streamable-http":
+                async with client_context as (read_stream, write_stream, get_session_id):
+                    async with ClientSession(read_stream, write_stream) as mcp_session:
+                        # CRITICAL: Initialize the session
+                        logger.debug(f"Initializing MCP session for {server_name}")
+                        await mcp_session.initialize()
+                        
+                        # Collect tools
+                        try:
+                            tools_result = await mcp_session.list_tools()
+                            if tools_result and hasattr(tools_result, 'tools'):
+                                tools = await self._create_tool_wrappers(session_data, server_name, tools_result.tools)
+                                logger.info(f"Found {len(tools)} tools from {server_name}")
+                        except Exception as e:
+                            logger.debug(f"No tools found in MCP server {server_name}: {e}")
+                            session_data["logs"]["info"].append(f"No tools found in {server_name}: {e}")
+
+                        # Collect resources  
+                        try:
+                            resources_result = await mcp_session.list_resources()
+                            if resources_result and hasattr(resources_result, 'resources'):
+                                resources = await self._create_resource_wrappers(session_data, server_name, resources_result.resources)
+                                logger.info(f"Found {len(resources)} resources from {server_name}")
+                        except Exception as e:
+                            logger.debug(f"No resources found in MCP server {server_name}: {e}")
+                            session_data["logs"]["info"].append(f"No resources found in {server_name}: {e}")
+
+                        # Collect prompts
+                        try:
+                            prompts_result = await mcp_session.list_prompts()
+                            if prompts_result and hasattr(prompts_result, 'prompts'):
+                                prompts = await self._create_prompt_wrappers(session_data, server_name, prompts_result.prompts)
+                                logger.info(f"Found {len(prompts)} prompts from {server_name}")
+                        except Exception as e:
+                            logger.debug(f"No prompts found in MCP server {server_name}: {e}")
+                            session_data["logs"]["info"].append(f"No prompts found in {server_name}: {e}")
+                            
+            elif transport == "sse":
+                # Add timeout to prevent hanging on connection issues
+                try:
+                    async with asyncio_timeout(10):  # 10 second timeout
+                        async with client_context as streams:
+                            async with ClientSession(*streams) as mcp_session:
+                                # CRITICAL: Initialize the session
+                                logger.debug(f"Initializing MCP SSE session for {server_name}")
+                                await mcp_session.initialize()
+                                
+                                # Collect tools
+                                try:
+                                    tools_result = await mcp_session.list_tools()
+                                    if tools_result and hasattr(tools_result, 'tools'):
+                                        tools = await self._create_tool_wrappers(session_data, server_name, tools_result.tools)
+                                        logger.info(f"Found {len(tools)} tools from {server_name}")
+                                except Exception as e:
+                                    logger.debug(f"No tools found in MCP server {server_name}: {e}")
+                                    session_data["logs"]["info"].append(f"No tools found in {server_name}: {e}")
+
+                                # Collect resources  
+                                try:
+                                    resources_result = await mcp_session.list_resources()
+                                    if resources_result and hasattr(resources_result, 'resources'):
+                                        resources = await self._create_resource_wrappers(session_data, server_name, resources_result.resources)
+                                        logger.info(f"Found {len(resources)} resources from {server_name}")
+                                except Exception as e:
+                                    logger.debug(f"No resources found in MCP server {server_name}: {e}")
+                                    session_data["logs"]["info"].append(f"No resources found in {server_name}: {e}")
+
+                                # Collect prompts
+                                try:
+                                    prompts_result = await mcp_session.list_prompts()
+                                    if prompts_result and hasattr(prompts_result, 'prompts'):
+                                        prompts = await self._create_prompt_wrappers(session_data, server_name, prompts_result.prompts)
+                                        logger.info(f"Found {len(prompts)} prompts from {server_name}")
+                                except Exception as e:
+                                    logger.debug(f"No prompts found in MCP server {server_name}: {e}")
+                                    session_data["logs"]["info"].append(f"No prompts found in {server_name}: {e}")
+                                    
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout connecting to SSE server {server_name} at {server_url}")
+                    raise RuntimeError(f"Connection to SSE server {server_name} timed out after 10 seconds")
+                except Exception as e:
+                    logger.error(f"Failed to connect to SSE server {server_name}: {e}", exc_info=True)
+                    # Check if this is a 501 error or similar HTTP error
+                    if "501" in str(e) or "not implemented" in str(e).lower():
+                        raise RuntimeError(f"SSE transport not supported by server at {server_url}")
+                    raise
             
             logger.info(f"Server {server_name}: Found {len(tools)} tools, {len(resources)} resources, {len(prompts)} prompts")
             
@@ -461,374 +482,273 @@ class MCPClientRunner(BaseWorker):
             raise
 
     def _create_mcp_client_context(self, session_data: dict, server_name: str):
-        """Create context object that MCP client functions can access."""
-        return {
-            "session_data": session_data,
-            "server_name": server_name,
-            "server": self.server,
-            "logger": logger
-        }
+        """Create appropriate MCP client context based on transport type."""
+        server_config = session_data["mcp_clients"][server_name]["config"]
+        server_url = server_config.get("url")
+        transport = session_data["mcp_clients"][server_name]["transport"]
+        
+        if transport == "streamable-http":
+            return streamablehttp_client(server_url)
+        elif transport == "sse":
+            if not SSE_CLIENT_AVAILABLE:
+                raise RuntimeError("SSE client not available. Install with: pip install mcp[sse]")
+            return sse_client(url=server_url)
+        else:
+            raise ValueError(f"Unsupported transport type: {transport}")
 
     def _wrap_tool(self, session_data: dict, server_name: str, tool_name: str, tool_description: str, tool_schema: dict):
-        """Create a wrapper function for an MCP tool."""
+        """Create a tool wrapper function with proper closure."""
         async def tool_wrapper(**kwargs):
+            """Wrapper function to call MCP tool."""
+            logger.debug(f"Calling MCP tool {server_name}.{tool_name} with args: {kwargs}")
             try:
-                connection_info = session_data["connections"][server_name]
-                server_type = connection_info["type"]
+                # Get the appropriate client context
+                client_context = self._create_mcp_client_context(session_data, server_name)
+                transport = session_data["mcp_clients"][server_name]["transport"]
                 
-                if server_type == "streamable-http":
-                    # Use HTTP transport
-                    transport = connection_info["transport"]
-                    response = await transport.send_request({
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "tools/call",
-                        "params": {
-                            "name": tool_name,
-                            "arguments": kwargs
-                        }
-                    })
-                    
-                    if "error" in response:
-                        raise Exception(f"Tool call failed: {response['error']}")
-                    
-                    return response.get("result", {})
-                    
+                # Connect and call tool
+                if transport == "streamable-http":
+                    async with client_context as (read_stream, write_stream, get_session_id):
+                        async with ClientSession(read_stream, write_stream) as session:
+                            await session.initialize()
+                            result = await session.call_tool(name=tool_name, arguments=kwargs)
+                elif transport == "sse":
+                    # Add timeout to prevent hanging on SSE connection issues
+                    try:
+                        async with asyncio_timeout(10):  # 10 second timeout
+                            async with client_context as streams:
+                                async with ClientSession(*streams) as session:
+                                    await session.initialize()
+                                    result = await session.call_tool(name=tool_name, arguments=kwargs)
+                    except asyncio.TimeoutError:
+                        logger.error(f"Timeout calling SSE tool {server_name}.{tool_name}")
+                        raise RuntimeError(f"SSE tool call timed out after 10 seconds")
                 else:
-                    # Use MCP session
-                    mcp_session = connection_info["session"]
+                    raise ValueError(f"Unsupported transport: {transport}")
+                
+                # Extract content from MCP result
+                if hasattr(result, 'content') and result.content:
+                    if len(result.content) == 1:
+                        return result.content[0].text
+                    else:
+                        return [content.text for content in result.content]
+                else:
+                    return str(result)
                     
-                    async with asyncio_timeout(30):
-                        # Create tool call request
-                        call_request = CallToolRequest(
-                            method="tools/call",
-                            params={
-                                "name": tool_name,
-                                "arguments": kwargs
-                            }
-                        )
-                        
-                        result = await mcp_session.call_tool(call_request)
-                        
-                        if hasattr(result, 'content') and result.content:
-                            # Extract content from MCP response
-                            content_items = []
-                            for item in result.content:
-                                if hasattr(item, 'text'):
-                                    content_items.append(item.text)
-                                elif hasattr(item, 'type') and item.type == "text":
-                                    content_items.append(getattr(item, 'text', str(item)))
-                                else:
-                                    content_items.append(str(item))
-                            
-                            return {
-                                "content": content_items,
-                                "isError": getattr(result, 'isError', False)
-                            }
-                        else:
-                            return {"content": [], "isError": False}
-                        
             except Exception as e:
-                error_msg = f"Error calling tool {tool_name}: {str(e)}"
-                session_data["logs"]["error"].append(error_msg)
-                logger.error(error_msg)
-                raise Exception(error_msg)
-        
+                logger.error(f"Error calling MCP tool {server_name}.{tool_name}: {e}", exc_info=True)
+                raise
+
         return tool_wrapper
 
     def _wrap_resource(self, session_data: dict, server_name: str, resource_uri: str, resource_name: str, resource_description: str, resource_mime_type: str):
-        """Create a wrapper function for an MCP resource."""
+        """Create a resource wrapper function with proper closure."""
         async def resource_read():
+            """Wrapper function to read MCP resource."""
+            logger.debug(f"Reading MCP resource {server_name}.{resource_uri}")
             try:
-                connection_info = session_data["connections"][server_name]
-                server_type = connection_info["type"]
+                # Get the appropriate client context
+                client_context = self._create_mcp_client_context(session_data, server_name)
+                transport = session_data["mcp_clients"][server_name]["transport"]
                 
-                if server_type == "streamable-http":
-                    # Use HTTP transport
-                    transport = connection_info["transport"]
-                    response = await transport.send_request({
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "resources/read",
-                        "params": {
-                            "uri": resource_uri
-                        }
-                    })
-                    
-                    if "error" in response:
-                        raise Exception(f"Resource read failed: {response['error']}")
-                    
-                    return response.get("result", {})
-                    
+                # Connect and read resource
+                if transport == "streamable-http":
+                    async with client_context as (read_stream, write_stream, get_session_id):
+                        async with ClientSession(read_stream, write_stream) as session:
+                            await session.initialize()
+                            result = await session.read_resource(uri=resource_uri)
+                elif transport == "sse":
+                    # Add timeout to prevent hanging on SSE connection issues
+                    try:
+                        async with asyncio_timeout(10):  # 10 second timeout
+                            async with client_context as streams:
+                                async with ClientSession(*streams) as session:
+                                    await session.initialize()
+                                    result = await session.read_resource(uri=resource_uri)
+                    except asyncio.TimeoutError:
+                        logger.error(f"Timeout reading SSE resource {server_name}.{resource_uri}")
+                        raise RuntimeError(f"SSE resource read timed out after 10 seconds")
                 else:
-                    # Use MCP session
-                    mcp_session = connection_info["session"]
+                    raise ValueError(f"Unsupported transport: {transport}")
+                
+                # Extract content from MCP result
+                if hasattr(result, 'contents') and result.contents:
+                    if len(result.contents) == 1:
+                        return result.contents[0].text
+                    else:
+                        return [content.text for content in result.contents]
+                else:
+                    return str(result)
                     
-                    async with asyncio_timeout(30):
-                        # Create resource read request
-                        read_request = ReadResourceRequest(
-                            method="resources/read",
-                            params={"uri": resource_uri}
-                        )
-                        
-                        result = await mcp_session.read_resource(read_request)
-                        
-                        if hasattr(result, 'contents') and result.contents:
-                            # Extract contents from MCP response
-                            content_items = []
-                            for item in result.contents:
-                                if hasattr(item, 'text'):
-                                    content_items.append({
-                                        "type": "text",
-                                        "text": item.text,
-                                        "uri": resource_uri
-                                    })
-                                elif hasattr(item, 'blob'):
-                                    content_items.append({
-                                        "type": "blob", 
-                                        "blob": item.blob,
-                                        "uri": resource_uri,
-                                        "mimeType": resource_mime_type
-                                    })
-                                else:
-                                    content_items.append({
-                                        "type": "text",
-                                        "text": str(item),
-                                        "uri": resource_uri
-                                    })
-                            
-                            return {
-                                "contents": content_items,
-                                "uri": resource_uri,
-                                "mimeType": resource_mime_type
-                            }
-                        else:
-                            return {
-                                "contents": [],
-                                "uri": resource_uri, 
-                                "mimeType": resource_mime_type
-                            }
-                            
             except Exception as e:
-                error_msg = f"Error reading resource {resource_uri}: {str(e)}"
-                session_data["logs"]["error"].append(error_msg)
-                logger.error(error_msg)
-                raise Exception(error_msg)
-        
-        return resource_read
+                logger.error(f"Error reading MCP resource {server_name}.{resource_uri}: {e}", exc_info=True)
+                raise
+
+        return {
+            "uri": str(resource_uri),
+            "name": str(resource_name),
+            "description": str(resource_description),
+            "mimeType": str(resource_mime_type),
+            "read": resource_read,
+        }
 
     def _wrap_prompt(self, session_data: dict, server_name: str, prompt_name: str, prompt_description: str, prompt_args: list):
-        """Create a wrapper function for an MCP prompt."""
-        # Extract argument names and create function signature
-        arg_names = []
-        for arg in prompt_args:
-            if isinstance(arg, dict):
-                arg_names.append(arg.get('name', 'arg'))
-            else:
-                # Fallback for different argument formats
-                arg_names.append(getattr(arg, 'name', 'arg'))
-        
+        """Create a prompt wrapper function with proper closure."""
         async def prompt_read(**kwargs):
+            """Wrapper function to get MCP prompt."""
+            logger.debug(f"Reading MCP prompt {server_name}.{prompt_name} with args: {kwargs}")
             try:
-                connection_info = session_data["connections"][server_name]
-                server_type = connection_info["type"]
+                # Get the appropriate client context
+                client_context = self._create_mcp_client_context(session_data, server_name)
+                transport = session_data["mcp_clients"][server_name]["transport"]
                 
-                if server_type == "streamable-http":
-                    # Use HTTP transport
-                    transport = connection_info["transport"]
-                    response = await transport.send_request({
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "prompts/get",
-                        "params": {
-                            "name": prompt_name,
-                            "arguments": kwargs
-                        }
-                    })
-                    
-                    if "error" in response:
-                        raise Exception(f"Prompt get failed: {response['error']}")
-                    
-                    return response.get("result", {})
-                    
+                # Connect and get prompt
+                if transport == "streamable-http":
+                    async with client_context as (read_stream, write_stream, get_session_id):
+                        async with ClientSession(read_stream, write_stream) as session:
+                            await session.initialize()
+                            result = await session.get_prompt(name=prompt_name, arguments=kwargs)
+                elif transport == "sse":
+                    # Add timeout to prevent hanging on SSE connection issues
+                    try:
+                        async with asyncio_timeout(10):  # 10 second timeout
+                            async with client_context as streams:
+                                async with ClientSession(*streams) as session:
+                                    await session.initialize()
+                                    result = await session.get_prompt(name=prompt_name, arguments=kwargs)
+                    except asyncio.TimeoutError:
+                        logger.error(f"Timeout reading SSE prompt {server_name}.{prompt_name}")
+                        raise RuntimeError(f"SSE prompt read timed out after 10 seconds")
                 else:
-                    # Use MCP session  
-                    mcp_session = connection_info["session"]
+                    raise ValueError(f"Unsupported transport: {transport}")
+                
+                # Extract content from MCP result
+                if hasattr(result, 'messages') and result.messages:
+                    return {
+                        "description": str(result.description),
+                        "messages": [
+                            {
+                                "role": str(msg.role),
+                                "content": {
+                                    "type": "text",
+                                    "text": str(msg.content.text)
+                                }
+                            }
+                            for msg in result.messages
+                        ]
+                    }
+                else:
+                    return str(result)
                     
-                    async with asyncio_timeout(30):
-                        # Create prompt get request
-                        get_request = GetPromptRequest(
-                            method="prompts/get",
-                            params={
-                                "name": prompt_name,
-                                "arguments": kwargs
-                            }
-                        )
-                        
-                        result = await mcp_session.get_prompt(get_request)
-                        
-                        if hasattr(result, 'messages') and result.messages:
-                            # Extract messages from MCP response
-                            messages = []
-                            for msg in result.messages:
-                                if hasattr(msg, 'content') and hasattr(msg, 'role'):
-                                    content_items = []
-                                    if hasattr(msg.content, '__iter__'):
-                                        for item in msg.content:
-                                            if hasattr(item, 'text'):
-                                                content_items.append({
-                                                    "type": "text", 
-                                                    "text": item.text
-                                                })
-                                            else:
-                                                content_items.append({
-                                                    "type": "text",
-                                                    "text": str(item)
-                                                })
-                                    else:
-                                        content_items.append({
-                                            "type": "text",
-                                            "text": str(msg.content)
-                                        })
-                                    
-                                    messages.append({
-                                        "role": msg.role,
-                                        "content": content_items
-                                    })
-                                else:
-                                    # Fallback for different message formats
-                                    messages.append({
-                                        "role": getattr(msg, 'role', 'user'),
-                                        "content": [{"type": "text", "text": str(msg)}]
-                                    })
-                            
-                            return {
-                                "messages": messages,
-                                "description": prompt_description
-                            }
-                        else:
-                            return {
-                                "messages": [],
-                                "description": prompt_description
-                            }
-                            
             except Exception as e:
-                error_msg = f"Error getting prompt {prompt_name}: {str(e)}"
-                session_data["logs"]["error"].append(error_msg)
-                logger.error(error_msg)
-                raise Exception(error_msg)
-        
-        return prompt_read
+                logger.error(f"Error getting MCP prompt {server_name}.{prompt_name}: {e}", exc_info=True)
+                raise
+
+        return {
+            "name": str(prompt_name),
+            "description": str(prompt_description),
+            "read": prompt_read,
+        }
 
     async def _create_tool_wrappers(self, session_data: dict, server_name: str, tools: List) -> List:
-        """Create wrapper functions for all tools."""
+        """Create tool wrapper functions."""
         tool_wrappers = []
         
         for tool in tools:
             try:
-                tool_name = tool.get('name') if isinstance(tool, dict) else getattr(tool, 'name', 'unknown')
-                tool_description = tool.get('description') if isinstance(tool, dict) else getattr(tool, 'description', '')
-                tool_schema = tool.get('inputSchema') if isinstance(tool, dict) else getattr(tool, 'inputSchema', {})
+                # Convert MCP objects to basic Python types
+                tool_name = str(tool.name)
+                tool_description = str(tool.description)
+                tool_schema = tool.inputSchema
                 
-                wrapper = self._wrap_tool(session_data, server_name, tool_name, tool_description, tool_schema)
+                # Convert tool_schema from Pydantic to dict if needed
+                if hasattr(tool_schema, 'model_dump'):
+                    tool_schema = tool_schema.model_dump()
+                elif hasattr(tool_schema, 'dict'):
+                    tool_schema = tool_schema.dict()
+
+                # Create wrapper function
+                tool_wrapper = self._wrap_tool(session_data, server_name, tool_name, tool_description, tool_schema)
+                tool_wrappers.append(tool_wrapper)
                 
-                tool_wrappers.append({
-                    "name": tool_name,
-                    "description": tool_description,
-                    "schema": tool_schema,
-                    "function": wrapper
-                })
-                
+                logger.info(f"Created tool wrapper: {server_name}.{tool_name}")
+                session_data["logs"]["info"].append(f"Created tool wrapper: {server_name}.{tool_name}")
+
             except Exception as e:
-                logger.error(f"Failed to create wrapper for tool {tool}: {e}")
-                continue
+                logger.error(f"Failed to create tool wrapper for {tool.name}: {e}", exc_info=True)
+                session_data["logs"]["error"].append(f"Failed to create tool wrapper for {tool.name}: {e}")
         
         return tool_wrappers
 
     async def _create_resource_wrappers(self, session_data: dict, server_name: str, resources: List) -> List:
-        """Create wrapper functions for all resources."""
-        resource_wrappers = []
+        """Create resource wrapper configurations with read functions."""
+        resource_configs = []
         
         for resource in resources:
             try:
-                resource_uri = resource.get('uri') if isinstance(resource, dict) else getattr(resource, 'uri', 'unknown')
-                resource_name = resource.get('name') if isinstance(resource, dict) else getattr(resource, 'name', resource_uri)
-                resource_description = resource.get('description') if isinstance(resource, dict) else getattr(resource, 'description', '')
-                resource_mime_type = resource.get('mimeType') if isinstance(resource, dict) else getattr(resource, 'mimeType', 'text/plain')
+                # Convert MCP objects to basic Python types
+                resource_uri = str(resource.uri)
+                resource_name = str(resource.name)
+                resource_description = str(resource.description)
+                resource_mime_type = str(getattr(resource, 'mimeType', 'text/plain'))
+
+                # Create resource config
+                resource_config = self._wrap_resource(session_data, server_name, resource_uri, resource_name, resource_description, resource_mime_type)
+                resource_configs.append(resource_config)
                 
-                wrapper = self._wrap_resource(session_data, server_name, resource_uri, resource_name, resource_description, resource_mime_type)
-                
-                resource_wrappers.append({
-                    "name": resource_name,
-                    "uri": resource_uri,
-                    "description": resource_description,
-                    "mimeType": resource_mime_type,
-                    "function": wrapper
-                })
-                
+                logger.info(f"Created resource wrapper: {server_name}.{resource_name}")
+                session_data["logs"]["info"].append(f"Created resource wrapper: {server_name}.{resource_name}")
+
             except Exception as e:
-                logger.error(f"Failed to create wrapper for resource {resource}: {e}")
-                continue
+                logger.error(f"Failed to create resource wrapper for {resource.name}: {e}", exc_info=True)
+                session_data["logs"]["error"].append(f"Failed to create resource wrapper for {resource.name}: {e}")
         
-        return resource_wrappers
+        return resource_configs
 
     async def _create_prompt_wrappers(self, session_data: dict, server_name: str, prompts: List) -> List:
-        """Create wrapper functions for all prompts."""
-        prompt_wrappers = []
+        """Create prompt wrapper configurations with read functions."""
+        prompt_configs = []
         
         for prompt in prompts:
             try:
-                prompt_name = prompt.get('name') if isinstance(prompt, dict) else getattr(prompt, 'name', 'unknown')
-                prompt_description = prompt.get('description') if isinstance(prompt, dict) else getattr(prompt, 'description', '')
-                prompt_args = prompt.get('arguments') if isinstance(prompt, dict) else getattr(prompt, 'arguments', [])
+                # Convert MCP objects to basic Python types
+                prompt_name = str(prompt.name)
+                prompt_description = str(prompt.description)
+                prompt_args = getattr(prompt, 'arguments', [])
+
+                # Create prompt config
+                prompt_config = self._wrap_prompt(session_data, server_name, prompt_name, prompt_description, prompt_args)
+                prompt_configs.append(prompt_config)
                 
-                wrapper = self._wrap_prompt(session_data, server_name, prompt_name, prompt_description, prompt_args)
-                
-                prompt_wrappers.append({
-                    "name": prompt_name,
-                    "description": prompt_description,
-                    "arguments": prompt_args,
-                    "function": wrapper
-                })
-                
+                logger.info(f"Created prompt wrapper: {server_name}.{prompt_name}")
+                session_data["logs"]["info"].append(f"Created prompt wrapper: {server_name}.{prompt_name}")
+
             except Exception as e:
-                logger.error(f"Failed to create wrapper for prompt {prompt}: {e}")
-                continue
+                logger.error(f"Failed to create prompt wrapper for {prompt.name}: {e}", exc_info=True)
+                session_data["logs"]["error"].append(f"Failed to create prompt wrapper for {prompt.name}: {e}")
         
-        return prompt_wrappers
+        return prompt_configs
 
     async def _register_unified_mcp_service(self, session_data: dict, server_name: str, tools: List, resources: List, prompts: List, client):
         """Register a unified service that exposes all MCP server capabilities."""
-        # Create wrappers for all capabilities
-        tool_wrappers = await self._create_tool_wrappers(session_data, server_name, tools)
-        resource_wrappers = await self._create_resource_wrappers(session_data, server_name, resources)  
-        prompt_wrappers = await self._create_prompt_wrappers(session_data, server_name, prompts)
-        
-        service_def = {
-            "id": server_name,
-            "name": f"MCP Server: {server_name}",
-            "description": f"Unified service exposing tools, resources, and prompts from MCP server {server_name}",
-            "type": "mcp-server-proxy",
-            "config": {"visibility": "public"},
-        }
-        
-        # Add tool functions
-        for tool_wrapper in tool_wrappers:
-            service_def[f"tool_{tool_wrapper['name']}"] = tool_wrapper["function"]
-            
-        # Add resource functions  
-        for resource_wrapper in resource_wrappers:
-            service_def[f"resource_{resource_wrapper['name']}"] = resource_wrapper["function"]
-            
-        # Add prompt functions
-        for prompt_wrapper in prompt_wrappers:
-            service_def[f"prompt_{prompt_wrapper['name']}"] = prompt_wrapper["function"]
-        
-        # Register the service
         try:
+            # Register the service with correct structure
+            service_def = {
+                "id": server_name,
+                "name": f"MCP Server: {server_name}",
+                "description": f"Unified service exposing tools, resources, and prompts from MCP server {server_name}",
+                "type": "mcp-server-proxy",
+                "config": {"visibility": "public"},
+                "tools": tools,
+                "resources": resources,
+                "prompts": prompts,
+            }
+            
+            # Register the service
             await client.register_service(service_def, overwrite=True)
             session_data["services"].append(service_def["name"])
             logger.info(f"Registered unified MCP service: {service_def['name']} with ID: {server_name}")
+            
         except Exception as e:
             error_msg = f"Failed to register MCP service for {server_name}: {e}"
             session_data["logs"]["error"].append(error_msg)
@@ -857,25 +777,8 @@ class MCPClientRunner(BaseWorker):
                     except Exception as e:
                         logger.warning(f"Error unregistering service {service_name}: {e}")
 
-                # Close all MCP connections
-                connections = session_data.get("connections", {})
-                for server_name, connection_info in connections.items():
-                    try:
-                        server_type = connection_info.get("type")
-                        if server_type == "streamable-http":
-                            # Close HTTP transport
-                            transport = connection_info.get("transport")
-                            if transport:
-                                await transport.__aexit__(None, None, None)
-                        elif "session" in connection_info:
-                            # Close MCP session
-                            mcp_session = connection_info["session"]
-                            if hasattr(mcp_session, 'close'):
-                                await mcp_session.close()
-                        
-                        logger.info(f"Closed connection to MCP server: {server_name}")
-                    except Exception as e:
-                        logger.warning(f"Error closing connection to {server_name}: {e}")
+                # Log cleanup
+                logger.info(f"Cleaning up MCP connections for session {session_id}")
             
             session_info.status = SessionStatus.STOPPED
             logger.info(f"Stopped MCP session {session_id}")
@@ -973,7 +876,7 @@ class MCPClientRunner(BaseWorker):
 
 async def hypha_startup(server):
     """Hypha startup function to initialize MCP client."""
-    if MCP_AVAILABLE:
+    if MCP_SDK_AVAILABLE:
         worker = MCPClientRunner(server)
         await server.register_service(worker.get_service_config())
         logger.info("MCP client worker initialized and registered")
@@ -985,7 +888,7 @@ async def start_worker(server_url, workspace, token):
     """Start MCP worker standalone."""
     from hypha_rpc import connect
     
-    if not MCP_AVAILABLE:
+    if not MCP_SDK_AVAILABLE:
         logger.error("MCP library not available")
         return
     

@@ -401,6 +401,10 @@ class ServerAppController:
             None,
             description="Application manifest dictionary containing app metadata and settings. Can include autoscaling config. MUTUALLY EXCLUSIVE with 'config' parameter - when manifest is provided, config must be None. The manifest is stored directly without conversion and must include 'entry_point' field."
         ),
+        app_id: Optional[str] = Field(
+            None,
+            description="The unique identifier of the application to install. This is typically the alias of the application."
+        ),
         config: Optional[Dict[str, Any]] = Field(
             None,
             description="DEPRECATED: Use 'manifest' instead. Application configuration dictionary (alias for manifest for backward compatibility)."
@@ -444,6 +448,10 @@ class ServerAppController:
         progress_callback: Any = Field(
             None,
             description="Callback function to receive progress updates from the app."
+        ),
+        additional_kwargs: Optional[dict] = Field(
+            None,
+            description="Additional keyword arguments to pass to the app worker."
         ),
         context: Optional[dict] = Field(
             None,
@@ -619,7 +627,6 @@ class ServerAppController:
             "ws": context["ws"],
             "user": context["user"]
         }
-        detached = artifact_obj.get("detached", detached)
         
         # Create startup_config from the arguments if any are provided
         startup_config = {}
@@ -629,6 +636,8 @@ class ServerAppController:
             startup_config["wait_for_service"] = wait_for_service
         if detached is not None:
             startup_config["detached"] = detached
+        if additional_kwargs is not None:
+            startup_config["additional_kwargs"] = additional_kwargs
         if stop_after_inactive is not None:
             startup_config["stop_after_inactive"] = stop_after_inactive
         
@@ -660,6 +669,7 @@ class ServerAppController:
         # Create artifact using the artifact controller - let it generate the alias
         artifact = await self.artifact_manager.create(
             type="application",
+            alias=app_id,
             parent_id=collection_id,
             manifest=artifact_obj,
             overwrite=overwrite,
@@ -845,6 +855,10 @@ class ServerAppController:
             False,
             description="Whether to start the app in detached mode. If True, the app starts without waiting for any service registration or client connection, useful for running scripts that don't need to stay connected."
         ),
+        additional_kwargs: Optional[dict] = Field(
+            None,
+            description="Additional keyword arguments to pass to the app worker."
+        ),
         progress_callback: Any = Field(
             None,
             description="Callback function to receive progress updates from the app."
@@ -873,6 +887,8 @@ class ServerAppController:
                 startup_config["wait_for_service"] = wait_for_service
             if detached is not None:
                 startup_config["detached"] = detached
+            if additional_kwargs is not None:
+                startup_config["additional_kwargs"] = additional_kwargs
             if stop_after_inactive is not None:
                 startup_config["stop_after_inactive"] = stop_after_inactive
             
@@ -958,6 +974,7 @@ class ServerAppController:
         timeout: float = None,
         manifest: dict = None,
         progress_callback: Any = None,
+        additional_kwargs: Optional[dict] = None,
         context: dict = None,
     ):
         """Start the app by type using the appropriate worker."""
@@ -981,6 +998,7 @@ class ServerAppController:
         
         # Start the app using the worker with reorganized config
         full_client_id = workspace + "/" + client_id
+        additional_kwargs = additional_kwargs or {}
         session_id = await worker.start({
             "id": full_client_id,
             "app_id": app_id,
@@ -994,6 +1012,7 @@ class ServerAppController:
             "timeout": timeout,
             "manifest": manifest,
             "progress_callback": progress_callback,
+            **additional_kwargs,
         })
         
         # Store minimal session info for apps.py - worker handles detailed session management
@@ -1071,6 +1090,10 @@ class ServerAppController:
             None,
             description="Callback function to receive progress updates from the app."
         ),
+        additional_kwargs: Optional[dict] = Field(
+            None,
+            description="Additional keyword arguments to pass to the app worker."
+        ),
         context: Optional[dict] = Field(
             None,
             description="Additional context information including user and workspace details. Usually provided automatically by the system."
@@ -1130,6 +1153,9 @@ class ServerAppController:
         # Handle detached parameter from startup_config if not explicitly provided
         if not detached and "detached" in startup_config:
             detached = startup_config["detached"]
+            
+        if additional_kwargs is None and "additional_kwargs" in startup_config:
+            additional_kwargs = startup_config["additional_kwargs"]
 
         # When detached=True, override wait_for_service to avoid waiting
         if detached:
@@ -1245,6 +1271,7 @@ class ServerAppController:
                 timeout=timeout,
                 manifest=manifest,
                 progress_callback=progress_callback,
+                additional_kwargs=additional_kwargs,
                 context=context,
             )
             

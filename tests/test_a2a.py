@@ -18,9 +18,25 @@ try:
     from a2a.types import SendMessageRequest, MessageSendParams, Message, TextPart, Role
     import uuid
 
+    def create_text_message(text: str) -> SendMessageRequest:
+        """Helper function to create a properly formatted A2A text message request."""
+        message = Message(
+            messageId=str(uuid.uuid4()),
+            role=Role.user,
+            parts=[TextPart(kind="text", text=text)],
+        )
+
+        params = MessageSendParams(message=message)
+
+        return SendMessageRequest(id=str(uuid.uuid4()), params=params)
+
     A2A_CLIENT_AVAILABLE = True
 except ImportError:
     A2A_CLIENT_AVAILABLE = False
+
+    def create_text_message(text: str):
+        """Stub function when A2A SDK is not available."""
+        raise ImportError("A2A client SDK not available - ensure a2a-sdk is installed")
 
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
@@ -575,19 +591,6 @@ async def test_a2a_nonexistent_service(fastapi_server, test_user_token):
             headers={"Content-Type": "application/json"},
         )
         assert response.status_code == 404
-
-
-def create_text_message(text: str) -> SendMessageRequest:
-    """Helper function to create a properly formatted A2A text message request."""
-    message = Message(
-        messageId=str(uuid.uuid4()),
-        role=Role.user,
-        parts=[TextPart(kind="text", text=text)],
-    )
-
-    params = MessageSendParams(message=message)
-
-    return SendMessageRequest(id=str(uuid.uuid4()), params=params)
 
 
 @pytest.mark.skipif(not A2A_CLIENT_AVAILABLE, reason="A2A client SDK not available")

@@ -484,7 +484,8 @@ async def install_mcp_server():
 
     # Install DeepWiki MCP server
     app_info = await controller.install(
-        config={
+        app_id="deepwiki-mcp-server",  # Custom app ID
+        manifest={
             "type": "mcp-server",
             "name": "DeepWiki Integration",
             "version": "1.0.0",
@@ -495,7 +496,8 @@ async def install_mcp_server():
                     "url": "https://mcp.deepwiki.com/mcp"
                 }
             }
-        }
+        },
+        overwrite=True
     )
 
     # Start the MCP server
