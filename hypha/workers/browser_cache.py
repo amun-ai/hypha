@@ -97,11 +97,7 @@ class BrowserCache:
         # Anchor the pattern
         pattern_regex = f'^{pattern_regex}$'
         
-        try:
-            return bool(re.match(pattern_regex, url))
-        except re.error:
-            logger.warning(f"Invalid cache pattern: {pattern}")
-            return False
+        return bool(re.match(pattern_regex, url))
     
     async def should_cache_url(self, workspace: str, app_id: str, url: str, cache_routes: Optional[List[str]] = None) -> bool:
         """Determine if a URL should be cached."""
@@ -119,13 +115,10 @@ class BrowserCache:
         """Get cached response for a URL."""
         cache_key = self._get_cache_key(workspace, app_id, url)
         
-        try:
-            cached_data = await self.redis_client.get(cache_key)
-            if cached_data:
-                data = json.loads(cached_data)
-                return CacheEntry.from_dict(data)
-        except Exception as e:
-            logger.warning(f"Failed to get cached response for {url}: {e}")
+        cached_data = await self.redis_client.get(cache_key)
+        if cached_data:
+            data = json.loads(cached_data)
+            return CacheEntry.from_dict(data)
         
         return None
     
@@ -134,14 +127,11 @@ class BrowserCache:
         """Cache an HTTP response."""
         cache_key = self._get_cache_key(workspace, app_id, url)
         
-        try:
-            entry = CacheEntry(url, status, headers, body, time.time())
-            data = json.dumps(entry.to_dict())
-            
-            await self.redis_client.setex(cache_key, self.cache_ttl, data)
-            logger.info(f"Cached response for {url} (size: {len(body)} bytes)")
-        except Exception as e:
-            logger.error(f"Failed to cache response for {url}: {e}")
+        entry = CacheEntry(url, status, headers, body, time.time())
+        data = json.dumps(entry.to_dict())
+        
+        await self.redis_client.setex(cache_key, self.cache_ttl, data)
+        logger.info(f"Cached response for {url} (size: {len(body)} bytes)")
     
     async def start_recording(self, workspace: str, app_id: str) -> None:
         """Start recording/caching for an app session."""
@@ -159,65 +149,48 @@ class BrowserCache:
         """Clear all cached entries for an app."""
         pattern = self._get_app_cache_pattern(workspace, app_id)
         
-        try:
-            # Find all keys matching the pattern
-            keys = []
-            async for key in self.redis_client.scan_iter(match=pattern):
-                keys.append(key)
-            
-            if keys:
-                deleted = await self.redis_client.delete(*keys)
-                logger.info(f"Cleared {deleted} cache entries for {workspace}/{app_id}")
-                return deleted
-            
-            return 0
-        except Exception as e:
-            logger.error(f"Failed to clear cache for {workspace}/{app_id}: {e}")
-            return 0
+        # Find all keys matching the pattern
+        keys = []
+        async for key in self.redis_client.scan_iter(match=pattern):
+            keys.append(key)
+        
+        if keys:
+            deleted = await self.redis_client.delete(*keys)
+            logger.info(f"Cleared {deleted} cache entries for {workspace}/{app_id}")
+            return deleted
+        
+        return 0
     
     async def get_cache_stats(self, workspace: str, app_id: str) -> Dict[str, Any]:
         """Get cache statistics for an app."""
         pattern = self._get_app_cache_pattern(workspace, app_id)
         
-        try:
-            entry_count = 0
-            total_size = 0
-            oldest_timestamp = None
-            newest_timestamp = None
-            
-            async for key in self.redis_client.scan_iter(match=pattern):
-                entry_count += 1
-                cached_data = await self.redis_client.get(key)
-                if cached_data:
-                    try:
-                        data = json.loads(cached_data)
-                        body_size = len(bytes.fromhex(data['body'])) if isinstance(data['body'], str) else len(data['body'])
-                        total_size += body_size
-                        
-                        timestamp = data['timestamp']
-                        if oldest_timestamp is None or timestamp < oldest_timestamp:
-                            oldest_timestamp = timestamp
-                        if newest_timestamp is None or timestamp > newest_timestamp:
-                            newest_timestamp = timestamp
-                    except Exception:
-                        continue
-            
-            return {
-                'entry_count': entry_count,
-                'total_size_bytes': total_size,
-                'oldest_entry': oldest_timestamp,
-                'newest_entry': newest_timestamp,
-                'recording': self.recording_sessions.get(f"{workspace}/{app_id}", False)
-            }
-        except Exception as e:
-            logger.error(f"Failed to get cache stats for {workspace}/{app_id}: {e}")
-            return {
-                'entry_count': 0,
-                'total_size_bytes': 0,
-                'oldest_entry': None,
-                'newest_entry': None,
-                'recording': False
-            }
+        entry_count = 0
+        total_size = 0
+        oldest_timestamp = None
+        newest_timestamp = None
+        
+        async for key in self.redis_client.scan_iter(match=pattern):
+            entry_count += 1
+            cached_data = await self.redis_client.get(key)
+            if cached_data:
+                data = json.loads(cached_data)
+                body_size = len(bytes.fromhex(data['body'])) if isinstance(data['body'], str) else len(data['body'])
+                total_size += body_size
+                
+                timestamp = data['timestamp']
+                if oldest_timestamp is None or timestamp < oldest_timestamp:
+                    oldest_timestamp = timestamp
+                if newest_timestamp is None or timestamp > newest_timestamp:
+                    newest_timestamp = timestamp
+        
+        return {
+            'entry_count': entry_count,
+            'total_size_bytes': total_size,
+            'oldest_entry': oldest_timestamp,
+            'newest_entry': newest_timestamp,
+            'recording': self.recording_sessions.get(f"{workspace}/{app_id}", False)
+        }
     
     def get_default_cache_routes_for_type(self, app_type: str) -> List[str]:
         """Get default cache routes for an app type."""

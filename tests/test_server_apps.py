@@ -2459,16 +2459,11 @@ async def test_web_app_type(fastapi_server, test_user_token):
 
     print("✅ Web-app installed successfully")
 
-    # Test that the compiled HTML contains the expected elements
+    # Test that web-app doesn't generate files (navigates directly to URL)
     files = await controller.get_files(app_info["id"])
-    html_file = next((f for f in files if f["name"] == "index.html"), None)
-    assert html_file is not None
+    assert len(files) == 0, "Web-app should not generate any files"
     
-    html_content = html_file["content"]
-    assert "https://example.com" in html_content  # URL should be in the template
-    assert "Test Web App" in html_content  # Name should be in the template
-    
-    print("✅ Web-app HTML template generated correctly")
+    print("✅ Web-app correctly configured for direct URL navigation")
 
     # Clean up
     await controller.uninstall(app_info["id"])
@@ -2508,24 +2503,20 @@ async def test_web_app_cache_functionality(fastapi_server, test_user_token):
 
     print("✅ Web-app with cache routes installed")
 
-    # Test cache management methods if browser worker is available
-    try:
-        browser_worker = await api.get_service("public/browser-worker")
-        
-        # Get initial cache stats (should be empty)
-        stats = await browser_worker.get_app_cache_stats("default", app_info["id"])
-        assert stats["entry_count"] == 0
-        
-        print("✅ Cache stats retrieved successfully")
-        
-        # Clear cache (should work even if empty)
-        result = await browser_worker.clear_app_cache("default", app_info["id"])
-        assert "deleted_entries" in result
-        
-        print("✅ Cache clearing functionality works")
-        
-    except Exception as e:
-        print(f"⚠️ Browser worker not available for cache testing: {e}")
+    # Test cache management methods
+    browser_worker = await api.get_service("public/browser-worker")
+    
+    # Get initial cache stats (should be empty)
+    stats = await browser_worker.get_app_cache_stats("default", app_info["id"])
+    assert stats["entry_count"] == 0
+    
+    print("✅ Cache stats retrieved successfully")
+    
+    # Clear cache (should work even if empty)
+    result = await browser_worker.clear_app_cache("default", app_info["id"])
+    assert "deleted_entries" in result
+    
+    print("✅ Cache clearing functionality works")
 
     # Clean up
     await controller.uninstall(app_info["id"])
@@ -2573,15 +2564,11 @@ api.export({
     print("✅ Web-python app installed (should have default cache routes)")
 
     # Test that browser worker recognizes this app for caching
-    try:
-        browser_worker = await api.get_service("public/browser-worker")
-        stats = await browser_worker.get_app_cache_stats("default", app_info["id"])
-        # Stats should be accessible even if empty
-        assert "entry_count" in stats
-        print("✅ Web-python app cache stats accessible")
-        
-    except Exception as e:
-        print(f"⚠️ Browser worker not available: {e}")
+    browser_worker = await api.get_service("public/browser-worker")
+    stats = await browser_worker.get_app_cache_stats("default", app_info["id"])
+    # Stats should be accessible even if empty
+    assert "entry_count" in stats
+    print("✅ Web-python app cache stats accessible")
 
     # Clean up
     await controller.uninstall(app_info["id"])

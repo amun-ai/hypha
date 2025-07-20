@@ -195,6 +195,9 @@ class BrowserAppRunner(BaseWorker):
         # Create a new page in the context
         page = await context.new_page()
 
+        # Setup cookies, localStorage, and other authentication before loading the page
+        await self._setup_page_authentication(page, config.manifest)
+
         logs = {}
         _capture_logs_from_browser_tabs(page, logs)
         
@@ -224,10 +227,13 @@ class BrowserAppRunner(BaseWorker):
             entry_point = config.manifest.get("entry_point", "index.html")
             logger.info(f"Browser worker starting session with entry_point: {entry_point}, app_type: {app_type}")
             
-            # For web-app type, handle differently - it should directly navigate to the external URL
+            # For web-app type, navigate directly to the external URL
             if app_type == "web-app":
-                # For web-app, we first load our template, then it will handle the external URL
-                local_url, public_url = self._generate_app_urls(config, entry_point)
+                external_url = config.manifest.get("url")
+                if not external_url:
+                    raise Exception("web-app type requires 'url' field in manifest")
+                local_url = external_url
+                public_url = external_url
             else:
                 # Generate URLs for the app
                 local_url, public_url = self._generate_app_urls(config, entry_point)
@@ -245,6 +251,9 @@ class BrowserAppRunner(BaseWorker):
                     f"Failed to start browser app instance, "
                     f"status: {response.status}, url: {local_url}"
                 )
+
+            # Apply cookies and localStorage after successful navigation
+            await self._apply_pending_page_setup(page, local_url)
 
             logger.info("Browser app loaded successfully")
             
@@ -277,30 +286,23 @@ class BrowserAppRunner(BaseWorker):
         session_info = self._sessions[session_id]
         session_info.status = SessionStatus.STOPPING
         
-        try:
-            session_data = self._session_data.get(session_id)
-            if session_data:
-                # Stop cache recording if it was enabled
-                if session_data.get("cache_enabled") and self.cache_manager:
-                    await self.cache_manager.stop_recording(session_info.workspace, session_info.app_id)
-                    
-                if "page" in session_data:
-                    await session_data["page"].close()
-                if "context" in session_data:
-                    await session_data["context"].close()
-            
-            session_info.status = SessionStatus.STOPPED
-            logger.info(f"Stopped browser session {session_id}")
-            
-        except Exception as e:
-            session_info.status = SessionStatus.FAILED
-            session_info.error = str(e)
-            logger.error(f"Failed to stop browser session {session_id}: {e}")
-            raise
-        finally:
-            # Cleanup
-            self._sessions.pop(session_id, None)
-            self._session_data.pop(session_id, None)
+        session_data = self._session_data.get(session_id)
+        if session_data:
+            # Stop cache recording if it was enabled
+            if session_data.get("cache_enabled") and self.cache_manager:
+                await self.cache_manager.stop_recording(session_info.workspace, session_info.app_id)
+                
+            if "page" in session_data:
+                await session_data["page"].close()
+            if "context" in session_data:
+                await session_data["context"].close()
+        
+        session_info.status = SessionStatus.STOPPED
+        logger.info(f"Stopped browser session {session_id}")
+        
+        # Cleanup
+        self._sessions.pop(session_id, None)
+        self._session_data.pop(session_id, None)
 
     async def list_sessions(self, workspace: str) -> List[SessionInfo]:
         """List all browser sessions for a workspace."""
@@ -359,19 +361,13 @@ class BrowserAppRunner(BaseWorker):
         ]
         
         for session_id in sessions_to_stop:
-            try:
-                await self.stop(session_id)
-            except Exception as e:
-                logger.warning(f"Failed to stop browser session {session_id}: {e}")
+            await self.stop(session_id)
         
         # Clear all cache entries for this workspace if cache manager is available
         if self.cache_manager:
-            try:
-                # Note: This is a simplified approach. In a production system,
-                # you might want to be more selective about cache clearing
-                logger.info(f"Cache cleanup for workspace {workspace} would be handled by app uninstall")
-            except Exception as e:
-                logger.warning(f"Failed to clear cache for workspace {workspace}: {e}")
+            # Note: This is a simplified approach. In a production system,
+            # you might want to be more selective about cache clearing
+            logger.info(f"Cache cleanup for workspace {workspace} would be handled by app uninstall")
 
     async def shutdown(self) -> None:
         """Shutdown the browser worker."""
@@ -380,23 +376,16 @@ class BrowserAppRunner(BaseWorker):
         # Stop all sessions
         session_ids = list(self._sessions.keys())
         for session_id in session_ids:
-            try:
-                await self.stop(session_id)
-            except Exception as e:
-                logger.warning(f"Failed to stop browser session {session_id}: {e}")
+            await self.stop(session_id)
         
         # Shutdown browser and playwright
-        try:
-            if self.browser:
-                await self.browser.close()
+        if self.browser:
+            await self.browser.close()
 
-            if self._playwright:
-                await self._playwright.stop()
+        if self._playwright:
+            await self._playwright.stop()
 
-            logger.info("Browser worker closed successfully.")
-        except Exception as e:
-            logger.error("Error during browser shutdown: %s", str(e))
-            raise
+        logger.info("Browser worker closed successfully.")
         
         self.initialized = False
         logger.info("Browser worker shutdown complete")
@@ -463,7 +452,7 @@ class BrowserAppRunner(BaseWorker):
         if app_type is None:
             logger.warning("No app type found in manifest, using default app type")
             
-        # Handle web-app type specially - it doesn't need source files, just manifest
+        # Handle web-app type specially - it doesn't need compilation, just validation
         if app_type == "web-app":
             progress_callback({"type": "info", "message": "Processing web-app configuration..."})
             
@@ -471,20 +460,12 @@ class BrowserAppRunner(BaseWorker):
             if not manifest.get("url"):
                 raise Exception("web-app type requires 'url' field in manifest")
             
-            # Create the compiled HTML using the template
-            compiled_config, compiled_html = await self._compile_source_to_html("", app_type, manifest, config)
-            
             new_manifest = manifest.copy()
-            new_manifest.update(compiled_config)
-            new_manifest["entry_point"] = "index.html"
             new_manifest["type"] = "web-app"
+            # No entry_point needed since we navigate directly to the URL
             
-            # Create files list with compiled HTML
-            new_files = [{
-                "name": "index.html",
-                "content": compiled_html,
-                "format": "text"
-            }]
+            # No files needed for web-app type
+            new_files = []
             
             progress_callback({"type": "success", "message": "Web-app configuration processed successfully"})
             return new_manifest, new_files
@@ -711,6 +692,55 @@ class BrowserAppRunner(BaseWorker):
         screenshot = await page.screenshot(type=format)
         return screenshot
 
+    async def _setup_page_authentication(self, page: Page, manifest: Dict[str, Any]) -> None:
+        """Setup cookies, localStorage, and authentication for the page."""
+        # Setup cookies if provided
+        cookies = manifest.get("cookies", {})
+        if cookies:
+            # Convert cookies to the format expected by Playwright
+            cookie_list = []
+            for name, value in cookies.items():
+                cookie_list.append({
+                    "name": name,
+                    "value": str(value),
+                    "domain": "localhost",  # Will be updated when we navigate
+                    "path": "/"
+                })
+            
+            # We'll set cookies after navigation since we need the domain
+            page._pending_cookies = cookie_list
+        
+        # Setup localStorage if provided
+        local_storage = manifest.get("localStorage", {})
+        if local_storage:
+            page._pending_local_storage = local_storage
+        
+        # Setup authorization token if provided
+        auth_token = manifest.get("authorization_token")
+        if auth_token:
+            # Set authorization header for all requests
+            await page.set_extra_http_headers({"Authorization": auth_token})
+
+    async def _apply_pending_page_setup(self, page: Page, url: str) -> None:
+        """Apply cookies and localStorage after page navigation."""
+        # Set cookies with correct domain
+        if hasattr(page, '_pending_cookies'):
+            from urllib.parse import urlparse
+            parsed_url = urlparse(url)
+            domain = parsed_url.netloc
+            
+            for cookie in page._pending_cookies:
+                cookie["domain"] = domain
+            
+            await page.context.add_cookies(page._pending_cookies)
+            delattr(page, '_pending_cookies')
+        
+        # Set localStorage
+        if hasattr(page, '_pending_local_storage'):
+            for key, value in page._pending_local_storage.items():
+                await page.evaluate(f"localStorage.setItem({repr(key)}, {repr(str(value))})")
+            delattr(page, '_pending_local_storage')
+
     async def _setup_route_caching(self, page: Page, workspace: str, app_id: str, cache_routes: List[str]) -> None:
         """Setup route interception for caching."""
         async def handle_route(route):
@@ -761,17 +791,11 @@ class BrowserAppRunner(BaseWorker):
 
     async def clear_app_cache(self, workspace: str, app_id: str) -> Dict[str, Any]:
         """Clear cache for an app."""
-        if not self.cache_manager:
-            return {"error": "Cache manager not available"}
-        
         deleted_count = await self.cache_manager.clear_app_cache(workspace, app_id)
         return {"deleted_entries": deleted_count}
 
     async def get_app_cache_stats(self, workspace: str, app_id: str) -> Dict[str, Any]:
         """Get cache statistics for an app."""
-        if not self.cache_manager:
-            return {"error": "Cache manager not available"}
-        
         return await self.cache_manager.get_cache_stats(workspace, app_id)
 
     def get_service(self):
