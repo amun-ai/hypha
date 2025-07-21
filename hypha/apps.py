@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 import base64
 
-from hypha import main_version
+from hypha import hypha_rpc_version
 from jinja2 import Environment, PackageLoader, select_autoescape
 from typing import Any, Dict, List, Optional, Union
 from hypha.core import UserInfo, UserPermission, ServiceInfo, ApplicationManifest, AutoscalingConfig, RedisRPCConnection

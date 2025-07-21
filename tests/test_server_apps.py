@@ -2607,7 +2607,7 @@ api.export({"test": lambda: "ok"})
     await controller.uninstall(app_with_cache["id"])
     await controller.uninstall(app_default["id"])
     
-        await api.disconnect()
+    await api.disconnect()
  
     
 async def test_custom_app_id_installation(fastapi_server, test_user_token):

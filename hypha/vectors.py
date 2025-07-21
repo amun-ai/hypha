@@ -16,7 +16,13 @@ from redis.commands.search.field import (
     GeoField,
     VectorField,
 )
-from redis.commands.search.indexDefinition import IndexDefinition, IndexType
+try:
+    # for new redis-py, e.g. 6.2.0
+    from redis.commands.search.index_definition import IndexDefinition, IndexType
+except ImportError:
+    # fallback to old version of redis-py, e.g. 5.2.0
+    from redis.commands.search.indexDefinition import IndexDefinition, IndexType
+    
 from redis.commands.search.query import Query
 from redis.commands.search.query import Query
 

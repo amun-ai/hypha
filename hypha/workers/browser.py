@@ -5,6 +5,7 @@ import logging
 import sys
 from typing import Any, Dict, List, Optional, Union
 from datetime import datetime
+from urllib.parse import urlparse
 
 from playwright.async_api import Page, async_playwright, Browser
 from jinja2 import Environment, PackageLoader, select_autoescape
@@ -12,7 +13,7 @@ from jinja2 import Environment, PackageLoader, select_autoescape
 from hypha.workers.base import BaseWorker, WorkerConfig, SessionStatus, SessionInfo, SessionNotFoundError, WorkerError
 from hypha.workers.browser_cache import BrowserCache
 from hypha.plugin_parser import parse_imjoy_plugin
-from hypha import main_version
+from hypha import hypha_rpc_version
 from hypha.utils import PLUGIN_CONFIG_FIELDS, safe_join
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -212,7 +213,7 @@ class BrowserAppRunner(BaseWorker):
             await self._setup_page_authentication(page, config.manifest, entry_point)
         else:
             # For other types, setup authentication for local URL
-            await self._setup_page_authentication(page, config.manifest, None)
+            await self._setup_page_authentication(page, config.manifest)
 
         # Setup caching if enabled
         cache_enabled = False
@@ -469,8 +470,8 @@ class BrowserAppRunner(BaseWorker):
             progress_callback({"type": "info", "message": "Processing web-app configuration..."})
             
             # Validate required fields for web-app
-            if not manifest.get("url"):
-                raise Exception("web-app type requires 'url' field in manifest")
+            if not manifest.get("entry_point"):
+                raise Exception("web-app type requires 'entry_point' field in manifest")
             
             new_manifest = manifest.copy()
             new_manifest["type"] = "web-app"
@@ -612,7 +613,7 @@ class BrowserAppRunner(BaseWorker):
                     template_config = {k: final_config[k] for k in final_config if k in PLUGIN_CONFIG_FIELDS}
                     template_config["server_url"] = server_url
                     compiled_html = template.render(
-                        hypha_main_version=main_version,
+                        hypha_hypha_rpc_version=hypha_rpc_version,
                         hypha_rpc_websocket_mjs=f"{server_url}/assets/hypha-rpc-websocket.mjs",
                         config=template_config,
                         script=final_config["script"],
@@ -669,7 +670,7 @@ class BrowserAppRunner(BaseWorker):
             })
         
         compiled_html = template.render(
-            hypha_main_version=main_version,
+            hypha_hypha_rpc_version=hypha_rpc_version,
             hypha_rpc_websocket_mjs=f"{server_url}/assets/hypha-rpc-websocket.mjs",
             config=template_config,
             script=final_config.get("script", ""),
@@ -704,36 +705,7 @@ class BrowserAppRunner(BaseWorker):
         screenshot = await page.screenshot(type=format)
         return screenshot
 
-    async def _setup_page_authentication(self, page: Page, manifest: Dict[str, Any]) -> None:
-        """Setup cookies, localStorage, and authentication for the page."""
-        # Setup cookies if provided
-        cookies = manifest.get("cookies", {})
-        if cookies:
-            # Convert cookies to the format expected by Playwright
-            cookie_list = []
-            for name, value in cookies.items():
-                cookie_list.append({
-                    "name": name,
-                    "value": str(value),
-                    "domain": "localhost",  # Will be updated when we navigate
-                    "path": "/"
-                })
-            
-            # We'll set cookies after navigation since we need the domain
-            page._pending_cookies = cookie_list
-        
-        # Setup localStorage if provided
-        local_storage = manifest.get("localStorage", {})
-        if local_storage:
-            page._pending_local_storage = local_storage
-        
-        # Setup authorization token if provided
-        auth_token = manifest.get("authorization_token")
-        if auth_token:
-            # Set authorization header for all requests
-            await page.set_extra_http_headers({"Authorization": auth_token})
-
-    async def _setup_page_authentication(self, page, manifest, target_url):
+    async def _setup_page_authentication(self, page, manifest, target_url=None):
         """Setup authentication (cookies, localStorage, headers) before navigation."""
         # Setup cookies
         cookies_config = manifest.get("cookies", {})
@@ -741,7 +713,6 @@ class BrowserAppRunner(BaseWorker):
             # Convert to Playwright cookie format
             cookies = []
             if target_url:
-                from urllib.parse import urlparse
                 parsed = urlparse(target_url)
                 domain = parsed.netloc
                 for name, value in cookies_config.items():
@@ -777,7 +748,6 @@ class BrowserAppRunner(BaseWorker):
         """Apply cookies and localStorage after page navigation."""
         # Set cookies with correct domain
         if hasattr(page, '_pending_cookies'):
-            from urllib.parse import urlparse
             parsed_url = urlparse(url)
             domain = parsed_url.netloc
             

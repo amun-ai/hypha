@@ -996,6 +996,10 @@ class WorkspaceManager:
         pagination: Optional[bool] = Field(
             False, description="Enable pagination, return metadata with total count."
         ),
+        include_unlisted: bool = Field(
+            False,
+            description="Whether to include unlisted services from the current workspace in search results.",
+        ),
         context: Optional[dict] = None,
     ):
         """
@@ -1015,6 +1019,7 @@ class WorkspaceManager:
         else:
             vector_query = query
 
+        # Use simple auth filter and do post-processing for unlisted services
         auth_filter = f"@visibility:{{public}} | @workspace:{{{sanitize_search_value(current_workspace)}}}"
         results = await self._vector_search.search_vectors(
             "services",
@@ -1035,6 +1040,16 @@ class WorkspaceManager:
         ]
         for item in results["items"]:
             item["id"] = re.sub(r"^[^|]+\|[^:]+:(.+)$", r"\1", item["id"]).split("@")[0]
+        
+        # Filter out unlisted services if not explicitly requested
+        if not include_unlisted:
+            filtered_items = []
+            for item in results["items"]:
+                service_visibility = item.get("config", {}).get("visibility")
+                if service_visibility != "unlisted":
+                    filtered_items.append(item)
+            results["items"] = filtered_items
+        
         if pagination:
             return results
         else:
@@ -1046,6 +1061,10 @@ class WorkspaceManager:
         query: Optional[Union[dict, str]] = Field(
             None,
             description="Query for filtering services. This can be either a dictionary specifying detailed parameters like 'visibility', 'workspace', 'client_id', 'service_id', and 'type', or a string that includes these parameters in a formatted pattern. Examples: 'workspace/client_id:service_id' or 'workspace/service_id'.",
+        ),
+        include_unlisted: bool = Field(
+            False,
+            description="Whether to include unlisted services in the results. Only works if the user is from the same workspace as the unlisted services.",
         ),
         context: Optional[dict] = None,
     ):
@@ -1136,13 +1155,23 @@ class WorkspaceManager:
         workspace = query.get("workspace", cws)
         if workspace == "*":
             assert (
-                original_visibility != "protected"
-            ), "Cannot list protected services in all workspaces."
+                original_visibility not in ["protected", "unlisted"]
+            ), "Cannot list protected or unlisted services in all workspaces."
+            if include_unlisted:
+                raise PermissionError("Cannot include unlisted services when searching all workspaces.")
             query["visibility"] = "public"
         elif workspace not in ["public", cws]:
             # Check user permission for the specified workspace only once
-            if user_info.check_permission(workspace, UserPermission.read):
+            if not user_info.check_permission(workspace, UserPermission.read):
                 raise PermissionError(f"Permission denied for workspace {workspace}")
+            # Check permission for including unlisted services
+            if include_unlisted and workspace != cws:
+                raise PermissionError(f"Cannot include unlisted services from workspace {workspace}. Only services from your current workspace ({cws}) can include unlisted services.")
+        
+        # Validate include_unlisted permissions for current workspace
+        if include_unlisted and workspace == cws:
+            if not user_info.check_permission(cws, UserPermission.read):
+                raise PermissionError(f"Cannot include unlisted services without read permission for workspace {cws}.")
 
         visibility = query.get("visibility", "*")
         client_id = query.get("client_id", "*")
@@ -1181,33 +1210,54 @@ class WorkspaceManager:
         validate_key_part(service_id)
         validate_key_part(app_id)
 
-        pattern = f"services:{visibility}|{type_filter}:{workspace}/{client_id}:{service_id}@{app_id}"
+        # Construct patterns based on whether we want to include unlisted services
+        patterns = []
+        if include_unlisted and workspace == cws:
+            # If including unlisted in current workspace, query all visibility types
+            for vis in ["public", "protected", "unlisted"]:
+                patterns.append(f"services:{vis}|{type_filter}:{workspace}/{client_id}:{service_id}@{app_id}")
+        else:
+            # Normal query with specified visibility (may be "*")
+            patterns.append(f"services:{visibility}|{type_filter}:{workspace}/{client_id}:{service_id}@{app_id}")
 
-        assert pattern.startswith(
-            "services:"
-        ), "Query pattern does not start with 'services:'."
-        assert not any(
-            char in pattern for char in "{}"
-        ), "Query pattern contains invalid characters."
+        assert all(pattern.startswith("services:") for pattern in patterns), "Query patterns do not start with 'services:'."
+        assert all(not any(char in pattern for char in "{}") for pattern in patterns), "Query patterns contain invalid characters."
 
-        keys = await self._redis.keys(pattern)
+        keys = []
+        for pattern in patterns:
+            keys.extend(await self._redis.keys(pattern))
 
         if workspace == "*":
-            # add services in the current workspace
-            ws_pattern = f"services:{original_visibility}|{type_filter}:{cws}/{client_id}:{service_id}@{app_id}"
-            keys = keys + await self._redis.keys(ws_pattern)
+            # add services in the current workspace (but not unlisted unless explicitly requested)
+            if include_unlisted:
+                # This case should already be blocked by permission check above
+                pass  # Already handled above with error
+            else:
+                ws_pattern = f"services:{original_visibility}|{type_filter}:{cws}/{client_id}:{service_id}@{app_id}"
+                keys = keys + await self._redis.keys(ws_pattern)
 
         services = []
         for key in set(keys):
             service_data = await self._redis.hgetall(key)
             service_dict = ServiceInfo.from_redis_dict(service_data).model_dump()
-            if service_dict.get("config", {}).get(
-                "visibility"
-            ) != "public" and not user_info.check_permission(
-                workspace, UserPermission.read
+            service_visibility = service_dict.get("config", {}).get("visibility")
+            service_workspace = service_dict.get("id", "").split("/")[0] if "/" in service_dict.get("id", "") else workspace
+            
+            # Check if this is an unlisted service and whether we should include it
+            if service_visibility == "unlisted":
+                if not include_unlisted:
+                    # Skip unlisted services if not explicitly requested
+                    continue
+                elif service_workspace != cws:
+                    # Skip unlisted services from other workspaces
+                    continue
+            
+            # Existing permission check for protected services
+            if service_visibility not in ["public", "unlisted"] and not user_info.check_permission(
+                service_workspace, UserPermission.read
             ):
                 logger.warning(
-                    f"Potential issue in list_services: Protected service appear in the search list: {service_id}"
+                    f"Potential issue in list_services: Protected service appear in the search list: {service_dict.get('id')}"
                 )
                 continue
             services.append(service_dict)
