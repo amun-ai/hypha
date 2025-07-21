@@ -96,6 +96,7 @@ class A2AClientRunner(BaseWorker):
                 except json.JSONDecodeError as e:
                     logger.warning(f"Failed to parse source as JSON: {e}")
             
+            assert a2a_agents, "a2aAgents configuration is required"
             # Create final configuration
             final_manifest = {
                 "type": "a2a-agent",

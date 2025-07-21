@@ -950,7 +950,13 @@ class ArtifactController:
                             },
                             UploadId=upload_id
                         )
-                    return {"success": True, "message": f"File uploaded successfully"}
+                    content = json.dumps({"success": True, "message": f"File uploaded successfully"})
+                    headers = {
+                        "Content-Type": "application/json",
+                        "Content-Length": str(len(content)),
+                        "ETag": response.headers.get("ETag")
+                    }
+                    return Response(content=content, headers=headers)
             except ClientError as e:
                 logger.error(f"Failed to complete multipart upload: {e.response['Error']['Message']}")
                 raise HTTPException(status_code=400, detail=f"Failed to complete multipart upload: {e.response['Error']['Message']}")
@@ -994,8 +1000,14 @@ class ArtifactController:
                     response = await client.put(presigned_url, content=body_generator(), headers={"Content-Type": "application/octet-stream", "Content-Length": request.headers.get("content-length")})
 
                 if not (200 == response.status_code):
-                    raise HTTPException(status_code=response.status_code, detail=f"S3 upload failed with status {response.status_code}: {response.text}")
-                return {"success": True, "message": f"File uploaded successfully"}
+                    raise HTTPException(status_code=response.status_code, detail=f"S3 upload failed with status {response.status_code}: {response.text}", headers=response.headers)
+                content = json.dumps({"success": True, "message": f"File uploaded successfully"})
+                headers = {
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(content)),
+                    "ETag": response.headers.get("ETag")
+                }
+                return Response(content=content, headers=headers)
             except Exception as e:
                 logger.error(f"Unhandled exception in upload_file: {str(e)}")
                 raise HTTPException(status_code=500, detail=f"Failed to upload file: {traceback.format_exc()}")

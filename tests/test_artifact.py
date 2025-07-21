@@ -5580,7 +5580,7 @@ async def test_put_file_endpoint_small_file(minio_server, fastapi_server, test_u
         assert response.status_code == 200
         response_data = response.json()
         assert response_data["message"] == "File uploaded successfully"
-        assert "etag" in response_data
+        assert "etag" in response.headers
 
     # Verify the file was uploaded correctly by listing files
     files = await artifact_manager.list_files(artifact_id=dataset.id, stage=True)
@@ -5635,7 +5635,7 @@ async def test_put_file_endpoint_large_file_multipart(minio_server, fastapi_serv
         assert response.status_code == 200
         response_data = response.json()
         assert response_data["message"] == "File uploaded successfully"
-        assert "etag" in response_data
+        assert "etag" in response.headers
 
     # Verify the file was uploaded correctly
     files = await artifact_manager.list_files(artifact_id=dataset.id, stage=True)
@@ -5698,7 +5698,7 @@ async def test_put_file_endpoint_streaming_chunked(minio_server, fastapi_server,
         assert response.status_code == 200
         response_data = response.json()
         assert response_data["message"] == "File uploaded successfully"
-        assert "etag" in response_data
+        assert "etag" in response.headers
 
     # Verify the file was uploaded correctly
     files = await artifact_manager.list_files(artifact_id=dataset.id, stage=True)
