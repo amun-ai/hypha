@@ -54,6 +54,7 @@ from fastapi.responses import (
     JSONResponse,
     Response,
 )
+from fastapi import Body
 from hypha.core import (
     UserInfo,
     UserPermission,
@@ -70,6 +71,7 @@ import struct
 import mimetypes
 import aiohttp
 from jinja2 import Template
+from pydantic import BaseModel
 
 # Logger setup
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -77,6 +79,13 @@ logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("artifact")
 logger.setLevel(LOGLEVEL)
 
+class PartETag(BaseModel):
+    PartNumber: int
+    ETag: str
+
+class CompleteMultipartUploadRequest(BaseModel):
+    upload_id: str
+    parts: List[PartETag]
 
 def make_json_safe(data):
     if isinstance(data, dict):
@@ -836,170 +845,161 @@ class ArtifactController:
             finally:
                 await session.close()
 
-        # HTTP endpoint for uploading files to an artifact
-        @router.put("/{workspace}/artifacts/{artifact_alias}/files/{path:path}")
-        async def put_file(
-            request: Request,
+        @router.post("/{workspace}/artifacts/{artifact_alias}/create_multipart_upload")
+        async def create_multipart_upload(
             workspace: str,
             artifact_alias: str,
             path: str,
-            download_weight: float = 0,
-            token: str = None,
+            part_count: int = Query(..., gt=0, description="The total number of parts for the upload."),
+            expires_in: int = Query(3600, description="The number of seconds for the presigned URLs to expire."),
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
-            """Upload a file to an artifact using streaming multipart upload."""
+            """
+            Initiate a multipart upload and get a list of presigned URLs for all parts.
+            """
+            if part_count > 10000:
+                raise HTTPException(status_code=400, detail="The maximum number of parts is 10,000.")
+            
+            context = {"ws": workspace, "user": user_info.model_dump()}
+            artifact_id = self._validate_artifact_id(artifact_alias, context=context)
+            session = await self._get_session()
             try:
-                artifact_id = self._validate_artifact_id(
-                    artifact_alias, {"ws": workspace}
-                )
-                
-                session = await self._get_session()
-                if token:
-                    user_info = await self.store.parse_user_token(token)
-                
-                assert download_weight >= 0, "Download weight must be a non-negative number."
-                
                 async with session.begin():
-                    # Fetch artifact and check permissions
-                    (
-                        artifact,
-                        parent_artifact,
-                    ) = await self._get_artifact_with_permission(
+                    artifact, parent_artifact = await self._get_artifact_with_permission(
                         user_info, artifact_id, "put_file", session
                     )
-                    
-                    assert artifact.staging is not None, "Artifact must be in staging mode."
-
-                    # For staging mode, always use the target version index
-                    # This ensures files are properly staged and can be found by list_files
-                    target_version_index = len(artifact.versions or [])
-                    
-                    # Check if there's intent to create a new version for commit behavior
-                    staging_list = artifact.staging or []
-                    has_new_version_intent = any(
-                        item.get("_intent") == "new_version" for item in staging_list
-                    )
-
-                    # The staging area index for manifest operations
                     version_index = self._get_version_index(artifact, "stage")
-
-                    logger.info(
-                        f"Uploading file '{path}' directly to target version {target_version_index} (has_new_version_intent: {has_new_version_intent})"
-                    )
-
                     s3_config = self._get_s3_config(artifact, parent_artifact)
-                    
-                    # Stream upload the file to S3
+                    s3_key = safe_join(s3_config["prefix"], f"{artifact.id}/v{version_index}/{path}")
+
                     async with self._create_client_async(s3_config) as s3_client:
-                        file_key = safe_join(
-                            s3_config["prefix"],
-                            f"{artifact.id}/v{target_version_index}/{path}",
-                        )
-                        
-                        # Create multipart upload
+                        # 1. Create the multipart upload to get an UploadId
                         mpu = await s3_client.create_multipart_upload(
-                            Bucket=s3_config["bucket"], Key=file_key
+                            Bucket=s3_config["bucket"], Key=s3_key
                         )
-                        
-                        parts_info = {}
-                        futures = []
-                        count = 0
-                        current_chunk = b""
-                        
-                        # Stream the incoming request data in chunks
-                        async for chunk in request.stream():
-                            current_chunk += chunk
-                            # When chunk reaches 5MB, upload it as a part
-                            if len(current_chunk) > 5 * 1024 * 1024:
-                                count += 1
-                                part_fut = s3_client.upload_part(
-                                    Bucket=s3_config["bucket"],
-                                    ContentLength=len(current_chunk),
-                                    Key=file_key,
-                                    PartNumber=count,
-                                    UploadId=mpu["UploadId"],
-                                    Body=current_chunk,
-                                )
-                                futures.append(part_fut)
-                                current_chunk = b""
-                        
-                        # Handle multipart upload completion
-                        if len(futures) > 0:
-                            if len(current_chunk) > 0:
-                                # Upload the last chunk
-                                count += 1
-                                part_fut = s3_client.upload_part(
-                                    Bucket=s3_config["bucket"],
-                                    ContentLength=len(current_chunk),
-                                    Key=file_key,
-                                    PartNumber=count,
-                                    UploadId=mpu["UploadId"],
-                                    Body=current_chunk,
-                                )
-                                futures.append(part_fut)
+                        upload_id = mpu["UploadId"]
 
-                            parts = await asyncio.gather(*futures)
-                            parts_info["Parts"] = [
-                                {"PartNumber": i + 1, "ETag": part["ETag"]}
-                                for i, part in enumerate(parts)
-                            ]
-
-                            response = await s3_client.complete_multipart_upload(
-                                Bucket=s3_config["bucket"],
-                                Key=file_key,
-                                UploadId=mpu["UploadId"],
-                                MultipartUpload=parts_info,
+                        # 2. Generate a presigned URL for each part
+                        part_urls = []
+                        for i in range(1, part_count + 1):
+                            url = await s3_client.generate_presigned_url(
+                                "upload_part",
+                                Params={
+                                    "Bucket": s3_config["bucket"],
+                                    "Key": s3_key,
+                                    "UploadId": upload_id,
+                                    "PartNumber": i,
+                                },
+                                ExpiresIn=expires_in,
                             )
-                        else:
-                            # For small files, use simple put_object
-                            response = await s3_client.put_object(
-                                Body=current_chunk,
-                                Bucket=s3_config["bucket"],
-                                Key=file_key,
-                                ContentLength=len(current_chunk),
-                            )
+                            part_urls.append({"part_number": i, "url": url})
 
-                        assert "ETag" in response
-                        
-                        # Update artifact staging information
-                        artifact.staging = artifact.staging or []
-                        # Filter out intent markers when checking for existing files
-                        staging_files = [f for f in artifact.staging if "path" in f]
-                        if not any(f["path"] == path for f in staging_files):
-                            artifact.staging.append(
-                                {
-                                    "path": path,
-                                    "download_weight": download_weight,
-                                }
-                            )
-                            flag_modified(artifact, "staging")
+                        await self._cache.set(f"multipart_upload:{upload_id}", {
+                            "s3_key": s3_key,
+                            "parts": part_urls,
+                        }, ttl=expires_in + 10)
 
-                        # Save the artifact to s3
-                        await self._save_version_to_s3(version_index, artifact, s3_config)
-                        session.add(artifact)
-                        await session.commit()
-                        
-                        logger.info(
-                            f"Successfully uploaded file '{path}' to artifact with ID: {artifact_id} (target version: {target_version_index})"
-                        )
-                        
-                        return {"message": "File uploaded successfully", "etag": response["ETag"]}
-
-            except KeyError:
-                raise HTTPException(status_code=404, detail="Artifact not found")
-            except AssertionError as e:
-                raise HTTPException(status_code=400, detail=str(e))
-            except PermissionError:
-                raise HTTPException(status_code=403, detail="Permission denied")
-            except HTTPException as e:
-                raise e  # Re-raise HTTPExceptions to be handled by FastAPI
+                        return {
+                            "upload_id": upload_id,
+                            "parts": part_urls,
+                        }
             except Exception as e:
-                logger.error(f"Unhandled exception in http put_file: {str(e)}")
-                raise HTTPException(
-                    status_code=500, detail=f"Internal server error: {str(e)}"
-                )
+                logger.error(f"Failed to create multipart upload: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
             finally:
                 await session.close()
+        
+        @router.post("/{workspace}/artifacts/{artifact_alias}/complete_multipart_upload")
+        async def complete_multipart_upload(
+            workspace: str,
+            artifact_alias: str,
+            data: CompleteMultipartUploadRequest = Body(...),
+            user_info: self.store.login_optional = Depends(self.store.login_optional),
+        ):
+            """
+            Complete the multipart upload and finalize the file in S3.
+            The 'parts' list should contain dicts with 'PartNumber' and 'ETag'.
+            """
+            context = {"ws": workspace, "user": user_info.model_dump()}
+            upload_id = data.upload_id
+            parts = data.parts
+            artifact_id = self._validate_artifact_id(artifact_alias, context=context)
+            cache_key = f"multipart_upload:{upload_id}"
+            upload_info = await self._cache.get(cache_key)
+            if not upload_info:
+                raise HTTPException(status_code=400, detail="Upload session expired or not found")
+            try:
+                s3_key = upload_info["s3_key"]
+                session = await self._get_session()
+            
+                async with session.begin():
+                    artifact, parent_artifact = await self._get_artifact_with_permission(
+                        user_info, artifact_id, "put_file", session
+                    )
+                    s3_config = self._get_s3_config(artifact, parent_artifact)
+                    # The 'parts' list from the client should be sorted by PartNumber
+                    sorted_parts = sorted(parts, key=lambda p: p.PartNumber)
+                    sorted_parts = [{"ETag": p.ETag, "PartNumber": p.PartNumber} for p in sorted_parts]
+
+                    async with self._create_client_async(s3_config) as s3_client:
+                        await s3_client.complete_multipart_upload(
+                            Bucket=s3_config["bucket"],
+                            Key=s3_key,
+                            MultipartUpload={
+                                "Parts": sorted_parts
+                            },
+                            UploadId=upload_id
+                        )
+                    return {"success": True, "message": f"File uploaded successfully"}
+            except ClientError as e:
+                logger.error(f"Failed to complete multipart upload: {e.response['Error']['Message']}")
+                raise HTTPException(status_code=400, detail=f"Failed to complete multipart upload: {e.response['Error']['Message']}")
+            except Exception as e:
+                logger.error(f"An unexpected error occurred: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+            finally:
+                await session.close()
+                await self._cache.delete(cache_key)
+                
+        
+        # HTTP endpoint for uploading files to an artifact
+        @router.put("/{workspace}/artifacts/{artifact_alias}/files/{file_path:path}")
+        async def upload_file(
+            request: Request,
+            workspace: str,
+            artifact_alias: str,
+            file_path: str,
+            download_weight: float = 0,
+            user_info: self.store.login_optional = Depends(self.store.login_optional),
+        ):
+            """
+            Upload a file by streaming it directly to S3.
+
+            This endpoint handles file uploads by streaming the request body
+            directly to the S3 storage backend, avoiding local temporary storage.
+            This is efficient for handling large files. After a successful upload,
+            it updates the artifact's manifest.
+            """
+            context = {"ws": workspace, "user": user_info.model_dump()}
+            try:
+                artifact_id = self._validate_artifact_id(artifact_alias, context=context)
+                presigned_url = await self.put_file(artifact_id=artifact_id, file_path=file_path, download_weight=download_weight, use_proxy=False, use_local_url=False, expires_in=3600, context=context)
+                # stream the request.stream() to the url
+                async with httpx.AsyncClient() as client:
+                    # Use an async generator to stream chunks
+                    async def body_generator():
+                        async for chunk in request.stream():
+                            yield chunk
+                    # Stream the body to the presigned URL
+                    response = await client.put(presigned_url, content=body_generator(), headers={"Content-Type": "application/octet-stream", "Content-Length": request.headers.get("content-length")})
+
+                if not (200 == response.status_code):
+                    raise HTTPException(status_code=response.status_code, detail=f"S3 upload failed with status {response.status_code}: {response.text}")
+                return {"success": True, "message": f"File uploaded successfully"}
+            except Exception as e:
+                logger.error(f"Unhandled exception in upload_file: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to upload file: {traceback.format_exc()}")
+
 
         # HTTP endpoint for serving static sites
         @router.get("/{workspace}/site/{artifact_alias}/{file_path:path}")

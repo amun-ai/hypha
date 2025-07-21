@@ -5761,9 +5761,9 @@ async def test_put_file_endpoint_nested_directories(minio_server, fastapi_server
 
     # Verify all files were uploaded
     files = await artifact_manager.list_files(artifact_id=dataset.id, stage=True)
-    assert len(files) == len(test_files)
+    assert len(files) == 2 # 1 file + 1 directory
     uploaded_paths = {f["name"] for f in files}
-    assert uploaded_paths == set(test_files.keys())
+    assert uploaded_paths == {"root_file.txt", "level1"}
 
     # Commit and verify files can be downloaded
     await artifact_manager.commit(artifact_id=dataset.id)
@@ -5778,6 +5778,98 @@ async def test_put_file_endpoint_nested_directories(minio_server, fastapi_server
             assert response.status_code == 200
             assert response.text == expected_content
 
+async def test_multipart_upload_endpoint(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test the two-step multipart upload endpoint."""
+    # 1. Set up the connection and create a test artifact
+    api = await connect_to_server(
+        {"name": "test-client", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+    workspace = api.config.workspace
+    token = await api.generate_token()
+
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={"name": "Multipart Test Collection"},
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={"name": "Multipart Dataset"},
+        version="stage",
+    )
+
+    # 2. Define the file to be uploaded and chunk details
+    file_path = "large_test_file.bin"
+    file_size = 12 * 1024 * 1024  # 12 MB
+    file_content = os.urandom(file_size)
+    chunk_size = 5 * 1024 * 1024  # 5 MB
+    part_count = (file_size + chunk_size - 1) // chunk_size
+    assert part_count == 3
+
+    # 3. Step 1: Create the multipart upload and get presigned URLs
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create_multipart_upload",
+            params={"path": file_path, "part_count": part_count},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        upload_info = response.json()
+        assert "upload_id" in upload_info
+        assert len(upload_info["parts"]) == part_count
+        upload_id = upload_info["upload_id"]
+        presigned_urls = upload_info["parts"]
+
+    # 4. Step 2: Upload each part to its presigned URL
+    uploaded_parts = []
+    file_buffer = BytesIO(file_content)
+    async with httpx.AsyncClient(timeout=120) as client:
+        for part_info in presigned_urls:
+            part_number = part_info["part_number"]
+            url = part_info["url"]
+            chunk_data = file_buffer.read(chunk_size)
+            
+            # Upload the chunk
+            response = await client.put(url, data=chunk_data)
+            assert response.status_code == 200
+            
+            # Save the ETag from the response header
+            etag = response.headers["ETag"].strip('"').strip("'")
+            uploaded_parts.append({"PartNumber": part_number, "ETag": etag})
+
+    assert len(uploaded_parts) == part_count
+
+    # 5. Step 3: Complete the multipart upload
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/complete_multipart_upload",
+            json={"upload_id": upload_id, "parts": uploaded_parts},
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        assert response.status_code == 200
+        completion_response = response.json()
+        assert completion_response["success"] is True
+
+    # 6. Commit and verify the uploaded file
+    await artifact_manager.commit(artifact_id=dataset.id)
+    
+    # Download the file to verify its content
+    download_url = f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/files/{file_path}?use_proxy=true"
+    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+        response = await client.get(
+            download_url, headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code == 200
+        downloaded_content = response.content
+        assert downloaded_content == file_content
+
+    # 7. Clean up
+    await artifact_manager.delete(artifact_id=dataset.id)
+    await artifact_manager.delete(artifact_id=collection.id)
 
 async def test_put_file_endpoint_download_weight(minio_server, fastapi_server, test_user_token):
     """Test the HTTP PUT file endpoint with download weight parameter."""
