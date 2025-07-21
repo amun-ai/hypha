@@ -374,6 +374,9 @@ class A2AClientRunner(BaseWorker):
             except Exception as e:
                 logger.error(f"Error calling A2A skill {agent_name}.{skill_name}: {e}", exc_info=True)
                 raise
+        
+        skill_wrapper.__name__ = skill_name
+        skill_wrapper.__doc__ = skill_description or ""
 
         return skill_wrapper
 

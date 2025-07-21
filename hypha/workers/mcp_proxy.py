@@ -538,7 +538,16 @@ class MCPClientRunner(BaseWorker):
             except Exception as e:
                 logger.error(f"Error calling MCP tool {server_name}.{tool_name}: {e}", exc_info=True)
                 raise
-
+        tool_wrapper.__name__ = tool_name
+        tool_wrapper.__doc__ = tool_description or ""
+        tool_wrapper.__schema__ = {
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "description": tool_description or "",
+                "parameters": tool_schema
+            }
+        }
         return tool_wrapper
 
     def _wrap_resource(self, session_data: dict, server_name: str, resource_uri: str, resource_name: str, resource_description: str, resource_mime_type: str):
