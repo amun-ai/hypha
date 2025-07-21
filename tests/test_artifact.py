@@ -5822,13 +5822,13 @@ async def test_multipart_upload_endpoint(
         assert "upload_id" in upload_info
         assert len(upload_info["parts"]) == part_count
         upload_id = upload_info["upload_id"]
-        presigned_urls = upload_info["parts"]
+        parts = upload_info["parts"]
 
     # 4. Step 2: Upload each part to its presigned URL
     uploaded_parts = []
     file_buffer = BytesIO(file_content)
     async with httpx.AsyncClient(timeout=120) as client:
-        for part_info in presigned_urls:
+        for part_info in parts:
             part_number = part_info["part_number"]
             url = part_info["url"]
             chunk_data = file_buffer.read(chunk_size)
@@ -5839,7 +5839,7 @@ async def test_multipart_upload_endpoint(
             
             # Save the ETag from the response header
             etag = response.headers["ETag"].strip('"').strip("'")
-            uploaded_parts.append({"PartNumber": part_number, "ETag": etag})
+            uploaded_parts.append({"part_number": part_number, "etag": etag})
 
     assert len(uploaded_parts) == part_count
 

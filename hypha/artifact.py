@@ -80,8 +80,8 @@ logger = logging.getLogger("artifact")
 logger.setLevel(LOGLEVEL)
 
 class PartETag(BaseModel):
-    PartNumber: int
-    ETag: str
+    part_number: int
+    etag: str
 
 class CompleteMultipartUploadRequest(BaseModel):
     upload_id: str
@@ -938,8 +938,8 @@ class ArtifactController:
                     )
                     s3_config = self._get_s3_config(artifact, parent_artifact)
                     # The 'parts' list from the client should be sorted by PartNumber
-                    sorted_parts = sorted(parts, key=lambda p: p.PartNumber)
-                    sorted_parts = [{"ETag": p.ETag, "PartNumber": p.PartNumber} for p in sorted_parts]
+                    sorted_parts = sorted(parts, key=lambda p: p.part_number)
+                    sorted_parts = [{"ETag": p.etag, "PartNumber": p.part_number} for p in sorted_parts]
 
                     async with self._create_client_async(s3_config) as s3_client:
                         await s3_client.complete_multipart_upload(

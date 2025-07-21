@@ -1339,6 +1339,352 @@ response = requests.get(
 
 ---
 
+### File Upload Endpoints
+
+The Artifact Manager provides HTTP endpoints for uploading files directly to artifacts. These endpoints support both single file uploads and multipart uploads for large files.
+
+#### Single File Upload Endpoint
+
+**Endpoint**: `PUT /{workspace}/artifacts/{artifact_alias}/files/{file_path:path}`
+
+Upload a single file by streaming it directly to S3 storage. This endpoint is efficient for handling files of any size as it streams the request body directly to S3 without local temporary storage.
+
+**Request Format:**
+- **Method**: `PUT`
+- **Path Parameters**:
+  - **workspace**: The workspace containing the artifact
+  - **artifact_alias**: The alias or ID of the artifact
+  - **file_path**: The relative path where the file will be stored within the artifact
+- **Query Parameters**:
+  - **download_weight**: (Optional) Float value representing the file's impact on download count. Defaults to `0`.
+- **Headers**:
+  - `Authorization`: Optional. Bearer token for private artifact access
+  - `Content-Type`: Optional. MIME type of the file being uploaded
+  - `Content-Length`: Optional. Size of the file being uploaded
+- **Body**: Raw file content
+
+**Response:**
+```json
+{
+    "success": true,
+    "message": "File uploaded successfully"
+}
+```
+
+**Example Usage:**
+```python
+import asyncio
+import httpx
+
+SERVER_URL = "https://hypha.aicell.io"
+workspace = "my-workspace"
+artifact_alias = "example-dataset"
+file_path = "data/example.csv"
+
+async def upload_file():
+    # Upload a file with download weight
+    with open("local_file.csv", "rb") as f:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.put(
+                f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/files/{file_path}",
+                data=f,
+                params={"download_weight": 1.0},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "text/csv"
+                }
+            )
+
+    if response.status_code == 200:
+        print("File uploaded successfully")
+    else:
+        print(f"Upload failed: {response.status_code}")
+
+# Run the async function
+asyncio.run(upload_file())
+```
+
+#### Multipart Upload Endpoints
+
+For large files, the Artifact Manager supports multipart uploads which allow uploading files in chunks. This is useful for files larger than 5GB or when you need to resume interrupted uploads.
+
+##### 1. Create Multipart Upload
+
+**Endpoint**: `POST /{workspace}/artifacts/{artifact_alias}/create_multipart_upload`
+
+Initiate a multipart upload and get presigned URLs for all parts.
+
+**Request Format:**
+- **Method**: `POST`
+- **Path Parameters**:
+  - **workspace**: The workspace containing the artifact
+  - **artifact_alias**: The alias or ID of the artifact
+- **Query Parameters**:
+  - **path**: The relative path where the file will be stored within the artifact
+  - **part_count**: The total number of parts for the upload (required, max 10,000)
+  - **expires_in**: (Optional) Number of seconds for presigned URLs to expire. Defaults to 3600.
+
+**Response:**
+```json
+{
+    "upload_id": "abc123...",
+    "parts": [
+        {"part_number": 1, "url": "https://s3.amazonaws.com/..."},
+        {"part_number": 2, "url": "https://s3.amazonaws.com/..."},
+        ...
+    ]
+}
+```
+
+##### 2. Complete Multipart Upload
+
+**Endpoint**: `POST /{workspace}/artifacts/{artifact_alias}/complete_multipart_upload`
+
+Complete the multipart upload and finalize the file in S3.
+
+**Request Format:**
+- **Method**: `POST`
+- **Path Parameters**:
+  - **workspace**: The workspace containing the artifact
+  - **artifact_alias**: The alias or ID of the artifact
+- **Body**:
+```json
+{
+    "upload_id": "abc123...",
+    "parts": [
+        {"part_number": 1, "etag": "etag1"},
+        {"part_number": 2, "etag": "etag2"},
+        ...
+    ]
+}
+```
+
+**Response:**
+```json
+{
+    "success": true,
+    "message": "File uploaded successfully"
+}
+```
+
+**Complete Multipart Upload Example:**
+```python
+import asyncio
+import httpx
+import os
+
+SERVER_URL = "https://hypha.aicell.io"
+workspace = "my-workspace"
+artifact_alias = "example-dataset"
+file_path = "large_file.zip"
+
+async def upload_large_file():
+    # Step 1: Create multipart upload
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/create_multipart_upload",
+            params={
+                "path": file_path,
+                "part_count": 3,
+                "expires_in": 3600
+            },
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        if response.status_code != 200:
+            print(f"Failed to create multipart upload: {response.status_code}")
+            return
+            
+        upload_data = response.json()
+        upload_id = upload_data["upload_id"]
+        parts = upload_data["parts"]
+
+    # Step 2: Upload all parts in parallel
+    file_size = os.path.getsize("large_file.zip")
+    chunk_size = file_size // 3
+    uploaded_parts = []
+    
+    async def upload_part(part_info):
+        """Upload a single part by reading directly from disk."""
+        part_number = part_info["part_number"]
+        url = part_info["url"]
+        
+        # Calculate start and end positions for this chunk
+        start_pos = (part_number - 1) * chunk_size
+        end_pos = min(start_pos + chunk_size, file_size)
+        chunk_size_actual = end_pos - start_pos
+        
+        # Read chunk directly from disk with seek
+        with open("large_file.zip", "rb") as f:
+            f.seek(start_pos)
+            chunk_data = f.read(chunk_size_actual)
+        
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.put(url, data=chunk_data)
+            if response.status_code != 200:
+                raise Exception(f"Failed to upload part {part_number}")
+                
+            # Save the ETag from the response header
+            etag = response.headers["ETag"].strip('"').strip("'")
+            return {
+                "part_number": part_number,
+                "etag": etag
+            }
+    
+    # Upload all parts in parallel using asyncio.gather (equivalent to Promise.all)
+    try:
+        uploaded_parts = await asyncio.gather(*[upload_part(part) for part in parts])
+        print(f"Successfully uploaded {len(uploaded_parts)} parts in parallel")
+    except Exception as e:
+        print(f"Upload failed: {e}")
+        return
+
+    # Step 3: Complete multipart upload
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/complete_multipart_upload",
+            json={
+                "upload_id": upload_id,
+                "parts": uploaded_parts
+            },
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+        )
+        
+        if response.status_code == 200:
+            print("Multipart upload completed successfully")
+        else:
+            print(f"Failed to complete multipart upload: {response.status_code}")
+
+# Run the async function
+asyncio.run(upload_large_file())
+```
+
+**Important Notes:**
+- **Part Limits**: Maximum 10,000 parts per multipart upload
+- **Part Size**: Each part must be at least 5MB (except the last part)
+- **ETags**: The ETag returned from S3 when uploading each part must be included in the completion request
+- **Session Expiration**: Upload sessions expire after the specified `expires_in` time
+- **Permissions**: Requires `put_file` permission on the artifact
+- **Parallel Uploads**: Using `asyncio.gather()` for parallel uploads significantly improves performance for large files
+
+**Advanced Example with Optimized Chunking:**
+```python
+import asyncio
+import httpx
+import os
+import math
+
+async def upload_large_file_optimized(file_path, artifact_alias, workspace, token):
+    """Upload a large file with optimized chunking and parallel uploads."""
+    
+    # Calculate optimal chunk size (5MB minimum, 100MB recommended for large files)
+    file_size = os.path.getsize(file_path)
+    min_chunk_size = 5 * 1024 * 1024  # 5MB
+    recommended_chunk_size = 100 * 1024 * 1024  # 100MB
+    chunk_size = max(min_chunk_size, min(recommended_chunk_size, file_size // 10))
+    part_count = math.ceil(file_size / chunk_size)
+    
+    # For very large files, limit concurrent uploads to avoid overwhelming the system
+    max_concurrent_uploads = min(10, part_count)  # Max 10 concurrent uploads
+    
+    print(f"File size: {file_size / (1024*1024):.1f}MB")
+    print(f"Chunk size: {chunk_size / (1024*1024):.1f}MB")
+    print(f"Number of parts: {part_count}")
+    
+    # Step 1: Create multipart upload
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/create_multipart_upload",
+            params={
+                "path": os.path.basename(file_path),
+                "part_count": part_count,
+                "expires_in": 3600
+            },
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        if response.status_code != 200:
+            print(f"Failed to create multipart upload: {response.status_code}")
+            return
+            
+        upload_data = response.json()
+        upload_id = upload_data["upload_id"]
+        parts = upload_data["parts"]
+
+    # Step 2: Upload all parts in parallel with progress tracking
+    async def upload_part_with_progress(part_info):
+        """Upload a single part by reading directly from disk with offset."""
+        part_number = part_info["part_number"]
+        url = part_info["url"]
+        
+        # Calculate start and end positions for this chunk
+        start_pos = (part_number - 1) * chunk_size
+        end_pos = min(start_pos + chunk_size, file_size)
+        chunk_size_actual = end_pos - start_pos
+        
+        print(f"Starting upload of part {part_number}/{part_count} (size: {chunk_size_actual / (1024*1024):.1f}MB)")
+        
+        # Read chunk directly from disk with seek
+        with open(file_path, "rb") as f:
+            f.seek(start_pos)
+            chunk_data = f.read(chunk_size_actual)
+        
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.put(url, data=chunk_data)
+            if response.status_code != 200:
+                raise Exception(f"Failed to upload part {part_number}")
+                
+            etag = response.headers["ETag"].strip('"').strip("'")
+            print(f"Completed upload of part {part_number}/{part_count}")
+            return {
+                "part_number": part_number,
+                "etag": etag
+            }
+    
+    # Upload all parts with controlled concurrency
+    semaphore = asyncio.Semaphore(max_concurrent_uploads)
+    
+    async def upload_part_with_semaphore(part_info):
+        """Upload a single part with semaphore control."""
+        async with semaphore:
+            return await upload_part_with_progress(part_info)
+    
+    try:
+        print(f"Starting upload of {part_count} parts with max {max_concurrent_uploads} concurrent uploads...")
+        uploaded_parts = await asyncio.gather(*[upload_part_with_semaphore(part) for part in parts])
+        print(f"Successfully uploaded all {len(uploaded_parts)} parts")
+    except Exception as e:
+        print(f"Upload failed: {e}")
+        return
+
+    # Step 3: Complete multipart upload
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/complete_multipart_upload",
+            json={
+                "upload_id": upload_id,
+                "parts": uploaded_parts
+            },
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+        )
+        
+        if response.status_code == 200:
+            print("Multipart upload completed successfully")
+        else:
+            print(f"Failed to complete multipart upload: {response.status_code}")
+
+# Usage example
+# asyncio.run(upload_large_file_optimized("large_file.zip", "example-dataset", "my-workspace", token))
+```
+
+---
+
 ### Dynamic Zip File Creation Endpoint
 
 #### Endpoint:
