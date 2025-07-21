@@ -1905,6 +1905,146 @@ async def test_artifact_search_with_advanced_filters(
     await artifact_manager.delete(artifact_id=collection.id)
 
 
+async def test_multipart_upload_service_functions(
+    minio_server, fastapi_server, test_user_token
+):
+    """Test the new multipart upload service functions."""
+    api = await connect_to_server(
+        {
+            "name": "test client for multipart",
+            "server_url": SERVER_URL,
+            "token": test_user_token,
+        }
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a collection for testing
+    collection = await artifact_manager.create(
+        type="collection",
+        manifest={
+            "name": "Multipart Upload Test Collection",
+            "description": "A collection for testing multipart upload service functions",
+        },
+        config={"permissions": {"*": "r", "@": "rw+"}},
+    )
+
+    # Create a dataset artifact
+    dataset = await artifact_manager.create(
+        type="dataset",
+        parent_id=collection.id,
+        manifest={
+            "name": "Multipart Test Dataset",
+            "description": "A dataset for testing multipart upload",
+        },
+        version="stage",
+    )
+
+    # Test put_file_start_multipart service function
+    file_path = "large_file.txt"
+    part_count = 3
+    download_weight = 5.0
+    
+    multipart_info = await artifact_manager.put_file_start_multipart(
+        artifact_id=dataset.id,
+        file_path=file_path,
+        part_count=part_count,
+        download_weight=download_weight,
+        expires_in=3600
+    )
+    
+    # Verify the response structure
+    assert "upload_id" in multipart_info
+    assert "parts" in multipart_info
+    assert len(multipart_info["parts"]) == part_count
+    
+    upload_id = multipart_info["upload_id"]
+    part_urls = multipart_info["parts"]
+    
+    # Verify each part has the expected structure
+    for i, part in enumerate(part_urls):
+        assert part["part_number"] == i + 1
+        assert "url" in part
+        assert part["url"].startswith("http")
+
+    # Simulate uploading parts (we'll create fake ETags)
+    # In a real scenario, you would upload actual data to each URL and get real ETags
+    parts_data = []
+    for part in part_urls:
+        # Simulate an ETag (normally this would come from the S3 upload response)
+        fake_etag = f'"etag-{part["part_number"]}"'
+        parts_data.append({
+            "part_number": part["part_number"],
+            "etag": fake_etag
+        })
+
+    # Test put_file_complete_multipart service function
+    # Note: This will fail in the test because we didn't actually upload the parts
+    # but it tests that the service function is properly structured
+    try:
+        result = await artifact_manager.put_file_complete_multipart(
+            artifact_id=dataset.id,
+            upload_id=upload_id,
+            parts=parts_data
+        )
+        # If this succeeds, verify the response
+        assert result["success"] is True
+        assert "message" in result
+    except Exception as e:
+        # Expected to fail because we didn't actually upload parts
+        # but should be a specific S3 error, not a permission or structure error
+        error_msg = str(e).lower()
+        assert "invalid" in error_msg or "part" in error_msg or "etag" in error_msg
+        print(f"Expected S3 error (parts not actually uploaded): {e}")
+
+    # Test with invalid parameters
+    try:
+        await artifact_manager.put_file_start_multipart(
+            artifact_id=dataset.id,
+            file_path="test2.txt",
+            part_count=0  # Invalid: should be > 0
+        )
+        assert False, "Should have raised ValueError for invalid part_count"
+    except Exception as e:
+        assert "Part count must be greater than 0" in str(e)
+
+    try:
+        await artifact_manager.put_file_start_multipart(
+            artifact_id=dataset.id,
+            file_path="test3.txt",
+            part_count=10001  # Invalid: too many parts
+        )
+        assert False, "Should have raised ValueError for too many parts"
+    except Exception as e:
+        assert "maximum number of parts is 10,000" in str(e)
+
+    # Test with invalid download_weight
+    try:
+        await artifact_manager.put_file_start_multipart(
+            artifact_id=dataset.id,
+            file_path="test4.txt",
+            part_count=2,
+            download_weight=-1  # Invalid: should be non-negative
+        )
+        assert False, "Should have raised ValueError for negative download_weight"
+    except Exception as e:
+        assert "Download weight must be a non-negative number" in str(e)
+
+    # Test complete with invalid upload_id
+    try:
+        await artifact_manager.put_file_complete_multipart(
+            artifact_id=dataset.id,
+            upload_id="invalid-upload-id",
+            parts=[{"part_number": 1, "etag": '"test"'}]
+        )
+        assert False, "Should have raised ValueError for invalid upload_id"
+    except Exception as e:
+        assert "Upload session expired or not found" in str(e)
+
+    # Clean up
+    await artifact_manager.delete(artifact_id=dataset.id)
+    await artifact_manager.delete(artifact_id=collection.id)
+
+
 async def test_artifact_version_management(
     minio_server, fastapi_server_sqlite, test_user_token
 ):

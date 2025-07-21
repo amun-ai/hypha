@@ -1,10 +1,10 @@
-# Worker API Documentation
+# Hypha Worker API Documentation
 
 ## Overview
 
 Hypha workers are responsible for executing different types of applications within isolated environments. The worker interface has been simplified to focus on essential functions, making it easy to create custom workers in both Python and JavaScript.
 
-## Worker Interface
+## Hypha Worker Interface
 
 All workers must implement these core methods:
 
@@ -19,7 +19,7 @@ All workers must implement these core methods:
 Optional methods:
 - `compile(manifest, files, config)` - Compile application files (for build-time processing)
 
-## Worker Configuration
+## Hypha Worker Configuration
 
 When `start(config)` is called, the config parameter contains:
 
@@ -45,7 +45,7 @@ When `start(config)` is called, the config parameter contains:
 }
 ```
 
-## Python Worker Implementation
+## Hypha Worker Implementation in Python
 
 ### Method 1: Using BaseWorker Class (Recommended)
 
@@ -399,7 +399,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-## JavaScript Worker Implementation
+## Hypha Worker Implementation in Javascript
 
 ### Method 1: Using Class Structure
 
@@ -892,7 +892,7 @@ async def compile(self, manifest: Dict[str, Any], files: List[Dict[str, Any]], c
     return processed_manifest, processed_files
 ```
 
-## Running Your Workers
+## Running Your Hypha Workers
 
 ### Python
 ```bash

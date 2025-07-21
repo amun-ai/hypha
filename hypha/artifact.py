@@ -858,61 +858,22 @@ class ArtifactController:
             """
             Initiate a multipart upload and get a list of presigned URLs for all parts.
             """
-            if download_weight < 0:
-                raise HTTPException(status_code=400, detail=f"Download weight must be a non-negative number: {download_weight}")
-            if part_count > 10000:
-                raise HTTPException(status_code=400, detail="The maximum number of parts is 10,000.")
-            
             context = {"ws": workspace, "user": user_info.model_dump()}
             artifact_id = self._validate_artifact_id(artifact_alias, context=context)
             
-            
             try:
-                # call put_file to get the presigned url
-                # to ensure we can put the file:
-                await self.put_file(artifact_id=artifact_id, file_path=path, download_weight=download_weight, use_proxy=False, use_local_url=False, expires_in=expires_in, context=context)
-                session = await self._get_session()
-                async with session.begin():
-                    artifact, parent_artifact = await self._get_artifact_with_permission(
-                        user_info, artifact_id, "put_file", session
-                    )
-                    version_index = self._get_version_index(artifact, "stage")
-                    s3_config = self._get_s3_config(artifact, parent_artifact)
-                    s3_key = safe_join(s3_config["prefix"], f"{artifact.id}/v{version_index}/{path}")
-
-                    async with self._create_client_async(s3_config) as s3_client:
-                        # 1. Create the multipart upload to get an UploadId
-                        mpu = await s3_client.create_multipart_upload(
-                            Bucket=s3_config["bucket"], Key=s3_key
-                        )
-                        upload_id = mpu["UploadId"]
-
-                        # 2. Generate a presigned URL for each part
-                        part_urls = []
-                        for i in range(1, part_count + 1):
-                            url = await s3_client.generate_presigned_url(
-                                "upload_part",
-                                Params={
-                                    "Bucket": s3_config["bucket"],
-                                    "Key": s3_key,
-                                    "UploadId": upload_id,
-                                    "PartNumber": i,
-                                },
-                                ExpiresIn=expires_in,
-                            )
-                            part_urls.append({"part_number": i, "url": url})
-
-                        await self._cache.set(f"multipart_upload:{upload_id}", {
-                            "s3_key": s3_key,
-                            "parts": part_urls,
-                        }, ttl=expires_in + 10)
-
-                        return {
-                            "upload_id": upload_id,
-                            "parts": part_urls,
-                        }
+                return await self.put_file_start_multipart(
+                    artifact_id=artifact_id,
+                    file_path=path,
+                    part_count=part_count,
+                    download_weight=download_weight,
+                    expires_in=expires_in,
+                    context=context
+                )
             except HTTPException:
                 raise
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
             except KeyError:
                 raise HTTPException(status_code=404, detail="Artifact not found")
             except PermissionError:
@@ -920,8 +881,6 @@ class ArtifactController:
             except Exception as e:
                 logger.error(f"Failed to create multipart upload: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
-            finally:
-                await session.close()
         
         @router.post("/{workspace}/artifacts/{artifact_alias}/complete_multipart_upload")
         async def complete_multipart_upload(
@@ -938,35 +897,21 @@ class ArtifactController:
             upload_id = data.upload_id
             parts = data.parts
             artifact_id = self._validate_artifact_id(artifact_alias, context=context)
-            cache_key = f"multipart_upload:{upload_id}"
-            upload_info = await self._cache.get(cache_key)
-            if not upload_info:
-                raise HTTPException(status_code=400, detail="Upload session expired or not found")
-            try:
-                s3_key = upload_info["s3_key"]
-                session = await self._get_session()
             
-                async with session.begin():
-                    artifact, parent_artifact = await self._get_artifact_with_permission(
-                        user_info, artifact_id, "put_file", session
-                    )
-                    s3_config = self._get_s3_config(artifact, parent_artifact)
-                    # The 'parts' list from the client should be sorted by PartNumber
-                    sorted_parts = sorted(parts, key=lambda p: p.part_number)
-                    sorted_parts = [{"ETag": p.etag, "PartNumber": p.part_number} for p in sorted_parts]
-
-                    async with self._create_client_async(s3_config) as s3_client:
-                        await s3_client.complete_multipart_upload(
-                            Bucket=s3_config["bucket"],
-                            Key=s3_key,
-                            MultipartUpload={
-                                "Parts": sorted_parts
-                            },
-                            UploadId=upload_id
-                        )
-                    return {"success": True, "message": f"File uploaded successfully"}
+            try:
+                # Convert parts to the format expected by the service function
+                parts_data = [{"part_number": p.part_number, "etag": p.etag} for p in parts]
+                
+                return await self.put_file_complete_multipart(
+                    artifact_id=artifact_id,
+                    upload_id=upload_id,
+                    parts=parts_data,
+                    context=context
+                )
             except HTTPException:
                 raise
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
             except ClientError as e:
                 logger.error(f"Failed to complete multipart upload: {e.response['Error']['Message']}")
                 raise HTTPException(status_code=400, detail=f"Failed to complete multipart upload: {e.response['Error']['Message']}")
@@ -977,9 +922,6 @@ class ArtifactController:
             except Exception as e:
                 logger.error(f"An unexpected error occurred: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
-            finally:
-                await session.close()
-                await self._cache.delete(cache_key)
                 
         
         # HTTP endpoint for uploading files to an artifact
@@ -3235,6 +3177,152 @@ class ArtifactController:
         finally:
             await session.close()
 
+    async def put_file_start_multipart(
+        self,
+        artifact_id,
+        file_path,
+        part_count: int,
+        download_weight: float = 0,
+        expires_in: int = 3600,
+        context: dict = None,
+    ):
+        """
+        Initiate a multipart upload and get a list of presigned URLs for all parts.
+        This is a service function that can be called from hypha-rpc.
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.model_validate(context["user"])
+        
+        if download_weight < 0:
+            raise ValueError(f"Download weight must be a non-negative number: {download_weight}")
+        if part_count <= 0:
+            raise ValueError("Part count must be greater than 0")
+        if part_count > 10000:
+            raise ValueError("The maximum number of parts is 10,000.")
+        
+        session = await self._get_session()
+        try:
+            # First call put_file to ensure we can put the file and perform permission checks
+            await self.put_file(
+                artifact_id=artifact_id, 
+                file_path=file_path, 
+                download_weight=download_weight, 
+                use_proxy=False, 
+                use_local_url=False, 
+                expires_in=expires_in, 
+                context=context
+            )
+            
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "put_file", session
+                )
+                version_index = self._get_version_index(artifact, "stage")
+                s3_config = self._get_s3_config(artifact, parent_artifact)
+                s3_key = safe_join(s3_config["prefix"], f"{artifact.id}/v{version_index}/{file_path}")
+
+                async with self._create_client_async(s3_config) as s3_client:
+                    # Create the multipart upload to get an UploadId
+                    mpu = await s3_client.create_multipart_upload(
+                        Bucket=s3_config["bucket"], Key=s3_key
+                    )
+                    upload_id = mpu["UploadId"]
+
+                    # Generate a presigned URL for each part
+                    part_urls = []
+                    for i in range(1, part_count + 1):
+                        url = await s3_client.generate_presigned_url(
+                            "upload_part",
+                            Params={
+                                "Bucket": s3_config["bucket"],
+                                "Key": s3_key,
+                                "UploadId": upload_id,
+                                "PartNumber": i,
+                            },
+                            ExpiresIn=expires_in,
+                        )
+                        part_urls.append({"part_number": i, "url": url})
+
+                    # Cache the upload info for later completion
+                    await self._cache.set(f"multipart_upload:{upload_id}", {
+                        "s3_key": s3_key,
+                        "parts": part_urls,
+                    }, ttl=expires_in + 10)
+
+                    return {
+                        "upload_id": upload_id,
+                        "parts": part_urls,
+                    }
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
+    async def put_file_complete_multipart(
+        self,
+        artifact_id,
+        upload_id: str,
+        parts: list,
+        context: dict = None,
+    ):
+        """
+        Complete the multipart upload and finalize the file in S3.
+        This is a service function that can be called from hypha-rpc.
+        
+        Args:
+            artifact_id: The artifact ID
+            upload_id: The upload ID returned from put_file_start_multipart
+            parts: List of dicts with 'part_number' and 'etag' keys
+            context: Context containing workspace and user info
+        """
+        if context is None or "ws" not in context:
+            raise ValueError("Context must include 'ws' (workspace).")
+        
+        artifact_id = self._validate_artifact_id(artifact_id, context)
+        user_info = UserInfo.model_validate(context["user"])
+        
+        # Get upload info from cache
+        cache_key = f"multipart_upload:{upload_id}"
+        upload_info = await self._cache.get(cache_key)
+        if not upload_info:
+            raise ValueError("Upload session expired or not found")
+        
+        session = await self._get_session()
+        try:
+            s3_key = upload_info["s3_key"]
+            
+            async with session.begin():
+                artifact, parent_artifact = await self._get_artifact_with_permission(
+                    user_info, artifact_id, "put_file", session
+                )
+                s3_config = self._get_s3_config(artifact, parent_artifact)
+                
+                # Sort parts by part number and format for S3
+                sorted_parts = sorted(parts, key=lambda p: p["part_number"])
+                formatted_parts = [{"ETag": p["etag"], "PartNumber": p["part_number"]} for p in sorted_parts]
+
+                async with self._create_client_async(s3_config) as s3_client:
+                    await s3_client.complete_multipart_upload(
+                        Bucket=s3_config["bucket"],
+                        Key=s3_key,
+                        MultipartUpload={
+                            "Parts": formatted_parts
+                        },
+                        UploadId=upload_id
+                    )
+                
+                # Clean up cache
+                await self._cache.delete(cache_key)
+                
+                return {"success": True, "message": "File uploaded successfully"}
+        except Exception as e:
+            raise e
+        finally:
+            await session.close()
+
     async def remove_file(self, artifact_id, file_path, context: dict = None):
         """Remove a file from the artifact and update the staged manifest."""
         if context is None or "ws" not in context:
@@ -4459,6 +4547,8 @@ class ArtifactController:
             "discard": self.discard,
             "delete": self.delete,
             "put_file": self.put_file,
+            "put_file_start_multipart": self.put_file_start_multipart,
+            "put_file_complete_multipart": self.put_file_complete_multipart,
             "remove_file": self.remove_file,
             "get_file": self.get_file,
             "list": self.list_children,

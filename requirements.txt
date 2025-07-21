@@ -1,6 +1,6 @@
 aioboto3==13.1.1
 aiofiles==23.2.1
-websockets==14.0
+websockets==15.0.1
 base58==2.1.1
 fastapi==0.115.2
 hypha-rpc==0.20.69
