@@ -491,8 +491,5 @@ class PythonDataScienceApp:
             "timestamp": datetime.now().isoformat()
         }
 
-# Create and export the app instance
-app_instance = PythonDataScienceApp()
-
-api.export(app_instance)
+api.export(PythonDataScienceApp)
 </script> 

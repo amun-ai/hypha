@@ -1216,7 +1216,7 @@ window.onload = function() {
         )
         assert False, "Should have failed when entry_point is missing for non-template app"
     except Exception as e:
-        assert "No server app worker found for type" in str(e)
+        assert "No server app worker found for app type" in str(e)
     
     # Clean up
     await controller.uninstall(app_info["id"])

@@ -291,6 +291,11 @@
                             url: window.location.origin + "/ws/mcp_server_template.hypha.html",
                             lang: 'json',
                         },
+                        {
+                            name: "A2A Agent",
+                            url: window.location.origin + "/ws/a2a_agent_template.hypha.html",
+                            lang: 'json',
+                        }
                     ],
                     ui_elements: {
                          install: {
@@ -6493,7 +6498,6 @@ license: "MIT"`);
                     title={spinnerTitle}
                     retryAction={spinnerRetryAction}
                     includeHiddenFiles={includeHiddenFiles}
-                    onIncludeHiddenFilesChange={setIncludeHiddenFiles}
                 />
                 </div>
             );

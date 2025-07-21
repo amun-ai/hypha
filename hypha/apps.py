@@ -597,10 +597,9 @@ class ServerAppController:
             raise ValueError("Application type should not be application or None")
         
         # Try to get worker that supports this app type
-        try:
-            worker = await self.get_server_app_workers(app_type, context, random_select=True)
-        except Exception as e:
-            raise Exception(f"No worker found for app type: {app_type}")
+        worker = await self.get_server_app_workers(app_type, context, random_select=True)
+        if not worker:
+            raise Exception(f"No server app worker found for app type: {app_type}")
         
         progress_callback({
             "type": "info",
@@ -771,12 +770,12 @@ class ServerAppController:
                 app_id, version=version, context=context
             )
             progress_callback({
-                "type": "info",
+                "type": "success",
                 "message": "Installation complete!",
             })
             return updated_artifact_info.get("manifest", artifact_obj)
         progress_callback({
-            "type": "info",
+            "type": "success",
             "message": "Installation complete!",
         })
         return artifact_obj
@@ -1052,7 +1051,7 @@ class ServerAppController:
                 if isinstance(logs, dict) and logs.get('error'):
                     error_list = logs['error']
                     if isinstance(error_list, list) and error_list:
-                        return error_list[0]
+                        return "\n".join(error_list)
                     else:
                         return str(error_list)
                 elif isinstance(logs, str):
@@ -1393,10 +1392,7 @@ class ServerAppController:
                     await session_info["_worker"].stop(full_client_id)
             except Exception:
                 pass  # Ignore cleanup errors
-            
-            # Extract core error message
-            core_error = self._extract_core_error(exp, logs)
-            raise Exception(f"Failed to start app '{app_id}': {core_error}") from None
+            raise Exception(f"Failed to start app '{app_id}', error: {exp}, logs:\n{logs}") from None
         finally:
             # Clean up event listeners
             if not detached:
