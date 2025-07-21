@@ -1868,6 +1868,420 @@ with open("example2.txt", "wb") as f:
         f.write(chunk)
 ```
 
+---
+
+## Static Site Hosting
+
+The Artifact Manager supports hosting static websites through special "site" artifacts. These artifacts can serve static files with optional Jinja2 template rendering, making them perfect for hosting documentation, portfolios, or any static web content.
+
+### Site Artifact Features
+
+- **Static File Serving**: Serve HTML, CSS, JavaScript, images, and other static files
+- **Template Rendering**: Jinja2 template support for dynamic content
+- **Custom Headers**: Configure CORS, caching, and other HTTP headers
+- **Version Control**: Support for staging and versioning of site content
+- **Access Control**: Permission-based access to site content
+- **View Statistics**: Track page views and download counts
+
+### Creating and Deploying a Static Site
+
+#### Step 1: Create a Site Artifact
+
+```python
+import asyncio
+import httpx
+import requests
+from hypha_rpc import connect_to_server
+
+async def deploy_static_site():
+    # Connect to the Artifact Manager
+    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    artifact_manager = await api.get_service("public/artifact-manager")
+    workspace = api.config.workspace
+    token = await api.generate_token()
+
+    # Create a site artifact
+    manifest = {
+        "name": "My Portfolio",
+        "description": "A personal portfolio website",
+        "type": "site"
+    }
+    
+    config = {
+        "templates": ["index.html", "about.html"],  # Files that use Jinja2 templates
+        "template_engine": "jinja2",
+        "headers": {
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "max-age=3600"
+        }
+    }
+    
+    site_artifact = await artifact_manager.create(
+        type="site",
+        alias="my-portfolio",
+        manifest=manifest,
+        config=config,
+        stage=True
+    )
+    
+    print(f"Site artifact created with ID: {site_artifact.id}")
+    return site_artifact, workspace, token
+```
+
+#### Step 2: Upload Site Files
+
+```python
+async def upload_site_files(artifact_manager, site_artifact, token):
+    # Upload regular HTML file (non-templated)
+    static_html = """<!DOCTYPE html>
+<html>
+<head><title>Static Page</title></head>
+<body><h1>This is a static page</h1></body>
+</html>"""
+    
+    file_url = await artifact_manager.put_file(site_artifact.id, "static.html")
+    response = requests.put(file_url, data=static_html.encode(), headers={"Content-Type": "text/html"})
+    assert response.ok
+    
+    # Upload templated HTML file (with Jinja2)
+    template_html = """<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ MANIFEST.name }}</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>{{ MANIFEST.name }}</h1>
+        <p>{{ MANIFEST.description }}</p>
+    </header>
+    
+    <main>
+        <section>
+            <h2>Site Information</h2>
+            <ul>
+                <li><strong>Base URL:</strong> {{ BASE_URL }}</li>
+                <li><strong>Workspace:</strong> {{ WORKSPACE }}</li>
+                <li><strong>View Count:</strong> {{ VIEW_COUNT }}</li>
+                <li><strong>Download Count:</strong> {{ DOWNLOAD_COUNT }}</li>
+            </ul>
+        </section>
+        
+        <section>
+            <h2>User Information</h2>
+            {% if USER %}
+                <p>Welcome, {{ USER.id }}!</p>
+            {% else %}
+                <p>Welcome, Anonymous user!</p>
+            {% endif %}
+        </section>
+        
+        <section>
+            <h2>Configuration</h2>
+            <pre>{{ CONFIG | tojson(indent=2) }}</pre>
+        </section>
+    </main>
+    
+    <footer>
+        <p>Powered by Hypha Artifact Manager</p>
+    </footer>
+</body>
+</html>"""
+    
+    file_url = await artifact_manager.put_file(site_artifact.id, "index.html")
+    response = requests.put(file_url, data=template_html.encode(), headers={"Content-Type": "text/html"})
+    assert response.ok
+    
+    # Upload CSS file
+    css_content = """
+body {
+    font-family: Arial, sans-serif;
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    line-height: 1.6;
+}
+
+header {
+    background-color: #f4f4f4;
+    padding: 20px;
+    border-radius: 5px;
+    margin-bottom: 20px;
+}
+
+section {
+    margin-bottom: 30px;
+    padding: 20px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+}
+
+footer {
+    text-align: center;
+    padding: 20px;
+    color: #666;
+    border-top: 1px solid #ddd;
+    margin-top: 40px;
+}
+"""
+    
+    file_url = await artifact_manager.put_file(site_artifact.id, "style.css")
+    response = requests.put(file_url, data=css_content.encode(), headers={"Content-Type": "text/css"})
+    assert response.ok
+    
+    # Upload JavaScript file
+    js_content = """
+console.log('Site loaded successfully!');
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('DOM ready');
+});
+"""
+    
+    file_url = await artifact_manager.put_file(site_artifact.id, "script.js")
+    response = requests.put(file_url, data=js_content.encode(), headers={"Content-Type": "application/javascript"})
+    assert response.ok
+    
+    print("All site files uploaded successfully")
+```
+
+#### Step 3: Commit and Deploy
+
+```python
+async def commit_and_deploy(artifact_manager, site_artifact):
+    # Commit the site
+    await artifact_manager.commit(site_artifact.id)
+    print("Site committed and deployed!")
+    
+    # The site is now accessible at:
+    # https://your-hypha-server.com/{workspace}/site/my-portfolio/
+    
+    return site_artifact
+```
+
+#### Step 4: Complete Deployment Example
+
+```python
+async def main():
+    # Step 1: Create site artifact
+    site_artifact, workspace, token = await deploy_static_site()
+    
+    # Step 2: Upload files
+    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    artifact_manager = await api.get_service("public/artifact-manager")
+    await upload_site_files(artifact_manager, site_artifact, token)
+    
+    # Step 3: Deploy
+    await commit_and_deploy(artifact_manager, site_artifact)
+    
+    # Step 4: Test the site
+    site_url = f"{SERVER_URL}/{workspace}/site/my-portfolio/"
+    print(f"Your site is now live at: {site_url}")
+    
+    # Test the site
+    async with httpx.AsyncClient() as client:
+        response = await client.get(site_url, headers={"Authorization": f"Bearer {token}"})
+        if response.status_code == 200:
+            print("✅ Site is working correctly!")
+        else:
+            print(f"❌ Site test failed: {response.status_code}")
+
+# Run the deployment
+asyncio.run(main())
+```
+
+### Site Configuration Options
+
+#### Template Configuration
+
+```python
+config = {
+    "templates": ["index.html", "about.html", "contact.html"],  # Files to render with Jinja2
+    "template_engine": "jinja2",  # Currently only Jinja2 is supported
+    "headers": {
+        "Access-Control-Allow-Origin": "*",  # CORS headers
+        "Cache-Control": "max-age=3600",     # Caching headers
+        "X-Frame-Options": "DENY",           # Security headers
+        "X-Content-Type-Options": "nosniff"
+    }
+}
+```
+
+#### Available Template Variables
+
+When using Jinja2 templates, the following variables are available:
+
+- **`MANIFEST`**: The artifact's manifest data
+- **`CONFIG`**: The artifact's configuration (excluding secrets)
+- **`BASE_URL`**: The base URL for the site (e.g., `/workspace/site/alias/`)
+- **`PUBLIC_BASE_URL`**: The public base URL of the Hypha server
+- **`LOCAL_BASE_URL`**: The local base URL for cluster-internal access
+- **`WORKSPACE`**: The workspace name
+- **`VIEW_COUNT`**: Number of times the artifact has been viewed
+- **`DOWNLOAD_COUNT`**: Number of times files have been downloaded
+- **`USER`**: User information (if authenticated, otherwise None)
+
+### Site Serving Endpoints
+
+#### HTTP Endpoint
+
+**URL Pattern**: `GET /{workspace}/site/{artifact_alias}/{file_path:path}`
+
+**Parameters**:
+- **workspace**: The workspace containing the site
+- **artifact_alias**: The alias of the site artifact
+- **file_path**: (Optional) Path to the file within the site. Defaults to `index.html`
+
+**Query Parameters**:
+- **stage**: (Optional) Boolean to serve from staged version instead of committed version
+- **token**: (Optional) User token for private site access
+- **version**: (Optional) Specific version to serve
+
+**Features**:
+- **Automatic MIME Type Detection**: Files are served with appropriate Content-Type headers
+- **Template Rendering**: Files listed in `templates` config are rendered with Jinja2
+- **Custom Headers**: Headers specified in config are added to responses
+- **Default Index**: Empty paths or `/` automatically serve `index.html`
+- **View Tracking**: Each request increments the artifact's view count
+
+#### Example Usage
+
+```python
+import httpx
+
+async def test_site():
+    async with httpx.AsyncClient() as client:
+        # Access the main page
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/site/my-portfolio/",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        print(f"Main page: {response.status_code}")
+        
+        # Access a specific file
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/site/my-portfolio/style.css",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        print(f"CSS file: {response.status_code}")
+        
+        # Access staged version
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/site/my-portfolio/?stage=true",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        print(f"Staged version: {response.status_code}")
+```
+
+### Site Management
+
+#### Updating Site Content
+
+```python
+async def update_site(artifact_manager, site_artifact):
+    # Edit the site in staging mode
+    await artifact_manager.edit(
+        artifact_id=site_artifact.id,
+        manifest={"name": "Updated Portfolio", "description": "Updated description"},
+        stage=True
+    )
+    
+    # Upload new files
+    new_content = "<h1>Updated content</h1>"
+    file_url = await artifact_manager.put_file(site_artifact.id, "updated.html")
+    response = requests.put(file_url, data=new_content.encode(), headers={"Content-Type": "text/html"})
+    
+    # Commit the changes
+    await artifact_manager.commit(site_artifact.id)
+    print("Site updated successfully!")
+```
+
+#### Version Management
+
+```python
+async def manage_site_versions(artifact_manager, site_artifact):
+    # Create a new version
+    await artifact_manager.edit(
+        artifact_id=site_artifact.id,
+        manifest={"name": "Portfolio v2"},
+        stage=True,
+        version="new"
+    )
+    
+    # Upload new content for v2
+    v2_content = "<h1>Portfolio Version 2</h1>"
+    file_url = await artifact_manager.put_file(site_artifact.id, "index.html")
+    response = requests.put(file_url, data=v2_content.encode(), headers={"Content-Type": "text/html"})
+    
+    # Commit with custom version name
+    await artifact_manager.commit(site_artifact.id, version="v2.0")
+    print("New version created!")
+```
+
+### Best Practices
+
+1. **File Organization**: Organize your site files logically (CSS in `/css/`, JS in `/js/`, etc.)
+2. **Template Usage**: Use templates for dynamic content, static files for performance
+3. **Caching**: Configure appropriate cache headers for static assets
+4. **Security**: Set proper security headers in your site configuration
+5. **Testing**: Always test staged versions before committing to production
+6. **Backup**: Use versioning to maintain backup copies of your site
+
+### Example: Complete Portfolio Site
+
+Here's a complete example of deploying a portfolio site:
+
+```python
+async def deploy_portfolio():
+    # Setup
+    api = await connect_to_server({"name": "portfolio-deploy", "server_url": SERVER_URL})
+    artifact_manager = await api.get_service("public/artifact-manager")
+    workspace = api.config.workspace
+    token = await api.generate_token()
+    
+    # Create site artifact
+    site = await artifact_manager.create(
+        type="site",
+        alias="portfolio",
+        manifest={
+            "name": "John Doe - Portfolio",
+            "description": "Software Engineer & Data Scientist",
+            "type": "site"
+        },
+        config={
+            "templates": ["index.html", "about.html", "projects.html"],
+            "template_engine": "jinja2",
+            "headers": {
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "max-age=3600"
+            }
+        },
+        stage=True
+    )
+    
+    # Upload files (simplified for brevity)
+    files = {
+        "index.html": "<h1>{{ MANIFEST.name }}</h1><p>{{ MANIFEST.description }}</p>",
+        "style.css": "body { font-family: Arial; }",
+        "script.js": "console.log('Portfolio loaded');"
+    }
+    
+    for filename, content in files.items():
+        file_url = await artifact_manager.put_file(site.id, filename)
+        response = requests.put(file_url, data=content.encode())
+        assert response.ok
+    
+    # Deploy
+    await artifact_manager.commit(site.id)
+    
+    print(f"Portfolio deployed at: {SERVER_URL}/{workspace}/site/portfolio/")
+    return site
+
+# Deploy the portfolio
+asyncio.run(deploy_portfolio())
+```
+
+---
+
 ### Version Handling Rules
 
 The Artifact Manager follows specific rules for version handling during `create`, `edit`, and `commit` operations:
