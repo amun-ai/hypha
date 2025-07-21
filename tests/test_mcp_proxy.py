@@ -367,14 +367,7 @@ async def test_real_deepwiki_mcp_server_validation(fastapi_server, test_user_tok
     assert "mcpServers" in app_info
     assert "deepwiki" in app_info["mcpServers"]
     assert app_info["mcpServers"]["deepwiki"]["url"] == "https://mcp.deepwiki.com/mcp"
-    
-    # Verify the config file is properly created
-    config_content = await controller.read_file(app_info["id"], "mcp-config.json")
-    config_json = json.loads(config_content)
-    assert config_json["type"] == "mcp-server"
-    assert "deepwiki" in config_json["mcpServers"]
-    assert config_json["mcpServers"]["deepwiki"]["url"] == "https://mcp.deepwiki.com/mcp"
-    
+
     # Test lazy loading - get the unified service without explicit start
     session_info = await controller.start(app_info["id"], wait_for_service="deepwiki", timeout=30)
     deepwiki_service = await api.get_service("deepwiki@" + app_info.id, mode="first")

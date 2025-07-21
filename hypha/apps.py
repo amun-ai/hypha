@@ -477,6 +477,10 @@ class ServerAppController:
             workspace = context["ws"]
             
         progress_callback = progress_callback or (lambda x: None)
+        progress_callback({
+            "type": "info",
+            "message": "Parsing app manifest...",
+        })
 
         user_info = UserInfo.model_validate(context["user"])
         assert not user_info.is_anonymous, "Anonymous users cannot install apps"
@@ -602,6 +606,10 @@ class ServerAppController:
         except Exception as e:
             raise Exception(f"No worker found for app type: {app_type}")
         
+        progress_callback({
+            "type": "info",
+            "message": f"Compiling app using worker {worker.id}...",
+        })
         # If we have a worker, let it compile the manifest and files
         if worker and hasattr(worker, 'compile'):
             try:
@@ -622,6 +630,10 @@ class ServerAppController:
             # All browser-based apps should have a worker available
             raise Exception(f"No worker available for browser app type: {app_type}")
 
+        progress_callback({
+            "type": "info",
+            "message": "Creating application artifact...",
+        })
         # Store startup_context with workspace and user info from installation time
         artifact_obj["startup_context"] = {
             "ws": context["ws"],
@@ -748,6 +760,10 @@ class ServerAppController:
                 assert response.status_code == 200, f"Failed to upload file {file_name}"
 
         if not stage:
+            progress_callback({
+                "type": "info",
+                "message": "Committing application artifact...",
+            })
             # Commit the artifact if stage is not enabled
             await self.commit_app(
                 app_id,
@@ -760,7 +776,15 @@ class ServerAppController:
             updated_artifact_info = await self.artifact_manager.read(
                 app_id, version=version, context=context
             )
+            progress_callback({
+                "type": "info",
+                "message": "Installation complete!",
+            })
             return updated_artifact_info.get("manifest", artifact_obj)
+        progress_callback({
+            "type": "info",
+            "message": "Installation complete!",
+        })
         return artifact_obj
 
     @schema_method

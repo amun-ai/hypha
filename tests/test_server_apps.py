@@ -2369,7 +2369,7 @@ async def test_progress_callback_functionality(fastapi_server, test_user_token):
     
     def progress_callback(message):
         """Callback to capture progress messages."""
-        progress_messages.append(message["status"])
+        progress_messages.append(message["message"])
         print(f"Progress: {message}")  # For debugging
 
     # Test app code for compilation
@@ -2393,7 +2393,8 @@ async def test_progress_callback_functionality(fastapi_server, test_user_token):
             "version": "1.0.0",
         },
         progress_callback=progress_callback,
-        stage=True,  # Use stage mode to avoid app startup
+        wait_for_service="default",
+        stage=False,
         overwrite=True,
     )
 
@@ -2402,10 +2403,10 @@ async def test_progress_callback_functionality(fastapi_server, test_user_token):
     
     # Check for specific browser worker compilation messages
     progress_text = " ".join(progress_messages)
-    assert "Compiling window application" in progress_text, f"Missing app type compilation message in: {progress_messages}"
-    assert ("Processing source files and configurations" in progress_text or 
-            "Compiling source code to HTML template" in progress_text), f"Missing compilation process messages in: {progress_messages}"
-    assert "Browser app compilation completed" in progress_text, f"Missing compilation completion message in: {progress_messages}"
+    assert "Compiling app using worker" in progress_text, f"Missing app type compilation message in: {progress_messages}"
+    assert ("Creating application artifact" in progress_text or 
+            "Committing application artifact" in progress_text), f"Missing compilation process messages in: {progress_messages}"
+    assert "Installation complete!" in progress_text, f"Missing compilation completion message in: {progress_messages}"
     
     print(f"✅ Captured {len(progress_messages)} progress messages:")
     for i, msg in enumerate(progress_messages, 1):
