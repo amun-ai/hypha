@@ -419,11 +419,7 @@ class ServerAppController:
         ),
         wait_for_service: Optional[str] = Field(
             None,
-            description="The service to wait for before installing the app. If not provided, the app will be installed without waiting for any service."
-        ),
-        detached: bool = Field(
-            False,
-            description="Whether to start the app in detached mode. If True, the app starts without waiting for any service registration or client connection, useful for running scripts that don't need to stay connected."
+            description="The service to wait for before installing the app. If not provided, the app will be installed without waiting for any service, set to `False` to disable it, if not set, the app will wait for the `default` service"
         ),
         workspace: Optional[str] = Field(
             None,
@@ -646,8 +642,6 @@ class ServerAppController:
             startup_config["timeout"] = timeout
         if wait_for_service is not None:
             startup_config["wait_for_service"] = wait_for_service
-        if detached is not None:
-            startup_config["detached"] = detached
         if additional_kwargs is not None:
             startup_config["additional_kwargs"] = additional_kwargs
         if stop_after_inactive is not None:
@@ -875,10 +869,6 @@ class ServerAppController:
             None,
             description="The service to wait for before committing the app. If not provided, the app will be committed without waiting for any service."
         ),
-        detached: bool = Field(
-            False,
-            description="Whether to start the app in detached mode. If True, the app starts without waiting for any service registration or client connection, useful for running scripts that don't need to stay connected."
-        ),
         additional_kwargs: Optional[dict] = Field(
             None,
             description="Additional keyword arguments to pass to the app worker."
@@ -909,8 +899,6 @@ class ServerAppController:
                 startup_config["timeout"] = timeout
             if wait_for_service is not None:
                 startup_config["wait_for_service"] = wait_for_service
-            if detached is not None:
-                startup_config["detached"] = detached
             if additional_kwargs is not None:
                 startup_config["additional_kwargs"] = additional_kwargs
             if stop_after_inactive is not None:
@@ -1106,10 +1094,6 @@ class ServerAppController:
             False,
             description="Whether to start the app from stage mode. If True, starts from the staged version."
         ),
-        detached: bool = Field(
-            False,
-            description="Whether to start the app in detached mode. If True, the app starts without waiting for any service registration or client connection, useful for running scripts that don't need to stay connected."
-        ),
         progress_callback: Any = Field(
             None,
             description="Callback function to receive progress updates from the app."
@@ -1124,9 +1108,6 @@ class ServerAppController:
         ),
     ):
         """Start the app and keep it alive."""
-        # When detached=True, ignore wait_for_service to avoid waiting
-        if detached:
-            wait_for_service = None
         
         progress_callback = progress_callback or (lambda x: None)
 
@@ -1173,17 +1154,11 @@ class ServerAppController:
             wait_for_service = "default"
         if wait_for_service and ":" in wait_for_service:
             wait_for_service = wait_for_service.split(":")[1]
-
-        # Handle detached parameter from startup_config if not explicitly provided
-        if not detached and "detached" in startup_config:
-            detached = startup_config["detached"]
             
         if additional_kwargs is None and "additional_kwargs" in startup_config:
             additional_kwargs = startup_config["additional_kwargs"]
 
-        # When detached=True, override wait_for_service to avoid waiting
-        if detached:
-            wait_for_service = None
+        detached = wait_for_service == False
             
         # Only apply startup_config if stop_after_inactive is None (not explicitly set)
         # Do not override explicitly passed values (including verification timeout)
@@ -1889,7 +1864,7 @@ class ServerAppController:
         ),
         startup_config: Optional[Dict[str, Any]] = Field(
             None,
-            description="Startup configuration dictionary containing default startup parameters like timeout, wait_for_service, detached, and stop_after_inactive."
+            description="Startup configuration dictionary containing default startup parameters like timeout, wait_for_service, and stop_after_inactive."
         ),
         context: Optional[dict] = Field(
             None,

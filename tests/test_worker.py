@@ -515,7 +515,7 @@ async def test_worker_selection_by_type(fastapi_server, test_user_token):
             source=f"<html><body><script>{test_code}</script></body></html>",
             manifest=app_config,
             timeout=5,
-            detached=True,
+            wait_for_service=False,
             overwrite=True,
         )
         

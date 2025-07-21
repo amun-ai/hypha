@@ -195,8 +195,9 @@ class BrowserAppRunner(BaseWorker):
 
         # Create a new page in the context
         page = await context.new_page()
-
-        # Setup cookies, localStorage, and other authentication before loading the page
+        
+        entry_point = config.manifest.get("entry_point")
+        # Setup cookies, localtorage, and other authentication before loading the page
         await self._setup_page_authentication(page, config.manifest)
 
         logs = {}
@@ -665,7 +666,7 @@ class BrowserAppRunner(BaseWorker):
                 "url": final_config.get("url", ""),
                 "name": final_config.get("name", "Web App"),
                 "cookies": final_config.get("cookies", {}),
-                "localStorage": final_config.get("localStorage", {}),
+                "local_storage": final_config.get("local_storage", {}),
                 "authorization_token": final_config.get("authorization_token", "")
             })
         
@@ -706,7 +707,7 @@ class BrowserAppRunner(BaseWorker):
         return screenshot
 
     async def _setup_page_authentication(self, page, manifest, target_url=None):
-        """Setup authentication (cookies, localStorage, headers) before navigation."""
+        """Setup authentication (cookies, local_storage, headers) before navigation."""
         # Setup cookies
         cookies_config = manifest.get("cookies", {})
         if cookies_config:
@@ -742,10 +743,10 @@ class BrowserAppRunner(BaseWorker):
             logger.info("Setup Authorization header before navigation")
         
         # localStorage will be set after navigation since it requires the page to be loaded
-        page._pending_local_storage = manifest.get("localStorage", {})
+        page._pending_local_storage = manifest.get("local_storage", {})
 
     async def _apply_pending_page_setup(self, page: Page, url: str) -> None:
-        """Apply cookies and localStorage after page navigation."""
+        """Apply cookies and local_storage after page navigation."""
         # Set cookies with correct domain
         if hasattr(page, '_pending_cookies'):
             parsed_url = urlparse(url)

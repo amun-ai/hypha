@@ -970,14 +970,15 @@ await controller.install(
     timeout=None,                  # Installation timeout in seconds
     version=None,                  # Version identifier
     stage=False,                   # Install in stage mode
-    wait_for_service=None,         # Service to wait for during startup
-    detached=False,                # Run in detached mode
+    wait_for_service=None,         # Service to wait for during startup, default value: 'default', to disable it, set to False
     stop_after_inactive=None,      # Auto-stop timeout
     additional_kwargs=None,        # Additional worker arguments
     progress_callback=None,        # Progress update callback
     context=None                   # System context (auto-provided)
 )
 ```
+
+Note: Every app are expected to register at least a service via `api.export`, or `register_service({"id": "default", "setup": setup})`. If you don't want to register any service, you need to put it into *detached* mode by setting `wait_for_service=False`.
 
 ### Custom App IDs
 

@@ -1489,7 +1489,7 @@ print("This won't be reached")
 
 
 async def test_detached_mode_apps(fastapi_server, test_user_token):
-    """Test detached mode app functionality."""
+    """Test detached mode (wait_for_service=False) app functionality."""
     api = await connect_to_server(
         {
             "name": "test client",
@@ -1517,12 +1517,12 @@ async def test_detached_mode_apps(fastapi_server, test_user_token):
     console.log("Detached script completed");
     """
 
-    # Test 1: Launch with detached=True, should not wait for services
+    # Test 1: Launch with wait_for_service=False, should not wait for services
     print("Testing detached mode with launch...")
     config = await controller.install(
         source=detached_script,
         manifest={"type": "window", "name": "Detached Script"},
-        detached=True,
+        wait_for_service=False,
         timeout=5,  # Short timeout should be fine since we're not waiting
     )
     config = await controller.start(config.id)
@@ -1545,19 +1545,19 @@ async def test_detached_mode_apps(fastapi_server, test_user_token):
     # Clean up
     await controller.stop(config["id"])
     
-    # Test 2: Install and start with detached=True
+    # Test 2: Install and start with wait_for_service=False
     print("Testing detached mode with install + start...")
     app_info = await controller.install(
         source=detached_script,
         manifest={"type": "window", "name": "Detached Script Install"},
         overwrite=True,
-        detached=True,
+        wait_for_service=False,
     )
     
     # Start in detached mode
     start_config = await controller.start(
         app_info["id"],
-        detached=True,
+        wait_for_service=False,
         timeout=5,  # Short timeout should be fine
     )
     
@@ -1598,7 +1598,7 @@ print("Python detached script completed")
         python_config = await controller.install(
             source=python_detached_script,
             manifest={"type": "python-eval", "name": "Python Detached Script"},
-            detached=True,
+            wait_for_service=False,
             timeout=5,
         )
         python_config = await controller.start(python_config.id)
@@ -1652,7 +1652,7 @@ print("Python detached script completed")
     detached_config = await controller.install(
         source=problematic_script,
         manifest={"type": "window", "name": "Detached Mode Script"},
-        detached=True,
+        wait_for_service=False,
         timeout=10,
         overwrite=True,
     )
@@ -2450,10 +2450,11 @@ async def test_browser_cache_integration(fastapi_server, test_user_token):
                 "https://httpbin.org/*"
             ],
             "cookies": {"test": "value"},
-            "localStorage": {"theme": "dark"},
+            "local_storage": {"theme": "dark"},
             "authorization_token": "Bearer test-token"
         },
         files=[],
+        wait_for_service=False,
         stage=False,  # Actually start to test caching
         overwrite=True,
     )
