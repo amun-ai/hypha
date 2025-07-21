@@ -950,13 +950,7 @@ class ArtifactController:
                             },
                             UploadId=upload_id
                         )
-                    content = json.dumps({"success": True, "message": f"File uploaded successfully"})
-                    headers = {
-                        "Content-Type": "application/json",
-                        "Content-Length": str(len(content)),
-                        "ETag": response.headers.get("ETag")
-                    }
-                    return Response(content=content, headers=headers)
+                    return {"success": True, "message": f"File uploaded successfully"}
             except ClientError as e:
                 logger.error(f"Failed to complete multipart upload: {e.response['Error']['Message']}")
                 raise HTTPException(status_code=400, detail=f"Failed to complete multipart upload: {e.response['Error']['Message']}")
