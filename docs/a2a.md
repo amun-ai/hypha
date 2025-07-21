@@ -33,6 +33,12 @@ and start Hypha server with `--enable-a2a`:
 python -m hypha.server --enable-a2a
 ```
 
+If you start hypha with `--from-env`, please set the following env:
+```bash
+export HYPHA_ENABLE_A2A=true
+python -m hypha.server --from-env
+```
+
 When you register a service with `type="a2a"`, the middleware:
 1. Routes requests to the dedicated A2A URL namespace (`/{workspace}/a2a/{service_id}/`)
 2. Detects and validates the A2A service type
