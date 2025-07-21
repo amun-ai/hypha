@@ -136,7 +136,7 @@ def generate_authenticated_user_8():
 @pytest_asyncio.fixture(name="test_user_token_9", scope="session")
 def generate_authenticated_user_9():
     """Generate a test user token."""
-    yield from _generate_token("user-8", [])
+    yield from _generate_token("user-9", [])
 
 
 @pytest_asyncio.fixture(name="triton_server", scope="session")

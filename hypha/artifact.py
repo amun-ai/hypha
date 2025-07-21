@@ -850,6 +850,7 @@ class ArtifactController:
             workspace: str,
             artifact_alias: str,
             path: str,
+            download_weight: float = 0,
             part_count: int = Query(..., gt=0, description="The total number of parts for the upload."),
             expires_in: int = Query(3600, description="The number of seconds for the presigned URLs to expire."),
             user_info: self.store.login_optional = Depends(self.store.login_optional),
@@ -857,13 +858,20 @@ class ArtifactController:
             """
             Initiate a multipart upload and get a list of presigned URLs for all parts.
             """
+            if download_weight < 0:
+                raise HTTPException(status_code=400, detail=f"Download weight must be a non-negative number: {download_weight}")
             if part_count > 10000:
                 raise HTTPException(status_code=400, detail="The maximum number of parts is 10,000.")
             
             context = {"ws": workspace, "user": user_info.model_dump()}
             artifact_id = self._validate_artifact_id(artifact_alias, context=context)
-            session = await self._get_session()
+            
+            
             try:
+                # call put_file to get the presigned url
+                # to ensure we can put the file:
+                await self.put_file(artifact_id=artifact_id, file_path=path, download_weight=download_weight, use_proxy=False, use_local_url=False, expires_in=expires_in, context=context)
+                session = await self._get_session()
                 async with session.begin():
                     artifact, parent_artifact = await self._get_artifact_with_permission(
                         user_info, artifact_id, "put_file", session
@@ -903,6 +911,12 @@ class ArtifactController:
                             "upload_id": upload_id,
                             "parts": part_urls,
                         }
+            except HTTPException:
+                raise
+            except KeyError:
+                raise HTTPException(status_code=404, detail="Artifact not found")
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Permission denied")
             except Exception as e:
                 logger.error(f"Failed to create multipart upload: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
@@ -951,9 +965,15 @@ class ArtifactController:
                             UploadId=upload_id
                         )
                     return {"success": True, "message": f"File uploaded successfully"}
+            except HTTPException:
+                raise
             except ClientError as e:
                 logger.error(f"Failed to complete multipart upload: {e.response['Error']['Message']}")
                 raise HTTPException(status_code=400, detail=f"Failed to complete multipart upload: {e.response['Error']['Message']}")
+            except KeyError:
+                raise HTTPException(status_code=404, detail="Artifact not found")
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Permission denied")
             except Exception as e:
                 logger.error(f"An unexpected error occurred: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
@@ -1002,6 +1022,18 @@ class ArtifactController:
                     "ETag": response.headers.get("ETag")
                 }
                 return Response(content=content, headers=headers)
+            except HTTPException:
+                raise
+            except KeyError:
+                raise HTTPException(status_code=404, detail="Artifact not found")
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Permission denied")
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except AssertionError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except ClientError as e:
+                raise HTTPException(status_code=400, detail=f"Failed to upload file: {e.response['Error']['Message']}")
             except Exception as e:
                 logger.error(f"Unhandled exception in upload_file: {str(e)}")
                 raise HTTPException(status_code=500, detail=f"Failed to upload file: {traceback.format_exc()}")
@@ -3119,7 +3151,8 @@ class ArtifactController:
         artifact_id = self._validate_artifact_id(artifact_id, context)
         user_info = UserInfo.model_validate(context["user"])
         session = await self._get_session()
-        assert download_weight >= 0, "Download weight must be a non-negative number."
+        if download_weight < 0:
+            raise ValueError("Download weight must be a non-negative number: {download_weight}")
         try:
             async with session.begin():
                 artifact, parent_artifact = await self._get_artifact_with_permission(

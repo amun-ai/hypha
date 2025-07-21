@@ -5930,7 +5930,7 @@ async def test_put_file_endpoint_error_handling(minio_server, fastapi_server, te
     dataset = await artifact_manager.create(
         type="dataset",
         manifest=dataset_manifest,
-        config={"permissions": {"@": "rw+"}},  # Only owner has write access
+        config={"permissions": {"@": "r"}},  # Signed in user has read access
         version="stage",
     )
 
