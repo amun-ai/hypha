@@ -985,10 +985,8 @@ api.export(new HyphaApp());
         timeout=30,
         overwrite=True
     )
-
-    # Wait a brief moment for HTTP routes to be ready
-    await asyncio.sleep(0.5)
-
+    # Start the app
+    config = await controller.start(config["id"])
     # Test specific nested function
     response = requests.get(
         f"{SERVER_URL}/{workspace}/apps/complex-test-functions/api/users",
