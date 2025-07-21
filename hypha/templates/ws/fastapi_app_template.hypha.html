@@ -54,49 +54,6 @@ def create_fastapi_app():
                     <strong>Time:</strong> {current_time}<br>
                     <strong>Service:</strong> hello-fastapi
                 </div>
-
-                <div class="api-grid">
-                    <div class="api-card">
-                        <h3>🏠 Home</h3>
-                        <p>Welcome page with API overview</p>
-                        <a href="/">GET /</a>
-                    </div>
-                    <div class="api-card">
-                        <h3>💓 Health Check</h3>
-                        <p>Service health and status information</p>
-                        <a href="/health">GET /health</a>
-                    </div>
-                    <div class="api-card">
-                        <h3>🧮 Calculator</h3>
-                        <p>Add two numbers together</p>
-                        <a href="/api/add/15/25">GET /api/add/15/25</a>
-                    </div>
-                    <div class="api-card">
-                        <h3>🎲 Random Number</h3>
-                        <p>Generate a random number in range</p>
-                        <a href="/api/random?min=1&max=100">GET /api/random?min=1&max=100</a>
-                    </div>
-                    <div class="api-card">
-                        <h3>📊 Statistics</h3>
-                        <p>Get app statistics and metrics</p>
-                        <a href="/api/stats">GET /api/stats</a>
-                    </div>
-                    <div class="api-card">
-                        <h3>🔧 API Docs</h3>
-                        <p>Interactive API documentation</p>
-                        <a href="/docs">GET /docs</a>
-                    </div>
-                </div>
-
-                <div class="demo-section">
-                    <h3>🎮 Interactive Demo</h3>
-                    <p>Test the API endpoints directly:</p>
-                    <button class="demo-button" onclick="testAPI('/health')">Test Health</button>
-                    <button class="demo-button" onclick="testAPI('/api/add/42/8')">Test Calculator</button>
-                    <button class="demo-button" onclick="testAPI('/api/random?min=1&max=10')">Test Random</button>
-                    <button class="demo-button" onclick="testAPI('/api/stats')">Test Stats</button>
-                    <div id="demo-result" class="demo-result" style="display: none;"></div>
-                </div>
             </div>
 
         </body>
