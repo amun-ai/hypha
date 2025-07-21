@@ -152,6 +152,7 @@ async def test_functions(fastapi_server, test_user_token):
         .read()
     )
     config = await controller.install(
+        app_id="test-functions",
         source=source,
         wait_for_service="hello-functions",
         timeout=30,
@@ -160,9 +161,6 @@ async def test_functions(fastapi_server, test_user_token):
 
     service = await api.get_service(f"{config.workspace}/hello-functions")
     assert "hello-world" in service
-    
-    # Commit the app so it appears in the apps list
-    await controller.commit_app(config.app_id)
 
     response = requests.get(
         f"{SERVER_URL}/{workspace}/apps",
@@ -768,8 +766,7 @@ api.export(new HyphaApp());
         overwrite=True
     )
 
-    # Wait a brief moment for HTTP routes to be ready
-    await asyncio.sleep(0.5)
+    config = await controller.start(config["id"])
 
     # Test nested API v1 users
     response = requests.get(
@@ -873,10 +870,7 @@ api.export(new HyphaApp());
         timeout=30,
         overwrite=True
     )
-
-    # Wait a brief moment for HTTP routes to be ready
-    await asyncio.sleep(0.5)
-
+    config = await controller.start(config["id"])
     # Test specific function
     response = requests.get(
         f"{SERVER_URL}/{workspace}/apps/fallback-test-functions/hello",
