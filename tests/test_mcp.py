@@ -354,9 +354,8 @@ async def test_mcp_inline_config_service(fastapi_server, test_user_token):
                 "visibility": "public",
                 "run_in_executor": True,
             },
-            "tools": [
-                {
-                    "name": "simple_tool",
+            "tools": {
+                "simple_tool": {
                     "description": "Simple arithmetic tool",
                     "inputSchema": {
                         "type": "object",
@@ -373,9 +372,9 @@ async def test_mcp_inline_config_service(fastapi_server, test_user_token):
                     },
                     "handler": simple_tool
                 }
-            ],
-            "resources": [
-                {
+            },
+            "resources": {
+                "test_resource": {
                     "uri": "resource://test",
                     "name": "Test Resource",
                     "description": "A test resource",
@@ -383,15 +382,14 @@ async def test_mcp_inline_config_service(fastapi_server, test_user_token):
                     "mime_type": "text/plain",
                     "read": resource_read,
                 }
-            ],
-            "prompts": [
-                {
-                    "name": "test_prompt",
+            },
+            "prompts": {
+                "test_prompt": {
                     "description": "A test prompt template",
                     "tags": ["test", "prompt"],
                     "read": prompt_read,
                 }
-            ],
+            },
         }
     )
 
@@ -439,9 +437,11 @@ async def test_mcp_merged_approach(fastapi_server, test_user_token):
                 "visibility": "public",
                 "run_in_executor": True,
             },
-            "tools": [simple_tool],
-            "resources": [
-                {
+            "tools": {
+                "simple_tool": simple_tool
+            },
+            "resources": {
+                "test_resource": {
                     "uri": "resource://test",
                     "name": "Test Resource",
                     "description": "A test resource",
@@ -449,15 +449,15 @@ async def test_mcp_merged_approach(fastapi_server, test_user_token):
                     "mime_type": "text/plain",
                     "read": resource_read,
                 }
-            ],
-            "prompts": [
-                {
+            },
+            "prompts": {
+                "test_prompt": {
                     "name": "test_prompt",
                     "description": "A test prompt template",
                     "tags": ["test", "prompt"],
                     "read": prompt_read,
                 }
-            ],
+            },
         }
     )
 
@@ -490,7 +490,7 @@ async def test_mcp_validation_errors(fastapi_server, test_user_token):
             for k, v in kwargs.items():
                 setattr(self, k, v)
     
-    service_info = MockServiceInfo(tools=[non_schema_tool])
+    service_info = MockServiceInfo(tools={non_schema_tool.__name__: non_schema_tool})
     
     try:
         HyphaMCPServer({}, service_info)
@@ -500,11 +500,11 @@ async def test_mcp_validation_errors(fastapi_server, test_user_token):
         print("✓ Tool validation error properly raised")
     
     # Test 2: Resource without read function should raise error
-    service_info = MockServiceInfo(resources=[{
+    service_info = MockServiceInfo(resources={"resource://test": {
         "uri": "resource://test",
         "name": "Test Resource",
         "description": "A test resource",
-    }])
+    }})
     
     try:
         HyphaMCPServer({}, service_info)
@@ -517,12 +517,12 @@ async def test_mcp_validation_errors(fastapi_server, test_user_token):
     def non_schema_read():
         return "content"
     
-    service_info = MockServiceInfo(resources=[{
+    service_info = MockServiceInfo(resources={"resource://test": {
         "uri": "resource://test",
         "name": "Test Resource",
         "description": "A test resource",
         "read": non_schema_read,
-    }])
+    }})
     
     try:
         HyphaMCPServer({}, service_info)
@@ -532,10 +532,10 @@ async def test_mcp_validation_errors(fastapi_server, test_user_token):
         print("✓ Resource read validation error properly raised")
     
     # Test 4: Prompt without read function should raise error
-    service_info = MockServiceInfo(prompts=[{
+    service_info = MockServiceInfo(prompts={"test_prompt": {
         "name": "test_prompt",
         "description": "A test prompt",
-    }])
+    }})
     
     try:
         HyphaMCPServer({}, service_info)

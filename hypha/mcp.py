@@ -18,6 +18,7 @@ from starlette.types import ASGIApp, Scope, Receive, Send
 from collections import deque
 from dataclasses import dataclass
 from uuid import uuid4
+from pydantic import AnyUrl
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -46,7 +47,7 @@ try:
         StreamId,
     )
     from mcp.types import JSONRPCMessage
-    from pydantic import AnyUrl
+    
 
     MCP_SDK_AVAILABLE = True
 except ImportError:
@@ -288,13 +289,13 @@ class HyphaMCPServer:
         
         # Validate inline tools are schema functions
         if has_inline_tools:
-            for tool in self.service_info.tools:
+            for key, tool in self.service_info.tools.items():
                 if not (callable(tool) and hasattr(tool, '__schema__')):
-                    raise ValueError(f"Tool {tool} must be a @schema_function decorated function")
+                    raise ValueError(f"Tool {key} must be a @schema_function decorated function")
         
         # Validate inline resources have schema function readers
         if has_inline_resources:
-            for resource in self.service_info.resources:
+            for key, resource in self.service_info.resources.items():
                 if not isinstance(resource, dict):
                     raise ValueError(f"Resource {resource} must be a dictionary")
                 if 'read' not in resource:
@@ -305,7 +306,7 @@ class HyphaMCPServer:
         
         # Validate inline prompts have schema function readers
         if has_inline_prompts:
-            for prompt in self.service_info.prompts:
+            for key, prompt in self.service_info.prompts.items():
                 if not isinstance(prompt, dict):
                     raise ValueError(f"Prompt {prompt} must be a dictionary")
                 if 'read' not in prompt:
@@ -339,9 +340,10 @@ class HyphaMCPServer:
             async def list_tools() -> List[types.Tool]:
                 try:
                     tools = []
-                    for tool_func in self.service_info.tools:
+                    for key, tool_func in self.service_info.tools.items():
                         # Extract tool definition from schema function
                         tool_dict = self._extract_tool_from_schema_function(tool_func)
+                        tool_dict["name"] = key
                         tools.append(types.Tool(**tool_dict))
                     return tools
                 except Exception as e:
@@ -386,7 +388,7 @@ class HyphaMCPServer:
                 try:
                     # Find the tool by name
                     tool_func = None
-                    for func in self.service_info.tools:
+                    for key, func in self.service_info.tools:
                         if func.__name__ == name:
                             tool_func = func
                             break
@@ -431,9 +433,10 @@ class HyphaMCPServer:
             async def list_prompts() -> List[types.Prompt]:
                 try:
                     prompts = []
-                    for prompt_config in self.service_info.prompts:
+                    for key, prompt_config in self.service_info.prompts.items():
                         # Extract prompt metadata without handler
                         prompt_dict = {k: v for k, v in prompt_config.items() if k != 'read'}
+                        assert key == prompt_dict["name"], f"Prompt name mismatch: {key} != {prompt_dict['name']}"
                         
                         # Add arguments from the schema function if available
                         if 'read' in prompt_config:
@@ -522,8 +525,8 @@ class HyphaMCPServer:
                 try:
                     # Find the prompt by name
                     prompt_handler = None
-                    for prompt_config in self.service_info.prompts:
-                        if prompt_config.get('name') == name:
+                    for key, prompt_config in self.service_info.prompts.items():
+                        if key == name:
                             prompt_handler = prompt_config.get('read')
                             break
                     
@@ -616,7 +619,7 @@ class HyphaMCPServer:
             async def list_resource_templates() -> List[types.ResourceTemplate]:
                 try:
                     templates = []
-                    for resource_config in self.service_info.resources:
+                    for key, resource_config in self.service_info.resources.items():
                         # Create ResourceTemplate from resource config
                         template_dict = {
                             "uriTemplate": resource_config.get("uri", ""),
@@ -651,7 +654,7 @@ class HyphaMCPServer:
             async def list_resources() -> List[types.Resource]:
                 try:
                     resources = []
-                    for resource_config in self.service_info.resources:
+                    for key, resource_config in self.service_info.resources.items():
                         # Create Resource from resource config
                         resource_dict = {
                             "uri": resource_config.get("uri", ""),
@@ -699,7 +702,7 @@ class HyphaMCPServer:
                 try:
                     # Find the resource by URI
                     resource_handler = None
-                    for resource_config in self.service_info.resources:
+                    for key, resource_config in self.service_info.resources.items():
                         if resource_config.get('uri') == str(uri):
                             resource_handler = resource_config.get('read')
                             break
@@ -850,23 +853,8 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                                   len(service.tools) > 0)
                 has_tools = has_list_tools or has_inline_tools
                 
-                logger.debug(f"MCP tools/list check - has_list_tools: {has_list_tools}, has_inline_tools: {has_inline_tools}, has_tools: {has_tools}")
-                logger.debug(f"Service object type: {type(service)}")
-                logger.debug(f"Service object attributes: {[attr for attr in dir(service) if not attr.startswith('_')]}")
-                logger.debug(f"Service.tools: {service.tools if hasattr(service, 'tools') else 'None'}")
-                if hasattr(service, 'tools') and service.tools:
-                    logger.debug(f"Service tools type: {type(service.tools)}")
-                    logger.debug(f"Service tools content: {[str(tool) for tool in service.tools]}")
-                logger.debug(f"Service info service_schema: {service_info.service_schema if hasattr(service_info, 'service_schema') else 'None'}")
-                if hasattr(service_info, 'service_schema') and hasattr(service_info.service_schema, 'tools'):
-                    logger.debug(f"Service schema tools: {service_info.service_schema.tools}")
-                if has_inline_tools:
-                    logger.debug(f"Service has {len(service.tools)} tool functions")
-                
                 if has_tools:
-                    logger.debug(f"Has tools, processing tools/list request")
                     try:
-                        logger.debug(f"Entered tools processing try block")
                         # Use MCP server's list_tools handler which handles both approaches
                         if "list_tools" in service:
                             logger.debug("Using list_tools function")
@@ -878,18 +866,19 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                             tools = []
                             logger.debug(f"About to process {len(service.tools)} tools")
                             # Iterate through both the actual functions and their schema
-                            for i, tool_func in enumerate(service.tools):
-                                logger.debug(f"Processing tool function #{i}: {tool_func}")
+                            for key, tool_func in service.tools.items():
+                                assert key == tool_func.__name__, f"Tool name mismatch: {key} != {tool_func.__name__}"
+                                logger.debug(f"Processing tool function {key}: {tool_func}")
                                 try:
                                     # Extract tool schema using the MCP server's method
                                     tool_dict = mcp_server._extract_tool_from_schema_function(tool_func)
                                     logger.debug(f"Extracted tool dict: {tool_dict}")
                                     tools.append(tool_dict)
                                 except Exception as e:
-                                    logger.exception(f"Error extracting tool schema for function #{i}: {e}")
+                                    logger.exception(f"Error extracting tool schema for function {key}: {e}")
                                     # Fallback: use schema from service_info if available
-                                    if i < len(service_info.service_schema.tools):
-                                        tool_schema = service_info.service_schema.tools[i]
+                                    if key in service_info.service_schema.tools:
+                                        tool_schema = service_info.service_schema.tools[key]
                                         if hasattr(tool_schema, 'function'):
                                             func_info = tool_schema.function
                                             tool_dict = {
@@ -975,14 +964,14 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                             
                             # Search through service tools
                             if hasattr(service, 'tools') and service.tools:
-                                for i, tool_function in enumerate(service.tools):
+                                for key, tool_function in service.tools.items():
+                                    assert key == tool_function.__name__, f"Tool name mismatch: {key} != {tool_function.__name__}"
                                     # Get corresponding schema from service_info if available
                                     tool_schema = None
                                     if (hasattr(service_info, 'service_schema') and 
                                         hasattr(service_info.service_schema, 'tools') and 
-                                        service_info.service_schema.tools and
-                                        i < len(service_info.service_schema.tools)):
-                                        tool_schema = service_info.service_schema.tools[i]
+                                        service_info.service_schema.tools):
+                                        tool_schema = service_info.service_schema.tools[key]
                                     
                                     # Extract tool name from schema - handle different structures
                                     schema_tool_name = None
@@ -1103,23 +1092,23 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                             if hasattr(service, 'prompts') and service.prompts:
                                 logger.debug(f"Service.prompts: {service.prompts}")
                                 # Extract metadata from the actual prompt objects
-                                for i, prompt_obj in enumerate(service.prompts):
-                                    logger.debug(f"Processing prompt object #{i}: {prompt_obj}")
+                                for key, prompt_obj in service.prompts.items():
+                                    logger.debug(f"Processing prompt object {key}: {prompt_obj}")
                                     
                                     # Get metadata from the prompt object
                                     if hasattr(prompt_obj, 'name'):
                                         name = prompt_obj.name
                                     elif hasattr(prompt_obj, 'get'):
-                                        name = prompt_obj.get('name', f'prompt_{i}')
+                                        name = prompt_obj.get('name', f'prompt_{key}')
                                     else:
-                                        name = f'prompt_{i}'
+                                        name = f'prompt_{key}'
                                         
                                     if hasattr(prompt_obj, 'description'):
                                         description = prompt_obj.description
                                     elif hasattr(prompt_obj, 'get'):
-                                        description = prompt_obj.get('description', f'Prompt {i}')
+                                        description = prompt_obj.get('description', f'Prompt {key}')
                                     else:
-                                        description = f'Prompt {i}'
+                                        description = f'Prompt {key}'
                                     
                                     # Get arguments from the schema function if available
                                     arguments = []
@@ -1229,14 +1218,10 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                         
                         # Find the prompt by name
                         prompt_handler = None
-                        for prompt_obj in service.prompts:
+                        for key, prompt_obj in service.prompts.items():
+                            assert key == prompt_obj.name, f"Prompt name mismatch: {key} != {prompt_obj.name}"
                             # Get name from prompt object
-                            if hasattr(prompt_obj, 'name'):
-                                name = prompt_obj.name
-                            elif hasattr(prompt_obj, 'get'):
-                                name = prompt_obj.get('name', '')
-                            else:
-                                name = ''
+                            name = prompt_obj.name
                                 
                             if name == prompt_name:
                                 prompt_handler = prompt_obj.read if hasattr(prompt_obj, 'read') else prompt_obj.get('read')
@@ -1333,7 +1318,7 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                             if hasattr(service_info, 'resources') and service_info.resources:
                                 logger.debug(f"Found service_info.resources: {service_info.resources}")
                                 # Use the original resource configuration
-                                for resource_config in service_info.resources:
+                                for key, resource_config in service_info.resources.items():
                                     template_dict = {
                                         "uriTemplate": resource_config.get("uri", "unknown"),
                                         "name": resource_config.get("name", "unknown"),
@@ -1362,14 +1347,13 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                                     
                                     # service.resources should contain resource objects
                                     # service_info.service_schema.resources should contain schema info
-                                    for i, resource_obj in enumerate(service.resources):
-                                        logger.debug(f"Processing resource object #{i}: {resource_obj}")
+                                    for key, resource_obj in service.resources.items():
+                                        logger.debug(f"Processing resource object {key}: {resource_obj}")
                                         
                                         # Get corresponding schema if available
                                         resource_schema = None
-                                        if i < len(service_info.service_schema.resources):
-                                            resource_schema = service_info.service_schema.resources[i]
-                                            logger.debug(f"Resource schema #{i}: {resource_schema}")
+                                        resource_schema = service_info.service_schema.resources[key]
+                                        logger.debug(f"Resource schema {key}: {resource_schema}")
                                         
                                         # Extract metadata from resource object or schema
                                         try:
@@ -1461,13 +1445,14 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                             if hasattr(service_info, 'resources') and service_info.resources:
                                 logger.debug(f"Found service_info.resources: {service_info.resources}")
                                 # Use the original resource configuration
-                                for resource_config in service_info.resources:
+                                for key, resource_config in service_info.resources.items():
                                     resource_dict = {
                                         "uri": resource_config.get("uri", "unknown"),
                                         "name": resource_config.get("name", "unknown"),
                                         "description": resource_config.get("description", "unknown"),
                                         "mimeType": resource_config.get("mime_type", "text/plain")
                                     }
+                                    assert resource_dict["uri"] == key, f"Resource URI mismatch: {resource_dict['uri']} != {key}"
                                     logger.debug(f"Resource from service_info.resources: {resource_dict}")
                                     resources.append(resource_dict)
                             else:
@@ -1475,20 +1460,20 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                                 if hasattr(service, 'resources') and service.resources and hasattr(service_info, 'service_schema') and service_info.service_schema.resources:
                                     logger.debug("Using fallback: service.resources and service_info.service_schema.resources")
                                     
-                                    for i, resource_obj in enumerate(service.resources):
-                                        logger.debug(f"Processing resource object #{i}: {resource_obj}")
+                                    for key, resource_obj in service.resources.items():
+                                        logger.debug(f"Processing resource object {key}: {resource_obj}")
                                         
                                         # Extract metadata from resource object
                                         try:
                                             # Try to get attributes from resource object
                                             uri = getattr(resource_obj, 'uri', None) or getattr(resource_obj, 'get', lambda k, d: d)('uri', 'resource://unknown')
-                                            name = getattr(resource_obj, 'name', None) or getattr(resource_obj, 'get', lambda k, d: d)('name', f'Resource {i}')
+                                            name = getattr(resource_obj, 'name', None) or getattr(resource_obj, 'get', lambda k, d: d)('name', f'Resource {key}')
                                             description = getattr(resource_obj, 'description', None) or getattr(resource_obj, 'get', lambda k, d: d)('description', 'A resource')
                                             mime_type = getattr(resource_obj, 'mime_type', None) or getattr(resource_obj, 'get', lambda k, d: d)('mime_type', 'text/plain')
                                         except Exception as e:
                                             logger.debug(f"Failed to extract metadata from resource object: {e}")
                                             uri = 'resource://unknown'
-                                            name = f'Resource {i}'
+                                            name = f'Resource {key}'
                                             description = 'A resource'
                                             mime_type = 'text/plain'
                                         
@@ -1556,9 +1541,10 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                     
                     # Find the resource by URI
                     resource_to_read = None
-                    for resource in service.resources:
+                    for key, resource in service.resources.items():
                         if resource.get("uri") == uri:
                             resource_to_read = resource
+                            assert key == uri, f"Resource URI mismatch: {key} != {uri}"
                             break
                     
                     if not resource_to_read:

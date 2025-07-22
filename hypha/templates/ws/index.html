@@ -341,7 +341,7 @@
                                      
                                      window.updateProgressSpinner('Refreshing application list...');
                                      await refreshApps(ws);
-                                     window.addProgressLog('Application list refreshed.', 'success');
+                                     window.addProgressLog('Application list refreshed', 'info');
                                      
                                      // Allow user to close the dialog
                                      setTimeout(() => {
@@ -2348,7 +2348,7 @@
                                 setExpandedDirs(prev => ({ ...prev, [targetPath]: updatedFolderFiles }));
                             }
                             
-                            window.addProgressLog('File list refreshed', 'success');
+                            window.addProgressLog('File list refreshed', 'info');
                         } catch (error) {
                             window.addProgressLog(`Failed to refresh file list: ${error.message}`, 'error');
                         }
@@ -2576,7 +2576,7 @@
                             const updatedFiles = await listFiles(currentArtifact.id, "");
                             setFiles(updatedFiles);
                             setExpandedDirs({});
-                            window.addProgressLog('File list refreshed', 'success');
+                            window.addProgressLog('File list refreshed', 'info');
                         } catch (error) {
                             window.addProgressLog(`Failed to refresh file list: ${error.message}`, 'error');
                         }
@@ -4494,7 +4494,7 @@ license: "MIT"`);
                     
                     try {
                         await refreshFileList(targetPath);
-                        window.addProgressLog('File list refreshed', 'success');
+                        window.addProgressLog('File list refreshed', 'info');
             } catch (error) {
                         window.addProgressLog(`Failed to refresh file list: ${error.message}`, 'error');
                     }
@@ -4616,7 +4616,7 @@ license: "MIT"`);
                     
                     try {
                         await refreshFileList(targetPath);
-                        window.addProgressLog('File list refreshed', 'success');
+                        window.addProgressLog('File list refreshed', 'info');
                     } catch (error) {
                         window.addProgressLog(`Failed to refresh file list: ${error.message}`, 'error');
                     }
@@ -4750,7 +4750,7 @@ license: "MIT"`);
                     
                     try {
                         await refreshFileList(baseFolderPath);
-                        window.addProgressLog('File list refreshed', 'success');
+                        window.addProgressLog('File list refreshed', 'info');
                 } catch (error) {
                         window.addProgressLog(`Failed to refresh file list: ${error.message}`, 'error');
                     }
@@ -5184,7 +5184,7 @@ license: "MIT"`);
                     
                     window.updateProgressSpinner('Refreshing application list...');
                     await refreshApps(ws);
-                    window.addProgressLog('Application list refreshed.', 'success');
+                    window.addProgressLog('Application list refreshed', 'info');
                     
                                          // Allow user to close the dialog
                      setTimeout(() => {
@@ -5334,7 +5334,7 @@ license: "MIT"`);
                     
                     window.updateProgressSpinner('Refreshing application list...');
                     await refreshApps(ws);
-                    window.addProgressLog('Application list refreshed.', 'success');
+                    window.addProgressLog('Application list refreshed', 'info');
                     
                                          // Allow user to close the dialog
                      setTimeout(() => {
@@ -5384,7 +5384,7 @@ license: "MIT"`);
                     
                     window.updateProgressSpinner('Refreshing application list...');
                     await refreshApps(ws);
-                    window.addProgressLog('Application list refreshed.', 'success');
+                    window.addProgressLog('Application list refreshed', 'info');
                     
                                          // Allow user to close the dialog
                      setTimeout(() => {

@@ -365,9 +365,9 @@ class MCPClientRunner(BaseWorker):
         if config:
             config.progress_callback({"type": "info", "message": f"Discovering capabilities from {server_name}..."})
         
-        tools = []
-        resources = []
-        prompts = []
+        tools = {}
+        resources = {}
+        prompts = {}
         
         try:
             # Get the appropriate client context
@@ -393,7 +393,7 @@ class MCPClientRunner(BaseWorker):
                             tools_result = await mcp_session.list_tools()
                             if tools_result and hasattr(tools_result, 'tools'):
                                 tools = await self._create_tool_wrappers(session_data, server_name, tools_result.tools)
-                                logger.info(f"Found {len(tools)} tools from {server_name}")
+                                logger.info(f"Found {len(tools.keys())} tools from {server_name}")
                         except Exception as e:
                             logger.debug(f"No tools found in MCP server {server_name}: {e}")
                             session_data["logs"]["info"].append(f"No tools found in {server_name}: {e}")
@@ -468,10 +468,10 @@ class MCPClientRunner(BaseWorker):
                         raise RuntimeError(f"SSE transport not supported by server at {server_url}")
                     raise
             
-            logger.info(f"Server {server_name}: Found {len(tools)} tools, {len(resources)} resources, {len(prompts)} prompts")
+            logger.info(f"Server {server_name}: Found {len(tools.keys())} tools, {len(resources.keys())} resources, {len(prompts.keys())} prompts")
             
             if config:
-                config.progress_callback({"type": "info", "message": f"Found {len(tools)} tools, {len(resources)} resources, {len(prompts)} prompts from {server_name}"})
+                config.progress_callback({"type": "info", "message": f"Found {len(tools.keys())} tools, {len(resources.keys())} resources, {len(prompts.keys())} prompts from {server_name}"})
                 config.progress_callback({"type": "info", "message": f"Registering services for {server_name}..."})
             
             # Register unified service for this server
@@ -541,12 +541,9 @@ class MCPClientRunner(BaseWorker):
         tool_wrapper.__name__ = tool_name
         tool_wrapper.__doc__ = tool_description or ""
         tool_wrapper.__schema__ = {
-            "type": "function",
-            "function": {
-                "name": tool_name,
-                "description": tool_description or "",
-                "parameters": tool_schema
-            }
+            "name": tool_name,
+            "description": tool_description or "",
+            "parameters": tool_schema
         }
         return tool_wrapper
 
@@ -659,9 +656,9 @@ class MCPClientRunner(BaseWorker):
             "read": prompt_read,
         }
 
-    async def _create_tool_wrappers(self, session_data: dict, server_name: str, tools: List) -> List:
+    async def _create_tool_wrappers(self, session_data: dict, server_name: str, tools: list) -> List:
         """Create tool wrapper functions."""
-        tool_wrappers = []
+        tool_wrappers = {}
         
         for tool in tools:
             try:
@@ -678,7 +675,7 @@ class MCPClientRunner(BaseWorker):
 
                 # Create wrapper function
                 tool_wrapper = self._wrap_tool(session_data, server_name, tool_name, tool_description, tool_schema)
-                tool_wrappers.append(tool_wrapper)
+                tool_wrappers[tool_name] = tool_wrapper
                 
                 logger.info(f"Created tool wrapper: {server_name}.{tool_name}")
                 session_data["logs"]["info"].append(f"Created tool wrapper: {server_name}.{tool_name}")
@@ -689,9 +686,9 @@ class MCPClientRunner(BaseWorker):
         
         return tool_wrappers
 
-    async def _create_resource_wrappers(self, session_data: dict, server_name: str, resources: List) -> List:
+    async def _create_resource_wrappers(self, session_data: dict, server_name: str, resources: list) -> Dict[str, Any]:
         """Create resource wrapper configurations with read functions."""
-        resource_configs = []
+        resource_configs = {}
         
         for resource in resources:
             try:
@@ -703,7 +700,7 @@ class MCPClientRunner(BaseWorker):
 
                 # Create resource config
                 resource_config = self._wrap_resource(session_data, server_name, resource_uri, resource_name, resource_description, resource_mime_type)
-                resource_configs.append(resource_config)
+                resource_configs[resource_uri] = resource_config
                 
                 logger.info(f"Created resource wrapper: {server_name}.{resource_name}")
                 session_data["logs"]["info"].append(f"Created resource wrapper: {server_name}.{resource_name}")
@@ -714,9 +711,9 @@ class MCPClientRunner(BaseWorker):
         
         return resource_configs
 
-    async def _create_prompt_wrappers(self, session_data: dict, server_name: str, prompts: List) -> List:
+    async def _create_prompt_wrappers(self, session_data: dict, server_name: str, prompts: list) -> List:
         """Create prompt wrapper configurations with read functions."""
-        prompt_configs = []
+        prompt_configs = {}
         
         for prompt in prompts:
             try:
@@ -727,7 +724,7 @@ class MCPClientRunner(BaseWorker):
 
                 # Create prompt config
                 prompt_config = self._wrap_prompt(session_data, server_name, prompt_name, prompt_description, prompt_args)
-                prompt_configs.append(prompt_config)
+                prompt_configs[prompt_name] = prompt_config
                 
                 logger.info(f"Created prompt wrapper: {server_name}.{prompt_name}")
                 session_data["logs"]["info"].append(f"Created prompt wrapper: {server_name}.{prompt_name}")
@@ -738,7 +735,7 @@ class MCPClientRunner(BaseWorker):
         
         return prompt_configs
 
-    async def _register_unified_mcp_service(self, session_data: dict, server_name: str, tools: List, resources: List, prompts: List, client):
+    async def _register_unified_mcp_service(self, session_data: dict, server_name: str, tools: Dict[str, Any], resources: Dict[str, Any], prompts: Dict[str, Any], client):
         """Register a unified service that exposes all MCP server capabilities."""
         try:
             # Register the service with correct structure
@@ -754,9 +751,9 @@ class MCPClientRunner(BaseWorker):
             }
             
             # Register the service
-            await client.register_service(service_def, overwrite=True)
-            session_data["services"].append(service_def["name"])
-            logger.info(f"Registered unified MCP service: {service_def['name']} with ID: {server_name}")
+            service_info = await client.register_service(service_def, overwrite=True)
+            session_data["services"].append(service_info.id)
+            logger.info(f"Registered unified MCP service: {service_info.id}")
             
         except Exception as e:
             error_msg = f"Failed to register MCP service for {server_name}: {e}"
@@ -778,13 +775,13 @@ class MCPClientRunner(BaseWorker):
             if session_data:
                 # Unregister services
                 services = session_data.get("services", [])
-                for service_name in services:
+                for service_id in services:
                     try:
                         if self.server:
-                            await self.server.unregister_service(service_name)
-                            logger.info(f"Unregistered service: {service_name}")
+                            await self.server.unregister_service(service_id)
+                            logger.info(f"Unregistered service: {service_id}")
                     except Exception as e:
-                        logger.warning(f"Error unregistering service {service_name}: {e}")
+                        logger.warning(f"Error unregistering service {service_id}: {e}")
 
                 # Log cleanup
                 logger.info(f"Cleaning up MCP connections for session {session_id}")
