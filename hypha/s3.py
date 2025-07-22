@@ -170,6 +170,7 @@ class S3Controller:
         workspace_bucket="hypha-workspaces",
         workspace_etc_dir="etc",
         executable_path="",
+        cleanup_period=300,
     ):
         """Set up controller."""
         self.endpoint_url = endpoint_url
@@ -190,6 +191,7 @@ class S3Controller:
         self.endpoint_url_public = endpoint_url_public or endpoint_url
         self.store = store
         self.workspace_bucket = workspace_bucket
+        self.cleanup_period = cleanup_period
         
         # Use Redis cache for multipart upload info (same as artifact manager)
         self._cache = store.get_redis_cache()
@@ -1175,7 +1177,8 @@ class S3Controller:
         full_path = safe_join(workspace, file_path)
         
         # Add to sorted set for efficient range queries
-        await self._redis.zadd("s3_expiry_index", {full_path: expires_at})
+        # Ensure the key is a string, not bytes
+        await self._redis.zadd("s3_expiry_index", {str(full_path): expires_at})
 
     async def cleanup_expired_files(self):
         """Clean up expired files. Called by periodic task."""
@@ -1192,10 +1195,13 @@ class S3Controller:
             async with self.create_client_async() as s3_client:
                 for s3_key in expired_keys:
                     try:
+                        # Ensure s3_key is a string, not bytes
+                        s3_key_str = s3_key.decode('utf-8') if isinstance(s3_key, bytes) else str(s3_key)
+                        
                         # Delete the file from S3
-                        await s3_client.delete_object(Bucket=self.workspace_bucket, Key=s3_key)
+                        await s3_client.delete_object(Bucket=self.workspace_bucket, Key=s3_key_str)
                         deleted_count += 1
-                        logger.info(f"Deleted expired file: {s3_key}")
+                        logger.info(f"Deleted expired file: {s3_key_str}")
                     except Exception as e:
                         logger.error(f"Failed to delete expired file {s3_key}: {e}")
                     
@@ -1210,7 +1216,7 @@ class S3Controller:
 
     async def _periodic_cleanup(self):
         """Periodic task to clean up expired files."""
-        cleanup_interval = 300  # 5 minutes
+        cleanup_interval = self.cleanup_period
         
         while True:
             try:

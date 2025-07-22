@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import httpx
+import time
 
 import asyncio
 import aioboto3
@@ -706,11 +707,6 @@ async def test_s3_ttl_functionality(minio_server, fastapi_server, test_user_toke
         assert response.status_code == 200
         assert response.content == test_content
     
-    # Import time for testing
-    import time
-    now = time.time()
-    full_path = f"{workspace}/{ttl_file_path}"
-    
     # Test TTL with multipart upload
     multipart_ttl_path = "ttl_test/multipart_short_lived.bin"
     
@@ -752,14 +748,52 @@ async def test_s3_ttl_functionality(minio_server, fastapi_server, test_user_toke
     )
     assert result["success"] is True
     
-    # Test cleanup functionality by waiting a bit and manually triggering cleanup
-    multipart_full_path = f"{workspace}/{multipart_ttl_path}"
+    # Verify multipart file exists immediately after upload
+    get_url_multipart = await s3controller.get_file(multipart_ttl_path)
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(get_url_multipart)
+        assert response.status_code == 200
+        expected_content = b"".join(parts_data)
+        assert response.content == expected_content
     
-    # For testing, we'll simulate TTL expiry by waiting and then testing cleanup
-    # In a real scenario, files would be deleted after the TTL expires
-    print(f"TTL test completed successfully for files:")
-    print(f"  - Single file: {full_path}")
-    print(f"  - Multipart file: {multipart_full_path}")
-    print("Note: In production, these files would be automatically deleted after TTL expires")
+    print(f"Files uploaded successfully with TTL={ttl_seconds}s:")
+    print(f"  - Single file: {ttl_file_path}")
+    print(f"  - Multipart file: {multipart_ttl_path}")
+    
+    # Wait for TTL to expire plus cleanup period
+    # TTL is 3 seconds, cleanup runs every 2 seconds, so wait 6 seconds to ensure cleanup runs
+    wait_time = ttl_seconds + 3  # Add buffer for cleanup to run
+    print(f"Waiting {wait_time} seconds for TTL to expire and cleanup to run...")
+    await asyncio.sleep(wait_time)
+    
+    # Verify that files have been deleted by TTL cleanup
+    print("Verifying files have been deleted by TTL cleanup...")
+    
+    # Try to get the single file - should fail (404 or similar)
+
+    get_url_after_ttl = await s3controller.get_file(ttl_file_path)
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(get_url_after_ttl)
+        # File should be deleted, so we expect an error
+        assert response.status_code in [404], f"File should be deleted but got status {response.status_code}"
+        print("✅ Single file successfully deleted by TTL cleanup")
+
+    # Try to get the multipart file - should fail (404 or similar)
+
+    get_url_multipart_after_ttl = await s3controller.get_file(multipart_ttl_path)
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(get_url_multipart_after_ttl)
+        # File should be deleted, so we expect an error
+        assert response.status_code in [404], f"Multipart file should be deleted but got status {response.status_code}"
+        print("✅ Multipart file successfully deleted by TTL cleanup")
+
+    # Test that files are not in the listing
+    files_list = await s3controller.list_files("ttl_test/")
+    file_names = [f["name"] for f in files_list]
+    assert ttl_file_path.split("/")[-1] not in file_names, f"TTL file still exists in listing: {file_names}"
+    assert multipart_ttl_path.split("/")[-1] not in file_names, f"TTL multipart file still exists in listing: {file_names}"
+    print("✅ Files successfully removed from directory listing")
+
+    print("🎉 TTL functionality test completed successfully!")
     
     await api.disconnect()

@@ -107,6 +107,7 @@ def start_builtin_services(
             enable_s3_proxy=args.enable_s3_proxy,
             workspace_bucket=args.workspace_bucket,
             executable_path=args.executable_path or args.cache_dir,
+            cleanup_period=args.s3_cleanup_period,
         )
         artifact_manager = ArtifactController(
             store,
@@ -637,6 +638,12 @@ def get_argparser(add_help=True):
         "--minio-file-system-mode",
         action="store_true",
         help="enable file system mode for Minio, which uses specific compatible versions",
+    )
+    parser.add_argument(
+        "--s3-cleanup-period",
+        type=int,
+        default=300,
+        help="period in seconds for S3 TTL cleanup task (default: 300 seconds)",
     )
     return parser
 

@@ -663,6 +663,434 @@ async def upload_large_file_http(file_path, remote_path):
    - Want parallel chunk uploads for faster performance
    - Network conditions are unreliable
 
+### Temporary Files
+
+Sometimes, you may want to create temporary files which will be removed automatically later. Hypha's S3 service supports a Time-To-Live (TTL) feature that allows you to schedule files for automatic deletion after a specified period.
+
+#### Using TTL with Single File Upload
+
+```python
+from hypha_rpc import connect_to_server
+import httpx
+import asyncio
+
+# Connect to S3 service
+api = await connect_to_server({"server_url": "https://hypha.aicell.io"})
+s3controller = await api.get_service("public/s3-storage")
+
+# Upload a file with 1-hour TTL (3600 seconds)
+upload_url = await s3controller.put_file(
+    file_path="temp/data.txt",
+    ttl=3600,  # File will be deleted after 1 hour
+    context={"ws": "my-workspace", "user": {"id": "user123"}}
+)
+
+# Upload the file
+with open("local_file.txt", "rb") as f:
+    async with httpx.AsyncClient() as client:
+        response = await client.put(upload_url, content=f)
+        print("Temporary file uploaded successfully" if response.status_code == 200 else "Upload failed")
+```
+
+#### Using TTL with Multipart Upload
+
+```python
+# Start multipart upload with TTL
+multipart_info = await s3controller.put_file_start_multipart(
+    file_path="temp/large_file.zip",
+    part_count=5,
+    ttl=7200,  # File will be deleted after 2 hours
+    context={"ws": "my-workspace", "user": {"id": "user123"}}
+)
+
+# Upload parts and complete as usual
+# The TTL will be applied when the multipart upload is completed
+result = await s3controller.put_file_complete_multipart(
+    upload_id=multipart_info["upload_id"],
+    parts=uploaded_parts,
+    context={"ws": "my-workspace", "user": {"id": "user123"}}
+)
+```
+
+#### TTL Behavior and Cleanup
+
+- **Automatic Cleanup**: Files with TTL are automatically deleted by a background task that runs every 5 minutes
+- **Expiration Tracking**: Files are tracked using Redis sorted sets for efficient cleanup
+- **Graceful Handling**: If cleanup fails for a specific file, the system continues with other files
+- **No Manual Intervention**: Once set, TTL cannot be modified or cancelled - files will be deleted when they expire
+- **Background Task**: The cleanup task runs continuously and handles expired files efficiently
+
+#### Use Cases for Temporary Files
+
+1. **Processing Pipelines**: Upload input files that will be processed and then cleaned up
+2. **Temporary Storage**: Store intermediate results that are only needed for a short period
+3. **Testing**: Upload test files that should be automatically removed
+4. **Caching**: Store temporary cache files with automatic expiration
+5. **Batch Operations**: Upload files for batch processing with automatic cleanup
+
+#### Best Practices
+
+- **Set Appropriate TTL**: Choose TTL values that give enough time for processing but not so long that storage costs accumulate
+- **Monitor Cleanup**: Check logs for any cleanup failures if you're relying on automatic deletion
+- **Plan for Failures**: Have a backup cleanup strategy in case the automatic system fails
+- **Use Descriptive Paths**: Place temporary files in a `temp/` or `cache/` directory for better organization
+
+## API Reference
+
+### `put_file(file_path: str, use_proxy: bool = None, use_local_url: bool = False, expires_in: float = 3600, ttl: int = None, context: dict = None) -> str`
+
+Generates a presigned URL for uploading a file to S3. The URL can be used with an HTTP `PUT` request to upload the file.
+
+**Parameters:**
+
+- `file_path`: The relative path where the file will be stored in S3 (e.g., `"data/myfile.txt"`).
+- `use_proxy`: Optional. A boolean to control whether to use the S3 proxy for the generated URL. If `None` (default), follows the server configuration. If `True`, forces the use of the proxy. If `False`, bypasses the proxy and returns a direct S3 URL.
+- `use_local_url`: Optional. A boolean to control whether to generate URLs for local/cluster-internal access. Defaults to `False`. When `True`, generates URLs suitable for access within the cluster.
+- `expires_in`: Optional. A float number for the expiration time of the S3 presigned URL in seconds. Defaults to 3600 (1 hour).
+- `ttl`: Optional. Time-to-live in seconds for the uploaded file. If specified and greater than 0, the file will be automatically deleted after this time period. Defaults to `None` (no automatic deletion).
+- `context`: Required. A dictionary containing workspace and user information. Must include:
+  - `ws`: The workspace ID
+  - `user`: User information dictionary
+
+**Returns:** A presigned URL string for uploading the file.
+
+**Example:**
+
+```python
+# Upload a file with 1-hour TTL
+upload_url = await s3controller.put_file(
+    file_path="temp/data.csv",
+    ttl=3600,  # Delete after 1 hour
+    context={"ws": "my-workspace", "user": {"id": "user123"}}
+)
+
+# Upload the file using the presigned URL
+with open("local_file.csv", "rb") as f:
+    async with httpx.AsyncClient() as client:
+        response = await client.put(upload_url, content=f)
+        if response.status_code == 200:
+            print("File uploaded successfully")
+```
+
+---
+
+### `get_file(file_path: str, use_proxy: bool = None, use_local_url: bool = False, expires_in: float = 3600, context: dict = None) -> str`
+
+Generates a presigned URL for downloading a file from S3.
+
+**Parameters:**
+
+- `file_path`: The relative path of the file to download (e.g., `"data/myfile.txt"`).
+- `use_proxy`: Optional. A boolean to control whether to use the S3 proxy for the generated URL. If `None` (default), follows the server configuration. If `True`, forces the use of the proxy. If `False`, bypasses the proxy and returns a direct S3 URL.
+- `use_local_url`: Optional. A boolean to control whether to generate URLs for local/cluster-internal access. Defaults to `False`. When `True`, generates URLs suitable for access within the cluster.
+- `expires_in`: Optional. A float number for the expiration time of the S3 presigned URL in seconds. Defaults to 3600 (1 hour).
+- `context`: Required. A dictionary containing workspace and user information. Must include:
+  - `ws`: The workspace ID
+  - `user`: User information dictionary
+
+**Returns:** A presigned URL string for downloading the file.
+
+**Example:**
+
+```python
+# Get download URL for a file
+download_url = await s3controller.get_file(
+    file_path="data/myfile.txt",
+    context={"ws": "my-workspace", "user": {"id": "user123"}}
+)
+
+# Download the file
+async with httpx.AsyncClient() as client:
+    response = await client.get(download_url)
+    with open("downloaded_file.txt", "wb") as f:
+        f.write(response.content)
+```
+
+---
+
+### `put_file_start_multipart(file_path: str, part_count: int, expires_in: int = 3600, ttl: int = None, context: dict = None) -> dict`
+
+Initiates a multipart upload for large files and generates presigned URLs for uploading each part. This is useful for files larger than 100MB or when you need to upload files in chunks with parallel processing.
+
+**Parameters:**
+
+- `file_path`: The relative path where the file will be stored in S3 (e.g., `"uploads/large_file.zip"`).
+- `part_count`: The number of parts to split the file into. Must be between 1 and 10,000.
+- `expires_in`: Optional. The expiration time in seconds for the multipart upload session and part URLs. Defaults to 3600 (1 hour).
+- `ttl`: Optional. Time-to-live in seconds for the uploaded file. If specified and greater than 0, the file will be automatically deleted after this time period. Defaults to `None` (no automatic deletion).
+- `context`: Required. A dictionary containing workspace and user information. Must include:
+  - `ws`: The workspace ID
+  - `user`: User information dictionary
+
+**Returns:** A dictionary containing:
+- `upload_id`: The unique identifier for this multipart upload session
+- `parts`: A list of part information, each containing:
+  - `part_number`: The sequential part number (1-indexed)
+  - `url`: The presigned URL for uploading this specific part
+
+**Important Notes:**
+- Each part (except the last) must be at least 5MB in size
+- Part URLs expire after the specified `expires_in` time
+- The multipart upload session must be completed with `put_file_complete_multipart`
+- If not completed within the expiration time, the session will be automatically cleaned up
+- TTL is applied when the multipart upload is completed, not when it's started
+
+**Example:**
+
+```python
+# Start multipart upload for a large file with 2-hour TTL
+multipart_info = await s3controller.put_file_start_multipart(
+    file_path="uploads/large_video.mp4",
+    part_count=5,
+    ttl=7200,  # Delete after 2 hours
+    context={"ws": "my-workspace", "user": {"id": "user123"}}
+)
+
+upload_id = multipart_info["upload_id"]
+part_urls = multipart_info["parts"]
+
+# Upload parts in parallel
+async def upload_part(part_info, file_data):
+    async with httpx.AsyncClient(timeout=120) as client:
+        response = await client.put(part_info["url"], data=file_data)
+        return {
+            "part_number": part_info["part_number"],
+            "etag": response.headers["ETag"].strip('"')
+        }
+
+# Upload all parts concurrently
+uploaded_parts = await asyncio.gather(*[
+    upload_part(part, get_part_data(part["part_number"])) 
+    for part in part_urls
+])
+```
+
+---
+
+### `put_file_complete_multipart(upload_id: str, parts: list, context: dict = None) -> dict`
+
+Completes a multipart upload by combining all uploaded parts into the final file. This must be called after all parts have been successfully uploaded using the URLs from `put_file_start_multipart`.
+
+**Parameters:**
+
+- `upload_id`: The unique upload identifier returned by `put_file_start_multipart`.
+- `parts`: A list of dictionaries containing information about uploaded parts. Each part must include:
+  - `part_number`: The part number (1-indexed, matching the original part numbers)
+  - `etag`: The ETag returned by S3 when the part was uploaded (without quotes)
+- `context`: Required. A dictionary containing workspace and user information. Must include:
+  - `ws`: The workspace ID
+  - `user`: User information dictionary
+
+**Returns:** A dictionary containing:
+- `success`: Boolean indicating whether the multipart upload was completed successfully
+- `message`: A descriptive message about the operation result
+- `etag`: The ETag of the completed file (if successful)
+- `location`: The S3 location of the completed file (if successful)
+
+**Important Notes:**
+- All parts must be uploaded before calling this function
+- Parts must be provided in the correct order with accurate ETags
+- ETags should be provided without surrounding quotes
+- The function will fail if any parts are missing or have incorrect ETags
+- Once completed successfully, the individual parts are automatically cleaned up by S3
+- If TTL was specified in `put_file_start_multipart`, it will be applied to the completed file
+
+**Example:**
+
+```python
+# Complete the multipart upload
+result = await s3controller.put_file_complete_multipart(
+    upload_id=upload_id,
+    parts=uploaded_parts,  # From the previous upload_part operations
+    context={"ws": "my-workspace", "user": {"id": "user123"}}
+)
+
+if result["success"]:
+    print("Multipart upload completed successfully!")
+    print(f"File ETag: {result['etag']}")
+    print(f"File location: {result['location']}")
+else:
+    print(f"Upload failed: {result['message']}")
+```
+
+---
+
+### `remove_file(path: str, context: dict = None) -> dict`
+
+Removes a file or directory from S3. This function combines the functionality of both file and directory deletion.
+
+**Parameters:**
+
+- `path`: The relative path of the file or directory to remove (e.g., `"data/myfile.txt"` or `"data/"`).
+- `context`: Required. A dictionary containing workspace and user information. Must include:
+  - `ws`: The workspace ID
+  - `user`: User information dictionary
+
+**Returns:** A dictionary containing:
+- `success`: Boolean indicating whether the operation was successful
+- `message`: A descriptive message about the operation result
+
+**Behavior:**
+- **Files**: If the path points to a file, it will be deleted
+- **Directories**: If the path points to a directory (ends with `/` or contains other files), the entire directory and its contents will be deleted
+- **Non-existent paths**: Returns success=False with an appropriate error message
+- **Permissions**: Requires read_write permission on the workspace
+
+**Example:**
+
+```python
+# Remove a file
+result = await s3controller.remove_file(
+    path="data/myfile.txt",
+    context={"ws": "my-workspace", "user": {"id": "user123"}}
+)
+print(result["message"])
+
+# Remove an entire directory
+result = await s3controller.remove_file(
+    path="data/",
+    context={"ws": "my-workspace", "user": {"id": "user123"}}
+)
+print(result["message"])
+```
+
+---
+
+### `list_files(path: str = "", max_length: int = 1000, context: dict = None) -> Dict[str, Any]`
+
+Lists files and directories in the specified path.
+
+**Parameters:**
+
+- `path`: Optional. The relative path to list files from. Defaults to `""` (root of workspace).
+- `max_length`: Optional. Maximum number of items to return. Defaults to 1000.
+- `context`: Required. A dictionary containing workspace and user information. Must include:
+  - `ws`: The workspace ID
+  - `user`: User information dictionary
+
+**Returns:** A list of file and directory objects, each containing:
+- `name`: The name of the file or directory
+- `type`: Either `"file"` or `"directory"`
+- `size`: File size in bytes (for files only)
+- `last_modified`: Last modification timestamp (for files only)
+
+**Example:**
+
+```python
+# List files in the root directory
+files = await s3controller.list_files(
+    context={"ws": "my-workspace", "user": {"id": "user123"}}
+)
+
+# List files in a specific directory
+files = await s3controller.list_files(
+    path="data/",
+    context={"ws": "my-workspace", "user": {"id": "user123"}}
+)
+
+for file in files:
+    print(f"{file['name']} ({file['type']})")
+    if file['type'] == 'file':
+        print(f"  Size: {file['size']} bytes")
+```
+
+---
+
+### `generate_presigned_url(path: str, client_method: str = "get_object", expiration: int = 3600, context: dict = None) -> str`
+
+Generates a presigned URL for direct S3 operations. This is a lower-level function that provides more control over S3 operations.
+
+**Parameters:**
+
+- `path`: The relative path of the file in S3 (e.g., `"data/myfile.txt"`).
+- `client_method`: The S3 client method to use. Common values:
+  - `"get_object"`: For downloading files
+  - `"put_object"`: For uploading files
+  - `"delete_object"`: For deleting files
+- `expiration`: Optional. The expiration time in seconds for the presigned URL. Defaults to 3600 (1 hour).
+- `context`: Required. A dictionary containing workspace and user information. Must include:
+  - `ws`: The workspace ID
+  - `user`: User information dictionary
+
+**Returns:** A presigned URL string for the specified S3 operation.
+
+**Example:**
+
+```python
+# Generate a download URL
+download_url = await s3controller.generate_presigned_url(
+    path="data/myfile.txt",
+    client_method="get_object",
+    context={"ws": "my-workspace", "user": {"id": "user123"}}
+)
+
+# Generate an upload URL
+upload_url = await s3controller.generate_presigned_url(
+    path="data/myfile.txt",
+    client_method="put_object",
+    context={"ws": "my-workspace", "user": {"id": "user123"}}
+)
+```
+
+---
+
+### `generate_credential(context: dict = None) -> dict`
+
+Generates S3 credentials for the current user. This is only available for Minio-based S3 servers.
+
+**Parameters:**
+
+- `context`: Required. A dictionary containing workspace and user information. Must include:
+  - `ws`: The workspace ID
+  - `user`: User information dictionary
+
+**Returns:** A dictionary containing S3 credentials:
+- `endpoint_url`: The S3 endpoint URL
+- `access_key_id`: The access key for S3 operations
+- `secret_access_key`: The secret key for S3 operations
+- `region_name`: The S3 region name
+- `bucket`: The S3 bucket name
+- `prefix`: The workspace prefix for S3 operations
+
+**Example:**
+
+```python
+# Generate S3 credentials
+credentials = await s3controller.generate_credential(
+    context={"ws": "my-workspace", "user": {"id": "user123"}}
+)
+
+# Use credentials with boto3
+import boto3
+s3_client = boto3.client(
+    's3',
+    endpoint_url=credentials['endpoint_url'],
+    aws_access_key_id=credentials['access_key_id'],
+    aws_secret_access_key=credentials['secret_access_key'],
+    region_name=credentials['region_name']
+)
+
+# List objects in the workspace
+response = s3_client.list_objects_v2(
+    Bucket=credentials['bucket'],
+    Prefix=credentials['prefix']
+)
+```
+
+---
+
+### Deprecated Functions
+
+The following functions are deprecated and should not be used in new code. Use the recommended functions instead:
+
+#### `delete_file(path: str, context: dict = None) -> dict`
+
+**Deprecated.** Use `remove_file()` instead.
+
+#### `delete_directory(path: str, context: dict = None) -> dict`
+
+**Deprecated.** Use `remove_file()` instead.
+
 ## Summary
 
 To enable S3 storage in Hypha, you need to provide existing credentials during server startup. Once configured, Hypha supports three ways to manipulate files in S3:

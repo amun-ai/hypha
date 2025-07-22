@@ -321,6 +321,7 @@ def fastapi_server_fixture(minio_server, postgres_server):
             "--cache-dir=./bin/cache",
             f"--triton-servers=http://127.0.0.1:{TRITON_PORT}",
             "--static-mounts=/tests:./tests",
+            "--s3-cleanup-period=2",
             "--startup-functions",
             "hypha.utils:_example_hypha_startup",
             "./tests/example-startup-function.py:hypha_startup",
