@@ -1848,10 +1848,6 @@
                                 <code className="text-gray-400 text-xs break-all">
                                     ID: {artifact.id}
                                 </code>
-                                {isCollection && isHovered && (
-                                    <p className="text-xs text-gray-400 mt-2">(drop files/folders here)</p>
-                                )}
-                                
                                 {/* Action buttons */}
                                 <div className="flex justify-between items-center w-full mt-3">
                                     <div className="flex gap-2">
@@ -1861,31 +1857,13 @@
                                         >
                                             <i className="fas fa-info-circle mr-1"></i> More Info
                                         </button>
-                                        {isCollection && onUploadFile && (
-                                            <button
-                                                className="bg-green-600 hover:bg-green-500 text-white font-bold py-1 px-3 rounded text-sm transition duration-300"
-                                                onClick={() => onUploadFile(fullPath)}
-                                                title="Upload files to this collection"
-                                            >
-                                                <i className="fas fa-upload"></i>
-                                            </button>
-                                        )}
-                                        {isCollection && onCreateFolder && (
-                                            <button
-                                                className="bg-purple-600 hover:bg-purple-500 text-white font-bold py-1 px-3 rounded text-sm transition duration-300"
-                                                onClick={() => onCreateFolder(fullPath)}
-                                                title="Create artifact in this collection"
-                                            >
-                                                <i className="fas fa-plus"></i>
-                                            </button>
-                                        )}
                                         {isCollection && (
                                             <button
                                                 className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-1 px-3 rounded text-sm transition duration-300"
                                                 onClick={() => onCreateChildArtifact(artifact.id)}
                                                 title="Create child artifact in this collection"
                                             >
-                                                <i className="fas fa-baby"></i>
+                                                <i className="fas fa-plus"></i>
                                             </button>
                                         )}
                                     </div>
