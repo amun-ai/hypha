@@ -519,10 +519,6 @@ class ServerAppController:
                     source.encode("utf-8")
                 ), f"App source code verification failed (source_hash: {source_hash})."
             artifact_obj["source_hash"] = mhash
-            
-        # Set default wait_for_service
-        if wait_for_service is None:
-            wait_for_service = "default"
         
         # Handle URL downloads
         if source and source.startswith("http"):
@@ -1149,7 +1145,7 @@ class ServerAppController:
             wait_for_service = startup_config["wait_for_service"]
 
         # Convert True to "default" after startup_config is applied
-        if wait_for_service is True:
+        if wait_for_service is True or wait_for_service is None:
             wait_for_service = "default"
         if wait_for_service and ":" in wait_for_service:
             wait_for_service = wait_for_service.split(":")[1]

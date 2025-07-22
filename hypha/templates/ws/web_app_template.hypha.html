@@ -1,0 +1,18 @@
+<manifest lang="json">
+    {
+        "name": "ImageJ.JS",
+        "description": "ImageJ.JS is a web-based version of ImageJ, a powerful image processing program.",
+        "type": "web-app",
+        "entry_point": "https://ij.imjoy.io",
+        "version": "1.0.0",
+        "enable_cache": true,
+        "cache_routes": [
+            "https://cdn.jsdelivr.net/npm/*",
+            "https://cjrtnc.leaningtech.com/*",
+            "https://ij.imjoy.io/*"
+        ],
+        "startup_config": {
+           "wait_for_service": false
+        }
+    }
+</manifest> 

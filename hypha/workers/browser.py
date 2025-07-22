@@ -702,7 +702,7 @@ class BrowserAppRunner(BaseWorker):
         if format not in ["png", "jpeg"]:
             raise ValueError(f"Invalid format '{format}'. Must be 'png' or 'jpeg'")
         
-        # Take screenshot and return as base64
+        # Take screenshot
         screenshot = await page.screenshot(type=format)
         return screenshot
 
