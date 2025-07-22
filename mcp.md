@@ -15,6 +15,13 @@ To enable MCP support, start Hypha server with `--enable-mcp`:
 python -m hypha.server --enable-mcp
 ```
 
+If you start hypha with `--from-env`, please set the following env:
+
+```bash
+export HYPHA_ENABLE_MCP=true
+python -m hypha.server --from-env
+```
+
 ## Hypha Service as MCP Server
 
 Hypha can act as an MCP server, exposing its services to external MCP clients like Cursor, Claude Desktop, and other AI tools.
@@ -484,7 +491,8 @@ async def install_mcp_server():
 
     # Install DeepWiki MCP server
     app_info = await controller.install(
-        config={
+        app_id="deepwiki-mcp-server",  # Custom app ID
+        manifest={
             "type": "mcp-server",
             "name": "DeepWiki Integration",
             "version": "1.0.0",
@@ -495,7 +503,8 @@ async def install_mcp_server():
                     "url": "https://mcp.deepwiki.com/mcp"
                 }
             }
-        }
+        },
+        overwrite=True
     )
 
     # Start the MCP server

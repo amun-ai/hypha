@@ -7,6 +7,87 @@ The **Server Apps** service is a core Hypha service that enables serverless comp
 > - [Serverless Functions](serverless-functions.md) - Deploy HTTP endpoint functions
 > - [Autoscaling](autoscaling.md) - Automatic scaling based on load
 
+## 🌐 **Building HTTP Endpoints & Web Applications**
+
+For developers looking to create HTTP endpoints or web applications, Hypha provides **two powerful options**:
+
+### 🚀 **Serverless Functions** - Simple & Fast
+Perfect for REST APIs, webhooks, and microservices with automatic URL routing:
+
+```javascript
+// Deploy a REST API using functions
+await controller.install({
+    source: `
+        api.register_service({
+            "id": "user-api",
+            "type": "functions",
+            "users": {
+                "list": async (event) => ({ users: ["alice", "bob"] }),
+                "create": async (event) => ({ message: "User created" })
+            },
+            "health": async (event) => ({ status: "ok" }),
+            "default": async (event) => ({ 
+                path: event.function_path,
+                message: "Endpoint not found" 
+            })
+        });
+    `,
+    manifest: { 
+        "type": "web-worker",
+        "name": "User REST API",
+        "version": "1.0.0"
+    },
+    overwrite: true
+});
+```
+
+**URLs automatically created:**
+- `/{workspace}/apps/user-api/users/list` - List users
+- `/{workspace}/apps/user-api/users/create` - Create user  
+- `/{workspace}/apps/user-api/health` - Health check
+- `/{workspace}/apps/user-api/any-other-path` - Handled by default function
+
+### 🏗️ **ASGI Applications** - Full Web Frameworks
+Deploy FastAPI, Django, or any ASGI-compatible web framework:
+
+```python
+# Deploy a FastAPI web application  
+await controller.install({
+    source: '''
+        from fastapi import FastAPI
+        from hypha_rpc import connect_to_server
+        
+        app = FastAPI()
+        
+        @app.get("/dashboard")
+        async def dashboard():
+            return {"message": "Welcome to dashboard"}
+            
+        @app.post("/api/data") 
+        async def process_data(data: dict):
+            return {"processed": True, "data": data}
+        
+        # Register as ASGI service
+        api = await connect_to_server({...})
+        await api.register_service({
+            "id": "web-dashboard",
+            "type": "asgi",
+            "serve": app
+        })
+    ''',
+    manifest: { 
+        "type": "web-python", 
+        "name": "Web Dashboard",
+        "version": "1.0.0"
+    },
+    overwrite: True
+})
+```
+
+**🔗 Learn More:** See [Serverless Functions](serverless-functions.md) and [ASGI Applications](asgi-apps.md) for comprehensive guides.
+
+---
+
 ## Two Types of Applications
 
 The Server Apps service supports two distinct approaches for creating and deploying applications:
@@ -31,7 +112,7 @@ app_info = await controller.install(
         async multiply(a, b) { return a * b; }
     });
     ''',
-    config={
+    manifest={
         "name": "Calculator",
         "type": "web-worker",  # Built-in template type
         "version": "1.0.0"
@@ -122,11 +203,13 @@ api.export({
 
 app_info = await controller.install(
     source=web_worker_source,
-    config={
+    app_id="data-processor",  # Custom app ID
+    manifest={
         "name": "Data Processor",
         "type": "web-worker",
         "version": "1.0.0"
-    }
+    },
+    overwrite=True
 )
 ```
 
@@ -166,7 +249,13 @@ api.export({
 
 app_info = await controller.install(
     source=web_python_source,
-    config={"type": "web-python"}
+    app_id="python-data-processor",  # Custom app ID
+    manifest={
+        "name": "Python Data Processor", 
+        "type": "web-python",
+        "version": "1.0.0"
+    },
+    overwrite=True
 )
 ```
 
@@ -213,7 +302,13 @@ api.export({
 
 app_info = await controller.install(
     source=window_app_source,
-    config={"type": "window"}
+    app_id="interactive-dashboard",  # Custom app ID
+    manifest={
+        "name": "Interactive Dashboard",
+        "type": "window", 
+        "version": "1.0.0"
+    },
+    overwrite=True
 )
 ```
 
@@ -224,7 +319,8 @@ Built-in templates use Jinja2 for rendering and support various configuration op
 ```python
 app_info = await controller.install(
     source=app_source,
-    config={
+    app_id="configured-app",  # Custom app ID
+    manifest={
         "name": "My App",
         "type": "web-worker",
         "version": "1.0.0",
@@ -242,7 +338,8 @@ app_info = await controller.install(
             "max_instances": 5,
             "target_requests_per_instance": 100
         }
-    }
+    },
+    overwrite=True
 )
 ```
 
@@ -289,13 +386,15 @@ custom_html_app = '''
 
 app_info = await controller.install(
     source=custom_html_app,
+    app_id="custom-html-dashboard",  # Custom app ID
     manifest={
         "name": "Custom HTML App",
         "type": "window",
         "version": "1.0.0",
         "entry_point": "index.html",
         "description": "A custom HTML application with full control"
-    }
+    },
+    overwrite=True
 )
 ```
 
@@ -318,12 +417,14 @@ app_info = await controller.install(
     result = 42 * 2
     print(f"Calculation result: {result}")
     ''',
+    app_id="python-calculation-script",  # Custom app ID
     manifest={
         "name": "Python Eval Example",
         "type": "python-eval",  # Custom type supported by python-eval worker
         "version": "1.0.0",
         "entry_point": "main.py"
-    }
+    },
+    overwrite=True
 )
 ```
 
@@ -755,14 +856,28 @@ api.export({
 })
 '''
 
-# Install the app
+# Install the app (auto-generated app_id)
 app_info = await controller.install(
     source=app_source,
-    config={"type": "web-worker"},
+    manifest={"type": "web-worker"},
     overwrite=True,
 )
 
 print(f"App installed with ID: {app_info.id}")
+
+# Or install with a custom app_id
+app_info = await controller.install(
+    source=app_source,
+    app_id="my-calculator-app",  # Custom app identifier
+    manifest={
+        "name": "My Calculator",
+        "type": "web-worker",
+        "version": "1.0.0"
+    },
+    overwrite=True,  # Required if app_id already exists
+)
+
+print(f"App installed with custom ID: {app_info.id}")
 ```
 
 ### Step 3: Starting and Using the App
@@ -806,6 +921,137 @@ await controller.stop(started_app.id)
 
 # Uninstall the app
 await controller.uninstall(app_info.id)
+```
+
+---
+
+## Application Installation
+
+### Basic Installation
+
+The `install` method provides flexible options for installing applications:
+
+```python
+# Basic installation with auto-generated app_id
+app_info = await controller.install(
+    source=app_source,
+    manifest={
+        "name": "My App",
+        "type": "web-worker",
+        "version": "1.0.0"
+    }
+)
+
+# Installation with custom app_id
+app_info = await controller.install(
+    source=app_source,
+    app_id="my-custom-app-id",  # Specify custom app identifier
+    manifest={
+        "name": "My Custom App",
+        "type": "web-worker", 
+        "version": "1.0.0"
+    },
+    overwrite=True  # Required if app_id already exists
+)
+```
+
+### Install Method Parameters
+
+The `install` method supports the following parameters:
+
+```python
+await controller.install(
+    source=None,                    # Source code, URL, or None (using files)
+    manifest=None,                  # Application manifest dictionary
+    app_id=None,                   # Custom app identifier (optional)
+    files=None,                    # List of files to include
+    workspace=None,                # Target workspace (defaults to current)
+    overwrite=False,               # Overwrite existing app with same app_id
+    timeout=None,                  # Installation timeout in seconds
+    version=None,                  # Version identifier
+    stage=False,                   # Install in stage mode
+    wait_for_service=None,         # Service to wait for during startup, default value: 'default', to disable it, set to False
+    stop_after_inactive=None,      # Auto-stop timeout
+    additional_kwargs=None,        # Additional worker arguments
+    progress_callback=None,        # Progress update callback
+    context=None                   # System context (auto-provided)
+)
+```
+
+Note: Every app are expected to register at least a service via `api.export`, or `register_service({"id": "default", "setup": setup})`. If you don't want to register any service, you need to put it into *detached* mode by setting `wait_for_service=False`.
+
+### Custom App IDs
+
+You can specify custom app identifiers for better organization and predictable naming:
+
+```python
+# Install with meaningful app_id
+app_info = await controller.install(
+    source=calculator_source,
+    app_id="team-calculator-v2",  # Custom identifier
+    manifest={
+        "name": "Team Calculator v2",
+        "type": "web-worker",
+        "version": "2.0.0"
+    }
+)
+
+# Update existing app (requires overwrite=True)
+updated_app_info = await controller.install(
+    source=updated_calculator_source,
+    app_id="team-calculator-v2",  # Same identifier
+    manifest={
+        "name": "Team Calculator v2",
+        "type": "web-worker", 
+        "version": "2.1.0"  # Updated version
+    },
+    overwrite=True  # Required to replace existing app
+)
+```
+
+**Important Notes:**
+- If `app_id` is not specified, the system generates a unique identifier
+- When using custom `app_id`, set `overwrite=True` to replace existing apps
+- Custom app IDs must be unique within the workspace
+- App IDs are used in service URLs: `workspace/artifacts/app_id/files/...`
+
+### Installation with Files
+
+You can install apps with multiple files:
+
+```python
+app_info = await controller.install(
+    app_id="multi-file-app",
+    manifest={
+        "name": "Multi-File Application",
+        "type": "window",
+        "version": "1.0.0",
+        "entry_point": "index.html"
+    },
+    files=[
+        {
+            "name": "index.html",
+            "content": "<!DOCTYPE html><html>...</html>",
+            "format": "text"
+        },
+        {
+            "name": "styles.css", 
+            "content": "body { margin: 0; }",
+            "format": "text"
+        },
+        {
+            "name": "config.json",
+            "content": {"theme": "dark", "version": "1.0"},
+            "format": "json"
+        },
+        {
+            "name": "logo.png",
+            "content": "iVBORw0KGgoAAAANSUhEUgAA...",  # base64 content
+            "format": "base64"
+        }
+    ],
+    overwrite=True
+)
 ```
 
 ---
