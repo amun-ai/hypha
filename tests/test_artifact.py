@@ -5953,7 +5953,7 @@ async def test_multipart_upload_endpoint(
     # 3. Step 1: Create the multipart upload and get presigned URLs
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
-            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create_multipart_upload",
+            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/create-multipart-upload",
             params={"path": file_path, "part_count": part_count},
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -5986,7 +5986,7 @@ async def test_multipart_upload_endpoint(
     # 5. Step 3: Complete the multipart upload
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
-            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/complete_multipart_upload",
+            f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/complete-multipart-upload",
             json={"upload_id": upload_id, "parts": uploaded_parts},
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         )

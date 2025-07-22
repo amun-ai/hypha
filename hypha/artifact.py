@@ -845,7 +845,7 @@ class ArtifactController:
             finally:
                 await session.close()
 
-        @router.post("/{workspace}/artifacts/{artifact_alias}/create_multipart_upload")
+        @router.post("/{workspace}/artifacts/{artifact_alias}/create-multipart-upload")
         async def create_multipart_upload(
             workspace: str,
             artifact_alias: str,
@@ -882,7 +882,7 @@ class ArtifactController:
                 logger.error(f"Failed to create multipart upload: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
         
-        @router.post("/{workspace}/artifacts/{artifact_alias}/complete_multipart_upload")
+        @router.post("/{workspace}/artifacts/{artifact_alias}/complete-multipart-upload")
         async def complete_multipart_upload(
             workspace: str,
             artifact_alias: str,

@@ -55,6 +55,85 @@ const workspace = api.config.workspace;
 const s3Controller = await api.getService("public/s3-storage");
 ```
 
+### Recommended S3 Service Functions
+
+**For optimal integration with Hypha's S3 service, we recommend using these functions:**
+
+- **`put_file()`** - For single file uploads (< 100MB)
+- **`get_file()`** - For file downloads  
+- **`put_file_start_multipart()`** and **`put_file_complete_multipart()`** - For large file uploads (> 100MB)
+- **`remove_file()`** - For deleting files or directories (replaces both `delete_file` and `delete_directory`)
+- **`list_files()`** - For listing files and directories
+
+**Deprecated Functions (still supported but not recommended):**
+- ⚠️ `delete_file()` - Use `remove_file()` instead
+- ⚠️ `delete_directory()` - Use `remove_file()` instead  
+- ⚠️ `generate_presigned_url()` - Use `put_file()` and `get_file()` instead for better integration
+
+### Using Recommended S3 Service Functions
+
+```python
+from hypha_rpc import connect_to_server
+import httpx
+import asyncio
+
+# Connect to S3 service
+api = await connect_to_server({"server_url": "https://hypha.aicell.io"})
+s3controller = await api.get_service("public/s3-storage")
+
+# Upload a file using put_file (recommended)
+upload_url = await s3controller.put_file("data/myfile.txt")
+with open("local_file.txt", "rb") as f:
+    async with httpx.AsyncClient() as client:
+        response = await client.put(upload_url, content=f)
+        print("Upload successful" if response.status_code == 200 else "Upload failed")
+
+# Download a file using get_file (recommended)
+download_url = await s3controller.get_file("data/myfile.txt")
+async with httpx.AsyncClient() as client:
+    response = await client.get(download_url)
+    with open("downloaded_file.txt", "wb") as f:
+        f.write(response.content)
+
+# Remove a file or directory using remove_file (recommended)
+result = await s3controller.remove_file("data/myfile.txt")  # Remove file
+print(result["message"])
+
+result = await s3controller.remove_file("data/")  # Remove entire directory
+print(result["message"])
+
+# List files
+files = await s3controller.list_files("data/")
+for file in files:
+    print(f"File: {file['name']}, Size: {file.get('size', 'N/A')}")
+```
+
+```javascript
+import axios from 'axios';
+
+// Connect to S3 service
+const api = await connectToServer({"server_url": "https://hypha.aicell.io"});
+const s3Controller = await api.getService("public/s3-storage");
+
+// Upload a file using putFile (recommended)
+const uploadUrl = await s3Controller.putFile("data/myfile.txt");
+const fileData = new FormData();
+fileData.append('file', fileInput.files[0]);
+const uploadResponse = await axios.put(uploadUrl, fileData);
+
+// Download a file using getFile (recommended)
+const downloadUrl = await s3Controller.getFile("data/myfile.txt");
+const downloadResponse = await axios.get(downloadUrl, { responseType: 'blob' });
+
+// Remove a file or directory using removeFile (recommended)
+const result = await s3Controller.removeFile("data/myfile.txt");
+console.log(result.message);
+
+// List files
+const files = await s3Controller.listFiles("data/");
+files.forEach(file => console.log(`File: ${file.name}, Size: ${file.size || 'N/A'}`));
+```
+
 ### 1. Using the Admin API (Minio-based S3 Servers)
 
 For Minio-based S3 servers, Hypha can use the admin API to create user-specific credentials. Once you have the credentials, you can use any standard S3 client, such as [Cyberduck](https://cyberduck.io/), to access the S3 storage.
@@ -378,6 +457,211 @@ async function uploadFileToHypha(file, fileUploadUrl, token) {
 ```
 
 <!-- tabs:end -->
+
+## Uploading Large Files with Multipart Upload
+
+For large files (> 100MB), Hypha supports multipart uploads that allow files to be uploaded in chunks. This provides better performance, reliability, and the ability to resume interrupted uploads.
+
+### Using S3 Service Functions for Multipart Upload
+
+```python
+from hypha_rpc import connect_to_server
+import asyncio
+import os
+import math
+import httpx
+
+# Connect to the S3 service
+api = await connect_to_server({"server_url": "https://hypha.aicell.io"})
+s3_controller = await api.get_service("public/s3-storage")
+workspace = api.config["workspace"]
+
+async def upload_large_file_multipart(file_path, s3_file_path):
+    """Upload a large file using multipart upload."""
+    
+    # Calculate optimal chunk size (minimum 5MB, recommended 100MB)
+    file_size = os.path.getsize(file_path)
+    min_chunk_size = 5 * 1024 * 1024  # 5MB
+    recommended_chunk_size = 100 * 1024 * 1024  # 100MB
+    chunk_size = max(min_chunk_size, min(recommended_chunk_size, file_size // 10))
+    part_count = math.ceil(file_size / chunk_size)
+    
+    print(f"File size: {file_size / (1024*1024):.1f}MB")
+    print(f"Chunk size: {chunk_size / (1024*1024):.1f}MB")
+    print(f"Number of parts: {part_count}")
+    
+    # Step 1: Start multipart upload
+    multipart_info = await s3_controller.put_file_start_multipart(
+        file_path=s3_file_path,
+        part_count=part_count,
+        expires_in=3600
+    )
+    
+    upload_id = multipart_info["upload_id"]
+    part_urls = multipart_info["parts"]
+    
+    # Step 2: Upload all parts in parallel
+    async def upload_part(part_info):
+        """Upload a single part."""
+        part_number = part_info["part_number"]
+        url = part_info["url"]
+        
+        # Calculate chunk boundaries
+        start_pos = (part_number - 1) * chunk_size
+        end_pos = min(start_pos + chunk_size, file_size)
+        chunk_size_actual = end_pos - start_pos
+        
+        # Read chunk from file
+        with open(file_path, "rb") as f:
+            f.seek(start_pos)
+            chunk_data = f.read(chunk_size_actual)
+        
+        # Upload chunk
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.put(url, data=chunk_data)
+            if response.status_code != 200:
+                raise Exception(f"Failed to upload part {part_number}")
+                
+            return {
+                "part_number": part_number,
+                "etag": response.headers["ETag"].strip('"').strip("'")
+            }
+    
+    # Upload parts in parallel with controlled concurrency
+    max_concurrent = min(10, part_count)
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    async def upload_with_semaphore(part_info):
+        async with semaphore:
+            return await upload_part(part_info)
+    
+    print(f"Uploading {part_count} parts with max {max_concurrent} concurrent uploads...")
+    uploaded_parts = await asyncio.gather(*[upload_with_semaphore(part) for part in part_urls])
+    
+    # Step 3: Complete multipart upload
+    result = await s3_controller.put_file_complete_multipart(
+        upload_id=upload_id,
+        parts=uploaded_parts
+    )
+    
+    print("Multipart upload completed successfully!")
+    return result
+
+# Example usage
+# await upload_large_file_multipart("large_video.mp4", "uploads/large_video.mp4")
+```
+
+### Using HTTP Endpoints for Multipart Upload
+
+You can also use the HTTP endpoints directly for more control:
+
+```python
+import asyncio
+import httpx
+import os
+import math
+
+SERVER_URL = "https://hypha.aicell.io"
+workspace = "my-workspace"
+token = "your-token"  # Get from api.generate_token()
+
+async def upload_large_file_http(file_path, remote_path):
+    """Upload large file using HTTP multipart endpoints."""
+    
+    file_size = os.path.getsize(file_path)
+    chunk_size = 100 * 1024 * 1024  # 100MB chunks
+    part_count = math.ceil(file_size / chunk_size)
+    
+    # Step 1: Create multipart upload
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{SERVER_URL}/{workspace}/files/create-multipart-upload",
+            params={
+                "path": remote_path,
+                "part_count": part_count,
+                "expires_in": 3600
+            },
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        if response.status_code != 200:
+            raise Exception(f"Failed to create multipart upload: {response.text}")
+            
+        upload_data = response.json()
+        upload_id = upload_data["upload_id"]
+        parts = upload_data["parts"]
+
+    # Step 2: Upload parts in parallel
+    async def upload_part(part_info):
+        part_number = part_info["part_number"]
+        url = part_info["url"]
+        
+        start_pos = (part_number - 1) * chunk_size
+        end_pos = min(start_pos + chunk_size, file_size)
+        
+        with open(file_path, "rb") as f:
+            f.seek(start_pos)
+            chunk_data = f.read(end_pos - start_pos)
+        
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.put(url, data=chunk_data)
+            if response.status_code != 200:
+                raise Exception(f"Failed to upload part {part_number}")
+                
+            return {
+                "part_number": part_number,
+                "etag": response.headers["ETag"].strip('"').strip("'")
+            }
+    
+    uploaded_parts = await asyncio.gather(*[upload_part(part) for part in parts])
+
+    # Step 3: Complete multipart upload
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{SERVER_URL}/{workspace}/files/complete-multipart-upload",
+            json={
+                "upload_id": upload_id,
+                "parts": uploaded_parts
+            },
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+        )
+        
+        if response.status_code != 200:
+            raise Exception(f"Failed to complete multipart upload: {response.text}")
+            
+        return response.json()
+
+# Example usage
+# await upload_large_file_http("large_dataset.zip", "data/large_dataset.zip")
+```
+
+### Multipart Upload Best Practices
+
+- **File Size Threshold**: Use multipart uploads for files larger than 100MB
+- **Chunk Size**: 
+  - Minimum: 5MB (S3 requirement, except for the last part)
+  - Recommended: 100MB for optimal performance
+  - Maximum parts: 10,000 per upload
+- **Concurrency**: Limit concurrent uploads to avoid overwhelming the server (recommended: 10 concurrent parts)
+- **Error Handling**: Implement retry logic for individual part uploads
+- **Cleanup**: If an upload fails, the multipart upload session will automatically expire after the specified time
+- **Progress Tracking**: Track upload progress by monitoring completed parts
+
+### When to Use Each Method
+
+1. **Single File Upload** (`/files/{path}`): 
+   - Files < 100MB
+   - Simple upload scenarios
+   - Direct streaming from client to S3
+
+2. **Multipart Upload** (`/files/create-multipart-upload` + `/files/complete-multipart-upload`):
+   - Files > 100MB
+   - Need upload resumption capability
+   - Want parallel chunk uploads for faster performance
+   - Network conditions are unreliable
 
 ## Summary
 
