@@ -80,9 +80,11 @@ async def test_mcp_streamable_http_round_trip_service_consistency(fastapi_server
                 "visibility": "public",
                 "run_in_executor": True,
             },
-            "tools": [calculate_tool],
-            "resources": [
-                {
+            "tools": {
+                "calculate_tool": calculate_tool
+            },
+            "resources": {
+                "resource://streamable-http-test": {
                     "uri": "resource://streamable-http-test",
                     "name": "Streamable HTTP Test Resource", 
                     "description": "A test resource for streamable HTTP transport",
@@ -90,15 +92,15 @@ async def test_mcp_streamable_http_round_trip_service_consistency(fastapi_server
                     "mime_type": "text/plain",
                     "read": resource_read,
                 }
-            ],
-            "prompts": [
-                {
+            },
+            "prompts": {
+                "streamable_http_prompt": {
                     "name": "streamable_http_prompt",
                     "description": "A test prompt for streamable HTTP transport",
                     "tags": ["test", "streamable-http", "prompt"],
                     "read": prompt_read,
                 }
-            ],
+            },
         }
     )
 
@@ -159,8 +161,8 @@ async def test_mcp_streamable_http_round_trip_service_consistency(fastapi_server
     
     # Test tool functionality consistency
     print("  Testing calculate_tool...")
-    original_tool = original_service.tools[0]
-    mcp_tool = mcp_service.tools[0]
+    original_tool = original_service.tools["calculate_tool"]
+    mcp_tool = mcp_service.tools["calculate_tool"]
     
     # Test the tools with the same parameters
     original_result = await original_tool(operation="add", a=5, b=3)
@@ -170,8 +172,8 @@ async def test_mcp_streamable_http_round_trip_service_consistency(fastapi_server
     
     # Test resource functionality consistency
     print("  Testing resource access...")
-    original_resource = original_service.resources[0]
-    mcp_resource = mcp_service.resources[0]
+    original_resource = original_service.resources["resource://streamable-http-test"]
+    mcp_resource = mcp_service.resources["resource://streamable-http-test"]
     
     original_resource_content = await original_resource["read"]()
     mcp_resource_content = await mcp_resource["read"]()
@@ -180,8 +182,8 @@ async def test_mcp_streamable_http_round_trip_service_consistency(fastapi_server
     
     # Test prompt functionality consistency  
     print("  Testing prompt access...")
-    original_prompt = original_service.prompts[0]
-    mcp_prompt = mcp_service.prompts[0]
+    original_prompt = original_service.prompts["streamable_http_prompt"]
+    mcp_prompt = mcp_service.prompts["streamable_http_prompt"]
     
     original_prompt_content = await original_prompt["read"](task="testing", difficulty="easy")
     mcp_prompt_content = await mcp_prompt["read"](task="testing", difficulty="easy")
@@ -381,13 +383,13 @@ async def test_real_deepwiki_mcp_server_validation(fastapi_server, test_user_tok
     assert deepwiki_service.prompts is not None
     
     # Test actual tool functionality
-    assert len(deepwiki_service.tools) > 0
-    tools = {}
-    for tool in deepwiki_service.tools:
-        tools[tool.__name__] = tool
-    print(f"Available Tools in DeepWiki: {tools}")
+    assert len(deepwiki_service.tools.keys()) > 0
 
-    read_wiki_structure = tools["read_wiki_structure"]
+    print(f"Available Tools in DeepWiki: {deepwiki_service.tools}")
+
+    read_wiki_structure = deepwiki_service.tools.read_wiki_structure
+    assert read_wiki_structure.__schema__ is not None
+    assert read_wiki_structure.__schema__["parameters"]["properties"]["repoName"] is not None
     # Test with simple parameters - DeepWiki tools likely have search functionality
     test_result = await read_wiki_structure(repoName="amun-ai/hypha")
     print(f"Read wiki structure result: {test_result}")

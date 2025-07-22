@@ -2451,10 +2451,12 @@ async def test_browser_cache_integration(fastapi_server, test_user_token):
             ],
             "cookies": {"test": "value"},
             "local_storage": {"theme": "dark"},
-            "authorization_token": "Bearer test-token"
+            "authorization_token": "Bearer test-token",
+            "startup_config": {
+                "wait_for_service": False
+            }
         },
         files=[],
-        wait_for_service=False,
         stage=False,  # Actually start to test caching
         overwrite=True,
     )
