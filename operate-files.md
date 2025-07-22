@@ -180,7 +180,7 @@ async def operate_files_with_aioboto(info):
         await obj.upload_file("/tmp/hello.txt")
 
         # Generate a presigned URL and download the file
-        url = await s3controller.generate_presigned_url("hello.txt")
+        url = await s3controller.get_file("hello.txt")
         print(url)
 
 # Example usage
@@ -218,7 +218,7 @@ def operate_files_with_boto(info):
         print(obj.key)
 
     # Generate a presigned URL and download the file
-    url = s3controller.generate_presigned_url("hello.txt")
+    url = s3controller.get_file("hello.txt")
     print(f"Presigned URL: {url}")
 
 # Example usage
@@ -287,8 +287,8 @@ from hypha_rpc import connect_to_server
 
 api = await connect_to_server({"server_url": "https://hypha.aicell.io"})
 s3controller = await api.get_service("public/s3-storage")
-upload_url = await s3controller.generate_presigned_url("myfolder/myfile.txt", client_method="put_object")
-download_url = await s3controller.generate_presigned_url("myfolder/myfile.txt", client_method="get_object")
+upload_url = await s3controller.put_file("myfolder/myfile.txt")
+download_url = await s3controller.get_file("myfolder/myfile.txt")
 ```
 
 ```javascript
@@ -309,7 +309,7 @@ import asyncio
 
 api = await connect_to_server({"server_url": "https://hypha.aicell.io"})
 s3controller = await api.get_service("public/s3-storage")
-upload_url = await s3controller.generate_presigned_url("myfolder/myfile.txt", client_method="put_object")
+upload_url = await s3controller.put_file("myfolder/myfile.txt")
 
 async def upload_file(presigned_url: str, file_path: str):
     async with httpx.AsyncClient() as client:
@@ -331,7 +331,7 @@ import requests
 
 api = await connect_to_server({"server_url": "https://hypha.aicell.io"})
 s3controller = await api.get_service("public/s3-storage")
-upload_url = await s3controller.generate_presigned_url("myfolder/myfile.txt", client_method="put_object")
+upload_url = await s3controller.put_file("myfolder/myfile.txt")
 
 def upload_file(presigned_url, file_path):
     with open(file_path, "rb") as file:
@@ -682,7 +682,6 @@ s3controller = await api.get_service("public/s3-storage")
 upload_url = await s3controller.put_file(
     file_path="temp/data.txt",
     ttl=3600,  # File will be deleted after 1 hour
-    context={"ws": "my-workspace", "user": {"id": "user123"}}
 )
 
 # Upload the file
@@ -700,7 +699,6 @@ multipart_info = await s3controller.put_file_start_multipart(
     file_path="temp/large_file.zip",
     part_count=5,
     ttl=7200,  # File will be deleted after 2 hours
-    context={"ws": "my-workspace", "user": {"id": "user123"}}
 )
 
 # Upload parts and complete as usual
@@ -708,7 +706,6 @@ multipart_info = await s3controller.put_file_start_multipart(
 result = await s3controller.put_file_complete_multipart(
     upload_id=multipart_info["upload_id"],
     parts=uploaded_parts,
-    context={"ws": "my-workspace", "user": {"id": "user123"}}
 )
 ```
 
@@ -737,7 +734,7 @@ result = await s3controller.put_file_complete_multipart(
 
 ## API Reference
 
-### `put_file(file_path: str, use_proxy: bool = None, use_local_url: bool = False, expires_in: float = 3600, ttl: int = None, context: dict = None) -> str`
+### `put_file(file_path: str, use_proxy: bool = None, use_local_url: bool = False, expires_in: float = 3600, ttl: int = None) -> str`
 
 Generates a presigned URL for uploading a file to S3. The URL can be used with an HTTP `PUT` request to upload the file.
 
@@ -748,9 +745,6 @@ Generates a presigned URL for uploading a file to S3. The URL can be used with a
 - `use_local_url`: Optional. A boolean to control whether to generate URLs for local/cluster-internal access. Defaults to `False`. When `True`, generates URLs suitable for access within the cluster.
 - `expires_in`: Optional. A float number for the expiration time of the S3 presigned URL in seconds. Defaults to 3600 (1 hour).
 - `ttl`: Optional. Time-to-live in seconds for the uploaded file. If specified and greater than 0, the file will be automatically deleted after this time period. Defaults to `None` (no automatic deletion).
-- `context`: Required. A dictionary containing workspace and user information. Must include:
-  - `ws`: The workspace ID
-  - `user`: User information dictionary
 
 **Returns:** A presigned URL string for uploading the file.
 
@@ -761,7 +755,6 @@ Generates a presigned URL for uploading a file to S3. The URL can be used with a
 upload_url = await s3controller.put_file(
     file_path="temp/data.csv",
     ttl=3600,  # Delete after 1 hour
-    context={"ws": "my-workspace", "user": {"id": "user123"}}
 )
 
 # Upload the file using the presigned URL
@@ -796,7 +789,6 @@ Generates a presigned URL for downloading a file from S3.
 # Get download URL for a file
 download_url = await s3controller.get_file(
     file_path="data/myfile.txt",
-    context={"ws": "my-workspace", "user": {"id": "user123"}}
 )
 
 # Download the file
@@ -843,7 +835,6 @@ multipart_info = await s3controller.put_file_start_multipart(
     file_path="uploads/large_video.mp4",
     part_count=5,
     ttl=7200,  # Delete after 2 hours
-    context={"ws": "my-workspace", "user": {"id": "user123"}}
 )
 
 upload_id = multipart_info["upload_id"]
@@ -902,7 +893,6 @@ Completes a multipart upload by combining all uploaded parts into the final file
 result = await s3controller.put_file_complete_multipart(
     upload_id=upload_id,
     parts=uploaded_parts,  # From the previous upload_part operations
-    context={"ws": "my-workspace", "user": {"id": "user123"}}
 )
 
 if result["success"]:
@@ -942,14 +932,12 @@ Removes a file or directory from S3. This function combines the functionality of
 # Remove a file
 result = await s3controller.remove_file(
     path="data/myfile.txt",
-    context={"ws": "my-workspace", "user": {"id": "user123"}}
 )
 print(result["message"])
 
 # Remove an entire directory
 result = await s3controller.remove_file(
     path="data/",
-    context={"ws": "my-workspace", "user": {"id": "user123"}}
 )
 print(result["message"])
 ```
@@ -978,14 +966,11 @@ Lists files and directories in the specified path.
 
 ```python
 # List files in the root directory
-files = await s3controller.list_files(
-    context={"ws": "my-workspace", "user": {"id": "user123"}}
-)
+files = await s3controller.list_files()
 
 # List files in a specific directory
 files = await s3controller.list_files(
     path="data/",
-    context={"ws": "my-workspace", "user": {"id": "user123"}}
 )
 
 for file in files:
@@ -997,6 +982,8 @@ for file in files:
 ---
 
 ### `generate_presigned_url(path: str, client_method: str = "get_object", expiration: int = 3600, context: dict = None) -> str`
+
+**Deprecated.**  This function is deprecated, please use `put_file` and `get_file` instead.
 
 Generates a presigned URL for direct S3 operations. This is a lower-level function that provides more control over S3 operations.
 
@@ -1021,14 +1008,12 @@ Generates a presigned URL for direct S3 operations. This is a lower-level functi
 download_url = await s3controller.generate_presigned_url(
     path="data/myfile.txt",
     client_method="get_object",
-    context={"ws": "my-workspace", "user": {"id": "user123"}}
 )
 
 # Generate an upload URL
 upload_url = await s3controller.generate_presigned_url(
     path="data/myfile.txt",
     client_method="put_object",
-    context={"ws": "my-workspace", "user": {"id": "user123"}}
 )
 ```
 
@@ -1057,7 +1042,6 @@ Generates S3 credentials for the current user. This is only available for Minio-
 ```python
 # Generate S3 credentials
 credentials = await s3controller.generate_credential(
-    context={"ws": "my-workspace", "user": {"id": "user123"}}
 )
 
 # Use credentials with boto3
