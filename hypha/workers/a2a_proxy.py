@@ -1,4 +1,4 @@
-"""Provide an A2A client worker."""
+"""A2A (Agent to Agent) Proxy Worker for connecting to A2A agents and exposing them as Hypha services."""
 
 import asyncio
 import json
@@ -6,19 +6,18 @@ import logging
 import os
 import sys
 import uuid
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 import httpx
 from hypha_rpc import connect_to_server
-from hypha_rpc.utils.schema import schema_function
-from hypha.workers.base import BaseWorker, WorkerConfig, SessionStatus
+from hypha.core import UserInfo
+from hypha.workers.base import BaseWorker, WorkerConfig, SessionStatus, SessionInfo, SessionNotFoundError, WorkerError
 
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "INFO").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("a2a_client")
+logger = logging.getLogger("a2a_proxy")
 logger.setLevel(LOGLEVEL)
-
-MAXIMUM_LOG_ENTRIES = 2048
 
 # Try to import A2A SDK
 try:
@@ -40,6 +39,10 @@ class A2AClientRunner(BaseWorker):
         super().__init__(server)
         self.controller_id = str(A2AClientRunner.instance_counter)
         A2AClientRunner.instance_counter += 1
+        
+        # Session management
+        self._sessions: Dict[str, SessionInfo] = {}
+        self._session_data: Dict[str, Dict[str, Any]] = {}
 
     @property
     def supported_types(self) -> List[str]:
@@ -56,56 +59,206 @@ class A2AClientRunner(BaseWorker):
         """Return the worker description."""
         return "A2A proxy worker for connecting to A2A agents"
 
-    async def _initialize_worker(self) -> None:
-        """Initialize the A2A client worker."""
-        pass
-
-    async def initialize(self) -> None:
-        """Initialize the A2A client worker."""
-        if not self.initialized:
-            await self.server.register_service(self.get_service())
-            self.initialized = True
-
-    async def _start_session(self, config: WorkerConfig) -> Dict[str, Any]:
-        """Start an A2A client session."""
-        if not A2A_SDK_AVAILABLE:
-            raise RuntimeError("A2A SDK not available. Install with: pip install a2a")
-
-        # Get the A2A agents configuration from metadata
-        a2a_agents = config.metadata.get("a2a_agents", {})
-        if not a2a_agents:
-            raise ValueError("No A2A agents configuration found in metadata")
-
-        # Create user API connection for service registration in user workspace
-        user_api = await connect_to_server({
-            "server_url": config.server_url,
-            "client_id": config.client_id,
-            "workspace": config.workspace,
-            "token": config.token,
-            "method_timeout": 30,
-        })
+    async def compile(self, manifest: dict, files: list, config: dict = None) -> tuple[dict, list]:
+        """Compile A2A agent manifest and files.
         
-        # Store session data
+        This method processes A2A agent configuration:
+        1. Looks for 'source' file containing JSON configuration
+        2. Extracts a2aAgents from the source or manifest
+        3. Updates manifest with proper A2A agent settings
+        4. Generates source file with final configuration
+        """
+        # For A2A agents, check if we need to generate source from manifest
+        if manifest.get("type") == "a2a-agent":
+            # Extract A2A agents configuration
+            a2a_agents = manifest.get("a2aAgents", {})
+            
+            # Look for source file that might contain additional config
+            source_file = None
+            for file_info in files:
+                if file_info.get("name") == "source":
+                    source_file = file_info
+                    break
+            
+            # If source file exists, try to parse it as JSON to extract a2aAgents
+            if source_file:
+                try:
+                    source_content = source_file.get("content", "{}")
+                    source_json = json.loads(source_content) if source_content.strip() else {}
+                    
+                    # Merge agents from source with manifest
+                    if "a2aAgents" in source_json:
+                        source_agents = source_json["a2aAgents"]
+                        # Manifest takes precedence, but use source as fallback
+                        merged_agents = {**source_agents, **a2a_agents}
+                        a2a_agents = merged_agents
+                        
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse source as JSON: {e}")
+            
+            assert a2a_agents, "a2aAgents configuration is required"
+            # Create final configuration
+            final_manifest = {
+                "type": "a2a-agent",
+                "a2aAgents": a2a_agents,
+                "name": manifest.get("name", "A2A Agent"),
+                "description": manifest.get("description", "A2A agent application"),
+                "version": manifest.get("version", "1.0.0"),
+            }
+            
+            # Merge any additional manifest fields
+            for key, value in manifest.items():
+                if key not in final_manifest:
+                    final_manifest[key] = value
+            
+            # Generate source file with final configuration
+            source_content = json.dumps(final_manifest, indent=2)
+            
+            # Create new files list, replacing or adding source
+            new_files = [f for f in files if f.get("name") != "source"]
+            new_files.append({
+                "name": "source", 
+                "content": source_content,
+                "format": "text"
+            })
+            final_manifest["wait_for_service"] = "default"
+            return final_manifest, new_files
+        
+        # Not an A2A agent type, return unchanged
+        return manifest, files
+
+    async def start(self, config: Union[WorkerConfig, Dict[str, Any]]) -> str:
+        """Start a new A2A client session."""
+        if not A2A_SDK_AVAILABLE:
+            raise WorkerError("A2A SDK not available. Install with: pip install a2a")
+        
+        # Handle both pydantic model and dict input for RPC compatibility
+        if isinstance(config, dict):
+            config = WorkerConfig(**config)
+        
+        session_id = config.id
+        
+        if session_id in self._sessions:
+            raise WorkerError(f"Session {session_id} already exists")
+        
+        # Create session info
+        session_info = SessionInfo(
+            session_id=session_id,
+            app_id=config.app_id,
+            workspace=config.workspace,
+            client_id=config.client_id,
+            status=SessionStatus.STARTING,
+            app_type=config.manifest.get("type", "unknown"),
+            entry_point=config.entry_point,
+            created_at=datetime.now().isoformat(),
+            metadata=config.manifest
+        )
+        
+        self._sessions[session_id] = session_info
+        
+        try:
+            session_data = await self._start_a2a_session(config)
+            self._session_data[session_id] = session_data
+            
+            # Update session status
+            session_info.status = SessionStatus.RUNNING
+            logger.info(f"Started A2A session {session_id}")
+            
+            return session_id
+            
+        except Exception as e:
+            session_info.status = SessionStatus.FAILED
+            session_info.error = str(e)
+            logger.error(f"Failed to start A2A session {session_id}: {e}")
+            # Clean up failed session
+            self._sessions.pop(session_id, None)
+            raise
+
+    async def _start_a2a_session(self, config: WorkerConfig) -> Dict[str, Any]:
+        """Start A2A client session and connect to configured agents."""
+        if not A2A_SDK_AVAILABLE:
+            raise Exception("A2A SDK not available. Install with: pip install a2a")
+
+        # Call progress callback if provided
+        config.progress_callback({"type": "info", "message": "Initializing A2A proxy worker..."})
+
+        # Extract A2A agents configuration from manifest
+        manifest = config.manifest
+        a2a_agents = manifest.get("a2aAgents", {})
+        
+        if not a2a_agents:
+            raise Exception("No A2A agents configured in manifest")
+
         session_data = {
             "a2a_agents": a2a_agents,
-            "logs": {"log": [], "error": []},
+            "logs": {"info": [], "error": [], "debug": []},
             "a2a_clients": {},
-            "registered_services": [],
-            "_internal": {
-                "user_api": user_api
-            }
+            "services": []
         }
-
-        # Connect to each A2A agent and register unified services
-        for agent_name, agent_config in a2a_agents.items():
-            await self._connect_and_register_a2a_service(session_data, agent_name, agent_config)
-
-        # Log successful startup
-        session_data["logs"]["log"].append(f"A2A client session started with {len(a2a_agents)} agents")
         
+        config.progress_callback({"type": "info", "message": "Connecting to Hypha server..."})
+        
+        client = await connect_to_server({
+            "server_url": config.server_url,
+            "client_id": config.client_id,
+            "token": config.token,
+            "workspace": config.workspace,
+        })
+
+        config.progress_callback({"type": "info", "message": f"Connecting to {len(a2a_agents)} A2A agent(s)..."})
+
+        # Connect to each A2A agent
+        for agent_name, agent_config in a2a_agents.items():
+            try:
+                config.progress_callback({"type": "info", "message": f"Connecting to A2A agent: {agent_name}..."})
+                logger.info(f"Connecting to A2A agent: {agent_name}")
+                
+                await self._connect_and_register_a2a_service(session_data, agent_name, agent_config, client, config)
+                
+                session_data["logs"]["info"].append(f"Successfully connected to A2A agent: {agent_name}")
+                logger.info(f"Successfully connected to A2A agent: {agent_name}")
+                config.progress_callback({"type": "info", "message": f"Successfully connected to A2A agent: {agent_name}"})
+                
+            except Exception as e:
+                error_msg = f"Failed to connect to A2A agent {agent_name}: {str(e)}"
+                session_data["logs"]["error"].append(error_msg)
+                logger.error(error_msg)
+                config.progress_callback({"type": "error", "message": error_msg})
+                # For single agent configs, fail fast instead of continuing
+                if len(a2a_agents) == 1:
+                    raise Exception(error_msg)
+                # Continue with other agents even if one fails
+                continue
+        
+        config.progress_callback({"type": "info", "message": "Registering default service..."})
+
+        # register the default service
+        await client.register_service(
+            {
+                "id": "default",
+                "name": "default",
+                "description": "Default service",
+                "setup": lambda: None,
+            }
+        )
+
+        if not session_data["a2a_clients"]:
+            # Provide more specific error message
+            all_errors = session_data["logs"]["error"]
+            if all_errors:
+                last_error = all_errors[-1]
+                error_msg = f"Failed to connect to any A2A agents. Last error: {last_error}"
+                config.progress_callback({"type": "error", "message": error_msg})
+                raise Exception(error_msg)
+            else:
+                error_msg = "Failed to connect to any A2A agents"
+                config.progress_callback({"type": "error", "message": error_msg})
+                raise Exception(error_msg)
+
+        config.progress_callback({"type": "success", "message": f"A2A proxy initialized successfully with {len(session_data['a2a_clients'])} agent(s)"})
         return session_data
 
-    async def _connect_and_register_a2a_service(self, session_data: dict, agent_name: str, agent_config: dict):
+    async def _connect_and_register_a2a_service(self, session_data: dict, agent_name: str, agent_config: dict, client, config: WorkerConfig = None):
         """Connect to A2A agent and register a unified service."""
         try:
             agent_url = agent_config.get("url")
@@ -116,21 +269,24 @@ class A2AClientRunner(BaseWorker):
 
             logger.info(f"Connecting to A2A agent {agent_name} at {agent_url}")
             
+            if config:
+                config.progress_callback({"type": "info", "message": f"Discovering capabilities from {agent_name}..."})
+            
             # Create HTTP client for this agent
-            client = httpx.AsyncClient(headers=headers, timeout=30.0)
+            http_client = httpx.AsyncClient(headers=headers, timeout=30.0)
             
             # Store agent info with persistent client
             session_data["a2a_clients"][agent_name] = {
                 "config": agent_config,
                 "url": agent_url,
                 "headers": headers,
-                "client": client
+                "client": http_client
             }
             
             # Resolve agent card and create A2A client
             agent_card_url = f"{agent_url}/.well-known/agent.json"
             resolver = A2ACardResolver(
-                httpx_client=client,
+                httpx_client=http_client,
                 base_url=agent_url,
                 agent_card_path="/.well-known/agent.json"
             )
@@ -143,19 +299,21 @@ class A2AClientRunner(BaseWorker):
             session_data["a2a_clients"][agent_name]["agent_card"] = agent_card
             
             # Create skills as callable functions
-            skills = await self._create_skill_wrappers(session_data, agent_name, agent_card.skills)
+            skills = await self._create_skill_wrappers(session_data, agent_name, agent_card.skills if agent_card.skills else [])
+            
+            logger.info(f"Agent {agent_name}: Found {len(skills)} skills")
+            
+            if config:
+                config.progress_callback({"type": "info", "message": f"Found {len(skills)} skills from {agent_name}"})
+                config.progress_callback({"type": "info", "message": f"Registering services for {agent_name}..."})
             
             # Register the unified A2A service
-            await self._register_unified_a2a_service(session_data, agent_name, agent_card, skills)
-            
-            logger.info(f"Successfully connected to A2A agent {agent_name}")
-            session_data["logs"]["log"].append(f"Connected to A2A agent {agent_name}")
+            await self._register_unified_a2a_service(session_data, agent_name, agent_card, skills, client)
             
         except Exception as e:
             logger.error(f"Failed to connect to A2A agent {agent_name}: {e}", exc_info=True)
             session_data["logs"]["error"].append(f"Failed to connect to {agent_name}: {e}")
-
-
+            raise
 
     def _wrap_skill(self, session_data: dict, agent_name: str, skill_name: str, skill_description: str):
         """Create a skill wrapper function with proper closure."""
@@ -165,11 +323,11 @@ class A2AClientRunner(BaseWorker):
             try:
                 # Get the persistent client and agent card from session data
                 agent_info = session_data["a2a_clients"][agent_name]
-                client = agent_info["client"]
+                http_client = agent_info["client"]
                 agent_card = agent_info["agent_card"]
                 
                 # Create A2A client
-                a2a_client = A2AClient(httpx_client=client, agent_card=agent_card)
+                a2a_client = A2AClient(httpx_client=http_client, agent_card=agent_card)
                 
                 # Create message request
                 message = Message(
@@ -216,24 +374,10 @@ class A2AClientRunner(BaseWorker):
             except Exception as e:
                 logger.error(f"Error calling A2A skill {agent_name}.{skill_name}: {e}", exc_info=True)
                 raise
-
-        # Set function name and schema
-        skill_wrapper.__name__ = skill_name
-        skill_wrapper.__schema__ = {
-            "name": skill_name,
-            "description": skill_description,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "text": {
-                        "type": "string",
-                        "description": "Text message to send to the A2A agent"
-                    }
-                },
-                "required": ["text"]
-            }
-        }
         
+        skill_wrapper.__name__ = skill_name
+        skill_wrapper.__doc__ = skill_description or ""
+
         return skill_wrapper
 
     async def _create_skill_wrappers(self, session_data: dict, agent_name: str, skills: List) -> List:
@@ -250,7 +394,7 @@ class A2AClientRunner(BaseWorker):
                 skill_wrappers.append(skill_wrapper)
                 
                 logger.info(f"Created skill wrapper: {agent_name}.{skill_name}")
-                session_data["logs"]["log"].append(f"Created skill wrapper: {agent_name}.{skill_name}")
+                session_data["logs"]["info"].append(f"Created skill wrapper: {agent_name}.{skill_name}")
 
             except Exception as e:
                 logger.error(f"Failed to create skill wrapper for {skill.name}: {e}", exc_info=True)
@@ -258,7 +402,7 @@ class A2AClientRunner(BaseWorker):
         
         return skill_wrappers
 
-    async def _register_unified_a2a_service(self, session_data: dict, agent_name: str, agent_card, skills: List):
+    async def _register_unified_a2a_service(self, session_data: dict, agent_name: str, agent_card, skills: List, client):
         """Register a unified A2A service with skills."""
         try:
             # Create a run function that handles A2A protocol messages
@@ -277,15 +421,12 @@ class A2AClientRunner(BaseWorker):
                     return f"A2A agent {agent_name} processed: {text_content}"
             
             # Create service configuration
-            service_info = {
+            service_def = {
                 "id": agent_name,  # Use agent name as service ID
-                "name": f"A2A {agent_name.title()} Agent",
-                "description": f"A2A agent for {agent_name}: {agent_card.description}",
-                "type": "a2a",
-                "config": {
-                    "visibility": "public",
-                    "run_in_executor": True,
-                },
+                "name": f"A2A Agent: {agent_name}",
+                "description": f"A2A agent service for {agent_name}",
+                "type": "a2a-agent-proxy",
+                "config": {"visibility": "public"},
                 "skills": skills,
                 "run": a2a_run,  # Add the run function
                 "agent_card": {
@@ -298,136 +439,166 @@ class A2AClientRunner(BaseWorker):
                     } if agent_card.capabilities else {},
                     "defaultInputModes": [str(mode) for mode in agent_card.defaultInputModes] if agent_card.defaultInputModes else [],
                     "defaultOutputModes": [str(mode) for mode in agent_card.defaultOutputModes] if agent_card.defaultOutputModes else [],
-                    "skills": [
-                        {
-                            "id": str(skill.id),
-                            "name": str(skill.name),
-                            "description": str(skill.description),
-                            "tags": [str(tag) for tag in skill.tags] if skill.tags else [],
-                            "examples": [str(example) for example in skill.examples] if skill.examples else []
-                        }
-                        for skill in agent_card.skills
-                    ] if agent_card.skills else []
                 }
             }
-
+            
             # Register the service
-            registered_service = await session_data["_internal"]["user_api"].register_service(service_info)
-            session_data["registered_services"].append(registered_service)
+            await client.register_service(service_def, overwrite=True)
+            session_data["services"].append(service_def["name"])
+            logger.info(f"Registered unified A2A service: {service_def['name']} with ID: {agent_name}")
             
-            logger.info(f"Registered unified A2A service: {agent_name}")
-            logger.info(f"  - Skills: {len(skills)}")
-            
-            session_data["logs"]["log"].append(f"Registered unified A2A service: {agent_name}")
-            session_data["logs"]["log"].append(f"  - Skills: {len(skills)}")
-            
-            await session_data["_internal"]["user_api"].export({
-                "setup": lambda: logger.info(f"A2A agent {agent_name} setup complete")
-            })
-
         except Exception as e:
-            logger.error(f"Failed to register unified A2A service for {agent_name}: {e}", exc_info=True)
-            session_data["logs"]["error"].append(f"Failed to register unified A2A service for {agent_name}: {e}")
+            error_msg = f"Failed to register A2A service for {agent_name}: {e}"
+            session_data["logs"]["error"].append(error_msg)
+            logger.error(error_msg)
+            raise Exception(error_msg)
 
-    async def _stop_session(self, session_id: str) -> None:
-        """Stop an A2A client session."""
-        session_data = self._session_data.get(session_id)
-        if not session_data:
+    async def stop(self, session_id: str) -> None:
+        """Stop an A2A session."""
+        if session_id not in self._sessions:
+            logger.warning(f"A2A session {session_id} not found for stopping, may have already been cleaned up")
             return
-            
-        # Close all HTTP clients
-        for agent_name, agent_info in session_data.get("a2a_clients", {}).items():
-            try:
-                if "client" in agent_info:
-                    await agent_info["client"].aclose()
-                    logger.info(f"Closed HTTP client for agent: {agent_name}")
-            except Exception as e:
-                logger.warning(f"Failed to close HTTP client for agent {agent_name}: {e}")
         
-        # Unregister services using the user API
-        user_api = session_data.get("_internal", {}).get("user_api")
-        for service in session_data.get("registered_services", []):
-            try:
-                if user_api:
-                    await user_api.unregister_service(service["id"])
-                else:
-                    # Fallback to server instance
-                    await self.server.unregister_service(service["id"])
-            except Exception as e:
-                logger.warning(f"Failed to unregister service {service['id']}: {e}")
+        session_info = self._sessions[session_id]
+        session_info.status = SessionStatus.STOPPING
         
-        # Disconnect the user API
-        if user_api:
-            try:
-                await user_api.disconnect()
-            except Exception as e:
-                logger.warning(f"Failed to disconnect user API for session {session_id}: {e}")
-        
-        logger.info(f"Stopped A2A client session: {session_id}")
+        try:
+            session_data = self._session_data.get(session_id)
+            if session_data:
+                # Unregister services
+                services = session_data.get("services", [])
+                for service_name in services:
+                    try:
+                        if self.server:
+                            await self.server.unregister_service(service_name)
+                            logger.info(f"Unregistered service: {service_name}")
+                    except Exception as e:
+                        logger.warning(f"Error unregistering service {service_name}: {e}")
 
-    async def _get_session_logs(
+                # Close all HTTP clients
+                a2a_clients = session_data.get("a2a_clients", {})
+                for agent_name, agent_info in a2a_clients.items():
+                    try:
+                        if "client" in agent_info:
+                            await agent_info["client"].aclose()
+                            logger.info(f"Closed HTTP client for agent: {agent_name}")
+                    except Exception as e:
+                        logger.warning(f"Failed to close HTTP client for agent {agent_name}: {e}")
+            
+            session_info.status = SessionStatus.STOPPED
+            logger.info(f"Stopped A2A session {session_id}")
+            
+        except Exception as e:
+            session_info.status = SessionStatus.FAILED
+            session_info.error = str(e)
+            logger.error(f"Failed to stop A2A session {session_id}: {e}")
+            raise
+        finally:
+            # Cleanup
+            self._sessions.pop(session_id, None)
+            self._session_data.pop(session_id, None)
+
+    async def list_sessions(self, workspace: str) -> List[SessionInfo]:
+        """List all A2A sessions for a workspace."""
+        return [
+            session_info for session_info in self._sessions.values()
+            if session_info.workspace == workspace
+        ]
+
+    async def get_session_info(self, session_id: str) -> SessionInfo:
+        """Get information about an A2A session."""
+        if session_id not in self._sessions:
+            raise SessionNotFoundError(f"A2A session {session_id} not found")
+        return self._sessions[session_id]
+
+    async def get_logs(
         self, 
         session_id: str, 
-        log_type: Optional[str] = None,
+        type: Optional[str] = None,
         offset: int = 0,
         limit: Optional[int] = None
     ) -> Union[Dict[str, List[str]], List[str]]:
-        """Get logs for an A2A client session."""
+        """Get logs for an A2A session."""
+        if session_id not in self._sessions:
+            raise SessionNotFoundError(f"A2A session {session_id} not found")
+
         session_data = self._session_data.get(session_id)
         if not session_data:
-            return {} if log_type is None else []
+            return {} if type is None else []
 
-        logs = session_data.get("logs", {"log": [], "error": []})
+        logs = session_data.get("logs", {})
         
-        if log_type:
-            # Return specific log type
-            target_logs = logs.get(log_type, [])
+        if type:
+            target_logs = logs.get(type, [])
             end_idx = len(target_logs) if limit is None else min(offset + limit, len(target_logs))
             return target_logs[offset:end_idx]
         else:
-            # Return all logs
             result = {}
             for log_type_key, log_entries in logs.items():
                 end_idx = len(log_entries) if limit is None else min(offset + limit, len(log_entries))
                 result[log_type_key] = log_entries[offset:end_idx]
             return result
 
-    # list_sessions method is now inherited from BaseWorker
+    async def prepare_workspace(self, workspace: str) -> None:
+        """Prepare workspace for A2A operations."""
+        logger.info(f"Preparing workspace {workspace} for A2A proxy worker")
+        pass
+
+    async def close_workspace(self, workspace: str) -> None:
+        """Close all A2A sessions for a workspace."""
+        logger.info(f"Closing workspace {workspace} for A2A proxy worker")
+        
+        # Stop all sessions for this workspace
+        sessions_to_stop = [
+            session_id for session_id, session_info in self._sessions.items()
+            if session_info.workspace == workspace
+        ]
+        
+        for session_id in sessions_to_stop:
+            try:
+                await self.stop(session_id)
+            except Exception as e:
+                logger.warning(f"Failed to stop A2A session {session_id}: {e}")
+
+    async def shutdown(self) -> None:
+        """Shutdown the A2A proxy worker."""
+        logger.info("Shutting down A2A proxy worker...")
+        
+        # Stop all sessions
+        session_ids = list(self._sessions.keys())
+        for session_id in session_ids:
+            try:
+                await self.stop(session_id)
+            except Exception as e:
+                logger.warning(f"Failed to stop A2A session {session_id}: {e}")
+        
+        logger.info("A2A proxy worker shutdown complete")
 
     def get_service(self) -> dict:
-        """Get the service definition for the A2A proxy worker."""
+        """Get the service configuration."""
         return self.get_service_config()
 
-    async def _prepare_workspace(self, workspace_id: str) -> None:
-        """Prepare workspace for A2A client operations."""
-        logger.info(f"Preparing workspace {workspace_id} for A2A client operations")
-
-    async def _close_workspace(self, workspace_id: str) -> None:
-        """Close workspace and cleanup A2A client sessions."""
-        logger.info(f"Closing workspace {workspace_id} and cleaning up A2A client sessions")
-        # This is now handled by the base class
 
 async def hypha_startup(server):
-    """Initialize the A2A client worker as a startup function."""
-    a2a_client_runner = A2AClientRunner(server)
-    await a2a_client_runner.initialize()
-    logger.info("A2A client worker registered as startup function") 
+    """Hypha startup function to initialize A2A client."""
+    if A2A_SDK_AVAILABLE:
+        worker = A2AClientRunner(server)
+        await server.register_service(worker.get_service_config())
+        logger.info("A2A client worker initialized and registered")
+    else:
+        logger.warning("A2A library not available, skipping A2A client worker")
 
 
 async def start_worker(server_url, workspace, token):
-    """Start the A2A client worker."""
-    from hypha_rpc import connect_to_server
-    async with connect_to_server(server_url) as server:
-        a2a_client_runner = A2AClientRunner(server)
-        await a2a_client_runner.initialize()
-        logger.info("A2A client worker registered as startup function")
-        await server.serve()
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--server-url", type=str, required=True)
-    parser.add_argument("--workspace", type=str, required=True)
-    parser.add_argument("--token", type=str, required=True)
-    args = parser.parse_args()
-    asyncio.run(start_worker(args.server_url, args.workspace, args.token))
+    """Start A2A worker standalone."""
+    from hypha_rpc import connect
+    
+    if not A2A_SDK_AVAILABLE:
+        logger.error("A2A library not available")
+        return
+    
+    server = await connect(server_url, workspace=workspace, token=token)
+    worker = A2AClientRunner(server.rpc)
+    logger.info(f"A2A worker started, server: {server_url}, workspace: {workspace}")
+    
+    return worker

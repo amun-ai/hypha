@@ -41,23 +41,24 @@ async def test_worker_config_creation():
     from hypha.workers.base import WorkerConfig
     
     config = WorkerConfig(
+        id="test-workspace/test-client",
         client_id="test-client",
         app_id="test-app",
         server_url="http://localhost:8080",
-        public_base_url="http://localhost:8080",
-        local_base_url="http://localhost:8080",
         workspace="test-workspace",
-        app_type="web-python",
         entry_point="index.html",
-        metadata={"test": "value"}
+        artifact_id="test-workspace/test-app",
+        manifest={"test": "value", "type": "web-python"},
+        token="test-token"
     )
     
     assert config.client_id == "test-client"
     assert config.app_id == "test-app"
     assert config.workspace == "test-workspace"
-    assert config.app_type == "web-python"
     assert config.entry_point == "index.html"
-    assert config.metadata == {"test": "value"}
+    assert config.manifest == {"test": "value", "type": "web-python"}
+    assert config.id == "test-workspace/test-client"
+    assert config.artifact_id == "test-workspace/test-app"
     print("✓ WorkerConfig created successfully")
 
 
@@ -116,13 +117,14 @@ async def test_browser_worker_integration(fastapi_server, test_user_token):
     """
     
     # Install and run app (this will use the browser worker for window type)
-    config = await controller.launch(
+    config = await controller.install(
         source=test_app_code,
-        config={"type": "window", "name": "Browser Worker Test"},
+        manifest={"type": "window", "name": "Browser Worker Test"},
         wait_for_service="default",
         timeout=15,  # Reduced from 30
         overwrite=True,
     )
+    config = await controller.start(config.id)
     
     assert "id" in config
     app = await api.get_app(config.id)
@@ -181,13 +183,13 @@ print("Python worker test app registered successfully")
     
     try:
         # Install and run Python app (this will use the python worker for python-eval type)
-        config = await controller.launch(
+        config = await controller.install(
             source=test_python_code,
-            config={"type": "python-eval", "name": "Python Worker Test"},
+            manifest={"type": "python-eval", "name": "Python Worker Test"},
             timeout=5,  # Reduced from 10
             overwrite=True,
         )
-        
+        config = await controller.start(config.id)
         # Check logs
         logs = await controller.get_logs(config.id)
         log_text = " ".join(logs.get("log", []))
@@ -250,7 +252,7 @@ async def test_mcp_worker_integration(fastapi_server, test_user_token):
     
     # Install MCP app
     app_info = await controller.install(
-        config=mcp_config,
+        manifest=mcp_config,
         overwrite=True,
     )
     
@@ -333,7 +335,7 @@ async def test_a2a_worker_integration(fastapi_server, test_user_token):
     
     # Install A2A app
     app_info = await controller.install(
-        config=a2a_config,
+        manifest=a2a_config,
         overwrite=True,
     )
     
@@ -511,9 +513,9 @@ async def test_worker_selection_by_type(fastapi_server, test_user_token):
         # Install the app (worker selection happens automatically)
         app_info = await controller.install(
             source=f"<html><body><script>{test_code}</script></body></html>",
-            config=app_config,
+            manifest=app_config,
             timeout=5,
-            detached=True,
+            wait_for_service=False,
             overwrite=True,
         )
         
@@ -557,13 +559,14 @@ async def test_worker_concurrent_sessions(fastapi_server, test_user_token):
     try:
         # Start multiple sessions concurrently
         for i in range(3):
-            config = await controller.launch(
+            config = await controller.install(
                 source=test_app_code,
-                config={"type": "window", "name": f"Concurrent Test App {i}"},
+                manifest={"type": "window", "name": f"Concurrent Test App {i}"},
                 wait_for_service="default",
                 timeout=10,  # Reduced from 30
                 overwrite=True,
             )
+            config = await controller.start(config.id)
             sessions.append(config)
         
         # Verify all sessions are running
@@ -622,12 +625,13 @@ async def test_worker_error_handling(fastapi_server, test_user_token):
     """
     
     try:
-        config = await controller.launch(
+        config = await controller.install(
             source=bad_app_code,
-            config={"type": "window", "name": "Bad App"},
+            manifest={"type": "window", "name": "Bad App"},
             timeout=5,
             overwrite=True,
         )
+        config = await controller.start(config.id)
         # If it somehow succeeds, stop it
         await controller.stop(config.id)
         print("⚠️ Bad app unexpectedly succeeded")
@@ -647,12 +651,13 @@ async def test_worker_error_handling(fastapi_server, test_user_token):
     """
     
     try:
-        config = await controller.launch(
+        config = await controller.install(
             source=slow_app_code,
-            config={"type": "window", "name": "Slow App"},
+            manifest={"type": "window", "name": "Slow App"},
             timeout=2,  # Short timeout
             overwrite=True,
         )
+        config = await controller.start(config.id)
         await controller.stop(config.id)
         print("⚠️ Slow app unexpectedly succeeded")
     except Exception as e:
@@ -691,7 +696,7 @@ async def test_worker_lifecycle_management(fastapi_server, test_user_token):
     # 1. Install app
     app_info = await controller.install(
         source=test_app_code,
-        config={"type": "window", "name": "Lifecycle Test App"},
+        manifest={"type": "window", "name": "Lifecycle Test App"},
         overwrite=True,
     )
     
@@ -786,21 +791,23 @@ async def test_worker_workspace_isolation(fastapi_server, test_user_token, test_
     });
     """
     
-    config1 = await controller1.launch(
+    config1 = await controller1.install(
         source=test_app_code,
-        config={"type": "window", "name": "Workspace 1 App"},
+        manifest={"type": "window", "name": "Workspace 1 App"},
         wait_for_service="default",
         timeout=10,  # Reduced from 30
         overwrite=True,
     )
+    config1 = await controller1.start(config1.id)
     
-    config2 = await controller2.launch(
+    config2 = await controller2.install(
         source=test_app_code,
-        config={"type": "window", "name": "Workspace 2 App"},
+        manifest={"type": "window", "name": "Workspace 2 App"},
         wait_for_service="default",
         timeout=10,  # Reduced from 30
         overwrite=True,
     )
+    config2 = await controller2.start(config2.id)
     
     # Verify apps are in different workspaces
     app1 = await api1.get_app(config1.id)

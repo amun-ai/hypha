@@ -1,98 +1,356 @@
-# Worker API Documentation
+# Hypha Worker API Documentation
 
 ## Overview
 
-Hypha workers are responsible for executing different types of applications within isolated environments. Creating a worker is simple - you just need to implement a few functions and register them as a service.
+Hypha workers are responsible for executing different types of applications within isolated environments. The worker interface has been simplified to focus on essential functions, making it easy to create custom workers in both Python and JavaScript.
 
-## Simple Worker Functions
+## Hypha Worker Interface
 
-A worker needs to implement these basic functions:
+All workers must implement these core methods:
 
-- `start(config)` - Start a new session
-- `stop(session_id)` - Stop a session  
+- `start(config)` - Start a new session and return session_id
+- `stop(session_id)` - Stop a session
 - `list_sessions(workspace)` - List sessions for a workspace
-- `get_logs(session_id)` - Get logs for a session
+- `get_session_info(session_id)` - Get detailed session information
+- `get_logs(session_id, type, offset, limit)` - Get logs for a session
+- `prepare_workspace(workspace)` - Prepare workspace for operations
+- `close_workspace(workspace)` - Close workspace and cleanup sessions
 
-That's it! No classes or complex inheritance needed.
+Optional methods:
+- `compile(manifest, files, config)` - Compile application files (for build-time processing)
 
-## Python Worker Example
+## Hypha Worker Configuration
 
-Here's a complete Python worker using only functions and dictionaries:
+When `start(config)` is called, the config parameter contains:
 
 ```python
-"""Simple Python worker example."""
+{
+    "id": "workspace/client_id",           # Full session ID
+    "app_id": "my-app",                    # Application ID
+    "workspace": "my-workspace",           # Workspace name
+    "client_id": "unique-client-id",       # Client ID
+    "server_url": "http://localhost:9527", # Server URL
+    "token": "auth-token",                 # Authentication token (optional)
+    "entry_point": "index.html",           # Entry point file (optional)
+    "artifact_id": "workspace/app_id",     # Artifact ID for file access
+    "manifest": {                          # Full application manifest
+        "type": "python-eval",             # Application type
+        "name": "My App",                  # Application name
+        "version": "1.0.0",                # Version
+        "description": "My application",   # Description
+        # ... other manifest fields
+    },
+    "timeout": 30,                         # Optional timeout in seconds
+    "progress_callback": callable          # Optional progress callback
+}
+```
+
+## Hypha Worker Implementation in Python
+
+### Method 1: Using BaseWorker Class (Recommended)
+
+```python
+"""Example worker using BaseWorker class."""
+
+import asyncio
+from datetime import datetime
+from typing import Dict, List, Any, Union, Optional
+from hypha_rpc import connect_to_server
+
+from hypha.workers.base import (
+    BaseWorker, WorkerConfig, SessionInfo, SessionStatus,
+    SessionNotFoundError, WorkerError
+)
+
+class MyCustomWorker(BaseWorker):
+    """Custom worker implementation."""
+    
+    def __init__(self, server=None):
+        super().__init__(server)
+        self._sessions: Dict[str, SessionInfo] = {}
+        self._session_data: Dict[str, Dict[str, Any]] = {}
+    
+    @property
+    def supported_types(self) -> List[str]:
+        """Return list of supported application types."""
+        return ["my-custom-type", "another-type"]
+    
+    @property
+    def worker_name(self) -> str:
+        """Return the worker name."""
+        return "My Custom Worker"
+    
+    @property
+    def worker_description(self) -> str:
+        """Return the worker description."""
+        return "A custom worker for specialized tasks"
+    
+    async def start(self, config: Union[WorkerConfig, Dict[str, Any]]) -> str:
+        """Start a new worker session."""
+        # Handle both dict and WorkerConfig input
+        if isinstance(config, dict):
+            config = WorkerConfig(**config)
+        
+        session_id = config.id
+        
+        if session_id in self._sessions:
+            raise WorkerError(f"Session {session_id} already exists")
+        
+        # Create session info
+        session_info = SessionInfo(
+            session_id=session_id,
+            app_id=config.app_id,
+            workspace=config.workspace,
+            client_id=config.client_id,
+            status=SessionStatus.STARTING,
+            app_type=config.manifest.get("type", "unknown"),
+            entry_point=config.entry_point,
+            created_at=datetime.now().isoformat(),
+            metadata=config.manifest
+        )
+        
+        self._sessions[session_id] = session_info
+        
+        try:
+            # Your custom session startup logic here
+            print(f"Starting session {session_id} for app {config.app_id}")
+            
+            # Access application files if needed
+            server = await connect_to_server({"server_url": config.server_url})
+            artifact_manager = await server.get_service("public/artifact-manager")
+            
+            # Example: Read application files
+            try:
+                file_url = await artifact_manager.get_file(
+                    config.artifact_id, 
+                    file_path="config.json"
+                )
+                # Download and process file...
+                print(f"Found config file: {file_url}")
+            except Exception as e:
+                print(f"No config file found: {e}")
+            
+            # Store session data
+            session_data = {
+                "server": server,
+                "artifact_manager": artifact_manager,
+                "logs": [f"Session {session_id} started"],
+                "custom_data": {"key": "value"}
+            }
+            self._session_data[session_id] = session_data
+            
+            # Update session status
+            session_info.status = SessionStatus.RUNNING
+            print(f"Session {session_id} started successfully")
+            
+            return session_id
+            
+        except Exception as e:
+            session_info.status = SessionStatus.FAILED
+            session_info.error = str(e)
+            # Clean up failed session
+            self._sessions.pop(session_id, None)
+            raise
+    
+    async def stop(self, session_id: str) -> None:
+        """Stop a worker session."""
+        if session_id not in self._sessions:
+            return  # Session not found, already stopped
+        
+        session_info = self._sessions[session_id]
+        session_info.status = SessionStatus.STOPPING
+        
+        try:
+            # Your custom cleanup logic here
+            print(f"Stopping session {session_id}")
+            
+            session_data = self._session_data.get(session_id)
+            if session_data:
+                # Clean up resources
+                if "server" in session_data:
+                    await session_data["server"].disconnect()
+            
+            session_info.status = SessionStatus.STOPPED
+            print(f"Session {session_id} stopped successfully")
+            
+        except Exception as e:
+            session_info.status = SessionStatus.FAILED
+            session_info.error = str(e)
+            raise
+        finally:
+            # Always clean up
+            self._sessions.pop(session_id, None)
+            self._session_data.pop(session_id, None)
+    
+    async def list_sessions(self, workspace: str) -> List[SessionInfo]:
+        """List all sessions for a workspace."""
+        return [
+            session_info for session_info in self._sessions.values()
+            if session_info.workspace == workspace
+        ]
+    
+    async def get_session_info(self, session_id: str) -> SessionInfo:
+        """Get information about a session."""
+        if session_id not in self._sessions:
+            raise SessionNotFoundError(f"Session {session_id} not found")
+        return self._sessions[session_id]
+    
+    async def get_logs(
+        self, 
+        session_id: str, 
+        type: Optional[str] = None,
+        offset: int = 0,
+        limit: Optional[int] = None
+    ) -> Union[Dict[str, List[str]], List[str]]:
+        """Get logs for a session."""
+        if session_id not in self._sessions:
+            raise SessionNotFoundError(f"Session {session_id} not found")
+        
+        session_data = self._session_data.get(session_id, {})
+        logs = session_data.get("logs", [])
+        
+        # Apply offset and limit
+        if limit:
+            logs = logs[offset:offset + limit]
+        else:
+            logs = logs[offset:]
+        
+        if type:
+            return logs
+        else:
+            return {"log": logs, "error": []}
+    
+    async def prepare_workspace(self, workspace: str) -> None:
+        """Prepare workspace for worker operations."""
+        print(f"Preparing workspace {workspace}")
+    
+    async def close_workspace(self, workspace: str) -> None:
+        """Close workspace and cleanup sessions."""
+        print(f"Closing workspace {workspace}")
+        
+        # Stop all sessions for this workspace
+        sessions_to_stop = [
+            session_id for session_id, session_info in self._sessions.items()
+            if session_info.workspace == workspace
+        ]
+        
+        for session_id in sessions_to_stop:
+            try:
+                await self.stop(session_id)
+            except Exception as e:
+                print(f"Failed to stop session {session_id}: {e}")
+
+# Register and start the worker
+async def main():
+    worker = MyCustomWorker()
+    
+    # Connect to Hypha server
+    server = await connect_to_server({
+        "server_url": "http://localhost:9527"
+    })
+    
+    # Register worker as a service
+    service_config = worker.get_service_config()
+    service = await server.register_service(service_config)
+    
+    print(f"Worker registered: {service.id}")
+    print("Worker is running...")
+    
+    # Keep running
+    await server.serve()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+### Method 2: Simple Functions (Minimal Approach)
+
+```python
+"""Simple worker using functions only."""
+
 import asyncio
 from hypha_rpc import connect_to_server
 
-# Simple storage for demo (use proper storage in production)
+# Simple storage for sessions
 sessions = {}
+session_data = {}
 
 async def start(config):
     """Start a new worker session."""
-    session_id = f"{config['workspace']}/{config['client_id']}"
+    session_id = config["id"]
     
     print(f"Starting session {session_id} for app {config['app_id']}")
     
-    # Your custom session startup logic here
-    session_data = {
+    # Get app type from manifest
+    app_type = config["manifest"]["type"]
+    
+    # Store session information
+    session_info = {
         "session_id": session_id,
         "app_id": config["app_id"],
         "workspace": config["workspace"],
         "client_id": config["client_id"],
         "status": "running",
-        "app_type": config.get("app_type", "unknown"),
+        "app_type": app_type,
         "created_at": "2024-01-01T00:00:00Z",
-        "logs": [f"Session {session_id} started"],
-        "metadata": config.get("metadata", {})
+        "entry_point": config.get("entry_point"),
+        "metadata": config["manifest"]
     }
     
-    # Store session data
-    sessions[session_id] = session_data
+    sessions[session_id] = session_info
     
-    return session_data
+    # Connect to artifact manager to access files
+    server = await connect_to_server({"server_url": config["server_url"]})
+    artifact_manager = await server.get_service("public/artifact-manager")
+    
+    # Store session data
+    session_data[session_id] = {
+        "server": server,
+        "artifact_manager": artifact_manager,
+        "logs": [f"Session {session_id} started"]
+    }
+    
+    return session_id
 
 async def stop(session_id):
     """Stop a worker session."""
-    print(f"Stopping session {session_id}")
-    
     if session_id in sessions:
         sessions[session_id]["status"] = "stopped"
-        sessions[session_id]["logs"].append(f"Session {session_id} stopped")
+        # Clean up resources
+        if session_id in session_data:
+            data = session_data[session_id]
+            if "server" in data:
+                await data["server"].disconnect()
+        session_data.pop(session_id, None)
         print(f"Session {session_id} stopped")
-    else:
-        print(f"Session {session_id} not found")
 
 async def list_sessions(workspace):
     """List all sessions for a workspace."""
-    workspace_sessions = []
-    for session_id, session_data in sessions.items():
-        if session_data["workspace"] == workspace:
-            workspace_sessions.append(session_data)
-    return workspace_sessions
-
-async def get_logs(session_id, log_type=None, offset=0, limit=None):
-    """Get logs for a session."""
-    if session_id not in sessions:
-        raise Exception(f"Session {session_id} not found")
-    
-    logs = sessions[session_id]["logs"]
-    
-    # Apply offset and limit
-    if limit:
-        logs = logs[offset:offset+limit]
-    else:
-        logs = logs[offset:]
-    
-    if log_type:
-        return logs
-    else:
-        return {"log": logs, "error": []}
+    return [
+        session for session in sessions.values()
+        if session["workspace"] == workspace
+    ]
 
 async def get_session_info(session_id):
     """Get information about a session."""
     if session_id not in sessions:
         raise Exception(f"Session {session_id} not found")
     return sessions[session_id]
+
+async def get_logs(session_id, type=None, offset=0, limit=None):
+    """Get logs for a session."""
+    if session_id not in session_data:
+        return [] if type else {"log": [], "error": []}
+    
+    logs = session_data[session_id].get("logs", [])
+    
+    # Apply offset and limit
+    if limit:
+        logs = logs[offset:offset + limit]
+    else:
+        logs = logs[offset:]
+    
+    return logs if type else {"log": logs, "error": []}
 
 async def prepare_workspace(workspace):
     """Prepare workspace for worker operations."""
@@ -101,33 +359,30 @@ async def prepare_workspace(workspace):
 async def close_workspace(workspace):
     """Close workspace and cleanup sessions."""
     print(f"Closing workspace {workspace}")
-    
-    # Stop all sessions for this workspace
     sessions_to_stop = [
-        session_id for session_id, session_data in sessions.items()
-        if session_data["workspace"] == workspace
+        session_id for session_id, session in sessions.items()
+        if session["workspace"] == workspace
     ]
-    
     for session_id in sessions_to_stop:
         await stop(session_id)
 
 # Register the worker
-async def register_worker():
-    """Register the worker as a service."""
+async def main():
     server = await connect_to_server({
         "server_url": "http://localhost:9527"
     })
     
     # Register the worker service
     service = await server.register_service({
-        "name": "Simple Python Worker",
+        "id": f"simple-worker-{id(start)}",
+        "name": "Simple Worker",
         "description": "A simple worker implemented with functions",
         "type": "server-app-worker",
         "config": {
             "visibility": "protected",
             "run_in_executor": True,
         },
-        "supported_types": ["python-custom", "simple-task"],
+        "supported_types": ["simple-task", "custom-type"],
         "start": start,
         "stop": stop,
         "list_sessions": list_sessions,
@@ -137,83 +392,329 @@ async def register_worker():
         "close_workspace": close_workspace,
     })
     
-    print(f"Python worker registered: {service.id}")
-    return server
+    print(f"Simple worker registered: {service.id}")
+    await server.serve()
 
-# Start the worker
 if __name__ == "__main__":
-    async def main():
-        server = await register_worker()
-        print("Python worker is running...")
-        # Keep the connection alive
-        await server.serve()
-    
     asyncio.run(main())
 ```
 
-## JavaScript Worker Example
+## Hypha Worker Implementation in Javascript
 
-Here's a complete JavaScript worker using only functions and objects:
+### Method 1: Using Class Structure
+
+```javascript
+// my-worker.js
+const { connectToServer } = require('hypha-rpc');
+
+class MyCustomWorker {
+    constructor() {
+        this.sessions = new Map();
+        this.sessionData = new Map();
+    }
+
+    get supportedTypes() {
+        return ["javascript-custom", "my-js-type"];
+    }
+
+    get workerName() {
+        return "My JavaScript Worker";
+    }
+
+    get workerDescription() {
+        return "A custom JavaScript worker";
+    }
+
+    async start(config) {
+        const sessionId = config.id;
+        
+        console.log(`Starting session ${sessionId} for app ${config.app_id}`);
+        
+        if (this.sessions.has(sessionId)) {
+            throw new Error(`Session ${sessionId} already exists`);
+        }
+
+        // Create session info
+        const sessionInfo = {
+            session_id: sessionId,
+            app_id: config.app_id,
+            workspace: config.workspace,
+            client_id: config.client_id,
+            status: "starting",
+            app_type: config.manifest.type,
+            entry_point: config.entry_point,
+            created_at: new Date().toISOString(),
+            metadata: config.manifest
+        };
+
+        this.sessions.set(sessionId, sessionInfo);
+
+        try {
+            // Connect to artifact manager
+            const server = await connectToServer({server_url: config.server_url});
+            const artifactManager = await server.getService("public/artifact-manager");
+
+            // Example: Access application files
+            try {
+                const fileUrl = await artifactManager.getFile(
+                    config.artifact_id,
+                    {file_path: "package.json"}
+                );
+                console.log(`Found package.json: ${fileUrl}`);
+            } catch (error) {
+                console.log(`No package.json found: ${error.message}`);
+            }
+
+            // Store session data
+            const sessionData = {
+                server: server,
+                artifactManager: artifactManager,
+                logs: [`Session ${sessionId} started`],
+                customData: {key: "value"}
+            };
+            this.sessionData.set(sessionId, sessionData);
+
+            // Update status
+            sessionInfo.status = "running";
+            console.log(`Session ${sessionId} started successfully`);
+
+            return sessionId;
+
+        } catch (error) {
+            sessionInfo.status = "failed";
+            sessionInfo.error = error.message;
+            this.sessions.delete(sessionId);
+            throw error;
+        }
+    }
+
+    async stop(sessionId) {
+        if (!this.sessions.has(sessionId)) {
+            return; // Already stopped
+        }
+
+        const sessionInfo = this.sessions.get(sessionId);
+        sessionInfo.status = "stopping";
+
+        try {
+            console.log(`Stopping session ${sessionId}`);
+
+            const sessionData = this.sessionData.get(sessionId);
+            if (sessionData && sessionData.server) {
+                await sessionData.server.disconnect();
+            }
+
+            sessionInfo.status = "stopped";
+            console.log(`Session ${sessionId} stopped successfully`);
+
+        } catch (error) {
+            sessionInfo.status = "failed";
+            sessionInfo.error = error.message;
+            throw error;
+        } finally {
+            this.sessions.delete(sessionId);
+            this.sessionData.delete(sessionId);
+        }
+    }
+
+    async listSessions(workspace) {
+        const workspaceSessions = [];
+        for (const [sessionId, sessionInfo] of this.sessions) {
+            if (sessionInfo.workspace === workspace) {
+                workspaceSessions.push(sessionInfo);
+            }
+        }
+        return workspaceSessions;
+    }
+
+    async getSessionInfo(sessionId) {
+        if (!this.sessions.has(sessionId)) {
+            throw new Error(`Session ${sessionId} not found`);
+        }
+        return this.sessions.get(sessionId);
+    }
+
+    async getLogs(sessionId, type = null, offset = 0, limit = null) {
+        if (!this.sessions.has(sessionId)) {
+            throw new Error(`Session ${sessionId} not found`);
+        }
+
+        const sessionData = this.sessionData.get(sessionId) || {};
+        let logs = sessionData.logs || [];
+
+        // Apply offset and limit
+        if (limit) {
+            logs = logs.slice(offset, offset + limit);
+        } else {
+            logs = logs.slice(offset);
+        }
+
+        return type ? logs : {log: logs, error: []};
+    }
+
+    async prepareWorkspace(workspace) {
+        console.log(`Preparing workspace ${workspace}`);
+    }
+
+    async closeWorkspace(workspace) {
+        console.log(`Closing workspace ${workspace}`);
+        
+        const sessionsToStop = [];
+        for (const [sessionId, sessionInfo] of this.sessions) {
+            if (sessionInfo.workspace === workspace) {
+                sessionsToStop.push(sessionId);
+            }
+        }
+
+        for (const sessionId of sessionsToStop) {
+            try {
+                await this.stop(sessionId);
+            } catch (error) {
+                console.log(`Failed to stop session ${sessionId}: ${error.message}`);
+            }
+        }
+    }
+
+    getServiceConfig() {
+        return {
+            id: `${this.workerName.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`,
+            name: this.workerName,
+            description: this.workerDescription,
+            type: "server-app-worker",
+            config: {
+                visibility: "protected",
+                run_in_executor: true,
+            },
+            supported_types: this.supportedTypes,
+            start: this.start.bind(this),
+            stop: this.stop.bind(this),
+            list_sessions: this.listSessions.bind(this),
+            get_logs: this.getLogs.bind(this),
+            get_session_info: this.getSessionInfo.bind(this),
+            prepare_workspace: this.prepareWorkspace.bind(this),
+            close_workspace: this.closeWorkspace.bind(this),
+        };
+    }
+}
+
+// Register and start the worker
+async function main() {
+    try {
+        const worker = new MyCustomWorker();
+        
+        const server = await connectToServer({
+            server_url: "http://localhost:9527"
+        });
+
+        const serviceConfig = worker.getServiceConfig();
+        const service = await server.registerService(serviceConfig);
+
+        console.log(`Worker registered: ${service.id}`);
+        console.log("Worker is running...");
+
+        // Keep the process running
+        process.on('SIGINT', async () => {
+            console.log('Shutting down...');
+            await server.disconnect();
+            process.exit(0);
+        });
+
+    } catch (error) {
+        console.error("Failed to start worker:", error);
+        process.exit(1);
+    }
+}
+
+if (require.main === module) {
+    main();
+}
+
+module.exports = MyCustomWorker;
+```
+
+### Method 2: Simple Functions
 
 ```javascript
 // simple-worker.js
-import { connectToServer } from 'hypha-rpc';
+const { connectToServer } = require('hypha-rpc');
 
-// Simple storage for demo (use proper storage in production)
-const sessions = {};
+// Simple storage for sessions
+const sessions = new Map();
+const sessionData = new Map();
 
 async function start(config) {
-    const sessionId = `${config.workspace}/${config.client_id}`;
+    const sessionId = config.id;
     
     console.log(`Starting session ${sessionId} for app ${config.app_id}`);
     
-    // Your custom session startup logic here
-    const sessionData = {
+    // Store session information
+    const sessionInfo = {
         session_id: sessionId,
         app_id: config.app_id,
         workspace: config.workspace,
         client_id: config.client_id,
         status: "running",
-        app_type: config.app_type || "unknown",
+        app_type: config.manifest.type,
         created_at: new Date().toISOString(),
-        logs: [`Session ${sessionId} started`],
-        metadata: config.metadata || {}
+        entry_point: config.entry_point,
+        metadata: config.manifest
     };
     
-    // Store session data
-    sessions[sessionId] = sessionData;
+    sessions.set(sessionId, sessionInfo);
     
-    return sessionData;
+    // Connect to artifact manager
+    const server = await connectToServer({server_url: config.server_url});
+    const artifactManager = await server.getService("public/artifact-manager");
+    
+    // Store session data
+    sessionData.set(sessionId, {
+        server: server,
+        artifactManager: artifactManager,
+        logs: [`Session ${sessionId} started`]
+    });
+    
+    return sessionId;
 }
 
 async function stop(sessionId) {
-    console.log(`Stopping session ${sessionId}`);
-    
-    if (sessions[sessionId]) {
-        sessions[sessionId].status = "stopped";
-        sessions[sessionId].logs.push(`Session ${sessionId} stopped`);
+    if (sessions.has(sessionId)) {
+        const sessionInfo = sessions.get(sessionId);
+        sessionInfo.status = "stopped";
+        
+        // Clean up resources
+        const data = sessionData.get(sessionId);
+        if (data && data.server) {
+            await data.server.disconnect();
+        }
+        
+        sessionData.delete(sessionId);
         console.log(`Session ${sessionId} stopped`);
-    } else {
-        console.log(`Session ${sessionId} not found`);
     }
 }
 
 async function listSessions(workspace) {
     const workspaceSessions = [];
-    for (const [sessionId, sessionData] of Object.entries(sessions)) {
-        if (sessionData.workspace === workspace) {
-            workspaceSessions.push(sessionData);
+    for (const [sessionId, sessionInfo] of sessions) {
+        if (sessionInfo.workspace === workspace) {
+            workspaceSessions.push(sessionInfo);
         }
     }
     return workspaceSessions;
 }
 
-async function getLogs(sessionId, logType = null, offset = 0, limit = null) {
-    if (!sessions[sessionId]) {
+async function getSessionInfo(sessionId) {
+    if (!sessions.has(sessionId)) {
         throw new Error(`Session ${sessionId} not found`);
     }
+    return sessions.get(sessionId);
+}
+
+async function getLogs(sessionId, type = null, offset = 0, limit = null) {
+    if (!sessionData.has(sessionId)) {
+        return type ? [] : {log: [], error: []};
+    }
     
-    let logs = sessions[sessionId].logs;
+    let logs = sessionData.get(sessionId).logs || [];
     
     // Apply offset and limit
     if (limit) {
@@ -222,18 +723,7 @@ async function getLogs(sessionId, logType = null, offset = 0, limit = null) {
         logs = logs.slice(offset);
     }
     
-    if (logType) {
-        return logs;
-    } else {
-        return { log: logs, error: [] };
-    }
-}
-
-async function getSessionInfo(sessionId) {
-    if (!sessions[sessionId]) {
-        throw new Error(`Session ${sessionId} not found`);
-    }
-    return sessions[sessionId];
+    return type ? logs : {log: logs, error: []};
 }
 
 async function prepareWorkspace(workspace) {
@@ -243,9 +733,12 @@ async function prepareWorkspace(workspace) {
 async function closeWorkspace(workspace) {
     console.log(`Closing workspace ${workspace}`);
     
-    // Stop all sessions for this workspace
-    const sessionsToStop = Object.keys(sessions)
-        .filter(sessionId => sessions[sessionId].workspace === workspace);
+    const sessionsToStop = [];
+    for (const [sessionId, sessionInfo] of sessions) {
+        if (sessionInfo.workspace === workspace) {
+            sessionsToStop.push(sessionId);
+        }
+    }
     
     for (const sessionId of sessionsToStop) {
         await stop(sessionId);
@@ -253,7 +746,7 @@ async function closeWorkspace(workspace) {
 }
 
 // Register the worker
-async function registerWorker() {
+async function main() {
     try {
         const server = await connectToServer({
             server_url: "http://localhost:9527"
@@ -261,6 +754,7 @@ async function registerWorker() {
         
         // Register the worker service
         const service = await server.registerService({
+            id: `simple-js-worker-${Date.now()}`,
             name: "Simple JavaScript Worker",
             description: "A simple worker implemented with functions",
             type: "server-app-worker",
@@ -268,7 +762,7 @@ async function registerWorker() {
                 visibility: "protected",
                 run_in_executor: true,
             },
-            supported_types: ["javascript-custom", "simple-task"],
+            supported_types: ["javascript-simple", "custom-js-type"],
             start: start,
             stop: stop,
             list_sessions: listSessions,
@@ -278,82 +772,147 @@ async function registerWorker() {
             close_workspace: closeWorkspace,
         });
         
-        console.log(`JavaScript worker registered: ${service.id}`);
-        return server;
+        console.log(`Simple worker registered: ${service.id}`);
+        console.log("Worker is running...");
+        
+        // Keep the process running
+        process.on('SIGINT', async () => {
+            console.log('Shutting down...');
+            await server.disconnect();
+            process.exit(0);
+        });
         
     } catch (error) {
-        console.error("Failed to register worker:", error);
-        throw error;
+        console.error("Failed to start worker:", error);
+        process.exit(1);
     }
 }
 
-// Start the worker
-registerWorker().then(server => {
-    console.log("JavaScript worker is running...");
-    // Keep the process running
-}).catch(error => {
-    console.error("Worker startup failed:", error);
-    process.exit(1);
-});
-```
-
-## Running the Workers
-
-### Python Worker
-
-1. Save the code as `simple-worker.py`
-2. Install dependencies: `pip install hypha-rpc`
-3. Run: `python simple-worker.py`
-
-### JavaScript Worker
-
-1. Save the code as `simple-worker.js`
-2. Install dependencies: `npm install hypha-rpc`
-3. Run: `node simple-worker.js`
-
-## How It Works
-
-1. **Connect to server**: Use `connect_to_server()` to connect to Hypha
-2. **Define functions**: Implement the required worker functions
-3. **Register as service**: Call `register_service()` with your functions
-4. **That's it!** Your worker is now available to handle app requests
-
-## Configuration
-
-The `config` parameter in the `start()` function contains:
-
-```python
-{
-    "client_id": "unique-client-id",
-    "app_id": "my-app", 
-    "workspace": "my-workspace",
-    "server_url": "http://localhost:9527",
-    "public_base_url": "http://localhost:9527",
-    "local_base_url": "http://localhost:9527",
-    "app_type": "my-app-type",
-    "entry_point": "index.html",
-    "metadata": {"key": "value"},
-    "token": "auth-token",
-    "version": "1.0.0"
+if (require.main === module) {
+    main();
 }
 ```
 
-## Session Data
+## Accessing Application Files
 
-Return session information from `start()` like this:
+Workers can access application files using the artifact manager:
+
+```python
+# Python example
+server = await connect_to_server({"server_url": config["server_url"]})
+artifact_manager = await server.get_service("public/artifact-manager")
+
+# Get file URL
+file_url = await artifact_manager.get_file(
+    config["artifact_id"], 
+    file_path="config.json"
+)
+
+# Download file content
+import httpx
+async with httpx.AsyncClient() as client:
+    response = await client.get(file_url)
+    if response.status_code == 200:
+        content = response.text
+```
+
+```javascript
+// JavaScript example
+const server = await connectToServer({server_url: config.server_url});
+const artifactManager = await server.getService("public/artifact-manager");
+
+// Get file URL
+const fileUrl = await artifactManager.getFile(
+    config.artifact_id,
+    {file_path: "config.json"}
+);
+
+// Download file content
+const response = await fetch(fileUrl);
+if (response.ok) {
+    const content = await response.text();
+}
+```
+
+## Session Management
+
+### Session States
+
+Sessions follow these status transitions:
+- `starting` → `running` → `stopping` → `stopped`
+- `starting` → `failed` (if startup fails)
+- `running` → `failed` (if runtime error occurs)
+
+### Session Information
+
+The `get_session_info()` method returns:
 
 ```python
 {
-    "session_id": "workspace/client-id",
+    "session_id": "workspace/client_id",
     "app_id": "my-app",
-    "workspace": "my-workspace", 
-    "client_id": "client-id",
-    "status": "running",
-    "app_type": "my-app-type",
+    "workspace": "workspace",
+    "client_id": "client_id",
+    "status": "running",  # SessionStatus enum value
+    "app_type": "python-eval",
+    "entry_point": "main.py",
     "created_at": "2024-01-01T00:00:00Z",
-    "logs": ["Session started"],
-    "metadata": {"key": "value"}
+    "metadata": {...},  # Application manifest
+    "error": "error message"  # Only if status is "failed"
 }
 ```
 
-That's all you need to create a custom worker! No complex classes or inheritance required.
+## Compilation Support
+
+Workers can optionally implement a `compile()` method to process application files at install time:
+
+```python
+async def compile(self, manifest: Dict[str, Any], files: List[Dict[str, Any]], config: Optional[Dict[str, Any]] = None) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Compile application manifest and files."""
+    
+    # Process files and manifest as needed
+    processed_manifest = manifest.copy()
+    processed_files = []
+    
+    for file in files:
+        if file["name"].endswith(".js"):
+            # Example: Minify JavaScript files
+            processed_content = minify_js(file["content"])
+            processed_files.append({
+                "name": file["name"],
+                "content": processed_content,
+                "format": file.get("format", "text")
+            })
+        else:
+            processed_files.append(file)
+    
+    # Update manifest if needed
+    processed_manifest["compiled"] = True
+    
+    return processed_manifest, processed_files
+```
+
+## Running Your Hypha Workers
+
+### Python
+```bash
+pip install hypha-rpc
+python my-worker.py
+```
+
+### JavaScript
+```bash
+npm install hypha-rpc
+node my-worker.js
+```
+
+## Key Changes from Previous API
+
+1. **Simplified Interface**: No complex base classes required - implement functions directly
+2. **Standardized Config**: All workers receive the same `WorkerConfig` structure
+3. **Session Management**: Built-in session tracking with `SessionInfo` objects
+4. **Error Handling**: Standardized exceptions (`SessionNotFoundError`, `WorkerError`)
+5. **Type Safety**: Optional Pydantic models for Python workers
+6. **Consistent Returns**: `start()` returns only `session_id`, detailed info via `get_session_info()`
+
+The new worker API is designed to be simple, consistent, and easy to implement while providing all the necessary functionality for managing application sessions.

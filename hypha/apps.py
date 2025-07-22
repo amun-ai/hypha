@@ -6,26 +6,25 @@ import sys
 import multihash
 import asyncio
 import logging
+import yaml
 import sys
 import time
 from pathlib import Path
+import base64
 
-from hypha import main_version
+from hypha import hypha_rpc_version
 from jinja2 import Environment, PackageLoader, select_autoescape
 from typing import Any, Dict, List, Optional, Union
 from hypha.core import UserInfo, UserPermission, ServiceInfo, ApplicationManifest, AutoscalingConfig, RedisRPCConnection
 from hypha.utils import (
     random_id,
-    PLUGIN_CONFIG_FIELDS,
-    safe_join,
 )
 import base58
 import random
-from hypha.plugin_parser import convert_config_to_artifact, parse_imjoy_plugin
+from hypha.plugin_parser import extract_files_from_source
 from hypha.core import WorkspaceInfo
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
-from hypha.workers.base import WorkerConfig
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "INFO").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -398,17 +397,21 @@ class ServerAppController:
             None,
             description="The source code of the application, URL to fetch the source, or None if using config. Can be raw HTML content, ImJoy/Hypha plugin code, or a URL to download the source from. URLs must be HTTPS or localhost/127.0.0.1."
         ),
-        source_hash: Optional[str] = Field(
-            None,
-            description="Optional hash of the source for verification. Use this to ensure the downloaded source matches the expected content."
-        ),
         manifest: Optional[Dict[str, Any]] = Field(
             None,
             description="Application manifest dictionary containing app metadata and settings. Can include autoscaling config. MUTUALLY EXCLUSIVE with 'config' parameter - when manifest is provided, config must be None. The manifest is stored directly without conversion and must include 'entry_point' field."
         ),
+        app_id: Optional[str] = Field(
+            None,
+            description="The unique identifier of the application to install. This is typically the alias of the application."
+        ),
         config: Optional[Dict[str, Any]] = Field(
             None,
-            description="Application configuration dictionary containing app metadata and settings. Can include startup_config with default startup parameters like timeout, wait_for_service, and stop_after_inactive. Required fields: name, type, version. Optional fields: description, entry_point, requirements, etc. MUTUALLY EXCLUSIVE with 'manifest' parameter - when config is provided, manifest must be None."
+            description="DEPRECATED: Use 'manifest' instead. Application configuration dictionary (alias for manifest for backward compatibility)."
+        ),
+        files: Optional[List[Dict[str, Any]]] = Field(
+            None,
+            description="List of files to include in the application artifact. Each file should be a dictionary with 'name' (file path), 'content' (file content), and optional 'format' ('text', 'json', or 'base64', defaults to 'text'). For 'json' format, content can be a dictionary that gets JSON serialized. For 'base64' format, content will be decoded from base64 or data URL format and stored as binary data."
         ),
         stop_after_inactive: Optional[int] = Field(
             None,
@@ -416,11 +419,7 @@ class ServerAppController:
         ),
         wait_for_service: Optional[str] = Field(
             None,
-            description="The service to wait for before installing the app. If not provided, the app will be installed without waiting for any service."
-        ),
-        detached: bool = Field(
-            False,
-            description="Whether to start the app in detached mode. If True, the app starts without waiting for any service registration or client connection, useful for running scripts that don't need to stay connected."
+            description="The service to wait for before installing the app. If not provided, the app will be installed without waiting for any service, set to `False` to disable it, if not set, the app will wait for the `default` service"
         ),
         workspace: Optional[str] = Field(
             None,
@@ -442,6 +441,14 @@ class ServerAppController:
             False,
             description="Whether to install the app in stage mode. If True, the app will be installed as a staged artifact that can be discarded or committed later."
         ),
+        progress_callback: Any = Field(
+            None,
+            description="Callback function to receive progress updates from the app."
+        ),
+        additional_kwargs: Optional[dict] = Field(
+            None,
+            description="Additional keyword arguments to pass to the app worker."
+        ),
         context: Optional[dict] = Field(
             None,
             description="Additional context information including user and workspace details. Usually provided automatically by the system."
@@ -451,14 +458,11 @@ class ServerAppController:
 
         Args:
             source: The source code of the application, URL to fetch the source, or None if using manifest
-            source_hash: Optional hash of the source for verification
             manifest: Application manifest dictionary containing app metadata and settings.
-                     Mutually exclusive with config parameter. When provided, config must be None.
                      The manifest is stored directly without conversion and must include 'entry_point' field.
-            config: Application configuration dictionary containing app metadata and settings.
-                   Can include startup_config with default startup parameters like timeout,
-                   wait_for_service, and stop_after_inactive.
-                   Mutually exclusive with manifest parameter. When provided, manifest must be None.
+            files: List of files to include in the application artifact. Each file should be a dictionary 
+                   with 'name' (file path), 'content' (file content), and optional 'format' ('text', 'json', or 'base64', defaults to 'text'). 
+                   For 'json' format, content can be a dictionary. For 'base64' format, supports data URL format.
             workspace: Target workspace for installation (defaults to current workspace)
             overwrite: Whether to overwrite existing app with same name
             timeout: Maximum time to wait for installation completion
@@ -467,6 +471,12 @@ class ServerAppController:
         """
         if not workspace:
             workspace = context["ws"]
+            
+        progress_callback = progress_callback or (lambda x: None)
+        progress_callback({
+            "type": "info",
+            "message": "Parsing app manifest...",
+        })
 
         user_info = UserInfo.model_validate(context["user"])
         assert not user_info.is_anonymous, "Anonymous users cannot install apps"
@@ -478,250 +488,147 @@ class ServerAppController:
                 f" to install apps in workspace {workspace_info.id}"
             )
 
+        # Handle backward compatibility: config is an alias for manifest
+        if config is not None and manifest is not None:
+            raise ValueError("Cannot specify both 'config' and 'manifest' parameters. Use 'manifest' (config is deprecated).")
+        if config is not None:
+            manifest = config
+        
+        # Simplified installation: Convert source to files and use worker compilation
+        
+        # Initialize artifact object from manifest or create default
         if manifest:
-            artifact_obj = manifest
-            assert "entry_point" in artifact_obj, "entry_point is required in manifest"
-            file_path = artifact_obj["entry_point"]
-            assert config is None, "config should be None when manifest is provided"
-            # For manifest installations, we need to extract the source from the manifest
-            # and compute the hash from the script content
-            if source:
-                mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
-                mhash = mhash.encode("base58").decode("ascii")
-            else:
-                mhash = None
-            # Set default wait_for_service if not provided, consistent with config path
-            if wait_for_service is None:
-                wait_for_service = "default"
+            artifact_obj = manifest.copy()
         else:
-            wait_for_service = wait_for_service or "default"
-
-            # Determine template type
-            if config and config.get("type"):
-                if config.get("type") == "mcp-server":
-                    # Special handling for MCP server type - no source code needed
-                    template = "mcp-server"
-                elif config.get("type") == "a2a-agent":
-                    # Special handling for A2A agent type - no source code needed
-                    template = "a2a-agent"
-                else:
-                    config["entry_point"] = config.get("entry_point", "index.html")
-                    template = config.get("type") + "." + config["entry_point"]
-            else:
-                template = "hypha"
-
-            # Handle different source types
-            if source and source.startswith("http"):
-                if not (
-                    source.startswith("https://")
-                    or source.startswith("http://localhost")
-                    or source.startswith("http://127.0.0.1")
-                ):
-                    raise Exception("Only secured https urls are allowed: " + source)
-                if source.startswith("https://") and (
-                    source.split("?")[0].endswith(".imjoy.html")
-                    or source.split("?")[0].endswith(".hypha.html")
-                ):
-                    # download source with httpx
-                    async with httpx.AsyncClient() as client:
-                        response = await client.get(source)
-                        assert response.status_code == 200, f"Failed to download {source}"
-                        source = response.text
-                else:
-                    template = None
-            elif source and is_raw_html_content(source):
-                # Handle raw HTML content
-                if not config:
-                    config = {
-                        "name": "Raw HTML App",
-                        "version": "0.1.0",
-                        "type": "window",
-                        "entry_point": "index.html",
-                    }
-                else:
-                    config["entry_point"] = config.get("entry_point", "index.html")
-                    config["type"] = config.get("type", "window")
-                template = "html"
-
-            # Compute multihash of the source code if source exists
-            if source:
-                mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
-                mhash = mhash.encode("base58").decode("ascii")
-                # Verify the source code, useful for downloading from the web
-                if source_hash is not None:
-                    target_mhash = multihash.decode(source_hash.encode("ascii"), "base58")
-                    assert target_mhash.verify(
-                        source.encode("utf-8")
-                    ), f"App source code verification failed (source_hash: {source_hash})."
-            else:
-                mhash = None
-
-            # Process based on template type
-            if template is None:
-                config = config or {}
-                config["entry_point"] = config.get("entry_point", source)
-                entry_point = config["entry_point"]
-            elif template == "html":
-                # For raw HTML, we'll upload the content as-is
-                entry_point = config["entry_point"]
-            elif template == "hypha":
-                if not source:
-                    raise Exception("Source should be provided for hypha app.")
-
-                try:
-                    # Parse the template config
-                    template_config = parse_imjoy_plugin(source)
-                    template_config["source_hash"] = mhash
-                    entry_point = template_config.get("entry_point", "index.html")
-                    template_config["entry_point"] = entry_point
-
-                    # Merge with provided config, giving priority to template config for app metadata
-                    # but allowing additional config like startup_config to be provided
-                    if config:
-                        merged_config = config.copy()
-                        merged_config.update(
-                            template_config
-                        )  # Template config overrides provided config
-                        config = merged_config
-                    else:
-                        config = template_config
-
-                    temp = self.jinja_env.get_template(
-                        safe_join("apps", config["type"] + "." + entry_point)
-                    )
-
-                    source = temp.render(
-                        hypha_main_version=main_version,
-                        hypha_rpc_websocket_mjs=self.local_base_url
-                        + "/assets/hypha-rpc-websocket.mjs",
-                        config={k: config[k] for k in config if k in PLUGIN_CONFIG_FIELDS},
-                        script=config["script"],
-                        requirements=config["requirements"],
-                        local_base_url=self.local_base_url,
-                    )
-                except Exception as err:
-                    raise Exception(
-                        f"Failed to parse or compile the hypha app {mhash}: {source[:100]}...",
-                    ) from err
-            elif template and template not in ["mcp-server", "a2a-agent"]:
-                assert (
-                    "." in template
-                ), f"Invalid template name: {template}, should be a file name with extension."
-                # extract the last dash separated part as the file name
-                temp = self.jinja_env.get_template(safe_join("apps", template))
-                default_config = {
-                    "name": "Untitled App",
-                    "version": "0.1.0",
-                    "local_base_url": self.local_base_url,
-                }
-                default_config.update(config or {})
-                config = default_config
-                entry_point = config.get("entry_point", template)
-                config["entry_point"] = entry_point
-                source = temp.render(
-                    hypha_main_version=main_version,
-                    hypha_rpc_websocket_mjs=self.local_base_url
-                    + "/assets/hypha-rpc-websocket.mjs",
-                    script=source,
-                    source_hash=mhash,
-                    config=config,
-                    requirements=config.get("requirements", []),
-                )
-            elif template == "mcp-server":
-                # Handle MCP server type - no source code needed, config only
-                if not config:
-                    raise Exception("Config with mcpServers is required for mcp-server type.")
-                
-                mcp_servers = config.get("mcpServers", {})
-                if not mcp_servers:
-                    raise Exception("mcpServers configuration is required for mcp-server type.")
-                
-                # Create default config for MCP server
-                default_config = {
-                    "name": "MCP Server",
-                    "version": "0.1.0",
-                    "type": "mcp-server",
-                    "entry_point": "mcp-config.json",
-                    "mcpServers": mcp_servers,
-                }
-                default_config.update(config or {})
-                config = default_config
-                entry_point = config["entry_point"]
-                
-                # Create a JSON configuration file content
-                source = json.dumps({
-                    "type": "mcp-server",
-                    "mcpServers": mcp_servers,
-                    "name": config.get("name", "MCP Server"),
-                    "version": config.get("version", "0.1.0"),
-                    "description": config.get("description", "MCP Server Application")
-                }, indent=2)
-                
-                # Compute multihash of the configuration
-                mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
-                mhash = mhash.encode("base58").decode("ascii")
-                
-            elif template == "a2a-agent":
-                # Handle A2A agent type - no source code needed, config only
-                if not config:
-                    raise Exception("Config with a2aAgents is required for a2a-agent type.")
-                
-                a2a_agents = config.get("a2aAgents", {})
-                if not a2a_agents:
-                    raise Exception("a2aAgents configuration is required for a2a-agent type.")
-                
-                # Create default config for A2A agent
-                default_config = {
-                    "name": "A2A Agent",
-                    "version": "0.1.0",
-                    "type": "a2a-agent",
-                    "entry_point": "a2a-config.json",
-                    "a2aAgents": a2a_agents,
-                }
-                default_config.update(config or {})
-                config = default_config
-                entry_point = config["entry_point"]
-                
-                # Create a JSON configuration file content
-                source = json.dumps({
-                    "type": "a2a-agent",
-                    "a2aAgents": a2a_agents,
-                    "name": config.get("name", "A2A Agent"),
-                    "version": config.get("version", "0.1.0"),
-                    "description": config.get("description", "A2A Agent Application")
-                }, indent=2)
-                
-                # Compute multihash of the configuration
-                mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
-                mhash = mhash.encode("base58").decode("ascii")
-                
-            elif not source and template not in ["mcp-server", "a2a-agent"]:
-                raise Exception("Source or template should be provided.")
-
-            # Create artifact object first (with placeholder app_id)
-            placeholder_app_id = "temp_app_id"
-            if template and template != "html":
-                # Use placeholder URLs that will be updated after we get the actual app_id
-                placeholder_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{placeholder_app_id}/files/{entry_point}"
-                artifact_obj = convert_config_to_artifact(config, placeholder_app_id, placeholder_url)
-            elif template == "html":
-                # Use placeholder URLs that will be updated after we get the actual app_id
-                placeholder_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{placeholder_app_id}/files/{entry_point}"
-                artifact_obj = convert_config_to_artifact(config, placeholder_app_id, placeholder_url)
-            else:
-                artifact_obj = convert_config_to_artifact(config, placeholder_app_id, source)
+            artifact_obj = {
+                "name": "Untitled App",
+                "version": "0.1.0",
+                "type": "hypha"  # Default type
+            }
+        
+        # Compute source hash if source exists
+        mhash = None
+        if source:
+            mhash = multihash.digest(source.encode("utf-8"), "sha2-256")
+            mhash = mhash.encode("base58").decode("ascii")
+            # Verify the source code if hash provided
+            if "source_hash" in artifact_obj:
+                source_hash = artifact_obj["source_hash"]
+                target_mhash = multihash.decode(source_hash.encode("ascii"), "base58")
+                assert target_mhash.verify(
+                    source.encode("utf-8")
+                ), f"App source code verification failed (source_hash: {source_hash})."
+            artifact_obj["source_hash"] = mhash
             
-            # For MCP server type, move mcpServers to root level for easier access
-            if template == "mcp-server" and "mcpServers" in config:
-                artifact_obj["mcpServers"] = config["mcpServers"]
+        # Set default wait_for_service
+        if wait_for_service is None:
+            wait_for_service = "default"
+        
+        # Handle URL downloads
+        if source and source.startswith("http"):
+            if not (
+                source.startswith("https://")
+                or source.startswith("http://localhost")
+                or source.startswith("http://127.0.0.1")
+            ):
+                raise Exception("Only secured https urls are allowed: " + source)
             
-            # For A2A agent type, move a2aAgents to root level for easier access
-            if template == "a2a-agent" and "a2aAgents" in config:
-                artifact_obj["a2aAgents"] = config["a2aAgents"]
+            # Download source for .imjoy.html and .hypha.html files
+            if (source.startswith("https://") and 
+                (source.split("?")[0].endswith(".imjoy.html") or 
+                 source.split("?")[0].endswith(".hypha.html"))):
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(source)
+                    assert response.status_code == 200, f"Failed to download {source}"
+                    source = response.text
+            else:
+                # For other HTTP sources, treat as external URLs
+                artifact_obj["entry_point"] = source.split("?")[0].split("/")[-1]
+                source = None
+        
+        # Handle raw HTML content - convert type to window if needed
+        elif source and is_raw_html_content(source):
+            if artifact_obj.get("type") == "hypha":
+                artifact_obj["type"] = "window"
+            # Set default name if not provided or is default "Untitled App"
+            if artifact_obj.get("name") in [None, "Untitled App"]:
+                artifact_obj["name"] = "Raw HTML App"
 
-        # startup_config is now handled automatically by convert_config_to_artifact
-        # if it exists in the config
+        artifact_obj["entry_point"] = artifact_obj.get("entry_point", "source")
+        # Convert source to files list with enhanced XML parsing
+        app_files = []
+        if source and source.strip().startswith("<"):
+            # Try to extract files from XML source (ImJoy/Hypha format)
+            extracted_files, remaining_source = extract_files_from_source(source)
+            # let's load config.json/yaml and update the artifact_obj
+            for file in extracted_files:
+                if file["name"] == 'manifest.json':
+                    artifact_obj.update(file["content"])
+            # now remove the manifest.json from the extracted_files
+            extracted_files = [file for file in extracted_files if file["name"] != 'manifest.json']
+            
+            # Add extracted files (config.json/yaml, script.js/py, <file> tags)
+            app_files.extend(extracted_files)
+            
+            # If there's remaining source content, add it as source file
+            if remaining_source and remaining_source.strip():
+                app_files.append({
+                    "name": artifact_obj["entry_point"],
+                    "content": remaining_source,
+                    "format": "text"
+                })
+        elif source:
+            # Fall back to treating source as single file
+            app_files.append({
+                "name": artifact_obj["entry_point"],
+                "content": source,
+                "format": "text"
+            })
+        
+        # Add any additional files provided
+        if files:
+            app_files.extend(files)
+        
+        # Always try to get a worker for compilation - this ensures all browser apps are handled consistently
+        app_type = artifact_obj.get("type", "hypha")
+        worker = None
+        
+        if app_type in ["application", None]:
+            raise ValueError("Application type should not be application or None")
+        
+        # Try to get worker that supports this app type
+        worker = await self.get_server_app_workers(app_type, context, random_select=True)
+        if not worker:
+            raise Exception(f"No server app worker found for app type: {app_type}")
+        
+        progress_callback({
+            "type": "info",
+            "message": f"Compiling app using worker {worker.id}...",
+        })
+        # If we have a worker, let it compile the manifest and files
+        if worker and hasattr(worker, 'compile'):
+            try:
+                # Construct compilation config with server URLs and workspace info
+                compile_config = {
+                    "server_url": self.local_base_url or f"http://127.0.0.1:{self.port}",
+                    "public_url": self.public_base_url or f"http://127.0.0.1:{self.port}",
+                    "workspace": context["ws"],
+                    "user": context["user"],
+                    "progress_callback": progress_callback,
+                }
+                
+                artifact_obj, app_files = await worker.compile(artifact_obj, app_files, config=compile_config)
+                logger.info(f"Worker compiled app with type {app_type}")
+            except Exception as e:
+                raise Exception(f"Worker compilation failed: {e}")
+        elif app_type in ["window", "iframe", "web-python", "web-worker", "hypha"]:
+            # All browser-based apps should have a worker available
+            raise Exception(f"No worker available for browser app type: {app_type}")
 
+        progress_callback({
+            "type": "info",
+            "message": "Creating application artifact...",
+        })
         # Store startup_context with workspace and user info from installation time
         artifact_obj["startup_context"] = {
             "ws": context["ws"],
@@ -734,8 +641,8 @@ class ServerAppController:
             startup_config["timeout"] = timeout
         if wait_for_service is not None:
             startup_config["wait_for_service"] = wait_for_service
-        if detached is not None:
-            startup_config["detached"] = detached
+        if additional_kwargs is not None:
+            startup_config["additional_kwargs"] = additional_kwargs
         if stop_after_inactive is not None:
             startup_config["stop_after_inactive"] = stop_after_inactive
         
@@ -751,6 +658,8 @@ class ServerAppController:
         if mhash:
             # Store source hash for singleton checking
             artifact_obj["source_hash"] = mhash
+        
+        assert artifact_obj.get("type") not in ["application", None], "Application type should not be application or None"
 
         ApplicationManifest.model_validate(artifact_obj)
 
@@ -765,6 +674,7 @@ class ServerAppController:
         # Create artifact using the artifact controller - let it generate the alias
         artifact = await self.artifact_manager.create(
             type="application",
+            alias=app_id,
             parent_id=collection_id,
             manifest=artifact_obj,
             overwrite=overwrite,
@@ -775,59 +685,99 @@ class ServerAppController:
         # Now get the app_id from the artifact alias
         app_id = artifact["alias"]
         
-        # Update the artifact object with the correct app_id and URLs
+        # Update the artifact object with the correct app_id
         artifact_obj["id"] = app_id
-        if config:
-            if template and template != "html":
-                public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}"
-                artifact_obj.update(
-                    {
-                        "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}",
-                        "public_url": public_url,
-                    }
-                )
-                file_path = config["entry_point"]
-            elif template == "html":
-                public_url = f"{self.public_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}"
-                artifact_obj.update(
-                    {
-                        "local_url": f"{self.local_base_url}/{workspace_info.id}/artifacts/{app_id}/files/{entry_point}",
-                        "public_url": public_url,
-                    }
-                )
-                file_path = entry_point
         
-        if source:
-            # Update the artifact with the correct app_id and URLs
-            await self.artifact_manager.edit(
-                artifact["id"],
-                stage=True,
-                manifest=artifact_obj,
-                context=context,
-            )
+        # Update the artifact with the compiled manifest
+        await self.artifact_manager.edit(
+            artifact["id"],
+            stage=True,
+            manifest=artifact_obj,
+            context=context,
+        )
+        
+        # Upload all files  
+        
+        for file_info in app_files:
+            file_name = file_info.get("name")
+            file_content = file_info.get("content")
+            file_format = file_info.get("format", "text")
+            
+            if not file_name or file_content is None:
+                raise Exception("Each file must have 'name' and 'content' fields")
+            
+            # Handle different file formats
+            if file_format == "base64":
+                try:
+                    # Check if content is in data URL format (e.g., "data:image/png;base64,...")
+                    if isinstance(file_content, str) and file_content.startswith("data:"):
+                        # Parse data URL format: data:[mediatype][;base64],<data>
+                        if ";base64," in file_content:
+                            # Extract base64 part after the comma
+                            base64_content = file_content.split(";base64,", 1)[1]
+                        else:
+                            raise Exception(f"Data URL format not supported for file {file_name}. Expected format: data:mediatype;base64,content")
+                    else:
+                        # Direct base64 content
+                        base64_content = file_content
+                    
+                    file_data = base64.b64decode(base64_content)
+                except Exception as e:
+                    raise Exception(f"Failed to decode base64 content for file {file_name}: {e}")
+            elif file_format == "json":
+                try:
+                    if isinstance(file_content, (dict, list)):
+                        # Serialize dictionary or list to JSON string
+                        json_string = json.dumps(file_content, indent=2)
+                    elif isinstance(file_content, str):
+                        # Validate that it's valid JSON if it's already a string
+                        json.loads(file_content)  # This will raise exception if invalid
+                        json_string = file_content
+                    else:
+                        raise Exception(f"JSON content must be a dictionary, list, or valid JSON string")
+                    
+                    file_data = json_string.encode('utf-8')
+                except Exception as e:
+                    raise Exception(f"Failed to process JSON content for file {file_name}: {e}")
+            elif file_format == "text":
+                file_data = file_content.encode('utf-8') if isinstance(file_content, str) else file_content
+            else:
+                raise Exception(f"Unsupported file format '{file_format}' for file {file_name}. Must be 'text', 'json', or 'base64'")
+            
+            # Upload the file to the artifact
             put_url = await self.artifact_manager.put_file(
-                artifact["id"], file_path=file_path, use_proxy=False, context=context
+                artifact["id"], file_path=file_name, use_proxy=False, context=context
             )
             async with httpx.AsyncClient() as client:
-                response = await client.put(put_url, data=source)
-                assert response.status_code == 200, f"Failed to upload {file_path}"
+                response = await client.put(put_url, data=file_data)
+                assert response.status_code == 200, f"Failed to upload file {file_name}"
 
         if not stage:
+            progress_callback({
+                "type": "info",
+                "message": "Committing application artifact...",
+            })
             # Commit the artifact if stage is not enabled
             await self.commit_app(
                 app_id,
-                timeout=timeout or 60,
                 version=version,
-                wait_for_service=wait_for_service,
-                stop_after_inactive=stop_after_inactive,
-                detached=detached,
                 context=context,
+                progress_callback=progress_callback,
+                **startup_config
             )
             # After commit, read the updated artifact to get the collected services
             updated_artifact_info = await self.artifact_manager.read(
                 app_id, version=version, context=context
             )
+            progress_callback({
+                "type": "success",
+                "message": "Installation complete!",
+            })
             return updated_artifact_info.get("manifest", artifact_obj)
+        progress_callback({
+            "type": "success",
+            "message": "Installation complete!",
+        })
         return artifact_obj
 
     @schema_method
@@ -918,9 +868,13 @@ class ServerAppController:
             None,
             description="The service to wait for before committing the app. If not provided, the app will be committed without waiting for any service."
         ),
-        detached: bool = Field(
-            False,
-            description="Whether to start the app in detached mode. If True, the app starts without waiting for any service registration or client connection, useful for running scripts that don't need to stay connected."
+        additional_kwargs: Optional[dict] = Field(
+            None,
+            description="Additional keyword arguments to pass to the app worker."
+        ),
+        progress_callback: Any = Field(
+            None,
+            description="Callback function to receive progress updates from the app."
         ),
         context: Optional[dict] = Field(
             None,
@@ -944,8 +898,8 @@ class ServerAppController:
                 startup_config["timeout"] = timeout
             if wait_for_service is not None:
                 startup_config["wait_for_service"] = wait_for_service
-            if detached is not None:
-                startup_config["detached"] = detached
+            if additional_kwargs is not None:
+                startup_config["additional_kwargs"] = additional_kwargs
             if stop_after_inactive is not None:
                 startup_config["stop_after_inactive"] = stop_after_inactive
             
@@ -963,11 +917,9 @@ class ServerAppController:
 
             info = await self.start(
                 app_id,
-                timeout=timeout,
-                wait_for_service=wait_for_service,
                 version="stage",
-                detached=detached,
-                stop_after_inactive=stop_after_inactive,
+                progress_callback=progress_callback,
+                **startup_config,
                 context=context,
             )
             await self.stop(info["id"], context=context)
@@ -977,18 +929,12 @@ class ServerAppController:
                 app_id, version="stage", context=context
             )
 
-        except asyncio.TimeoutError:
-            logger.error("Failed to start the app: %s during installation", app_id)
-            await self.uninstall(app_id, context=context)
-            raise TimeoutError(
-                "Failed to start the app: %s during installation" % app_id
-            )
         except Exception as exp:
-            logger.exception("Failed to start the app: %s during installation", app_id)
+            logger.error("Failed to start the app: %s during installation, error: %s", app_id, exp)
             await self.uninstall(app_id, context=context)
-            raise Exception(
-                f"Failed to start the app: {app_id} during installation, error: {exp}"
-            )
+            # Extract core error without chaining traceback
+            core_error = self._extract_core_error(exp)
+            raise Exception(f"Failed to install app '{app_id}': {core_error}") from None
         await self.artifact_manager.commit(
             app_id, version=version, context=context
         )
@@ -997,8 +943,6 @@ class ServerAppController:
             app_id, version=version, context=context
         )
         return updated_artifact_info.get("manifest", {})
-
-
 
     @schema_method
     async def uninstall(
@@ -1015,7 +959,7 @@ class ServerAppController:
         """Uninstall an application by removing its artifact."""
         # Check if the artifact is in stage mode
         try:
-            artifact_info = await self.artifact_manager.read(app_id, version="stage", context=context)
+            await self.artifact_manager.read(app_id, version="stage", context=context)
             # If we can read the stage version, it means the artifact is in stage mode
             # Use discard instead of delete to revert to the last committed state
             await self.artifact_manager.discard(app_id, context=context)
@@ -1024,64 +968,10 @@ class ServerAppController:
             # Use delete as usual
             await self.artifact_manager.delete(app_id, context=context)
 
-    @schema_method
-    async def launch(
-        self,
-        source: Optional[str] = Field(
-            None,
-            description="The source code of the application, URL to fetch the source, or application configuration. Can be raw HTML content, ImJoy/Hypha plugin code, or a URL to download the source from."
-        ),
-        timeout: float = Field(
-            60,
-            description="Maximum time to wait for launch completion in seconds. Increase for complex apps that take longer to start."
-        ),
-        config: Optional[Dict[str, Any]] = Field(
-            None,
-            description="Application configuration dictionary containing app metadata and settings. Can include startup_config with default startup parameters."
-        ),
-        overwrite: bool = Field(
-            False,
-            description="Whether to overwrite existing app with same name. Set to True to replace existing installations."
-        ),
-        wait_for_service: str = Field(
-            None,
-            description="Name of the service to wait for before considering the app started. If not provided, waits for default service."
-        ),
-        detached: bool = Field(
-            False,
-            description="Whether to start the app in detached mode. If True, the app starts without waiting for any service registration or client connection, useful for running scripts that don't need to stay connected."
-        ),
-        stop_after_inactive: Optional[int] = Field(
-            None,
-            description="Number of seconds to wait before stopping the app due to inactivity. If not provided, uses app configuration."
-        ),
-        context: Optional[dict] = Field(
-            None,
-            description="Additional context information including user and workspace details. Usually provided automatically by the system."
-        ),
-    ) -> dict:
-        """Install and start a server app instance in stage mode."""
-        # Install app in stage mode
-        app_info = await self.install(
-            source=source,
-            config=config,
-            timeout=timeout,
-            overwrite=overwrite,
-            stage=True,
-            detached=detached,
-            context=context,
-        )
-        app_id = app_info["id"]
-        # Start the app in stage mode
-        return await self.start(
-            app_id,
-            timeout=timeout,
-            wait_for_service=wait_for_service,
-            detached=detached,
-            stop_after_inactive=stop_after_inactive,
-            stage=True,
-            context=context,
-        )
+        # stop all the instances of the app
+        for app in self._sessions.values():
+            if app["id"] == app_id:
+                await self.stop(app["id"], raise_exception=False)
 
     async def start_by_type(
         self,
@@ -1089,96 +979,92 @@ class ServerAppController:
         app_type: str,
         client_id: str,
         server_url: str,
-        public_base_url: str,
-        local_base_url: str,
         workspace: str,
         version: str = None,
         token: str = None,
+        timeout: float = None,
         manifest: dict = None,
-        metadata: dict = None,
+        progress_callback: Any = None,
+        additional_kwargs: Optional[dict] = None,
         context: dict = None,
     ):
         """Start the app by type using the appropriate worker."""
+        progress_callback({
+            "type": "info",
+            "message": f"Initializing {app_type} worker..."
+        })
+            
         # Get a random worker that supports this app type
         worker = await self.get_server_app_workers(app_type, context, random_select=True)
         if not worker:
             raise Exception(f"No server app worker found for type: {app_type}")
         
+        progress_callback({
+            "type": "info",
+            "message": f"Starting {app_type} application..."
+        })
+        
         # Get entry point from manifest
         entry_point = manifest.entry_point
-        # For MCP server and A2A agent types, entry point is not required in the traditional sense
-        if app_type not in ["mcp-server", "a2a-agent"]:
-            assert entry_point, f"Entry point not found for app {app_id}."
         
-        # Prepare session metadata
+        # Start the app using the worker with reorganized config
         full_client_id = workspace + "/" + client_id
-        session_metadata = {
+        additional_kwargs = additional_kwargs or {}
+        session_id = await worker.start({
             "id": full_client_id,
             "app_id": app_id,
             "workspace": workspace,
             "client_id": client_id,
             "server_url": server_url,
-            "public_base_url": public_base_url,
-            "local_base_url": local_base_url,
-            "version": version,
-            "token": token,
-            "app_type": app_type,
-            "entry_point": entry_point,
-            "source_hash": manifest.source_hash,
-            "name": manifest.name,
-            "description": manifest.description,
-        }
-        
-        # Update with any additional metadata
-        if metadata:
-            session_metadata.update(metadata)
-        
-        # For MCP server type, add MCP servers configuration to metadata
-        if app_type == "mcp-server":
-            # Access mcpServers from metadata or manifest config
-            mcp_servers = metadata.get("mcpServers", {}) if metadata else {}
-            if not mcp_servers and hasattr(manifest, 'mcpServers'):
-                mcp_servers = manifest.mcpServers
-            if not mcp_servers and hasattr(manifest, 'config') and manifest.config:
-                mcp_servers = manifest.config.get("mcpServers", {})
-            session_metadata["mcp_servers"] = mcp_servers
-        
-        # For A2A agent type, add A2A agents configuration to metadata
-        if app_type == "a2a-agent":
-            # Access a2aAgents from metadata or manifest config
-            a2a_agents = metadata.get("a2aAgents", {}) if metadata else {}
-            if not a2a_agents and hasattr(manifest, 'a2aAgents'):
-                a2a_agents = manifest.a2aAgents
-            if not a2a_agents and hasattr(manifest, 'config') and manifest.config:
-                a2a_agents = manifest.config.get("a2aAgents", {})
-            session_metadata["a2a_agents"] = a2a_agents
-        
-        # Start the app using the worker
-        # Use the new API with WorkerConfig
-        session_data = await worker.start({
-            "client_id": client_id,
-            "app_id": app_id,
-            "server_url": server_url,
-            "public_base_url": public_base_url,
-            "local_base_url": local_base_url,
-            "workspace": workspace,
-            "version": version,
+            "app_files_base_url": f"{server_url}/{workspace}/artifacts/{app_id}/files",
             "token": token,
             "entry_point": entry_point,
-            "app_type": app_type,
-            "metadata": session_metadata,
+            "artifact_id": f"{workspace}/{app_id}",
+            "timeout": timeout,
+            "manifest": manifest,
+            "progress_callback": progress_callback,
+            **additional_kwargs,
         })
         
-        # Store session info
+        # Store minimal session info for apps.py - worker handles detailed session management
         self._sessions[full_client_id] = {
-            **session_metadata,
+            "id": full_client_id,
+            "app_id": app_id,
+            "workspace": workspace,
+            "client_id": client_id,
+            "app_type": app_type,
+            "entry_point": entry_point,
+            "name": manifest.name,
+            "description": manifest.description,
+            "version": version,
+            "source_hash": manifest.source_hash if hasattr(manifest, 'source_hash') else None,
             "_worker": worker,
         }
         
-        # Python eval apps don't need to emit client_connected event since they execute immediately
-        # and we skip the wait logic for them
+        return session_id
+
+    def _extract_core_error(self, error, logs=None):
+        """Extract the core error message from worker logs or exception."""
+        # First try to get meaningful error from worker logs
+        if logs:
+            try:
+                if isinstance(logs, dict) and logs.get('error'):
+                    error_list = logs['error']
+                    if isinstance(error_list, list) and error_list:
+                        return "\n".join(error_list)
+                    else:
+                        return str(error_list)
+                elif isinstance(logs, str):
+                    return logs
+            except (KeyError, IndexError, TypeError, AttributeError):
+                pass
         
-        return session_data
+        # Handle specific exception types
+        if isinstance(error, asyncio.TimeoutError):
+            return "Application startup timed out"
+        
+        # For other exceptions, just return the message without chaining
+        return str(error)
 
     @schema_method
     async def start(
@@ -1207,9 +1093,13 @@ class ServerAppController:
             False,
             description="Whether to start the app from stage mode. If True, starts from the staged version."
         ),
-        detached: bool = Field(
-            False,
-            description="Whether to start the app in detached mode. If True, the app starts without waiting for any service registration or client connection, useful for running scripts that don't need to stay connected."
+        progress_callback: Any = Field(
+            None,
+            description="Callback function to receive progress updates from the app."
+        ),
+        additional_kwargs: Optional[dict] = Field(
+            None,
+            description="Additional keyword arguments to pass to the app worker."
         ),
         context: Optional[dict] = Field(
             None,
@@ -1217,30 +1107,25 @@ class ServerAppController:
         ),
     ):
         """Start the app and keep it alive."""
-        if wait_for_service is True:
-            wait_for_service = "default"
-        if wait_for_service and ":" in wait_for_service:
-            wait_for_service = wait_for_service.split(":")[1]
-
-        # When detached=True, ignore wait_for_service to avoid waiting
-        if detached:
-            wait_for_service = None
+        
+        progress_callback = progress_callback or (lambda x: None)
 
         workspace = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
 
+        # Add "__rlb" suffix to enable load balancing metrics for app clients
+        # Add "_rapp_" prefix to identify app clients
+        # This allows the system to track load only for clients that may have multiple instances
+        client_id = "_rapp_" +random_id(readable=True) + "__rlb"
+
         async with self.store.get_workspace_interface(user_info, workspace) as ws:
-            token = await ws.generate_token()
+            token = await ws.generate_token({"client_id": client_id})
 
         if not user_info.check_permission(workspace, UserPermission.read):
             raise Exception(
                 f"User {user_info.id} does not have permission"
                 f" to run app {app_id} in workspace {workspace}."
             )
-
-        # Add "__rlb" suffix to enable load balancing metrics for app clients
-        # This allows the system to track load only for clients that may have multiple instances
-        client_id = random_id(readable=True) + "__rlb"
 
         # If stage is True, use stage version, otherwise use provided version
         read_version = "stage" if stage else version
@@ -1250,6 +1135,8 @@ class ServerAppController:
         manifest = artifact_info.get("manifest", {})
         manifest = ApplicationManifest.model_validate(manifest)
 
+        if "disabled" in manifest and manifest["disabled"]:
+            raise RuntimeError(f"App {app_id} is disabled")
 
         # Apply default startup config from manifest if not explicitly provided
         startup_config = manifest.startup_config or {}
@@ -1261,13 +1148,16 @@ class ServerAppController:
         if wait_for_service is None and "wait_for_service" in startup_config:
             wait_for_service = startup_config["wait_for_service"]
 
-        # Handle detached parameter from startup_config if not explicitly provided
-        if not detached and "detached" in startup_config:
-            detached = startup_config["detached"]
+        # Convert True to "default" after startup_config is applied
+        if wait_for_service is True:
+            wait_for_service = "default"
+        if wait_for_service and ":" in wait_for_service:
+            wait_for_service = wait_for_service.split(":")[1]
+            
+        if additional_kwargs is None and "additional_kwargs" in startup_config:
+            additional_kwargs = startup_config["additional_kwargs"]
 
-        # When detached=True, override wait_for_service to avoid waiting
-        if detached:
-            wait_for_service = None
+        detached = wait_for_service == False
             
         # Only apply startup_config if stop_after_inactive is None (not explicitly set)
         # Do not override explicitly passed values (including verification timeout)
@@ -1303,7 +1193,7 @@ class ServerAppController:
             "workspace": workspace,
             "client_id": client_id,
             "config": {},
-            "session_data": {},  # Will be updated after start_by_type
+            "session_id": None,  # Will be updated after start_by_type
         }
 
         # Only set up event waiting if not in detached mode
@@ -1317,22 +1207,45 @@ class ServerAppController:
                 if info["id"].startswith(full_client_id + ":"):
                     sinfo = ServiceInfo.model_validate(info)
                     collected_services.append(sinfo)
+                    # Report service registration progress
+                    service_name = info["id"].split(":")[-1]
+                    progress_callback({
+                        "type": "success",
+                        "message": f"Service '{service_name}' registered successfully"
+                    })
+                        
                 if info["id"] == full_client_id + ":default":
                     for key in ["config", "name", "description"]:
                         if info.get(key):
                             app_info[key] = info[key]
+                    progress_callback({
+                        "type": "success",
+                        "message": "Default service configured"
+                    })
                 
                 # Check if this is the target service we're waiting for
-                if wait_for_service and info["id"] == full_client_id + ":" + wait_for_service:
+                if wait_for_service and isinstance(wait_for_service, str) and info["id"] == full_client_id + ":" + wait_for_service:
                     if not event_future.done():
+                        progress_callback({
+                            "type": "success",
+                            "message": f"Target service '{wait_for_service}' found"
+                        })
                         event_future.set_result(info)
                         logger.info(f"Target service found: {info['id']}")
 
             def client_connected(info: dict):
                 logger.info(f"Client connected: {info}")
+                progress_callback({
+                    "type": "success",
+                    "message": "Client connection established"
+                })
                 # Check if this is the target client we're waiting for
                 if not wait_for_service and info["id"] == full_client_id:
                     if not event_future.done():
+                        progress_callback({
+                            "type": "success",
+                            "message": "Application ready"
+                        })
                         event_future.set_result(info)
                         logger.info(f"Target client connected: {info['id']}")
 
@@ -1340,53 +1253,46 @@ class ServerAppController:
             self.event_bus.on_local("service_added", service_added)
             if not wait_for_service:
                 self.event_bus.on_local("client_connected", client_connected)
-        else:
-            # In detached mode, still collect services but don't wait for them
-            def service_added(info: dict):
-                logger.info(f"Service added (detached): {info}")
-                if info["id"].startswith(full_client_id + ":"):
-                    sinfo = ServiceInfo.model_validate(info)
-                    collected_services.append(sinfo)
-                if info["id"] == full_client_id + ":default":
-                    for key in ["config", "name", "description"]:
-                        if info.get(key):
-                            app_info[key] = info[key]
-
-            self.event_bus.on_local("service_added", service_added)
 
         try:
-            # Prepare metadata, including MCP servers configuration for mcp-server apps
-            # and A2A agents configuration for a2a-agent apps
-            metadata = {}
-            if app_type == "mcp-server":
-                # Extract mcpServers from artifact_info (it should be at root level)
-                mcp_servers = artifact_info.get("mcpServers", {})
-                if mcp_servers:
-                    metadata["mcpServers"] = mcp_servers
-            elif app_type == "a2a-agent":
-                # Extract a2aAgents from artifact_info (it should be at root level)
-                a2a_agents = artifact_info.get("a2aAgents", {})
-                if a2a_agents:
-                    metadata["a2aAgents"] = a2a_agents
-                    
             # Start the app using the new start_by_type function
-            session_data = await self.start_by_type(
+            server_url = self.local_base_url or f"http://127.0.0.1:{self.port}"
+            logger.debug(f"Starting app with server_url: {server_url} (local_base_url: {self.local_base_url}, port: {self.port})")
+            session_id = await self.start_by_type(
                 app_id=app_id,
                 app_type=app_type,
                 client_id=client_id,
-                server_url=self.local_base_url,
-                public_base_url=self.public_base_url,
-                local_base_url=self.local_base_url,
+                server_url=server_url,
                 workspace=workspace,
                 version=version,
                 token=token,
+                timeout=timeout,
                 manifest=manifest,
-                metadata=metadata,
+                progress_callback=progress_callback,
+                additional_kwargs=additional_kwargs,
                 context=context,
             )
             
             # Update app_info with session data
-            app_info["session_data"] = session_data
+            app_info["session_id"] = session_id
+            
+            # Progress update after worker starts but before waiting for services
+            if not detached:
+                if wait_for_service:
+                    progress_callback({
+                        "type": "info",
+                        "message": f"Waiting for service '{wait_for_service}'..."
+                    })
+                else:
+                    progress_callback({
+                        "type": "info",
+                        "message": "Waiting for client connection..."
+                    })
+            else:
+                progress_callback({
+                    "type": "success",
+                    "message": "Application started in detached mode"
+                })
 
             # Set up activity tracker after starting the app
             tracker = self.store.get_activity_tracker()
@@ -1413,17 +1319,27 @@ class ServerAppController:
             # Only wait for events if not in detached mode
             if not detached and event_future is not None:
                 # Now wait for the event that we set up before starting the app
-                logger.info(f"Waiting for event after starting app: {full_client_id}, timeout: {timeout}")
+                logger.info(f"Waiting for event after starting app: {full_client_id}, timeout: {timeout}, wait_for_service: {wait_for_service}")
                 await asyncio.wait_for(event_future, timeout=timeout)
-                logger.info(f"Event received for app: {full_client_id}")
-            else:
+                logger.info(f"Successfully received event for starting app: {full_client_id}")
+                await asyncio.sleep(0.1)  # Brief delay to allow service registration
+            
+                progress_callback({
+                    "type": "info",
+                    "message": "Finalizing application startup..."
+                })
+            elif detached:
                 # In detached mode, give a brief moment for services to be registered
                 # but don't wait for them
                 logger.info(f"Started app in detached mode: {full_client_id}")
 
-            await asyncio.sleep(0.1)  # Brief delay to allow service registration
 
             # save the services
+            # service_count = len(collected_services)
+            progress_callback({
+                "type": "info",
+                "message": "Updating application manifest..."
+            })
             manifest.name = manifest.name or app_info.get("name", "Untitled App")
             manifest.description = manifest.description or app_info.get(
                 "description", ""
@@ -1453,51 +1369,36 @@ class ServerAppController:
                 manifest=manifest.model_dump(mode="json"),
                 context=context,
             )
+            
+            progress_callback({
+                "type": "success",
+                "message": "Application manifest updated successfully"
+            })
 
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, Exception) as exp:
+            # Get worker logs for debugging
+            logs = None
             try:
                 session_info = self._sessions.get(full_client_id)
                 if session_info and "_worker" in session_info:
                     logs = await session_info["_worker"].get_logs(full_client_id)
-                else:
-                    logs = "No logs available (session not found)"
             except Exception:
-                logs = "No logs available (session not found)"
+                pass  # Ignore log retrieval errors
+            
+            # Clean up session
             try:
                 session_info = self._sessions.get(full_client_id)
                 if session_info and "_worker" in session_info:
                     await session_info["_worker"].stop(full_client_id)
             except Exception:
-                pass  # Session might not exist or already stopped
-            raise Exception(
-                f"Failed to start the app: {workspace}/{app_id}, timeout reached ({timeout}s), browser logs:\n{logs}"
-            )
-        except Exception as exp:
-            try:
-                session_info = self._sessions.get(full_client_id)
-                if session_info and "_worker" in session_info:
-                    logs = await session_info["_worker"].get_logs(full_client_id)
-                else:
-                    logs = "No logs available (session not found)"
-            except Exception:
-                logs = "No logs available (session not found)"
-            try:
-                session_info = self._sessions.get(full_client_id)
-                if session_info and "_worker" in session_info:
-                    await session_info["_worker"].stop(full_client_id)
-            except Exception:
-                pass  # Session might not exist or already stopped
-            raise Exception(
-                f"Failed to start the app: {workspace}/{app_id}, error: {exp}, browser logs:\n{logs}"
-            ) from exp
+                pass  # Ignore cleanup errors
+            raise Exception(f"Failed to start app '{app_id}', error: {exp}, logs:\n{logs}") from None
         finally:
             # Clean up event listeners
             if not detached:
                 self.event_bus.off_local("service_added", service_added)
                 if not wait_for_service:
                     self.event_bus.off_local("client_connected", client_connected)
-            else:
-                self.event_bus.off_local("service_added", service_added)
 
         if wait_for_service:
             app_info["service_id"] = (
@@ -1514,9 +1415,24 @@ class ServerAppController:
         
         # Start autoscaling if enabled
         if manifest.autoscaling and manifest.autoscaling.enabled:
+            progress_callback({
+                "type": "info",
+                "message": "Configuring autoscaling..."
+            })
             await self.autoscaling_manager.start_autoscaling(
                 app_id, manifest.autoscaling, context
             )
+            progress_callback({
+                "type": "success",
+                "message": "Autoscaling enabled"
+            })
+        
+        # Final completion message
+        progress_callback({
+            "type": "success",
+            "message": "Application startup completed successfully"
+        })
+        
         return app_info
 
     @schema_method
@@ -1784,11 +1700,11 @@ class ServerAppController:
             raise Exception(f"Failed to get file content for {app_id}/{file_path}: {exp}") from exp
 
     @schema_method
-    async def validate_app_config(
+    async def validate_app_manifest(
         self,
-        config: Dict[str, Any] = Field(
+        manifest: Dict[str, Any] = Field(
             ...,
-            description="Application configuration dictionary to validate."
+            description="Application manifest dictionary to validate."
         ),
         context: Optional[dict] = Field(
             None,
@@ -1820,32 +1736,32 @@ class ServerAppController:
             # Check required fields
             required_fields = ["name", "type", "version"]
             for field in required_fields:
-                if field not in config:
+                if field not in manifest:
                     validation_result["errors"].append(f"Missing required field: {field}")
                     validation_result["valid"] = False
             
             # Check field types
-            if "name" in config and not isinstance(config["name"], str):
+            if "name" in manifest and not isinstance(manifest["name"], str):
                 validation_result["errors"].append("Field 'name' must be a string")
                 validation_result["valid"] = False
             
-            if "type" in config and config["type"] not in ["window", "web-worker", "web-python", "mcp-server", "a2a-agent"]:
-                validation_result["warnings"].append(f"Unusual application type: {config['type']}")
+            if "type" in manifest and manifest["type"] not in ["window", "web-worker", "web-python", "mcp-server", "a2a-agent"]:
+                validation_result["warnings"].append(f"Unusual application type: {manifest['type']}")
             
             # Special validation for mcp-server type
-            if "type" in config and config["type"] == "mcp-server":
-                if "mcpServers" not in config:
+            if "type" in manifest and manifest["type"] == "mcp-server":
+                if "mcpServers" not in manifest:
                     validation_result["errors"].append("MCP server applications require 'mcpServers' configuration")
                     validation_result["valid"] = False
-                elif not isinstance(config["mcpServers"], dict):
+                elif not isinstance(manifest["mcpServers"], dict):
                     validation_result["errors"].append("'mcpServers' must be a dictionary")
                     validation_result["valid"] = False
-                elif len(config["mcpServers"]) == 0:
+                elif len(manifest["mcpServers"]) == 0:
                     validation_result["errors"].append("'mcpServers' cannot be empty")
                     validation_result["valid"] = False
                 else:
                     # Validate each MCP server configuration
-                    for server_name, server_config in config["mcpServers"].items():
+                    for server_name, server_config in manifest["mcpServers"].items():
                         if not isinstance(server_config, dict):
                             validation_result["errors"].append(f"MCP server '{server_name}' configuration must be a dictionary")
                             validation_result["valid"] = False
@@ -1863,19 +1779,19 @@ class ServerAppController:
                             validation_result["warnings"].append(f"MCP server '{server_name}' has unusual type: {server_config.get('type')}")
             
             # Special validation for a2a-agent type
-            if "type" in config and config["type"] == "a2a-agent":
-                if "a2aAgents" not in config:
+            if "type" in manifest and manifest["type"] == "a2a-agent":
+                if "a2aAgents" not in manifest:
                     validation_result["errors"].append("A2A agent applications require 'a2aAgents' configuration")
                     validation_result["valid"] = False
-                elif not isinstance(config["a2aAgents"], dict):
+                elif not isinstance(manifest["a2aAgents"], dict):
                     validation_result["errors"].append("'a2aAgents' must be a dictionary")
                     validation_result["valid"] = False
-                elif len(config["a2aAgents"]) == 0:
+                elif len(manifest["a2aAgents"]) == 0:
                     validation_result["errors"].append("'a2aAgents' cannot be empty")
                     validation_result["valid"] = False
                 else:
                     # Validate each A2A agent configuration
-                    for agent_name, agent_config in config["a2aAgents"].items():
+                    for agent_name, agent_config in manifest["a2aAgents"].items():
                         if not isinstance(agent_config, dict):
                             validation_result["errors"].append(f"A2A agent '{agent_name}' configuration must be a dictionary")
                             validation_result["valid"] = False
@@ -1895,21 +1811,21 @@ class ServerAppController:
                             validation_result["errors"].append(f"A2A agent '{agent_name}' headers must be a dictionary")
                             validation_result["valid"] = False
             
-            if "version" in config and not isinstance(config["version"], str):
+            if "version" in manifest and not isinstance(manifest["version"], str):
                 validation_result["errors"].append("Field 'version' must be a string")
                 validation_result["valid"] = False
             
             # Check entry point
-            if "entry_point" in config:
-                entry_point = config["entry_point"]
+            if "entry_point" in manifest:
+                entry_point = manifest["entry_point"]
                 if not entry_point.endswith((".html", ".js", ".py")):
                     validation_result["warnings"].append(f"Entry point '{entry_point}' has unusual extension")
             
             # Suggestions
-            if "description" not in config:
+            if "description" not in manifest:
                 validation_result["suggestions"].append("Consider adding a description for better documentation")
             
-            if "tags" not in config:
+            if "tags" not in manifest:
                 validation_result["suggestions"].append("Consider adding tags for better discoverability")
             
             return validation_result
@@ -1930,10 +1846,6 @@ class ServerAppController:
             None,
             description="Updated manifest fields to merge with the existing manifest. Only provided fields will be updated."
         ),
-        config: Optional[Dict[str, Any]] = Field(
-            None,
-            description="Updated config fields to merge with the existing config. Only provided fields will be updated."
-        ),
         disabled: Optional[bool] = Field(
             None,
             description="Whether to disable the application. Set to True to disable, False to enable. If not provided, disabled status is not changed."
@@ -1942,9 +1854,13 @@ class ServerAppController:
             None,
             description="Autoscaling configuration dictionary. Set to None to disable autoscaling."
         ),
+        autoscaling_manifest: Optional[Dict[str, Any]] = Field(
+            None,
+            description="Alias for autoscaling_config for backward compatibility."
+        ),
         startup_config: Optional[Dict[str, Any]] = Field(
             None,
-            description="Startup configuration dictionary containing default startup parameters like timeout, wait_for_service, detached, and stop_after_inactive."
+            description="Startup configuration dictionary containing default startup parameters like timeout, wait_for_service, and stop_after_inactive."
         ),
         context: Optional[dict] = Field(
             None,
@@ -1979,26 +1895,23 @@ class ServerAppController:
             # Update manifest fields if provided
             if manifest:
                 updated_manifest.update(manifest)
-            
-            # Handle config updates
-            if config is not None or disabled is not None:
-                # Ensure config exists in manifest
-                if "config" not in updated_manifest or updated_manifest["config"] is None:
-                    updated_manifest["config"] = {}
-                
-                # Update config fields if provided
-                if config:
-                    updated_manifest["config"].update(config)
-                
-                # Update disabled status if provided
-                if disabled is not None:
-                    updated_manifest["config"]["disabled"] = disabled
+            if disabled is not None:
+                updated_manifest["disabled"] = disabled
+                if disabled:
+                    # stop all the instances of the app
+                    for app in self._sessions.values():
+                        if app["id"] == app_id:
+                            await self.stop(app["id"], raise_exception=False)
 
             # Handle autoscaling configuration updates
-            if autoscaling_config is not None:
-                if autoscaling_config:
+            final_autoscaling_config = autoscaling_config
+            if autoscaling_manifest is not None:
+                final_autoscaling_config = autoscaling_manifest
+            
+            if final_autoscaling_config is not None:
+                if final_autoscaling_config:
                     # Validate the autoscaling config
-                    autoscaling_obj = AutoscalingConfig.model_validate(autoscaling_config)
+                    autoscaling_obj = AutoscalingConfig.model_validate(final_autoscaling_config)
                     updated_manifest["autoscaling"] = autoscaling_obj.model_dump()
                 else:
                     updated_manifest["autoscaling"] = None
@@ -2103,6 +2016,11 @@ class ServerAppController:
                         f"Worker failed to close workspace: {workspace_info.id}, error: {exp}"
                     )
 
+    async def launch(self, *args, **kwargs):
+        """Launch an application."""
+        # launch is deprecated, use install then start instead 
+        raise NotImplementedError("Launch is deprecated, use install then start instead")
+
     def get_service_api(self) -> Dict[str, Any]:
         """Get a list of service API endpoints."""
         return {
@@ -2125,6 +2043,6 @@ class ServerAppController:
             "commit_app": self.commit_app,
             "get_app_info": self.get_app_info,
             "read_file": self.read_file,
-            "validate_app_config": self.validate_app_config,
+            "validate_app_manifest": self.validate_app_manifest,
             "edit_app": self.edit_app,
         }

@@ -90,11 +90,13 @@ async def main():
     # Install app with autoscaling
     app_info = await controller.install(
         source=app_source,
-        config={
+        app_id="my-first-autoscaling-app",  # Custom app ID
+        manifest={
             "name": "My First Autoscaling App",
             "type": "window",
             "autoscaling": autoscaling_config,
-        }
+        },
+        overwrite=True
     )
     
     print(f"App installed with ID: {app_info['id']}")
@@ -156,11 +158,13 @@ autoscaling_config = {
 
 app_info = await controller.install(
     source=app_source,
-    config={
+    app_id="my-scalable-app",  # Custom app ID
+    manifest={
         "name": "My Scalable App",
         "type": "window",
         "autoscaling": autoscaling_config,
-    }
+    },
+    overwrite=True
 )
 ```
 
@@ -186,12 +190,14 @@ When you have multiple instances of an app running, accessing a service like `de
 ```python
 app_info = await controller.install(
     source=app_source,
-    config={
+    app_id="my-scalable-app-v2",  # Custom app ID
+    manifest={
         "name": "My Scalable App",
         "type": "window",
         "autoscaling": autoscaling_config,
         "service_selection_mode": "random",  # Key addition for autoscaling
-    }
+    },
+    overwrite=True
 )
 ```
 
@@ -425,7 +431,8 @@ async def install_scalable_fastapi_app():
     # Install the FastAPI app with autoscaling
     app_info = await controller.install(
         source=fastapi_app_source,
-        config={
+        app_id="scalable-fastapi-image-processor",  # Custom app ID
+        manifest={
             "name": "Scalable FastAPI Image Processor",
             "type": "web-python",
             "version": "1.0.0",
@@ -645,7 +652,8 @@ api.export({
 
 app_info = await controller.install(
     source=function_source,
-    config={
+    app_id="scalable-function-service",  # Custom app ID
+    manifest={
         "name": "Scalable Function Service",
         "type": "functions",
         "autoscaling": {
@@ -655,7 +663,8 @@ app_info = await controller.install(
             "target_requests_per_instance": 25,
         },
         "service_selection_mode": "random",
-    }
+    },
+    overwrite=True
 )
 ```
 
@@ -909,7 +918,8 @@ async def deploy_ai_model_server():
     # Deploy the AI model server
     app_info = await controller.install(
         source=ai_model_source,
-        config={
+        app_id="production-ai-model-server",  # Custom app ID
+        manifest={
             "name": "Production AI Model Server",
             "type": "window",
             "version": "1.0.0",

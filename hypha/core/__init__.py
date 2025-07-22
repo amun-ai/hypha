@@ -56,6 +56,7 @@ class VisibilityEnum(str, Enum):
 
     public = "public"
     protected = "protected"
+    unlisted = "unlisted"
 
 
 class StatusEnum(str, Enum):

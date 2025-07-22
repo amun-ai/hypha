@@ -706,7 +706,7 @@ vectors = await artifact_manager.list_vectors(artifact_id="example-id", limit=20
 
 ---
 
-### `put_file(artifact_id: str, file_path: str, download_weight: float = 0, use_proxy: bool = None) -> str`
+### `put_file(artifact_id: str, file_path: str, download_weight: float = 0, use_proxy: bool = None, use_local_url: bool = False, expires_in: float = 3600) -> str`
 
 Generates a pre-signed URL to upload a file to the artifact in S3. The URL can be used with an HTTP `PUT` request to upload the file. 
 
@@ -721,6 +721,11 @@ Generates a pre-signed URL to upload a file to the artifact in S3. The URL can b
 - `file_path`: The relative path of the file to upload within the artifact (e.g., `"data.csv"`).
 - `download_weight`: A float value representing the file's impact on download count when downloaded via any endpoint. Defaults to `0`. Files with weight `0` don't increment download count when accessed.
 - `use_proxy`: A boolean to control whether to use the S3 proxy for the generated URL. If `None` (default), follows the server configuration. If `True`, forces the use of the proxy. If `False`, bypasses the proxy and returns a direct S3 URL.
+- `use_local_url`: A boolean to control whether to generate URLs for local/cluster-internal access. Defaults to `False`. When `True`, generates URLs suitable for access within the cluster:
+  - **With proxy (`use_proxy=True`)**: Uses `local_base_url/s3` instead of the public proxy URL for cluster-internal access
+  - **Direct S3 (`use_proxy=False`)**: Uses the S3 endpoint URL as-is (already configured for local access)
+  - **Use case**: Useful when services within a cluster need to access files but public URLs are not accessible from within the cluster network
+- `expires_in`: A float number for the expiration time of the S3 presigned url
 
 **Returns:** A pre-signed URL for uploading the file.
 
@@ -739,6 +744,12 @@ put_url = await artifact_manager.put_file(artifact_id="other_workspace/example-d
 
 # Upload with proxy bypassed (useful for direct S3 access)
 put_url = await artifact_manager.put_file(artifact_id="example-dataset", file_path="data.csv", use_proxy=False)
+
+# Upload using local/cluster-internal URLs (useful within cluster networks)
+put_url = await artifact_manager.put_file(artifact_id="example-dataset", file_path="data.csv", use_local_url=True)
+
+# Upload using local proxy URL for cluster-internal access
+put_url = await artifact_manager.put_file(artifact_id="example-dataset", file_path="data.csv", use_proxy=True, use_local_url=True)
 
 # Upload the file using an HTTP PUT request
 with open("path/to/local/data.csv", "rb") as f:
@@ -778,7 +789,7 @@ await artifact_manager.remove_file(artifact_id="other_workspace/example-dataset"
 
 ---
 
-### `get_file(artifact_id: str, file_path: str, silent: bool = False, version: str = None, use_proxy: bool = None) -> str`
+### `get_file(artifact_id: str, file_path: str, silent: bool = False, version: str = None, use_proxy: bool = None, use_local_url: bool = False, expires_in: float = 3600) -> str`
 
 Generates a pre-signed URL to download a file from the artifact stored in S3.
 
@@ -789,6 +800,11 @@ Generates a pre-signed URL to download a file from the artifact stored in S3.
 - `silent`: A boolean to suppress the download count increment. Default is `False`.
 - `version`: The version of the artifact to download the file from. By default, it downloads from the latest version. If you want to download from a staged version, you can set it to `"stage"`.
 - `use_proxy`: A boolean to control whether to use the S3 proxy for the generated URL. If `None` (default), follows the server configuration. If `True`, forces the use of the proxy. If `False`, bypasses the proxy and returns a direct S3 URL.
+- `use_local_url`: A boolean to control whether to generate URLs for local/cluster-internal access. Defaults to `False`. When `True`, generates URLs suitable for access within the cluster:
+  - **With proxy (`use_proxy=True`)**: Uses `local_base_url/s3` instead of the public proxy URL for cluster-internal access
+  - **Direct S3 (`use_proxy=False`)**: Uses the S3 endpoint URL as-is (already configured for local access)
+  - **Use case**: Useful when services within a cluster need to access files but public URLs are not accessible from within the cluster network
+- `expires_in`: A float number for the expiration time of the S3 presigned url
 
 **Returns:** A pre-signed URL for downloading the file.
 
@@ -808,6 +824,191 @@ get_url = await artifact_manager.get_file(artifact_id="example-dataset", file_pa
 
 # Get a file bypassing the S3 proxy (useful for publishing to external services)
 get_url = await artifact_manager.get_file(artifact_id="example-dataset", file_path="data.csv", use_proxy=False)
+
+# Get a file using local/cluster-internal URLs (useful within cluster networks)
+get_url = await artifact_manager.get_file(artifact_id="example-dataset", file_path="data.csv", use_local_url=True)
+
+# Get a file using local proxy URL for cluster-internal access
+get_url = await artifact_manager.get_file(artifact_id="example-dataset", file_path="data.csv", use_proxy=True, use_local_url=True)
+```
+
+---
+
+### `put_file_start_multipart(artifact_id: str, file_path: str, part_count: int, expires_in: int = 3600) -> dict`
+
+Initiates a multipart upload for large files and generates pre-signed URLs for uploading each part. This is useful for files larger than 100MB or when you need to upload files in chunks with parallel processing.
+
+**File Placement Optimization:** Like `put_file`, files are placed directly in their final destination based on version intent:
+- If the artifact has `new_version` intent (set via `version="new"` during edit), files are uploaded to the new version location
+- Otherwise, files are uploaded to the existing latest version location
+
+**Parameters:**
+
+- `artifact_id`: The id of the artifact to upload the file to. It can be an uuid generated by `create` or `edit` function, or it can be an alias of the artifact under the current workspace. If you want to refer to an artifact in another workspace, you should use the full alias in the format of `"workspace_id/alias"`.
+- `file_path`: The relative path of the file to upload within the artifact (e.g., `"large_dataset.zip"`).
+- `part_count`: The number of parts to split the file into. Must be between 1 and 10,000.
+- `expires_in`: The expiration time in seconds for the multipart upload session and part URLs. Defaults to 3600 (1 hour).
+
+**Returns:** A dictionary containing:
+- `upload_id`: The unique identifier for this multipart upload session
+- `parts`: A list of part information, each containing:
+  - `part_number`: The sequential part number (1-indexed)
+  - `url`: The pre-signed URL for uploading this specific part
+
+**Important Notes:**
+- Each part (except the last) must be at least 5MB in size
+- Part URLs expire after the specified `expires_in` time
+- The multipart upload session must be completed with `put_file_complete_multipart` 
+- If not completed within the expiration time, the session will be automatically cleaned up
+
+**Example:**
+
+```python
+# Start multipart upload for a large file
+multipart_info = await artifact_manager.put_file_start_multipart(
+    artifact_id="example-dataset",
+    file_path="large_video.mp4", 
+    part_count=5,
+    expires_in=7200  # 2 hours
+)
+
+upload_id = multipart_info["upload_id"]
+part_urls = multipart_info["parts"]
+
+# Upload parts in parallel (example with httpx)
+import httpx
+import asyncio
+
+async def upload_part(part_info, file_data):
+    async with httpx.AsyncClient(timeout=120) as client:
+        response = await client.put(part_info["url"], data=file_data)
+        return {
+            "part_number": part_info["part_number"],
+            "etag": response.headers["ETag"].strip('"')
+        }
+
+# Upload all parts concurrently
+uploaded_parts = await asyncio.gather(*[
+    upload_part(part, get_part_data(part["part_number"])) 
+    for part in part_urls
+])
+```
+
+---
+
+### `put_file_complete_multipart(artifact_id: str, upload_id: str, parts: list) -> dict`
+
+Completes a multipart upload by combining all uploaded parts into the final file. This must be called after all parts have been successfully uploaded using the URLs from `put_file_start_multipart`.
+
+**Parameters:**
+
+- `artifact_id`: The id of the artifact where the multipart upload was initiated. Must match the artifact_id used in `put_file_start_multipart`.
+- `upload_id`: The unique upload identifier returned by `put_file_start_multipart`.
+- `parts`: A list of dictionaries containing information about uploaded parts. Each part must include:
+  - `part_number`: The part number (1-indexed, matching the original part numbers)
+  - `etag`: The ETag returned by S3 when the part was uploaded (without quotes)
+
+**Returns:** A dictionary containing:
+- `success`: Boolean indicating whether the multipart upload was completed successfully
+- `message`: A descriptive message about the operation result
+
+**Important Notes:**
+- All parts must be uploaded before calling this function
+- Parts must be provided in the correct order with accurate ETags
+- ETags should be provided without surrounding quotes
+- The function will fail if any parts are missing or have incorrect ETags
+- Once completed successfully, the individual parts are automatically cleaned up by S3
+
+**Example:**
+
+```python
+# Complete the multipart upload from the previous example
+result = await artifact_manager.put_file_complete_multipart(
+    artifact_id="example-dataset",
+    upload_id=upload_id,
+    parts=uploaded_parts  # From the previous upload_part operations
+)
+
+if result["success"]:
+    print("Multipart upload completed successfully!")
+    print(result["message"])
+else:
+    print(f"Upload failed: {result['message']}")
+```
+
+**Complete Multipart Upload Example:**
+
+```python
+import asyncio
+import httpx
+import os
+import math
+
+async def upload_large_file_multipart(artifact_manager, artifact_id, file_path, local_file_path):
+    """Complete example of uploading a large file using multipart upload."""
+    
+    # Calculate optimal part count (aim for ~100MB per part)
+    file_size = os.path.getsize(local_file_path)
+    part_size = 100 * 1024 * 1024  # 100MB
+    part_count = max(1, math.ceil(file_size / part_size))
+    
+    print(f"Uploading {file_size / (1024*1024):.1f}MB file in {part_count} parts")
+    
+    # Step 1: Start multipart upload
+    multipart_info = await artifact_manager.put_file_start_multipart(
+        artifact_id=artifact_id,
+        file_path=file_path,
+        part_count=part_count,
+        expires_in=3600
+    )
+    
+    upload_id = multipart_info["upload_id"]
+    part_urls = multipart_info["parts"]
+    
+    # Step 2: Upload all parts
+    async def upload_part(part_info):
+        part_number = part_info["part_number"]
+        start_pos = (part_number - 1) * part_size
+        end_pos = min(start_pos + part_size, file_size)
+        
+        with open(local_file_path, "rb") as f:
+            f.seek(start_pos)
+            part_data = f.read(end_pos - start_pos)
+        
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.put(part_info["url"], data=part_data)
+            if response.status_code != 200:
+                raise Exception(f"Failed to upload part {part_number}")
+                
+            return {
+                "part_number": part_number,
+                "etag": response.headers["ETag"].strip('"')
+            }
+    
+    # Upload parts with controlled concurrency
+    semaphore = asyncio.Semaphore(5)  # Max 5 concurrent uploads
+    
+    async def upload_with_semaphore(part_info):
+        async with semaphore:
+            return await upload_part(part_info)
+    
+    uploaded_parts = await asyncio.gather(*[
+        upload_with_semaphore(part) for part in part_urls
+    ])
+    
+    # Step 3: Complete multipart upload
+    result = await artifact_manager.put_file_complete_multipart(
+        artifact_id=artifact_id,
+        upload_id=upload_id,
+        parts=uploaded_parts
+    )
+    
+    return result
+
+# Usage example
+# result = await upload_large_file_multipart(
+#     artifact_manager, "my-dataset", "data/large_file.zip", "/path/to/large_file.zip"
+# )
 ```
 
 ---
@@ -1252,6 +1453,9 @@ The `Artifact Manager` provides an HTTP API for retrieving artifact manifests, d
       - `all`: Return both staged and committed artifacts
 - `/{workspace}/artifacts/{artifact_alias}/files`: List all files in the artifact.
 - `/{workspace}/artifacts/{artifact_alias}/files/{file_path:path}`: Download a file from the artifact (redirects to a pre-signed URL).
+  - **Query Parameters**:
+    - `use_proxy`: (Optional) Boolean to control whether to use the S3 proxy
+    - `use_local_url`: (Optional) Boolean to generate local/cluster-internal URLs
 
 #### Request Format:
 
@@ -1310,6 +1514,352 @@ response = requests.get(
     f"{SERVER_URL}/{workspace}/artifacts/",
     headers={"Authorization": f"Bearer {token}"}
 )
+```
+
+---
+
+### File Upload Endpoints
+
+The Artifact Manager provides HTTP endpoints for uploading files directly to artifacts. These endpoints support both single file uploads and multipart uploads for large files.
+
+#### Single File Upload Endpoint
+
+**Endpoint**: `PUT /{workspace}/artifacts/{artifact_alias}/files/{file_path:path}`
+
+Upload a single file by streaming it directly to S3 storage. This endpoint is efficient for handling files of any size as it streams the request body directly to S3 without local temporary storage.
+
+**Request Format:**
+- **Method**: `PUT`
+- **Path Parameters**:
+  - **workspace**: The workspace containing the artifact
+  - **artifact_alias**: The alias or ID of the artifact
+  - **file_path**: The relative path where the file will be stored within the artifact
+- **Query Parameters**:
+  - **download_weight**: (Optional) Float value representing the file's impact on download count. Defaults to `0`.
+- **Headers**:
+  - `Authorization`: Optional. Bearer token for private artifact access
+  - `Content-Type`: Optional. MIME type of the file being uploaded
+  - `Content-Length`: Optional. Size of the file being uploaded
+- **Body**: Raw file content
+
+**Response:**
+```json
+{
+    "success": true,
+    "message": "File uploaded successfully"
+}
+```
+
+**Example Usage:**
+```python
+import asyncio
+import httpx
+
+SERVER_URL = "https://hypha.aicell.io"
+workspace = "my-workspace"
+artifact_alias = "example-dataset"
+file_path = "data/example.csv"
+
+async def upload_file():
+    # Upload a file with download weight
+    with open("local_file.csv", "rb") as f:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.put(
+                f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/files/{file_path}",
+                data=f,
+                params={"download_weight": 1.0},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "text/csv"
+                }
+            )
+
+    if response.status_code == 200:
+        print("File uploaded successfully")
+    else:
+        print(f"Upload failed: {response.status_code}")
+
+# Run the async function
+asyncio.run(upload_file())
+```
+
+#### Multipart Upload Endpoints
+
+For large files, the Artifact Manager supports multipart uploads which allow uploading files in chunks. This is useful for files larger than 5GB or when you need to resume interrupted uploads.
+
+##### 1. Create Multipart Upload
+
+**Endpoint**: `POST /{workspace}/artifacts/{artifact_alias}/create-multipart-upload`
+
+Initiate a multipart upload and get presigned URLs for all parts.
+
+**Request Format:**
+- **Method**: `POST`
+- **Path Parameters**:
+  - **workspace**: The workspace containing the artifact
+  - **artifact_alias**: The alias or ID of the artifact
+- **Query Parameters**:
+  - **path**: The relative path where the file will be stored within the artifact
+  - **part_count**: The total number of parts for the upload (required, max 10,000)
+  - **expires_in**: (Optional) Number of seconds for presigned URLs to expire. Defaults to 3600.
+
+**Response:**
+```json
+{
+    "upload_id": "abc123...",
+    "parts": [
+        {"part_number": 1, "url": "https://s3.amazonaws.com/..."},
+        {"part_number": 2, "url": "https://s3.amazonaws.com/..."},
+        ...
+    ]
+}
+```
+
+##### 2. Complete Multipart Upload
+
+**Endpoint**: `POST /{workspace}/artifacts/{artifact_alias}/complete-multipart-upload`
+
+Complete the multipart upload and finalize the file in S3.
+
+**Request Format:**
+- **Method**: `POST`
+- **Path Parameters**:
+  - **workspace**: The workspace containing the artifact
+  - **artifact_alias**: The alias or ID of the artifact
+- **Body**:
+```json
+{
+    "upload_id": "abc123...",
+    "parts": [
+        {"part_number": 1, "etag": "etag1"},
+        {"part_number": 2, "etag": "etag2"},
+        ...
+    ]
+}
+```
+
+**Response:**
+```json
+{
+    "success": true,
+    "message": "File uploaded successfully"
+}
+```
+
+**Complete Multipart Upload Example:**
+```python
+import asyncio
+import httpx
+import os
+
+SERVER_URL = "https://hypha.aicell.io"
+workspace = "my-workspace"
+artifact_alias = "example-dataset"
+file_path = "large_file.zip"
+
+async def upload_large_file():
+    # Step 1: Create multipart upload
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/create-multipart-upload",
+            params={
+                "path": file_path,
+                "part_count": 3,
+                "expires_in": 3600
+            },
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        if response.status_code != 200:
+            print(f"Failed to create multipart upload: {response.status_code}")
+            return
+            
+        upload_data = response.json()
+        upload_id = upload_data["upload_id"]
+        parts = upload_data["parts"]
+
+    # Step 2: Upload all parts in parallel
+    file_size = os.path.getsize("large_file.zip")
+    chunk_size = file_size // 3
+    uploaded_parts = []
+    
+    async def upload_part(part_info):
+        """Upload a single part by reading directly from disk."""
+        part_number = part_info["part_number"]
+        url = part_info["url"]
+        
+        # Calculate start and end positions for this chunk
+        start_pos = (part_number - 1) * chunk_size
+        end_pos = min(start_pos + chunk_size, file_size)
+        chunk_size_actual = end_pos - start_pos
+        
+        # Read chunk directly from disk with seek
+        with open("large_file.zip", "rb") as f:
+            f.seek(start_pos)
+            chunk_data = f.read(chunk_size_actual)
+        
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.put(url, data=chunk_data)
+            if response.status_code != 200:
+                raise Exception(f"Failed to upload part {part_number}")
+                
+            # Save the ETag from the response header
+            etag = response.headers["ETag"].strip('"').strip("'")
+            return {
+                "part_number": part_number,
+                "etag": etag
+            }
+    
+    # Upload all parts in parallel using asyncio.gather (equivalent to Promise.all)
+    try:
+        uploaded_parts = await asyncio.gather(*[upload_part(part) for part in parts])
+        print(f"Successfully uploaded {len(uploaded_parts)} parts in parallel")
+    except Exception as e:
+        print(f"Upload failed: {e}")
+        return
+
+    # Step 3: Complete multipart upload
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/complete-multipart-upload",
+            json={
+                "upload_id": upload_id,
+                "parts": uploaded_parts
+            },
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+        )
+        
+        if response.status_code == 200:
+            print("Multipart upload completed successfully")
+        else:
+            print(f"Failed to complete multipart upload: {response.status_code}")
+
+# Run the async function
+asyncio.run(upload_large_file())
+```
+
+**Important Notes:**
+- **Part Limits**: Maximum 10,000 parts per multipart upload
+- **Part Size**: Each part must be at least 5MB (except the last part)
+- **ETags**: The ETag returned from S3 when uploading each part must be included in the completion request
+- **Session Expiration**: Upload sessions expire after the specified `expires_in` time
+- **Permissions**: Requires `put_file` permission on the artifact
+- **Parallel Uploads**: Using `asyncio.gather()` for parallel uploads significantly improves performance for large files
+
+**Advanced Example with Optimized Chunking:**
+```python
+import asyncio
+import httpx
+import os
+import math
+
+async def upload_large_file_optimized(file_path, artifact_alias, workspace, token):
+    """Upload a large file with optimized chunking and parallel uploads."""
+    
+    # Calculate optimal chunk size (5MB minimum, 100MB recommended for large files)
+    file_size = os.path.getsize(file_path)
+    min_chunk_size = 5 * 1024 * 1024  # 5MB
+    recommended_chunk_size = 100 * 1024 * 1024  # 100MB
+    chunk_size = max(min_chunk_size, min(recommended_chunk_size, file_size // 10))
+    part_count = math.ceil(file_size / chunk_size)
+    
+    # For very large files, limit concurrent uploads to avoid overwhelming the system
+    max_concurrent_uploads = min(10, part_count)  # Max 10 concurrent uploads
+    
+    print(f"File size: {file_size / (1024*1024):.1f}MB")
+    print(f"Chunk size: {chunk_size / (1024*1024):.1f}MB")
+    print(f"Number of parts: {part_count}")
+    
+    # Step 1: Create multipart upload
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/create-multipart-upload",
+            params={
+                "path": os.path.basename(file_path),
+                "part_count": part_count,
+                "expires_in": 3600
+            },
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        if response.status_code != 200:
+            print(f"Failed to create multipart upload: {response.status_code}")
+            return
+            
+        upload_data = response.json()
+        upload_id = upload_data["upload_id"]
+        parts = upload_data["parts"]
+
+    # Step 2: Upload all parts in parallel with progress tracking
+    async def upload_part_with_progress(part_info):
+        """Upload a single part by reading directly from disk with offset."""
+        part_number = part_info["part_number"]
+        url = part_info["url"]
+        
+        # Calculate start and end positions for this chunk
+        start_pos = (part_number - 1) * chunk_size
+        end_pos = min(start_pos + chunk_size, file_size)
+        chunk_size_actual = end_pos - start_pos
+        
+        print(f"Starting upload of part {part_number}/{part_count} (size: {chunk_size_actual / (1024*1024):.1f}MB)")
+        
+        # Read chunk directly from disk with seek
+        with open(file_path, "rb") as f:
+            f.seek(start_pos)
+            chunk_data = f.read(chunk_size_actual)
+        
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.put(url, data=chunk_data)
+            if response.status_code != 200:
+                raise Exception(f"Failed to upload part {part_number}")
+                
+            etag = response.headers["ETag"].strip('"').strip("'")
+            print(f"Completed upload of part {part_number}/{part_count}")
+            return {
+                "part_number": part_number,
+                "etag": etag
+            }
+    
+    # Upload all parts with controlled concurrency
+    semaphore = asyncio.Semaphore(max_concurrent_uploads)
+    
+    async def upload_part_with_semaphore(part_info):
+        """Upload a single part with semaphore control."""
+        async with semaphore:
+            return await upload_part_with_progress(part_info)
+    
+    try:
+        print(f"Starting upload of {part_count} parts with max {max_concurrent_uploads} concurrent uploads...")
+        uploaded_parts = await asyncio.gather(*[upload_part_with_semaphore(part) for part in parts])
+        print(f"Successfully uploaded all {len(uploaded_parts)} parts")
+    except Exception as e:
+        print(f"Upload failed: {e}")
+        return
+
+    # Step 3: Complete multipart upload
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/complete-multipart-upload",
+            json={
+                "upload_id": upload_id,
+                "parts": uploaded_parts
+            },
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+        )
+        
+        if response.status_code == 200:
+            print("Multipart upload completed successfully")
+        else:
+            print(f"Failed to complete multipart upload: {response.status_code}")
+
+# Usage example
+# asyncio.run(upload_large_file_optimized("large_file.zip", "example-dataset", "my-workspace", token))
 ```
 
 ---
@@ -1496,6 +2046,420 @@ with open("example2.txt", "wb") as f:
     for chunk in response.iter_content(chunk_size=8192):
         f.write(chunk)
 ```
+
+---
+
+## Static Site Hosting
+
+The Artifact Manager supports hosting static websites through special "site" artifacts. These artifacts can serve static files with optional Jinja2 template rendering, making them perfect for hosting documentation, portfolios, or any static web content.
+
+### Site Artifact Features
+
+- **Static File Serving**: Serve HTML, CSS, JavaScript, images, and other static files
+- **Template Rendering**: Jinja2 template support for dynamic content
+- **Custom Headers**: Configure CORS, caching, and other HTTP headers
+- **Version Control**: Support for staging and versioning of site content
+- **Access Control**: Permission-based access to site content
+- **View Statistics**: Track page views and download counts
+
+### Creating and Deploying a Static Site
+
+#### Step 1: Create a Site Artifact
+
+```python
+import asyncio
+import httpx
+import requests
+from hypha_rpc import connect_to_server
+
+async def deploy_static_site():
+    # Connect to the Artifact Manager
+    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    artifact_manager = await api.get_service("public/artifact-manager")
+    workspace = api.config.workspace
+    token = await api.generate_token()
+
+    # Create a site artifact
+    manifest = {
+        "name": "My Portfolio",
+        "description": "A personal portfolio website",
+        "type": "site"
+    }
+    
+    config = {
+        "templates": ["index.html", "about.html"],  # Files that use Jinja2 templates
+        "template_engine": "jinja2",
+        "headers": {
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "max-age=3600"
+        }
+    }
+    
+    site_artifact = await artifact_manager.create(
+        type="site",
+        alias="my-portfolio",
+        manifest=manifest,
+        config=config,
+        stage=True
+    )
+    
+    print(f"Site artifact created with ID: {site_artifact.id}")
+    return site_artifact, workspace, token
+```
+
+#### Step 2: Upload Site Files
+
+```python
+async def upload_site_files(artifact_manager, site_artifact, token):
+    # Upload regular HTML file (non-templated)
+    static_html = """<!DOCTYPE html>
+<html>
+<head><title>Static Page</title></head>
+<body><h1>This is a static page</h1></body>
+</html>"""
+    
+    file_url = await artifact_manager.put_file(site_artifact.id, "static.html")
+    response = requests.put(file_url, data=static_html.encode(), headers={"Content-Type": "text/html"})
+    assert response.ok
+    
+    # Upload templated HTML file (with Jinja2)
+    template_html = """<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ MANIFEST.name }}</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>{{ MANIFEST.name }}</h1>
+        <p>{{ MANIFEST.description }}</p>
+    </header>
+    
+    <main>
+        <section>
+            <h2>Site Information</h2>
+            <ul>
+                <li><strong>Base URL:</strong> {{ BASE_URL }}</li>
+                <li><strong>Workspace:</strong> {{ WORKSPACE }}</li>
+                <li><strong>View Count:</strong> {{ VIEW_COUNT }}</li>
+                <li><strong>Download Count:</strong> {{ DOWNLOAD_COUNT }}</li>
+            </ul>
+        </section>
+        
+        <section>
+            <h2>User Information</h2>
+            {% if USER %}
+                <p>Welcome, {{ USER.id }}!</p>
+            {% else %}
+                <p>Welcome, Anonymous user!</p>
+            {% endif %}
+        </section>
+        
+        <section>
+            <h2>Configuration</h2>
+            <pre>{{ CONFIG | tojson(indent=2) }}</pre>
+        </section>
+    </main>
+    
+    <footer>
+        <p>Powered by Hypha Artifact Manager</p>
+    </footer>
+</body>
+</html>"""
+    
+    file_url = await artifact_manager.put_file(site_artifact.id, "index.html")
+    response = requests.put(file_url, data=template_html.encode(), headers={"Content-Type": "text/html"})
+    assert response.ok
+    
+    # Upload CSS file
+    css_content = """
+body {
+    font-family: Arial, sans-serif;
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    line-height: 1.6;
+}
+
+header {
+    background-color: #f4f4f4;
+    padding: 20px;
+    border-radius: 5px;
+    margin-bottom: 20px;
+}
+
+section {
+    margin-bottom: 30px;
+    padding: 20px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+}
+
+footer {
+    text-align: center;
+    padding: 20px;
+    color: #666;
+    border-top: 1px solid #ddd;
+    margin-top: 40px;
+}
+"""
+    
+    file_url = await artifact_manager.put_file(site_artifact.id, "style.css")
+    response = requests.put(file_url, data=css_content.encode(), headers={"Content-Type": "text/css"})
+    assert response.ok
+    
+    # Upload JavaScript file
+    js_content = """
+console.log('Site loaded successfully!');
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('DOM ready');
+});
+"""
+    
+    file_url = await artifact_manager.put_file(site_artifact.id, "script.js")
+    response = requests.put(file_url, data=js_content.encode(), headers={"Content-Type": "application/javascript"})
+    assert response.ok
+    
+    print("All site files uploaded successfully")
+```
+
+#### Step 3: Commit and Deploy
+
+```python
+async def commit_and_deploy(artifact_manager, site_artifact):
+    # Commit the site
+    await artifact_manager.commit(site_artifact.id)
+    print("Site committed and deployed!")
+    
+    # The site is now accessible at:
+    # https://your-hypha-server.com/{workspace}/site/my-portfolio/
+    
+    return site_artifact
+```
+
+#### Step 4: Complete Deployment Example
+
+```python
+async def main():
+    # Step 1: Create site artifact
+    site_artifact, workspace, token = await deploy_static_site()
+    
+    # Step 2: Upload files
+    api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    artifact_manager = await api.get_service("public/artifact-manager")
+    await upload_site_files(artifact_manager, site_artifact, token)
+    
+    # Step 3: Deploy
+    await commit_and_deploy(artifact_manager, site_artifact)
+    
+    # Step 4: Test the site
+    site_url = f"{SERVER_URL}/{workspace}/site/my-portfolio/"
+    print(f"Your site is now live at: {site_url}")
+    
+    # Test the site
+    async with httpx.AsyncClient() as client:
+        response = await client.get(site_url, headers={"Authorization": f"Bearer {token}"})
+        if response.status_code == 200:
+            print("✅ Site is working correctly!")
+        else:
+            print(f"❌ Site test failed: {response.status_code}")
+
+# Run the deployment
+asyncio.run(main())
+```
+
+### Site Configuration Options
+
+#### Template Configuration
+
+```python
+config = {
+    "templates": ["index.html", "about.html", "contact.html"],  # Files to render with Jinja2
+    "template_engine": "jinja2",  # Currently only Jinja2 is supported
+    "headers": {
+        "Access-Control-Allow-Origin": "*",  # CORS headers
+        "Cache-Control": "max-age=3600",     # Caching headers
+        "X-Frame-Options": "DENY",           # Security headers
+        "X-Content-Type-Options": "nosniff"
+    }
+}
+```
+
+#### Available Template Variables
+
+When using Jinja2 templates, the following variables are available:
+
+- **`MANIFEST`**: The artifact's manifest data
+- **`CONFIG`**: The artifact's configuration (excluding secrets)
+- **`BASE_URL`**: The base URL for the site (e.g., `/workspace/site/alias/`)
+- **`PUBLIC_BASE_URL`**: The public base URL of the Hypha server
+- **`LOCAL_BASE_URL`**: The local base URL for cluster-internal access
+- **`WORKSPACE`**: The workspace name
+- **`VIEW_COUNT`**: Number of times the artifact has been viewed
+- **`DOWNLOAD_COUNT`**: Number of times files have been downloaded
+- **`USER`**: User information (if authenticated, otherwise None)
+
+### Site Serving Endpoints
+
+#### HTTP Endpoint
+
+**URL Pattern**: `GET /{workspace}/site/{artifact_alias}/{file_path:path}`
+
+**Parameters**:
+- **workspace**: The workspace containing the site
+- **artifact_alias**: The alias of the site artifact
+- **file_path**: (Optional) Path to the file within the site. Defaults to `index.html`
+
+**Query Parameters**:
+- **stage**: (Optional) Boolean to serve from staged version instead of committed version
+- **token**: (Optional) User token for private site access
+- **version**: (Optional) Specific version to serve
+
+**Features**:
+- **Automatic MIME Type Detection**: Files are served with appropriate Content-Type headers
+- **Template Rendering**: Files listed in `templates` config are rendered with Jinja2
+- **Custom Headers**: Headers specified in config are added to responses
+- **Default Index**: Empty paths or `/` automatically serve `index.html`
+- **View Tracking**: Each request increments the artifact's view count
+
+#### Example Usage
+
+```python
+import httpx
+
+async def test_site():
+    async with httpx.AsyncClient() as client:
+        # Access the main page
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/site/my-portfolio/",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        print(f"Main page: {response.status_code}")
+        
+        # Access a specific file
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/site/my-portfolio/style.css",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        print(f"CSS file: {response.status_code}")
+        
+        # Access staged version
+        response = await client.get(
+            f"{SERVER_URL}/{workspace}/site/my-portfolio/?stage=true",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        print(f"Staged version: {response.status_code}")
+```
+
+### Site Management
+
+#### Updating Site Content
+
+```python
+async def update_site(artifact_manager, site_artifact):
+    # Edit the site in staging mode
+    await artifact_manager.edit(
+        artifact_id=site_artifact.id,
+        manifest={"name": "Updated Portfolio", "description": "Updated description"},
+        stage=True
+    )
+    
+    # Upload new files
+    new_content = "<h1>Updated content</h1>"
+    file_url = await artifact_manager.put_file(site_artifact.id, "updated.html")
+    response = requests.put(file_url, data=new_content.encode(), headers={"Content-Type": "text/html"})
+    
+    # Commit the changes
+    await artifact_manager.commit(site_artifact.id)
+    print("Site updated successfully!")
+```
+
+#### Version Management
+
+```python
+async def manage_site_versions(artifact_manager, site_artifact):
+    # Create a new version
+    await artifact_manager.edit(
+        artifact_id=site_artifact.id,
+        manifest={"name": "Portfolio v2"},
+        stage=True,
+        version="new"
+    )
+    
+    # Upload new content for v2
+    v2_content = "<h1>Portfolio Version 2</h1>"
+    file_url = await artifact_manager.put_file(site_artifact.id, "index.html")
+    response = requests.put(file_url, data=v2_content.encode(), headers={"Content-Type": "text/html"})
+    
+    # Commit with custom version name
+    await artifact_manager.commit(site_artifact.id, version="v2.0")
+    print("New version created!")
+```
+
+### Best Practices
+
+1. **File Organization**: Organize your site files logically (CSS in `/css/`, JS in `/js/`, etc.)
+2. **Template Usage**: Use templates for dynamic content, static files for performance
+3. **Caching**: Configure appropriate cache headers for static assets
+4. **Security**: Set proper security headers in your site configuration
+5. **Testing**: Always test staged versions before committing to production
+6. **Backup**: Use versioning to maintain backup copies of your site
+
+### Example: Complete Portfolio Site
+
+Here's a complete example of deploying a portfolio site:
+
+```python
+async def deploy_portfolio():
+    # Setup
+    api = await connect_to_server({"name": "portfolio-deploy", "server_url": SERVER_URL})
+    artifact_manager = await api.get_service("public/artifact-manager")
+    workspace = api.config.workspace
+    token = await api.generate_token()
+    
+    # Create site artifact
+    site = await artifact_manager.create(
+        type="site",
+        alias="portfolio",
+        manifest={
+            "name": "John Doe - Portfolio",
+            "description": "Software Engineer & Data Scientist",
+            "type": "site"
+        },
+        config={
+            "templates": ["index.html", "about.html", "projects.html"],
+            "template_engine": "jinja2",
+            "headers": {
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "max-age=3600"
+            }
+        },
+        stage=True
+    )
+    
+    # Upload files (simplified for brevity)
+    files = {
+        "index.html": "<h1>{{ MANIFEST.name }}</h1><p>{{ MANIFEST.description }}</p>",
+        "style.css": "body { font-family: Arial; }",
+        "script.js": "console.log('Portfolio loaded');"
+    }
+    
+    for filename, content in files.items():
+        file_url = await artifact_manager.put_file(site.id, filename)
+        response = requests.put(file_url, data=content.encode())
+        assert response.ok
+    
+    # Deploy
+    await artifact_manager.commit(site.id)
+    
+    print(f"Portfolio deployed at: {SERVER_URL}/{workspace}/site/portfolio/")
+    return site
+
+# Deploy the portfolio
+asyncio.run(deploy_portfolio())
+```
+
+---
 
 ### Version Handling Rules
 

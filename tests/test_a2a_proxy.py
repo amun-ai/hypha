@@ -165,7 +165,7 @@ async def test_a2a_round_trip_service_consistency(fastapi_server, test_user_toke
     
     # Install the A2A agent app
     a2a_app_info = await controller.install(
-        config=a2a_config,
+        manifest=a2a_config,
         overwrite=True,
         stage=True,
     )
@@ -320,7 +320,7 @@ async def test_a2a_double_round_trip_reversibility(fastapi_server, test_user_tok
     }
     
     first_a2a_app_info = await controller.install(
-        config=first_a2a_config,
+        manifest=first_a2a_config,
         overwrite=True,
         stage=True,
     )
@@ -352,7 +352,7 @@ async def test_a2a_double_round_trip_reversibility(fastapi_server, test_user_tok
     }
     
     second_a2a_app_info = await controller.install(
-        config=second_a2a_config,
+        manifest=second_a2a_config,
         overwrite=True,
         stage=True,
     )
@@ -439,7 +439,7 @@ async def test_a2a_error_handling_and_debugging(fastapi_server, test_user_token)
     
     # Install the A2A agent app with invalid URL
     a2a_app_info = await controller.install(
-        config=a2a_config_invalid,
+        manifest=a2a_config_invalid,
         overwrite=True,
         stage=True,
     )
@@ -483,7 +483,7 @@ async def test_a2a_error_handling_and_debugging(fastapi_server, test_user_token)
     # Install the A2A agent app with missing config - should fail
     try:
         a2a_app_info = await controller.install(
-            config=a2a_config_missing,
+            manifest=a2a_config_missing,
             overwrite=True,
             stage=True,
         )
@@ -533,7 +533,7 @@ async def test_a2a_config_validation(fastapi_server, test_user_token):
         }
     }
     
-    validation_result = await controller.validate_app_config(valid_config)
+    validation_result = await controller.validate_app_manifest(valid_config)
     assert validation_result["valid"] is True
     print("✓ Valid A2A config passed validation")
     
@@ -546,7 +546,7 @@ async def test_a2a_config_validation(fastapi_server, test_user_token):
         # Missing a2aAgents
     }
     
-    validation_result = await controller.validate_app_config(invalid_config_1)
+    validation_result = await controller.validate_app_manifest(invalid_config_1)
     assert validation_result["valid"] is False
     assert any("a2aAgents" in error for error in validation_result["errors"])
     print("✓ Invalid A2A config (missing a2aAgents) failed validation as expected")
@@ -560,7 +560,7 @@ async def test_a2a_config_validation(fastapi_server, test_user_token):
         "a2aAgents": {}  # Empty
     }
     
-    validation_result = await controller.validate_app_config(invalid_config_2)
+    validation_result = await controller.validate_app_manifest(invalid_config_2)
     assert validation_result["valid"] is False
     assert any("cannot be empty" in error for error in validation_result["errors"])
     print("✓ Invalid A2A config (empty a2aAgents) failed validation as expected")
@@ -579,7 +579,7 @@ async def test_a2a_config_validation(fastapi_server, test_user_token):
         }
     }
     
-    validation_result = await controller.validate_app_config(invalid_config_3)
+    validation_result = await controller.validate_app_manifest(invalid_config_3)
     assert validation_result["valid"] is False
     assert any("missing required field 'url'" in error for error in validation_result["errors"])
     print("✓ Invalid A2A config (missing URL) failed validation as expected")
@@ -598,7 +598,7 @@ async def test_a2a_config_validation(fastapi_server, test_user_token):
         }
     }
     
-    validation_result = await controller.validate_app_config(warning_config)
+    validation_result = await controller.validate_app_manifest(warning_config)
     assert validation_result["valid"] is True  # Still valid but with warnings
     assert any("should start with http://" in warning for warning in validation_result["warnings"])
     print("✓ A2A config with non-HTTP URL generated warning as expected")

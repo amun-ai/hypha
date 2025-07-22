@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import hypha_rpc
 
 # read version information from file
 VERSION_INFO = json.loads(
@@ -9,7 +10,8 @@ VERSION_INFO = json.loads(
 )
 __version__ = VERSION_INFO["version"]
 parts = __version__.split(".")
-main_version = f"{parts[0]}.{parts[1]}.{parts[2]}"
+
+hypha_rpc_version = hypha_rpc.__version__ if hasattr(hypha_rpc, "__version__") else "0.20.70"
 
 
-__all__ = ["__version__", "main_version"]
+__all__ = ["__version__", "hypha_rpc_version"]

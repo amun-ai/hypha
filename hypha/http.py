@@ -28,7 +28,7 @@ import os
 from starlette.datastructures import Headers, MutableHeaders
 
 from hypha_rpc import RPC
-from hypha import main_version
+from hypha import hypha_rpc_version
 from hypha.core import UserPermission
 from hypha.core.auth import AUTH0_DOMAIN
 from hypha.core.store import RedisStore
@@ -305,11 +305,40 @@ class ASGIRoutingMiddleware:
 
         await self.app(scope, receive, send)
 
+    def _find_nested_function(self, service, path_parts):
+        """Find a function in nested service structure."""
+        current = service
+        for part in path_parts:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return None
+        return current if callable(current) else None
+
     async def handle_function_service(self, service, path, scope, receive, send):
-        """Handle function service."""
-        func_name = path.split("/", 1)[-1] or "index"
-        func_name = func_name.rstrip("/")
-        if func_name in service and callable(service[func_name]):
+        """Handle function service with support for nested functions and default fallback."""
+        # Clean up the path
+        path = path.strip("/")
+        if not path:
+            path = "index"
+        
+        path_parts = path.split("/")
+        
+        # Try to find the exact function match (including nested)
+        func = self._find_nested_function(service, path_parts)
+        
+        # If no exact match, try index function for directory-style access
+        if not func and len(path_parts) > 1:
+            index_parts = path_parts + ["index"]
+            func = self._find_nested_function(service, index_parts)
+        
+        # If still no match, try the default function as fallback
+        if not func and "default" in service and callable(service["default"]):
+            func = service["default"]
+            # For default function, we pass the original path in the scope
+            scope["function_path"] = "/" + path if path != "index" else "/"
+        
+        if func:
             scope["query_string"] = scope["query_string"].decode("utf-8")
             scope["raw_path"] = scope["raw_path"].decode("latin-1")
             scope["headers"] = dict(Headers(scope=scope).items())
@@ -318,7 +347,7 @@ class ASGIRoutingMiddleware:
             while event.get("more_body"):
                 body += await receive()["body"]
             scope["body"] = body or None
-            func = service[func_name]
+            
             try:
                 result = await func(scope)
                 headers = MutableHeaders(headers=result.get("headers"))
@@ -385,7 +414,7 @@ class ASGIRoutingMiddleware:
             await send(
                 {
                     "type": "http.response.body",
-                    "body": b"Function not found: " + func_name.encode(),
+                    "body": b"Function not found: " + path.encode(),
                     "more_body": False,
                 }
             )
@@ -435,7 +464,7 @@ class HTTPProxy:
         @app.get(norm_url("/assets/hypha-rpc-websocket.mjs"))
         async def hypha_rpc_websocket_mjs(request: Request):
             if not self.rpc_lib_esm_content:
-                _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{main_version}/dist/hypha-rpc-websocket.mjs"
+                _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{hypha_rpc_version}/dist/hypha-rpc-websocket.mjs"
                 async with httpx.AsyncClient(timeout=10) as client:
                     response = await client.get(_rpc_lib_script)
                     response.raise_for_status()
@@ -447,7 +476,7 @@ class HTTPProxy:
         @app.get(norm_url("/assets/hypha-rpc-websocket.js"))
         async def hypha_rpc_websocket_js(request: Request):
             if not self.rpc_lib_umd_content:
-                _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{main_version}/dist/hypha-rpc-websocket.js"
+                _rpc_lib_script = f"https://cdn.jsdelivr.net/npm/hypha-rpc@{hypha_rpc_version}/dist/hypha-rpc-websocket.js"
                 async with httpx.AsyncClient() as client:
                     response = await client.get(_rpc_lib_script)
                     response.raise_for_status()

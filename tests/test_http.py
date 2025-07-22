@@ -113,11 +113,12 @@ async def test_http_proxy(
 
     # Test app with custom template
     controller = await api.get_service("public/server-apps")
-    app_config = await controller.launch(
+    app_config = await controller.install(
         source=TEST_APP_CODE,
         config={"type": "window"},
         wait_for_service=True,
     )
+    app_config = await controller.start(app_config.id)
     app = await api.get_app(app_config.id)
     assert "setup" in app and "register_services" in app
     svc1, svc2 = await app.register_services()

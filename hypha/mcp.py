@@ -1714,8 +1714,6 @@ class MCPRoutingMiddleware:
         
         logger.info(f"MCP middleware initialized with route patterns:")
         logger.info(f"  - Streamable HTTP: {self.mcp_route.path}")
-        logger.info(f"  - Info (404): {self.info_route.path}")
-        logger.info(f"  - SSE (future): {self.sse_route.path}")
     
     def _get_authorization_header(self, scope):
         """Extract the Authorization header from the scope."""

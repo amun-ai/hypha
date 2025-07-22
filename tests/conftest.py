@@ -136,7 +136,7 @@ def generate_authenticated_user_8():
 @pytest_asyncio.fixture(name="test_user_token_9", scope="session")
 def generate_authenticated_user_9():
     """Generate a test user token."""
-    yield from _generate_token("user-8", [])
+    yield from _generate_token("user-9", [])
 
 
 @pytest_asyncio.fixture(name="triton_server", scope="session")
@@ -321,6 +321,7 @@ def fastapi_server_fixture(minio_server, postgres_server):
             "--cache-dir=./bin/cache",
             f"--triton-servers=http://127.0.0.1:{TRITON_PORT}",
             "--static-mounts=/tests:./tests",
+            "--s3-cleanup-period=2",
             "--startup-functions",
             "hypha.utils:_example_hypha_startup",
             "./tests/example-startup-function.py:hypha_startup",
