@@ -7,6 +7,107 @@ The **Server Apps** service is a core Hypha service that enables serverless comp
 > - [Serverless Functions](serverless-functions.md) - Deploy HTTP endpoint functions
 > - [Autoscaling](autoscaling.md) - Automatic scaling based on load
 
+
+---
+
+## Getting Started
+
+### Step 1: Connecting to the Server Apps Service
+
+To use the Server Apps service, start by connecting to the Hypha server and accessing the service.
+
+```python
+from hypha_rpc import connect_to_server, login
+
+SERVER_URL = "https://hypha.aicell.io"  # Replace with your server URL
+
+token = await login({"server_url": SERVER_URL})
+# Connect to the server
+api = await connect_to_server({"server_url": SERVER_URL, "token": token})
+
+# Get the server apps controller
+controller = await api.get_service("public/server-apps")
+```
+
+### Step 2: Installing Your First App
+
+Let's install a simple web worker application that provides basic functionality.
+
+```python
+# Define a simple web worker app
+app_source = '''
+api.export({
+    async setup(){
+        console.log("App initialized");
+    },
+    async add(a, b){
+        return a + b;
+    },
+    async echo(message){
+        return message;
+    }
+})
+'''
+
+# install with a custom app_id
+app_info = await controller.install(
+    source=app_source,
+    # app_id="my-calculator-app",  # Custom app identifier if needed
+    manifest={
+        "name": "My Calculator",
+        "type": "web-worker",
+        "version": "1.0.0"
+    },
+    overwrite=True,  # Required if app_id already exists
+)
+
+print(f"App installed with custom ID: {app_info.id}")
+```
+
+### Step 3: Starting and Using the App
+
+After installation, you can start the app and use its services.
+
+```python
+# Start the app
+started_app = await controller.start(
+    app_info.id,
+    wait_for_service="default",  # Wait for the default service to be available
+    timeout=30
+)
+
+print(f"App started with session ID: {started_app.id}")
+
+# Get the app service and use it
+app_service = await api.get_service(f"default@{app_info.id}")
+result = await app_service.add(5, 3)
+print(f"5 + 3 = {result}")
+
+echo_result = await app_service.echo("Hello, World!")
+print(f"Echo result: {echo_result}")
+```
+
+### Step 4: Managing Apps
+
+You can list, stop, and uninstall apps as needed.
+
+```python
+# List all installed apps
+apps = await controller.list_apps()
+print(f"Total apps: {len(apps)}")
+
+# List running apps
+running_apps = await controller.list_running()
+print(f"Running apps: {len(running_apps)}")
+
+# Stop the app
+await controller.stop(started_app.id)
+
+# Uninstall the app
+await controller.uninstall(app_info.id)
+```
+
+
 ## 🌐 **Building HTTP Endpoints & Web Applications**
 
 For developers looking to create HTTP endpoints or web applications, Hypha provides **two powerful options**:
@@ -50,38 +151,90 @@ await controller.install({
 ### 🏗️ **ASGI Applications** - Full Web Frameworks
 Deploy FastAPI, Django, or any ASGI-compatible web framework:
 
-```python
-# Deploy a FastAPI web application  
-await controller.install({
-    source: '''
-        from fastapi import FastAPI
-        from hypha_rpc import connect_to_server
-        
-        app = FastAPI()
-        
-        @app.get("/dashboard")
-        async def dashboard():
-            return {"message": "Welcome to dashboard"}
-            
-        @app.post("/api/data") 
-        async def process_data(data: dict):
-            return {"processed": True, "data": data}
-        
-        # Register as ASGI service
-        api = await connect_to_server({...})
-        await api.register_service({
-            "id": "web-dashboard",
-            "type": "asgi",
-            "serve": app
-        })
-    ''',
-    manifest: { 
+```python 
+source = '''
+from hypha_rpc import api
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+import time
+import json
+from datetime import datetime
+
+def create_fastapi_app():
+    app = FastAPI(
+        title="Modern FastAPI App",
+        description="A stylish FastAPI application with interactive features",
+        version="1.0.0"
+    )
+
+    @app.get("/", response_class=HTMLResponse)
+    async def home():
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return f"""
+        <html>
+        <head>
+            <title>Modern FastAPI App</title>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>🚀 Modern FastAPI App</h1>
+                    <div class="subtitle">A stylish web application with interactive features</div>
+                </div>
+                
+                <div class="status">
+                    <strong>Status:</strong> ✅ Service Running<br>
+                    <strong>Time:</strong> {current_time}<br>
+                    <strong>Service:</strong> hello-fastapi
+                </div>
+            </div>
+
+        </body>
+        </html>
+        """
+
+    @app.get("/api/add/{a}/{b}")
+    async def add_numbers(a: int, b: int):
+        result = a + b
+        return {
+            "operation": "addition",
+            "inputs": {"a": a, "b": b},
+            "result": result,
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+    return app
+
+async def setup():
+    # Registering FastAPI app
+    fastapi_app = create_fastapi_app()
+
+    async def serve_fastapi(args):
+        await fastapi_app(args["scope"], args["receive"], args["send"])
+
+    await api.register_service({
+        "id": "hello-fastapi",
+        "type": "asgi",
+        "serve": serve_fastapi,
+        "config": {
+            "visibility": "public"
+        }
+    }, {"overwrite": True})
+
+api.export({"setup": setup})
+'''
+
+await controller.install(
+    source=source,
+    manifest={ 
         "type": "web-python", 
         "name": "Web Dashboard",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "requirements": ["fastapi==0.112.1"]
     },
-    overwrite: True
-})
+    overwrite=True
+)
 ```
 
 **🔗 Learn More:** See [Serverless Functions](serverless-functions.md) and [ASGI Applications](asgi-apps.md) for comprehensive guides.
@@ -818,113 +971,6 @@ session = await controller.start(app_info.id)
 
 ---
 
-## Getting Started
-
-### Step 1: Connecting to the Server Apps Service
-
-To use the Server Apps service, start by connecting to the Hypha server and accessing the service.
-
-```python
-from hypha_rpc import connect_to_server
-
-SERVER_URL = "https://hypha.aicell.io"  # Replace with your server URL
-
-# Connect to the server
-api = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
-
-# Get the server apps controller
-controller = await api.get_service("public/server-apps")
-```
-
-### Step 2: Installing Your First App
-
-Let's install a simple web worker application that provides basic functionality.
-
-```python
-# Define a simple web worker app
-app_source = '''
-api.export({
-    async setup(){
-        console.log("App initialized");
-    },
-    async add(a, b){
-        return a + b;
-    },
-    async echo(message){
-        return message;
-    }
-})
-'''
-
-# Install the app (auto-generated app_id)
-app_info = await controller.install(
-    source=app_source,
-    manifest={"type": "web-worker"},
-    overwrite=True,
-)
-
-print(f"App installed with ID: {app_info.id}")
-
-# Or install with a custom app_id
-app_info = await controller.install(
-    source=app_source,
-    app_id="my-calculator-app",  # Custom app identifier
-    manifest={
-        "name": "My Calculator",
-        "type": "web-worker",
-        "version": "1.0.0"
-    },
-    overwrite=True,  # Required if app_id already exists
-)
-
-print(f"App installed with custom ID: {app_info.id}")
-```
-
-### Step 3: Starting and Using the App
-
-After installation, you can start the app and use its services.
-
-```python
-# Start the app
-started_app = await controller.start(
-    app_info.id,
-    wait_for_service="default",  # Wait for the default service to be available
-    timeout=30
-)
-
-print(f"App started with session ID: {started_app.id}")
-
-# Get the app service and use it
-app_service = await api.get_service(f"default@{app_info.id}")
-result = await app_service.add(5, 3)
-print(f"5 + 3 = {result}")
-
-echo_result = await app_service.echo("Hello, World!")
-print(f"Echo result: {echo_result}")
-```
-
-### Step 4: Managing Apps
-
-You can list, stop, and uninstall apps as needed.
-
-```python
-# List all installed apps
-apps = await controller.list_apps()
-print(f"Total apps: {len(apps)}")
-
-# List running apps
-running_apps = await controller.list_running()
-print(f"Running apps: {len(running_apps)}")
-
-# Stop the app
-await controller.stop(started_app.id)
-
-# Uninstall the app
-await controller.uninstall(app_info.id)
-```
-
----
-
 ## Application Installation
 
 ### Basic Installation
@@ -964,7 +1010,7 @@ await controller.install(
     source=None,                    # Source code, URL, or None (using files)
     manifest=None,                  # Application manifest dictionary
     app_id=None,                   # Custom app identifier (optional)
-    files=None,                    # List of files to include
+    files=None,                    # List of files to include, {name/path, content, format}, the format can be text/base64/json
     workspace=None,                # Target workspace (defaults to current)
     overwrite=False,               # Overwrite existing app with same app_id
     timeout=None,                  # Installation timeout in seconds
@@ -1030,22 +1076,22 @@ app_info = await controller.install(
     },
     files=[
         {
-            "name": "index.html",
+            "path": "index.html", # can also be "path": "nested/folder/index.html"
             "content": "<!DOCTYPE html><html>...</html>",
             "format": "text"
         },
         {
-            "name": "styles.css", 
+            "path": "styles.css", 
             "content": "body { margin: 0; }",
             "format": "text"
         },
         {
-            "name": "config.json",
+            "path": "config.json",
             "content": {"theme": "dark", "version": "1.0"},
             "format": "json"
         },
         {
-            "name": "logo.png",
+            "path": "logo.png",
             "content": "iVBORw0KGgoAAAANSUhEUgAA...",  # base64 content
             "format": "base64"
         }
