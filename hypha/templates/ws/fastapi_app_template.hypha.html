@@ -60,15 +60,6 @@ def create_fastapi_app():
         </html>
         """
 
-    @app.get("/health")
-    async def health():
-        return {
-            "status": "healthy",
-            "service": "hello-fastapi",
-            "timestamp": datetime.now().isoformat(),
-            "uptime": "running"
-        }
-
     @app.get("/api/add/{a}/{b}")
     async def add_numbers(a: int, b: int):
         result = a + b
@@ -79,30 +70,6 @@ def create_fastapi_app():
             "timestamp": datetime.now().isoformat()
         }
 
-    @app.get("/api/random")
-    async def get_random(min: int = 1, max: int = 100):
-        import random
-        if min >= max:
-            raise HTTPException(status_code=400, detail="min must be less than max")
-        
-        number = random.randint(min, max)
-        return {
-            "random_number": number,
-            "range": {"min": min, "max": max},
-            "timestamp": datetime.now().isoformat()
-        }
-
-    @app.get("/api/stats")
-    async def get_stats():
-        return {
-            "app_name": "Modern FastAPI App",
-            "version": "1.0.0",
-            "framework": "FastAPI",
-            "python_version": "3.x",
-            "endpoints": 6,
-            "status": "active",
-            "timestamp": datetime.now().isoformat()
-        }
 
     return app
 

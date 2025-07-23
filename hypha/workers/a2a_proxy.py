@@ -115,9 +115,9 @@ class A2AClientRunner(BaseWorker):
             source_content = json.dumps(final_manifest, indent=2)
             
             # Create new files list, replacing or adding source
-            new_files = [f for f in files if f.get("name") != "source"]
+            new_files = [f for f in files if f.get("path") != "source"]
             new_files.append({
-                "name": "source", 
+                "path": "source", 
                 "content": source_content,
                 "format": "text"
             })

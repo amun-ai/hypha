@@ -563,7 +563,7 @@ class BrowserAppRunner(BaseWorker):
         
         # Always save the compiled HTML as index.html for consistency
         new_files.append({
-            "name": compiled_entry_point,
+            "path": compiled_entry_point,
             "content": compiled_html,
             "format": "text"
         })
@@ -573,7 +573,7 @@ class BrowserAppRunner(BaseWorker):
             del new_manifest["script"]
         if "code" in new_manifest:
             new_files.append({
-                "name": entry_point,
+                "path": entry_point,
                 "content": new_manifest["code"],
                 "format": "text"
             })

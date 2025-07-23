@@ -506,6 +506,16 @@ class ServerAppController:
                 "type": "hypha"  # Default type
             }
         
+        if files:
+            # make sure all files have path and name
+            for file in files:
+                if "path" not in file and "name" not in file:
+                    raise ValueError(f"File {file} must have 'name' or 'path' field")
+                if "path" not in file:
+                    file["path"] = file["name"]
+                if "name" not in file:
+                    file["name"] = file["path"].split("/")[-1]
+        
         # Compute source hash if source exists
         mhash = None
         if source:
@@ -569,14 +579,14 @@ class ServerAppController:
             # If there's remaining source content, add it as source file
             if remaining_source and remaining_source.strip():
                 app_files.append({
-                    "name": artifact_obj["entry_point"],
+                    "path": artifact_obj["entry_point"],
                     "content": remaining_source,
                     "format": "text"
                 })
         elif source:
             # Fall back to treating source as single file
             app_files.append({
-                "name": artifact_obj["entry_point"],
+                "path": artifact_obj["entry_point"],
                 "content": source,
                 "format": "text"
             })
@@ -591,6 +601,12 @@ class ServerAppController:
         
         if app_type in ["application", None]:
             raise ValueError("Application type should not be application or None")
+        
+        if app_type == "hypha":
+            assert source is not None, "Source is missing"
+            # Ensure source is in top level xml format with tags such as <config> <script>
+            
+            
         
         # Try to get worker that supports this app type
         worker = await self.get_server_app_workers(app_type, context, random_select=True)
@@ -695,11 +711,17 @@ class ServerAppController:
         # Upload all files  
         
         for file_info in app_files:
-            file_name = file_info.get("name")
+            if "path" not in file_info and "name" not in file_info:
+                raise ValueError(f"File {file_info} must have 'name' or 'path' field")
+            if "path" not in file_info:
+                file_info["path"] = file_info["name"]
+            if "name" not in file_info:
+                file_info["name"] = file_info["path"].split("/")[-1]
+            file_path = file_info["path"]
             file_content = file_info.get("content")
             file_format = file_info.get("format", "text")
             
-            if not file_name or file_content is None:
+            if not file_path or file_content is None:
                 raise Exception("Each file must have 'name' and 'content' fields")
             
             # Handle different file formats
@@ -712,14 +734,14 @@ class ServerAppController:
                             # Extract base64 part after the comma
                             base64_content = file_content.split(";base64,", 1)[1]
                         else:
-                            raise Exception(f"Data URL format not supported for file {file_name}. Expected format: data:mediatype;base64,content")
+                            raise Exception(f"Data URL format not supported for file {file_path}. Expected format: data:mediatype;base64,content")
                     else:
                         # Direct base64 content
                         base64_content = file_content
                     
                     file_data = base64.b64decode(base64_content)
                 except Exception as e:
-                    raise Exception(f"Failed to decode base64 content for file {file_name}: {e}")
+                    raise Exception(f"Failed to decode base64 content for file {file_path}: {e}")
             elif file_format == "json":
                 try:
                     if isinstance(file_content, (dict, list)):
@@ -734,19 +756,19 @@ class ServerAppController:
                     
                     file_data = json_string.encode('utf-8')
                 except Exception as e:
-                    raise Exception(f"Failed to process JSON content for file {file_name}: {e}")
+                    raise Exception(f"Failed to process JSON content for file {file_path}: {e}")
             elif file_format == "text":
                 file_data = file_content.encode('utf-8') if isinstance(file_content, str) else file_content
             else:
-                raise Exception(f"Unsupported file format '{file_format}' for file {file_name}. Must be 'text', 'json', or 'base64'")
+                raise Exception(f"Unsupported file format '{file_format}' for file {file_path}. Must be 'text', 'json', or 'base64'")
             
             # Upload the file to the artifact
             put_url = await self.artifact_manager.put_file(
-                artifact["id"], file_path=file_name, use_proxy=False, context=context
+                artifact["id"], file_path=file_path, use_proxy=False, context=context
             )
             async with httpx.AsyncClient() as client:
                 response = await client.put(put_url, data=file_data)
-                assert response.status_code == 200, f"Failed to upload file {file_name}"
+                assert response.status_code == 200, f"Failed to upload file {file_path}"
 
         if not stage:
             progress_callback({

@@ -2136,32 +2136,32 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
     # Test files array
     test_files = [
         {
-            "name": "main.html",
+            "path": "main.html",
             "content": text_content,
             "format": "text"
         },
         {
-            "name": "style.css",
+            "path": "style.css",
             "content": css_content,
             "format": "text"
         },
         {
-            "name": "assets/image.png",
+            "path": "assets/image.png",
             "content": base64_content,
             "format": "base64"
         },
         {
-            "name": "data.json",
+            "path": "data.json",
             "content": '{"test": true, "value": 42}',
             # Test default format (should default to text)
         },
         {
-            "name": "config.json",
+            "path": "config.json",
             "content": {"setting": "value", "enabled": True, "count": 123},
             "format": "json"
         },
         {
-            "name": "favicon.ico",
+            "path": "favicon.ico",
             "content": f"data:image/x-icon;base64,{base64_content}",
             "format": "base64"
         }
@@ -2219,7 +2219,7 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
     # Test 7: Error handling for missing required fields
     invalid_files = [
         {
-            "name": "test.txt",
+            "path": "test.txt",
             # Missing content
             "format": "text"
         }
@@ -2244,7 +2244,7 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
     # Test 8: Error handling for invalid base64
     invalid_base64_files = [
         {
-            "name": "invalid.bin",
+            "path": "invalid.bin",
             "content": "not-valid-base64-content!!!",
             "format": "base64"
         }
@@ -2269,7 +2269,7 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
                     # Test 9: Error handling for invalid file format
         invalid_format_files = [
             {
-                "name": "test.txt",
+                "path": "test.txt",
                 "content": "test content",
                 "format": "invalid-format"
             }
@@ -2295,7 +2295,7 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
     # Test 10: Error handling for invalid JSON content
     invalid_json_files = [
         {
-            "name": "invalid.json",
+            "path": "invalid.json",
             "content": 123.456,  # Not a dict, list, or string
             "format": "json"
         }
@@ -2321,7 +2321,7 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
     # Test 11: Error handling for invalid data URL format
     invalid_data_url_files = [
         {
-            "name": "invalid.bin",
+            "path": "invalid.bin",
             "content": "data:image/png,not-base64-format",  # Missing ;base64
             "format": "base64"
         }

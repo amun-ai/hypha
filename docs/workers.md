@@ -879,7 +879,7 @@ async def compile(self, manifest: Dict[str, Any], files: List[Dict[str, Any]], c
             # Example: Minify JavaScript files
             processed_content = minify_js(file["content"])
             processed_files.append({
-                "name": file["name"],
+                "path": file["name"],
                 "content": processed_content,
                 "format": file.get("format", "text")
             })
