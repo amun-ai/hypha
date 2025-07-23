@@ -492,14 +492,14 @@ class BrowserAppRunner(BaseWorker):
         script_file = None
         source_content = ""
         
-        files_by_name = {f.get("name"): f for f in files}
+        files_by_name = {f.get("path"): f for f in files}
         
         entry_point = manifest["entry_point"]
         # Check for source file (traditional approach)
         if entry_point in files_by_name:
             source_file = files_by_name[entry_point]
             if source_file.get("content") is None:
-                raise Exception(f"Source file {source_file.get('name')} is empty")
+                raise Exception(f"Source file {source_file.get('path')} is empty")
             source_content = source_file.get("content") or ""
         
         # Only process config/script files for compilation if there's a source file
@@ -518,11 +518,11 @@ class BrowserAppRunner(BaseWorker):
             found_html_file = False
             
             for file in files:
-                file_name = file.get("name", "")
+                file_name = file.get("path", "")
                 if file_name.endswith(".html") and not found_html_file:
                     # Rename the first HTML file to index.html
                     updated_file = file.copy()
-                    updated_file["name"] = "index.html"
+                    updated_file["path"] = "index.html"
                     updated_files.append(updated_file)
                     found_html_file = True
                 elif file_name != "index.html" or not found_html_file:
@@ -555,11 +555,11 @@ class BrowserAppRunner(BaseWorker):
         # Create new files list without the source/config/script files and add compiled file
         files_to_remove = set([entry_point])
         if config_file:
-            files_to_remove.add(config_file["name"])
+            files_to_remove.add(config_file["path"])
         if script_file:
-            files_to_remove.add(script_file["name"])
+            files_to_remove.add(script_file["path"])
         
-        new_files = [f for f in files if f.get("name") not in files_to_remove]
+        new_files = [f for f in files if f.get("path") not in files_to_remove]
         
         # Always save the compiled HTML as index.html for consistency
         new_files.append({
