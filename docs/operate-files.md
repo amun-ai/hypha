@@ -767,7 +767,7 @@ with open("local_file.csv", "rb") as f:
 
 ---
 
-### `get_file(file_path: str, use_proxy: bool = None, use_local_url: bool = False, expires_in: float = 3600, context: dict = None) -> str`
+### `get_file(file_path: str, use_proxy: bool = None, use_local_url: bool = False, expires_in: float = 3600) -> str`
 
 Generates a presigned URL for downloading a file from S3.
 
@@ -777,9 +777,6 @@ Generates a presigned URL for downloading a file from S3.
 - `use_proxy`: Optional. A boolean to control whether to use the S3 proxy for the generated URL. If `None` (default), follows the server configuration. If `True`, forces the use of the proxy. If `False`, bypasses the proxy and returns a direct S3 URL.
 - `use_local_url`: Optional. A boolean to control whether to generate URLs for local/cluster-internal access. Defaults to `False`. When `True`, generates URLs suitable for access within the cluster.
 - `expires_in`: Optional. A float number for the expiration time of the S3 presigned URL in seconds. Defaults to 3600 (1 hour).
-- `context`: Required. A dictionary containing workspace and user information. Must include:
-  - `ws`: The workspace ID
-  - `user`: User information dictionary
 
 **Returns:** A presigned URL string for downloading the file.
 
@@ -800,7 +797,7 @@ async with httpx.AsyncClient() as client:
 
 ---
 
-### `put_file_start_multipart(file_path: str, part_count: int, expires_in: int = 3600, ttl: int = None, context: dict = None) -> dict`
+### `put_file_start_multipart(file_path: str, part_count: int, expires_in: int = 3600, ttl: int = None) -> dict`
 
 Initiates a multipart upload for large files and generates presigned URLs for uploading each part. This is useful for files larger than 100MB or when you need to upload files in chunks with parallel processing.
 
@@ -810,9 +807,6 @@ Initiates a multipart upload for large files and generates presigned URLs for up
 - `part_count`: The number of parts to split the file into. Must be between 1 and 10,000.
 - `expires_in`: Optional. The expiration time in seconds for the multipart upload session and part URLs. Defaults to 3600 (1 hour).
 - `ttl`: Optional. Time-to-live in seconds for the uploaded file. If specified and greater than 0, the file will be automatically deleted after this time period. Defaults to `None` (no automatic deletion).
-- `context`: Required. A dictionary containing workspace and user information. Must include:
-  - `ws`: The workspace ID
-  - `user`: User information dictionary
 
 **Returns:** A dictionary containing:
 - `upload_id`: The unique identifier for this multipart upload session
@@ -858,7 +852,7 @@ uploaded_parts = await asyncio.gather(*[
 
 ---
 
-### `put_file_complete_multipart(upload_id: str, parts: list, context: dict = None) -> dict`
+### `put_file_complete_multipart(upload_id: str, parts: list) -> dict`
 
 Completes a multipart upload by combining all uploaded parts into the final file. This must be called after all parts have been successfully uploaded using the URLs from `put_file_start_multipart`.
 
@@ -868,9 +862,6 @@ Completes a multipart upload by combining all uploaded parts into the final file
 - `parts`: A list of dictionaries containing information about uploaded parts. Each part must include:
   - `part_number`: The part number (1-indexed, matching the original part numbers)
   - `etag`: The ETag returned by S3 when the part was uploaded (without quotes)
-- `context`: Required. A dictionary containing workspace and user information. Must include:
-  - `ws`: The workspace ID
-  - `user`: User information dictionary
 
 **Returns:** A dictionary containing:
 - `success`: Boolean indicating whether the multipart upload was completed successfully
@@ -905,16 +896,13 @@ else:
 
 ---
 
-### `remove_file(path: str, context: dict = None) -> dict`
+### `remove_file(path: str) -> dict`
 
 Removes a file or directory from S3. This function combines the functionality of both file and directory deletion.
 
 **Parameters:**
 
 - `path`: The relative path of the file or directory to remove (e.g., `"data/myfile.txt"` or `"data/"`).
-- `context`: Required. A dictionary containing workspace and user information. Must include:
-  - `ws`: The workspace ID
-  - `user`: User information dictionary
 
 **Returns:** A dictionary containing:
 - `success`: Boolean indicating whether the operation was successful
@@ -944,7 +932,7 @@ print(result["message"])
 
 ---
 
-### `list_files(path: str = "", max_length: int = 1000, context: dict = None) -> Dict[str, Any]`
+### `list_files(path: str = "", max_length: int = 1000) -> Dict[str, Any]`
 
 Lists files and directories in the specified path.
 
@@ -952,9 +940,6 @@ Lists files and directories in the specified path.
 
 - `path`: Optional. The relative path to list files from. Defaults to `""` (root of workspace).
 - `max_length`: Optional. Maximum number of items to return. Defaults to 1000.
-- `context`: Required. A dictionary containing workspace and user information. Must include:
-  - `ws`: The workspace ID
-  - `user`: User information dictionary
 
 **Returns:** A list of file and directory objects, each containing:
 - `name`: The name of the file or directory
@@ -981,53 +966,9 @@ for file in files:
 
 ---
 
-### `generate_presigned_url(path: str, client_method: str = "get_object", expiration: int = 3600, context: dict = None) -> str`
-
-**Deprecated.**  This function is deprecated, please use `put_file` and `get_file` instead.
-
-Generates a presigned URL for direct S3 operations. This is a lower-level function that provides more control over S3 operations.
-
-**Parameters:**
-
-- `path`: The relative path of the file in S3 (e.g., `"data/myfile.txt"`).
-- `client_method`: The S3 client method to use. Common values:
-  - `"get_object"`: For downloading files
-  - `"put_object"`: For uploading files
-  - `"delete_object"`: For deleting files
-- `expiration`: Optional. The expiration time in seconds for the presigned URL. Defaults to 3600 (1 hour).
-- `context`: Required. A dictionary containing workspace and user information. Must include:
-  - `ws`: The workspace ID
-  - `user`: User information dictionary
-
-**Returns:** A presigned URL string for the specified S3 operation.
-
-**Example:**
-
-```python
-# Generate a download URL
-download_url = await s3controller.generate_presigned_url(
-    path="data/myfile.txt",
-    client_method="get_object",
-)
-
-# Generate an upload URL
-upload_url = await s3controller.generate_presigned_url(
-    path="data/myfile.txt",
-    client_method="put_object",
-)
-```
-
----
-
-### `generate_credential(context: dict = None) -> dict`
+### `generate_credential() -> dict`
 
 Generates S3 credentials for the current user. This is only available for Minio-based S3 servers.
-
-**Parameters:**
-
-- `context`: Required. A dictionary containing workspace and user information. Must include:
-  - `ws`: The workspace ID
-  - `user`: User information dictionary
 
 **Returns:** A dictionary containing S3 credentials:
 - `endpoint_url`: The S3 endpoint URL
@@ -1067,13 +1008,46 @@ response = s3_client.list_objects_v2(
 
 The following functions are deprecated and should not be used in new code. Use the recommended functions instead:
 
-#### `delete_file(path: str, context: dict = None) -> dict`
+#### `delete_file(path: str) -> dict`
 
 **Deprecated.** Use `remove_file()` instead.
 
-#### `delete_directory(path: str, context: dict = None) -> dict`
+#### `delete_directory(path: str) -> dict`
 
 **Deprecated.** Use `remove_file()` instead.
+
+#### `generate_presigned_url(path: str, client_method: str = "get_object", expiration: int = 3600) -> str`
+
+**Deprecated.**  This function is deprecated, please use `put_file` and `get_file` instead.
+
+Generates a presigned URL for direct S3 operations. This is a lower-level function that provides more control over S3 operations.
+
+**Parameters:**
+
+- `path`: The relative path of the file in S3 (e.g., `"data/myfile.txt"`).
+- `client_method`: The S3 client method to use. Common values:
+  - `"get_object"`: For downloading files
+  - `"put_object"`: For uploading files
+  - `"delete_object"`: For deleting files
+- `expiration`: Optional. The expiration time in seconds for the presigned URL. Defaults to 3600 (1 hour).
+
+**Returns:** A presigned URL string for the specified S3 operation.
+
+**Example:**
+
+```python
+# Generate a download URL
+download_url = await s3controller.generate_presigned_url(
+    path="data/myfile.txt",
+    client_method="get_object",
+)
+
+# Generate an upload URL
+upload_url = await s3controller.generate_presigned_url(
+    path="data/myfile.txt",
+    client_method="put_object",
+)
+```
 
 ## Summary
 
