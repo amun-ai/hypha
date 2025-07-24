@@ -311,23 +311,14 @@ class CondaEnvWorker(BaseWorker):
                 self._env_cache.add_cached_env(packages, channels, executor.env_path)
                 logger.info(f"Cached new conda environment: {executor.env_path}")
             
-            # Determine if script needs input data (check for execute function)
-            needs_execute_function = "def execute(" in script or "async def execute(" in script
+            # Always execute the script during startup to run initialization code
+            # This ensures print statements and setup code are executed
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, executor.execute, script, None
+            )
             
-            # Execute the script
-            if needs_execute_function:
-                # For scripts with execute function, we'll store the executor for later use
-                result = ExecutionResult(
-                    success=True,
-                    result="Environment prepared for execute function",
-                    stdout="",
-                    stderr=""
-                )
-            else:
-                # For scripts without execute function, run immediately
-                result = await asyncio.get_event_loop().run_in_executor(
-                    None, executor.execute, script, None
-                )
+            # Determine if script has execute function for later interactive calls
+            needs_execute_function = "def execute(" in script or "async def execute(" in script
             
             # Store logs
             logs = {

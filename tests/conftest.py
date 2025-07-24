@@ -12,6 +12,7 @@ from threading import Thread
 
 import requests
 from requests import RequestException
+import pytest
 import pytest_asyncio
 from sqlalchemy import create_engine
 
