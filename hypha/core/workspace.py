@@ -1950,9 +1950,7 @@ class WorkspaceManager:
             assert service_api, f"Failed to get service: {svc_info.id}"
             workspace = svc_info.id.split("/")[0]
             service_api["config"]["workspace"] = workspace
-            service_api["config"][
-                "url"
-            ] = f"{self._server_info['public_base_url']}/{workspace}/services/{svc_info.id.split("/")[-1]}"
+            service_api["config"]["url"] = f"{self._server_info['public_base_url']}/{workspace}/services/{svc_info.id.split('/')[-1]}"
             return service_api
         except KeyError as exp:
             if "@" in service_id:
