@@ -1589,7 +1589,7 @@ print("Python Conda app completed successfully!")
 """
 
 
-async def test_conda_python_apps(fastapi_server, test_user_token):
+async def test_conda_python_apps(fastapi_server, test_user_token, conda_available):
     """Test python-conda app installation and execution."""
     api = await connect_to_server(
         {
