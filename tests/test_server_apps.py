@@ -1488,6 +1488,228 @@ print("This won't be reached")
     await api.disconnect()
 
 
+# Test Python code for the python-conda app type
+TEST_CONDA_PYTHON_CODE = """
+import os
+import sys
+import numpy as np
+from hypha_rpc.sync import connect_to_server
+
+# Connect to server
+server = connect_to_server({
+    "client_id": os.environ["HYPHA_CLIENT_ID"],
+    "server_url": os.environ["HYPHA_SERVER_URL"],
+    "workspace": os.environ["HYPHA_WORKSPACE"],
+    "method_timeout": 30,
+    "token": os.environ["HYPHA_TOKEN"],
+})
+
+# Simple conda-python test app
+print("Python Conda app started!")
+print(f"Python version: {sys.version}")
+print(f"NumPy version: {np.__version__}")
+
+# Basic calculations with numpy
+arr = np.array([1, 2, 3, 4, 5])
+total = np.sum(arr)
+mean = np.mean(arr)
+print(f"NumPy array: {arr}")
+print(f"Sum: {total}, Mean: {mean}")
+
+# Execute function for interactive calls
+def execute(input_data):
+    \"\"\"Function that can be called interactively.\"\"\"
+    if input_data is None:
+        return {
+            "message": "Hello from python-conda app!",
+            "numpy_version": np.__version__,
+            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}"
+        }
+    
+    # Process input data with numpy
+    if isinstance(input_data, list):
+        arr = np.array(input_data)
+        return {
+            "input": input_data,
+            "sum": float(np.sum(arr)),
+            "mean": float(np.mean(arr)),
+            "std": float(np.std(arr)),
+            "shape": arr.shape
+        }
+    
+    return {"input": input_data, "type": str(type(input_data))}
+
+# Register a service for RPC calls
+server.register_service({
+    "id": "default",
+    "name": "Python Conda Test App",
+    "version": "1.0.0",
+    "calculate_with_numpy": lambda data: {
+        "sum": float(np.sum(np.array(data))),
+        "mean": float(np.mean(np.array(data)))
+    },
+    "get_numpy_info": lambda: {
+        "version": np.__version__,
+        "available": True
+    },
+    "setup": lambda: print("Python Conda app setup completed"),
+})
+
+print("Python Conda app completed successfully!")
+"""
+
+
+async def test_conda_python_apps(fastapi_server, test_user_token):
+    """Test python-conda app installation and execution."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 60,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+
+    # Test installing a python-conda app
+    app_info = await controller.install(
+        source=TEST_CONDA_PYTHON_CODE,
+        manifest={
+            "name": "Test Conda Python App",
+            "type": "python-conda",
+            "version": "1.0.0",
+            "entry_point": "main.py",
+            "description": "A test python-conda app with numpy",
+            "packages": ["python=3.11", "numpy"],
+            "channels": ["conda-forge"]
+        },
+        timeout=90,
+        wait_for_service=False,
+        overwrite=True,
+    )
+
+    assert app_info["name"] == "Test Conda Python App"
+    assert app_info["type"] == "python-conda"
+    assert app_info["entry_point"] == "main.py"
+
+    # Test starting the python-conda app
+    started_app = await controller.start(
+        app_info["id"],
+        timeout=90,
+        wait_for_service="default",
+    )
+
+    assert "id" in started_app
+
+    # Verify the logs contain our expected output
+    logs = await controller.get_logs(started_app["id"])
+    assert len(logs) > 0
+    
+    # Check that our print statements are in the logs
+    log_text = " ".join(logs.get("stdout", []))
+    assert "Python Conda app started!" in log_text
+    assert "NumPy version:" in log_text
+    assert "NumPy array:" in log_text
+    assert "Python Conda app completed successfully!" in log_text
+
+    # Test stopping the session
+    await controller.stop(started_app["id"])
+
+    # Test launching a python-conda app with an error
+    error_python_code = """
+print("This will work")
+import nonexistent_package_that_will_cause_error
+print("This won't be reached")
+"""
+
+    await controller.uninstall(app_info["id"])
+
+    with pytest.raises(hypha_rpc.rpc.RemoteException):
+        await controller.install(
+            source=error_python_code,
+            manifest={
+                "name": "Test Conda Python App Error", 
+                "type": "python-conda",
+                "version": "1.0.0",
+                "entry_point": "error.py",
+                "packages": ["python=3.11"],
+                "channels": ["conda-forge"]
+            },
+            timeout=30,
+            overwrite=True,
+        )
+
+    await api.disconnect()
+
+
+async def test_startup_config_from_source(fastapi_server, test_user_token):
+    """Test that startup_config from source is correctly applied."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    controller = await api.get_service("public/server-apps")
+
+    # Source with startup_config in the config tag
+    source_with_startup_config = """
+    <config lang="json">
+    {
+        "name": "Startup Config Test",
+        "type": "window",
+        "version": "1.0.0"
+    }
+    </config>
+    <script>
+    api.export({
+        async setup(){
+            await api.log("initialized");
+            await api.registerService({
+                id: "my-special-service",
+                name: "My Special Service",
+                "type": "test"
+            });
+        }
+    })
+    </script>
+    """
+
+    # Install the app
+    app_info = await controller.install(
+        source=source_with_startup_config,
+        overwrite=True,
+        manifest={
+            "startup_config": {
+                "wait_for_service": "my-special-service",
+                "timeout": 45,
+                "stop_after_inactive": 300
+            }
+        }
+    )
+
+    # Get the full app info
+    installed_app_info = await controller.get_app_info(app_info["id"])
+    manifest = installed_app_info["manifest"]
+
+    # Verify that startup_config is present and correct
+    assert "startup_config" in manifest
+    startup_config = manifest["startup_config"]
+    assert startup_config["wait_for_service"] == "my-special-service"
+    assert startup_config["timeout"] == 45
+    assert startup_config["stop_after_inactive"] == 300
+
+    print("✅ startup_config from source was correctly installed.")
+
+    # Clean up
+    await controller.uninstall(app_info["id"])
+    await api.disconnect()
+
+
 async def test_detached_mode_apps(fastapi_server, test_user_token):
     """Test detached mode (wait_for_service=False) app functionality."""
     api = await connect_to_server(

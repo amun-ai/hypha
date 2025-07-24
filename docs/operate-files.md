@@ -35,6 +35,100 @@ https://hypha.aicell.io/public/services/s3-storage
 
 Replace `https://hypha.aicell.io/` with your Hypha server URL. If everything is set up correctly, you should not encounter any errors on this page.
 
+
+## Starting with Built-in S3 (Minio) Server
+
+Hypha also provides a convenient built-in Minio server. To start the Hypha server along with this built-in S3 server, use the `--start-minio-server` flag:
+
+```bash
+python3 -m hypha.server --host=0.0.0.0 --port=9527 --start-minio-server
+```
+
+This automatically:
+- Starts a Minio server process.
+- Enables S3 support (`--enable-s3`).
+- Configures the necessary S3 connection details (`--endpoint-url`, `--access-key-id`, `--secret-access-key`).
+
+**Note:** You cannot use `--start-minio-server` if you are also manually providing S3 connection details (e.g., `--endpoint-url`). Choose one method or the other.
+
+You can customize the built-in Minio server using these options:
+- `--minio-workdir`: Specify a directory for Minio data (defaults to a temporary directory), it must be an absolute path.
+- `--minio-port`: Set the port for the Minio server (defaults to 9000).
+- `--minio-root-user`: Set the root user (defaults to `minioadmin`).
+- `--minio-root-password`: Set the root password (defaults to `minioadmin`).
+- `--minio-version`: Specify a specific version of the Minio server to use.
+- `--mc-version`: Specify a specific version of the Minio client to use.
+- `--minio-file-system-mode`: Enable file system mode with specific compatible versions.
+
+Example with custom Minio settings:
+```bash
+python3 -m hypha.server --host=0.0.0.0 --port=9527 \
+    --start-minio-server \
+    --minio-workdir=/tmp/minio_data \
+    --minio-port=9001 \
+    --minio-root-user=myuser \
+    --minio-root-password=mypassword
+```
+
+#### Minio File System Mode
+
+For better filesystem-like behavior, you can enable file system mode with the `--minio-file-system-mode` flag:
+
+```bash
+python3 -m hypha.server --host=0.0.0.0 --port=9527 \
+    --start-minio-server \
+    --minio-file-system-mode
+```
+
+When file system mode is enabled, Hypha uses specific versions of Minio that are compatible with file system operations:
+- Minio server: `RELEASE.2022-10-24T18-35-07Z`
+- Minio client: `RELEASE.2022-10-29T10-09-23Z`
+
+This mode optimizes Minio for use as a direct file system, which means:
+1. Files are stored in their raw format, allowing direct access from the file system
+2. The .minio.sys directory is automatically cleaned up to avoid version conflicts
+3. The Minio server process is properly terminated when the application shuts down
+
+File system mode is particularly useful for development environments and when you need to access the stored files directly without using S3 API calls.
+
+**Note:** In file system mode, some advanced S3 features like versioning may not be available, but basic operations like storing and retrieving files will work consistently.
+
+#### Running with Built-in S3 (Minio) in Docker
+
+When running Hypha with the built-in Minio server inside a Docker container, additional considerations are necessary:
+
+1. **Volume Mounting**: For data persistence, mount a volume for the Minio data directory:
+   ```bash
+   docker run -v /host/path/to/minio_data:/app/minio_data your-hypha-image \
+     python -m hypha.server --host=0.0.0.0 --port=9527 \
+     --start-minio-server \
+     --minio-workdir=/app/minio_data
+   ```
+
+2. **Executable Path**: You may need to specify the Minio executable path with `--executable-path`:
+   ```bash
+   docker run your-hypha-image \
+     python -m hypha.server --host=0.0.0.0 --port=9527 \
+     --start-minio-server \
+     --executable-path=/path/to/minio
+   ```
+
+3. **Permissions**: Ensure the Minio working directory is writable by the container user:
+   ```bash
+   docker run -v /host/path/to/minio_data:/app/minio_data your-hypha-image \
+     chown -R container_user:container_user /app/minio_data && \
+     python -m hypha.server --host=0.0.0.0 --port=9527 \
+     --start-minio-server \
+     --minio-workdir=/app/minio_data
+   ```
+
+4. **Port Exposure**: Remember to expose both the Hypha port and Minio port:
+   ```bash
+   docker run -p 9527:9527 -p 9000:9000 -v /host/path/to/minio_data:/app/minio_data your-hypha-image \
+     python -m hypha.server --host=0.0.0.0 --port=9527 \
+     --start-minio-server
+   ```
+
 ## Methods for Manipulating Files in S3
 
 ### Connecting to the Server and Getting the S3 Service

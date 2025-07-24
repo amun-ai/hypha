@@ -325,7 +325,8 @@ def fastapi_server_fixture(minio_server, postgres_server):
             "--startup-functions",
             "hypha.utils:_example_hypha_startup",
             "./tests/example-startup-function.py:hypha_startup",
-            "hypha.workers.python_eval:hypha_startup"
+            "hypha.workers.python_eval:hypha_startup",
+            "hypha.workers.conda_env:hypha_startup"
         ],
         env=test_env,
     ) as proc:
@@ -549,3 +550,71 @@ def minio_server_fixture():
                 shutil.rmtree(workdir, ignore_errors=True)
             except Exception as e:
                 print(f"Error removing Minio workdir {workdir}: {e}")
+
+
+@pytest_asyncio.fixture(name="conda_available", scope="session")
+def conda_available_fixture():
+    """Check if conda is available and skip tests if not."""
+    import shutil
+    
+    # Check if conda command is available
+    conda_path = shutil.which("conda")
+    if conda_path is None:
+        pytest.skip("Conda not available - skipping conda integration tests")
+    
+    # Check if we can run conda commands
+    try:
+        result = subprocess.run(
+            ["conda", "--version"], 
+            capture_output=True, 
+            text=True, 
+            timeout=10
+        )
+        if result.returncode != 0:
+            pytest.skip("Conda command failed - skipping conda integration tests")
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pytest.skip("Conda command not accessible - skipping conda integration tests")
+    
+    yield conda_path
+
+
+@pytest_asyncio.fixture(name="conda_test_workspace")
+def conda_test_workspace_fixture(conda_available):
+    """Provide a clean workspace for conda integration tests."""
+    # Create a temporary directory for conda test environments
+    test_workspace = tempfile.mkdtemp(prefix="hypha_conda_test_")
+    
+    # Create subdirectories
+    cache_dir = os.path.join(test_workspace, "cache")
+    envs_dir = os.path.join(test_workspace, "envs") 
+    os.makedirs(cache_dir, exist_ok=True)
+    os.makedirs(envs_dir, exist_ok=True)
+    
+    workspace_info = {
+        "workspace_dir": test_workspace,
+        "cache_dir": cache_dir,
+        "envs_dir": envs_dir
+    }
+    
+    yield workspace_info
+    
+    # Cleanup - remove all test environments and cache
+    print(f"Cleaning up conda test workspace: {test_workspace}")
+    try:
+        shutil.rmtree(test_workspace, ignore_errors=True)
+    except Exception as e:
+        print(f"Error cleaning up conda test workspace: {e}")
+
+
+@pytest_asyncio.fixture(name="conda_integration_server")
+def conda_integration_server_fixture():
+    """Provide a mock server for conda integration tests."""
+    class MockIntegrationServer:
+        def __init__(self):
+            self.registered_services = []
+            
+        async def register_service(self, service_config):
+            self.registered_services.append(service_config)
+            return {"id": service_config.get("id", "test-service")}
+    
+    yield MockIntegrationServer()

@@ -34,6 +34,100 @@ logger.setLevel(LOGLEVEL)
 multihash.CodecReg.register("base58", base58.b58encode, base58.b58decode)
 
 
+def merge_startup_config(manifest_config: dict, **kwargs) -> dict:
+    """
+    Merge startup configuration with proper priority.
+    
+    Priority order (highest to lowest):
+    1. Function kwargs (current call parameters)
+    2. Manifest startup_config (stored configuration)
+    
+    Args:
+        manifest_config: The startup_config from the manifest (can be None)
+        **kwargs: Direct parameters from function calls
+        
+    Returns:
+        Merged startup configuration dictionary
+    """
+    # Start with manifest config (lowest priority)
+    merged_config = (manifest_config or {}).copy()
+    
+    # Known startup_config fields that should be processed
+    # Note: progress_callback is excluded from stored config as it can't be JSON serialized
+    startup_config_fields = [
+        'timeout', 'wait_for_service', 'additional_kwargs', 
+        'stop_after_inactive'
+    ]
+    
+    # Override with any provided kwargs (highest priority)
+    for field in startup_config_fields:
+        if field in kwargs and kwargs[field] is not None:
+            merged_config[field] = kwargs[field]
+    
+    return merged_config
+
+
+def merge_startup_config_with_runtime(manifest_config: dict, **kwargs) -> dict:
+    """
+    Merge startup configuration including runtime-only fields like progress_callback.
+    
+    This version includes fields that are only used during execution and not stored.
+    
+    Args:
+        manifest_config: The startup_config from the manifest (can be None)
+        **kwargs: Direct parameters from function calls
+        
+    Returns:
+        Merged startup configuration dictionary including runtime fields
+    """
+    # Start with the stored config
+    merged_config = merge_startup_config(manifest_config, **kwargs)
+    
+    # Add runtime-only fields that don't get stored
+    if 'progress_callback' in kwargs and kwargs['progress_callback'] is not None:
+        merged_config['progress_callback'] = kwargs['progress_callback']
+    
+    return merged_config
+
+
+def extract_startup_config_kwargs(**kwargs) -> dict:
+    """
+    Extract startup_config related kwargs from function parameters.
+    
+    Returns:
+        Dictionary containing only startup_config related parameters (excluding runtime-only fields)
+    """
+    startup_config_fields = [
+        'timeout', 'wait_for_service', 'additional_kwargs', 
+        'stop_after_inactive'
+    ]
+    
+    return {
+        field: kwargs[field] 
+        for field in startup_config_fields 
+        if field in kwargs and kwargs[field] is not None
+    }
+
+
+def extract_all_startup_config_kwargs(**kwargs) -> dict:
+    """
+    Extract all startup_config related kwargs including runtime-only fields.
+    
+    Returns:
+        Dictionary containing all startup_config related parameters including progress_callback
+    """
+    startup_config_fields = [
+        'timeout', 'wait_for_service', 'additional_kwargs', 
+        'stop_after_inactive', 'progress_callback'
+    ]
+    
+    return {
+        field: kwargs[field] 
+        for field in startup_config_fields 
+        if field in kwargs and kwargs[field] is not None
+    }
+
+
 class AutoscalingManager:
     """Manages autoscaling for applications based on client load.
     
@@ -559,8 +653,8 @@ class ServerAppController:
             # Set default name if not provided or is default "Untitled App"
             if artifact_obj.get("name") in [None, "Untitled App"]:
                 artifact_obj["name"] = "Raw HTML App"
+            artifact_obj["entry_point"] = "index.html"
 
-        artifact_obj["entry_point"] = artifact_obj.get("entry_point", "source")
         # Convert source to files list with enhanced XML parsing
         app_files = []
         if source and source.strip().startswith("<"):
@@ -578,15 +672,18 @@ class ServerAppController:
             
             # If there's remaining source content, add it as source file
             if remaining_source and remaining_source.strip():
+                # Use entry_point from manifest if available, otherwise default to "source"
+                source_file_path = artifact_obj.get("entry_point", "source")
                 app_files.append({
-                    "path": artifact_obj["entry_point"],
+                    "path": source_file_path,
                     "content": remaining_source,
                     "format": "text"
                 })
         elif source:
-            # Fall back to treating source as single file
+            # Use entry_point from manifest if available, otherwise default to "source"
+            source_file_path = artifact_obj.get("entry_point", "source")
             app_files.append({
-                "path": artifact_obj["entry_point"],
+                "path": source_file_path,
                 "content": source,
                 "format": "text"
             })
@@ -606,7 +703,8 @@ class ServerAppController:
             assert source is not None, "Source is missing"
             # Ensure source is in top level xml format with tags such as <config> <script>
             
-            
+        if "entry_point" not in artifact_obj:
+            artifact_obj["entry_point"] = "source"
         
         # Try to get worker that supports this app type
         worker = await self.get_server_app_workers(app_type, context, random_select=True)
@@ -629,7 +727,10 @@ class ServerAppController:
                     "progress_callback": progress_callback,
                 }
                 
-                artifact_obj, app_files = await worker.compile(artifact_obj, app_files, config=compile_config)
+                compiled_manifest, app_files = await worker.compile(artifact_obj, app_files, config=compile_config)
+                # merge the compiled manifest into the artifact_obj
+                artifact_obj.update(compiled_manifest)
+
                 logger.info(f"Worker compiled app with type {app_type}")
             except Exception as e:
                 raise Exception(f"Worker compilation failed: {e}")
@@ -647,25 +748,20 @@ class ServerAppController:
             "user": context["user"]
         }
         
-        # Create startup_config from the arguments if any are provided
-        startup_config = {}
-        if timeout is not None:
-            startup_config["timeout"] = timeout
-        if wait_for_service is not None:
-            startup_config["wait_for_service"] = wait_for_service
-        if additional_kwargs is not None:
-            startup_config["additional_kwargs"] = additional_kwargs
-        if stop_after_inactive is not None:
-            startup_config["stop_after_inactive"] = stop_after_inactive
+        # Merge startup_config with proper priority: kwargs > manifest
+        # Note: progress_callback is excluded from stored config as it's not serializable
+        startup_config_kwargs = extract_startup_config_kwargs(
+            timeout=timeout,
+            wait_for_service=wait_for_service,
+            additional_kwargs=additional_kwargs,
+            stop_after_inactive=stop_after_inactive
+        )
         
-        # Merge with existing startup_config if any
-        if startup_config:
-            existing_startup_config = artifact_obj.get("startup_config", {})
-            if existing_startup_config:
-                existing_startup_config.update(startup_config)
-                artifact_obj["startup_config"] = existing_startup_config
-            else:
-                artifact_obj["startup_config"] = startup_config
+        existing_startup_config = artifact_obj.get("startup_config", {})
+        merged_startup_config = merge_startup_config(existing_startup_config, **startup_config_kwargs)
+        
+        if merged_startup_config:
+            artifact_obj["startup_config"] = merged_startup_config
         
         if mhash:
             # Store source hash for singleton checking
@@ -781,7 +877,7 @@ class ServerAppController:
                 version=version,
                 context=context,
                 progress_callback=progress_callback,
-                **startup_config
+                **startup_config_kwargs
             )
             # After commit, read the updated artifact to get the collected services
             updated_artifact_info = await self.artifact_manager.read(
@@ -871,8 +967,8 @@ class ServerAppController:
             description="The unique identifier of the application to commit. This is typically the alias of the application."
         ),
         timeout: int = Field(
-            30,
-            description="Maximum time to wait for commit completion in seconds. Increase for complex apps that take longer to verify."
+            None,
+            description="Maximum time to wait for commit completion in seconds. If not provided, uses app configuration. Increase for complex apps that take longer to verify."
         ),
         version: str = Field(
             None,
@@ -908,21 +1004,18 @@ class ServerAppController:
             manifest = artifact_info.get("manifest", {})
             manifest = ApplicationManifest.model_validate(manifest)
 
-            # Create startup_config from provided arguments and existing config
-            startup_config = manifest.startup_config or {}
+            # Merge startup_config with proper priority: kwargs > manifest
+            startup_config_kwargs = extract_startup_config_kwargs(
+                timeout=timeout,
+                wait_for_service=wait_for_service,
+                additional_kwargs=additional_kwargs,
+                stop_after_inactive=stop_after_inactive
+            )
             
-            # Only update startup_config if arguments are explicitly provided
-            if timeout is not None:
-                startup_config["timeout"] = timeout
-            if wait_for_service is not None:
-                startup_config["wait_for_service"] = wait_for_service
-            if additional_kwargs is not None:
-                startup_config["additional_kwargs"] = additional_kwargs
-            if stop_after_inactive is not None:
-                startup_config["stop_after_inactive"] = stop_after_inactive
+            merged_startup_config = merge_startup_config(manifest.startup_config, **startup_config_kwargs)
             
-            # Update the manifest with the new startup_config
-            manifest.startup_config = startup_config
+            # Update the manifest with the merged startup_config
+            manifest.startup_config = merged_startup_config
             
             # Save the updated manifest back to the artifact
             await self.artifact_manager.edit(
@@ -933,12 +1026,16 @@ class ServerAppController:
                 context=context,
             )
 
+            # Include progress_callback with the merged config for the start call
+            start_config = merged_startup_config.copy()
+            if progress_callback is not None:
+                start_config['progress_callback'] = progress_callback
+                
             info = await self.start(
                 app_id,
                 version="stage",
-                progress_callback=progress_callback,
-                **startup_config,
                 context=context,
+                **start_config
             )
             await self.stop(info["id"], context=context)
 
@@ -1156,31 +1253,41 @@ class ServerAppController:
         if "disabled" in manifest and manifest["disabled"]:
             raise RuntimeError(f"App {app_id} is disabled")
 
-        # Apply default startup config from manifest if not explicitly provided
-        startup_config = manifest.startup_config or {}
-        if timeout is None and "timeout" in startup_config:
-            timeout = startup_config["timeout"]
-        else:
-            timeout = timeout or 60
-
-        if wait_for_service is None and "wait_for_service" in startup_config:
-            wait_for_service = startup_config["wait_for_service"]
+        # Merge startup_config with proper priority: kwargs > manifest
+        # Use all kwargs including runtime-only fields like progress_callback
+        startup_config_kwargs = extract_all_startup_config_kwargs(
+            timeout=timeout,
+            wait_for_service=wait_for_service,
+            additional_kwargs=additional_kwargs,
+            stop_after_inactive=stop_after_inactive,
+            progress_callback=progress_callback
+        )
+        
+        final_startup_config = merge_startup_config_with_runtime(manifest.startup_config, **startup_config_kwargs)
+        
+        # Apply final values with defaults
+        timeout = final_startup_config.get("timeout", timeout or 60)
+        wait_for_service = final_startup_config.get("wait_for_service", wait_for_service)
+        additional_kwargs = final_startup_config.get("additional_kwargs", additional_kwargs)
+        stop_after_inactive = final_startup_config.get("stop_after_inactive", stop_after_inactive)
 
         # Convert True to "default" after startup_config is applied
         if wait_for_service is True or wait_for_service is None:
             wait_for_service = "default"
         if wait_for_service and ":" in wait_for_service:
             wait_for_service = wait_for_service.split(":")[1]
-            
-        if additional_kwargs is None and "additional_kwargs" in startup_config:
-            additional_kwargs = startup_config["additional_kwargs"]
 
         detached = wait_for_service == False
-            
-        # Only apply startup_config if stop_after_inactive is None (not explicitly set)
-        # Do not override explicitly passed values (including verification timeout)
-        if stop_after_inactive is None and "stop_after_inactive" in startup_config:
-            stop_after_inactive = startup_config["stop_after_inactive"]
+
+        # Check if a non-singleton, non-daemon app is already running.
+        # If so, return the existing session to prevent multiple instances
+        # unless autoscaling is enabled.
+        if not manifest.singleton and not manifest.daemon:
+            if not (manifest.autoscaling and manifest.autoscaling.enabled):
+                for session_info in self._sessions.values():
+                    if session_info["app_id"] == app_id and session_info["workspace"] == workspace:
+                        logger.info(f"Returning existing instance for app {app_id} in workspace {workspace}")
+                        return session_info
 
         if manifest.singleton:
             # check if the app is already running
@@ -1193,8 +1300,8 @@ class ServerAppController:
         if stop_after_inactive is None:
             stop_after_inactive = (
                 600
-                if startup_config.get("stop_after_inactive") is None
-                else startup_config.get("stop_after_inactive")
+                if final_startup_config.get("stop_after_inactive") is None
+                else final_startup_config.get("stop_after_inactive")
             )
         # Get app type from config, fallback to manifest type
         app_type = manifest.type if manifest else None

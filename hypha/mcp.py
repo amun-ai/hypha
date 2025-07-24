@@ -1047,6 +1047,7 @@ async def create_mcp_app_from_service(service, service_info, redis_client):
                                 
                                 content_data.append(item_dict)
                         else:
+                            # Don't JSON encode the result, just convert to string
                             content_data = [{"type": "text", "text": str(result)}]
                         
                         response = {

@@ -136,6 +136,7 @@ class RedisStore:
         enable_service_search=False,
         reconnection_token_life_time=2 * 24 * 60 * 60,
         activity_check_interval=10,
+        enable_s3_for_anonymous_users=False,
     ):
         """Initialize the redis store."""
         self._s3_controller = None
@@ -159,6 +160,7 @@ class RedisStore:
         self.reconnection_token_life_time = reconnection_token_life_time
         self._enable_service_search = enable_service_search
         self._activity_check_interval = activity_check_interval
+        self._enable_s3_for_anonymous_users = enable_s3_for_anonymous_users
         # Create a fixed HTTP anonymous user
         self._http_anonymous_user = UserInfo(
             id="http-anonymous",
@@ -325,7 +327,7 @@ class RedisStore:
                     "description": f"Workspace for user {user_info.id}",
                     "persistent": not user_info.is_anonymous,
                     "owners": [user_info.id],
-                    "read_only": user_info.is_anonymous,
+                    "read_only": user_info.is_anonymous and not self._enable_s3_for_anonymous_users,
                 }
             )
         else:
@@ -553,7 +555,7 @@ class RedisStore:
                         "description": "Shared workspace for anonymous users",
                         "persistent": True,
                         "owners": ["root"],
-                        "read_only": True,
+                        "read_only": not self._enable_s3_for_anonymous_users,
                     }
                 ),
                 overwrite=False,
@@ -810,6 +812,7 @@ class RedisStore:
             self._artifact_manager,
             self._enable_service_search,
             self._cache_dir,
+            self._enable_s3_for_anonymous_users,
         )
         await manager.setup()
         return manager

@@ -147,6 +147,7 @@ class WorkspaceManager:
         artifact_manager: Optional[Any] = None,
         enable_service_search: bool = False,
         cache_dir: str = None,
+        enable_s3_for_anonymous_users: bool = False,
     ):
         self._redis = redis
         self._store = store
@@ -161,6 +162,7 @@ class WorkspaceManager:
         self._server_app_controller = server_app_controller
         self._sql_engine = sql_engine
         self._cache_dir = cache_dir
+        self._enable_s3_for_anonymous_users = enable_s3_for_anonymous_users
         if self._sql_engine:
             self.SessionLocal = async_sessionmaker(
                 self._sql_engine, expire_on_commit=False, class_=AsyncSession
@@ -1717,7 +1719,7 @@ class WorkspaceManager:
                 description="Anonymous workspace",
                 owners=[workspace],
                 persistent=False,
-                read_only=True,
+                read_only=not self._enable_s3_for_anonymous_users,
                 status={"ready": True},
             )
             await self._redis.hset(

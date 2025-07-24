@@ -540,16 +540,12 @@ class BrowserAppRunner(BaseWorker):
         app_type = new_manifest.get("type")
         
         progress_callback({"type": "info", "message": "Updating manifest and preparing files..."})
-        
-        # All browser apps should compile to index.html as the entry point
-        # This ensures consistency and that the browser worker can find the file
-        compiled_entry_point = "index.html"
-        
+
         # Set the entry point to index.html for all browser app types
-        new_manifest["entry_point"] = compiled_entry_point
+        new_manifest["entry_point"] = "index.html"
         # Ensure the manifest type is correctly set to the expected app_type
         new_manifest["type"] = new_manifest.get("type", app_type)
-        
+        entry_point = new_manifest["entry_point"]
         
         
         # Create new files list without the source/config/script files and add compiled file
@@ -563,7 +559,7 @@ class BrowserAppRunner(BaseWorker):
         
         # Always save the compiled HTML as index.html for consistency
         new_files.append({
-            "path": compiled_entry_point,
+            "path": entry_point,
             "content": compiled_html,
             "format": "text"
         })
@@ -573,13 +569,13 @@ class BrowserAppRunner(BaseWorker):
             del new_manifest["script"]
         if "code" in new_manifest:
             new_files.append({
-                "path": entry_point,
+                "path": "source",
                 "content": new_manifest["code"],
                 "format": "text"
             })
             del new_manifest["code"]
         
-        progress_callback({"type": "success", "message": f"Browser app compilation completed. Generated {compiled_entry_point}"})
+        progress_callback({"type": "success", "message": f"Browser app compilation completed. Generated {entry_point}"})
             
         return new_manifest, new_files
     
