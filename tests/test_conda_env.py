@@ -648,7 +648,6 @@ def execute(input_data):
         assert len(service_config["supported_types"]) == 1
 
 
-@pytest.mark.integration
 class TestCondaEnvWorkerIntegration:
     """Integration tests for conda environment worker using real conda environments."""
     
