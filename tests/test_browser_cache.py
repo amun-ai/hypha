@@ -5,6 +5,9 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 from hypha.workers.browser_cache import BrowserCache
 
+# Mark all async functions in this module as asyncio tests
+pytestmark = pytest.mark.asyncio
+
 
 @pytest.fixture
 def mock_redis():

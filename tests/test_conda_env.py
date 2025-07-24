@@ -13,6 +13,9 @@ from hypha.workers.conda_env import CondaEnvWorker, EnvironmentCache
 from hypha.workers.base import WorkerConfig, SessionStatus, SessionInfo, SessionNotFoundError, WorkerError
 from hypha.workers.conda_env_executor import ExecutionResult, TimingInfo
 
+# Mark all async functions in this module as asyncio tests
+pytestmark = pytest.mark.asyncio
+
 
 class TestEnvironmentCache:
     """Test the environment cache functionality."""
