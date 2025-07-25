@@ -230,13 +230,13 @@ class CondaEnvExecutor:
             yaml.safe_dump(spec.to_dict(), f)
 
         # Create the environment
-        if os.name == 'nt':  # Windows
-            create_cmd = f"conda env create -p {self.env_path} -f {env_file} -y"
-        else:  # Unix-like
-            create_cmd = f"source $(conda info --base)/etc/profile.d/conda.sh && conda env create -p {self.env_path} -f {env_file} -y"
-
         try:
-            subprocess.run(create_cmd, shell=True, check=True, capture_output=True, text=True)
+            if os.name == 'nt':  # Windows
+                create_cmd = f"conda env create -p {self.env_path} -f {env_file} -y"
+                subprocess.run(create_cmd, shell=True, check=True, capture_output=True, text=True)
+            else:  # Unix-like
+                create_cmd = f"source $(conda info --base)/etc/profile.d/conda.sh && conda env create -p {self.env_path} -f {env_file} -y"
+                subprocess.run(create_cmd, shell=True, check=True, capture_output=True, text=True, executable="/bin/bash")
             return time.time() - start_time
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Failed to create conda environment: {e.stderr}")
