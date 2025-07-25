@@ -279,87 +279,74 @@ class CondaEnvWorker(BaseWorker):
         if isinstance(channels, str):
             channels = [channels]
         
-        try:
-            # Check if we have a cached environment
-            cached_env_path = self._env_cache.get_cached_env(packages, channels)
-            
-            if cached_env_path:
-                logger.info(f"Using cached conda environment: {cached_env_path}")
-                executor = CondaEnvExecutor({
-                    'name': 'cached_env',
-                    'channels': channels,
-                    'dependencies': packages
-                }, env_dir=cached_env_path.parent)
-                executor.env_path = cached_env_path
-                executor._is_extracted = True
-            else:
-                # Create new temporary environment
-                logger.info(f"Creating new conda environment with packages: {packages}")
-                executor = CondaEnvExecutor.create_temp_env(
-                    packages=packages,
-                    channels=channels,
-                    name=f"hypha-session-{config.id}"
-                )
-                
-                # Cache the environment after creation
-                # We need to run the extraction first to create the environment
-                await asyncio.get_event_loop().run_in_executor(
-                    None, executor._extract_env
-                )
-                
-                # Add to cache
-                self._env_cache.add_cached_env(packages, channels, executor.env_path)
-                logger.info(f"Cached new conda environment: {executor.env_path}")
-            
-            # Always execute the script during startup to run initialization code
-            # This ensures print statements and setup code are executed
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, executor.execute, script, None
+        # Check if we have a cached environment
+        cached_env_path = self._env_cache.get_cached_env(packages, channels)
+        
+        if cached_env_path:
+            logger.info(f"Using cached conda environment: {cached_env_path}")
+            executor = CondaEnvExecutor({
+                'name': 'cached_env',
+                'channels': channels,
+                'dependencies': packages
+            }, env_dir=cached_env_path.parent)
+            executor.env_path = cached_env_path
+            executor._is_extracted = True
+        else:
+            # Create new temporary environment
+            logger.info(f"Creating new conda environment with packages: {packages}")
+            executor = CondaEnvExecutor.create_temp_env(
+                packages=packages,
+                channels=channels,
+                name=f"hypha-session-{config.id}"
             )
             
-            # Determine if script has execute function for later interactive calls
-            needs_execute_function = "def execute(" in script or "async def execute(" in script
+            # Cache the environment after creation
+            # We need to run the extraction first to create the environment
+            await asyncio.get_event_loop().run_in_executor(
+                None, executor._extract_env
+            )
             
-            # Store logs
-            logs = {
-                "stdout": [result.stdout] if result.stdout else [],
-                "stderr": [result.stderr] if result.stderr else [],
-                "info": []
-            }
-            
-            if result.success:
-                logs["info"].append(f"Conda environment session started successfully")
-                if result.timing:
-                    logs["info"].append(f"Environment setup time: {result.timing.env_setup_time:.2f}s")
-                    logs["info"].append(f"Execution time: {result.timing.execution_time:.2f}s")
-            else:
-                logs["error"] = [result.error] if result.error else ["Unknown error occurred"]
-            
-            return {
-                "executor": executor,
-                "script": script,
-                "packages": packages,
-                "channels": channels,
-                "needs_execute_function": needs_execute_function,
-                "result": result,
-                "logs": logs
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to create conda environment: {e}")
-            logs = {
-                "error": [f"Failed to create conda environment: {str(e)}"],
-                "info": []
-            }
-            return {
-                "executor": None,
-                "script": script,
-                "packages": packages,
-                "channels": channels,
-                "needs_execute_function": False,
-                "result": ExecutionResult(success=False, error=str(e)),
-                "logs": logs
-            }
+            # Add to cache
+            self._env_cache.add_cached_env(packages, channels, executor.env_path)
+            logger.info(f"Cached new conda environment: {executor.env_path}")
+        
+        # Always execute the script during startup to run initialization code
+        # This ensures print statements and setup code are executed
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, executor.execute, script, None
+        )
+        
+        # Determine if script has execute function for later interactive calls
+        needs_execute_function = "def execute(" in script or "async def execute(" in script
+        
+        # Store logs
+        logs = {
+            "stdout": [result.stdout] if result.stdout else [],
+            "stderr": [result.stderr] if result.stderr else [],
+            "info": []
+        }
+        
+        if result.success:
+            logs["info"].append(f"Conda environment session started successfully")
+            if (result.timing and 
+                hasattr(result.timing, 'env_setup_time') and 
+                hasattr(result.timing, 'execution_time') and
+                isinstance(result.timing.env_setup_time, (int, float)) and
+                isinstance(result.timing.execution_time, (int, float))):
+                logs["info"].append(f"Environment setup time: {result.timing.env_setup_time:.2f}s")
+                logs["info"].append(f"Execution time: {result.timing.execution_time:.2f}s")
+        else:
+            logs["error"] = [result.error] if result.error else ["Unknown error occurred"]
+        
+        return {
+            "executor": executor,
+            "script": script,
+            "packages": packages,
+            "channels": channels,
+            "needs_execute_function": needs_execute_function,
+            "result": result,
+            "logs": logs
+        }
     
     async def execute_code(self, session_id: str, input_data: Any = None) -> ExecutionResult:
         """Execute code in a conda environment session with optional input data."""
