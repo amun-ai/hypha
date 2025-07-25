@@ -32,25 +32,25 @@ class TestEnvironmentCache:
     
     def test_compute_env_hash(self):
         """Test environment hash computation."""
-        packages1 = ["python=3.11", "numpy", "pandas"]
+        dependencies1 = ["python=3.11", "numpy", "pandas"]
         channels1 = ["conda-forge", "defaults"]
         
-        packages2 = ["pandas", "numpy", "python=3.11"]  # Different order
+        dependencies2 = ["pandas", "numpy", "python=3.11"]  # Different order
         channels2 = ["defaults", "conda-forge"]  # Different order
         
-        # Same packages and channels should produce same hash regardless of order
-        hash1 = self.cache._compute_env_hash(packages1, channels1)
-        hash2 = self.cache._compute_env_hash(packages2, channels2)
+        # Same dependencies and channels should produce same hash regardless of order
+        hash1 = self.cache._compute_env_hash(dependencies1, channels1)
+        hash2 = self.cache._compute_env_hash(dependencies2, channels2)
         assert hash1 == hash2
         
-        # Different packages should produce different hash
-        packages3 = ["python=3.10", "numpy", "pandas"]
-        hash3 = self.cache._compute_env_hash(packages3, channels1)
+        # Different dependencies should produce different hash
+        dependencies3 = ["python=3.10", "numpy", "pandas"]
+        hash3 = self.cache._compute_env_hash(dependencies3, channels1)
         assert hash1 != hash3
     
     def test_cache_operations(self):
         """Test basic cache operations."""
-        packages = ["python=3.11", "numpy"]
+        dependencies = ["python=3.11", "numpy"]
         channels = ["conda-forge"]
         env_path = Path(self.temp_dir) / "test_env"
         env_path.mkdir()
@@ -58,33 +58,33 @@ class TestEnvironmentCache:
         (env_path / "bin" / "python").touch()
         
         # Initially no cached environment
-        cached = self.cache.get_cached_env(packages, channels)
+        cached = self.cache.get_cached_env(dependencies, channels)
         assert cached is None
         
         # Add to cache
-        self.cache.add_cached_env(packages, channels, env_path)
+        self.cache.add_cached_env(dependencies, channels, env_path)
         
         # Should now be in cache
-        cached = self.cache.get_cached_env(packages, channels)
+        cached = self.cache.get_cached_env(dependencies, channels)
         assert cached == env_path
         
         # Check cache index was updated
         assert len(self.cache.index) == 1
-        env_hash = self.cache._compute_env_hash(packages, channels)
+        env_hash = self.cache._compute_env_hash(dependencies, channels)
         assert env_hash in self.cache.index
         assert self.cache.index[env_hash]['path'] == str(env_path)
     
     def test_cache_validation(self):
         """Test cache entry validation."""
-        packages = ["python=3.11"]
+        dependencies = ["python=3.11"]
         channels = ["conda-forge"] 
         env_path = Path(self.temp_dir) / "invalid_env"
         
         # Add invalid environment (doesn't exist)
-        self.cache.add_cached_env(packages, channels, env_path)
+        self.cache.add_cached_env(dependencies, channels, env_path)
         
         # Should not return invalid environment and should clean it up
-        cached = self.cache.get_cached_env(packages, channels)
+        cached = self.cache.get_cached_env(dependencies, channels)
         assert cached is None
         assert len(self.cache.index) == 0
     
@@ -92,47 +92,47 @@ class TestEnvironmentCache:
         """Test LRU eviction policy."""
         # Fill cache to capacity
         for i in range(3):
-            packages = [f"python=3.{i+9}"]
+            dependencies = [f"python=3.{i+9}"]
             channels = ["conda-forge"]
             env_path = Path(self.temp_dir) / f"env_{i}"
             env_path.mkdir()
             (env_path / "bin").mkdir()
             (env_path / "bin" / "python").touch()
             
-            self.cache.add_cached_env(packages, channels, env_path)
+            self.cache.add_cached_env(dependencies, channels, env_path)
         
         assert len(self.cache.index) == 3
         
         # Access first environment to make it more recently used
-        first_packages = ["python=3.9"]
+        first_dependencies = ["python=3.9"]
         first_channels = ["conda-forge"]
-        cached = self.cache.get_cached_env(first_packages, first_channels)
+        cached = self.cache.get_cached_env(first_dependencies, first_channels)
         assert cached is not None
         
         # Add one more environment (should evict least recently used)
-        new_packages = ["python=3.12"]
+        new_dependencies = ["python=3.12"]
         new_channels = ["conda-forge"]
         new_env_path = Path(self.temp_dir) / "env_new"
         new_env_path.mkdir()
         (new_env_path / "bin").mkdir()
         (new_env_path / "bin" / "python").touch()
         
-        self.cache.add_cached_env(new_packages, new_channels, new_env_path)
+        self.cache.add_cached_env(new_dependencies, new_channels, new_env_path)
         
         # Should still have 3 entries (max size)
         assert len(self.cache.index) == 3
         
         # First environment should still be there (was accessed recently)
-        cached = self.cache.get_cached_env(first_packages, first_channels)
+        cached = self.cache.get_cached_env(first_dependencies, first_channels)
         assert cached is not None
         
         # New environment should be there
-        cached = self.cache.get_cached_env(new_packages, new_channels)
+        cached = self.cache.get_cached_env(new_dependencies, new_channels)
         assert cached is not None
     
     def test_age_based_eviction(self):
         """Test age-based cache eviction."""
-        packages = ["python=3.11"]
+        dependencies = ["python=3.11"]
         channels = ["conda-forge"]
         env_path = Path(self.temp_dir) / "old_env"
         env_path.mkdir()
@@ -140,8 +140,8 @@ class TestEnvironmentCache:
         (env_path / "bin" / "python").touch()
         
         # Add environment with old timestamp
-        self.cache.add_cached_env(packages, channels, env_path)
-        env_hash = self.cache._compute_env_hash(packages, channels)
+        self.cache.add_cached_env(dependencies, channels, env_path)
+        env_hash = self.cache._compute_env_hash(dependencies, channels)
         
         # Manually set old creation time (35 days ago)
         old_time = time.time() - (35 * 24 * 60 * 60)
@@ -153,7 +153,7 @@ class TestEnvironmentCache:
         
         # Old environment should be removed
         assert len(self.cache.index) == 0
-        cached = self.cache.get_cached_env(packages, channels)
+        cached = self.cache.get_cached_env(dependencies, channels)
         assert cached is None
 
 
@@ -178,14 +178,14 @@ class TestCondaEnvWorkerBasic:
     
     async def test_compile_manifest(self):
         """Test manifest compilation and validation."""
-        # Test with packages field
+        # Test with dependencies field
         manifest1 = {
             "type": "python-conda",
-            "packages": ["python=3.11", "numpy"],
+            "dependencies": ["python=3.11", "numpy"],
             "channels": ["conda-forge"]
         }
         compiled_manifest, files = await self.worker.compile(manifest1, [])
-        assert compiled_manifest["packages"] == ["python=3.11", "numpy"]
+        assert compiled_manifest["dependencies"] == ["python=3.11", "numpy"]
         assert compiled_manifest["channels"] == ["conda-forge"]
         
         # Test with dependencies field (alternate name)
@@ -195,13 +195,13 @@ class TestCondaEnvWorkerBasic:
             "channels": "conda-forge"  # String should be converted to list
         }
         compiled_manifest, files = await self.worker.compile(manifest2, [])
-        assert compiled_manifest["packages"] == ["python=3.11"]
+        assert compiled_manifest["dependencies"] == ["python=3.11"]
         assert compiled_manifest["channels"] == ["conda-forge"]
         
-        # Test with no packages (should add default)
+        # Test with no dependencies (should add default)
         manifest3 = {"type": "python-conda"}
         compiled_manifest, files = await self.worker.compile(manifest3, [])
-        assert compiled_manifest["packages"] == []
+        assert compiled_manifest["dependencies"] == []
         assert compiled_manifest["channels"] == ["conda-forge"]
     
     def test_get_service_config(self):
@@ -261,7 +261,7 @@ def execute(input_data):
             artifact_id="test-artifact",
             manifest={
                 "type": "python-conda",
-                "packages": ["python=3.11"],
+                "dependencies": ["python=3.11"],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py"
             },
@@ -319,7 +319,7 @@ def execute(input_data):
                 raise
     
     async def test_real_conda_package_installation(self, conda_integration_server, conda_test_workspace):
-        """Test conda environment with additional packages."""
+        """Test conda environment with additional dependencies."""
         from hypha.workers.conda_env import CondaEnvWorker, EnvironmentCache
         
         worker = CondaEnvWorker(conda_integration_server)
@@ -368,7 +368,7 @@ def execute(input_data):
             artifact_id="test-artifact",
             manifest={
                 "type": "python-conda",
-                "packages": ["python=3.11", "numpy"],
+                "dependencies": ["python=3.11", "numpy"],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py"
             },
@@ -429,7 +429,7 @@ def execute(input_data):
     }
 '''
         
-        # First session with specific packages
+        # First session with specific dependencies
         config1 = WorkerConfig(
             id="cache-test-1",
             app_id="cache-test-app",
@@ -441,7 +441,7 @@ def execute(input_data):
             artifact_id="test-artifact",
             manifest={
                 "type": "python-conda",
-                "packages": ["python=3.11"],
+                "dependencies": ["python=3.11"],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py"
             },
@@ -473,8 +473,8 @@ def execute(input_data):
                 
                 await worker.stop(session_id1)
                 
-                print("🔄 Creating second session with same packages...")
-                # Start second session with same packages (should use cache)
+                print("🔄 Creating second session with same dependencies...")
+                # Start second session with same dependencies (should use cache)
                 config2 = WorkerConfig(
                     id="cache-test-2", 
                     app_id="cache-test-app-2",
@@ -486,7 +486,7 @@ def execute(input_data):
                     artifact_id="test-artifact",
                     manifest={
                         "type": "python-conda",
-                        "packages": ["python=3.11"],  # Same packages
+                        "dependencies": ["python=3.11"],  # Same dependencies
                         "channels": ["conda-forge"],  # Same channels
                         "entry_point": "main.py"
                     },
@@ -521,8 +521,8 @@ def execute(input_data):
                     pass
                 raise
     
-    async def test_real_conda_mixed_packages(self, conda_integration_server, conda_test_workspace):
-        """Test conda environment with both conda and pip packages."""
+    async def test_real_conda_mixed_dependencies(self, conda_integration_server, conda_test_workspace):
+        """Test conda environment with both conda and pip dependencies."""
         from hypha.workers.conda_env import CondaEnvWorker, EnvironmentCache
         
         worker = CondaEnvWorker(conda_integration_server)
@@ -531,7 +531,7 @@ def execute(input_data):
             max_size=5
         )
         
-        # Script that uses both conda (numpy) and pip packages
+        # Script that uses both conda (numpy) and pip dependencies
         script = '''
 def execute(input_data):
     import sys
@@ -564,7 +564,7 @@ def execute(input_data):
 '''
         
         config = WorkerConfig(
-            id="mixed-packages-test",
+            id="mixed-dependencies-test",
             app_id="mixed-test-app",
             workspace="test-workspace",
             client_id="test-client",
@@ -574,7 +574,7 @@ def execute(input_data):
             artifact_id="test-artifact", 
             manifest={
                 "type": "python-conda",
-                "packages": [
+                "dependencies": [
                     "python=3.11",
                     "numpy", 
                     {"pip": ["requests"]}
@@ -592,14 +592,14 @@ def execute(input_data):
             mock_http_client.return_value.__aenter__.return_value.get.return_value = mock_response
             
             try:
-                print("🚀 Creating environment with mixed conda/pip packages...")
+                print("🚀 Creating environment with mixed conda/pip dependencies...")
                 session_id = await worker.start(config)
                 
                 print("⚙️ Testing mixed package functionality...")
                 test_data = [1.5, 2.3, 3.7, 4.1, 5.9]
                 result = await worker.execute_code(session_id, test_data)
                 
-                assert result.success, f"Mixed packages test failed: {result.error}\nStderr: {result.stderr}"
+                assert result.success, f"Mixed dependencies test failed: {result.error}\nStderr: {result.stderr}"
                 
                 # Verify conda package (numpy) works
                 assert result.result["numpy_available"] is True
@@ -618,7 +618,7 @@ def execute(input_data):
                 assert abs(data_processed["sum"] - expected_sum) < 0.001
                 assert abs(data_processed["mean"] - expected_mean) < 0.001
                 
-                print(f"✅ Mixed packages test successful:")
+                print(f"✅ Mixed dependencies test successful:")
                 print(f"  NumPy version: {result.result['numpy_version']}")
                 print(f"  Requests version: {result.result['requests_version']}")
                 print(f"  Data processing: {data_processed}")
@@ -626,9 +626,9 @@ def execute(input_data):
                 await worker.stop(session_id)
                 
             except Exception as e:
-                print(f"❌ Mixed packages test failed: {e}")
+                print(f"❌ Mixed dependencies test failed: {e}")
                 try:
-                    await worker.stop("mixed-packages-test")
+                    await worker.stop("mixed-dependencies-test")
                 except:
                     pass
                 raise
@@ -676,7 +676,7 @@ print("=== Script completed successfully ===")
             artifact_id="test-artifact",
             manifest={
                 "type": "python-conda",
-                "packages": ["python=3.11"],
+                "dependencies": ["python=3.11"],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py"
             },

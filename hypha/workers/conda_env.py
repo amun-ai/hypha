@@ -57,24 +57,24 @@ class EnvironmentCache:
         except IOError as e:
             logger.warning(f"Failed to save cache index: {e}")
     
-    def _compute_env_hash(self, packages: List[str], channels: List[str]) -> str:
+    def _compute_env_hash(self, dependencies: List[str], channels: List[str]) -> str:
         """Compute hash for environment specification."""
-        # Sort packages and channels for consistent hashing
+        # Sort dependencies and channels for consistent hashing
         # Use JSON serialization as sort key to handle mixed types (strings and dicts)
-        sorted_packages = sorted(packages, key=lambda x: json.dumps(x, sort_keys=True)) if packages else []
+        sorted_dependencies = sorted(dependencies, key=lambda x: json.dumps(x, sort_keys=True)) if dependencies else []
         sorted_channels = sorted(channels) if channels else []
         
         # Create a canonical string representation
         env_spec = {
-            'packages': sorted_packages,
+            'dependencies': sorted_dependencies,
             'channels': sorted_channels
         }
         env_str = json.dumps(env_spec, sort_keys=True)
         return hashlib.sha256(env_str.encode()).hexdigest()
     
-    def get_cached_env(self, packages: List[str], channels: List[str]) -> Optional[Path]:
+    def get_cached_env(self, dependencies: List[str], channels: List[str]) -> Optional[Path]:
         """Get cached environment path if it exists and is valid."""
-        env_hash = self._compute_env_hash(packages, channels)
+        env_hash = self._compute_env_hash(dependencies, channels)
         
         if env_hash in self.index:
             cache_entry = self.index[env_hash]
@@ -93,16 +93,16 @@ class EnvironmentCache:
         
         return None
     
-    def add_cached_env(self, packages: List[str], channels: List[str], env_path: Path):
+    def add_cached_env(self, dependencies: List[str], channels: List[str], env_path: Path):
         """Add environment to cache."""
-        env_hash = self._compute_env_hash(packages, channels)
+        env_hash = self._compute_env_hash(dependencies, channels)
         
         # Evict old entries if cache is full
         self._evict_if_needed()
         
         self.index[env_hash] = {
             'path': str(env_path),
-            'packages': packages,
+            'dependencies': dependencies,
             'channels': channels,
             'created_at': time.time(),
             'last_accessed': time.time()
@@ -191,24 +191,24 @@ class CondaEnvWorker(BaseWorker):
     async def compile(self, manifest: dict, files: list, config: dict = None) -> tuple[dict, list]:
         """Compile conda environment application - validate manifest."""
         # Validate manifest has required fields
-        if "packages" not in manifest and "dependencies" not in manifest:
-            logger.warning("No packages or dependencies specified in manifest")
+        if "dependencies" not in manifest and "dependencies" not in manifest:
+            logger.warning("No dependencies or dependencies specified in manifest")
         # Set entry point is not set
         if "entry_point" not in manifest:
             manifest["entry_point"] = "main.py"
         
-        # Normalize packages field
-        packages = manifest.get("packages", manifest.get("dependencies", []))
+        # Normalize dependencies field
+        dependencies = manifest.get("dependencies", manifest.get("dependencies", []))
         channels = manifest.get("channels", ["conda-forge"])
         
-        # Ensure packages and channels are lists
-        if isinstance(packages, str):
-            packages = [packages]
+        # Ensure dependencies and channels are lists
+        if isinstance(dependencies, str):
+            dependencies = [dependencies]
         if isinstance(channels, str):
             channels = [channels]
         
         # Update manifest with normalized values
-        manifest["packages"] = packages
+        manifest["dependencies"] = dependencies
         manifest["channels"] = channels
         
         return manifest, files
@@ -270,32 +270,32 @@ class CondaEnvWorker(BaseWorker):
         assert script is not None, "Script is not found"
         
         # Extract environment specification from manifest
-        packages = config.manifest.get("packages", config.manifest.get("dependencies", []))
+        dependencies = config.manifest.get("dependencies", config.manifest.get("dependencies", []))
         channels = config.manifest.get("channels", ["conda-forge"])
         
         # Ensure lists
-        if isinstance(packages, str):
-            packages = [packages]
+        if isinstance(dependencies, str):
+            dependencies = [dependencies]
         if isinstance(channels, str):
             channels = [channels]
         
         # Check if we have a cached environment
-        cached_env_path = self._env_cache.get_cached_env(packages, channels)
+        cached_env_path = self._env_cache.get_cached_env(dependencies, channels)
         
         if cached_env_path:
             logger.info(f"Using cached conda environment: {cached_env_path}")
             executor = CondaEnvExecutor({
                 'name': 'cached_env',
                 'channels': channels,
-                'dependencies': packages
+                'dependencies': dependencies
             }, env_dir=cached_env_path.parent)
             executor.env_path = cached_env_path
             executor._is_extracted = True
         else:
             # Create new temporary environment
-            logger.info(f"Creating new conda environment with packages: {packages}")
+            logger.info(f"Creating new conda environment with dependencies: {dependencies}")
             executor = CondaEnvExecutor.create_temp_env(
-                packages=packages,
+                dependencies=dependencies,
                 channels=channels,
                 name=f"hypha-session-{config.id}"
             )
@@ -307,7 +307,7 @@ class CondaEnvWorker(BaseWorker):
             )
             
             # Add to cache
-            self._env_cache.add_cached_env(packages, channels, executor.env_path)
+            self._env_cache.add_cached_env(dependencies, channels, executor.env_path)
             logger.info(f"Cached new conda environment: {executor.env_path}")
         
         # Always execute the script during startup to run initialization code
@@ -341,7 +341,7 @@ class CondaEnvWorker(BaseWorker):
         return {
             "executor": executor,
             "script": script,
-            "packages": packages,
+            "dependencies": dependencies,
             "channels": channels,
             "needs_execute_function": needs_execute_function,
             "result": result,

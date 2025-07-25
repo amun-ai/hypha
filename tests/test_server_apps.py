@@ -1553,7 +1553,7 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
             "version": "1.0.0",
             "entry_point": "main.py",
             "description": "A test python-conda app with numpy",
-            "packages": ["python=3.11", "numpy"],
+            "dependencies": ["python=3.11", "numpy"],
             "channels": ["conda-forge"]
         },
         timeout=90,
@@ -1621,7 +1621,7 @@ print("This won't be reached")
                 "type": "python-conda",
                 "version": "1.0.0",
                 "entry_point": "error.py",
-                "packages": ["python=3.11"],
+                "dependencies": ["python=3.11"],
                 "channels": ["conda-forge"]
             },
             timeout=30,

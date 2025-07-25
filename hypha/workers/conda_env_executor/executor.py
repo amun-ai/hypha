@@ -172,7 +172,7 @@ class CondaEnvExecutor:
         self._env_path = Path(value) if value else None
 
     @classmethod
-    def create_temp_env(cls, packages: List[Union[str, Dict]], channels: Optional[List[str]] = None, name: str = None, **kwargs) -> 'CondaEnvExecutor':
+    def create_temp_env(cls, dependencies: List[Union[str, Dict]], channels: Optional[List[str]] = None, name: str = None, **kwargs) -> 'CondaEnvExecutor':
         """Create an executor with a temporary environment.
 
         Args:
@@ -186,7 +186,7 @@ class CondaEnvExecutor:
         spec = {
             'name': name or 'temp_env',
             'channels': channels or ['conda-forge'],
-            'dependencies': packages
+            'dependencies': dependencies
         }
         return cls(spec, **kwargs)
 
