@@ -949,6 +949,7 @@ async def test_service_selection_mode_with_multiple_instances(fastapi_server, te
             "name": "multi-instance-test-app",
             "type": "window",
             "service_selection_mode": "random",  # Set random selection mode
+            "stop_after_inactive": 0,  # Disable inactivity timeout
         },
         overwrite=True,
     )
