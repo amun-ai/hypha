@@ -5,6 +5,9 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 from hypha.workers.browser_cache import BrowserCache
 
+# Mark all async functions in this module as asyncio tests
+pytestmark = pytest.mark.asyncio
+
 
 @pytest.fixture
 def mock_redis():
@@ -26,29 +29,34 @@ def cache_manager(mock_redis):
 
 async def test_cache_entry_serialization(cache_manager):
     """Test HTTP response serialization and deserialization."""
-    # Mock HTTP response data
-    response_data = {
-        "status": 200,
-        "headers": {"content-type": "application/json", "cache-control": "max-age=3600"},
-        "body": b'{"test": "data"}',
-        "url": "https://example.com/api"
-    }
+    from hypha.workers.browser_cache import CacheEntry
+    
+    # Create a cache entry
+    url = "https://example.com/api"
+    status = 200
+    headers = {"content-type": "application/json", "cache-control": "max-age=3600"}
+    body = b'{"test": "data"}'
+    timestamp = 1234567890.0
+    
+    entry = CacheEntry(url, status, headers, body, timestamp)
     
     # Test serialization
-    cache_entry = cache_manager._create_cache_entry(response_data)
+    cache_dict = entry.to_dict()
     
-    assert cache_entry["status"] == 200
-    assert cache_entry["headers"]["content-type"] == "application/json"
-    assert cache_entry["body_hex"] == b'{"test": "data"}'.hex()
-    assert cache_entry["url"] == "https://example.com/api"
-    assert "timestamp" in cache_entry
+    assert cache_dict["status"] == 200
+    assert cache_dict["headers"]["content-type"] == "application/json"
+    assert cache_dict["body"] == b'{"test": "data"}'.hex()
+    assert cache_dict["url"] == "https://example.com/api"
+    assert cache_dict["timestamp"] == timestamp
     
     # Test deserialization
-    reconstructed = cache_manager._parse_cache_entry(cache_entry)
+    reconstructed = CacheEntry.from_dict(cache_dict)
     
-    assert reconstructed["status"] == 200
-    assert reconstructed["body"] == b'{"test": "data"}'
-    assert reconstructed["headers"]["content-type"] == "application/json"
+    assert reconstructed.status == 200
+    assert reconstructed.body == b'{"test": "data"}'
+    assert reconstructed.url == url
+    assert reconstructed.headers == headers
+    assert reconstructed.headers["content-type"] == "application/json"
 
 
 async def test_url_pattern_matching(cache_manager):
@@ -58,6 +66,9 @@ async def test_url_pattern_matching(cache_manager):
         "https://files.pythonhosted.org/*.whl",
         "https://pyodide.org/*/pyodide.js"
     ]
+    
+    # Enable recording so should_cache_url will check patterns
+    await cache_manager.start_recording("test_workspace", "test_app")
     
     test_cases = [
         ("https://cdn.jsdelivr.net/pyodide/pyodide.js", True),
@@ -77,17 +88,18 @@ async def test_cache_recording_session(cache_manager):
     """Test cache recording session management."""
     workspace = "test_workspace"
     app_id = "test_app"
+    session_key = f"{workspace}/{app_id}"
     
     # Initially not recording
-    assert not cache_manager.is_recording(workspace, app_id)
+    assert not cache_manager.recording_sessions.get(session_key, False)
     
     # Start recording
     await cache_manager.start_recording(workspace, app_id)
-    assert cache_manager.is_recording(workspace, app_id)
+    assert cache_manager.recording_sessions.get(session_key, False)
     
     # Stop recording
     await cache_manager.stop_recording(workspace, app_id)
-    assert not cache_manager.is_recording(workspace, app_id)
+    assert not cache_manager.recording_sessions.get(session_key, False)
 
 
 async def test_cache_operations(cache_manager, mock_redis):
@@ -95,13 +107,9 @@ async def test_cache_operations(cache_manager, mock_redis):
     workspace = "test_workspace"
     app_id = "test_app"
     url = "https://example.com/test.js"
-    
-    response_data = {
-        "status": 200,
-        "headers": {"content-type": "application/javascript"},
-        "body": b"console.log('test');",
-        "url": url
-    }
+    status = 200
+    headers = {"content-type": "application/javascript"}
+    body = b"console.log('test');"
     
     # Test cache miss
     mock_redis.get.return_value = None
@@ -109,18 +117,22 @@ async def test_cache_operations(cache_manager, mock_redis):
     assert cached is None
     
     # Test cache set
-    await cache_manager.cache_response(workspace, app_id, url, response_data)
-    mock_redis.set.assert_called_once()
+    await cache_manager.cache_response(workspace, app_id, url, status, headers, body)
+    mock_redis.setex.assert_called_once()
     
     # Test cache hit
-    cache_entry = cache_manager._create_cache_entry(response_data)
+    from hypha.workers.browser_cache import CacheEntry
     import json
-    mock_redis.get.return_value = json.dumps(cache_entry)
+    import time
+    
+    cache_entry = CacheEntry(url, status, headers, body, time.time())
+    mock_redis.get.return_value = json.dumps(cache_entry.to_dict())
     
     cached = await cache_manager.get_cached_response(workspace, app_id, url)
     assert cached is not None
-    assert cached["status"] == 200
-    assert cached["body"] == b"console.log('test');"
+    assert cached.status == 200
+    assert cached.body == b"console.log('test');"
+    assert cached.url == url
 
 
 async def test_default_cache_routes(cache_manager):
@@ -142,19 +154,33 @@ async def test_cache_stats(cache_manager, mock_redis):
     workspace = "test_workspace"
     app_id = "test_app"
     
-    # Mock Redis responses for stats
-    mock_redis.keys.return_value = [
-        f"acache:{workspace}/{app_id}:url1",
-        f"acache:{workspace}/{app_id}:url2"
-    ]
-    mock_redis.get.return_value = '{"size": 1024}'
+    # Create a proper async iterator mock
+    async def mock_scan_iter(match):
+        keys = [
+            f"acache:{workspace}/{app_id}:url1",
+            f"acache:{workspace}/{app_id}:url2"
+        ]
+        for key in keys:
+            yield key
+    
+    mock_redis.scan_iter = mock_scan_iter
+    
+    # Mock cache entry data
+    from hypha.workers.browser_cache import CacheEntry
+    import json
+    import time
+    
+    entry = CacheEntry("http://example.com", 200, {}, b"test data", time.time())
+    mock_redis.get.return_value = json.dumps(entry.to_dict())
     
     stats = await cache_manager.get_cache_stats(workspace, app_id)
     
-    assert "entries" in stats
-    assert "total_size" in stats
-    assert "hits" in stats
-    assert "misses" in stats
+    assert "entry_count" in stats
+    assert "total_size_bytes" in stats
+    assert "oldest_entry" in stats
+    assert "newest_entry" in stats
+    assert "recording" in stats
+    assert stats["entry_count"] == 2  # Two keys in our mock
 
 
 async def test_error_propagation(cache_manager, mock_redis):

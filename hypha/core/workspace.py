@@ -147,6 +147,7 @@ class WorkspaceManager:
         artifact_manager: Optional[Any] = None,
         enable_service_search: bool = False,
         cache_dir: str = None,
+        enable_s3_for_anonymous_users: bool = False,
     ):
         self._redis = redis
         self._store = store
@@ -161,6 +162,7 @@ class WorkspaceManager:
         self._server_app_controller = server_app_controller
         self._sql_engine = sql_engine
         self._cache_dir = cache_dir
+        self._enable_s3_for_anonymous_users = enable_s3_for_anonymous_users
         if self._sql_engine:
             self.SessionLocal = async_sessionmaker(
                 self._sql_engine, expire_on_commit=False, class_=AsyncSession
@@ -1728,7 +1730,7 @@ class WorkspaceManager:
                 description="Anonymous workspace",
                 owners=[workspace],
                 persistent=False,
-                read_only=True,
+                read_only=not self._enable_s3_for_anonymous_users,
                 status={"ready": True},
             )
             await self._redis.hset(
@@ -1959,9 +1961,7 @@ class WorkspaceManager:
             assert service_api, f"Failed to get service: {svc_info.id}"
             workspace = svc_info.id.split("/")[0]
             service_api["config"]["workspace"] = workspace
-            service_api["config"][
-                "url"
-            ] = f"{self._server_info['public_base_url']}/{workspace}/services/{svc_info.id}"
+            service_api["config"]["url"] = f"{self._server_info['public_base_url']}/{workspace}/services/{svc_info.id.split('/')[-1]}"
             return service_api
         except KeyError as exp:
             if "@" in service_id:

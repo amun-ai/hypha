@@ -50,21 +50,20 @@ def _capture_logs_from_browser_tabs(page: Page, logs: dict) -> None:
     page.on("pageerror", lambda target: _app_error(str(target)))
 
 
-class BrowserAppRunner(BaseWorker):
+class BrowserWorker(BaseWorker):
     """Browser app worker."""
 
     instance_counter: int = 0
 
     def __init__(
         self,
-        store,
         in_docker: bool = False,
     ):
         """Initialize the class."""
-        super().__init__(store)
+        super().__init__()
         self.browser: Optional[Browser] = None
-        self.controller_id = str(BrowserAppRunner.instance_counter)
-        BrowserAppRunner.instance_counter += 1
+        self.controller_id = str(BrowserWorker.instance_counter)
+        BrowserWorker.instance_counter += 1
         self.in_docker = in_docker
         self._playwright = None
         self.jinja_env = Environment(
@@ -79,12 +78,7 @@ class BrowserAppRunner(BaseWorker):
         
         # Initialize cache manager
         self.cache_manager = None
-        if store and hasattr(store, '_redis'):
-            self.cache_manager = BrowserCache(store._redis)
-        
-        # Register service with store since browser worker is created directly by server
-        if store:
-            store.register_public_service(self.get_service())
+
 
     @property
     def supported_types(self) -> List[str]:
@@ -92,14 +86,19 @@ class BrowserAppRunner(BaseWorker):
         return ["web-python", "web-worker", "window", "iframe", "hypha", "web-app"]
 
     @property
-    def worker_name(self) -> str:
+    def name(self) -> str:
         """Return the worker name."""
         return "Browser Worker"
 
     @property
-    def worker_description(self) -> str:
+    def description(self) -> str:
         """Return the worker description."""
         return "A worker for running web applications in browser environments"
+
+    @property
+    def require_context(self) -> bool:
+        """Return whether the worker requires a context."""
+        return True
 
     async def initialize(self) -> Browser:
         """Initialize the browser worker."""
@@ -124,7 +123,7 @@ class BrowserAppRunner(BaseWorker):
         self.initialized = True
         return self.browser
 
-    async def start(self, config: Union[WorkerConfig, Dict[str, Any]]) -> str:
+    async def start(self, config: Union[WorkerConfig, Dict[str, Any]], context: Optional[Dict[str, Any]] = None) -> str:
         """Start a new browser session."""
         # Handle both pydantic model and dict input for RPC compatibility
         if isinstance(config, dict):
@@ -291,7 +290,7 @@ class BrowserAppRunner(BaseWorker):
             await context.close()
             raise e
 
-    async def stop(self, session_id: str) -> None:
+    async def stop(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Stop a browser session."""
         if session_id not in self._sessions:
             logger.warning(f"Browser session {session_id} not found for stopping, may have already been cleaned up")
@@ -318,14 +317,14 @@ class BrowserAppRunner(BaseWorker):
         self._sessions.pop(session_id, None)
         self._session_data.pop(session_id, None)
 
-    async def list_sessions(self, workspace: str) -> List[SessionInfo]:
+    async def list_sessions(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> List[SessionInfo]:
         """List all browser sessions for a workspace."""
         return [
             session_info for session_info in self._sessions.values()
             if session_info.workspace == workspace
         ]
 
-    async def get_session_info(self, session_id: str) -> SessionInfo:
+    async def get_session_info(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> SessionInfo:
         """Get information about a browser session."""
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"Browser session {session_id} not found")
@@ -336,7 +335,8 @@ class BrowserAppRunner(BaseWorker):
         session_id: str, 
         type: Optional[str] = None,
         offset: int = 0,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        context: Optional[Dict[str, Any]] = None
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get logs for a browser session."""
         if session_id not in self._sessions:
@@ -359,12 +359,12 @@ class BrowserAppRunner(BaseWorker):
                 result[log_type_key] = log_entries[offset:end_idx]
             return result
 
-    async def prepare_workspace(self, workspace: str) -> None:
+    async def prepare_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Prepare workspace for browser operations."""
         logger.info(f"Preparing workspace {workspace} for browser worker")
         pass
 
-    async def close_workspace(self, workspace: str) -> None:
+    async def close_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Close all browser sessions for a workspace."""
         logger.info(f"Closing workspace {workspace} for browser worker")
         
@@ -383,7 +383,7 @@ class BrowserAppRunner(BaseWorker):
             # you might want to be more selective about cache clearing
             logger.info(f"Cache cleanup for workspace {workspace} would be handled by app uninstall")
 
-    async def shutdown(self) -> None:
+    async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
         """Shutdown the browser worker."""
         logger.info("Shutting down browser worker...")
         
@@ -445,7 +445,7 @@ class BrowserAppRunner(BaseWorker):
         
         return local_url, public_url
 
-    async def compile(self, manifest: dict, files: list, config: dict = None) -> tuple[dict, list]:
+    async def compile(self, manifest: dict, files: list, config: dict = None, context: Optional[Dict[str, Any]] = None) -> tuple[dict, list]:
         """Compile browser app manifest and files.
         
         This method:
@@ -540,16 +540,12 @@ class BrowserAppRunner(BaseWorker):
         app_type = new_manifest.get("type")
         
         progress_callback({"type": "info", "message": "Updating manifest and preparing files..."})
-        
-        # All browser apps should compile to index.html as the entry point
-        # This ensures consistency and that the browser worker can find the file
-        compiled_entry_point = "index.html"
-        
+
         # Set the entry point to index.html for all browser app types
-        new_manifest["entry_point"] = compiled_entry_point
+        new_manifest["entry_point"] = "index.html"
         # Ensure the manifest type is correctly set to the expected app_type
         new_manifest["type"] = new_manifest.get("type", app_type)
-        
+        entry_point = new_manifest["entry_point"]
         
         
         # Create new files list without the source/config/script files and add compiled file
@@ -563,7 +559,7 @@ class BrowserAppRunner(BaseWorker):
         
         # Always save the compiled HTML as index.html for consistency
         new_files.append({
-            "path": compiled_entry_point,
+            "path": entry_point,
             "content": compiled_html,
             "format": "text"
         })
@@ -573,13 +569,13 @@ class BrowserAppRunner(BaseWorker):
             del new_manifest["script"]
         if "code" in new_manifest:
             new_files.append({
-                "path": entry_point,
+                "path": "source",
                 "content": new_manifest["code"],
                 "format": "text"
             })
             del new_manifest["code"]
         
-        progress_callback({"type": "success", "message": f"Browser app compilation completed. Generated {compiled_entry_point}"})
+        progress_callback({"type": "success", "message": f"Browser app compilation completed. Generated {entry_point}"})
             
         return new_manifest, new_files
     
@@ -687,6 +683,7 @@ class BrowserAppRunner(BaseWorker):
         self,
         session_id: str,
         format: str = "png",
+        context: Optional[Dict[str, Any]] = None
     ) -> str:
         """Take a screenshot of a browser app instance."""
         if session_id not in self._sessions:
@@ -812,20 +809,186 @@ class BrowserAppRunner(BaseWorker):
         await page.route("**/*", handle_route)
         logger.info(f"Setup route caching for {len(cache_routes)} patterns")
 
-    async def clear_app_cache(self, workspace: str, app_id: str) -> Dict[str, Any]:
+    async def clear_app_cache(self, workspace: str, app_id: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Clear cache for an app."""
         deleted_count = await self.cache_manager.clear_app_cache(workspace, app_id)
         return {"deleted_entries": deleted_count}
 
-    async def get_app_cache_stats(self, workspace: str, app_id: str) -> Dict[str, Any]:
+    async def get_app_cache_stats(self, workspace: str, app_id: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Get cache statistics for an app."""
         return await self.cache_manager.get_cache_stats(workspace, app_id)
 
-    def get_service(self):
-        """Get the service."""
-        service_config = self.get_service_config()
+    def get_worker_service(self) -> Dict[str, Any]:
+        """Get the service configuration for registration with browser-specific methods."""
+        service_config = super().get_worker_service()
         # Add browser-specific methods
         service_config["take_screenshot"] = self.take_screenshot
         service_config["clear_app_cache"] = self.clear_app_cache
         service_config["get_app_cache_stats"] = self.get_app_cache_stats
         return service_config
+
+
+async def hypha_startup(server):
+    """Hypha startup function to initialize browser worker."""
+    worker = BrowserWorker()
+    await worker.register_worker_service(server)
+    logger.info("Browser worker initialized and registered")
+
+
+def main():
+    """Main function for command line execution."""
+    import argparse
+    import asyncio
+    import sys
+    
+    def get_env_var(name: str, default: str = None) -> str:
+        """Get environment variable with HYPHA_ prefix."""
+        return os.environ.get(f"HYPHA_{name.upper()}", default)
+    
+    parser = argparse.ArgumentParser(
+        description="Hypha Browser Worker - Execute web applications in isolated browser environments",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Environment Variables (with HYPHA_ prefix):
+  HYPHA_SERVER_URL     Hypha server URL (e.g., https://hypha.aicell.io)
+  HYPHA_WORKSPACE      Workspace name (e.g., my-workspace)
+  HYPHA_TOKEN          Authentication token
+  HYPHA_SERVICE_ID     Service ID for the worker (optional)
+  HYPHA_VISIBILITY     Service visibility: public or protected (default: protected)
+  HYPHA_IN_DOCKER      Set to 'true' if running in Docker container (default: false)
+
+Examples:
+  # Using command line arguments
+  python -m hypha.workers.browser --server-url https://hypha.aicell.io --workspace my-workspace --token TOKEN
+
+  # Using environment variables
+  export HYPHA_SERVER_URL=https://hypha.aicell.io
+  export HYPHA_WORKSPACE=my-workspace
+  export HYPHA_TOKEN=your-token-here
+  python -m hypha.workers.browser
+
+  # Running in Docker
+  export HYPHA_IN_DOCKER=true
+  python -m hypha.workers.browser --server-url https://hypha.aicell.io --workspace my-workspace --token TOKEN
+        """
+    )
+    
+    parser.add_argument(
+        "--server-url", 
+        type=str, 
+        default=get_env_var("SERVER_URL"),
+        help="Hypha server URL (default: from HYPHA_SERVER_URL env var)"
+    )
+    parser.add_argument(
+        "--workspace", 
+        type=str, 
+        default=get_env_var("WORKSPACE"),
+        help="Workspace name (default: from HYPHA_WORKSPACE env var)"
+    )
+    parser.add_argument(
+        "--token", 
+        type=str, 
+        default=get_env_var("TOKEN"),
+        help="Authentication token (default: from HYPHA_TOKEN env var)"
+    )
+    parser.add_argument(
+        "--service-id", 
+        type=str, 
+        default=get_env_var("SERVICE_ID"),
+        help="Service ID for the worker (default: from HYPHA_SERVICE_ID env var or auto-generated)"
+    )
+    parser.add_argument(
+        "--visibility", 
+        type=str, 
+        choices=["public", "protected"],
+        default=get_env_var("VISIBILITY", "protected"),
+        help="Service visibility (default: protected, from HYPHA_VISIBILITY env var)"
+    )
+    parser.add_argument(
+        "--in-docker",
+        action="store_true",
+        default=get_env_var("IN_DOCKER", "false").lower() == "true",
+        help="Set if running in Docker container (default: from HYPHA_IN_DOCKER env var or false)"
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Enable verbose logging"
+    )
+    
+    args = parser.parse_args()
+    
+    # Validate required arguments
+    if not args.server_url:
+        print("Error: --server-url is required (or set HYPHA_SERVER_URL environment variable)", file=sys.stderr)
+        sys.exit(1)
+    if not args.workspace:
+        print("Error: --workspace is required (or set HYPHA_WORKSPACE environment variable)", file=sys.stderr)
+        sys.exit(1)
+    if not args.token:
+        print("Error: --token is required (or set HYPHA_TOKEN environment variable)", file=sys.stderr)
+        sys.exit(1)
+    
+    # Set up logging
+    if args.verbose:
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        logger.setLevel(logging.INFO)
+    
+    print(f"Starting Hypha Browser Worker...")
+    print(f"  Server URL: {args.server_url}")
+    print(f"  Workspace: {args.workspace}")
+    print(f"  Service ID: {args.service_id or 'auto-generated'}")
+    print(f"  Visibility: {args.visibility}")
+    print(f"  In Docker: {args.in_docker}")
+    
+    async def run_worker():
+        """Run the browser worker."""
+        try:
+            from hypha_rpc import connect_to_server
+            
+            # Connect to server
+            server = await connect_to_server(
+                server_url=args.server_url, 
+                workspace=args.workspace, 
+                token=args.token
+            )
+            
+            # Create and register worker - use BrowserWorker directly  
+            worker = BrowserWorker(in_docker=args.in_docker)
+            
+            # Get service config and set custom properties (use get_worker_service() to include browser-specific methods)
+            service_config = worker.get_worker_service()
+            if args.service_id:
+                service_config["id"] = args.service_id
+            service_config["visibility"] = args.visibility
+            
+            # Register the service
+            await server.rpc.register_service(service_config)
+            
+            print(f"✅ Browser Worker registered successfully!")
+            print(f"   Service ID: {service_config['id']}")
+            print(f"   Supported types: {worker.supported_types}")
+            print(f"   Visibility: {args.visibility}")
+            print(f"")
+            print(f"Worker is ready to process browser application requests...")
+            print(f"Press Ctrl+C to stop the worker.")
+            
+            # Keep the worker running
+            try:
+                while True:
+                    await asyncio.sleep(1)
+            except KeyboardInterrupt:
+                print(f"\n🛑 Shutting down Browser Worker...")
+                await worker.shutdown()
+                print(f"✅ Worker shutdown complete.")
+                
+        except Exception as e:
+            print(f"❌ Failed to start Browser Worker: {e}", file=sys.stderr)
+            sys.exit(1)
+    
+    # Run the worker
+    asyncio.run(run_worker())
+
+
+if __name__ == "__main__":
+    main()

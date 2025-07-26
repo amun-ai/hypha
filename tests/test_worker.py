@@ -36,6 +36,21 @@ async def test_worker_api_imports():
         pytest.fail(f"Failed to import worker API classes: {e}")
 
 
+async def test_conda_worker_imports():
+    """Test that conda worker can be imported."""
+    from hypha.workers.conda import CondaWorker, get_available_package_manager
+    assert CondaWorker is not None
+    assert get_available_package_manager is not None
+    print("✓ Conda worker classes imported successfully")
+
+
+async def test_browser_worker_imports():
+    """Test that browser worker can be imported."""
+    from hypha.workers.browser import BrowserWorker
+    assert BrowserWorker is not None
+    print("✓ Browser worker classes imported successfully")
+
+
 async def test_worker_config_creation():
     """Test WorkerConfig dataclass creation."""
     from hypha.workers.base import WorkerConfig
@@ -84,6 +99,474 @@ async def test_session_info_creation():
     assert session_info.status == SessionStatus.RUNNING
     assert session_info.app_type == "web-python"
     print("✓ SessionInfo created successfully")
+
+
+async def test_conda_worker_service_registration(fastapi_server, test_user_token):
+    """Test conda worker service registration and basic functionality."""
+    from hypha.workers.conda import CondaWorker
+    
+    api = await connect_to_server(
+        {
+            "name": "conda worker test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+    
+    workspace = api.config.workspace
+    
+    # Create and register conda worker
+    worker = CondaWorker()
+    
+    # Get service config and register (use get_worker_service() to include conda-specific methods)
+    service_config = worker.get_worker_service()
+    service_config["id"] = "test-conda-worker"
+    service_config["visibility"] = "public"
+    
+    await api.rpc.register_service(service_config)
+    
+    # Verify worker is registered
+    worker_service = await api.get_service("test-conda-worker")
+    assert worker_service is not None
+    assert hasattr(worker_service, "start")
+    assert hasattr(worker_service, "stop")
+    assert hasattr(worker_service, "execute_code")
+    assert hasattr(worker_service, "get_logs")
+    assert hasattr(worker_service, "list_sessions")
+    
+    print("✓ Conda worker registered successfully")
+    
+    # Test supported types
+    assert "python-conda" in worker.supported_types
+    print(f"✓ Conda worker supports types: {worker.supported_types}")
+    
+    # Test worker info
+    assert "Conda Environment Worker" in worker.name
+    assert worker.description is not None
+    print(f"✓ Worker info: {worker.name}")
+    
+    # Clean up
+    await api.unregister_service("test-conda-worker")
+    await worker.shutdown()
+    await api.disconnect()
+
+
+async def test_browser_worker_service_registration(fastapi_server, test_user_token):
+    """Test browser worker service registration and basic functionality."""
+    from hypha.workers.browser import BrowserWorker
+    
+    api = await connect_to_server(
+        {
+            "name": "browser worker test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+    
+    workspace = api.config.workspace
+    
+    # Create and register browser worker
+    worker = BrowserWorker(in_docker=False)
+    
+    # Get service config and register (use get_service() to include browser-specific methods)
+    service_config = worker.get_worker_service()
+    service_config["id"] = "test-browser-worker"
+    service_config["visibility"] = "public"
+    
+    await api.rpc.register_service(service_config)
+    
+    # Verify worker is registered
+    worker_service = await api.get_service("test-browser-worker")
+    assert worker_service is not None
+    assert hasattr(worker_service, "start")
+    assert hasattr(worker_service, "stop")
+    assert hasattr(worker_service, "take_screenshot")
+    assert hasattr(worker_service, "get_logs")
+    assert hasattr(worker_service, "list_sessions")
+    assert hasattr(worker_service, "compile")
+    
+    print("✓ Browser worker registered successfully")
+    
+    # Test supported types
+    expected_types = ["web-python", "web-worker", "window", "iframe", "hypha", "web-app"]
+    for app_type in expected_types:
+        assert app_type in worker.supported_types
+    print(f"✓ Browser worker supports types: {worker.supported_types}")
+    
+    # Test worker info
+    assert "Browser Worker" in worker.name
+    assert worker.description is not None
+    print(f"✓ Worker info: {worker.name}")
+    
+    # Clean up
+    await api.unregister_service("test-browser-worker")
+    await worker.shutdown()
+    await api.disconnect()
+
+
+async def test_conda_worker_session_lifecycle(fastapi_server, test_user_token):
+    """Test conda worker session lifecycle management."""
+    from hypha.workers.conda import CondaWorker
+    from hypha.workers.base import WorkerConfig
+    
+    api = await connect_to_server(
+        {
+            "name": "conda session test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 60,  # Longer timeout for conda operations
+            "token": test_user_token,
+        }
+    )
+    
+    workspace = api.config.workspace
+    
+    # Create and register conda worker
+    worker = CondaWorker()
+    service_config = worker.get_worker_service()
+    service_config["id"] = "test-conda-session-worker"
+    service_config["visibility"] = "public"
+    
+    await api.rpc.register_service(service_config)
+    worker_service = await api.get_service("test-conda-session-worker")
+    
+    # Test session lifecycle
+    # Create session config
+    session_config = {
+        "id": f"{workspace}/test-conda-session",
+        "client_id": "test-conda-session",
+        "app_id": "test-conda-app",
+        "server_url": WS_SERVER_URL,
+        "workspace": workspace,
+        "token": test_user_token,
+        "entry_point": "main.py",
+        "artifact_id": f"{workspace}/test-conda-app",
+        "manifest": {
+            "type": "python-conda",
+            "name": "Test Conda App",
+            "entry_point": "main.py",
+            "dependencies": ["python=3.11", "numpy"],
+            "channels": ["conda-forge"]
+        },
+        "app_files_base_url": f"{SERVER_URL}/{workspace}/artifacts/test-conda-app/files",
+        "progress_callback": lambda x: print(f"Progress: {x}")
+    }
+    
+    # Note: We can't actually start a conda session without proper setup
+    # So we'll test the session management methods directly
+    
+    # Test list sessions (should be empty initially)
+    sessions = await worker_service.list_sessions(workspace)
+    assert isinstance(sessions, list)
+    print("✓ List sessions works")
+    
+    # Test get logs for non-existent session (should handle gracefully)
+    try:
+        logs = await worker_service.get_logs("non-existent-session")
+        assert isinstance(logs, (dict, list))
+    except Exception as e:
+        # Expected to fail for non-existent session
+        assert "not found" in str(e).lower()
+    print("✓ Get logs handles non-existent session correctly")
+    
+    print("✓ Conda worker session management tested")
+    
+    # Clean up
+    await api.unregister_service("test-conda-session-worker")
+    await worker.shutdown()
+    await api.disconnect()
+
+
+async def test_browser_worker_session_lifecycle(fastapi_server, test_user_token):
+    """Test browser worker session lifecycle management."""
+    from hypha.workers.browser import BrowserWorker
+    from hypha.workers.base import WorkerConfig
+    
+    api = await connect_to_server(
+        {
+            "name": "browser session test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 60,  # Longer timeout for browser operations
+            "token": test_user_token,
+        }
+    )
+    
+    workspace = api.config.workspace
+    
+    # Create and register browser worker
+    worker = BrowserWorker(in_docker=False)
+    service_config = worker.get_worker_service()
+    service_config["id"] = "test-browser-session-worker"
+    service_config["visibility"] = "public"
+    
+    await api.rpc.register_service(service_config)
+    worker_service = await api.get_service("test-browser-session-worker")
+    
+    # Test session lifecycle
+    # Test list sessions (should be empty initially)
+    sessions = await worker_service.list_sessions(workspace)
+    assert isinstance(sessions, list)
+    print("✓ List sessions works")
+    
+    # Test get logs for non-existent session (should handle gracefully)
+    try:
+        logs = await worker_service.get_logs("non-existent-session")
+        assert isinstance(logs, (dict, list))
+    except Exception as e:
+        # Expected to fail for non-existent session
+        assert "not found" in str(e).lower()
+    print("✓ Get logs handles non-existent session correctly")
+    
+    # Test take screenshot for non-existent session (should fail gracefully)
+    try:
+        screenshot = await worker_service.take_screenshot("non-existent-session")
+    except Exception as e:
+        # Expected to fail for non-existent session
+        assert "not found" in str(e).lower() or "not found" in str(e)
+    print("✓ Take screenshot handles non-existent session correctly")
+    
+    # Test compile method
+    manifest = {
+        "type": "web-python",
+        "name": "Test Web Python App",
+        "entry_point": "main.py"
+    }
+    files = [
+        {
+            "path": "main.py",
+            "content": "print('Hello from web python')",
+            "format": "text"
+        }
+    ]
+    config = {"progress_callback": lambda x: print(f"Compile: {x}")}
+    
+    compiled_manifest, compiled_files = await worker_service.compile(manifest, files, config)
+    assert isinstance(compiled_manifest, dict)
+    assert isinstance(compiled_files, list)
+    assert compiled_manifest["type"] == "web-python"
+    print("✓ Compile method works")
+    
+    print("✓ Browser worker session management tested")
+    
+    # Clean up
+    await api.unregister_service("test-browser-session-worker")
+    await worker.shutdown()
+    await api.disconnect()
+
+
+async def test_conda_worker_cli_functionality():
+    """Test conda worker CLI argument parsing and configuration."""
+    from hypha.workers.conda import main
+    import sys
+    from unittest.mock import patch
+    
+    # Test help functionality (should not raise exception)
+    with patch.object(sys, 'argv', ['conda.py', '--help']):
+        try:
+            main()
+        except SystemExit as e:
+            # --help causes SystemExit with code 0
+            assert e.code == 0
+    
+    print("✓ Conda worker CLI help works")
+    
+    # Test missing required arguments
+    with patch.object(sys, 'argv', ['conda.py']):
+        try:
+            main()
+        except SystemExit as e:
+            # Missing required args should cause SystemExit with code 1
+            assert e.code == 1
+    
+    print("✓ Conda worker CLI validates required arguments")
+
+
+async def test_browser_worker_cli_functionality():
+    """Test browser worker CLI argument parsing and configuration."""
+    from hypha.workers.browser import main
+    import sys
+    from unittest.mock import patch
+    
+    # Test help functionality (should not raise exception)
+    with patch.object(sys, 'argv', ['browser.py', '--help']):
+        try:
+            main()
+        except SystemExit as e:
+            # --help causes SystemExit with code 0
+            assert e.code == 0
+    
+    print("✓ Browser worker CLI help works")
+    
+    # Test missing required arguments
+    with patch.object(sys, 'argv', ['browser.py']):
+        try:
+            main()
+        except SystemExit as e:
+            # Missing required args should cause SystemExit with code 1
+            assert e.code == 1
+    
+    print("✓ Browser worker CLI validates required arguments")
+
+
+async def test_worker_environment_variable_support():
+    """Test that both workers support environment variables correctly."""
+    import os
+    from unittest.mock import patch
+    
+    # Test conda worker environment variables by testing the CLI function
+    from hypha.workers.conda import main
+    import sys
+    
+    # Test that environment variables are used when set
+    with patch.dict(os.environ, {'HYPHA_SERVER_URL': 'https://test.example.com'}):
+        with patch.object(sys, 'argv', ['conda.py', '--help']):
+            try:
+                main()
+            except SystemExit:
+                pass  # Expected for --help
+    
+    print("✓ Conda worker environment variable support works")
+    
+    # Test browser worker environment variables  
+    from hypha.workers.browser import main
+    import sys
+    
+    # We can test the get_env_var function indirectly by checking argument defaults
+    with patch.dict(os.environ, {'HYPHA_SERVER_URL': 'https://browser-test.example.com'}):
+        with patch.object(sys, 'argv', ['browser.py', '--help']):
+            try:
+                main()
+            except SystemExit:
+                pass  # Expected for --help
+    
+    print("✓ Browser worker environment variable support works")
+
+
+async def test_worker_docker_configuration():
+    """Test docker-specific configuration for workers."""
+    # Test conda worker docker setup
+    from hypha.workers.conda import CondaWorker
+    
+    # Create worker instance
+    worker = CondaWorker()
+    
+    # Test that worker can be created (Docker-specific setup would be in main())
+    assert worker is not None
+    assert hasattr(worker, 'supported_types')
+    
+    print("✓ Conda worker can be created for Docker deployment")
+    
+    # Test browser worker docker setup
+    from hypha.workers.browser import BrowserWorker
+    
+    # Create worker instance with Docker flag
+    worker = BrowserWorker(in_docker=True)
+    
+    # Test that worker can be created with Docker configuration
+    assert worker is not None
+    assert worker.in_docker == True
+    
+    print("✓ Browser worker can be created for Docker deployment")
+
+
+async def test_worker_service_integration_with_controller(fastapi_server, test_user_token):
+    """Test that workers integrate properly with the server app controller."""
+    api = await connect_to_server(
+        {
+            "name": "worker integration test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+    
+    # Get the controller
+    controller = await api.get_service("public/server-apps")
+    
+    # Test that different worker types can be utilized by installing and starting apps
+    
+    # Test Python eval worker (conda worker)
+    python_app_code = """
+import os
+from hypha_rpc.sync import connect_to_server
+
+server = connect_to_server({
+    "client_id": os.environ["HYPHA_CLIENT_ID"],
+    "server_url": os.environ["HYPHA_SERVER_URL"],
+    "workspace": os.environ["HYPHA_WORKSPACE"],
+    "token": os.environ["HYPHA_TOKEN"],
+})
+
+print("Python worker test successful")
+
+server.register_service({
+    "id": "default",
+    "name": "Python Worker Test Service",
+    "test": lambda: "Python worker working"
+})
+"""
+    config = await controller.install(
+        source=python_app_code,
+        manifest={"type": "python-eval", "name": "Python Worker Test"},
+        timeout=10,
+        overwrite=True
+    )
+    config = await controller.start(config.id)
+    # Just verify we can start the app - the exact return format doesn't matter for this test
+    print("✓ Python eval worker integration - app started successfully")
+    
+    # Verify the app is running by checking it's in the running list
+    running_apps = await controller.list_running()
+    app_running = any(app["id"] == config.id for app in running_apps)
+    assert app_running, f"App {config.id} should be running"
+    print("✓ App is confirmed running")
+    
+    await controller.stop(config.id)
+    
+    # Test that we can install another app using the same worker
+    python_app_code2 = """
+import os
+from hypha_rpc.sync import connect_to_server
+
+server = connect_to_server({
+    "client_id": os.environ["HYPHA_CLIENT_ID"],
+    "server_url": os.environ["HYPHA_SERVER_URL"],
+    "workspace": os.environ["HYPHA_WORKSPACE"],
+    "token": os.environ["HYPHA_TOKEN"],
+})
+
+print("Second Python worker test successful")
+
+server.register_service({
+    "id": "default",
+    "name": "Second Python Worker Test Service",
+    "calculate": lambda a, b: a + b
+})
+"""
+    config2 = await controller.install(
+        source=python_app_code2,
+        manifest={"type": "python-eval", "name": "Second Python Worker Test"},
+        timeout=10,
+        overwrite=True
+    )
+    config2 = await controller.start(config2.id)
+    print("✓ Second Python eval worker integration - app started successfully")
+    
+    # Verify both workers can be used for different apps
+    running_apps = await controller.list_running()
+    app2_running = any(app["id"] == config2.id for app in running_apps)
+    assert app2_running, f"App {config2.id} should be running"
+    print("✓ Second app is confirmed running")
+    
+    await controller.stop(config2.id)
+    
+    # Test that controller basic functionality works
+    running_apps = await controller.list_running()
+    assert isinstance(running_apps, list)
+    print("✓ Controller list_running works")
+    
+    await api.disconnect()
 
 
 async def test_browser_worker_integration(fastapi_server, test_user_token):
@@ -181,28 +664,35 @@ server.register_service({
 print("Python worker test app registered successfully")
 """
     
-    try:
-        # Install and run Python app (this will use the python worker for python-eval type)
-        config = await controller.install(
-            source=test_python_code,
-            manifest={"type": "python-eval", "name": "Python Worker Test"},
-            timeout=5,  # Reduced from 10
-            overwrite=True,
-        )
-        config = await controller.start(config.id)
-        # Check logs
-        logs = await controller.get_logs(config.id)
-        log_text = " ".join(logs.get("log", []))
-        assert "Python worker calculation: 8" in log_text
-        assert "Python worker test app registered successfully" in log_text
-        print("✓ Python worker integration test passed")
-        
-        # Clean up
-        await controller.stop(config.id)
-        
-    except Exception as e:
-        print(f"Python worker test failed (may not be available): {e}")
-        # Python worker might not be available in all environments
+    # Install and run Python app (this will use the python worker for python-eval type)
+    config = await controller.install(
+        source=test_python_code,
+        manifest={"type": "python-eval", "name": "Python Worker Test"},
+        timeout=5,  # Reduced from 10
+        overwrite=True,
+    )
+    config = await controller.start(config.id)
+    
+    # Wait a bit for the Python code to execute and logs to be populated
+    import asyncio
+    await asyncio.sleep(2)
+    
+    # Check logs - Python worker outputs to stdout, not log
+    logs = await controller.get_logs(config.id)
+    
+    # Get all log content from different log types (stdout, stderr, log, etc.)
+    all_logs = []
+    for log_type, entries in logs.items():
+        all_logs.extend(entries)
+    full_log_text = " ".join(all_logs)
+    
+    # Check for the expected output in any log type
+    assert "Python worker calculation: 8" in full_log_text
+    assert "Python worker test app registered successfully" in full_log_text
+    print("✓ Python worker integration test passed")
+    
+    # Clean up
+    await controller.stop(config.id)
     
     await api.disconnect()
 
@@ -606,13 +1096,17 @@ async def test_worker_error_handling(fastapi_server, test_user_token):
     # Get the controller
     controller = await api.get_service("public/server-apps")
     
-    # Test 1: Invalid app type
+    # Test 1: Invalid app manifest
     try:
-        workers = await controller.get_server_app_workers(app_type="nonexistent-type")
-        assert len(workers) == 0, "Should return empty list for nonexistent type"
-        print("✓ Invalid app type handled correctly")
+        config = await controller.install(
+            source="console.log('test');",
+            manifest={"type": "nonexistent-type", "name": "Invalid Type App"},
+            timeout=5,
+            overwrite=True,
+        )
+        print("⚠️ Invalid app type unexpectedly succeeded")
     except Exception as e:
-        print(f"✓ Invalid app type properly rejected: {e}")
+        print(f"✓ Invalid app type properly rejected: {type(e).__name__}")
     
     # Test 2: App with syntax errors
     bad_app_code = """

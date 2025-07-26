@@ -34,9 +34,9 @@ class A2AClientRunner(BaseWorker):
 
     instance_counter: int = 0
 
-    def __init__(self, server):
+    def __init__(self):
         """Initialize the A2A client worker."""
-        super().__init__(server)
+        super().__init__()
         self.controller_id = str(A2AClientRunner.instance_counter)
         A2AClientRunner.instance_counter += 1
         
@@ -50,16 +50,21 @@ class A2AClientRunner(BaseWorker):
         return ["a2a-agent"]
 
     @property
-    def worker_name(self) -> str:
+    def name(self) -> str:
         """Return the worker name."""
         return "A2A Proxy Worker"
 
     @property
-    def worker_description(self) -> str:
+    def description(self) -> str:
         """Return the worker description."""
         return "A2A proxy worker for connecting to A2A agents"
+    
+    @property
+    def require_context(self) -> bool:
+        """Return whether the worker requires a context."""
+        return True
 
-    async def compile(self, manifest: dict, files: list, config: dict = None) -> tuple[dict, list]:
+    async def compile(self, manifest: dict, files: list, config: dict = None, context: Optional[Dict[str, Any]] = None) -> tuple[dict, list]:
         """Compile A2A agent manifest and files.
         
         This method processes A2A agent configuration:
@@ -127,7 +132,7 @@ class A2AClientRunner(BaseWorker):
         # Not an A2A agent type, return unchanged
         return manifest, files
 
-    async def start(self, config: Union[WorkerConfig, Dict[str, Any]]) -> str:
+    async def start(self, config: Union[WorkerConfig, Dict[str, Any]], context: Optional[Dict[str, Any]] = None) -> str:
         """Start a new A2A client session."""
         if not A2A_SDK_AVAILABLE:
             raise WorkerError("A2A SDK not available. Install with: pip install a2a")
@@ -453,7 +458,7 @@ class A2AClientRunner(BaseWorker):
             logger.error(error_msg)
             raise Exception(error_msg)
 
-    async def stop(self, session_id: str) -> None:
+    async def stop(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Stop an A2A session."""
         if session_id not in self._sessions:
             logger.warning(f"A2A session {session_id} not found for stopping, may have already been cleaned up")
@@ -498,14 +503,14 @@ class A2AClientRunner(BaseWorker):
             self._sessions.pop(session_id, None)
             self._session_data.pop(session_id, None)
 
-    async def list_sessions(self, workspace: str) -> List[SessionInfo]:
+    async def list_sessions(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> List[SessionInfo]:
         """List all A2A sessions for a workspace."""
         return [
             session_info for session_info in self._sessions.values()
             if session_info.workspace == workspace
         ]
 
-    async def get_session_info(self, session_id: str) -> SessionInfo:
+    async def get_session_info(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> SessionInfo:
         """Get information about an A2A session."""
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"A2A session {session_id} not found")
@@ -516,7 +521,8 @@ class A2AClientRunner(BaseWorker):
         session_id: str, 
         type: Optional[str] = None,
         offset: int = 0,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        context: Optional[Dict[str, Any]] = None
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get logs for an A2A session."""
         if session_id not in self._sessions:
@@ -539,12 +545,12 @@ class A2AClientRunner(BaseWorker):
                 result[log_type_key] = log_entries[offset:end_idx]
             return result
 
-    async def prepare_workspace(self, workspace: str) -> None:
+    async def prepare_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Prepare workspace for A2A operations."""
         logger.info(f"Preparing workspace {workspace} for A2A proxy worker")
         pass
 
-    async def close_workspace(self, workspace: str) -> None:
+    async def close_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Close all A2A sessions for a workspace."""
         logger.info(f"Closing workspace {workspace} for A2A proxy worker")
         
@@ -560,7 +566,7 @@ class A2AClientRunner(BaseWorker):
             except Exception as e:
                 logger.warning(f"Failed to stop A2A session {session_id}: {e}")
 
-    async def shutdown(self) -> None:
+    async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
         """Shutdown the A2A proxy worker."""
         logger.info("Shutting down A2A proxy worker...")
         
@@ -574,16 +580,12 @@ class A2AClientRunner(BaseWorker):
         
         logger.info("A2A proxy worker shutdown complete")
 
-    def get_service(self) -> dict:
-        """Get the service configuration."""
-        return self.get_service_config()
-
 
 async def hypha_startup(server):
     """Hypha startup function to initialize A2A client."""
     if A2A_SDK_AVAILABLE:
-        worker = A2AClientRunner(server)
-        await server.register_service(worker.get_service_config())
+        worker = A2AClientRunner()
+        await server.register_service(worker.get_worker_service())
         logger.info("A2A client worker initialized and registered")
     else:
         logger.warning("A2A library not available, skipping A2A client worker")

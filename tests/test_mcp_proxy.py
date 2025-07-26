@@ -136,7 +136,7 @@ async def test_mcp_streamable_http_round_trip_service_consistency(fastapi_server
     
     # Install the MCP server app
     mcp_app_info = await controller.install(
-        config=mcp_config,
+        manifest=mcp_config,
         overwrite=True,
         stage=True,
     )
@@ -240,7 +240,7 @@ async def test_mcp_error_handling_and_debugging(fastapi_server, test_user_token)
     
     # Install the MCP server app with invalid URL
     mcp_app_info = await controller.install(
-        config=mcp_config_invalid,
+        manifest=mcp_config_invalid,
         overwrite=True,
         stage=True,
     )
@@ -288,7 +288,7 @@ async def test_mcp_error_handling_and_debugging(fastapi_server, test_user_token)
     
     # Install the MCP server app with unsupported transport
     mcp_app_info = await controller.install(
-        config=mcp_config_unsupported,
+        manifest=mcp_config_unsupported,
         overwrite=True,
         stage=True,
     )
@@ -358,7 +358,7 @@ async def test_real_deepwiki_mcp_server_validation(fastapi_server, test_user_tok
     
     # Install the real MCP server app - connect to actual external service
     app_info = await controller.install(
-        config=deepwiki_config,
+        manifest=deepwiki_config,
         wait_for_service="deepwiki",
         overwrite=True,
     )
@@ -412,4 +412,87 @@ async def test_real_deepwiki_mcp_server_validation(fastapi_server, test_user_tok
             await controller.stop(app["id"])
     
     await controller.uninstall(app_info["id"])
-    await api.disconnect() 
+    await api.disconnect()
+
+async def test_mcp_lazy_service_one_instance(fastapi_server, test_user_token):
+    """Test that lazy loading an MCP service creates only one app instance."""
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+    workspace = api.config.workspace
+    controller = await api.get_service("public/server-apps")
+
+    # Clean up running apps from previous tests
+    for app in await controller.list_running():
+        await controller.stop(app["id"])
+
+    @schema_function
+    def my_tool(x: int) -> int:
+        """A simple tool."""
+        return x * 2
+
+    original_service_info = await api.register_service(
+        {
+            "id": "lazy-mcp-test-service",
+            "name": "Lazy MCP Test Service",
+            "type": "mcp",
+            "config": {"visibility": "public"},
+            "tools": {"my_tool": my_tool},
+        }
+    )
+
+    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{original_service_info['id'].split('/')[-1]}/mcp"
+
+    mcp_config = {
+        "type": "mcp-server",
+        "name": "Lazy MCP App",
+        "mcpServers": {
+            "lazy-server": {
+                "type": "streamable-http",
+                "url": mcp_endpoint_url,
+            }
+        },
+    }
+
+    app_info = await controller.install(manifest=mcp_config, overwrite=True, stage=True)
+    
+    # Commit the staged app to make it available
+    await controller.commit_app(app_info.id)
+
+    # First lazy call
+    print("First lazy call to get_service...")
+    service = await api.get_service(f"lazy-server@{app_info.id}")
+    assert service is not None
+    assert "my_tool" in service.tools
+    assert await service.tools.my_tool(2) == 4
+
+    # Check running instances
+    running_apps = await controller.list_running()
+    mcp_app_instances = [app for app in running_apps if app["app_id"] == app_info.id]
+    assert len(mcp_app_instances) == 1, f"Expected 1 instance, but found {len(mcp_app_instances)}"
+    print(f"Found {len(mcp_app_instances)} instance(s) running, as expected.")
+
+    # Second lazy call
+    print("Second lazy call to get_service...")
+    service2 = await api.get_service(f"lazy-server@{app_info.id}")
+    assert service2 is not None
+    assert "my_tool" in service2.tools
+    assert await service2.tools.my_tool(3) == 6
+
+    # Check running instances again
+    running_apps_after = await controller.list_running()
+    mcp_app_instances_after = [app for app in running_apps_after if app["app_id"] == app_info.id]
+    assert len(mcp_app_instances_after) == 1, f"Expected 1 instance after second call, but found {len(mcp_app_instances_after)}"
+    print(f"Found {len(mcp_app_instances_after)} instance(s) running after second call, as expected.")
+
+    # Cleanup
+    # Stop the running instance
+    await controller.stop(mcp_app_instances[0]["id"])
+    await controller.uninstall(app_info.id)
+    await api.unregister_service(original_service_info["id"])
+    await api.disconnect()

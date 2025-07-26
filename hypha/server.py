@@ -119,9 +119,10 @@ def start_builtin_services(
         assert args.enable_s3, "Server apps require S3 to be enabled"
         # pylint: disable=import-outside-toplevel
         from hypha.apps import ServerAppController
-        from hypha.workers import BrowserAppRunner
+        from hypha.workers import BrowserWorker
 
-        BrowserAppRunner(store, in_docker=args.in_docker)
+        browser_worker = BrowserWorker(in_docker=args.in_docker)
+        store.register_public_service(browser_worker.get_worker_service())
         ServerAppController(
             store,
             port=args.port,
@@ -316,6 +317,7 @@ def create_application(args):
             env.get("RECONNECTION_TOKEN_LIFE_TIME", str(2 * 24 * 60 * 60))
         ),
         activity_check_interval=float(env.get("ACTIVITY_CHECK_INTERVAL", str(10))),
+        enable_s3_for_anonymous_users=args.enable_s3_for_anonymous_users,
     )
     application.state.store = store
 
@@ -602,7 +604,7 @@ def get_argparser(add_help=True):
         "--minio-workdir",
         type=str,
         default=None,
-        help="working directory for the built-in Minio server data",
+        help="working directory for the built-in Minio server data, it must be an absolute path",
     )
     parser.add_argument(
         "--minio-port",
@@ -644,6 +646,11 @@ def get_argparser(add_help=True):
         type=int,
         default=300,
         help="period in seconds for S3 TTL cleanup task (default: 300 seconds)",
+    )
+    parser.add_argument(
+        "--enable-s3-for-anonymous-users",
+        action="store_true",
+        help="allow anonymous users to use S3 and artifact functionality (removes read-only restriction)",
     )
     return parser
 

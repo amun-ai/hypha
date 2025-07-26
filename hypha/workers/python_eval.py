@@ -25,7 +25,7 @@ class PythonEvalRunner(BaseWorker):
 
     def __init__(self, server):
         """Initialize the Python evaluation runner."""
-        super().__init__(server)
+        super().__init__()
         self.controller_id = str(PythonEvalRunner.instance_counter)
         PythonEvalRunner.instance_counter += 1
         
@@ -39,20 +39,25 @@ class PythonEvalRunner(BaseWorker):
         return ["python-eval"]
 
     @property
-    def worker_name(self) -> str:
+    def name(self) -> str:
         """Return the worker name."""
         return "Python Eval Worker"
 
     @property
-    def worker_description(self) -> str:
+    def description(self) -> str:
         """Return the worker description."""
         return "A worker for executing Python code in isolated processes"
 
-    async def compile(self, manifest: dict, files: list, config: dict = None) -> tuple[dict, list]:
+    @property
+    def require_context(self) -> bool:
+        """Return whether the worker requires a context."""
+        return True
+
+    async def compile(self, manifest: dict, files: list, config: dict = None, context: Optional[Dict[str, Any]] = None) -> tuple[dict, list]:
         """Compile Python evaluation application - no compilation needed."""
         return manifest, files
 
-    async def start(self, config: Union[WorkerConfig, Dict[str, Any]]) -> str:
+    async def start(self, config: Union[WorkerConfig, Dict[str, Any]], context: Optional[Dict[str, Any]] = None) -> str:
         """Start a new Python evaluation session."""
         # Handle both pydantic model and dict input for RPC compatibility
         if isinstance(config, dict):
@@ -166,7 +171,7 @@ class PythonEvalRunner(BaseWorker):
                 "python_code": script
             }
 
-    async def stop(self, session_id: str) -> None:
+    async def stop(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Stop a Python evaluation session."""
         if session_id not in self._sessions:
             logger.warning(f"Python eval session {session_id} not found for stopping, may have already been cleaned up")
@@ -191,14 +196,14 @@ class PythonEvalRunner(BaseWorker):
             self._sessions.pop(session_id, None)
             self._session_data.pop(session_id, None)
 
-    async def list_sessions(self, workspace: str) -> List[SessionInfo]:
+    async def list_sessions(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> List[SessionInfo]:
         """List all Python eval sessions for a workspace."""
         return [
             session_info for session_info in self._sessions.values()
             if session_info.workspace == workspace
         ]
 
-    async def get_session_info(self, session_id: str) -> SessionInfo:
+    async def get_session_info(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> SessionInfo:
         """Get information about a Python eval session."""
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"Python eval session {session_id} not found")
@@ -209,7 +214,8 @@ class PythonEvalRunner(BaseWorker):
         session_id: str, 
         type: Optional[str] = None,
         offset: int = 0,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        context: Optional[Dict[str, Any]] = None
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get logs for a Python eval session."""
         if session_id not in self._sessions:
@@ -236,16 +242,17 @@ class PythonEvalRunner(BaseWorker):
         self,
         session_id: str,
         format: str = "png",
+        context: Optional[Dict[str, Any]] = None
     ) -> bytes:
         """Take a screenshot - not supported for Python eval."""
         raise NotImplementedError("Screenshots not supported for Python evaluation sessions")
 
-    async def prepare_workspace(self, workspace: str) -> None:
+    async def prepare_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Prepare workspace for Python eval operations."""
         logger.info(f"Preparing workspace {workspace} for Python eval worker")
         pass
 
-    async def close_workspace(self, workspace: str) -> None:
+    async def close_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Close all Python eval sessions for a workspace."""
         logger.info(f"Closing workspace {workspace} for Python eval worker")
         
@@ -261,7 +268,7 @@ class PythonEvalRunner(BaseWorker):
             except Exception as e:
                 logger.warning(f"Failed to stop Python eval session {session_id}: {e}")
 
-    async def shutdown(self) -> None:
+    async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
         """Shutdown the Python eval worker."""
         logger.info("Shutting down Python eval worker...")
         
@@ -275,9 +282,9 @@ class PythonEvalRunner(BaseWorker):
         
         logger.info("Python eval worker shutdown complete")
 
-    def get_service(self):
-        """Get the service."""
-        service_config = self.get_service_config()
+    def get_worker_service(self) -> Dict[str, Any]:
+        """Get the service configuration for registration with python-eval-specific methods."""
+        service_config = super().get_worker_service()
         # Add Python eval specific methods if any
         service_config["take_screenshot"] = self.take_screenshot
         return service_config
@@ -286,7 +293,7 @@ class PythonEvalRunner(BaseWorker):
 async def hypha_startup(server):
     """Hypha startup function to initialize Python eval worker."""
     worker = PythonEvalRunner(server)
-    await server.register_service(worker.get_service_config())
+    await worker.register_worker_service(server)
     logger.info("Python eval worker initialized and registered")
 
 

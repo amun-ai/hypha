@@ -66,9 +66,9 @@ class MCPClientRunner(BaseWorker):
 
     instance_counter: int = 0
 
-    def __init__(self, server):
+    def __init__(self):
         """Initialize the MCP client worker."""
-        super().__init__(server)
+        super().__init__()
         self.controller_id = str(MCPClientRunner.instance_counter)
         MCPClientRunner.instance_counter += 1
         
@@ -82,16 +82,21 @@ class MCPClientRunner(BaseWorker):
         return ["mcp-server"]
 
     @property
-    def worker_name(self) -> str:
+    def name(self) -> str:
         """Return the worker name."""
         return "MCP Proxy Worker"
 
     @property
-    def worker_description(self) -> str:
+    def description(self) -> str:
         """Return the worker description."""
         return "MCP proxy worker for connecting to MCP servers"
 
-    async def compile(self, manifest: dict, files: list, config: dict = None) -> tuple[dict, list]:
+    @property
+    def require_context(self) -> bool:
+        """Return whether the worker requires a context."""
+        return True
+    
+    async def compile(self, manifest: dict, files: list, config: dict = None, context: Optional[Dict[str, Any]] = None) -> tuple[dict, list]:
         """Compile MCP server manifest and files.
         
         This method processes MCP server configuration:
@@ -158,7 +163,7 @@ class MCPClientRunner(BaseWorker):
         # Not an MCP server type, return unchanged
         return manifest, files
 
-    async def start(self, config: Union[WorkerConfig, Dict[str, Any]]) -> str:
+    async def start(self, config: Union[WorkerConfig, Dict[str, Any]], context: Optional[Dict[str, Any]] = None) -> str:
         """Start a new MCP client session."""
         if not MCP_SDK_AVAILABLE:
             raise WorkerError("MCP SDK not available. Install with: pip install mcp")
@@ -270,6 +275,7 @@ class MCPClientRunner(BaseWorker):
                 "name": "default",
                 "description": "Default service",
                 "setup": lambda: None,
+                "app_id": config.app_id,  # Add app_id to default service too
             }
         )
 
@@ -287,6 +293,8 @@ class MCPClientRunner(BaseWorker):
                 raise Exception(error_msg)
 
         config.progress_callback({"type": "success", "message": f"MCP proxy initialized successfully with {len(session_data['mcp_clients'])} server(s)"})
+
+        session_data["client"] = client
         return session_data
 
     async def _connect_and_register_mcp_service(self, session_data: dict, server_name: str, server_config: dict, client, config: WorkerConfig = None):
@@ -475,7 +483,7 @@ class MCPClientRunner(BaseWorker):
                 config.progress_callback({"type": "info", "message": f"Registering services for {server_name}..."})
             
             # Register unified service for this server
-            await self._register_unified_mcp_service(session_data, server_name, tools, resources, prompts, client)
+            await self._register_unified_mcp_service(session_data, server_name, tools, resources, prompts, client, config)
             
         except Exception as e:
             logger.error(f"Failed to collect capabilities from {server_name}: {e}")
@@ -498,8 +506,20 @@ class MCPClientRunner(BaseWorker):
 
     def _wrap_tool(self, session_data: dict, server_name: str, tool_name: str, tool_description: str, tool_schema: dict):
         """Create a tool wrapper function with proper closure."""
-        async def tool_wrapper(**kwargs):
+        async def tool_wrapper(*args, **kwargs):
             """Wrapper function to call MCP tool."""
+            # Convert positional arguments to keyword arguments based on schema
+            if args:
+                param_names = []
+                if tool_schema and 'properties' in tool_schema:
+                    param_names = list(tool_schema['properties'].keys())
+                
+                # Map positional args to parameter names
+                for i, arg in enumerate(args):
+                    if i < len(param_names):
+                        param_name = param_names[i]
+                        if param_name not in kwargs:  # Don't override explicit kwargs
+                            kwargs[param_name] = arg
             logger.debug(f"Calling MCP tool {server_name}.{tool_name} with args: {kwargs}")
             try:
                 # Get the appropriate client context
@@ -529,9 +549,11 @@ class MCPClientRunner(BaseWorker):
                 # Extract content from MCP result
                 if hasattr(result, 'content') and result.content:
                     if len(result.content) == 1:
-                        return result.content[0].text
+                        text_result = result.content[0].text
+                        # Try to convert back to original type based on schema
+                        return self._convert_result_type(text_result, tool_schema)
                     else:
-                        return [content.text for content in result.content]
+                        return [self._convert_result_type(content.text, tool_schema) for content in result.content]
                 else:
                     return str(result)
                     
@@ -546,6 +568,47 @@ class MCPClientRunner(BaseWorker):
             "parameters": tool_schema
         }
         return tool_wrapper
+
+    def _convert_result_type(self, text_result: str, tool_schema: dict) -> any:
+        """Convert string result back to appropriate type based on return type inference."""
+        try:
+            # First try to parse as JSON to handle structured data
+            import json
+            try:
+                # Try JSON parsing first
+                parsed = json.loads(text_result)
+                return parsed
+            except (json.JSONDecodeError, ValueError):
+                pass
+            
+            # Try to infer type from the text content
+            # Check for boolean values
+            if text_result.lower() in ('true', 'false'):
+                return text_result.lower() == 'true'
+            
+            # Check for None/null
+            if text_result.lower() in ('none', 'null'):
+                return None
+            
+            # Try integer conversion
+            try:
+                if '.' not in text_result and 'e' not in text_result.lower():
+                    return int(text_result)
+            except ValueError:
+                pass
+            
+            # Try float conversion
+            try:
+                return float(text_result)
+            except ValueError:
+                pass
+            
+            # Return as string if no conversion is possible
+            return text_result
+            
+        except Exception:
+            # If any conversion fails, return the original text
+            return text_result
 
     def _wrap_resource(self, session_data: dict, server_name: str, resource_uri: str, resource_name: str, resource_description: str, resource_mime_type: str):
         """Create a resource wrapper function with proper closure."""
@@ -735,7 +798,7 @@ class MCPClientRunner(BaseWorker):
         
         return prompt_configs
 
-    async def _register_unified_mcp_service(self, session_data: dict, server_name: str, tools: Dict[str, Any], resources: Dict[str, Any], prompts: Dict[str, Any], client):
+    async def _register_unified_mcp_service(self, session_data: dict, server_name: str, tools: Dict[str, Any], resources: Dict[str, Any], prompts: Dict[str, Any], client, config: WorkerConfig = None):
         """Register a unified service that exposes all MCP server capabilities."""
         try:
             # Register the service with correct structure
@@ -750,10 +813,17 @@ class MCPClientRunner(BaseWorker):
                 "prompts": prompts,
             }
             
+            # Set app_id from config if available
+            if config and config.app_id:
+                service_def["app_id"] = config.app_id
+                logger.info(f"Setting app_id to {config.app_id} for service {server_name}")
+            else:
+                logger.warning(f"No config or app_id available for service {server_name} - config: {config}")
+            
             # Register the service
             service_info = await client.register_service(service_def, overwrite=True)
             session_data["services"].append(service_info.id)
-            logger.info(f"Registered unified MCP service: {service_info.id}")
+            logger.info(f"Registered unified MCP service: {service_info.id} with app_id: {service_def.get('app_id', 'NOT_SET')}")
             
         except Exception as e:
             error_msg = f"Failed to register MCP service for {server_name}: {e}"
@@ -761,7 +831,7 @@ class MCPClientRunner(BaseWorker):
             logger.error(error_msg)
             raise Exception(error_msg)
 
-    async def stop(self, session_id: str) -> None:
+    async def stop(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Stop an MCP session."""
         if session_id not in self._sessions:
             logger.warning(f"MCP session {session_id} not found for stopping, may have already been cleaned up")
@@ -799,14 +869,14 @@ class MCPClientRunner(BaseWorker):
             self._sessions.pop(session_id, None)
             self._session_data.pop(session_id, None)
 
-    async def list_sessions(self, workspace: str) -> List[SessionInfo]:
+    async def list_sessions(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> List[SessionInfo]:
         """List all MCP sessions for a workspace."""
         return [
             session_info for session_info in self._sessions.values()
             if session_info.workspace == workspace
         ]
 
-    async def get_session_info(self, session_id: str) -> SessionInfo:
+    async def get_session_info(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> SessionInfo:
         """Get information about an MCP session."""
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"MCP session {session_id} not found")
@@ -817,7 +887,8 @@ class MCPClientRunner(BaseWorker):
         session_id: str, 
         type: Optional[str] = None,
         offset: int = 0,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        context: Optional[Dict[str, Any]] = None
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get logs for an MCP session."""
         if session_id not in self._sessions:
@@ -840,12 +911,12 @@ class MCPClientRunner(BaseWorker):
                 result[log_type_key] = log_entries[offset:end_idx]
             return result
 
-    async def prepare_workspace(self, workspace: str) -> None:
+    async def prepare_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Prepare workspace for MCP operations."""
         logger.info(f"Preparing workspace {workspace} for MCP proxy worker")
         pass
 
-    async def close_workspace(self, workspace: str) -> None:
+    async def close_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Close all MCP sessions for a workspace."""
         logger.info(f"Closing workspace {workspace} for MCP proxy worker")
         
@@ -861,7 +932,7 @@ class MCPClientRunner(BaseWorker):
             except Exception as e:
                 logger.warning(f"Failed to stop MCP session {session_id}: {e}")
 
-    async def shutdown(self) -> None:
+    async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
         """Shutdown the MCP proxy worker."""
         logger.info("Shutting down MCP proxy worker...")
         
@@ -875,16 +946,14 @@ class MCPClientRunner(BaseWorker):
         
         logger.info("MCP proxy worker shutdown complete")
 
-    def get_service(self) -> dict:
-        """Get the service configuration."""
-        return self.get_service_config()
+
 
 
 async def hypha_startup(server):
     """Hypha startup function to initialize MCP client."""
     if MCP_SDK_AVAILABLE:
-        worker = MCPClientRunner(server)
-        await server.register_service(worker.get_service_config())
+        worker = MCPClientRunner()
+        await worker.register_worker_service(server)
         logger.info("MCP client worker initialized and registered")
     else:
         logger.warning("MCP library not available, skipping MCP client worker")
@@ -899,7 +968,7 @@ async def start_worker(server_url, workspace, token):
         return
     
     server = await connect(server_url, workspace=workspace, token=token)
-    worker = MCPClientRunner(server.rpc)
+    worker = MCPClientRunner()
     logger.info(f"MCP worker started, server: {server_url}, workspace: {workspace}")
     
     return worker

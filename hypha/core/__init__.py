@@ -393,7 +393,7 @@ class ApplicationManifest(Artifact):
     """Represent application artifact."""
 
     passive: Optional[bool] = False
-    dependencies: Optional[List[str]] = []
+    dependencies: Optional[List[Any]] = []
     requirements: Optional[List[str]] = []
     api_version: Optional[str] = "0.1.0"
     icon: Optional[str] = None
