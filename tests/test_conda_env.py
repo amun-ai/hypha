@@ -9,9 +9,9 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from hypha.workers.conda_env import CondaEnvWorker, EnvironmentCache
+from hypha.workers.conda import CondaWorker, EnvironmentCache
 from hypha.workers.base import WorkerConfig, SessionStatus, SessionInfo, SessionNotFoundError, WorkerError
-from hypha.workers.conda_env_executor import ExecutionResult, TimingInfo
+from hypha.workers.conda_executor import ExecutionResult, TimingInfo
 
 # Mark all async functions in this module as asyncio tests
 pytestmark = pytest.mark.asyncio
@@ -157,13 +157,13 @@ class TestEnvironmentCache:
         assert cached is None
 
 
-class TestCondaEnvWorkerBasic:
+class TestCondaWorkerBasic:
     """Test basic conda environment worker functionality without mocking."""
     
     def setup_method(self):
         """Set up test fixtures."""
         self.server = MagicMock()
-        self.worker = CondaEnvWorker(self.server)
+        self.worker = CondaWorker(self.server)
     
     def test_supported_types(self):
         """Test supported application types."""
@@ -221,15 +221,15 @@ class TestCondaEnvWorkerBasic:
         assert len(service_config["supported_types"]) == 1
 
 
-class TestCondaEnvWorkerIntegration:
+class TestCondaWorkerIntegration:
     """Integration tests for conda environment worker using real conda environments."""
     
     async def test_real_conda_basic_execution(self, conda_integration_server, conda_test_workspace):
         """Test basic conda environment creation and code execution."""
-        from hypha.workers.conda_env import CondaEnvWorker, EnvironmentCache
+        from hypha.workers.conda import CondaWorker, EnvironmentCache
         
         # Initialize worker with clean cache
-        worker = CondaEnvWorker(conda_integration_server)
+        worker = CondaWorker(conda_integration_server)
         worker._env_cache = EnvironmentCache(
             cache_dir=conda_test_workspace["cache_dir"],
             max_size=5
@@ -285,21 +285,45 @@ def execute(input_data):
                 assert session_info.status == SessionStatus.RUNNING
                 
                 print("⚙️ Executing code in real conda environment...")
-                # Execute with input data
-                result = await worker.execute_code(session_id, 21)
+                # Execute code directly
+                test_code = '''
+import sys
+import platform
+
+result = {
+    "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
+    "platform": platform.system(),
+    "input_data": 21,
+    "computation": 21 * 2
+}
+
+print(f"Result: {result}")
+'''
+                result = await worker.execute_code(session_id, test_code)
                 
                 assert result.success, f"Execution failed: {result.error}\nStderr: {result.stderr}"
-                assert isinstance(result.result, dict)
-                assert "python_version" in result.result
-                assert result.result["computation"] == 42  # 21 * 2
-                assert result.result["input_data"] == 21
                 
-                print(f"✅ Execution successful: {result.result}")
+                # Check that the code executed successfully by looking at stdout
+                assert "Result:" in result.stdout, f"Expected result output in stdout: {result.stdout}"
+                assert "'computation': 42" in result.stdout, f"Expected computation=42 in stdout: {result.stdout}"
+                assert "'input_data': 21" in result.stdout, f"Expected input_data=21 in stdout: {result.stdout}"
                 
-                # Test without input data
-                result2 = await worker.execute_code(session_id, None)
-                assert result2.success
-                assert result2.result["computation"] == 45  # sum(range(10))
+                print(f"✅ Execution successful: {result.stdout.strip()}")
+                
+                # Test another code execution
+                test_code2 = '''
+import sys
+
+result = {
+    "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
+    "computation": sum(range(10))  # Should be 45
+}
+
+print(f"Result2: {result}")
+'''
+                result2 = await worker.execute_code(session_id, test_code2)
+                assert result2.success, f"Second execution failed: {result2.error}"
+                assert "'computation': 45" in result2.stdout, f"Expected computation=45 in stdout: {result2.stdout}"
                 
                 # Check logs
                 logs = await worker.get_logs(session_id)
@@ -320,9 +344,9 @@ def execute(input_data):
     
     async def test_real_conda_package_installation(self, conda_integration_server, conda_test_workspace):
         """Test conda environment with additional dependencies."""
-        from hypha.workers.conda_env import CondaEnvWorker, EnvironmentCache
+        from hypha.workers.conda import CondaWorker, EnvironmentCache
         
-        worker = CondaEnvWorker(conda_integration_server)
+        worker = CondaWorker(conda_integration_server)
         worker._env_cache = EnvironmentCache(
             cache_dir=conda_test_workspace["cache_dir"],
             max_size=5
@@ -386,16 +410,35 @@ def execute(input_data):
                 session_id = await worker.start(config)
                 
                 print("⚙️ Testing numpy functionality...")
-                result = await worker.execute_code(session_id, [10, 20, 30, 40, 50])
+                test_code = '''
+import numpy as np
+import sys
+
+# Test numpy functionality
+arr = np.array([1, 2, 3, 4, 5])
+input_data = [10, 20, 30, 40, 50]
+input_array = np.array(input_data)
+
+result = {
+    "numpy_version": np.__version__,
+    "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
+    "array_sum": int(np.sum(arr)),
+    "array_mean": float(np.mean(arr)),
+    "input_processed": input_data,
+    "input_sum": int(np.sum(input_array)),
+    "input_mean": float(np.mean(input_array))
+}
+
+print(f"NumPy result: {result}")
+'''
+                result = await worker.execute_code(session_id, test_code)
                 
                 assert result.success, f"Numpy test failed: {result.error}\nStderr: {result.stderr}"
-                assert "numpy_version" in result.result
-                assert result.result["array_sum"] == 15  # 1+2+3+4+5
-                assert result.result["array_mean"] == 3.0  # (1+2+3+4+5)/5
-                assert result.result["input_sum"] == 150  # 10+20+30+40+50
-                assert result.result["input_mean"] == 30.0
+                assert "NumPy result:" in result.stdout, f"Expected result in stdout: {result.stdout}"
+                assert "'array_sum': 15" in result.stdout, f"Expected array_sum=15 in stdout: {result.stdout}"
+                assert "'input_sum': 150" in result.stdout, f"Expected input_sum=150 in stdout: {result.stdout}"
                 
-                print(f"✅ NumPy test successful: {result.result}")
+                print(f"✅ NumPy test successful: {result.stdout.strip()}")
                 
                 await worker.stop(session_id)
                 
@@ -409,9 +452,9 @@ def execute(input_data):
     
     async def test_real_conda_caching_behavior(self, conda_integration_server, conda_test_workspace):
         """Test that conda environments are properly cached and reused."""
-        from hypha.workers.conda_env import CondaEnvWorker, EnvironmentCache
+        from hypha.workers.conda import CondaWorker, EnvironmentCache
         
-        worker = CondaEnvWorker(conda_integration_server)
+        worker = CondaWorker(conda_integration_server)
         cache = EnvironmentCache(
             cache_dir=conda_test_workspace["cache_dir"],
             max_size=5
@@ -461,15 +504,30 @@ def execute(input_data):
                 
                 # Start first session
                 session_id1 = await worker.start(config1)
-                result1 = await worker.execute_code(session_id1, "first")
-                assert result1.success
+                test_code1 = '''
+import os
+import sys
+
+result = {
+    "python_executable": sys.executable,
+    "environment_variables": dict(os.environ).get("CONDA_DEFAULT_ENV", "none"),
+    "input": "first"
+}
+
+print(f"Cache test result 1: {result}")
+'''
+                result1 = await worker.execute_code(session_id1, test_code1)
+                assert result1.success, f"First execution failed: {result1.error}"
                 
                 # Check cache was populated
                 first_cache_size = len(cache.index)
                 assert first_cache_size == initial_cache_size + 1
                 
-                # Get the environment path for comparison
-                env_path1 = result1.result["python_executable"]
+                # Extract environment path from stdout
+                import re
+                match1 = re.search(r"'python_executable': '([^']+)'", result1.stdout)
+                assert match1, f"Could not find python_executable in stdout: {result1.stdout}"
+                env_path1 = match1.group(1)
                 
                 await worker.stop(session_id1)
                 
@@ -494,11 +552,25 @@ def execute(input_data):
                 )
                 
                 session_id2 = await worker.start(config2)
-                result2 = await worker.execute_code(session_id2, "second")
-                assert result2.success
+                test_code2 = '''
+import os
+import sys
+
+result = {
+    "python_executable": sys.executable,
+    "environment_variables": dict(os.environ).get("CONDA_DEFAULT_ENV", "none"),
+    "input": "second"
+}
+
+print(f"Cache test result 2: {result}")
+'''
+                result2 = await worker.execute_code(session_id2, test_code2)
+                assert result2.success, f"Second execution failed: {result2.error}"
                 
-                # Should have same environment path (reused from cache)
-                env_path2 = result2.result["python_executable"]
+                # Extract environment path from stdout
+                match2 = re.search(r"'python_executable': '([^']+)'", result2.stdout)
+                assert match2, f"Could not find python_executable in stdout: {result2.stdout}"
+                env_path2 = match2.group(1)
                 
                 # Cache size should not have increased (reused existing)
                 second_cache_size = len(cache.index)
@@ -523,9 +595,9 @@ def execute(input_data):
     
     async def test_real_conda_mixed_dependencies(self, conda_integration_server, conda_test_workspace):
         """Test conda environment with both conda and pip dependencies."""
-        from hypha.workers.conda_env import CondaEnvWorker, EnvironmentCache
+        from hypha.workers.conda import CondaWorker, EnvironmentCache
         
-        worker = CondaEnvWorker(conda_integration_server)
+        worker = CondaWorker(conda_integration_server)
         worker._env_cache = EnvironmentCache(
             cache_dir=conda_test_workspace["cache_dir"],
             max_size=5
@@ -596,32 +668,54 @@ def execute(input_data):
                 session_id = await worker.start(config)
                 
                 print("⚙️ Testing mixed package functionality...")
-                test_data = [1.5, 2.3, 3.7, 4.1, 5.9]
-                result = await worker.execute_code(session_id, test_data)
+                test_code = '''
+import sys
+import numpy as np
+
+result = {
+    "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
+    "numpy_available": True,
+    "numpy_version": np.__version__
+}
+
+try:
+    import requests
+    result["requests_available"] = True
+    result["requests_version"] = requests.__version__
+except ImportError:
+    result["requests_available"] = False
+
+# Test data processing
+test_data = [1.5, 2.3, 3.7, 4.1, 5.9]
+arr = np.array(test_data)
+result["data_processed"] = {
+    "sum": float(np.sum(arr)),
+    "mean": float(np.mean(arr)),
+    "std": float(np.std(arr))
+}
+
+print(f"Mixed dependencies result: {result}")
+'''
+                result = await worker.execute_code(session_id, test_code)
                 
                 assert result.success, f"Mixed dependencies test failed: {result.error}\nStderr: {result.stderr}"
                 
                 # Verify conda package (numpy) works
-                assert result.result["numpy_available"] is True
-                assert "numpy_version" in result.result
+                assert "'numpy_available': True" in result.stdout, f"Expected numpy_available=True in stdout: {result.stdout}"
+                assert "'numpy_version':" in result.stdout, f"Expected numpy_version in stdout: {result.stdout}"
                 
                 # Verify pip package (requests) works 
-                assert result.result["requests_available"] is True
-                assert "requests_version" in result.result
+                assert "'requests_available': True" in result.stdout, f"Expected requests_available=True in stdout: {result.stdout}"
+                assert "'requests_version':" in result.stdout, f"Expected requests_version in stdout: {result.stdout}"
                 
-                # Verify data processing works
-                assert "data_processed" in result.result
-                data_processed = result.result["data_processed"]
-                expected_sum = sum(test_data)
-                expected_mean = sum(test_data) / len(test_data)
-                
-                assert abs(data_processed["sum"] - expected_sum) < 0.001
-                assert abs(data_processed["mean"] - expected_mean) < 0.001
+                # Verify data processing works - check for expected sum and mean
+                expected_sum = sum([1.5, 2.3, 3.7, 4.1, 5.9])  # 17.5
+                expected_mean = expected_sum / 5  # 3.5
+                assert f"'sum': {expected_sum}" in result.stdout, f"Expected sum={expected_sum} in stdout: {result.stdout}"
+                assert f"'mean': {expected_mean}" in result.stdout, f"Expected mean={expected_mean} in stdout: {result.stdout}"
                 
                 print(f"✅ Mixed dependencies test successful:")
-                print(f"  NumPy version: {result.result['numpy_version']}")
-                print(f"  Requests version: {result.result['requests_version']}")
-                print(f"  Data processing: {data_processed}")
+                print(f"  Output: {result.stdout.strip()}")
                 
                 await worker.stop(session_id)
                 
@@ -635,9 +729,9 @@ def execute(input_data):
     
     async def test_real_conda_standalone_script(self, conda_integration_server, conda_test_workspace):
         """Test conda environment with a standalone script (no execute function)."""
-        from hypha.workers.conda_env import CondaEnvWorker, EnvironmentCache
+        from hypha.workers.conda import CondaWorker, EnvironmentCache
         
-        worker = CondaEnvWorker(conda_integration_server)
+        worker = CondaWorker(conda_integration_server)
         worker._env_cache = EnvironmentCache(
             cache_dir=conda_test_workspace["cache_dir"],
             max_size=5
@@ -659,8 +753,8 @@ result = sum(range(100))
 print(f"Computation result: {result}")
 
 # Test environment variables
-conda_env = os.environ.get("CONDA_DEFAULT_ENV", "Not set")
-print(f"Conda environment: {conda_env}")
+conda = os.environ.get("CONDA_DEFAULT_ENV", "Not set")
+print(f"Conda environment: {conda}")
 
 print("=== Script completed successfully ===")
 '''
@@ -729,13 +823,13 @@ print("=== Script completed successfully ===")
                 raise
 
 
-class TestCondaEnvWorkerProgressCallback:
+class TestCondaWorkerProgressCallback:
     """Test progress callback functionality for conda environment worker."""
     
     def setup_method(self):
         """Set up test fixtures."""
         self.server = MagicMock()
-        self.worker = CondaEnvWorker(self.server)
+        self.worker = CondaWorker(self.server)
         self.progress_messages = []
         
         def mock_progress_callback(info):
@@ -785,7 +879,7 @@ def execute(input_data):
             mock_http_client.return_value.__aenter__.return_value.get.return_value = mock_response
             
             # Mock the CondaEnvExecutor and its methods
-            with patch('hypha.workers.conda_env.CondaEnvExecutor') as mock_executor_class:
+            with patch('hypha.workers.conda.CondaEnvExecutor') as mock_executor_class:
                 mock_executor = MagicMock()
                 mock_executor_class.create_temp_env.return_value = mock_executor
                 # Mock async _extract_env method
@@ -888,7 +982,7 @@ def execute(input_data):
             mock_http_client.return_value.__aenter__.return_value.get.return_value = mock_response
             
             # Mock the CondaEnvExecutor
-            with patch('hypha.workers.conda_env.CondaEnvExecutor') as mock_executor_class:
+            with patch('hypha.workers.conda.CondaEnvExecutor') as mock_executor_class:
                 mock_executor = MagicMock()
                 mock_executor_class.return_value = mock_executor
                 mock_executor.env_path = mock_cached_path

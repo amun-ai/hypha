@@ -25,7 +25,7 @@ class PythonEvalRunner(BaseWorker):
 
     def __init__(self, server):
         """Initialize the Python evaluation runner."""
-        super().__init__(server)
+        super().__init__()
         self.controller_id = str(PythonEvalRunner.instance_counter)
         PythonEvalRunner.instance_counter += 1
         

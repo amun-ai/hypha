@@ -66,9 +66,9 @@ class MCPClientRunner(BaseWorker):
 
     instance_counter: int = 0
 
-    def __init__(self, server):
+    def __init__(self):
         """Initialize the MCP client worker."""
-        super().__init__(server)
+        super().__init__()
         self.controller_id = str(MCPClientRunner.instance_counter)
         MCPClientRunner.instance_counter += 1
         
@@ -948,7 +948,7 @@ class MCPClientRunner(BaseWorker):
 async def hypha_startup(server):
     """Hypha startup function to initialize MCP client."""
     if MCP_SDK_AVAILABLE:
-        worker = MCPClientRunner(server)
+        worker = MCPClientRunner()
         await server.register_service(worker.get_service_config())
         logger.info("MCP client worker initialized and registered")
     else:
@@ -964,7 +964,7 @@ async def start_worker(server_url, workspace, token):
         return
     
     server = await connect(server_url, workspace=workspace, token=token)
-    worker = MCPClientRunner(server.rpc)
+    worker = MCPClientRunner()
     logger.info(f"MCP worker started, server: {server_url}, workspace: {workspace}")
     
     return worker

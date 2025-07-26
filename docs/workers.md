@@ -8,11 +8,12 @@ Hypha workers are responsible for executing different types of applications with
 
 Hypha includes several built-in workers for common use cases:
 
-
-- **Browser Worker**: Runs web applications in server size browsers via playwright.
+- **[Browser Worker](browser-worker.md)**: Runs web applications in isolated browser environments via Playwright, supporting JavaScript, Python (web-python), web workers, and external web apps
 - **[Conda Environment Worker](conda-worker.md)**: Executes Python code in isolated conda environments with automatic mamba/conda detection for faster dependency management
 
-For detailed information about the Conda Environment Worker, including installation, configuration, and usage examples, see the [Conda Worker Documentation](conda-worker.md).
+For detailed information about each worker, including installation, configuration, and usage examples, see:
+- [Browser Worker Documentation](browser-worker.md)
+- [Conda Worker Documentation](conda-worker.md)
 
 ## Hypha Worker Interface
 
@@ -218,8 +219,8 @@ from hypha.workers.base import (
 class MyCustomWorker(BaseWorker):
     """Custom worker implementation."""
     
-    def __init__(self, server=None):
-        super().__init__(server)
+    def __init__(self):
+        super().__init__()
         self._sessions: Dict[str, SessionInfo] = {}
         self._session_data: Dict[str, Dict[str, Any]] = {}
     

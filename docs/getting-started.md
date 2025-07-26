@@ -1105,8 +1105,8 @@ logger = logging.getLogger(__name__)
 class CustomWorker(BaseWorker):
     """Custom worker for executing tasks."""
     
-    def __init__(self, server=None):
-        super().__init__(server)
+    def __init__(self):
+        super().__init__()
         self.running_tasks = {}
     
     @property

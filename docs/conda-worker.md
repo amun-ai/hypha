@@ -84,20 +84,20 @@ python -c "import hypha; print(f'Hypha version: {hypha.__version__}')"
 
 ```bash
 # Using command line arguments
-python -m hypha.workers.conda_env \
-  --server-url https://ai.amun.ai \
+python -m hypha.workers.conda \
+  --server-url https://hypha.aicell.io \
   --workspace my-workspace \
   --token your-token-here \
   --service-id my-conda-worker \
   --visibility public
 
 # Or using environment variables
-export HYPHA_SERVER_URL=https://ai.amun.ai
+export HYPHA_SERVER_URL=https://hypha.aicell.io
 export HYPHA_WORKSPACE=my-workspace
 export HYPHA_TOKEN=your-token-here
 export HYPHA_SERVICE_ID=my-conda-worker
 export HYPHA_VISIBILITY=public
-python -m hypha.workers.conda_env
+python -m hypha.workers.conda
 ```
 
 ### Method 2: Using Hypha Docker Container
@@ -120,14 +120,14 @@ docker pull ghcr.io/amun-ai/hypha:latest
 # Run with command line arguments
 docker run -it --rm \
   -v $(pwd)/conda_cache:/tmp/conda_cache \
-  -e HYPHA_SERVER_URL=https://ai.amun.ai \
+  -e HYPHA_SERVER_URL=https://hypha.aicell.io \
   -e HYPHA_WORKSPACE=my-workspace \
   -e HYPHA_TOKEN=your-token-here \
   -e HYPHA_SERVICE_ID=my-conda-worker \
   -e HYPHA_VISIBILITY=public \
   -e HYPHA_CACHE_DIR=/tmp/conda_cache \
   ghcr.io/amun-ai/hypha:0.20.71 \
-  python -m hypha.workers.conda_env --verbose
+  python -m hypha.workers.conda --verbose
 
 # Or create a docker-compose.yml file
 ```
@@ -142,9 +142,9 @@ version: '3.8'
 services:
   conda-worker:
     image: ghcr.io/amun-ai/hypha:0.20.71
-    command: python -m hypha.workers.conda_env --verbose
+    command: python -m hypha.workers.conda --verbose
     environment:
-      - HYPHA_SERVER_URL=https://ai.amun.ai
+      - HYPHA_SERVER_URL=https://hypha.aicell.io
       - HYPHA_WORKSPACE=my-workspace
       - HYPHA_TOKEN=your-token-here
       - HYPHA_SERVICE_ID=my-conda-worker
@@ -169,7 +169,7 @@ The Conda Environment Worker supports various configuration options through comm
 
 | Argument | Description | Required | Default |
 |----------|-------------|----------|---------|
-| `--server-url` | Hypha server URL (e.g., https://ai.amun.ai) | Yes | - |
+| `--server-url` | Hypha server URL (e.g., https://hypha.aicell.io) | Yes | - |
 | `--workspace` | Workspace name | Yes | - |
 | `--token` | Authentication token | Yes | - |
 | `--service-id` | Service ID for the worker | No | Auto-generated |
@@ -194,15 +194,15 @@ All command line arguments can be set using environment variables with the `HYPH
 
 #### Basic Setup
 ```bash
-python -m hypha.workers.conda_env \
-  --server-url https://ai.amun.ai \
+python -m hypha.workers.conda \
+  --server-url https://hypha.aicell.io \
   --workspace my-workspace \
   --token abc123...
 ```
 
 #### Production Setup with Custom Cache
 ```bash
-python -m hypha.workers.conda_env \
+python -m hypha.workers.conda \
   --server-url https://my-hypha-server.com \
   --workspace production \
   --token prod-token-123 \
@@ -214,13 +214,13 @@ python -m hypha.workers.conda_env \
 
 #### Environment Variables Setup
 ```bash
-export HYPHA_SERVER_URL=https://ai.amun.ai
+export HYPHA_SERVER_URL=https://hypha.aicell.io
 export HYPHA_WORKSPACE=my-workspace
 export HYPHA_TOKEN=your-token-here
 export HYPHA_SERVICE_ID=my-conda-worker
 export HYPHA_CACHE_DIR=/custom/cache/path
 
-python -m hypha.workers.conda_env --verbose
+python -m hypha.workers.conda --verbose
 ```
 
 ## Usage
@@ -278,7 +278,7 @@ from hypha_rpc import connect_to_server
 async def main():
     # Connect to Hypha server
     server = await connect_to_server({
-        "server_url": "https://ai.amun.ai",
+        "server_url": "https://hypha.aicell.io",
         "workspace": "my-workspace",
         "token": "your-token-here"
     })
@@ -340,7 +340,7 @@ The worker automatically caches conda environments to improve performance:
 Enable verbose logging with `--verbose` or `-v`:
 
 ```bash
-python -m hypha.workers.conda_env --verbose
+python -m hypha.workers.conda --verbose
 ```
 
 ### Sample Output
@@ -348,7 +348,7 @@ python -m hypha.workers.conda_env --verbose
 ```
 Starting Hypha Conda Environment Worker...
   Package Manager: mamba
-  Server URL: https://ai.amun.ai
+  Server URL: https://hypha.aicell.io
   Workspace: my-workspace
   Service ID: my-conda-worker
   Visibility: public
@@ -477,7 +477,7 @@ ENV HYPHA_VISIBILITY=protected
 RUN mkdir -p /opt/conda_cache
 
 # Set the default command
-CMD ["python", "-m", "hypha.workers.conda_env", "--verbose"]
+CMD ["python", "-m", "hypha.workers.conda", "--verbose"]
 ```
 
 ### Kubernetes Deployment
@@ -502,10 +502,10 @@ spec:
       containers:
       - name: conda-worker
         image: ghcr.io/amun-ai/hypha:0.20.71
-        command: ["python", "-m", "hypha.workers.conda_env", "--verbose"]
+        command: ["python", "-m", "hypha.workers.conda", "--verbose"]
         env:
         - name: HYPHA_SERVER_URL
-          value: "https://ai.amun.ai"
+          value: "https://hypha.aicell.io"
         - name: HYPHA_WORKSPACE
           value: "production"
         - name: HYPHA_TOKEN

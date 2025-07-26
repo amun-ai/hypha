@@ -17,11 +17,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from hypha.workers.base import BaseWorker, WorkerConfig, SessionStatus, SessionInfo, SessionNotFoundError, WorkerError
-from hypha.workers.conda_env_executor import CondaEnvExecutor, ExecutionResult
+from hypha.workers.conda_executor import CondaEnvExecutor, ExecutionResult
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("conda_env")
+logger = logging.getLogger("conda")
 logger.setLevel(LOGLEVEL)
 
 def get_available_package_manager() -> str:
@@ -188,16 +188,16 @@ class EnvironmentCache:
             self._remove_cache_entry(env_hash)
 
 
-class CondaEnvWorker(BaseWorker):
+class CondaWorker(BaseWorker):
     """Conda environment worker for executing Python code in isolated conda environments."""
     
     instance_counter: int = 0
     
-    def __init__(self, server):
+    def __init__(self):
         """Initialize the conda environment worker."""
-        super().__init__(server)
-        self.controller_id = str(CondaEnvWorker.instance_counter)
-        CondaEnvWorker.instance_counter += 1
+        super().__init__()
+        self.controller_id = str(CondaWorker.instance_counter)
+        CondaWorker.instance_counter += 1
         
         # Detect available package manager (mamba preferred over conda)
         try:
@@ -499,7 +499,7 @@ class CondaEnvWorker(BaseWorker):
         }
         
         # Determine if script has execute function for later interactive calls
-        needs_execute_function = "def execute(" in script or "async def execute(" in script
+
         
         # Create a task to run the script in background with the wrapper callback
         script_task = asyncio.create_task(
@@ -516,7 +516,7 @@ class CondaEnvWorker(BaseWorker):
             "script": script,
             "dependencies": dependencies,
             "channels": channels,
-            "needs_execute_function": needs_execute_function,
+
             "script_task": script_task,  # Keep reference to the background task
             "logs": logs,
             "hypha_config": hypha_config
@@ -532,7 +532,7 @@ class CondaEnvWorker(BaseWorker):
                 })
             
             # Execute the script in a thread pool to avoid blocking
-            execute_func = functools.partial(executor.execute, script, None, hypha_config)
+            execute_func = functools.partial(executor.execute, script, hypha_config)
             result = await asyncio.get_event_loop().run_in_executor(None, execute_func)
             
             # Update session logs with the background execution results
@@ -591,8 +591,8 @@ class CondaEnvWorker(BaseWorker):
                 })
             return None
     
-    async def execute_code(self, session_id: str, input_data: Any = None) -> ExecutionResult:
-        """Execute code in a conda environment session with optional input data."""
+    async def execute_code(self, session_id: str, code: str = None) -> ExecutionResult:
+        """Execute code in a conda environment session."""
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"Conda environment session {session_id} not found")
         
@@ -601,12 +601,14 @@ class CondaEnvWorker(BaseWorker):
             raise WorkerError(f"No executor available for session {session_id}")
         
         executor = session_data["executor"]
-        script = session_data["script"]
         hypha_config = session_data.get("hypha_config", {})
         
+        if not code:
+            raise WorkerError(f"No code provided to execute")
+        
         try:
-            # Execute the script with input data
-            execute_func = functools.partial(executor.execute, script, input_data, hypha_config)
+            # Execute the provided code directly
+            execute_func = functools.partial(executor.execute, code, hypha_config)
             result = await asyncio.get_event_loop().run_in_executor(None, execute_func)
             
             # Update logs
@@ -777,8 +779,8 @@ class CondaEnvWorker(BaseWorker):
 
 async def hypha_startup(server):
     """Hypha startup function to initialize conda environment worker."""
-    worker = CondaEnvWorker(server)
-    await server.register_service(worker.get_service_config())
+    worker = CondaWorker()
+    await server.register_service(worker.get_service())
     logger.info("Conda environment worker initialized and registered")
 
 
@@ -799,7 +801,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Environment Variables (with HYPHA_ prefix):
-  HYPHA_SERVER_URL     Hypha server URL (e.g., https://ai.amun.ai)
+  HYPHA_SERVER_URL     Hypha server URL (e.g., https://hypha.aicell.io)
   HYPHA_WORKSPACE      Workspace name (e.g., my-workspace)
   HYPHA_TOKEN          Authentication token
   HYPHA_SERVICE_ID     Service ID for the worker (optional)
@@ -808,17 +810,17 @@ Environment Variables (with HYPHA_ prefix):
 
 Examples:
   # Using command line arguments
-  python -m hypha.workers.conda_env --server-url https://ai.amun.ai --workspace my-workspace --token TOKEN
+  python -m hypha.workers.conda --server-url https://hypha.aicell.io --workspace my-workspace --token TOKEN
 
   # Using environment variables
-  export HYPHA_SERVER_URL=https://ai.amun.ai
+  export HYPHA_SERVER_URL=https://hypha.aicell.io
   export HYPHA_WORKSPACE=my-workspace
   export HYPHA_TOKEN=your-token-here
-  python -m hypha.workers.conda_env
+  python -m hypha.workers.conda
 
   # Mixed usage (command line overrides environment variables)
-  export HYPHA_SERVER_URL=https://ai.amun.ai
-  python -m hypha.workers.conda_env --workspace my-workspace --token TOKEN
+  export HYPHA_SERVER_URL=https://hypha.aicell.io
+  python -m hypha.workers.conda --workspace my-workspace --token TOKEN
         """
     )
     
@@ -917,7 +919,7 @@ Examples:
             )
             
             # Create and register worker
-            worker = CondaEnvWorker(server.rpc)
+            worker = CondaWorker(server.rpc)
             if args.cache_dir:
                 worker._env_cache = EnvironmentCache(cache_dir=args.cache_dir)
             

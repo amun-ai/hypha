@@ -50,21 +50,20 @@ def _capture_logs_from_browser_tabs(page: Page, logs: dict) -> None:
     page.on("pageerror", lambda target: _app_error(str(target)))
 
 
-class BrowserAppRunner(BaseWorker):
+class BrowserWorker(BaseWorker):
     """Browser app worker."""
 
     instance_counter: int = 0
 
     def __init__(
         self,
-        store,
         in_docker: bool = False,
     ):
         """Initialize the class."""
-        super().__init__(store)
+        super().__init__()
         self.browser: Optional[Browser] = None
-        self.controller_id = str(BrowserAppRunner.instance_counter)
-        BrowserAppRunner.instance_counter += 1
+        self.controller_id = str(BrowserWorker.instance_counter)
+        BrowserWorker.instance_counter += 1
         self.in_docker = in_docker
         self._playwright = None
         self.jinja_env = Environment(
@@ -79,12 +78,7 @@ class BrowserAppRunner(BaseWorker):
         
         # Initialize cache manager
         self.cache_manager = None
-        if store and hasattr(store, '_redis'):
-            self.cache_manager = BrowserCache(store._redis)
-        
-        # Register service with store since browser worker is created directly by server
-        if store:
-            store.register_public_service(self.get_service())
+
 
     @property
     def supported_types(self) -> List[str]:
@@ -825,3 +819,169 @@ class BrowserAppRunner(BaseWorker):
         service_config["clear_app_cache"] = self.clear_app_cache
         service_config["get_app_cache_stats"] = self.get_app_cache_stats
         return service_config
+
+
+async def hypha_startup(server):
+    """Hypha startup function to initialize browser worker."""
+    worker = BrowserWorker()
+    await server.register_service(worker.get_service())
+    logger.info("Browser worker initialized and registered")
+
+
+def main():
+    """Main function for command line execution."""
+    import argparse
+    import asyncio
+    import sys
+    
+    def get_env_var(name: str, default: str = None) -> str:
+        """Get environment variable with HYPHA_ prefix."""
+        return os.environ.get(f"HYPHA_{name.upper()}", default)
+    
+    parser = argparse.ArgumentParser(
+        description="Hypha Browser Worker - Execute web applications in isolated browser environments",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Environment Variables (with HYPHA_ prefix):
+  HYPHA_SERVER_URL     Hypha server URL (e.g., https://hypha.aicell.io)
+  HYPHA_WORKSPACE      Workspace name (e.g., my-workspace)
+  HYPHA_TOKEN          Authentication token
+  HYPHA_SERVICE_ID     Service ID for the worker (optional)
+  HYPHA_VISIBILITY     Service visibility: public or protected (default: protected)
+  HYPHA_IN_DOCKER      Set to 'true' if running in Docker container (default: false)
+
+Examples:
+  # Using command line arguments
+  python -m hypha.workers.browser --server-url https://hypha.aicell.io --workspace my-workspace --token TOKEN
+
+  # Using environment variables
+  export HYPHA_SERVER_URL=https://hypha.aicell.io
+  export HYPHA_WORKSPACE=my-workspace
+  export HYPHA_TOKEN=your-token-here
+  python -m hypha.workers.browser
+
+  # Running in Docker
+  export HYPHA_IN_DOCKER=true
+  python -m hypha.workers.browser --server-url https://hypha.aicell.io --workspace my-workspace --token TOKEN
+        """
+    )
+    
+    parser.add_argument(
+        "--server-url", 
+        type=str, 
+        default=get_env_var("SERVER_URL"),
+        help="Hypha server URL (default: from HYPHA_SERVER_URL env var)"
+    )
+    parser.add_argument(
+        "--workspace", 
+        type=str, 
+        default=get_env_var("WORKSPACE"),
+        help="Workspace name (default: from HYPHA_WORKSPACE env var)"
+    )
+    parser.add_argument(
+        "--token", 
+        type=str, 
+        default=get_env_var("TOKEN"),
+        help="Authentication token (default: from HYPHA_TOKEN env var)"
+    )
+    parser.add_argument(
+        "--service-id", 
+        type=str, 
+        default=get_env_var("SERVICE_ID"),
+        help="Service ID for the worker (default: from HYPHA_SERVICE_ID env var or auto-generated)"
+    )
+    parser.add_argument(
+        "--visibility", 
+        type=str, 
+        choices=["public", "protected"],
+        default=get_env_var("VISIBILITY", "protected"),
+        help="Service visibility (default: protected, from HYPHA_VISIBILITY env var)"
+    )
+    parser.add_argument(
+        "--in-docker",
+        action="store_true",
+        default=get_env_var("IN_DOCKER", "false").lower() == "true",
+        help="Set if running in Docker container (default: from HYPHA_IN_DOCKER env var or false)"
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Enable verbose logging"
+    )
+    
+    args = parser.parse_args()
+    
+    # Validate required arguments
+    if not args.server_url:
+        print("Error: --server-url is required (or set HYPHA_SERVER_URL environment variable)", file=sys.stderr)
+        sys.exit(1)
+    if not args.workspace:
+        print("Error: --workspace is required (or set HYPHA_WORKSPACE environment variable)", file=sys.stderr)
+        sys.exit(1)
+    if not args.token:
+        print("Error: --token is required (or set HYPHA_TOKEN environment variable)", file=sys.stderr)
+        sys.exit(1)
+    
+    # Set up logging
+    if args.verbose:
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        logger.setLevel(logging.INFO)
+    
+    print(f"Starting Hypha Browser Worker...")
+    print(f"  Server URL: {args.server_url}")
+    print(f"  Workspace: {args.workspace}")
+    print(f"  Service ID: {args.service_id or 'auto-generated'}")
+    print(f"  Visibility: {args.visibility}")
+    print(f"  In Docker: {args.in_docker}")
+    
+    async def run_worker():
+        """Run the browser worker."""
+        try:
+            from hypha_rpc import connect_to_server
+            
+            # Connect to server
+            server = await connect_to_server(
+                server_url=args.server_url, 
+                workspace=args.workspace, 
+                token=args.token
+            )
+            
+            # Create and register worker - use BrowserWorker directly  
+            worker = BrowserWorker(in_docker=args.in_docker)
+            
+            # Get service config and set custom properties (use get_service() to include browser-specific methods)
+            service_config = worker.get_service()
+            if args.service_id:
+                service_config["id"] = args.service_id
+            service_config["visibility"] = args.visibility
+            
+            # Register the service
+            await server.rpc.register_service(service_config)
+            
+            print(f"✅ Browser Worker registered successfully!")
+            print(f"   Service ID: {service_config['id']}")
+            print(f"   Supported types: {worker.supported_types}")
+            print(f"   Visibility: {args.visibility}")
+            print(f"")
+            print(f"Worker is ready to process browser application requests...")
+            print(f"Press Ctrl+C to stop the worker.")
+            
+            # Keep the worker running
+            try:
+                while True:
+                    await asyncio.sleep(1)
+            except KeyboardInterrupt:
+                print(f"\n🛑 Shutting down Browser Worker...")
+                await worker.shutdown()
+                print(f"✅ Worker shutdown complete.")
+                
+        except Exception as e:
+            print(f"❌ Failed to start Browser Worker: {e}", file=sys.stderr)
+            sys.exit(1)
+    
+    # Run the worker
+    asyncio.run(run_worker())
+
+
+if __name__ == "__main__":
+    main()

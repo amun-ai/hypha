@@ -17,6 +17,7 @@ import textwrap
 import logging
 import asyncio
 import functools
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, List, NamedTuple
 from dataclasses import dataclass
@@ -26,7 +27,7 @@ import traceback
 import yaml
 import psutil
 import conda_pack
-import numpy as np
+
 
 from .env_spec import EnvSpec, read_env_spec
 from .shared_memory import SharedMemoryChannel
@@ -113,7 +114,7 @@ def compute_file_hash(file_path: Union[str, Path], chunk_size: int = 8192) -> st
 class EnvCache:
     """Manages cached conda environments."""
     def __init__(self, cache_dir: Optional[str] = None):
-        self.cache_dir = cache_dir or os.path.expanduser("~/.conda_env_cache")
+        self.cache_dir = cache_dir or os.path.expanduser("~/.conda_cache")
         os.makedirs(self.cache_dir, exist_ok=True)
         self._load_cache_index()
     
@@ -257,7 +258,7 @@ class CondaEnvExecutor:
         """
         return cls(yaml_file, **kwargs)
     
-    async def _create_conda_env(self, progress_callback=None) -> float:
+    async def _create_conda(self, progress_callback=None) -> float:
         """Create a conda environment from the specified source.
 
         Args:
@@ -653,199 +654,43 @@ class CondaEnvExecutor:
 
 
         # Create or extract the environment
-        setup_time = await self._create_conda_env(progress_callback)
+        setup_time = await self._create_conda(progress_callback)
         self._is_extracted = True
         return setup_time
     
-    def _create_execution_script(self, code: str, input_data: Any = None) -> str:
-        """Create a Python script that will be executed in the conda environment.
 
-        Args:
-            code: The Python code to execute.
-            input_data: Optional input data to pass to the execute function.
-
-        Returns:
-            str: Path to the created execution script.
-        """
-        script_dir = os.path.join(self.env_path, '.scripts')
-        os.makedirs(script_dir, exist_ok=True)
-        script_path = os.path.join(script_dir, 'execute.py')
-
-        script_content = '''
-import os
-import sys
-import json
-import traceback
-import numpy as np
-from typing import Any
-
-def write_output(output: Any) -> None:
-    """Write output to the output file."""
-    # Convert numpy arrays to lists
-    if isinstance(output, np.ndarray):
-        output = output.tolist()
-    elif isinstance(output, dict):
-        output = {k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in output.items()}
-    with open(os.environ['EXECUTOR_OUTPUT_FILE'], 'w') as f:
-        json.dump({'success': True, 'result': output}, f)
-
-def write_error(error: str) -> None:
-    """Write error to the output file."""
-    with open(os.environ['EXECUTOR_OUTPUT_FILE'], 'w') as f:
-        json.dump({'success': False, 'error': error}, f)
-
-try:
-    # Execute the user code
-{0}
-
-    # Get input data if provided
-    input_data = None
-    if 'EXECUTOR_INPUT_FILE' in os.environ:
-        with open(os.environ['EXECUTOR_INPUT_FILE'], 'r') as f:
-            input_data = json.load(f)
-            # Convert lists back to numpy arrays if needed
-            if isinstance(input_data, list):
-                input_data = np.array(input_data)
-            elif isinstance(input_data, dict):
-                input_data = {k: np.array(v) if isinstance(v, list) else v for k, v in input_data.items()}
-
-    # Call the execute function
-    if 'execute' not in locals():
-        raise NameError("Code must define an 'execute' function")
     
-    result = execute(input_data) if input_data is not None else execute()
-    write_output(result)
 
-except Exception as e:
-    error_msg = f"{{str(e)}}\\n{{traceback.format_exc()}}"
-    write_error(error_msg)
-    sys.exit(1)
-'''.format(textwrap.indent(code.strip(), '    '))
-
-        with open(script_path, 'w') as f:
-            f.write(script_content)
-
-        return script_path
-    
-    def execute(self, code: str, input_data: Any = None, hypha_config: dict = None) -> ExecutionResult:
+    def execute(self, code: str, hypha_config: dict = None) -> ExecutionResult:
         """Execute Python code in the conda environment.
 
         Args:
             code: The Python code to execute.
-            input_data: Optional input data to pass to the execute function.
             hypha_config: Optional dict with Hypha connection info (server_url, workspace, client_id, token).
 
         Returns:
             ExecutionResult object containing the execution result or error.
         """
         start_time = time.time()
-        env_setup_time = self._extract_env()
+        # Environment should already be extracted when session was created
+        env_setup_time = 0.0
+        if not self._is_extracted:
+            # This should not happen in normal usage - environment should be extracted during session creation
+            raise RuntimeError("Environment not extracted. Call _extract_env() during session initialization.")
 
-        # Create temporary files for input/output
+        # Create temporary script file with unique name to avoid conflicts
+        execution_id = str(uuid.uuid4())[:8]
         script_dir = os.path.join(self.env_path, '.scripts')
         os.makedirs(script_dir, exist_ok=True)
-        script_path = os.path.join(script_dir, 'execute.py')
-        output_file = os.path.join(script_dir, 'output.json')
-        input_file = None
+        script_path = os.path.join(script_dir, f'execute_{execution_id}.py')
 
         try:
-            # Create the execution script
-            script_template = '''
-import os
-import sys
-import json
-import traceback
-from typing import Any
-
-def write_output(output: Any) -> None:
-    """Write output to the output file."""
-    with open(os.environ['EXECUTOR_OUTPUT_FILE'], 'w') as f:
-        json.dump({{'success': True, 'result': output}}, f)
-
-def write_error(error: str) -> None:
-    """Write error to the output file."""
-    with open(os.environ['EXECUTOR_OUTPUT_FILE'], 'w') as f:
-        json.dump({{'success': False, 'error': error}}, f)
-
-try:
-{0}
-
-    # Get input data if provided
-    input_data = None
-    if 'EXECUTOR_INPUT_FILE' in os.environ:
-        with open(os.environ['EXECUTOR_INPUT_FILE'], 'r') as f:
-            input_data = json.load(f)
-            
-            # Convert lists to numpy arrays if numpy is available and input_data
-            # looks like it might have been a numpy array
-            try:
-                import numpy as np
-                
-                # If input_data is a list of lists with consistent dimensions, convert to np.array
-                if isinstance(input_data, list):
-                    if all(isinstance(x, list) for x in input_data) or all(not isinstance(x, list) for x in input_data):
-                        input_data = np.array(input_data)
-            except ImportError:
-                # numpy not available, keep as list
-                pass
-
-    # Call the execute function
-    if 'execute' not in locals() and 'execute' not in globals():
-        error_msg = "NameError: Code must define an 'execute' function"
-        write_error(error_msg)
-        sys.exit(1)
-
-    result = execute(input_data)
-    write_output(result)
-
-except Exception as e:
-    error_msg = str(e)
-    if isinstance(e, NameError) and "execute" in str(e):
-        error_msg = f"NameError: Code must define an 'execute' function"
-    elif isinstance(e, SyntaxError):
-        error_msg = f"SyntaxError: Syntax error in code: {{str(e)}}"
-    else:
-        error_msg = f"{{str(e)}}\\n{{traceback.format_exc()}}"
-    write_error(error_msg)
-    sys.exit(1)
-'''
-            # Process the user code
-            # First, dedent the code to remove common leading whitespace
-            processed_code = textwrap.dedent(code)
-            # Now indent each line by 4 spaces
-            processed_code = '\n'.join('    ' + line if line.strip() else line for line in processed_code.split('\n'))
-            
-            # Now format it into the script template
-            script_content = script_template.format(processed_code)
-
-            # Write the script
+            # Write the script directly - no templates, no complex logic
             with open(script_path, 'w') as f:
-                f.write(script_content)
-
-            # Write input data if provided
-            if input_data is not None:
-                input_file = os.path.join(script_dir, 'input.json')
-                with open(input_file, 'w') as f:
-                    if isinstance(input_data, np.ndarray):
-                        # Convert numpy arrays to lists, preserving shape
-                        input_data_json = input_data.tolist()
-                    elif isinstance(input_data, dict):
-                        # Convert any numpy arrays in dictionaries
-                        input_data_json = {}
-                        for k, v in input_data.items():
-                            if isinstance(v, np.ndarray):
-                                input_data_json[k] = v.tolist()
-                            else:
-                                input_data_json[k] = v
-                    else:
-                        input_data_json = input_data
-                    json.dump(input_data_json, f)
+                f.write(code)
 
             # Set environment variables
             env = os.environ.copy()
-            env['EXECUTOR_OUTPUT_FILE'] = output_file
-            if input_file:
-                env['EXECUTOR_INPUT_FILE'] = input_file
             
             # Add Hypha connection environment variables if provided
             if hypha_config:
@@ -866,17 +711,14 @@ except Exception as e:
             start_exec_time = time.time()
             try:
                 result = subprocess.run([python_path, script_path], env=env, check=True, capture_output=True, text=True)
-                # Read output
-                with open(output_file, 'r') as f:
-                    output = json.load(f)
-
+                
                 execution_time = time.time() - start_exec_time
                 total_time = time.time() - start_time
 
                 return ExecutionResult(
-                    success=output['success'],
-                    result=output.get('result'),
-                    error=output.get('error'),
+                    success=True,
+                    result=None,  # No result data, just execution success
+                    error=None,
                     stdout=result.stdout,
                     stderr=result.stderr,
                     timing=TimingInfo(
@@ -889,19 +731,9 @@ except Exception as e:
                 execution_time = time.time() - start_exec_time
                 total_time = time.time() - start_time
 
-                # Try to read error from output file
-                error = e.stderr
-                try:
-                    with open(output_file, 'r') as f:
-                        output = json.load(f)
-                        if not output['success']:
-                            error = output['error']
-                except:
-                    pass
-
                 return ExecutionResult(
                     success=False,
-                    error=error,
+                    error=e.stderr or "Script execution failed",
                     stdout=e.stdout,
                     stderr=e.stderr,
                     timing=TimingInfo(
@@ -912,13 +744,9 @@ except Exception as e:
                 )
 
         finally:
-            # Clean up temporary files
+            # Clean up temporary script file
             if os.path.exists(script_path):
                 os.remove(script_path)
-            if os.path.exists(output_file):
-                os.remove(output_file)
-            if input_file and os.path.exists(input_file):
-                os.remove(input_file)
     
     def cleanup(self) -> None:
         """Clean up temporary files."""

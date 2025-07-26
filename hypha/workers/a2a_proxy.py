@@ -34,9 +34,9 @@ class A2AClientRunner(BaseWorker):
 
     instance_counter: int = 0
 
-    def __init__(self, server):
+    def __init__(self):
         """Initialize the A2A client worker."""
-        super().__init__(server)
+        super().__init__()
         self.controller_id = str(A2AClientRunner.instance_counter)
         A2AClientRunner.instance_counter += 1
         
@@ -582,7 +582,7 @@ class A2AClientRunner(BaseWorker):
 async def hypha_startup(server):
     """Hypha startup function to initialize A2A client."""
     if A2A_SDK_AVAILABLE:
-        worker = A2AClientRunner(server)
+        worker = A2AClientRunner()
         await server.register_service(worker.get_service_config())
         logger.info("A2A client worker initialized and registered")
     else:

@@ -1836,84 +1836,74 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
     # Test 2.2: Test service functionality
     print("Testing registered service functionality...")
     
-    try:
-        # Get the registered service
-        fastapi_service = await api.get_service(f"hello-fastapi@{fastapi_app_info['id']}")
-        assert fastapi_service is not None
-        print("✅ FastAPI service accessible via Hypha RPC")
+    # Get the registered service
+    fastapi_service = await api.get_service(f"hello-fastapi@{fastapi_app_info['id']}")
+    assert fastapi_service is not None
+    print("✅ FastAPI service accessible via Hypha RPC")
 
-        # Test the service is an ASGI service (we can't directly call HTTP endpoints via RPC)
-        # but we can verify it's registered and accessible
-        assert hasattr(fastapi_service, 'serve') or hasattr(fastapi_service, '__call__')
-        print("✅ FastAPI service has expected ASGI interface")
+    # Test the service is an ASGI service (we can't directly call HTTP endpoints via RPC)
+    # but we can verify it's registered and accessible
+    assert hasattr(fastapi_service, 'serve') or hasattr(fastapi_service, '__call__')
+    print("✅ FastAPI service has expected ASGI interface")
 
-    except Exception as e:
-        print(f"⚠️ Direct service access failed (may be expected for ASGI): {e}")
 
     # Test 2.3: Test HTTP endpoints through the workspace HTTP interface
     print("Testing HTTP endpoints...")
     workspace = api.config["workspace"]
     
-    try:
-        # Test root endpoint
-        home_url = f"{SERVER_URL}/{workspace}/services/hello-fastapi@{fastapi_app_info['id']}/"
-        response = requests.get(
-            home_url,
-            headers={"Authorization": f"Bearer {test_user_token}"},
-            timeout=10
-        )
-        
-        if response.status_code == 200:
-            home_data = response.json()
-            assert "message" in home_data
-            assert "Conda FastAPI" in home_data["message"]
-            assert "python_version" in home_data
-            assert "numpy_version" in home_data
-            print(f"✅ Home endpoint working: {home_data['message']}")
-        else:
-            print(f"⚠️ Home endpoint failed: {response.status_code} - {response.text}")
 
-        # Test calculation endpoint
-        calc_url = f"{SERVER_URL}/{workspace}/services/hello-fastapi@{fastapi_app_info['id']}/api/calculate/5/3"
-        response = requests.get(
-            calc_url,
-            headers={"Authorization": f"Bearer {test_user_token}"},
-            timeout=10
-        )
-        
-        if response.status_code == 200:
-            calc_data = response.json()
-            assert calc_data["operation"] == "numpy_calculation"
-            assert calc_data["inputs"]["a"] == 5
-            assert calc_data["inputs"]["b"] == 3
-            assert calc_data["sum"] == 8.0
-            assert calc_data["mean"] == 4.0
-            assert calc_data["product"] == 15.0
-            print(f"✅ Calculation endpoint working: sum={calc_data['sum']}, mean={calc_data['mean']}")
-        else:
-            print(f"⚠️ Calculation endpoint failed: {response.status_code} - {response.text}")
+    # Test root endpoint
+    home_url = f"{SERVER_URL}/{workspace}/apps/hello-fastapi@{fastapi_app_info['id']}/"
+    response = requests.get(
+        home_url,
+        headers={"Authorization": f"Bearer {test_user_token}"},
+        timeout=10
+    )
+    response.raise_for_status()
+    
+    home_data = response.json()
+    assert "message" in home_data
+    assert "Conda FastAPI" in home_data["message"]
+    assert "python_version" in home_data
+    assert "numpy_version" in home_data
+    print(f"✅ Home endpoint working: {home_data['message']}")
 
-        # Test matrix operations endpoint
-        matrix_url = f"{SERVER_URL}/{workspace}/services/hello-fastapi@{fastapi_app_info['id']}/api/matrix"
-        response = requests.get(
-            matrix_url,
-            headers={"Authorization": f"Bearer {test_user_token}"},
-            timeout=10
-        )
-        
-        if response.status_code == 200:
-            matrix_data = response.json()
-            assert "matrix" in matrix_data
-            assert "determinant" in matrix_data
-            assert "mean" in matrix_data
-            assert len(matrix_data["matrix"]) == 3  # 3x3 matrix
-            assert len(matrix_data["matrix"][0]) == 3
-            print(f"✅ Matrix endpoint working: det={matrix_data['determinant']:.4f}")
-        else:
-            print(f"⚠️ Matrix endpoint failed: {response.status_code} - {response.text}")
 
-    except Exception as e:
-        print(f"⚠️ HTTP endpoint testing failed: {e}")
+    # Test calculation endpoint
+    calc_url = f"{SERVER_URL}/{workspace}/apps/hello-fastapi@{fastapi_app_info['id']}/api/calculate/5/3"
+    response = requests.get(
+        calc_url,
+        headers={"Authorization": f"Bearer {test_user_token}"},
+        timeout=10
+    )
+    response.raise_for_status()
+    
+    calc_data = response.json()
+    assert calc_data["operation"] == "numpy_calculation"
+    assert calc_data["inputs"]["a"] == 5
+    assert calc_data["inputs"]["b"] == 3
+    assert calc_data["sum"] == 8.0
+    assert calc_data["mean"] == 4.0
+    assert calc_data["product"] == 15.0
+    print(f"✅ Calculation endpoint working: sum={calc_data['sum']}, mean={calc_data['mean']}")
+
+    # Test matrix operations endpoint
+    matrix_url = f"{SERVER_URL}/{workspace}/apps/hello-fastapi@{fastapi_app_info['id']}/api/matrix"
+    response = requests.get(
+        matrix_url,
+        headers={"Authorization": f"Bearer {test_user_token}"},
+        timeout=10
+    )
+    response.raise_for_status()
+    
+    matrix_data = response.json()
+    assert "matrix" in matrix_data
+    assert "determinant" in matrix_data
+    assert "mean" in matrix_data
+    assert len(matrix_data["matrix"]) == 3  # 3x3 matrix
+    assert len(matrix_data["matrix"][0]) == 3
+    print(f"✅ Matrix endpoint working: det={matrix_data['determinant']:.4f}")
+
 
     # Test stopping the FastAPI session
     print("Stopping FastAPI conda app...")
@@ -2125,34 +2115,31 @@ print(f"Sum of numbers 0-99: {total}")
 print("Python detached script completed")
 """
     
-    try:
-        python_config = await controller.install(
-            source=python_detached_script,
-            manifest={"type": "python-eval", "name": "Python Detached Script"},
-            wait_for_service=False,
-            timeout=5,
-        )
-        python_config = await controller.start(python_config.id)
-        assert "id" in python_config
-        print(f"✓ Python detached launch successful: {python_config['id']}")
-        
-        # Give it a moment to execute
-        await asyncio.sleep(1)
-        
-        # Check logs
-        logs = await controller.get_logs(python_config["id"])
-        assert len(logs) > 0
-        log_text = " ".join(logs["log"])
-        assert "Python detached script started" in log_text
-        assert "Sum of numbers 0-99: 4950" in log_text
-        print("✓ Python detached script executed correctly")
-        
-        # Clean up
-        await controller.stop(python_config["id"])
-        
-    except Exception as e:
-        print(f"⚠️  Python eval test skipped (may not be available): {e}")
+    python_config = await controller.install(
+        source=python_detached_script,
+        manifest={"type": "python-eval", "name": "Python Detached Script"},
+        wait_for_service=False,
+        timeout=5,
+    )
+    python_config = await controller.start(python_config.id)
+    assert "id" in python_config
+    print(f"✓ Python detached launch successful: {python_config['id']}")
     
+    # Give it a moment to execute
+    await asyncio.sleep(1)
+    
+    # Check logs
+    logs = await controller.get_logs(python_config["id"])
+    assert len(logs) > 0
+    log_text = " ".join(logs["log"])
+    assert "Python detached script started" in log_text
+    assert "Sum of numbers 0-99: 4950" in log_text
+    print("✓ Python detached script executed correctly")
+    
+    # Clean up
+    await controller.stop(python_config["id"])
+    
+
     # Test 4: Compare detached vs normal mode timing
     print("Testing detached mode performance benefit...")
     

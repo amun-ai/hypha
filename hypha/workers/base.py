@@ -120,8 +120,7 @@ class WorkerProtocol(Protocol):
 class BaseWorker(ABC):
     """Minimal base class for workers - provides only common utilities."""
     
-    def __init__(self, server=None):
-        self.server = server
+    def __init__(self,):
         self.instance_id = f"{self.__class__.__name__}-{id(self)}"
     
     @property

@@ -13,7 +13,7 @@ import aiofiles
 import yaml
 from hypha_rpc.utils import ObjectProxy
 from hypha_rpc import connect_to_server
-from hypha.workers.browser import BrowserAppRunner
+from hypha.workers.browser import BrowserWorker
 from hypha.workers.mcp_proxy import MCPClientRunner
 
 
@@ -114,7 +114,7 @@ async def run_server_app_worker(server_config):
     """Run the server app worker."""
     server = await connect_to_server(server_config)
 
-    bar = BrowserAppRunner()
+    bar = BrowserWorker()
     await bar.initialize()
     svc = await server.register_service(bar.get_service())
     logger.info(
@@ -127,7 +127,7 @@ async def run_mcp_client_worker(server_config):
     """Run the MCP client worker."""
     server = await connect_to_server(server_config)
 
-    mcr = MCPClientRunner(server)
+    mcr = MCPClientRunner()
     await mcr.initialize()
     svc = await server.register_service(mcr.get_service())
     logger.info(
