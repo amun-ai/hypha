@@ -238,6 +238,19 @@ class ASGIRoutingMiddleware:
                     access_token = self._get_access_token_from_cookies(scope)
                     # get authorization from headers
                     authorization = self._get_authorization_header(scope)
+                    
+                    # Check if there's a custom auth provider that can extract tokens from headers
+                    auth_provider = await self.store.get_auth_provider()
+                    if auth_provider and not authorization and not access_token and hasattr(auth_provider, "extract_token_from_headers"):
+                        # Extract all headers and let auth provider find the token
+                        headers = dict(Headers(scope=scope).items())
+                        try:
+                            token = await auth_provider.extract_token_from_headers(headers)
+                            if token:
+                                authorization = token
+                        except Exception as e:
+                            logger.debug(f"Failed to extract token from headers: {e}")
+                    
                     user_info = await self.store.login_optional(
                         authorization=authorization, access_token=access_token
                     )
@@ -488,7 +501,7 @@ class HTTPProxy:
         @app.get(norm_url("/assets/config.json"))
         async def get_config(
             request: Request,
-            user_info: store.login_optional = Depends(store.login_optional),
+            user_info: store.login_optional_with_request = Depends(store.login_optional_with_request),
         ):
             return JSONResponse(
                 status_code=200,
@@ -1084,6 +1097,13 @@ class HTTPProxy:
         @app.get(norm_url("/login"))
         async def login(request: Request):
             """Redirect to the login page."""
+            # Check if there's a custom auth provider
+            auth_provider = await store.get_auth_provider()
+            if auth_provider and hasattr(auth_provider, "get_login_redirect"):
+                # Let auth provider handle the login redirect
+                redirect_url = await auth_provider.get_login_redirect()
+                if redirect_url:
+                    return RedirectResponse(redirect_url)
             return RedirectResponse(norm_url("/public/apps/hypha-login/"))
 
         @app.get(norm_url("/metrics"))

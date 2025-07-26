@@ -1318,6 +1318,17 @@ class WorkspaceManager:
         if service.app_id:
             assert "/" not in service.app_id, "App id info must not contain '/'"
 
+        # Check if this is an auth-provider service
+        if service.type == "auth-provider":
+            # Check if we're in startup context
+            if not getattr(self._store, '_startup_context', False):
+                raise PermissionError(
+                    "Services with type 'auth-provider' can only be registered during startup functions"
+                )
+            # Notify the store about the auth provider with full service path
+            full_service_id = f"{workspace}/{service.id}"
+            await self._store.set_auth_provider(full_service_id)
+        
         # Store all the info for client's built-in services
         if service_name == "built-in" and service.type == "built-in":
             service.config.created_by = user_info.model_dump()

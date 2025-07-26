@@ -15,4 +15,5 @@
  * [Agent2Agent](/a2a)
  * [Model Context Protocol](/mcp)
  * [Vector Search](/vector-search)
+ * [Authentication](/auth)
  * [Development](/development)
