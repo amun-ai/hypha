@@ -39,7 +39,7 @@ This automatically:
 **Note:** You cannot use `--start-minio-server` if you are also manually providing S3 connection details (e.g., `--endpoint-url`). Choose one method or the other.
 
 You can customize the built-in Minio server using these options:
-- `--minio-workdir`: Specify a directory for Minio data (defaults to a temporary directory).
+- `--minio-workdir`: Specify a directory for Minio data (defaults to a temporary directory), it must be an absolute path.
 - `--minio-port`: Set the port for the Minio server (defaults to 9000).
 - `--minio-root-user`: Set the root user (defaults to `minioadmin`).
 - `--minio-root-password`: Set the root password (defaults to `minioadmin`).
@@ -51,7 +51,7 @@ Example with custom Minio settings:
 ```bash
 python3 -m hypha.server --host=0.0.0.0 --port=9527 \
     --start-minio-server \
-    --minio-workdir=./minio_data \
+    --minio-workdir=/tmp/minio_data \
     --minio-port=9001 \
     --minio-root-user=myuser \
     --minio-root-password=mypassword
@@ -1105,8 +1105,8 @@ logger = logging.getLogger(__name__)
 class CustomWorker(BaseWorker):
     """Custom worker for executing tasks."""
     
-    def __init__(self, server=None):
-        super().__init__(server)
+    def __init__(self):
+        super().__init__()
         self.running_tasks = {}
     
     @property
@@ -1114,16 +1114,12 @@ class CustomWorker(BaseWorker):
         return ["custom-task", "background-job"]
     
     @property
-    def worker_name(self) -> str:
+    def name(self) -> str:
         return "Custom Worker"
     
     @property
-    def worker_description(self) -> str:
+    def description(self) -> str:
         return "A custom worker for executing tasks"
-    
-    async def _initialize_worker(self) -> None:
-        """Initialize the custom worker."""
-        logger.info("Custom worker initialized")
     
     async def _start_session(self, config: WorkerConfig) -> Dict[str, Any]:
         """Start a custom worker session."""
@@ -1167,8 +1163,8 @@ async def hypha_startup(server):
     """Hypha startup function to register the custom worker."""
     
     # Create and initialize the custom worker
-    custom_worker = CustomWorker(server)
-    await custom_worker.initialize()
+    custom_worker = CustomWorker()
+    await server.register_service(custom_worker.get_service())
     
     logger.info("Custom worker registered successfully")
 ```

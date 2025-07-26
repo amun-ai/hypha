@@ -909,8 +909,8 @@ Add your worker as a startup function in your Hypha server configuration:
 # In your server startup configuration
 async def hypha_startup(server):
     """Initialize custom workers."""
-    custom_worker = CustomWorker(server)
-    await custom_worker.initialize()
+    custom_worker = CustomWorker()
+    await server.register_service(custom_worker.get_service())
 ```
 
 **Method 2: Direct Registration**
@@ -919,9 +919,12 @@ Register the worker directly after server startup:
 
 ```python
 # After server is running
-server = await hypha_server.start()
-custom_worker = CustomWorker(server)
-await custom_worker.initialize()
+from hypha_rpc import connect_to_server
+server = await connect_to_server({
+    "server_url": "http://localhost:9527",
+})
+custom_worker = CustomWorker()
+await server.register_service(custom_worker.get_service())
 ```
 
 ### Starting the Server with Startup Functions
