@@ -122,7 +122,7 @@ def start_builtin_services(
         from hypha.workers import BrowserWorker
 
         browser_worker = BrowserWorker(in_docker=args.in_docker)
-        store.register_public_service(browser_worker.get_service())
+        store.register_public_service(browser_worker.get_worker_service())
         ServerAppController(
             store,
             port=args.port,

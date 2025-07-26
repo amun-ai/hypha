@@ -116,7 +116,7 @@ async def run_server_app_worker(server_config):
 
     bar = BrowserWorker()
     await bar.initialize()
-    svc = await server.register_service(bar.get_service())
+    svc = await server.register_service(bar.get_worker_service())
     logger.info(
         f"Browser worker running at {server.config.public_base_url}/{server.config.workspace}/services/{svc['id'].split('/')[1]}"
     )
@@ -129,7 +129,7 @@ async def run_mcp_client_worker(server_config):
 
     mcr = MCPClientRunner()
     await mcr.initialize()
-    svc = await server.register_service(mcr.get_service())
+    svc = await server.register_service(mcr.get_worker_service())
     logger.info(
         f"MCP client worker running at {server.config.public_base_url}/{server.config.workspace}/services/{svc['id'].split('/')[1]}"
     )

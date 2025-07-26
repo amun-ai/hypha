@@ -1114,16 +1114,12 @@ class CustomWorker(BaseWorker):
         return ["custom-task", "background-job"]
     
     @property
-    def worker_name(self) -> str:
+    def name(self) -> str:
         return "Custom Worker"
     
     @property
-    def worker_description(self) -> str:
+    def description(self) -> str:
         return "A custom worker for executing tasks"
-    
-    async def _initialize_worker(self) -> None:
-        """Initialize the custom worker."""
-        logger.info("Custom worker initialized")
     
     async def _start_session(self, config: WorkerConfig) -> Dict[str, Any]:
         """Start a custom worker session."""
@@ -1167,8 +1163,8 @@ async def hypha_startup(server):
     """Hypha startup function to register the custom worker."""
     
     # Create and initialize the custom worker
-    custom_worker = CustomWorker(server)
-    await custom_worker.initialize()
+    custom_worker = CustomWorker()
+    await server.register_service(custom_worker.get_service())
     
     logger.info("Custom worker registered successfully")
 ```

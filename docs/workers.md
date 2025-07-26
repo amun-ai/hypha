@@ -19,20 +19,38 @@ For detailed information about each worker, including installation, configuratio
 
 All workers must implement these core methods:
 
-- `start(config)` - Start a new session and return session_id
-- `stop(session_id)` - Stop a session
-- `list_sessions(workspace)` - List sessions for a workspace
-- `get_session_info(session_id)` - Get detailed session information
-- `get_logs(session_id, type, offset, limit)` - Get logs for a session
-- `prepare_workspace(workspace)` - Prepare workspace for operations
-- `close_workspace(workspace)` - Close workspace and cleanup sessions
+- `start(config, context=None)` - Start a new session and return session_id
+- `stop(session_id, context=None)` - Stop a session
+- `list_sessions(workspace, context=None)` - List sessions for a workspace
+- `get_session_info(session_id, context=None)` - Get detailed session information
+- `get_logs(session_id, type, offset, limit, context=None)` - Get logs for a session
+- `prepare_workspace(workspace, context=None)` - Prepare workspace for operations
+- `close_workspace(workspace, context=None)` - Close workspace and cleanup sessions
 
 Optional methods:
-- `compile(manifest, files, config)` - Compile application files (for build-time processing)
+- `compile(manifest, files, config, context=None)` - Compile application files (for build-time processing)
+
+## Worker Properties
+
+All workers must define these properties:
+
+- `supported_types` - List of supported application types
+- `name` - Worker display name
+- `description` - Worker description
+- `visibility` - Worker visibility ("public", "protected", or "private", defaults to "protected")
+- `run_in_executor` - Whether worker should run in executor (defaults to False)
+- `require_context` - Whether worker requires context parameter (defaults to True)
+- `service_id` - Unique service identifier (auto-generated from name and instance)
+
+### Context Parameter
+
+Workers with `require_context = True` (default) receive a `context` parameter in all their methods containing workspace and user information. This allows the server to inject security context and workspace details into worker operations.
+
+If `require_context = False`, the context parameter will still be present but may be None depending on the calling context.
 
 ## Hypha Worker Configuration
 
-When `start(config)` is called, the config parameter contains:
+When `start(config, context)` is called, the config parameter contains:
 
 ```python
 {
@@ -53,6 +71,21 @@ When `start(config)` is called, the config parameter contains:
     },
     "timeout": 30,                         # Optional timeout in seconds
     "progress_callback": callable          # Optional progress callback
+}
+```
+
+The `context` parameter contains workspace and user information when available:
+
+```python
+{
+    "ws": "workspace-name",               # Workspace name
+    "user": {                             # User information
+        "id": "user-id",
+        "email": "user@example.com",
+        "roles": ["user"],
+        # ... other user properties
+    },
+    "from": "client-id"                   # Optional client ID
 }
 ```
 
@@ -230,16 +263,26 @@ class MyCustomWorker(BaseWorker):
         return ["my-custom-type", "another-type"]
     
     @property
-    def worker_name(self) -> str:
+    def name(self) -> str:
         """Return the worker name."""
         return "My Custom Worker"
     
     @property
-    def worker_description(self) -> str:
+    def description(self) -> str:
         """Return the worker description."""
         return "A custom worker for specialized tasks"
     
-    async def start(self, config: Union[WorkerConfig, Dict[str, Any]]) -> str:
+    @property
+    def visibility(self) -> str:
+        """Return the worker visibility."""
+        return "protected"  # or "public" if needed
+    
+    @property
+    def run_in_executor(self) -> bool:
+        """Return whether the worker should run in an executor."""
+        return True  # Set to True for CPU-intensive workers
+    
+    async def start(self, config: Union[WorkerConfig, Dict[str, Any]], context: Optional[Dict[str, Any]] = None) -> str:
         """Start a new worker session."""
         # Handle both dict and WorkerConfig input
         if isinstance(config, dict):
@@ -361,7 +404,7 @@ class MyCustomWorker(BaseWorker):
             self._sessions.pop(session_id, None)
             raise
     
-    async def stop(self, session_id: str) -> None:
+    async def stop(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Stop a worker session."""
         if session_id not in self._sessions:
             return  # Session not found, already stopped
@@ -391,14 +434,14 @@ class MyCustomWorker(BaseWorker):
             self._sessions.pop(session_id, None)
             self._session_data.pop(session_id, None)
     
-    async def list_sessions(self, workspace: str) -> List[SessionInfo]:
+    async def list_sessions(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> List[SessionInfo]:
         """List all sessions for a workspace."""
         return [
             session_info for session_info in self._sessions.values()
             if session_info.workspace == workspace
         ]
     
-    async def get_session_info(self, session_id: str) -> SessionInfo:
+    async def get_session_info(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> SessionInfo:
         """Get information about a session."""
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"Session {session_id} not found")
@@ -409,7 +452,8 @@ class MyCustomWorker(BaseWorker):
         session_id: str, 
         type: Optional[str] = None,
         offset: int = 0,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        context: Optional[Dict[str, Any]] = None
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get logs for a session."""
         if session_id not in self._sessions:
@@ -429,11 +473,11 @@ class MyCustomWorker(BaseWorker):
         else:
             return {"log": logs, "error": []}
     
-    async def prepare_workspace(self, workspace: str) -> None:
+    async def prepare_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Prepare workspace for worker operations."""
         print(f"Preparing workspace {workspace}")
     
-    async def close_workspace(self, workspace: str) -> None:
+    async def close_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Close workspace and cleanup sessions."""
         print(f"Closing workspace {workspace}")
         
@@ -445,7 +489,7 @@ class MyCustomWorker(BaseWorker):
         
         for session_id in sessions_to_stop:
             try:
-                await self.stop(session_id)
+                await self.stop(session_id, context=context)
             except Exception as e:
                 print(f"Failed to stop session {session_id}: {e}")
 
@@ -458,9 +502,12 @@ async def main():
         "server_url": "http://localhost:9527"
     })
     
-    # Register worker as a service
-    service_config = worker.get_service_config()
+    # Register worker as a service (Method 1: using get_worker_service)
+    service_config = worker.get_worker_service()
     service = await server.register_service(service_config)
+    
+    # Alternative (Method 2: using register_worker_service helper)
+    # service = await worker.register_worker_service(server)
     
     print(f"Worker registered: {service.id}")
     print("Worker is running...")
@@ -484,7 +531,7 @@ from hypha_rpc import connect_to_server
 sessions = {}
 session_data = {}
 
-async def start(config):
+async def start(config, context=None):
     """Start a new worker session."""
     session_id = config["id"]
     
@@ -521,7 +568,7 @@ async def start(config):
     
     return session_id
 
-async def stop(session_id):
+async def stop(session_id, context=None):
     """Stop a worker session."""
     if session_id in sessions:
         sessions[session_id]["status"] = "stopped"
@@ -533,20 +580,20 @@ async def stop(session_id):
         session_data.pop(session_id, None)
         print(f"Session {session_id} stopped")
 
-async def list_sessions(workspace):
+async def list_sessions(workspace, context=None):
     """List all sessions for a workspace."""
     return [
         session for session in sessions.values()
         if session["workspace"] == workspace
     ]
 
-async def get_session_info(session_id):
+async def get_session_info(session_id, context=None):
     """Get information about a session."""
     if session_id not in sessions:
         raise Exception(f"Session {session_id} not found")
     return sessions[session_id]
 
-async def get_logs(session_id, type=None, offset=0, limit=None):
+async def get_logs(session_id, type=None, offset=0, limit=None, context=None):
     """Get logs for a session."""
     if session_id not in session_data:
         return [] if type else {"log": [], "error": []}
@@ -561,11 +608,11 @@ async def get_logs(session_id, type=None, offset=0, limit=None):
     
     return logs if type else {"log": logs, "error": []}
 
-async def prepare_workspace(workspace):
+async def prepare_workspace(workspace, context=None):
     """Prepare workspace for worker operations."""
     print(f"Preparing workspace {workspace}")
 
-async def close_workspace(workspace):
+async def close_workspace(workspace, context=None):
     """Close workspace and cleanup sessions."""
     print(f"Closing workspace {workspace}")
     sessions_to_stop = [
@@ -573,7 +620,7 @@ async def close_workspace(workspace):
         if session["workspace"] == workspace
     ]
     for session_id in sessions_to_stop:
-        await stop(session_id)
+        await stop(session_id, context=context)
 
 # Register the worker
 async def main():
@@ -626,15 +673,31 @@ class MyCustomWorker {
         return ["javascript-custom", "my-js-type"];
     }
 
-    get workerName() {
+    get name() {
         return "My JavaScript Worker";
     }
 
-    get workerDescription() {
+    get description() {
         return "A custom JavaScript worker";
     }
 
-    async start(config) {
+    get visibility() {
+        return "protected";
+    }
+
+    get runInExecutor() {
+        return true;
+    }
+
+    get requireContext() {
+        return true;
+    }
+
+    get serviceId() {
+        return `${this.name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
+    }
+
+    async start(config, context = null) {
         const sessionId = config.id;
         const progressCallback = config.progress_callback;
         
@@ -762,7 +825,7 @@ class MyCustomWorker {
         }
     }
 
-    async stop(sessionId) {
+    async stop(sessionId, context = null) {
         if (!this.sessions.has(sessionId)) {
             return; // Already stopped
         }
@@ -791,7 +854,7 @@ class MyCustomWorker {
         }
     }
 
-    async listSessions(workspace) {
+    async listSessions(workspace, context = null) {
         const workspaceSessions = [];
         for (const [sessionId, sessionInfo] of this.sessions) {
             if (sessionInfo.workspace === workspace) {
@@ -801,14 +864,14 @@ class MyCustomWorker {
         return workspaceSessions;
     }
 
-    async getSessionInfo(sessionId) {
+    async getSessionInfo(sessionId, context = null) {
         if (!this.sessions.has(sessionId)) {
             throw new Error(`Session ${sessionId} not found`);
         }
         return this.sessions.get(sessionId);
     }
 
-    async getLogs(sessionId, type = null, offset = 0, limit = null) {
+    async getLogs(sessionId, type = null, offset = 0, limit = null, context = null) {
         if (!this.sessions.has(sessionId)) {
             throw new Error(`Session ${sessionId} not found`);
         }
@@ -826,11 +889,11 @@ class MyCustomWorker {
         return type ? logs : {log: logs, error: []};
     }
 
-    async prepareWorkspace(workspace) {
+    async prepareWorkspace(workspace, context = null) {
         console.log(`Preparing workspace ${workspace}`);
     }
 
-    async closeWorkspace(workspace) {
+    async closeWorkspace(workspace, context = null) {
         console.log(`Closing workspace ${workspace}`);
         
         const sessionsToStop = [];
@@ -842,22 +905,23 @@ class MyCustomWorker {
 
         for (const sessionId of sessionsToStop) {
             try {
-                await this.stop(sessionId);
+                await this.stop(sessionId, context);
             } catch (error) {
                 console.log(`Failed to stop session ${sessionId}: ${error.message}`);
             }
         }
     }
 
-    getServiceConfig() {
+    getWorkerService() {
         return {
-            id: `${this.workerName.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`,
-            name: this.workerName,
-            description: this.workerDescription,
+            id: this.serviceId,
+            name: this.name,
+            description: this.description,
             type: "server-app-worker",
             config: {
-                visibility: "protected",
-                run_in_executor: true,
+                visibility: this.visibility,
+                run_in_executor: this.runInExecutor,
+                require_context: this.requireContext,
             },
             supported_types: this.supportedTypes,
             start: this.start.bind(this),
@@ -880,7 +944,7 @@ async function main() {
             server_url: "http://localhost:9527"
         });
 
-        const serviceConfig = worker.getServiceConfig();
+        const serviceConfig = worker.getWorkerService();
         const service = await server.registerService(serviceConfig);
 
         console.log(`Worker registered: ${service.id}`);
@@ -916,7 +980,7 @@ const { connectToServer } = require('hypha-rpc');
 const sessions = new Map();
 const sessionData = new Map();
 
-async function start(config) {
+async function start(config, context = null) {
     const sessionId = config.id;
     
     console.log(`Starting session ${sessionId} for app ${config.app_id}`);
@@ -950,7 +1014,7 @@ async function start(config) {
     return sessionId;
 }
 
-async function stop(sessionId) {
+async function stop(sessionId, context = null) {
     if (sessions.has(sessionId)) {
         const sessionInfo = sessions.get(sessionId);
         sessionInfo.status = "stopped";
@@ -966,7 +1030,7 @@ async function stop(sessionId) {
     }
 }
 
-async function listSessions(workspace) {
+async function listSessions(workspace, context = null) {
     const workspaceSessions = [];
     for (const [sessionId, sessionInfo] of sessions) {
         if (sessionInfo.workspace === workspace) {
@@ -976,14 +1040,14 @@ async function listSessions(workspace) {
     return workspaceSessions;
 }
 
-async function getSessionInfo(sessionId) {
+async function getSessionInfo(sessionId, context = null) {
     if (!sessions.has(sessionId)) {
         throw new Error(`Session ${sessionId} not found`);
     }
     return sessions.get(sessionId);
 }
 
-async function getLogs(sessionId, type = null, offset = 0, limit = null) {
+async function getLogs(sessionId, type = null, offset = 0, limit = null, context = null) {
     if (!sessionData.has(sessionId)) {
         return type ? [] : {log: [], error: []};
     }
@@ -1000,11 +1064,11 @@ async function getLogs(sessionId, type = null, offset = 0, limit = null) {
     return type ? logs : {log: logs, error: []};
 }
 
-async function prepareWorkspace(workspace) {
+async function prepareWorkspace(workspace, context = null) {
     console.log(`Preparing workspace ${workspace}`);
 }
 
-async function closeWorkspace(workspace) {
+async function closeWorkspace(workspace, context = null) {
     console.log(`Closing workspace ${workspace}`);
     
     const sessionsToStop = [];
@@ -1015,7 +1079,7 @@ async function closeWorkspace(workspace) {
     }
     
     for (const sessionId of sessionsToStop) {
-        await stop(sessionId);
+        await stop(sessionId, context);
     }
 }
 
@@ -1141,7 +1205,7 @@ The `get_session_info()` method returns:
 Workers can optionally implement a `compile()` method to process application files at install time:
 
 ```python
-async def compile(self, manifest: Dict[str, Any], files: List[Dict[str, Any]], config: Optional[Dict[str, Any]] = None) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+async def compile(self, manifest: Dict[str, Any], files: List[Dict[str, Any]], config: Optional[Dict[str, Any]] = None, context: Optional[Dict[str, Any]] = None) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """Compile application manifest and files."""
     
     # Process files and manifest as needed

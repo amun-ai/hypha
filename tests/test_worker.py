@@ -119,8 +119,8 @@ async def test_conda_worker_service_registration(fastapi_server, test_user_token
     # Create and register conda worker
     worker = CondaWorker()
     
-    # Get service config and register (use get_service() to include conda-specific methods)
-    service_config = worker.get_service()
+    # Get service config and register (use get_worker_service() to include conda-specific methods)
+    service_config = worker.get_worker_service()
     service_config["id"] = "test-conda-worker"
     service_config["visibility"] = "public"
     
@@ -142,9 +142,9 @@ async def test_conda_worker_service_registration(fastapi_server, test_user_token
     print(f"✓ Conda worker supports types: {worker.supported_types}")
     
     # Test worker info
-    assert "Conda Environment Worker" in worker.worker_name
-    assert worker.worker_description is not None
-    print(f"✓ Worker info: {worker.worker_name}")
+    assert "Conda Environment Worker" in worker.name
+    assert worker.description is not None
+    print(f"✓ Worker info: {worker.name}")
     
     # Clean up
     await api.unregister_service("test-conda-worker")
@@ -171,7 +171,7 @@ async def test_browser_worker_service_registration(fastapi_server, test_user_tok
     worker = BrowserWorker(in_docker=False)
     
     # Get service config and register (use get_service() to include browser-specific methods)
-    service_config = worker.get_service()
+    service_config = worker.get_worker_service()
     service_config["id"] = "test-browser-worker"
     service_config["visibility"] = "public"
     
@@ -196,9 +196,9 @@ async def test_browser_worker_service_registration(fastapi_server, test_user_tok
     print(f"✓ Browser worker supports types: {worker.supported_types}")
     
     # Test worker info
-    assert "Browser Worker" in worker.worker_name
-    assert worker.worker_description is not None
-    print(f"✓ Worker info: {worker.worker_name}")
+    assert "Browser Worker" in worker.name
+    assert worker.description is not None
+    print(f"✓ Worker info: {worker.name}")
     
     # Clean up
     await api.unregister_service("test-browser-worker")
@@ -224,7 +224,7 @@ async def test_conda_worker_session_lifecycle(fastapi_server, test_user_token):
     
     # Create and register conda worker
     worker = CondaWorker()
-    service_config = worker.get_service()
+    service_config = worker.get_worker_service()
     service_config["id"] = "test-conda-session-worker"
     service_config["visibility"] = "public"
     
@@ -296,7 +296,7 @@ async def test_browser_worker_session_lifecycle(fastapi_server, test_user_token)
     
     # Create and register browser worker
     worker = BrowserWorker(in_docker=False)
-    service_config = worker.get_service()
+    service_config = worker.get_worker_service()
     service_config["id"] = "test-browser-session-worker"
     service_config["visibility"] = "public"
     

@@ -163,7 +163,7 @@ class TestCondaWorkerBasic:
     def setup_method(self):
         """Set up test fixtures."""
         self.server = MagicMock()
-        self.worker = CondaWorker(self.server)
+        self.worker = CondaWorker()
     
     def test_supported_types(self):
         """Test supported application types."""
@@ -173,8 +173,8 @@ class TestCondaWorkerBasic:
     
     def test_worker_properties(self):
         """Test worker properties."""
-        assert "Conda Environment Worker" in self.worker.worker_name
-        assert "conda environments" in self.worker.worker_description
+        assert "Conda Environment Worker" in self.worker.name
+        assert "conda environments" in self.worker.description
     
     async def test_compile_manifest(self):
         """Test manifest compilation and validation."""
@@ -185,7 +185,13 @@ class TestCondaWorkerBasic:
             "channels": ["conda-forge"]
         }
         compiled_manifest, files = await self.worker.compile(manifest1, [])
-        assert compiled_manifest["dependencies"] == ["python=3.11", "numpy"]
+        
+        # Should contain original dependencies plus automatically added ones
+        deps = compiled_manifest["dependencies"]
+        assert "python=3.11" in deps
+        assert "numpy" in deps
+        assert "pip" in deps  # Automatically added
+        assert {"pip": ["hypha-rpc"]} in deps  # Automatically added
         assert compiled_manifest["channels"] == ["conda-forge"]
         
         # Test with dependencies field (alternate name)
@@ -195,18 +201,25 @@ class TestCondaWorkerBasic:
             "channels": "conda-forge"  # String should be converted to list
         }
         compiled_manifest, files = await self.worker.compile(manifest2, [])
-        assert compiled_manifest["dependencies"] == ["python=3.11"]
+        
+        deps = compiled_manifest["dependencies"]
+        assert "python=3.11" in deps
+        assert "pip" in deps  # Automatically added
+        assert {"pip": ["hypha-rpc"]} in deps  # Automatically added
         assert compiled_manifest["channels"] == ["conda-forge"]
         
         # Test with no dependencies (should add default)
         manifest3 = {"type": "python-conda"}
         compiled_manifest, files = await self.worker.compile(manifest3, [])
-        assert compiled_manifest["dependencies"] == []
+        
+        deps = compiled_manifest["dependencies"]
+        assert "pip" in deps  # Automatically added
+        assert {"pip": ["hypha-rpc"]} in deps  # Automatically added
         assert compiled_manifest["channels"] == ["conda-forge"]
     
-    def test_get_service_config(self):
+    def test_get_service(self):
         """Test service configuration."""
-        service_config = self.worker.get_service()
+        service_config = self.worker.get_worker_service()
         
         assert "id" in service_config
         assert "name" in service_config
@@ -229,7 +242,7 @@ class TestCondaWorkerIntegration:
         from hypha.workers.conda import CondaWorker, EnvironmentCache
         
         # Initialize worker with clean cache
-        worker = CondaWorker(conda_integration_server)
+        worker = CondaWorker()
         worker._env_cache = EnvironmentCache(
             cache_dir=conda_test_workspace["cache_dir"],
             max_size=5
@@ -346,7 +359,7 @@ print(f"Result2: {result}")
         """Test conda environment with additional dependencies."""
         from hypha.workers.conda import CondaWorker, EnvironmentCache
         
-        worker = CondaWorker(conda_integration_server)
+        worker = CondaWorker()
         worker._env_cache = EnvironmentCache(
             cache_dir=conda_test_workspace["cache_dir"],
             max_size=5
@@ -454,7 +467,7 @@ print(f"NumPy result: {result}")
         """Test that conda environments are properly cached and reused."""
         from hypha.workers.conda import CondaWorker, EnvironmentCache
         
-        worker = CondaWorker(conda_integration_server)
+        worker = CondaWorker()
         cache = EnvironmentCache(
             cache_dir=conda_test_workspace["cache_dir"],
             max_size=5
@@ -597,7 +610,7 @@ print(f"Cache test result 2: {result}")
         """Test conda environment with both conda and pip dependencies."""
         from hypha.workers.conda import CondaWorker, EnvironmentCache
         
-        worker = CondaWorker(conda_integration_server)
+        worker = CondaWorker()
         worker._env_cache = EnvironmentCache(
             cache_dir=conda_test_workspace["cache_dir"],
             max_size=5
@@ -731,7 +744,7 @@ print(f"Mixed dependencies result: {result}")
         """Test conda environment with a standalone script (no execute function)."""
         from hypha.workers.conda import CondaWorker, EnvironmentCache
         
-        worker = CondaWorker(conda_integration_server)
+        worker = CondaWorker()
         worker._env_cache = EnvironmentCache(
             cache_dir=conda_test_workspace["cache_dir"],
             max_size=5
@@ -829,7 +842,7 @@ class TestCondaWorkerProgressCallback:
     def setup_method(self):
         """Set up test fixtures."""
         self.server = MagicMock()
-        self.worker = CondaWorker(self.server)
+        self.worker = CondaWorker()
         self.progress_messages = []
         
         def mock_progress_callback(info):

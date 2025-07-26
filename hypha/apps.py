@@ -289,7 +289,7 @@ class AutoscalingManager:
                         least_loaded_session = session_id
             
             if least_loaded_session:
-                await self.app_controller._stop(least_loaded_session, raise_exception=False)
+                await self.app_controller._stop(least_loaded_session, raise_exception=False, context=None)
                 logger.info(f"Successfully scaled down app {app_id} by stopping {least_loaded_session}")
                 
         except Exception as e:
@@ -346,7 +346,12 @@ class ServerAppController:
             if full_client_id in self._sessions:
                 app_info = self._sessions.pop(full_client_id, None)
                 try:
-                    await app_info["_worker"].stop(full_client_id)
+                    # Create context for worker call
+                    context = {
+                        "ws": info["workspace"],
+                        "user": self.store.get_root_user().model_dump()
+                    }
+                    await app_info["_worker"].stop(full_client_id, context=context)
                 except Exception as exp:
                     logger.warning(f"Failed to stop browser tab: {exp}")
 
@@ -727,7 +732,7 @@ class ServerAppController:
                     "progress_callback": progress_callback,
                 }
                 
-                compiled_manifest, app_files = await worker.compile(artifact_obj, app_files, config=compile_config)
+                compiled_manifest, app_files = await worker.compile(artifact_obj, app_files, config=compile_config, context=context)
                 # merge the compiled manifest into the artifact_obj
                 artifact_obj.update(compiled_manifest)
 
@@ -1139,7 +1144,7 @@ class ServerAppController:
             "manifest": manifest,
             "progress_callback": progress_callback,
             **additional_kwargs,
-        })
+        }, context=context)
         
         # Store minimal session info for apps.py - worker handles detailed session management
         self._sessions[full_client_id] = {
@@ -1429,7 +1434,7 @@ class ServerAppController:
 
                 async def _stop_after_inactive():
                     if full_client_id in self._sessions:
-                        await self._stop(full_client_id, raise_exception=False)
+                        await self._stop(full_client_id, raise_exception=False, context=context)
                     logger.info(
                         f"App {full_client_id} stopped because of inactive for {stop_after_inactive}s."
                     )
@@ -1506,7 +1511,7 @@ class ServerAppController:
             try:
                 session_info = self._sessions.get(full_client_id)
                 if session_info and "_worker" in session_info:
-                    logs = await session_info["_worker"].get_logs(full_client_id)
+                    logs = await session_info["_worker"].get_logs(full_client_id, context=context)
             except Exception:
                 pass  # Ignore log retrieval errors
             
@@ -1514,7 +1519,7 @@ class ServerAppController:
             try:
                 session_info = self._sessions.get(full_client_id)
                 if session_info and "_worker" in session_info:
-                    await session_info["_worker"].stop(full_client_id)
+                    await session_info["_worker"].stop(full_client_id, context=context)
             except Exception:
                 pass  # Ignore cleanup errors
             raise Exception(f"Failed to start app '{app_id}', error: {exp}, logs:\n{logs}") from None
@@ -1584,13 +1589,13 @@ class ServerAppController:
                 f"User {user_info.id} does not have permission"
                 f" to stop app {session_id} in workspace {workspace}."
             )
-        await self._stop(session_id, raise_exception=raise_exception)
+        await self._stop(session_id, raise_exception=raise_exception, context=context)
 
-    async def _stop(self, session_id: str, raise_exception=True):
+    async def _stop(self, session_id: str, raise_exception=True, context: Optional[dict] = None):
         if session_id in self._sessions:
             app_info = self._sessions.pop(session_id, None)
             try:
-                await app_info["_worker"].stop(session_id)
+                await app_info["_worker"].stop(session_id, context=context)
             except Exception as exp:
                 if raise_exception:
                     raise
@@ -1641,7 +1646,7 @@ class ServerAppController:
             )
         if session_id in self._sessions:
             return await self._sessions[session_id]["_worker"].get_logs(
-                session_id, type=type, offset=offset, limit=limit
+                session_id, type=type, offset=offset, limit=limit, context=context
             )
         else:
             raise Exception(f"Server app instance not found: {session_id}")
@@ -1672,7 +1677,7 @@ class ServerAppController:
             )
         if session_id in self._sessions:
             return await self._sessions[session_id]["_worker"].take_screenshot(
-                session_id, format=format
+                session_id, format=format, context=context
             )
         else:
             raise Exception(f"Server app instance not found: {session_id}")
@@ -2112,7 +2117,7 @@ class ServerAppController:
             for worker in workers:
                 if worker.prepare_workspace:
                     try:
-                        await worker.prepare_workspace(workspace_info.id)
+                        await worker.prepare_workspace(workspace_info.id, context=context)
                     except Exception as exp:
                         logger.warning(
                             f"Worker {worker.id} failed to prepare workspace: {workspace_info.id}, error: {exp}"
@@ -2120,22 +2125,23 @@ class ServerAppController:
 
     async def close_workspace(self, workspace_info: WorkspaceInfo):
         """Archive the workspace."""
-        # Stop all running apps
-        for app in list(self._sessions.values()):
-            if app["workspace"] == workspace_info.id:
-                await self._stop(app["id"], raise_exception=False)
-        # Send to all workers
+        # Define context first
         context = {
             "ws": workspace_info.id,
             "user": self.store.get_root_user().model_dump(),
         }
+        # Stop all running apps
+        for app in list(self._sessions.values()):
+            if app["workspace"] == workspace_info.id:
+                await self._stop(app["id"], raise_exception=False, context=context)
+        # Send to all workers
         workers = await self.get_server_app_workers(context=context)
         if not workers:
             return
         for worker in workers:
             if worker.close_workspace:
                 try:
-                    await worker.close_workspace(workspace_info.id)
+                    await worker.close_workspace(workspace_info.id, context=context)
                 except Exception as exp:
                     logger.warning(
                         f"Worker failed to close workspace: {workspace_info.id}, error: {exp}"

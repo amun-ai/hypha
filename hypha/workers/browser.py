@@ -86,14 +86,19 @@ class BrowserWorker(BaseWorker):
         return ["web-python", "web-worker", "window", "iframe", "hypha", "web-app"]
 
     @property
-    def worker_name(self) -> str:
+    def name(self) -> str:
         """Return the worker name."""
         return "Browser Worker"
 
     @property
-    def worker_description(self) -> str:
+    def description(self) -> str:
         """Return the worker description."""
         return "A worker for running web applications in browser environments"
+
+    @property
+    def require_context(self) -> bool:
+        """Return whether the worker requires a context."""
+        return True
 
     async def initialize(self) -> Browser:
         """Initialize the browser worker."""
@@ -118,7 +123,7 @@ class BrowserWorker(BaseWorker):
         self.initialized = True
         return self.browser
 
-    async def start(self, config: Union[WorkerConfig, Dict[str, Any]]) -> str:
+    async def start(self, config: Union[WorkerConfig, Dict[str, Any]], context: Optional[Dict[str, Any]] = None) -> str:
         """Start a new browser session."""
         # Handle both pydantic model and dict input for RPC compatibility
         if isinstance(config, dict):
@@ -285,7 +290,7 @@ class BrowserWorker(BaseWorker):
             await context.close()
             raise e
 
-    async def stop(self, session_id: str) -> None:
+    async def stop(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Stop a browser session."""
         if session_id not in self._sessions:
             logger.warning(f"Browser session {session_id} not found for stopping, may have already been cleaned up")
@@ -312,14 +317,14 @@ class BrowserWorker(BaseWorker):
         self._sessions.pop(session_id, None)
         self._session_data.pop(session_id, None)
 
-    async def list_sessions(self, workspace: str) -> List[SessionInfo]:
+    async def list_sessions(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> List[SessionInfo]:
         """List all browser sessions for a workspace."""
         return [
             session_info for session_info in self._sessions.values()
             if session_info.workspace == workspace
         ]
 
-    async def get_session_info(self, session_id: str) -> SessionInfo:
+    async def get_session_info(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> SessionInfo:
         """Get information about a browser session."""
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"Browser session {session_id} not found")
@@ -330,7 +335,8 @@ class BrowserWorker(BaseWorker):
         session_id: str, 
         type: Optional[str] = None,
         offset: int = 0,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        context: Optional[Dict[str, Any]] = None
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get logs for a browser session."""
         if session_id not in self._sessions:
@@ -353,12 +359,12 @@ class BrowserWorker(BaseWorker):
                 result[log_type_key] = log_entries[offset:end_idx]
             return result
 
-    async def prepare_workspace(self, workspace: str) -> None:
+    async def prepare_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Prepare workspace for browser operations."""
         logger.info(f"Preparing workspace {workspace} for browser worker")
         pass
 
-    async def close_workspace(self, workspace: str) -> None:
+    async def close_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Close all browser sessions for a workspace."""
         logger.info(f"Closing workspace {workspace} for browser worker")
         
@@ -377,7 +383,7 @@ class BrowserWorker(BaseWorker):
             # you might want to be more selective about cache clearing
             logger.info(f"Cache cleanup for workspace {workspace} would be handled by app uninstall")
 
-    async def shutdown(self) -> None:
+    async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
         """Shutdown the browser worker."""
         logger.info("Shutting down browser worker...")
         
@@ -439,7 +445,7 @@ class BrowserWorker(BaseWorker):
         
         return local_url, public_url
 
-    async def compile(self, manifest: dict, files: list, config: dict = None) -> tuple[dict, list]:
+    async def compile(self, manifest: dict, files: list, config: dict = None, context: Optional[Dict[str, Any]] = None) -> tuple[dict, list]:
         """Compile browser app manifest and files.
         
         This method:
@@ -677,6 +683,7 @@ class BrowserWorker(BaseWorker):
         self,
         session_id: str,
         format: str = "png",
+        context: Optional[Dict[str, Any]] = None
     ) -> str:
         """Take a screenshot of a browser app instance."""
         if session_id not in self._sessions:
@@ -802,18 +809,18 @@ class BrowserWorker(BaseWorker):
         await page.route("**/*", handle_route)
         logger.info(f"Setup route caching for {len(cache_routes)} patterns")
 
-    async def clear_app_cache(self, workspace: str, app_id: str) -> Dict[str, Any]:
+    async def clear_app_cache(self, workspace: str, app_id: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Clear cache for an app."""
         deleted_count = await self.cache_manager.clear_app_cache(workspace, app_id)
         return {"deleted_entries": deleted_count}
 
-    async def get_app_cache_stats(self, workspace: str, app_id: str) -> Dict[str, Any]:
+    async def get_app_cache_stats(self, workspace: str, app_id: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Get cache statistics for an app."""
         return await self.cache_manager.get_cache_stats(workspace, app_id)
 
-    def get_service(self):
-        """Get the service."""
-        service_config = self.get_service_config()
+    def get_worker_service(self) -> Dict[str, Any]:
+        """Get the service configuration for registration with browser-specific methods."""
+        service_config = super().get_worker_service()
         # Add browser-specific methods
         service_config["take_screenshot"] = self.take_screenshot
         service_config["clear_app_cache"] = self.clear_app_cache
@@ -824,7 +831,7 @@ class BrowserWorker(BaseWorker):
 async def hypha_startup(server):
     """Hypha startup function to initialize browser worker."""
     worker = BrowserWorker()
-    await server.register_service(worker.get_service())
+    await worker.register_worker_service(server)
     logger.info("Browser worker initialized and registered")
 
 
@@ -949,8 +956,8 @@ Examples:
             # Create and register worker - use BrowserWorker directly  
             worker = BrowserWorker(in_docker=args.in_docker)
             
-            # Get service config and set custom properties (use get_service() to include browser-specific methods)
-            service_config = worker.get_service()
+            # Get service config and set custom properties (use get_worker_service() to include browser-specific methods)
+            service_config = worker.get_worker_service()
             if args.service_id:
                 service_config["id"] = args.service_id
             service_config["visibility"] = args.visibility

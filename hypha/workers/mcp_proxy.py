@@ -82,16 +82,21 @@ class MCPClientRunner(BaseWorker):
         return ["mcp-server"]
 
     @property
-    def worker_name(self) -> str:
+    def name(self) -> str:
         """Return the worker name."""
         return "MCP Proxy Worker"
 
     @property
-    def worker_description(self) -> str:
+    def description(self) -> str:
         """Return the worker description."""
         return "MCP proxy worker for connecting to MCP servers"
 
-    async def compile(self, manifest: dict, files: list, config: dict = None) -> tuple[dict, list]:
+    @property
+    def require_context(self) -> bool:
+        """Return whether the worker requires a context."""
+        return True
+    
+    async def compile(self, manifest: dict, files: list, config: dict = None, context: Optional[Dict[str, Any]] = None) -> tuple[dict, list]:
         """Compile MCP server manifest and files.
         
         This method processes MCP server configuration:
@@ -158,7 +163,7 @@ class MCPClientRunner(BaseWorker):
         # Not an MCP server type, return unchanged
         return manifest, files
 
-    async def start(self, config: Union[WorkerConfig, Dict[str, Any]]) -> str:
+    async def start(self, config: Union[WorkerConfig, Dict[str, Any]], context: Optional[Dict[str, Any]] = None) -> str:
         """Start a new MCP client session."""
         if not MCP_SDK_AVAILABLE:
             raise WorkerError("MCP SDK not available. Install with: pip install mcp")
@@ -826,7 +831,7 @@ class MCPClientRunner(BaseWorker):
             logger.error(error_msg)
             raise Exception(error_msg)
 
-    async def stop(self, session_id: str) -> None:
+    async def stop(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Stop an MCP session."""
         if session_id not in self._sessions:
             logger.warning(f"MCP session {session_id} not found for stopping, may have already been cleaned up")
@@ -864,14 +869,14 @@ class MCPClientRunner(BaseWorker):
             self._sessions.pop(session_id, None)
             self._session_data.pop(session_id, None)
 
-    async def list_sessions(self, workspace: str) -> List[SessionInfo]:
+    async def list_sessions(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> List[SessionInfo]:
         """List all MCP sessions for a workspace."""
         return [
             session_info for session_info in self._sessions.values()
             if session_info.workspace == workspace
         ]
 
-    async def get_session_info(self, session_id: str) -> SessionInfo:
+    async def get_session_info(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> SessionInfo:
         """Get information about an MCP session."""
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"MCP session {session_id} not found")
@@ -882,7 +887,8 @@ class MCPClientRunner(BaseWorker):
         session_id: str, 
         type: Optional[str] = None,
         offset: int = 0,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        context: Optional[Dict[str, Any]] = None
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get logs for an MCP session."""
         if session_id not in self._sessions:
@@ -905,12 +911,12 @@ class MCPClientRunner(BaseWorker):
                 result[log_type_key] = log_entries[offset:end_idx]
             return result
 
-    async def prepare_workspace(self, workspace: str) -> None:
+    async def prepare_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Prepare workspace for MCP operations."""
         logger.info(f"Preparing workspace {workspace} for MCP proxy worker")
         pass
 
-    async def close_workspace(self, workspace: str) -> None:
+    async def close_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Close all MCP sessions for a workspace."""
         logger.info(f"Closing workspace {workspace} for MCP proxy worker")
         
@@ -926,7 +932,7 @@ class MCPClientRunner(BaseWorker):
             except Exception as e:
                 logger.warning(f"Failed to stop MCP session {session_id}: {e}")
 
-    async def shutdown(self) -> None:
+    async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
         """Shutdown the MCP proxy worker."""
         logger.info("Shutting down MCP proxy worker...")
         
@@ -940,16 +946,14 @@ class MCPClientRunner(BaseWorker):
         
         logger.info("MCP proxy worker shutdown complete")
 
-    def get_service(self) -> dict:
-        """Get the service configuration."""
-        return self.get_service_config()
+
 
 
 async def hypha_startup(server):
     """Hypha startup function to initialize MCP client."""
     if MCP_SDK_AVAILABLE:
         worker = MCPClientRunner()
-        await server.register_service(worker.get_service_config())
+        await worker.register_worker_service(server)
         logger.info("MCP client worker initialized and registered")
     else:
         logger.warning("MCP library not available, skipping MCP client worker")

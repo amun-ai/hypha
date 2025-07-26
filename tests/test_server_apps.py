@@ -2131,9 +2131,14 @@ print("Python detached script completed")
     # Check logs
     logs = await controller.get_logs(python_config["id"])
     assert len(logs) > 0
-    log_text = " ".join(logs["log"])
-    assert "Python detached script started" in log_text
-    assert "Sum of numbers 0-99: 4950" in log_text
+    # Combine all log types since Python eval outputs to stdout
+    full_log_text = ""
+    for log_type in ["stdout", "stderr", "log", "info"]:
+        if log_type in logs:
+            full_log_text += " ".join(logs[log_type]) + " "
+    
+    assert "Python detached script started" in full_log_text
+    assert "Sum of numbers 0-99: 4950" in full_log_text
     print("✓ Python detached script executed correctly")
     
     # Clean up

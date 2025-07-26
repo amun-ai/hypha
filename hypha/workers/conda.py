@@ -219,16 +219,21 @@ class CondaWorker(BaseWorker):
         return ["python-conda"]
     
     @property
-    def worker_name(self) -> str:
+    def name(self) -> str:
         """Return the worker name."""
         return f"Conda Environment Worker (using {self.package_manager})"
     
     @property
-    def worker_description(self) -> str:
+    def description(self) -> str:
         """Return the worker description."""
         return f"A worker for executing Python code in isolated conda environments with package management using {self.package_manager}"
     
-    async def compile(self, manifest: dict, files: list, config: dict = None) -> tuple[dict, list]:
+    @property
+    def require_context(self) -> bool:
+        """Return whether the worker requires a context."""
+        return True
+    
+    async def compile(self, manifest: dict, files: list, config: dict = None, context: Optional[Dict[str, Any]] = None) -> tuple[dict, list]:
         """Compile conda environment application - validate manifest."""
         # Validate manifest has required fields
         if "dependencies" not in manifest and "dependencies" not in manifest:
@@ -280,7 +285,7 @@ class CondaWorker(BaseWorker):
         
         return manifest, files
     
-    async def start(self, config: Union[WorkerConfig, Dict[str, Any]]) -> str:
+    async def start(self, config: Union[WorkerConfig, Dict[str, Any]], context: Optional[Dict[str, Any]] = None) -> str:
         """Start a new conda environment session."""
         # Handle both pydantic model and dict input for RPC compatibility
         if isinstance(config, dict):
@@ -591,7 +596,7 @@ class CondaWorker(BaseWorker):
                 })
             return None
     
-    async def execute_code(self, session_id: str, code: str = None) -> ExecutionResult:
+    async def execute_code(self, session_id: str, code: str = None, context: Optional[Dict[str, Any]] = None) -> ExecutionResult:
         """Execute code in a conda environment session."""
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"Conda environment session {session_id} not found")
@@ -642,7 +647,7 @@ class CondaWorker(BaseWorker):
                 session_data["logs"]["error"].append(str(e))
             return result
     
-    async def stop(self, session_id: str) -> None:
+    async def stop(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Stop a conda environment session."""
         if session_id not in self._sessions:
             logger.warning(f"Conda environment session {session_id} not found for stopping")
@@ -681,14 +686,14 @@ class CondaWorker(BaseWorker):
             self._sessions.pop(session_id, None)
             self._session_data.pop(session_id, None)
     
-    async def list_sessions(self, workspace: str) -> List[SessionInfo]:
+    async def list_sessions(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> List[SessionInfo]:
         """List all conda environment sessions for a workspace."""
         return [
             session_info for session_info in self._sessions.values()
             if session_info.workspace == workspace
         ]
     
-    async def get_session_info(self, session_id: str) -> SessionInfo:
+    async def get_session_info(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> SessionInfo:
         """Get information about a conda environment session."""
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"Conda environment session {session_id} not found")
@@ -699,7 +704,8 @@ class CondaWorker(BaseWorker):
         session_id: str,
         type: Optional[str] = None,
         offset: int = 0,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        context: Optional[Dict[str, Any]] = None
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get logs for a conda environment session."""
         if session_id not in self._sessions:
@@ -722,16 +728,16 @@ class CondaWorker(BaseWorker):
                 result[log_type_key] = log_entries[offset:end_idx]
             return result
     
-    async def take_screenshot(self, session_id: str, format: str = "png") -> bytes:
+    async def take_screenshot(self, session_id: str, format: str = "png", context: Optional[Dict[str, Any]] = None) -> bytes:
         """Take a screenshot - not supported for conda environment sessions."""
         raise NotImplementedError("Screenshots not supported for conda environment sessions")
     
-    async def prepare_workspace(self, workspace: str) -> None:
+    async def prepare_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Prepare workspace for conda environment operations."""
         logger.info(f"Preparing workspace {workspace} for conda environment worker")
         pass
     
-    async def close_workspace(self, workspace: str) -> None:
+    async def close_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Close all conda environment sessions for a workspace."""
         logger.info(f"Closing workspace {workspace} for conda environment worker")
         
@@ -747,7 +753,7 @@ class CondaWorker(BaseWorker):
             except Exception as e:
                 logger.warning(f"Failed to stop conda environment session {session_id}: {e}")
     
-    async def shutdown(self) -> None:
+    async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
         """Shutdown the conda environment worker."""
         logger.info("Shutting down conda environment worker...")
         
@@ -768,9 +774,9 @@ class CondaWorker(BaseWorker):
         
         logger.info("Conda environment worker shutdown complete")
     
-    def get_service(self):
-        """Get the service configuration."""
-        service_config = self.get_service_config()
+    def get_worker_service(self) -> Dict[str, Any]:
+        """Get the service configuration for registration with conda-specific methods."""
+        service_config = super().get_worker_service()
         # Add conda environment specific methods
         service_config["execute_code"] = self.execute_code
         service_config["take_screenshot"] = self.take_screenshot
@@ -780,11 +786,8 @@ class CondaWorker(BaseWorker):
 async def hypha_startup(server):
     """Hypha startup function to initialize conda environment worker."""
     worker = CondaWorker()
-    await server.register_service(worker.get_service())
+    await worker.register_worker_service(server)
     logger.info("Conda environment worker initialized and registered")
-
-
-
 
 
 def main():
@@ -919,12 +922,12 @@ Examples:
             )
             
             # Create and register worker
-            worker = CondaWorker(server.rpc)
+            worker = CondaWorker()
             if args.cache_dir:
                 worker._env_cache = EnvironmentCache(cache_dir=args.cache_dir)
             
             # Get service config and set custom properties
-            service_config = worker.get_service_config()
+            service_config = await worker.get_worker_service()
             if args.service_id:
                 service_config["id"] = args.service_id
             service_config["visibility"] = args.visibility
