@@ -64,6 +64,25 @@ app_info = await controller.install(
 print(f"App installed with custom ID: {app_info.id}")
 ```
 
+Optionally, if you want to see the installation or starting progress, you can add:
+```python
+def progress_callback(info):
+    emoji = {
+        "info": "ℹ️",
+        "success": "✅",
+        "error": "❌",
+        "warning": "⚠️",
+        "upload": "📤",
+        "download": "📥"
+    }.get(info.get("type", ""), "🔸")
+    print(f"{emoji} {info.get('message', '')}")
+
+app_info = await controller.install(
+    ...,
+    progress_callback=progress_callback
+)
+```
+
 ### Step 3: Starting and Using the App
 
 After installation, you can start the app and use its services.
@@ -85,6 +104,26 @@ print(f"5 + 3 = {result}")
 
 echo_result = await app_service.echo("Hello, World!")
 print(f"Echo result: {echo_result}")
+```
+
+
+To see starting progress, you can pass `progress_callback` to `start()`:
+```python
+def progress_callback(info):
+    emoji = {
+        "info": "ℹ️",
+        "success": "✅",
+        "error": "❌",
+        "warning": "⚠️",
+        "upload": "📤",
+        "download": "📥"
+    }.get(info.get("type", ""), "🔸")
+    print(f"{emoji} {info.get('message', '')}")
+
+session_info = await controller.start(
+    ...,
+    progress_callback=progress_callback
+)
 ```
 
 ### Step 4: Managing Apps

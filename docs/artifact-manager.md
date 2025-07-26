@@ -108,11 +108,147 @@ datasets = await artifact_manager.list(collection.id)
 print("Datasets in the gallery:", datasets)
 ```
 
+### Step 7: Reading Dataset Information and Files
+
+After the dataset is committed, you can read its metadata and access its files.
+
+```python
+# Read the dataset metadata
+dataset_info = await artifact_manager.read(dataset.id)
+print("Dataset info:", dataset_info["manifest"])
+print("View count:", dataset_info.get("view_count", 0))
+print("Download count:", dataset_info.get("download_count", 0))
+
+# List all files in the dataset
+files = await artifact_manager.list_files(dataset.id)
+print("Files in the dataset:", files)
+
+# Get a download URL for a specific file
+download_url = await artifact_manager.get_file(dataset.id, file_path="data.csv")
+print("Download URL:", download_url)
+
+# Download the file content (example using requests)
+import requests
+response = requests.get(download_url)
+if response.ok:
+    print("File content preview:", response.text[:100] + "...")
+else:
+    print("Failed to download file")
+```
+
+### Step 8: Updating the Dataset
+
+You can update the dataset by editing its manifest or adding/removing files.
+
+```python
+# Edit the dataset manifest
+updated_manifest = {
+    "name": "Updated Example Dataset",
+    "description": "An updated dataset with additional information",
+    "tags": ["example", "updated", "dataset"]
+}
+
+# Stage the changes
+await artifact_manager.edit(
+    artifact_id=dataset.id,
+    manifest=updated_manifest,
+    stage=True
+)
+
+# Add a new file to the staged dataset
+put_url = await artifact_manager.put_file(dataset.id, file_path="metadata.json", download_weight=0.1)
+metadata_content = '{"version": "1.1", "updated": "2024-01-01"}'
+response = requests.put(put_url, data=metadata_content.encode())
+assert response.ok, "Metadata upload failed"
+
+# Commit the changes (this updates the existing version)
+await artifact_manager.commit(dataset.id)
+print("Dataset updated successfully")
+```
+
+### Step 9: Creating a New Version
+
+To create a new version of the dataset, you must explicitly specify the intent during editing.
+
+```python
+# Edit with explicit intent to create new version
+await artifact_manager.edit(
+    artifact_id=dataset.id,
+    manifest={
+        "name": "Example Dataset v2",
+        "description": "Version 2 with new features",
+    },
+    stage=True,
+    version="new"  # Explicit intent for new version creation
+)
+
+# Add files to the new version
+put_url = await artifact_manager.put_file(dataset.id, file_path="data_v2.csv", download_weight=1.0)
+with open("path/to/local/data_v2.csv", "rb") as f:
+    response = requests.put(put_url, data=f)
+    assert response.ok, "File upload failed"
+
+# Commit with custom version name
+await artifact_manager.commit(dataset.id)
+print("New version v2 created")
+
+# Read specific version
+v1_data = await artifact_manager.read(dataset.id, version="v0")
+v2_data = await artifact_manager.read(dataset.id, version="v2")
+print("Version v0 name:", v1_data["manifest"]["name"])
+print("Version v2 name:", v2_data["manifest"]["name"])
+```
+
+### Step 10: File Management Operations
+
+Perform various file operations like removing files and managing file access.
+
+```python
+# Remove a file from the dataset (requires staging)
+await artifact_manager.edit(dataset.id, stage=True)  # Enter staging mode
+await artifact_manager.remove_file(dataset.id, file_path="old_file.csv")
+await artifact_manager.commit(dataset.id)  # Commit the file removal
+
+# List files from a specific version
+v1_files = await artifact_manager.list_files(dataset.id, version="v0")
+v2_files = await artifact_manager.list_files(dataset.id, version="v2")
+print("Files in v0:", [f["name"] for f in v1_files])
+print("Files in v2:", [f["name"] for f in v2_files])
+
+# Get file with specific options
+download_url = await artifact_manager.get_file(
+    dataset.id, 
+    file_path="data_v2.csv",
+    version="v2",
+    silent=True,  # Don't increment download count
+    use_proxy=False  # Get direct S3 URL
+)
+print("Direct S3 URL:", download_url)
+```
+
+### Step 11: Cleanup (Optional)
+
+If needed, you can delete files, datasets, or entire collections.
+
+```python
+# Delete a specific version
+await artifact_manager.delete(dataset.id, version="v0", delete_files=True)
+print("Version v0 deleted")
+
+# Delete the entire dataset (with all files)
+await artifact_manager.delete(dataset.id, delete_files=True)
+print("Dataset deleted")
+
+# Delete the collection (requires recursive=True for collections with children)
+await artifact_manager.delete(collection.id, delete_files=True, recursive=True)
+print("Collection deleted")
+```
+
 ---
 
 ## Full Example: Creating and Managing a Dataset Gallery
 
-Here's a complete example showing how to connect to the service, create a dataset gallery, add a dataset, upload files, and commit the dataset.
+Here's a complete example showing how to connect to the service, create a dataset gallery, add a dataset, upload files, access data, manage versions, and clean up.
 
 ```python
 import asyncio
@@ -143,6 +279,7 @@ async def main():
     dataset_manifest = {
         "name": "Example Dataset",
         "description": "A dataset containing example data",
+        "tags": ["example", "research"]
     }
     dataset = await artifact_manager.create(
         parent_id=collection.id,
@@ -152,20 +289,176 @@ async def main():
     )
     print("Dataset added to the gallery.")
 
-    # Upload a file to the dataset
-    put_url = await artifact_manager.put_file(dataset.id, file_path="data.csv", download_weight=0.5)
-    with open("path/to/local/data.csv", "rb") as f:
-        response = requests.put(put_url, data=f)
-        assert response.ok, "File upload failed"
-    print("File uploaded to the dataset.")
+    # Upload multiple files to the dataset
+    files_to_upload = [
+        {"path": "data.csv", "content": "name,age,city\nJohn,25,NYC\nJane,30,LA", "weight": 1.0},
+        {"path": "metadata.json", "content": '{"version": "1.0", "rows": 2}', "weight": 0.1},
+        {"path": "readme.txt", "content": "This is a sample dataset", "weight": 0.0}
+    ]
+    
+    for file_info in files_to_upload:
+        put_url = await artifact_manager.put_file(
+            dataset.id, 
+            file_path=file_info["path"], 
+            download_weight=file_info["weight"]
+        )
+        response = requests.put(put_url, data=file_info["content"].encode())
+        assert response.ok, f"Upload failed for {file_info['path']}"
+        print(f"Uploaded: {file_info['path']}")
 
     # Commit the dataset
     await artifact_manager.commit(dataset.id)
-    print("Dataset committed.")
+    print("Dataset committed as v0.")
+
+    # Read dataset information
+    dataset_info = await artifact_manager.read(dataset.id)
+    print(f"Dataset name: {dataset_info['manifest']['name']}")
+    print(f"View count: {dataset_info.get('view_count', 0)}")
+    print(f"Download count: {dataset_info.get('download_count', 0)}")
+
+    # List all files in the dataset
+    files = await artifact_manager.list_files(dataset.id)
+    print("Files in dataset:")
+    for file in files:
+        print(f"  - {file['name']} ({file.get('size', 'unknown')} bytes)")
+
+    # Download and read specific files
+    # Download the main data file
+    download_url = await artifact_manager.get_file(dataset.id, file_path="data.csv")
+    response = requests.get(download_url)
+    if response.ok:
+        print("Main data file content:")
+        print(response.text)
+    else:
+        print("Failed to download main data file")
+
+    # Download metadata without incrementing download count
+    metadata_url = await artifact_manager.get_file(
+        dataset.id, 
+        file_path="metadata.json", 
+        silent=True
+    )
+    response = requests.get(metadata_url)
+    if response.ok:
+        print("Metadata content:")
+        print(response.text)
+
+    # Update the dataset
+    updated_manifest = {
+        "name": "Updated Example Dataset",
+        "description": "A dataset containing example data with updates",
+        "tags": ["example", "research", "updated"]
+    }
+    
+    await artifact_manager.edit(
+        artifact_id=dataset.id,
+        manifest=updated_manifest,
+        stage=True
+    )
+    
+    # Add a new file to the update
+    put_url = await artifact_manager.put_file(dataset.id, file_path="changelog.txt", download_weight=0.1)
+    changelog_content = "v1.0: Added more data and metadata"
+    response = requests.put(put_url, data=changelog_content.encode())
+    assert response.ok, "Changelog upload failed"
+    
+    # Commit the update (updates existing v0)
+    await artifact_manager.commit(dataset.id)
+    print("Dataset updated successfully")
+
+    # Create a new version
+    await artifact_manager.edit(
+        artifact_id=dataset.id,
+        manifest={
+            "name": "Example Dataset v2",
+            "description": "Major update with new analysis",
+            "tags": ["example", "research", "v2"]
+        },
+        stage=True,
+        version="new"  # Explicit intent to create new version
+    )
+    
+    # Add files specific to v2
+    put_url = await artifact_manager.put_file(dataset.id, file_path="analysis.py", download_weight=0.5)
+    analysis_content = "import pandas as pd\ndf = pd.read_csv('data.csv')\nprint(df.describe())"
+    response = requests.put(put_url, data=analysis_content.encode())
+    assert response.ok, "Analysis script upload failed"
+    
+    # Commit with custom version name
+    await artifact_manager.commit(dataset.id, version="v2.0")
+    print("New version v2.0 created")
+
+    # Compare versions
+    v0_info = await artifact_manager.read(dataset.id, version="v0")
+    v2_info = await artifact_manager.read(dataset.id, version="v2.0")
+    
+    print(f"v0 name: {v0_info['manifest']['name']}")
+    print(f"v2.0 name: {v2_info['manifest']['name']}")
+    
+    v0_files = await artifact_manager.list_files(dataset.id, version="v0")
+    v2_files = await artifact_manager.list_files(dataset.id, version="v2.0")
+    
+    print(f"Files in v0: {[f['name'] for f in v0_files]}")
+    print(f"Files in v2.0: {[f['name'] for f in v2_files]}")
+
+    # File management operations
+    # Remove a file (requires staging)
+    await artifact_manager.edit(dataset.id, stage=True)
+    await artifact_manager.remove_file(dataset.id, file_path="readme.txt")
+    await artifact_manager.commit(dataset.id, comment="Removed readme file")
+    print("File removed from latest version")
+
+    # Search and filter datasets in the collection
+    all_datasets = await artifact_manager.list(collection.id)
+    print(f"Total datasets in collection: {len(all_datasets)}")
+
+    # Search by keywords
+    search_results = await artifact_manager.list(
+        collection.id,
+        keywords=["example"],
+        mode="AND"
+    )
+    print(f"Datasets matching 'example': {len(search_results)}")
+
+    # Reset download statistics
+    await artifact_manager.reset_stats(dataset.id)
+    print("Statistics reset")
+    
+    # Check updated statistics
+    updated_info = await artifact_manager.read(dataset.id)
+    print(f"Reset download count: {updated_info.get('download_count', 0)}")
+    print(f"Reset view count: {updated_info.get('view_count', 0)}")
+
+    # Demonstrate staging and discard
+    await artifact_manager.edit(
+        artifact_id=dataset.id,
+        manifest={"name": "Staged Changes Test"},
+        stage=True
+    )
+    print("Changes staged")
+    
+    # Discard staged changes
+    await artifact_manager.discard(dataset.id)
+    print("Staged changes discarded")
 
     # List all datasets in the gallery
     datasets = await artifact_manager.list(collection.id)
-    print("Datasets in the gallery:", datasets)
+    print("Final datasets in the gallery:", len(datasets))
+
+    # Optional cleanup (commented out for safety)
+    # Delete a specific version
+    # await artifact_manager.delete(dataset.id, version="v0", delete_files=True)
+    # print("Version v0 deleted")
+
+    # Delete the entire dataset
+    # await artifact_manager.delete(dataset.id, delete_files=True)
+    # print("Dataset deleted")
+
+    # Delete the collection
+    # await artifact_manager.delete(collection.id, delete_files=True, recursive=True)
+    # print("Collection deleted")
+
+    print("Example completed successfully!")
 
 asyncio.run(main())
 ```
@@ -430,11 +723,10 @@ Edits an existing artifact's manifest. The new manifest is staged until committe
 - `permissions`: Optional. A dictionary containing user permissions. For example `{"*": "r+"}` gives read and create access to everyone, `{"@": "rw+"}` allows all authenticated users to read/write/create, and `{"user_id_1": "r+"}` grants read and create permissions to a specific user. You can also set permissions for specific operations, such as `{"user_id_1": ["read", "create"]}`. See detailed explanation about permissions below.
 - `secrets`: Optional. A dictionary containing secrets to be stored with the artifact. Secrets are encrypted and can only be accessed by the artifact owner or users with appropriate permissions. See the `create` function for a list of supported secrets.
 - `config`: Optional. A dictionary containing additional configuration options for the artifact.
-- `version`: Optional. **Strict Validation Applied**: Must be `None`, `"new"`, or an existing version name from the artifact's versions array. Custom version names are NOT allowed during edit - they can only be specified during `commit()`.
+- `version`: Optional. **Strict Validation Applied**: Must be `None`, `"new"`, or `"stage"`. Historical version editing is NOT supported.
   - `None` (default): Updates the latest existing version
   - `"new"`: Creates a new version immediately (unless `stage=True`)
   - `"stage"`: Enters staging mode (equivalent to `stage=True`)
-  - `"existing_version_name"`: Updates the specified existing version (must already exist in the versions array)
   
   **Special Staging Behavior**: When `stage=True` and `version="new"` are used together, it stores an intent marker for creating a new version during commit, and allows custom version names to be specified later during the `commit()` operation.
 - `stage`: Optional. If `True`, the artifact will be edited in staging mode regardless of the version parameter. Default is `False`. When in staging mode, the artifact must be committed to finalize changes.
@@ -443,7 +735,7 @@ Edits an existing artifact's manifest. The new manifest is staged until committe
 **Important Notes:**
 - **Version Validation**: The system now strictly validates the `version` parameter. You cannot specify arbitrary custom version names during edit.
 - **Staging Intent System**: When you use `version="new"` with `stage=True`, the system stores an "intent" to create a new version, which allows you to specify a custom version name later during `commit()`.
-- **Historical Version Editing**: You can edit specific existing versions by providing their exact version name (e.g., `version="v1"`), but the version must already exist.
+- **No Historical Version Editing**: You cannot edit specific existing versions directly. The `version` parameter only supports `None` (edit latest), `"new"` (create new version), or `"stage"` (staging mode).
 
 **Example:**
 
@@ -469,18 +761,18 @@ await artifact_manager.edit(
     version="new"  # This sets intent for new version creation during commit
 )
 
-# Edit a specific existing version (version must already exist)
+# Edit in staging mode (valid approach)
 await artifact_manager.edit(
     artifact_id="example-dataset",
     manifest=updated_manifest,
-    version="v1"  # Must be an existing version name from the versions array
+    stage=True  # Use staging mode instead of trying to edit historical versions
 )
 
 # INVALID: This will raise an error
 await artifact_manager.edit(
     artifact_id="example-dataset",
     manifest=updated_manifest,
-    version="custom-v2.0"  # ERROR: Custom version names not allowed during edit
+    version="v1"  # ERROR: Historical version editing not allowed
 )
 ```
 
@@ -1374,43 +1666,353 @@ await artifact_manager.set_secret(
 
 ## Example Usage of API Functions
 
-Here's a simple sequence of API function calls to manage a dataset gallery:
+Here's a comprehensive sequence of API function calls demonstrating common artifact management operations:
+
+### Basic Setup and Collection Creation
 
 ```python
-# Step 1: Connect to the API
-server = await connect_to_server({"name": "test-client", "server_url": "https://hypha.aicell.io"})
-artifact_manager = await server.get_service("public/artifact-manager")
+import asyncio
+import requests
+from hypha_rpc import connect_to_server
 
-# Step 2: Create a gallery collection
-gallery_manifest = {
-    "name": "Dataset Gallery",
-    "description": "A collection for organizing datasets",
-}
-# Create the collection with read permission for everyone and create permission for all authenticated users
-collection = await artifact_manager.create(type="collection", alias="dataset-gallery", manifest=gallery_manifest, permissions={"*": "r", "@": "r+"})
+SERVER_URL = "https://hypha.aicell.io"
 
-# Step 3: Add a dataset to the gallery
-dataset_manifest = {
-    "name": "Example Dataset",
-    "description": "A dataset with example data",
-    "type": "dataset",
-}
-dataset = await artifact_manager.create(parent_id=collection.id, alias="example-dataset" manifest=dataset_manifest, stage=True)
+async def comprehensive_example():
+    # Step 1: Connect to the API
+    server = await connect_to_server({"name": "test-client", "server_url": SERVER_URL})
+    artifact_manager = await server.get_service("public/artifact-manager")
 
-# Step 4: Upload a file to the dataset
-# Note: Adding files does not automatically create new versions
-put_url = await artifact_manager.put_file(dataset.id, file_path="data.csv")
-with open("path/to/local/data.csv", "rb") as f:
-    response = requests.put(put_url, data=f)
-    assert response.ok, "File upload failed"
+    # Step 2: Create a gallery collection with schema validation
+    dataset_schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "description": {"type": "string"},
+            "category": {"type": "string", "enum": ["research", "demo", "production"]},
+        },
+        "required": ["name", "description", "category"]
+    }
+    
+    gallery_manifest = {
+        "name": "Dataset Gallery",
+        "description": "A collection for organizing datasets with validation",
+    }
+    
+    collection = await artifact_manager.create(
+        type="collection", 
+        alias="dataset-gallery", 
+        manifest=gallery_manifest, 
+        config={
+            "collection_schema": dataset_schema,
+            "permissions": {"*": "r", "@": "r+"}
+        }
+    )
+    print(f"Collection created with ID: {collection.id}")
+```
 
-# Step 5: Commit the dataset
-# This creates v0 since no version="new" was specified
-await artifact_manager.commit(dataset.id)
+### Dataset Creation and File Management
 
-# Step 6: List all datasets in the gallery
-datasets = await artifact_manager.list(collection.id)
-print("Datasets in the gallery:", datasets)
+```python
+    # Step 3: Create a dataset with multiple files
+    dataset_manifest = {
+        "name": "Research Dataset",
+        "description": "A comprehensive research dataset",
+        "category": "research",
+        "authors": ["Dr. Smith", "Dr. Johnson"],
+        "license": "MIT"
+    }
+    
+    dataset = await artifact_manager.create(
+        parent_id=collection.id, 
+        alias="research-dataset", 
+        manifest=dataset_manifest, 
+        stage=True
+    )
+    print(f"Dataset created: {dataset.id}")
+
+    # Step 4: Upload multiple files with different weights
+    files_to_upload = [
+        {"path": "data/main_dataset.csv", "local": "path/to/main_data.csv", "weight": 1.0},
+        {"path": "data/metadata.json", "local": "path/to/metadata.json", "weight": 0.1},
+        {"path": "docs/README.md", "local": "path/to/readme.md", "weight": 0.0},
+        {"path": "scripts/analysis.py", "local": "path/to/analysis.py", "weight": 0.2}
+    ]
+    
+    for file_info in files_to_upload:
+        put_url = await artifact_manager.put_file(
+            dataset.id, 
+            file_path=file_info["path"], 
+            download_weight=file_info["weight"]
+        )
+        with open(file_info["local"], "rb") as f:
+            response = requests.put(put_url, data=f)
+            assert response.ok, f"Upload failed for {file_info['path']}"
+        print(f"Uploaded: {file_info['path']}")
+
+    # Step 5: Commit the initial version
+    await artifact_manager.commit(dataset.id)
+    print("Dataset v0 committed")
+```
+
+### Reading and Accessing Data
+
+```python
+    # Step 6: Read dataset information
+    dataset_info = await artifact_manager.read(dataset.id, include_metadata=True)
+    print(f"Dataset: {dataset_info['manifest']['name']}")
+    print(f"Description: {dataset_info['manifest']['description']}")
+    print(f"View count: {dataset_info.get('view_count', 0)}")
+    print(f"Download count: {dataset_info.get('download_count', 0)}")
+
+    # Step 7: List and access files
+    files = await artifact_manager.list_files(dataset.id)
+    print("Files in dataset:")
+    for file in files:
+        print(f"  - {file['name']} ({file.get('size', 'unknown')} bytes)")
+
+    # Step 8: Download specific files
+    # Get main dataset file
+    main_data_url = await artifact_manager.get_file(dataset.id, file_path="data/main_dataset.csv")
+    response = requests.get(main_data_url)
+    if response.ok:
+        print("Main dataset downloaded successfully")
+        print(f"Content preview: {response.text[:200]}...")
+    
+    # Get metadata without incrementing download count
+    metadata_url = await artifact_manager.get_file(
+        dataset.id, 
+        file_path="data/metadata.json", 
+        silent=True
+    )
+    metadata_response = requests.get(metadata_url)
+    if metadata_response.ok:
+        import json
+        metadata = json.loads(metadata_response.text)
+        print(f"Metadata: {metadata}")
+```
+
+### Dataset Updates and File Operations
+
+```python
+    # Step 9: Update dataset manifest
+    updated_manifest = {
+        "name": "Research Dataset (Updated)",
+        "description": "A comprehensive research dataset with recent updates",
+        "category": "research",
+        "authors": ["Dr. Smith", "Dr. Johnson", "Dr. Wilson"],
+        "license": "MIT",
+        "tags": ["research", "updated", "2024"]
+    }
+    
+    await artifact_manager.edit(
+        artifact_id=dataset.id,
+        manifest=updated_manifest,
+        stage=True
+    )
+    
+    # Step 10: Add new files and remove old ones
+    # Add a new analysis file
+    put_url = await artifact_manager.put_file(dataset.id, file_path="analysis/results.csv", download_weight=0.5)
+    results_data = "column1,column2,column3\nvalue1,value2,value3\n"
+    response = requests.put(put_url, data=results_data.encode())
+    assert response.ok, "Results upload failed"
+    
+    # Remove an old file
+    await artifact_manager.remove_file(dataset.id, file_path="scripts/analysis.py")
+    print("Old analysis script removed")
+    
+    # Commit the updates (this updates existing version v0)
+    await artifact_manager.commit(dataset.id)
+    print("Dataset updated successfully")
+```
+
+### Version Management
+
+```python
+    # Step 11: Create a new version with significant changes
+    await artifact_manager.edit(
+        artifact_id=dataset.id,
+        manifest={
+            "name": "Research Dataset v2",
+            "description": "Major update with new analysis methods",
+            "category": "research",
+            "version": "2.0",
+            "authors": ["Dr. Smith", "Dr. Johnson", "Dr. Wilson"],
+            "license": "MIT"
+        },
+        stage=True,
+        version="new"  # Explicit intent to create new version
+    )
+    
+    # Add files specific to v2
+    put_url = await artifact_manager.put_file(dataset.id, file_path="data/enhanced_dataset.csv", download_weight=1.2)
+    enhanced_data = "id,feature1,feature2,target\n1,0.5,0.3,1\n2,0.8,0.1,0\n"
+    response = requests.put(put_url, data=enhanced_data.encode())
+    assert response.ok, "Enhanced data upload failed"
+    
+    # Commit with custom version name
+    await artifact_manager.commit(dataset.id, version="v2.0-beta")
+    print("Version v2.0-beta created")
+    
+    # Compare versions
+    v0_info = await artifact_manager.read(dataset.id, version="v0")
+    v2_info = await artifact_manager.read(dataset.id, version="v2.0-beta")
+    
+    print(f"v0 name: {v0_info['manifest']['name']}")
+    print(f"v2 name: {v2_info['manifest']['name']}")
+    
+    v0_files = await artifact_manager.list_files(dataset.id, version="v0")
+    v2_files = await artifact_manager.list_files(dataset.id, version="v2.0-beta")
+    
+    print(f"Files in v0: {[f['name'] for f in v0_files]}")
+    print(f"Files in v2: {[f['name'] for f in v2_files]}")
+```
+
+### Collection Management and Search
+
+```python
+    # Step 12: Create additional datasets for demonstration
+    datasets_to_create = [
+        {
+            "alias": "demo-dataset",
+            "manifest": {
+                "name": "Demo Dataset", 
+                "description": "Dataset for demonstrations",
+                "category": "demo"
+            }
+        },
+        {
+            "alias": "production-dataset", 
+            "manifest": {
+                "name": "Production Dataset",
+                "description": "Production-ready dataset", 
+                "category": "production"
+            }
+        }
+    ]
+    
+    for dataset_config in datasets_to_create:
+        demo_dataset = await artifact_manager.create(
+            parent_id=collection.id,
+            alias=dataset_config["alias"],
+            manifest=dataset_config["manifest"],
+            stage=True
+        )
+        # Add a simple file
+        put_url = await artifact_manager.put_file(demo_dataset.id, file_path="data.txt")
+        response = requests.put(put_url, data=b"Sample data")
+        await artifact_manager.commit(demo_dataset.id)
+    
+    # Step 13: Search and filter datasets
+    # List all datasets in the collection
+    all_datasets = await artifact_manager.list(collection.id)
+    print(f"Total datasets: {len(all_datasets)}")
+    
+    # Search by keywords
+    research_datasets = await artifact_manager.list(
+        collection.id,
+        keywords=["research"],
+        mode="AND"
+    )
+    print(f"Research datasets: {len(research_datasets)}")
+    
+    # Filter by category
+    demo_datasets = await artifact_manager.list(
+        collection.id,
+        filters={"manifest": {"category": "demo"}},
+        order_by="view_count>"
+    )
+    print(f"Demo datasets: {len(demo_datasets)}")
+    
+    # Advanced filtering with multiple conditions
+    recent_research = await artifact_manager.list(
+        collection.id,
+        keywords=["research", "updated"],
+        filters={"manifest": {"category": "research"}},
+        mode="AND",
+        order_by="last_modified>",
+        limit=5
+    )
+    print(f"Recent research datasets: {len(recent_research)}")
+```
+
+### Statistics and Monitoring
+
+```python
+    # Step 14: Monitor download statistics
+    # Reset statistics for testing
+    await artifact_manager.reset_stats(dataset.id)
+    print("Statistics reset")
+    
+    # Simulate downloads and track statistics
+    for i in range(3):
+        download_url = await artifact_manager.get_file(dataset.id, file_path="data/enhanced_dataset.csv")
+        response = requests.get(download_url)
+        print(f"Download {i+1} completed")
+    
+    # Check updated statistics
+    updated_info = await artifact_manager.read(dataset.id, include_metadata=True)
+    print(f"Updated download count: {updated_info.get('download_count', 0)}")
+    print(f"Updated view count: {updated_info.get('view_count', 0)}")
+```
+
+### Advanced Features
+
+```python
+    # Step 15: Multipart upload for large files (example)
+    # This would be used for files > 100MB
+    """
+    multipart_info = await artifact_manager.put_file_start_multipart(
+        dataset.id, 
+        file_path="large_data.zip", 
+        part_count=3
+    )
+    # ... upload parts ...
+    result = await artifact_manager.put_file_complete_multipart(
+        dataset.id,
+        upload_id=multipart_info["upload_id"],
+        parts=uploaded_parts
+    )
+    """
+    
+    # Step 16: Working with staged changes
+    # Edit dataset and view staged changes before committing
+    await artifact_manager.edit(
+        artifact_id=dataset.id,
+        manifest={"name": "Staged Update Test"},
+        stage=True
+    )
+    
+    # List staged files (includes pending files)
+    staged_files = await artifact_manager.list_files(
+        dataset.id, 
+        version="stage", 
+        include_pending=True
+    )
+    print(f"Staged files: {[f['name'] for f in staged_files]}")
+    
+    # Discard staged changes if needed
+    await artifact_manager.discard(dataset.id)
+    print("Staged changes discarded")
+```
+
+### Cleanup
+
+```python
+    # Step 17: Cleanup (optional)
+    # Delete specific version
+    # await artifact_manager.delete(dataset.id, version="v0", delete_files=True)
+    
+    # Delete entire dataset
+    # await artifact_manager.delete(dataset.id, delete_files=True)
+    
+    # Delete collection with all children
+    # await artifact_manager.delete(collection.id, delete_files=True, recursive=True)
+    
+    print("Example completed successfully!")
+
+# Run the comprehensive example
+asyncio.run(comprehensive_example())
 ```
 
 ## HTTP API for Accessing Artifacts and Download Counts

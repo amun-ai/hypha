@@ -239,7 +239,15 @@ class WebsocketServer:
                     f"Client reconnected: {workspace}/{cid} using reconnection token"
                 )
             elif token:
-                user_info = await self.store.parse_user_token(token)
+                # Check if there's a custom auth provider
+                auth_provider = await self.store.get_auth_provider()
+                if auth_provider:
+                    # Let custom auth provider handle the token
+                    user_info = await auth_provider.validate_token(token)
+                else:
+                    # Use default auth
+                    user_info = await self.store.parse_user_token(token)
+                
                 # Check if the token has a restricted client_id
                 if user_info.scope and user_info.scope.client_id:
                     # Token is restricted to a specific client_id

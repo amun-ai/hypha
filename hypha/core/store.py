@@ -8,7 +8,7 @@ import sys
 import datetime
 from typing import List, Union
 from pydantic import BaseModel
-from fastapi import Header, Cookie
+from fastapi import Header, Cookie, Request
 
 from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
@@ -346,10 +346,14 @@ class RedisStore:
         """Run the startup functions in the background."""
         try:
             if startup_functions:
-                for startup_function in startup_functions:
-                    logger.info(f"Running startup function: {startup_function}")
-                    await asyncio.sleep(0)
-                    await run_startup_function(self, startup_function)
+                self._startup_context = True  # Set context for startup functions
+                try:
+                    for startup_function in startup_functions:
+                        logger.info(f"Running startup function: {startup_function}")
+                        await asyncio.sleep(0)
+                        await run_startup_function(self, startup_function)
+                finally:
+                    self._startup_context = False  # Reset context
         except Exception as e:
             logger.exception(f"Error running startup function: {e}")
             # Stop the entire event loop if an error occurs
@@ -714,8 +718,69 @@ class RedisStore:
             # the service key format: "services:{visibility}|{type}:{workspace}/{client_id}:{service_id}@{app_id}"
             return keys[0].decode().split(":")[1].split("|")[1]
 
+    async def get_auth_provider(self):
+        """Get the registered auth provider if available."""
+        if self._auth_provider:
+            logger.info("Returning cached auth provider")
+            return self._auth_provider
+        
+        # First check if there's a stored auth provider service ID
+        service_id = await self._redis.get("auth-provider-service-id")
+        if service_id and isinstance(service_id, bytes):
+            service_id = service_id.decode("utf-8")
+        logger.info(f"Stored auth provider service ID: {service_id}")
+        if service_id:
+            try:
+                # Get the service directly using the stored ID
+                async with self.get_workspace_interface(
+                    self._root_user, "public", silent=True
+                ) as api:
+                    auth_provider = await api.get_service(service_id)
+                    self._auth_provider = auth_provider
+                    return auth_provider
+            except Exception as e:
+                logger.warning(f"Failed to get auth provider by ID {service_id}: {e}")
+        
+        # Fallback: Try to find auth-provider service in public workspace
+        try:
+            pattern = f"services:*|auth-provider:public/*:*@*"
+            keys = await self._redis.keys(pattern)
+            if keys:
+                # Get the first auth provider service
+                service_data = await self._redis.hgetall(keys[0])
+                service_info = ServiceInfo.from_redis_dict(service_data)
+                # Get the actual service
+                async with self.get_workspace_interface(
+                    self._root_user, "public", silent=True
+                ) as api:
+                    auth_provider = await api.get_service(service_info.id)
+                    self._auth_provider = auth_provider
+                    return auth_provider
+        except Exception as e:
+            logger.warning(f"Failed to get auth provider: {e}")
+        return None
+
+    async def set_auth_provider(self, service_id: str):
+        """Set the auth provider service."""
+        if not self._startup_context:
+            raise PermissionError("Auth provider can only be registered during startup")
+        # Store the service id in Redis for later retrieval
+        await self._redis.set("auth-provider-service-id", service_id)
+        logger.info(f"Auth provider registered: {service_id}")
+
     async def parse_user_token(self, token):
         """Parse a client token."""
+        # Check if there's a custom auth provider
+        auth_provider = await self.get_auth_provider()
+        if auth_provider and hasattr(auth_provider, "validate_token"):
+            try:
+                user_info = await auth_provider.validate_token(token)
+                return user_info
+            except Exception as e:
+                logger.debug(f"Auth provider failed to validate token: {e}")
+                # Fall back to default auth if custom auth fails
+        
+        # Use default auth
         user_info = parse_token(token)
         key = "revoked_token:" + token
         if await self._redis.exists(key):
@@ -735,6 +800,52 @@ class RedisStore:
         If the code is invalid an anonymous user is created.
         """
         token = authorization or access_token
+        if token:
+            user_info = await self.parse_user_token(token)
+            if user_info.scope.current_workspace is None:
+                user_info.scope.current_workspace = user_info.get_workspace()
+            return user_info
+        else:
+            # Use a fixed anonymous user
+            if not hasattr(self, "_http_anonymous_user"):
+                self._http_anonymous_user = UserInfo(
+                    id="http-anonymous",
+                    is_anonymous=True,
+                    email=None,
+                    parent=None,
+                    roles=["anonymous"],
+                    scope=create_scope("public#r", current_workspace="public"),
+                    expires_at=None,
+                )
+            return self._http_anonymous_user
+    
+    async def login_optional_with_request(
+        self,
+        request: Request,
+        authorization: str = Header(None),
+        access_token: str = Cookie(None),
+    ):
+        """Return user info or create an anonymous user, checking custom auth providers.
+
+        If authorization code is valid the user info is returned,
+        If the code is invalid an anonymous user is created.
+        """
+        token = authorization or access_token
+        
+        # If no token found, check custom auth providers
+        if not token:
+            auth_provider = await self.get_auth_provider()
+            logger.info(f"Auth provider retrieved: {auth_provider is not None}")
+            if auth_provider and hasattr(auth_provider, "extract_token_from_headers"):
+                logger.info("Auth provider has extract_token_from_headers method")
+                try:
+                    headers = dict(request.headers)
+                    logger.info(f"Calling extract_token_from_headers with {len(headers)} headers")
+                    token = await auth_provider.extract_token_from_headers(headers)
+                    logger.info(f"Token extracted: {token is not None}")
+                except Exception as e:
+                    logger.error(f"Failed to extract token from headers: {e}", exc_info=True)
+        
         if token:
             user_info = await self.parse_user_token(token)
             if user_info.scope.current_workspace is None:

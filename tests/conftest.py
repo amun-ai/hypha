@@ -513,6 +513,56 @@ def fastapi_subpath_server_fixture(minio_server):
         proc.terminate()
 
 
+@pytest_asyncio.fixture(name="fastapi_server_with_auth", scope="session")
+def fastapi_server_with_auth_fixture(minio_server, postgres_server, redis_server):
+    """Start server with custom auth provider as test fixture."""
+    # Make sure Redis is reset for this test
+    r = Redis(host="localhost", port=REDIS_PORT)
+    r.flushall()
+    
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "hypha.server",
+            f"--port={SIO_PORT + 10}",  # Use a different port
+            "--enable-server-apps",
+            "--enable-s3",
+            f"--database-uri={POSTGRES_URI}",
+            "--migrate-database=head",
+            f"--redis-uri=redis://127.0.0.1:{REDIS_PORT}/0",
+            f"--endpoint-url={MINIO_SERVER_URL}",
+            f"--access-key-id={MINIO_ROOT_USER}",
+            f"--secret-access-key={MINIO_ROOT_PASSWORD}",
+            f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
+            "--enable-s3-proxy",
+            f"--workspace-bucket=my-workspaces",
+            "--s3-admin-type=minio",
+            "--cache-dir=./bin/cache",
+            "--startup-functions",
+            "./tests/custom_auth_provider.py:hypha_startup",
+        ],
+        env=test_env,
+    ) as proc:
+        timeout = 20
+        while timeout > 0:
+            try:
+                response = requests.get(f"http://127.0.0.1:{SIO_PORT + 10}/health/readiness")
+                if response.ok:
+                    break
+            except RequestException:
+                pass
+            timeout -= 0.1
+            time.sleep(0.1)
+        if timeout <= 0:
+            raise TimeoutError("Server (fastapi_server_with_auth) did not start in time")
+        response = requests.get(f"http://127.0.0.1:{SIO_PORT + 10}/health/liveness")
+        assert response.ok
+        yield
+        proc.kill()
+        proc.terminate()
+
+
 @pytest_asyncio.fixture(name="minio_server", scope="session")
 def minio_server_fixture():
     """Start minio server as test fixture and tear down after test."""
