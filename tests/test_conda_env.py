@@ -729,5 +729,249 @@ print("=== Script completed successfully ===")
                 raise
 
 
+class TestCondaEnvWorkerProgressCallback:
+    """Test progress callback functionality for conda environment worker."""
+    
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.server = MagicMock()
+        self.worker = CondaEnvWorker(self.server)
+        self.progress_messages = []
+        
+        def mock_progress_callback(info):
+            self.progress_messages.append(info)
+        
+        self.progress_callback = mock_progress_callback
+    
+    async def test_progress_callback_with_new_environment(self):
+        """Test progress callback during new environment creation."""
+        from unittest.mock import AsyncMock
+        
+        # Mock script content
+        script = '''
+def execute(input_data):
+    return {"result": "test"}
+'''
+        
+        config = WorkerConfig(
+            id="progress-test",
+            app_id="test-app",
+            workspace="test-workspace",
+            client_id="test-client",
+            server_url="http://test-server",
+            token="test-token",
+            entry_point="main.py",
+            artifact_id="test-artifact",
+            manifest={
+                "type": "python-conda",
+                "dependencies": ["python=3.11", "numpy"],
+                "channels": ["conda-forge"],
+                "entry_point": "main.py"
+            },
+            app_files_base_url="http://test-server/files",
+            progress_callback=self.progress_callback
+        )
+        
+        # Mock the environment cache to return None (no cached environment)
+        self.worker._env_cache = MagicMock()
+        self.worker._env_cache.get_cached_env.return_value = None
+        self.worker._env_cache.add_cached_env = MagicMock()
+        
+        # Mock the HTTP client
+        with patch('httpx.AsyncClient') as mock_http_client:
+            mock_response = MagicMock()
+            mock_response.text = script
+            mock_response.raise_for_status = MagicMock()
+            mock_http_client.return_value.__aenter__.return_value.get.return_value = mock_response
+            
+            # Mock the CondaEnvExecutor and its methods
+            with patch('hypha.workers.conda_env.CondaEnvExecutor') as mock_executor_class:
+                mock_executor = MagicMock()
+                mock_executor_class.create_temp_env.return_value = mock_executor
+                # Mock async _extract_env method
+                async def mock_extract_env(progress_callback=None):
+                    if progress_callback:
+                        progress_callback({"type": "info", "message": "Mock environment setup"})
+                    return 10.5  # Mock setup time
+                mock_executor._extract_env = mock_extract_env
+                
+                # Mock execution result
+                mock_result = MagicMock()
+                mock_result.success = True
+                mock_result.result = {"result": "test"}
+                mock_result.stdout = "Test output"
+                mock_result.stderr = ""
+                mock_result.error = None
+                mock_result.timing = None
+                mock_executor.execute.return_value = mock_result
+                
+                # Start the session
+                session_id = await self.worker.start(config)
+                
+                # Verify session was created
+                assert session_id == "progress-test"
+                assert len(self.progress_messages) > 0
+                
+                # Check for expected progress messages
+                message_types = [msg["type"] for msg in self.progress_messages]
+                message_texts = [msg["message"] for msg in self.progress_messages]
+                
+                # Should have info and success messages
+                assert "info" in message_types
+                assert "success" in message_types
+                
+                # Check for specific expected messages
+                expected_patterns = [
+                    "Starting conda environment session",
+                    "Fetching application script",
+                    "Setting up conda environment",
+                    "Checking for cached conda environment",
+                    "Creating new conda environment", 
+                    "Installing packages",
+                    "Executing initialization script",
+                    "started successfully"
+                ]
+                
+                message_text = " ".join(message_texts)
+                found_patterns = 0
+                for pattern in expected_patterns:
+                    if any(pattern.lower() in msg.lower() for msg in message_texts):
+                        found_patterns += 1
+                
+                # Should find most of the expected patterns
+                assert found_patterns >= len(expected_patterns) // 2, f"Only found {found_patterns} patterns in messages: {message_texts}"
+                
+                print(f"✅ Progress callback test passed with {len(self.progress_messages)} messages")
+                print(f"   Found {found_patterns}/{len(expected_patterns)} expected patterns")
+                
+                # Clean up
+                await self.worker.stop(session_id)
+    
+    async def test_progress_callback_with_cached_environment(self):
+        """Test progress callback when using cached environment."""
+        from pathlib import Path
+        
+        script = '''
+def execute(input_data):
+    return {"result": "cached_test"}
+'''
+        
+        config = WorkerConfig(
+            id="cached-progress-test",
+            app_id="cached-test-app", 
+            workspace="test-workspace",
+            client_id="test-client",
+            server_url="http://test-server",
+            token="test-token",
+            entry_point="main.py",
+            artifact_id="test-artifact",
+            manifest={
+                "type": "python-conda",
+                "dependencies": ["python=3.11"],
+                "channels": ["conda-forge"],
+                "entry_point": "main.py"
+            },
+            app_files_base_url="http://test-server/files",
+            progress_callback=self.progress_callback
+        )
+        
+        # Mock the environment cache to return a cached environment
+        mock_cached_path = Path("/fake/cached/env")
+        self.worker._env_cache = MagicMock()
+        self.worker._env_cache.get_cached_env.return_value = mock_cached_path
+        
+        # Mock the HTTP client
+        with patch('httpx.AsyncClient') as mock_http_client:
+            mock_response = MagicMock()
+            mock_response.text = script
+            mock_response.raise_for_status = MagicMock()
+            mock_http_client.return_value.__aenter__.return_value.get.return_value = mock_response
+            
+            # Mock the CondaEnvExecutor
+            with patch('hypha.workers.conda_env.CondaEnvExecutor') as mock_executor_class:
+                mock_executor = MagicMock()
+                mock_executor_class.return_value = mock_executor
+                mock_executor.env_path = mock_cached_path
+                mock_executor._is_extracted = True
+                
+                # Mock execution result
+                mock_result = MagicMock()
+                mock_result.success = True
+                mock_result.result = {"result": "cached_test"}
+                mock_result.stdout = "Cached test output"
+                mock_result.stderr = ""
+                mock_result.error = None
+                mock_result.timing = None
+                mock_executor.execute.return_value = mock_result
+                
+                # Start the session
+                session_id = await self.worker.start(config)
+                
+                # Verify session was created
+                assert session_id == "cached-progress-test"
+                assert len(self.progress_messages) > 0
+                
+                # Check for cached environment specific messages
+                message_texts = [msg["message"] for msg in self.progress_messages]
+                
+                # Should mention cached environment
+                cached_mentioned = any("cached" in msg.lower() for msg in message_texts)
+                assert cached_mentioned, f"Cached environment not mentioned in messages: {message_texts}"
+                
+                print(f"✅ Cached environment progress callback test passed")
+                print(f"   Messages: {[msg['message'] for msg in self.progress_messages]}")
+                
+                # Clean up
+                await self.worker.stop(session_id)
+    
+    async def test_progress_callback_error_handling(self):
+        """Test progress callback during error scenarios."""
+        
+        config = WorkerConfig(
+            id="error-progress-test",
+            app_id="error-test-app",
+            workspace="test-workspace", 
+            client_id="test-client",
+            server_url="http://test-server",
+            token="test-token",
+            entry_point="main.py",
+            artifact_id="test-artifact",
+            manifest={
+                "type": "python-conda",
+                "dependencies": ["nonexistent-package==999.999.999"],
+                "channels": ["conda-forge"],
+                "entry_point": "main.py"
+            },
+            app_files_base_url="http://test-server/files",
+            progress_callback=self.progress_callback
+        )
+        
+        # Mock HTTP client to fail
+        with patch('httpx.AsyncClient') as mock_http_client:
+            mock_response = MagicMock()
+            mock_response.raise_for_status.side_effect = Exception("Failed to fetch script")
+            mock_http_client.return_value.__aenter__.return_value.get.return_value = mock_response
+            
+            try:
+                await self.worker.start(config)
+                assert False, "Expected exception was not raised"
+            except Exception as e:
+                # Should have progress messages including error
+                assert len(self.progress_messages) > 0
+                
+                message_types = [msg["type"] for msg in self.progress_messages]
+                message_texts = [msg["message"] for msg in self.progress_messages]
+                
+                # Should have error message
+                assert "error" in message_types, f"No error message found in types: {message_types}"
+                
+                # Error message should mention the failure
+                error_messages = [msg["message"] for msg in self.progress_messages if msg["type"] == "error"]
+                assert any("failed" in msg.lower() for msg in error_messages), f"No failure mentioned in error messages: {error_messages}"
+                
+                print(f"✅ Error handling progress callback test passed")
+                print(f"   Error messages: {error_messages}")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"]) 

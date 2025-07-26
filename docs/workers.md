@@ -4,6 +4,16 @@
 
 Hypha workers are responsible for executing different types of applications within isolated environments. The worker interface has been simplified to focus on essential functions, making it easy to create custom workers in both Python and JavaScript.
 
+### Built-in Workers
+
+Hypha includes several built-in workers for common use cases:
+
+
+- **Browser Worker**: Runs web applications in server size browsers via playwright.
+- **[Conda Environment Worker](conda-worker.md)**: Executes Python code in isolated conda environments with automatic mamba/conda detection for faster dependency management
+
+For detailed information about the Conda Environment Worker, including installation, configuration, and usage examples, see the [Conda Worker Documentation](conda-worker.md).
+
 ## Hypha Worker Interface
 
 All workers must implement these core methods:
@@ -44,6 +54,149 @@ When `start(config)` is called, the config parameter contains:
     "progress_callback": callable          # Optional progress callback
 }
 ```
+
+## Progress Callbacks
+
+The `progress_callback` parameter in the worker configuration allows workers to provide real-time feedback during long-running operations like environment setup, dependency installation, or application compilation. Implementing progress callbacks significantly improves user experience by keeping users informed about the current status.
+
+### Default Progress Callback Implementation
+
+Here's a recommended default progress callback implementation that workers can use:
+
+```python
+def progress_callback(info: Dict[str, Any]):
+    """Default progress callback with emoji indicators."""
+    emoji = {
+        "info": "ℹ️",
+        "success": "✅", 
+        "error": "❌",
+        "warning": "⚠️",
+    }.get(info.get("type", ""), "🔸")
+    print(f"{emoji} {info.get('message', '')}")
+```
+
+### Using Progress Callbacks in Workers
+
+Workers should call the progress callback during key phases of the `start()` method:
+
+```python
+async def start(self, config: WorkerConfig) -> str:
+    """Start a worker session with progress reporting."""
+    progress_callback = config.get("progress_callback")
+    
+    if progress_callback:
+        progress_callback({
+            "type": "info", 
+            "message": "Starting worker session..."
+        })
+    
+    try:
+        # Phase 1: Environment setup
+        if progress_callback:
+            progress_callback({
+                "type": "info",
+                "message": "Setting up environment..."
+            })
+        
+        # Your environment setup code here
+        await setup_environment()
+        
+        if progress_callback:
+            progress_callback({
+                "type": "success",
+                "message": "Environment setup completed"
+            })
+        
+        # Phase 2: Installing dependencies
+        if progress_callback:
+            progress_callback({
+                "type": "info", 
+                "message": "Installing dependencies..."
+            })
+        
+        # Your dependency installation code here
+        await install_dependencies()
+        
+        if progress_callback:
+            progress_callback({
+                "type": "success",
+                "message": "Dependencies installed successfully"
+            })
+        
+        # Phase 3: Final initialization
+        if progress_callback:
+            progress_callback({
+                "type": "info",
+                "message": "Finalizing session initialization..."
+            })
+        
+        # Your final initialization code here
+        session_id = await finalize_session()
+        
+        if progress_callback:
+            progress_callback({
+                "type": "success",
+                "message": f"Session {session_id} started successfully"
+            })
+        
+        return session_id
+        
+    except Exception as e:
+        if progress_callback:
+            progress_callback({
+                "type": "error",
+                "message": f"Failed to start session: {str(e)}"
+            })
+        raise
+```
+
+### Progress Message Types
+
+Use these standard message types for consistency:
+
+- **`info`**: General information messages (🔸 or ℹ️)
+- **`success`**: Successful completion of operations (✅)
+- **`error`**: Error messages (❌) 
+- **`warning`**: Warning messages (⚠️)
+
+### JavaScript Example
+
+```javascript
+function progressCallback(info) {
+    const emoji = {
+        "info": "ℹ️",
+        "success": "✅",
+        "error": "❌", 
+        "warning": "⚠️",
+    }[info.type] || "🔸";
+    
+    console.log(`${emoji} ${info.message || ''}`);
+}
+
+ async function start(config) {
+     const progressCallback = config.progress_callback;
+     
+     if (progressCallback) {
+         progressCallback({
+             type: "info",
+             message: "Starting JavaScript worker session..."
+         });
+     }
+     
+     // Your implementation with progress reporting...
+ }
+ ```
+
+### Recommendation
+
+**It is highly recommended that all workers implement progress callbacks** to provide users with real-time feedback during session startup. This significantly improves the user experience, especially for workers that perform time-consuming operations like:
+
+- Environment setup and dependency installation (conda environments, Docker containers)
+- Large file downloads or processing
+- Compilation or build processes
+- Database connections and initialization
+
+Workers that don't implement progress callbacks may appear unresponsive to users during startup, leading to confusion about whether the operation is still in progress or has failed.
 
 ## Hypha Worker Implementation in Python
 
@@ -92,9 +245,17 @@ class MyCustomWorker(BaseWorker):
             config = WorkerConfig(**config)
         
         session_id = config.id
+        progress_callback = config.get("progress_callback")
         
         if session_id in self._sessions:
             raise WorkerError(f"Session {session_id} already exists")
+        
+        # Report initial progress
+        if progress_callback:
+            progress_callback({
+                "type": "info",
+                "message": f"Starting session {session_id} for app {config.app_id}"
+            })
         
         # Create session info
         session_info = SessionInfo(
@@ -112,12 +273,28 @@ class MyCustomWorker(BaseWorker):
         self._sessions[session_id] = session_info
         
         try:
-            # Your custom session startup logic here
-            print(f"Starting session {session_id} for app {config.app_id}")
+            # Phase 1: Server connection
+            if progress_callback:
+                progress_callback({
+                    "type": "info",
+                    "message": "Connecting to server and artifact manager..."
+                })
             
-            # Access application files if needed
             server = await connect_to_server({"server_url": config.server_url})
             artifact_manager = await server.get_service("public/artifact-manager")
+            
+            if progress_callback:
+                progress_callback({
+                    "type": "success",
+                    "message": "Server connection established"
+                })
+            
+            # Phase 2: Application file processing
+            if progress_callback:
+                progress_callback({
+                    "type": "info",
+                    "message": "Processing application files..."
+                })
             
             # Example: Read application files
             try:
@@ -127,8 +304,26 @@ class MyCustomWorker(BaseWorker):
                 )
                 # Download and process file...
                 print(f"Found config file: {file_url}")
+                
+                if progress_callback:
+                    progress_callback({
+                        "type": "success",
+                        "message": "Application files processed successfully"
+                    })
             except Exception as e:
                 print(f"No config file found: {e}")
+                if progress_callback:
+                    progress_callback({
+                        "type": "warning",
+                        "message": "No configuration file found, using defaults"
+                    })
+            
+            # Phase 3: Session finalization
+            if progress_callback:
+                progress_callback({
+                    "type": "info",
+                    "message": "Finalizing session setup..."
+                })
             
             # Store session data
             session_data = {
@@ -141,13 +336,26 @@ class MyCustomWorker(BaseWorker):
             
             # Update session status
             session_info.status = SessionStatus.RUNNING
-            print(f"Session {session_id} started successfully")
             
+            if progress_callback:
+                progress_callback({
+                    "type": "success",
+                    "message": f"Session {session_id} started successfully"
+                })
+            
+            print(f"Session {session_id} started successfully")
             return session_id
             
         except Exception as e:
             session_info.status = SessionStatus.FAILED
             session_info.error = str(e)
+            
+            if progress_callback:
+                progress_callback({
+                    "type": "error",
+                    "message": f"Failed to start session: {str(e)}"
+                })
+            
             # Clean up failed session
             self._sessions.pop(session_id, None)
             raise
@@ -427,11 +635,18 @@ class MyCustomWorker {
 
     async start(config) {
         const sessionId = config.id;
-        
-        console.log(`Starting session ${sessionId} for app ${config.app_id}`);
+        const progressCallback = config.progress_callback;
         
         if (this.sessions.has(sessionId)) {
             throw new Error(`Session ${sessionId} already exists`);
+        }
+
+        // Report initial progress
+        if (progressCallback) {
+            progressCallback({
+                type: "info",
+                message: `Starting session ${sessionId} for app ${config.app_id}`
+            });
         }
 
         // Create session info
@@ -450,9 +665,31 @@ class MyCustomWorker {
         this.sessions.set(sessionId, sessionInfo);
 
         try {
-            // Connect to artifact manager
+            // Phase 1: Server connection
+            if (progressCallback) {
+                progressCallback({
+                    type: "info",
+                    message: "Connecting to server and artifact manager..."
+                });
+            }
+
             const server = await connectToServer({server_url: config.server_url});
             const artifactManager = await server.getService("public/artifact-manager");
+
+            if (progressCallback) {
+                progressCallback({
+                    type: "success",
+                    message: "Server connection established"
+                });
+            }
+
+            // Phase 2: Application file processing
+            if (progressCallback) {
+                progressCallback({
+                    type: "info",
+                    message: "Processing application files..."
+                });
+            }
 
             // Example: Access application files
             try {
@@ -461,8 +698,29 @@ class MyCustomWorker {
                     {file_path: "package.json"}
                 );
                 console.log(`Found package.json: ${fileUrl}`);
+                
+                if (progressCallback) {
+                    progressCallback({
+                        type: "success",
+                        message: "Application files processed successfully"
+                    });
+                }
             } catch (error) {
                 console.log(`No package.json found: ${error.message}`);
+                if (progressCallback) {
+                    progressCallback({
+                        type: "warning",
+                        message: "No package.json found, using defaults"
+                    });
+                }
+            }
+
+            // Phase 3: Session finalization
+            if (progressCallback) {
+                progressCallback({
+                    type: "info",
+                    message: "Finalizing session setup..."
+                });
             }
 
             // Store session data
@@ -476,13 +734,28 @@ class MyCustomWorker {
 
             // Update status
             sessionInfo.status = "running";
+            
+            if (progressCallback) {
+                progressCallback({
+                    type: "success",
+                    message: `Session ${sessionId} started successfully`
+                });
+            }
+            
             console.log(`Session ${sessionId} started successfully`);
-
             return sessionId;
 
         } catch (error) {
             sessionInfo.status = "failed";
             sessionInfo.error = error.message;
+            
+            if (progressCallback) {
+                progressCallback({
+                    type: "error",
+                    message: `Failed to start session: ${error.message}`
+                });
+            }
+            
             this.sessions.delete(sessionId);
             throw error;
         }

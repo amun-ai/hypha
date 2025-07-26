@@ -1,12 +1,14 @@
 """Conda Environment Worker for executing Python code in isolated conda environments."""
 
 import asyncio
+import functools
 import hashlib
 import httpx
 import json
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -21,6 +23,37 @@ LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("conda_env")
 logger.setLevel(LOGLEVEL)
+
+def get_available_package_manager() -> str:
+    """Detect available package manager, preferring mamba over conda.
+    
+    Returns:
+        str: 'mamba' if available, otherwise 'conda'
+        
+    Raises:
+        RuntimeError: If neither mamba nor conda is available
+    """
+    # Check for mamba first (faster alternative)
+    try:
+        result = subprocess.run(['mamba', '--version'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            logger.info(f"Detected mamba package manager: {result.stdout.strip()}")
+            return 'mamba'
+    except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError):
+        pass
+    
+    # Fall back to conda
+    try:
+        result = subprocess.run(['conda', '--version'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            logger.info(f"Detected conda package manager: {result.stdout.strip()}")
+            return 'conda'
+    except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError):
+        pass
+    
+    raise RuntimeError("Neither mamba nor conda package manager found. Please install conda or mamba.")
 
 # Cache configuration
 DEFAULT_CACHE_DIR = os.path.expanduser("~/.hypha_conda_cache")
@@ -166,6 +199,13 @@ class CondaEnvWorker(BaseWorker):
         self.controller_id = str(CondaEnvWorker.instance_counter)
         CondaEnvWorker.instance_counter += 1
         
+        # Detect available package manager (mamba preferred over conda)
+        try:
+            self.package_manager = get_available_package_manager()
+        except RuntimeError as e:
+            logger.error(f"Package manager detection failed: {e}")
+            raise
+        
         # Session management
         self._sessions: Dict[str, SessionInfo] = {}
         self._session_data: Dict[str, Dict[str, Any]] = {}
@@ -181,12 +221,12 @@ class CondaEnvWorker(BaseWorker):
     @property
     def worker_name(self) -> str:
         """Return the worker name."""
-        return "Conda Environment Worker"
+        return f"Conda Environment Worker (using {self.package_manager})"
     
     @property
     def worker_description(self) -> str:
         """Return the worker description."""
-        return "A worker for executing Python code in isolated conda environments with package management"
+        return f"A worker for executing Python code in isolated conda environments with package management using {self.package_manager}"
     
     async def compile(self, manifest: dict, files: list, config: dict = None) -> tuple[dict, list]:
         """Compile conda environment application - validate manifest."""
@@ -207,6 +247,33 @@ class CondaEnvWorker(BaseWorker):
         if isinstance(channels, str):
             channels = [channels]
         
+        # Always ensure pip is available
+        if "pip" not in dependencies:
+            dependencies.append("pip")
+        
+        # Always ensure hypha-rpc is available via pip
+        hypha_rpc_found = False
+        
+        # Check if hypha-rpc is already specified
+        for dep in dependencies:
+            if isinstance(dep, dict) and "pip" in dep:
+                pip_packages = dep["pip"]
+                if isinstance(pip_packages, list):
+                    if "hypha-rpc" in pip_packages:
+                        hypha_rpc_found = True
+                        break
+                elif isinstance(pip_packages, str) and pip_packages == "hypha-rpc":
+                    hypha_rpc_found = True
+                    break
+            elif isinstance(dep, str) and dep == "hypha-rpc":
+                hypha_rpc_found = True
+                break
+        
+        # Add hypha-rpc via pip if not found
+        if not hypha_rpc_found:
+            dependencies.append({"pip": ["hypha-rpc"]})
+            logger.info("Automatically added hypha-rpc to dependencies via pip")
+        
         # Update manifest with normalized values
         manifest["dependencies"] = dependencies
         manifest["channels"] = channels
@@ -220,9 +287,17 @@ class CondaEnvWorker(BaseWorker):
             config = WorkerConfig(**config)
         
         session_id = config.id
+        progress_callback = getattr(config, "progress_callback", None)
         
         if session_id in self._sessions:
             raise WorkerError(f"Session {session_id} already exists")
+        
+        # Report initial progress
+        if progress_callback:
+            progress_callback({
+                "type": "info",
+                "message": f"Starting conda environment session {session_id}"
+            })
         
         # Create session info
         session_info = SessionInfo(
@@ -240,34 +315,83 @@ class CondaEnvWorker(BaseWorker):
         self._sessions[session_id] = session_info
         
         try:
-            # Get the Python script
+            # Phase 1: Fetch application script
+            if progress_callback:
+                progress_callback({
+                    "type": "info",
+                    "message": "Fetching application script..."
+                })
+            
             script_url = f"{config.app_files_base_url}/{config.manifest['entry_point']}?use_proxy=true"
             async with httpx.AsyncClient() as client:
                 response = await client.get(script_url, headers={"Authorization": f"Bearer {config.token}"})
                 response.raise_for_status()
                 script = response.text
             
-            # Start the conda environment session
-            session_data = await self._start_conda_session(script, config)
+            if progress_callback:
+                progress_callback({
+                    "type": "success",
+                    "message": "Application script loaded successfully"
+                })
+            
+            # Phase 2: Start the conda environment session (this is the long part)
+            if progress_callback:
+                progress_callback({
+                    "type": "info",
+                    "message": f"Setting up conda environment using {self.package_manager}..."
+                })
+            
+            session_data = await self._start_conda_session(script, config, progress_callback)
             self._session_data[session_id] = session_data
             
             # Update session status
             session_info.status = SessionStatus.RUNNING
-            logger.info(f"Started conda environment session {session_id}")
             
+            if progress_callback:
+                progress_callback({
+                    "type": "success",
+                    "message": f"Conda environment session {session_id} started successfully"
+                })
+            
+            logger.info(f"Started conda environment session {session_id}")
             return session_id
             
         except Exception as e:
             session_info.status = SessionStatus.FAILED
             session_info.error = str(e)
+            
+            if progress_callback:
+                progress_callback({
+                    "type": "error",
+                    "message": f"Failed to start conda environment session: {str(e)}"
+                })
+            
             logger.error(f"Failed to start conda environment session {session_id}: {e}")
             # Clean up failed session
             self._sessions.pop(session_id, None)
             raise
     
-    async def _start_conda_session(self, script: str, config: WorkerConfig) -> Dict[str, Any]:
+    async def _start_conda_session(self, script: str, config: WorkerConfig, progress_callback=None) -> Dict[str, Any]:
         """Start a conda environment session."""
         assert script is not None, "Script is not found"
+        
+        # Initialize logs - they will be populated by the background task and progress callback
+        logs = {
+            "stdout": [],
+            "stderr": [],
+            "info": [f"Conda environment session started successfully"],
+            "error": [],
+            "progress": []  # Store real-time progress messages
+        }
+        
+        # Create a progress callback wrapper that stores messages in logs for real-time access
+        def progress_callback_wrapper(message):
+            # Store the progress message in logs for real-time retrieval
+            logs["progress"].append(f"{message['type'].upper()}: {message['message']}")
+            
+            # Also call the original progress callback if provided
+            if progress_callback:
+                progress_callback(message)
         
         # Extract environment specification from manifest
         dependencies = config.manifest.get("dependencies", config.manifest.get("dependencies", []))
@@ -279,10 +403,20 @@ class CondaEnvWorker(BaseWorker):
         if isinstance(channels, str):
             channels = [channels]
         
-        # Check if we have a cached environment
+        # Phase 1: Check for cached environment
+        progress_callback_wrapper({
+            "type": "info",
+            "message": "Checking for cached conda environment..."
+        })
+        
         cached_env_path = self._env_cache.get_cached_env(dependencies, channels)
         
         if cached_env_path:
+            progress_callback_wrapper({
+                "type": "success",
+                "message": f"Found cached environment: {cached_env_path}"
+            })
+            
             logger.info(f"Using cached conda environment: {cached_env_path}")
             executor = CondaEnvExecutor({
                 'name': 'cached_env',
@@ -292,51 +426,90 @@ class CondaEnvWorker(BaseWorker):
             executor.env_path = cached_env_path
             executor._is_extracted = True
         else:
-            # Create new temporary environment
+            # Phase 2: Create new environment (this is the long part)
+            # Format dependencies for display (handle both strings and dicts)
+            dep_strings = []
+            for dep in dependencies[:3]:
+                if isinstance(dep, dict):
+                    # Handle pip dependencies like {'pip': ['package1', 'package2']}
+                    for key, values in dep.items():
+                        if isinstance(values, list):
+                            dep_strings.append(f"{key}:[{', '.join(values)}]")
+                        else:
+                            dep_strings.append(f"{key}:{values}")
+                else:
+                    dep_strings.append(str(dep))
+            
+            deps_str = ", ".join(dep_strings) + ("..." if len(dependencies) > 3 else "")
+            progress_callback_wrapper({
+                "type": "info",  
+                "message": f"Creating new conda environment with dependencies: {deps_str}"
+            })
+            
             logger.info(f"Creating new conda environment with dependencies: {dependencies}")
+            
+            # Sanitize the config ID to make it compatible with conda/mamba
+            # Replace filesystem separators and other problematic characters
+            sanitized_id = config.id.replace("/", "-").replace("\\", "-").replace(":", "-").replace(" ", "-")
+            
             executor = CondaEnvExecutor.create_temp_env(
                 dependencies=dependencies,
                 channels=channels,
-                name=f"hypha-session-{config.id}"
+                name=f"hypha-session-{sanitized_id}"
             )
+            
+            # This is the long-running part - environment creation
+            progress_callback_wrapper({
+                "type": "info",
+                "message": f"Installing packages using {self.package_manager}... (this may take several minutes)"
+            })
+            
+            # Run environment creation directly (now async)
+            try:
+                setup_time = await executor._extract_env(progress_callback_wrapper)
+            except Exception as e:
+                progress_callback_wrapper({
+                    "type": "error",
+                    "message": f"Environment creation failed: {str(e)}"
+                })
+                raise
+            
+            progress_callback_wrapper({
+                "type": "success",
+                "message": f"Environment created successfully in {setup_time:.1f}s"
+            })
             
             # Cache the environment after creation
-            # We need to run the extraction first to create the environment
-            await asyncio.get_event_loop().run_in_executor(
-                None, executor._extract_env
-            )
-            
-            # Add to cache
             self._env_cache.add_cached_env(dependencies, channels, executor.env_path)
             logger.info(f"Cached new conda environment: {executor.env_path}")
         
-        # Always execute the script during startup to run initialization code
-        # This ensures print statements and setup code are executed
-        result = await asyncio.get_event_loop().run_in_executor(
-            None, executor.execute, script, None
-        )
+        # Phase 3: Start initialization script in background (non-blocking)
+        progress_callback_wrapper({
+            "type": "info",
+            "message": "Starting initialization script in background..."
+        })
+        
+        # Start the script execution in background without waiting for completion
+        # This allows long-running services (like FastAPI apps) to keep running
+        hypha_config = {
+            'server_url': config.server_url,
+            'workspace': config.workspace,
+            'client_id': config.client_id,
+            'token': config.token
+        }
         
         # Determine if script has execute function for later interactive calls
         needs_execute_function = "def execute(" in script or "async def execute(" in script
         
-        # Store logs
-        logs = {
-            "stdout": [result.stdout] if result.stdout else [],
-            "stderr": [result.stderr] if result.stderr else [],
-            "info": []
-        }
+        # Create a task to run the script in background with the wrapper callback
+        script_task = asyncio.create_task(
+            self._run_script_in_background(executor, script, hypha_config, progress_callback_wrapper, config.id)
+        )
         
-        if result.success:
-            logs["info"].append(f"Conda environment session started successfully")
-            if (result.timing and 
-                hasattr(result.timing, 'env_setup_time') and 
-                hasattr(result.timing, 'execution_time') and
-                isinstance(result.timing.env_setup_time, (int, float)) and
-                isinstance(result.timing.execution_time, (int, float))):
-                logs["info"].append(f"Environment setup time: {result.timing.env_setup_time:.2f}s")
-                logs["info"].append(f"Execution time: {result.timing.execution_time:.2f}s")
-        else:
-            logs["error"] = [result.error] if result.error else ["Unknown error occurred"]
+        progress_callback_wrapper({
+            "type": "success",
+            "message": "Conda environment session started, initialization script running in background"
+        })
         
         return {
             "executor": executor,
@@ -344,9 +517,79 @@ class CondaEnvWorker(BaseWorker):
             "dependencies": dependencies,
             "channels": channels,
             "needs_execute_function": needs_execute_function,
-            "result": result,
-            "logs": logs
+            "script_task": script_task,  # Keep reference to the background task
+            "logs": logs,
+            "hypha_config": hypha_config
         }
+    
+    async def _run_script_in_background(self, executor: CondaEnvExecutor, script: str, hypha_config: dict, progress_callback=None, session_id: str = None):
+        """Run the initialization script in background without blocking session startup."""
+        try:
+            if progress_callback:
+                progress_callback({
+                    "type": "info",
+                    "message": "Executing initialization script..."
+                })
+            
+            # Execute the script in a thread pool to avoid blocking
+            execute_func = functools.partial(executor.execute, script, None, hypha_config)
+            result = await asyncio.get_event_loop().run_in_executor(None, execute_func)
+            
+            # Update session logs with the background execution results
+            if session_id and session_id in self._session_data:
+                session_data = self._session_data[session_id]
+                logs = session_data.get("logs", {})
+                
+                if result.success:
+                    if result.stdout:
+                        logs.setdefault("stdout", []).append(result.stdout)
+                    logs.setdefault("info", []).append("Background script execution completed successfully")
+                    if result.timing:
+                        logs.setdefault("info", []).append(f"Background script execution time: {result.timing.execution_time:.2f}s")
+                else:
+                    if result.error:
+                        logs.setdefault("error", []).append(result.error)
+                    if result.stderr:
+                        logs.setdefault("stderr", []).append(result.stderr)
+                    logs.setdefault("error", []).append("Background script execution failed")
+            
+            if progress_callback:
+                if result.success:
+                    progress_callback({
+                        "type": "success",
+                        "message": "Initialization script executed successfully"
+                    })
+                else:
+                    progress_callback({
+                        "type": "error",
+                        "message": f"Initialization script failed: {result.error or 'Unknown error'}"
+                    })
+            
+            # Log the result for debugging
+            if result.success:
+                logger.info("Background script execution completed successfully")
+                if result.timing:
+                    logger.info(f"Script execution time: {result.timing.execution_time:.2f}s")
+            else:
+                logger.error(f"Background script execution failed: {result.error}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Background script execution failed with exception: {e}")
+            
+            # Update session logs with the exception
+            if session_id and session_id in self._session_data:
+                session_data = self._session_data[session_id]
+                logs = session_data.get("logs", {})
+                logs.setdefault("error", []).append(f"Background script execution failed: {str(e)}")
+            
+            if progress_callback:
+                progress_callback({
+                    "type": "error",
+                    "message": f"Background script execution failed: {str(e)}"
+                })
+            return None
     
     async def execute_code(self, session_id: str, input_data: Any = None) -> ExecutionResult:
         """Execute code in a conda environment session with optional input data."""
@@ -359,12 +602,12 @@ class CondaEnvWorker(BaseWorker):
         
         executor = session_data["executor"]
         script = session_data["script"]
+        hypha_config = session_data.get("hypha_config", {})
         
         try:
             # Execute the script with input data
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, executor.execute, script, input_data
-            )
+            execute_func = functools.partial(executor.execute, script, input_data, hypha_config)
+            result = await asyncio.get_event_loop().run_in_executor(None, execute_func)
             
             # Update logs
             if session_data["logs"] is None:
@@ -409,8 +652,17 @@ class CondaEnvWorker(BaseWorker):
         try:
             # Cleanup session data
             session_data = self._session_data.get(session_id)
-            if session_data and session_data.get("executor"):
-                executor = session_data["executor"]
+            if session_data:
+                # Cancel the background script task if it's still running
+                script_task = session_data.get("script_task")
+                if script_task and not script_task.done():
+                    logger.info(f"Cancelling background script task for session {session_id}")
+                    script_task.cancel()
+                    try:
+                        await script_task
+                    except asyncio.CancelledError:
+                        logger.info(f"Background script task cancelled for session {session_id}")
+                
                 # Note: We don't cleanup the executor environment since it's cached
                 # The cache manager will handle cleanup based on LRU policy
             
@@ -497,6 +749,13 @@ class CondaEnvWorker(BaseWorker):
         """Shutdown the conda environment worker."""
         logger.info("Shutting down conda environment worker...")
         
+        # Cancel all background script tasks first
+        for session_id, session_data in self._session_data.items():
+            script_task = session_data.get("script_task")
+            if script_task and not script_task.done():
+                logger.info(f"Cancelling background script task for session {session_id}")
+                script_task.cancel()
+        
         # Stop all sessions
         session_ids = list(self._sessions.keys())
         for session_id in session_ids:
@@ -523,22 +782,178 @@ async def hypha_startup(server):
     logger.info("Conda environment worker initialized and registered")
 
 
-async def start_worker(server_url, workspace, token):
-    """Start conda environment worker standalone."""
-    from hypha_rpc import connect_to_server
+
+
+
+def main():
+    """Main function for command line execution."""
+    import argparse
+    import sys
     
-    server = await connect_to_server(server_url=server_url, workspace=workspace, token=token)
-    worker = CondaEnvWorker(server.rpc)
-    logger.info(f"Conda environment worker started, server: {server_url}, workspace: {workspace}")
+    def get_env_var(name: str, default: str = None) -> str:
+        """Get environment variable with HYPHA_ prefix."""
+        return os.environ.get(f"HYPHA_{name.upper()}", default)
     
-    return worker
+    parser = argparse.ArgumentParser(
+        description="Hypha Conda Environment Worker - Execute Python code in isolated conda environments",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Environment Variables (with HYPHA_ prefix):
+  HYPHA_SERVER_URL     Hypha server URL (e.g., https://ai.amun.ai)
+  HYPHA_WORKSPACE      Workspace name (e.g., my-workspace)
+  HYPHA_TOKEN          Authentication token
+  HYPHA_SERVICE_ID     Service ID for the worker (optional)
+  HYPHA_VISIBILITY     Service visibility: public or protected (default: protected)
+  HYPHA_CACHE_DIR      Directory for caching conda environments (optional)
+
+Examples:
+  # Using command line arguments
+  python -m hypha.workers.conda_env --server-url https://ai.amun.ai --workspace my-workspace --token TOKEN
+
+  # Using environment variables
+  export HYPHA_SERVER_URL=https://ai.amun.ai
+  export HYPHA_WORKSPACE=my-workspace
+  export HYPHA_TOKEN=your-token-here
+  python -m hypha.workers.conda_env
+
+  # Mixed usage (command line overrides environment variables)
+  export HYPHA_SERVER_URL=https://ai.amun.ai
+  python -m hypha.workers.conda_env --workspace my-workspace --token TOKEN
+        """
+    )
+    
+    parser.add_argument(
+        "--server-url", 
+        type=str, 
+        default=get_env_var("SERVER_URL"),
+        help="Hypha server URL (default: from HYPHA_SERVER_URL env var)"
+    )
+    parser.add_argument(
+        "--workspace", 
+        type=str, 
+        default=get_env_var("WORKSPACE"),
+        help="Workspace name (default: from HYPHA_WORKSPACE env var)"
+    )
+    parser.add_argument(
+        "--token", 
+        type=str, 
+        default=get_env_var("TOKEN"),
+        help="Authentication token (default: from HYPHA_TOKEN env var)"
+    )
+    parser.add_argument(
+        "--service-id", 
+        type=str, 
+        default=get_env_var("SERVICE_ID"),
+        help="Service ID for the worker (default: from HYPHA_SERVICE_ID env var or auto-generated)"
+    )
+    parser.add_argument(
+        "--visibility", 
+        type=str, 
+        choices=["public", "protected"],
+        default=get_env_var("VISIBILITY", "protected"),
+        help="Service visibility (default: protected, from HYPHA_VISIBILITY env var)"
+    )
+    parser.add_argument(
+        "--cache-dir", 
+        type=str, 
+        default=get_env_var("CACHE_DIR"),
+        help="Directory for caching conda environments (default: from HYPHA_CACHE_DIR env var or ~/.hypha_conda_cache)"
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Enable verbose logging"
+    )
+    
+    args = parser.parse_args()
+    
+    # Validate required arguments
+    if not args.server_url:
+        print("Error: --server-url is required (or set HYPHA_SERVER_URL environment variable)", file=sys.stderr)
+        sys.exit(1)
+    if not args.workspace:
+        print("Error: --workspace is required (or set HYPHA_WORKSPACE environment variable)", file=sys.stderr)
+        sys.exit(1)
+    if not args.token:
+        print("Error: --token is required (or set HYPHA_TOKEN environment variable)", file=sys.stderr)
+        sys.exit(1)
+    
+    # Set up logging
+    if args.verbose:
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        logger.setLevel(logging.INFO)
+    
+    # Detect package manager early for better error reporting
+    try:
+        package_manager = get_available_package_manager()
+    except RuntimeError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        print(f"   Please install conda or mamba to use this worker.", file=sys.stderr)
+        sys.exit(1)
+    
+    print(f"Starting Hypha Conda Environment Worker...")
+    print(f"  Package Manager: {package_manager}")
+    print(f"  Server URL: {args.server_url}")
+    print(f"  Workspace: {args.workspace}")
+    print(f"  Service ID: {args.service_id or 'auto-generated'}")
+    print(f"  Visibility: {args.visibility}")
+    print(f"  Cache Dir: {args.cache_dir or DEFAULT_CACHE_DIR}")
+    
+    async def run_worker():
+        """Run the conda environment worker."""
+        try:
+            from hypha_rpc import connect_to_server
+            
+            # Override cache directory if specified
+            if args.cache_dir:
+                global DEFAULT_CACHE_DIR
+                DEFAULT_CACHE_DIR = args.cache_dir
+            
+            # Connect to server
+            server = await connect_to_server(
+                server_url=args.server_url, 
+                workspace=args.workspace, 
+                token=args.token
+            )
+            
+            # Create and register worker
+            worker = CondaEnvWorker(server.rpc)
+            if args.cache_dir:
+                worker._env_cache = EnvironmentCache(cache_dir=args.cache_dir)
+            
+            # Get service config and set custom properties
+            service_config = worker.get_service_config()
+            if args.service_id:
+                service_config["id"] = args.service_id
+            service_config["visibility"] = args.visibility
+            
+            # Register the service
+            await server.rpc.register_service(service_config)
+            
+            print(f"✅ Conda Environment Worker registered successfully!")
+            print(f"   Service ID: {service_config['id']}")
+            print(f"   Supported types: {worker.supported_types}")
+            print(f"   Visibility: {args.visibility}")
+            print(f"")
+            print(f"Worker is ready to process conda environment requests...")
+            print(f"Press Ctrl+C to stop the worker.")
+            
+            # Keep the worker running
+            try:
+                while True:
+                    await asyncio.sleep(1)
+            except KeyboardInterrupt:
+                print(f"\n🛑 Shutting down Conda Environment Worker...")
+                await worker.shutdown()
+                print(f"✅ Worker shutdown complete.")
+                
+        except Exception as e:
+            print(f"❌ Failed to start Conda Environment Worker: {e}", file=sys.stderr)
+            sys.exit(1)
+    
+    # Run the worker
+    asyncio.run(run_worker())
 
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--server-url", type=str, required=True)
-    parser.add_argument("--workspace", type=str, required=True)
-    parser.add_argument("--token", type=str, required=True)
-    args = parser.parse_args()
-    asyncio.run(start_worker(args.server_url, args.workspace, args.token))
+    main()

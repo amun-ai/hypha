@@ -555,13 +555,30 @@ def minio_server_fixture():
 
 @pytest_asyncio.fixture(name="conda_available", scope="session")
 def conda_available_fixture():
-    """Check if conda is available and skip tests if not."""
+    """Check if conda or mamba is available and skip tests if not."""
     import shutil
     
-    # Check if conda command is available
+    # Check for mamba first (preferred)
+    mamba_path = shutil.which("mamba")
+    if mamba_path is not None:
+        try:
+            result = subprocess.run(
+                ["mamba", "--version"], 
+                capture_output=True, 
+                text=True, 
+                timeout=10
+            )
+            if result.returncode == 0:
+                print(f"Using mamba for conda tests: {result.stdout.strip()}")
+                yield mamba_path
+                return
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+    
+    # Fall back to conda
     conda_path = shutil.which("conda")
     if conda_path is None:
-        pytest.skip("Conda not available - skipping conda integration tests")
+        pytest.skip("Neither mamba nor conda available - skipping conda integration tests")
     
     # Check if we can run conda commands
     try:
@@ -573,6 +590,7 @@ def conda_available_fixture():
         )
         if result.returncode != 0:
             pytest.skip("Conda command failed - skipping conda integration tests")
+        print(f"Using conda for conda tests: {result.stdout.strip()}")
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pytest.skip("Conda command not accessible - skipping conda integration tests")
     

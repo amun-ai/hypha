@@ -14,5 +14,6 @@
  * [Artifact Manager](/artifact-manager)
  * [Agent2Agent](/a2a)
  * [Model Context Protocol](/mcp)
+ * [Conda Environment Worker](/conda-worker)
  * [Vector Search](/vector-search)
  * [Development](/development)
