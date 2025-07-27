@@ -519,11 +519,8 @@ class RedisRPCConnection:
         self.manager_id = manager_id
         
         # Register this client for targeted subscriptions
-        # Exclude manager clients which need to be accessible across servers
-        self._is_local_client = not client_id.startswith("manager-")
-        if self._is_local_client:
-            # We'll register this asynchronously in on_message to avoid blocking
-            self._registration_task = None
+        # We'll register this asynchronously in on_message to avoid blocking
+        self._registration_task = None
 
     def on_disconnected(self, handler):
         """Register a disconnection event handler."""
@@ -544,16 +541,15 @@ class RedisRPCConnection:
         self._event_bus.on(f"{self._workspace}/*:msg", handler)
         
         # Register this client for targeted event subscriptions
-        if self._is_local_client:
-            async def register_client():
-                await self._event_bus.register_local_client(self._workspace, self._client_id)
-                await self._event_bus.subscribe_to_client_events(self._workspace, self._client_id)
-                logger.debug(f"Registered and subscribed to events for {self._workspace}/{self._client_id}")
-            
-            self._registration_task = asyncio.create_task(register_client())
-            background_tasks.add(self._registration_task)
-            self._registration_task.add_done_callback(background_tasks.discard)
+        async def register_client():
+            await self._event_bus.register_local_client(self._workspace, self._client_id)
+            await self._event_bus.subscribe_to_client_events(self._workspace, self._client_id)
+            logger.debug(f"Registered and subscribed to events for {self._workspace}/{self._client_id}")
         
+        self._registration_task = asyncio.create_task(register_client())
+        background_tasks.add(self._registration_task)
+        self._registration_task.add_done_callback(background_tasks.discard)
+    
         if self._handle_connected:
             task = asyncio.create_task(self._handle_connected(self))
             background_tasks.add(task)
@@ -706,19 +702,18 @@ class RedisRPCConnection:
         self._handle_message = None
         
         # Unregister this client from local routing and unsubscribe from events
-        if self._is_local_client:
-            try:
-                # Cancel registration task if still running
-                if self._registration_task and not self._registration_task.done():
-                    self._registration_task.cancel()
-                
-                # Unsubscribe from client events and unregister
-                await self._event_bus.unsubscribe_from_client_events(self._workspace, self._client_id)
-                await self._event_bus.unregister_local_client(self._workspace, self._client_id)
-                logger.debug(f"Unsubscribed and unregistered {self._workspace}/{self._client_id}")
-            except Exception as e:
-                logger.warning(f"Error during client cleanup: {e}")
-        
+        try:
+            # Cancel registration task if still running
+            if self._registration_task and not self._registration_task.done():
+                self._registration_task.cancel()
+            
+            # Unsubscribe from client events and unregister
+            await self._event_bus.unsubscribe_from_client_events(self._workspace, self._client_id)
+            await self._event_bus.unregister_local_client(self._workspace, self._client_id)
+            logger.debug(f"Unsubscribed and unregistered {self._workspace}/{self._client_id}")
+        except Exception as e:
+            logger.warning(f"Error during client cleanup: {e}")
+    
         logger.debug(
             f"Redis Connection Disconnected: {self._workspace}/{self._client_id}"
         )
@@ -1158,9 +1153,6 @@ class RedisEventBus:
                 
                 # Subscribe to all broadcast messages (server-wide events)
                 await pubsub.psubscribe("broadcast:*")
-                
-                # Subscribe to manager service communications 
-                await pubsub.psubscribe("targeted:*/manager-*:*")
                 
                 # Re-subscribe to any existing targeted client patterns
                 for pattern in list(self._subscribed_patterns):
