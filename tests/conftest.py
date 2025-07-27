@@ -47,6 +47,59 @@ os.environ["ACTIVITY_CHECK_INTERVAL"] = "0.3"
 test_env = os.environ.copy()
 
 
+def _wait_for_server_health(server_url, server_name, max_timeout=40):
+    """Helper function to wait for server health checks with robust retry logic."""
+    timeout = max_timeout
+    check_interval = 0.1
+    backoff_factor = 1.1
+    max_interval = 1.0
+    
+    while timeout > 0:
+        try:
+            # Check readiness
+            response = requests.get(
+                f"{server_url}/health/readiness",
+                timeout=5
+            )
+            if response.ok:
+                # Additional verification: check liveness
+                liveness_response = requests.get(
+                    f"{server_url}/health/liveness",
+                    timeout=5
+                )
+                if liveness_response.ok:
+                    return True
+        except (RequestException, Exception) as e:
+            # Log the exception for debugging in the second half of timeout period
+            if timeout < max_timeout * 0.5:
+                print(f"Server ({server_name}) not ready: {e}")
+        
+        time.sleep(check_interval)
+        timeout -= check_interval
+        # Exponential backoff for check interval
+        check_interval = min(check_interval * backoff_factor, max_interval)
+    
+    return False
+
+
+def _cleanup_server_process(proc, server_name):
+    """Helper function to cleanup server processes robustly."""
+    try:
+        proc.terminate()
+        # Give the process a chance to terminate gracefully
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+    except Exception as e:
+        print(f"Error during {server_name} cleanup: {e}")
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 @pytest_asyncio.fixture
 def event_loop():
     """Create an event loop for each test."""
@@ -422,29 +475,32 @@ def fastapi_server_redis_1(redis_server, minio_server):
             "--enable-service-search",
         ],
         env=test_env,
+        # Ensure the process has its own process group
+        preexec_fn=os.setsid if hasattr(os, 'setsid') else None,
     ) as proc:
-        timeout = 20
-        while timeout > 0:
+        # Wait for server to be ready
+        server_url = f"http://127.0.0.1:{SIO_PORT_REDIS_1}"
+        if not _wait_for_server_health(server_url, "fastapi_server_redis_1"):
+            # Try to get more information about why the server failed to start
             try:
-                response = requests.get(
-                    f"http://127.0.0.1:{SIO_PORT_REDIS_1}/health/readiness"
-                )
-                if response.ok:
-                    break
-            except RequestException:
+                if proc.poll() is not None:
+                    print(f"Server process exited with code: {proc.returncode}")
+                else:
+                    print("Server process is still running but not responding to health checks")
+            except Exception:
                 pass
-            timeout -= 0.1
-            time.sleep(0.1)
-        if timeout <= 0:
             raise TimeoutError("Server (fastapi_server_redis_1) did not start in time")
+        
         yield
-        proc.kill()
-        proc.terminate()
+        _cleanup_server_process(proc, "fastapi_server_redis_1")
 
 
 @pytest_asyncio.fixture(name="fastapi_server_redis_2", scope="session")
 def fastapi_server_redis_2(redis_server, minio_server, fastapi_server):
     """Start a backup server as test fixture and tear down after test."""
+    # Add a small delay to ensure the first server is fully initialized
+    time.sleep(1)
+    
     with subprocess.Popen(
         [
             sys.executable,
@@ -463,24 +519,24 @@ def fastapi_server_redis_2(redis_server, minio_server, fastapi_server):
             # f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
         ],
         env=test_env,
+        # Ensure the process has its own process group
+        preexec_fn=os.setsid if hasattr(os, 'setsid') else None,
     ) as proc:
-        timeout = 20
-        while timeout > 0:
+        # Wait for server to be ready
+        server_url = f"http://127.0.0.1:{SIO_PORT_REDIS_2}"
+        if not _wait_for_server_health(server_url, "fastapi_server_redis_2"):
+            # Try to get more information about why the server failed to start
             try:
-                response = requests.get(
-                    f"http://127.0.0.1:{SIO_PORT_REDIS_2}/health/readiness"
-                )
-                if response.ok:
-                    break
-            except RequestException:
+                if proc.poll() is not None:
+                    print(f"Server process exited with code: {proc.returncode}")
+                else:
+                    print("Server process is still running but not responding to health checks")
+            except Exception:
                 pass
-            timeout -= 0.1
-            time.sleep(0.1)
-        if timeout <= 0:
             raise TimeoutError("Server (fastapi_server_redis_2) did not start in time")
+        
         yield
-        proc.kill()
-        proc.terminate()
+        _cleanup_server_process(proc, "fastapi_server_redis_2")
 
 
 @pytest_asyncio.fixture(name="fastapi_subpath_server")
