@@ -137,6 +137,7 @@ class RedisStore:
         reconnection_token_life_time=2 * 24 * 60 * 60,
         activity_check_interval=10,
         enable_s3_for_anonymous_users=False,
+        housekeeping_interval=300,
     ):
         """Initialize the redis store."""
         self._s3_controller = None
@@ -161,6 +162,7 @@ class RedisStore:
         self._enable_service_search = enable_service_search
         self._activity_check_interval = activity_check_interval
         self._enable_s3_for_anonymous_users = enable_s3_for_anonymous_users
+        self._housekeeping_interval = housekeeping_interval
         # Create a fixed HTTP anonymous user
         self._http_anonymous_user = UserInfo(
             id="http-anonymous",
@@ -246,9 +248,11 @@ class RedisStore:
         self._root_user = None
         self._event_bus = RedisEventBus(self._redis)
 
+        # Track which workspaces were counted by this instance
+        self._counted_workspaces: set = set()
         self._tracker = None
         self._tracker_task = None
-        # self._house_keeping_task = None
+        self._house_keeping_task = None
 
         self._shared_anonymous_user = None
 
@@ -377,6 +381,33 @@ class RedisStore:
                         logger.exception(f"Error in housekeeping {workspace.id}: {e}")
         except Exception as exp:
             logger.error(f"Failed to run housekeeping task, error: {exp}")
+
+    async def _periodic_housekeeping(self, interval: int = 300):
+        """Run periodic housekeeping tasks to clean up hanging clients.
+        
+        Args:
+            interval: Housekeeping interval in seconds (default: 5 minutes)
+        """
+        logger.info(f"🚀 Starting periodic housekeeping task (interval: {interval}s)")
+        cleanup_count = 0
+        
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                logger.info("🧹 Running periodic housekeeping...")
+                
+                cleanup_count += 1
+                await self.housekeeping()
+                
+                logger.info(f"✅ Periodic housekeeping completed (run #{cleanup_count})")
+                
+            except asyncio.CancelledError:
+                logger.info("🛑 Periodic housekeeping task cancelled")
+                break
+            except Exception as e:
+                logger.error(f"❌ Error in periodic housekeeping: {e}")
+                # Continue running even if one cycle fails
+                continue
 
     async def upgrade(self):
         """Upgrade the store."""
@@ -601,7 +632,14 @@ class RedisStore:
         self._ready = True
         await self.get_event_bus().emit_local("startup")
         servers = await self.list_servers()
-        # self._house_keeping_task = asyncio.create_task(self.housekeeping())
+        
+        # Start periodic housekeeping to clean up hanging clients (if enabled)
+        if self._housekeeping_interval > 0:
+            self._house_keeping_task = asyncio.create_task(self._periodic_housekeeping(self._housekeeping_interval))
+            logger.info(f"🚀 Periodic housekeeping enabled with {self._housekeeping_interval}s interval")
+        else:
+            self._house_keeping_task = None
+            logger.info("⏸️ Periodic housekeeping disabled")
 
         logger.info("Server initialized with server id: %s", self._server_id)
         logger.info("Currently connected hypha servers: %s", servers)
@@ -1026,12 +1064,12 @@ class RedisStore:
         """Teardown the server."""
         self._ready = False
         logger.info("Tearing down the redis store...")
-        # if self._house_keeping_task:
-        #     self._house_keeping_task.cancel()
-        #     try:
-        #         await self._house_keeping_task
-        #     except asyncio.CancelledError:
-        #         print("Housekeeping task successfully exited.")
+        if self._house_keeping_task and not self._house_keeping_task.done():
+            self._house_keeping_task.cancel()
+            try:
+                await self._house_keeping_task
+            except asyncio.CancelledError:
+                logger.info("🛑 Periodic housekeeping task stopped successfully")
 
         if self._tracker_task:
             self._tracker_task.cancel()

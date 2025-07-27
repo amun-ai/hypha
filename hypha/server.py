@@ -318,6 +318,7 @@ def create_application(args):
         ),
         activity_check_interval=float(env.get("ACTIVITY_CHECK_INTERVAL", str(10))),
         enable_s3_for_anonymous_users=args.enable_s3_for_anonymous_users,
+        housekeeping_interval=args.housekeeping_interval,
     )
     application.state.store = store
 
@@ -651,6 +652,12 @@ def get_argparser(add_help=True):
         "--enable-s3-for-anonymous-users",
         action="store_true",
         help="allow anonymous users to use S3 and artifact functionality (removes read-only restriction)",
+    )
+    parser.add_argument(
+        "--housekeeping-interval",
+        type=int,
+        default=300,
+        help="interval in seconds for periodic housekeeping cleanup (default: 300 seconds, set to -1 to disable)",
     )
     return parser
 

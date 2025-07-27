@@ -323,6 +323,7 @@ def fastapi_server_fixture(minio_server, postgres_server):
             f"--triton-servers=http://127.0.0.1:{TRITON_PORT}",
             "--static-mounts=/tests:./tests",
             "--s3-cleanup-period=2",
+            "--housekeeping-interval=30",
             "--startup-functions",
             "hypha.utils:_example_hypha_startup",
             "./tests/example-startup-function.py:hypha_startup",
@@ -375,6 +376,7 @@ def fastapi_server_sqlite_fixture(minio_server):
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
             f"--workspace-bucket=my-workspaces",
             "--s3-admin-type=generic",
+            "--housekeeping-interval=30",
         ],
         env=test_env,
     ) as proc:
@@ -420,6 +422,7 @@ def fastapi_server_redis_1(redis_server, minio_server):
             f"--secret-access-key={MINIO_ROOT_PASSWORD}",
             f"--endpoint-url-public={MINIO_SERVER_URL_PUBLIC}",
             "--enable-service-search",
+            "--housekeeping-interval=30",
         ],
         env=test_env,
     ) as proc:
@@ -457,6 +460,7 @@ def fastapi_server_redis_2(redis_server, minio_server, fastapi_server):
             f"--public-base-url=http://my-public-url.com",
             "--server-id=server-1",
             f"--redis-uri=redis://127.0.0.1:{REDIS_PORT}/0",
+            "--housekeeping-interval=30",
             # f"--endpoint-url={MINIO_SERVER_URL}",
             # f"--access-key-id={MINIO_ROOT_USER}",
             # f"--secret-access-key={MINIO_ROOT_PASSWORD}",
@@ -493,6 +497,7 @@ def fastapi_subpath_server_fixture(minio_server):
             "hypha.server",
             f"--port={SIO_PORT2}",
             "--base-path=/my/engine",
+            "--housekeeping-interval=30",
         ],
         env=test_env,
     ) as proc:
