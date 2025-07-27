@@ -681,12 +681,41 @@ class RedisStore:
         return self._public_workspace_interface
 
     async def client_exists(self, client_id: str, workspace: str = None):
-        """Check if a client exists."""
+        """Check if a client exists AND is responsive."""
         assert workspace is not None, "Workspace must be provided."
         assert client_id and "/" not in client_id, "Invalid client id: " + client_id
         pattern = f"services:*|*:{workspace}/{client_id}:built-in@*"
         keys = await self._redis.keys(pattern)
-        return bool(keys)
+        
+        if not keys:
+            return False
+        
+        # Also verify the client is actually responsive
+        try:
+            full_client_id = f"{workspace}/{client_id}"
+            ping_result = await self._workspace_manager.ping_client(
+                full_client_id, timeout=2
+            )
+            if ping_result != "pong":
+                # Client exists in Redis but is unresponsive - clean it up
+                logger.warning(f"Found unresponsive client {full_client_id}, cleaning up stale Redis entries")
+                context = {"user": self._root_user.model_dump(), "ws": workspace}
+                await self._workspace_manager.delete_client(
+                    client_id, workspace, self._root_user, unload=False, context=context
+                )
+                return False
+            return True
+        except Exception as e:
+            # If ping fails, client is not responsive - clean up stale entries
+            logger.warning(f"Client {workspace}/{client_id} ping failed: {e}, cleaning up")
+            try:
+                context = {"user": self._root_user.model_dump(), "ws": workspace}
+                await self._workspace_manager.delete_client(
+                    client_id, workspace, self._root_user, unload=False, context=context
+                )
+            except Exception as cleanup_error:
+                logger.error(f"Failed to cleanup unresponsive client {workspace}/{client_id}: {cleanup_error}")
+            return False
 
     async def remove_client(self, client_id, workspace, user_info, unload):
         """Remove a client."""

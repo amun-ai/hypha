@@ -366,17 +366,24 @@ class WebsocketServer:
             _gauge.labels(workspace=workspace).dec()
             await conn.disconnect("disconnected")
             event_bus.off_local(f"unload:{workspace}", force_disconnect)
-            if (
-                workspace
-                and client_id
-                and f"{workspace}/{client_id}" in self._websockets
-            ):
-                del self._websockets[f"{workspace}/{client_id}"]
+            # Websocket tracking cleanup is now handled in handle_disconnection
+            # Only clean up here if it wasn't already cleaned up
+            ws_key = f"{workspace}/{client_id}"
+            if workspace and client_id and ws_key in self._websockets:
+                del self._websockets[ws_key]
+                logger.debug(f"Fallback cleanup of websocket tracking for {ws_key}")
 
     async def handle_disconnection(
         self, websocket, workspace: str, client_id: str, user_info: UserInfo, code, exp
     ):
-        """Handle client disconnection with delayed removal for unexpected disconnections."""
+        """Handle client disconnection with robust cleanup."""
+        # First, ensure websocket tracking is cleaned up immediately
+        ws_key = f"{workspace}/{client_id}"
+        if ws_key in self._websockets:
+            del self._websockets[ws_key]
+            logger.info(f"Cleaned up websocket tracking for {ws_key}")
+        
+        # Then attempt Redis cleanup
         try:
             await self.store.remove_client(client_id, workspace, user_info, unload=True)
             if code in [status.WS_1000_NORMAL_CLOSURE, status.WS_1001_GOING_AWAY]:
@@ -387,9 +394,11 @@ class WebsocketServer:
                 )
         except Exception as e:
             logger.error(
-                f"Error handling disconnection, client: {workspace}/{client_id}, error: {str(e)}"
+                f"Error during Redis cleanup for client {workspace}/{client_id}: {str(e)}"
             )
+            # Continue with websocket disconnection even if Redis cleanup failed
         finally:
+            # Always attempt to close the websocket connection
             await self.disconnect(
                 websocket,
                 f"Client {workspace}/{client_id} disconnected",
