@@ -916,8 +916,11 @@ class RedisEventBus:
         # Determine the appropriate prefix
         is_targeted_message = event_name.endswith(":msg") and "/" in event_name
         
-        if is_targeted_message:
-            # Use targeted: prefix for client messages
+        # Special case: broadcast messages (workspace/*:msg) should use broadcast prefix
+        is_broadcast_message = event_name.endswith("/*:msg")
+        
+        if is_targeted_message and not is_broadcast_message:
+            # Use targeted: prefix for specific client messages
             prefix = "targeted:"
             target_client = event_name[:-4]  # Remove ":msg" suffix
             if "/" in target_client:
@@ -925,7 +928,7 @@ class RedisEventBus:
                 if self.is_local_client(workspace, client_id):
                     logger.debug(f"Local client message detected: {target_client} (could be optimized)")
         else:
-            # Use broadcast: prefix for all other events (system events, test events, etc.)
+            # Use broadcast: prefix for broadcast messages and system events
             prefix = "broadcast:"
 
         # Emit to Redis with appropriate prefix
