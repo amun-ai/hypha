@@ -6,12 +6,34 @@ import pytest
 import pytest_asyncio
 from datetime import datetime, timedelta
 from hypha_rpc import connect_to_server
+from prometheus_client import CollectorRegistry, REGISTRY
 
 from hypha.core.store import RedisStore
 
 from . import SIO_PORT, find_item
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(autouse=True)
+def clear_prometheus_registry():
+    """Clear Prometheus registry before each test to prevent metric name collisions."""
+    # Clear all collectors from the default registry
+    collectors = list(REGISTRY._collector_to_names.keys())
+    for collector in collectors:
+        try:
+            REGISTRY.unregister(collector)
+        except KeyError:
+            # Collector might have already been unregistered
+            pass
+    yield
+    # Clean up after test as well
+    collectors = list(REGISTRY._collector_to_names.keys())
+    for collector in collectors:
+        try:
+            REGISTRY.unregister(collector)
+        except KeyError:
+            pass
 
 
 @pytest_asyncio.fixture(name="redis_store")
