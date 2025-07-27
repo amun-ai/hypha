@@ -17,7 +17,7 @@ from hypha.workers.base import (
     SessionNotFoundError,
     WorkerError,
 )
-from hypha.workers.conda_executor import ExecutionResult, TimingInfo
+from hypha.workers.conda_executor import TimingInfo
 
 # Mark all async functions in this module as asyncio tests
 pytestmark = pytest.mark.asyncio
@@ -175,7 +175,7 @@ class TestCondaWorkerBasic:
     def test_supported_types(self):
         """Test supported application types."""
         types = self.worker.supported_types
-        assert "python-conda" in types
+        assert "conda-jupyter-kernel" in types
         assert len(types) == 1
 
     def test_worker_properties(self):
@@ -187,7 +187,7 @@ class TestCondaWorkerBasic:
         """Test manifest compilation and validation."""
         # Test with dependencies field
         manifest1 = {
-            "type": "python-conda",
+            "type": "conda-jupyter-kernel",
             "dependencies": ["python=3.11", "numpy"],
             "channels": ["conda-forge"],
         }
@@ -203,7 +203,7 @@ class TestCondaWorkerBasic:
 
         # Test with dependencies field (alternate name)
         manifest2 = {
-            "type": "python-conda",
+            "type": "conda-jupyter-kernel",
             "dependencies": "python=3.11",  # String should be converted to list
             "channels": "conda-forge",  # String should be converted to list
         }
@@ -216,7 +216,7 @@ class TestCondaWorkerBasic:
         assert compiled_manifest["channels"] == ["conda-forge"]
 
         # Test with no dependencies (should add default)
-        manifest3 = {"type": "python-conda"}
+        manifest3 = {"type": "conda-jupyter-kernel"}
         compiled_manifest, files = await self.worker.compile(manifest3, [])
 
         deps = compiled_manifest["dependencies"]
@@ -234,10 +234,10 @@ class TestCondaWorkerBasic:
         assert "supported_types" in service_config
         assert "start" in service_config
         assert "stop" in service_config
-        assert "execute_code" in service_config
+        assert "execute" in service_config
 
         # Check supported types
-        assert "python-conda" in service_config["supported_types"]
+        assert "conda-jupyter-kernel" in service_config["supported_types"]
         assert len(service_config["supported_types"]) == 1
 
 
@@ -281,7 +281,7 @@ def execute(input_data):
             entry_point="main.py",
             artifact_id="test-artifact",
             manifest={
-                "type": "python-conda",
+                "type": "conda-jupyter-kernel",
                 "dependencies": ["python=3.11"],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py",
@@ -322,24 +322,30 @@ result = {
 
 print(f"Result: {result}")
 """
-                result = await worker.execute_code(session_id, test_code)
+                result = await worker.execute(session_id, test_code)
 
                 assert (
-                    result.success
-                ), f"Execution failed: {result.error}\nStderr: {result.stderr}"
+                    result["status"] == "ok"
+                ), f"Execution failed: {result.get('error', {})}"
+
+                # Extract stdout from outputs
+                stdout_text = "".join(
+                    output.get("text", "") for output in result.get("outputs", [])
+                    if output.get("type") == "stream" and output.get("name") == "stdout"
+                )
 
                 # Check that the code executed successfully by looking at stdout
                 assert (
-                    "Result:" in result.stdout
-                ), f"Expected result output in stdout: {result.stdout}"
+                    "Result:" in stdout_text
+                ), f"Expected result output in stdout: {stdout_text}"
                 assert (
-                    "'computation': 42" in result.stdout
-                ), f"Expected computation=42 in stdout: {result.stdout}"
+                    "'computation': 42" in stdout_text
+                ), f"Expected computation=42 in stdout: {stdout_text}"
                 assert (
-                    "'input_data': 21" in result.stdout
-                ), f"Expected input_data=21 in stdout: {result.stdout}"
+                    "'input_data': 21" in stdout_text
+                ), f"Expected input_data=21 in stdout: {stdout_text}"
 
-                print(f"✅ Execution successful: {result.stdout.strip()}")
+                print(f"✅ Execution successful: {stdout_text.strip()}")
 
                 # Test another code execution
                 test_code2 = """
@@ -352,11 +358,18 @@ result = {
 
 print(f"Result2: {result}")
 """
-                result2 = await worker.execute_code(session_id, test_code2)
-                assert result2.success, f"Second execution failed: {result2.error}"
+                result2 = await worker.execute(session_id, test_code2)
+                assert result2["status"] == "ok", f"Second execution failed: {result2.get('error', {})}"
+                
+                # Extract stdout from outputs
+                stdout_text2 = "".join(
+                    output.get("text", "") for output in result2.get("outputs", [])
+                    if output.get("type") == "stream" and output.get("name") == "stdout"
+                )
+                
                 assert (
-                    "'computation': 45" in result2.stdout
-                ), f"Expected computation=45 in stdout: {result2.stdout}"
+                    "'computation': 45" in stdout_text2
+                ), f"Expected computation=45 in stdout: {stdout_text2}"
 
                 # Check logs
                 logs = await worker.get_logs(session_id)
@@ -425,7 +438,7 @@ def execute(input_data):
             entry_point="main.py",
             artifact_id="test-artifact",
             manifest={
-                "type": "python-conda",
+                "type": "conda-jupyter-kernel",
                 "dependencies": ["python=3.11", "numpy"],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py",
@@ -467,22 +480,29 @@ result = {
 
 print(f"NumPy result: {result}")
 """
-                result = await worker.execute_code(session_id, test_code)
+                result = await worker.execute(session_id, test_code)
 
                 assert (
-                    result.success
-                ), f"Numpy test failed: {result.error}\nStderr: {result.stderr}"
+                    result["status"] == "ok"
+                ), f"Numpy test failed: {result.get('error', {})}"
+                
+                # Extract stdout from outputs
+                stdout_text = "".join(
+                    output.get("text", "") for output in result.get("outputs", [])
+                    if output.get("type") == "stream" and output.get("name") == "stdout"
+                )
+                
                 assert (
-                    "NumPy result:" in result.stdout
-                ), f"Expected result in stdout: {result.stdout}"
+                    "NumPy result:" in stdout_text
+                ), f"Expected result in stdout: {stdout_text}"
                 assert (
-                    "'array_sum': 15" in result.stdout
-                ), f"Expected array_sum=15 in stdout: {result.stdout}"
+                    "'array_sum': 15" in stdout_text
+                ), f"Expected array_sum=15 in stdout: {stdout_text}"
                 assert (
-                    "'input_sum': 150" in result.stdout
-                ), f"Expected input_sum=150 in stdout: {result.stdout}"
+                    "'input_sum': 150" in stdout_text
+                ), f"Expected input_sum=150 in stdout: {stdout_text}"
 
-                print(f"✅ NumPy test successful: {result.stdout.strip()}")
+                print(f"✅ NumPy test successful: {stdout_text.strip()}")
 
                 await worker.stop(session_id)
 
@@ -528,7 +548,7 @@ def execute(input_data):
             entry_point="main.py",
             artifact_id="test-artifact",
             manifest={
-                "type": "python-conda",
+                "type": "conda-jupyter-kernel",
                 "dependencies": ["python=3.11"],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py",
@@ -563,8 +583,14 @@ result = {
 
 print(f"Cache test result 1: {result}")
 """
-                result1 = await worker.execute_code(session_id1, test_code1)
-                assert result1.success, f"First execution failed: {result1.error}"
+                result1 = await worker.execute(session_id1, test_code1)
+                assert result1["status"] == "ok", f"First execution failed: {result1.get('error', {})}"
+                
+                # Extract stdout from outputs
+                stdout_text1 = "".join(
+                    output.get("text", "") for output in result1.get("outputs", [])
+                    if output.get("type") == "stream" and output.get("name") == "stdout"
+                )
 
                 # Check cache was populated
                 first_cache_size = len(cache.index)
@@ -573,10 +599,10 @@ print(f"Cache test result 1: {result}")
                 # Extract environment path from stdout
                 import re
 
-                match1 = re.search(r"'python_executable': '([^']+)'", result1.stdout)
+                match1 = re.search(r"'python_executable': '([^']+)'", stdout_text1)
                 assert (
                     match1
-                ), f"Could not find python_executable in stdout: {result1.stdout}"
+                ), f"Could not find python_executable in stdout: {stdout_text1}"
                 env_path1 = match1.group(1)
 
                 await worker.stop(session_id1)
@@ -593,7 +619,7 @@ print(f"Cache test result 1: {result}")
                     entry_point="main.py",
                     artifact_id="test-artifact",
                     manifest={
-                        "type": "python-conda",
+                        "type": "conda-jupyter-kernel",
                         "dependencies": ["python=3.11"],  # Same dependencies
                         "channels": ["conda-forge"],  # Same channels
                         "entry_point": "main.py",
@@ -614,14 +640,20 @@ result = {
 
 print(f"Cache test result 2: {result}")
 """
-                result2 = await worker.execute_code(session_id2, test_code2)
-                assert result2.success, f"Second execution failed: {result2.error}"
+                result2 = await worker.execute(session_id2, test_code2)
+                assert result2["status"] == "ok", f"Second execution failed: {result2.get('error', {})}"
+                
+                # Extract stdout from outputs
+                stdout_text2 = "".join(
+                    output.get("text", "") for output in result2.get("outputs", [])
+                    if output.get("type") == "stream" and output.get("name") == "stdout"
+                )
 
                 # Extract environment path from stdout
-                match2 = re.search(r"'python_executable': '([^']+)'", result2.stdout)
+                match2 = re.search(r"'python_executable': '([^']+)'", stdout_text2)
                 assert (
                     match2
-                ), f"Could not find python_executable in stdout: {result2.stdout}"
+                ), f"Could not find python_executable in stdout: {stdout_text2}"
                 env_path2 = match2.group(1)
 
                 # Cache size should not have increased (reused existing)
@@ -698,7 +730,7 @@ def execute(input_data):
             entry_point="main.py",
             artifact_id="test-artifact",
             manifest={
-                "type": "python-conda",
+                "type": "conda-jupyter-kernel",
                 "dependencies": ["python=3.11", "numpy", {"pip": ["requests"]}],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py",
@@ -747,40 +779,46 @@ result["data_processed"] = {
 
 print(f"Mixed dependencies result: {result}")
 """
-                result = await worker.execute_code(session_id, test_code)
+                result = await worker.execute(session_id, test_code)
 
                 assert (
-                    result.success
-                ), f"Mixed dependencies test failed: {result.error}\nStderr: {result.stderr}"
+                    result["status"] == "ok"
+                ), f"Mixed dependencies test failed: {result.get('error', {})}"
+                
+                # Extract stdout from outputs
+                stdout_text = "".join(
+                    output.get("text", "") for output in result.get("outputs", [])
+                    if output.get("type") == "stream" and output.get("name") == "stdout"
+                )
 
                 # Verify conda package (numpy) works
                 assert (
-                    "'numpy_available': True" in result.stdout
-                ), f"Expected numpy_available=True in stdout: {result.stdout}"
+                    "'numpy_available': True" in stdout_text
+                ), f"Expected numpy_available=True in stdout: {stdout_text}"
                 assert (
-                    "'numpy_version':" in result.stdout
-                ), f"Expected numpy_version in stdout: {result.stdout}"
+                    "'numpy_version':" in stdout_text
+                ), f"Expected numpy_version in stdout: {stdout_text}"
 
                 # Verify pip package (requests) works
                 assert (
-                    "'requests_available': True" in result.stdout
-                ), f"Expected requests_available=True in stdout: {result.stdout}"
+                    "'requests_available': True" in stdout_text
+                ), f"Expected requests_available=True in stdout: {stdout_text}"
                 assert (
-                    "'requests_version':" in result.stdout
-                ), f"Expected requests_version in stdout: {result.stdout}"
+                    "'requests_version':" in stdout_text
+                ), f"Expected requests_version in stdout: {stdout_text}"
 
                 # Verify data processing works - check for expected sum and mean
                 expected_sum = sum([1.5, 2.3, 3.7, 4.1, 5.9])  # 17.5
                 expected_mean = expected_sum / 5  # 3.5
                 assert (
-                    f"'sum': {expected_sum}" in result.stdout
-                ), f"Expected sum={expected_sum} in stdout: {result.stdout}"
+                    f"'sum': {expected_sum}" in stdout_text
+                ), f"Expected sum={expected_sum} in stdout: {stdout_text}"
                 assert (
-                    f"'mean': {expected_mean}" in result.stdout
-                ), f"Expected mean={expected_mean} in stdout: {result.stdout}"
+                    f"'mean': {expected_mean}" in stdout_text
+                ), f"Expected mean={expected_mean} in stdout: {stdout_text}"
 
                 print(f"✅ Mixed dependencies test successful:")
-                print(f"  Output: {result.stdout.strip()}")
+                print(f"  Output: {stdout_text.strip()}")
 
                 await worker.stop(session_id)
 
@@ -835,7 +873,7 @@ print("=== Script completed successfully ===")
             entry_point="main.py",
             artifact_id="test-artifact",
             manifest={
-                "type": "python-conda",
+                "type": "conda-jupyter-kernel",
                 "dependencies": ["python=3.11"],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py",
@@ -927,7 +965,7 @@ def execute(input_data):
             entry_point="main.py",
             artifact_id="test-artifact",
             manifest={
-                "type": "python-conda",
+                "type": "conda-jupyter-kernel",
                 "dependencies": ["python=3.11", "numpy"],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py",
@@ -969,7 +1007,7 @@ def execute(input_data):
                 mock_result = MagicMock()
                 mock_result.success = True
                 mock_result.result = {"result": "test"}
-                mock_result.stdout = "Test output"
+                mock_stdout_text = "Test output"
                 mock_result.stderr = ""
                 mock_result.error = None
                 mock_result.timing = None
@@ -1042,7 +1080,7 @@ def execute(input_data):
             entry_point="main.py",
             artifact_id="test-artifact",
             manifest={
-                "type": "python-conda",
+                "type": "conda-jupyter-kernel",
                 "dependencies": ["python=3.11"],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py",
@@ -1076,7 +1114,7 @@ def execute(input_data):
                 mock_result = MagicMock()
                 mock_result.success = True
                 mock_result.result = {"result": "cached_test"}
-                mock_result.stdout = "Cached test output"
+                mock_stdout_text = "Cached test output"
                 mock_result.stderr = ""
                 mock_result.error = None
                 mock_result.timing = None
@@ -1119,7 +1157,7 @@ def execute(input_data):
             entry_point="main.py",
             artifact_id="test-artifact",
             manifest={
-                "type": "python-conda",
+                "type": "conda-jupyter-kernel",
                 "dependencies": ["nonexistent-package==999.999.999"],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py",

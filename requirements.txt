@@ -43,3 +43,4 @@ prompt-toolkit==3.0.50
 ptpython==3.0.29
 mcp==1.11.0
 conda-pack>=0.7.0
+jupyter_client>=8.6.0
