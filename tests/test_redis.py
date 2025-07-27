@@ -129,23 +129,23 @@ async def test_redis_event_subscription_lifecycle(redis_store):
     assert "targeted:test-sub/client-2:*" in event_bus._subscribed_patterns
     assert "test-sub/client-2" in event_bus._local_clients
     
-    # Connect a manager client (should NOT create subscription since managers are not local)
+    # Connect a manager client (should now be treated as local like any other client)
     api_manager = await redis_store.connect_to_workspace("test-sub", client_id="manager-123")
     await asyncio.sleep(0.2)  # Wait for async registration
     
-    # Manager clients should NOT add subscriptions (they need cross-server communication)
-    assert len(event_bus._subscribed_patterns) == initial_pattern_count + 2  # No change
-    assert len(event_bus._local_clients) == initial_local_clients + 2  # No change
-    assert "targeted:test-sub/manager-123:*" not in event_bus._subscribed_patterns
-    assert "test-sub/manager-123" not in event_bus._local_clients
+    # Manager clients should now be treated as local clients
+    assert len(event_bus._subscribed_patterns) == initial_pattern_count + 3  # Now includes manager
+    assert len(event_bus._local_clients) == initial_local_clients + 3  # Now includes manager
+    assert "targeted:test-sub/manager-123:*" in event_bus._subscribed_patterns
+    assert "test-sub/manager-123" in event_bus._local_clients
     
     # Disconnect first client
     await api1.disconnect()
     await asyncio.sleep(0.1)  # Wait for cleanup
     
     # Should remove the first client's subscription
-    assert len(event_bus._subscribed_patterns) == initial_pattern_count + 1
-    assert len(event_bus._local_clients) == initial_local_clients + 1
+    assert len(event_bus._subscribed_patterns) == initial_pattern_count + 2
+    assert len(event_bus._local_clients) == initial_local_clients + 2
     assert "targeted:test-sub/client-1:*" not in event_bus._subscribed_patterns
     assert "test-sub/client-1" not in event_bus._local_clients
     # But second client should still be there
@@ -156,19 +156,24 @@ async def test_redis_event_subscription_lifecycle(redis_store):
     await api2.disconnect()
     await asyncio.sleep(0.1)  # Wait for cleanup
     
-    # Should remove the second client's subscription
-    assert len(event_bus._subscribed_patterns) == initial_pattern_count
-    assert len(event_bus._local_clients) == initial_local_clients
+    # Should remove the second client's subscription, leaving only manager
+    assert len(event_bus._subscribed_patterns) == initial_pattern_count + 1
+    assert len(event_bus._local_clients) == initial_local_clients + 1
     assert "targeted:test-sub/client-2:*" not in event_bus._subscribed_patterns
     assert "test-sub/client-2" not in event_bus._local_clients
+    # Manager should still be there
+    assert "targeted:test-sub/manager-123:*" in event_bus._subscribed_patterns
+    assert "test-sub/manager-123" in event_bus._local_clients
     
     # Disconnect manager client
     await api_manager.disconnect()
     await asyncio.sleep(0.1)  # Wait for cleanup
     
-    # Should remain the same since manager was never registered locally
+    # Should remove the manager's subscription and return to initial state
     assert len(event_bus._subscribed_patterns) == initial_pattern_count
     assert len(event_bus._local_clients) == initial_local_clients
+    assert "targeted:test-sub/manager-123:*" not in event_bus._subscribed_patterns
+    assert "test-sub/manager-123" not in event_bus._local_clients
 
 
 async def test_websocket_server(fastapi_server, test_user_token_7):
