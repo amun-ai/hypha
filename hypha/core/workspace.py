@@ -1327,9 +1327,8 @@ class WorkspaceManager:
                 raise PermissionError(
                     "Services with type 'auth-provider' can only be registered during startup functions"
                 )
-            # Notify the store about the auth provider with full service path
-            full_service_id = f"{workspace}/{service.id}"
-            await self._store.set_auth_provider(full_service_id)
+            # Notify the store about the auth provider with service id (already includes workspace)
+            await self._store.set_auth_provider(service.id)
         
         # Store all the info for client's built-in services
         if service_name == "built-in" and service.type == "built-in":

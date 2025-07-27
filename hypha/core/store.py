@@ -160,6 +160,7 @@ class RedisStore:
         self.reconnection_token_life_time = reconnection_token_life_time
         self._enable_service_search = enable_service_search
         self._activity_check_interval = activity_check_interval
+        self._auth_provider = None
         self._enable_s3_for_anonymous_users = enable_s3_for_anonymous_users
         # Create a fixed HTTP anonymous user
         self._http_anonymous_user = UserInfo(

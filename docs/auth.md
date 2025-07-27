@@ -426,6 +426,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from hypha.core import UserInfo, create_scope, UserPermission
 from datetime import datetime, timedelta
 import httpx
+from jose import jwt
 
 logger = logging.getLogger("custom-auth-provider")
 
@@ -479,7 +480,6 @@ async def hypha_startup(api):
         # This is a simplified example
         try:
             # Decode JWT (verify signature in production!)
-            import jwt
             payload = jwt.decode(token, options={"verify_signature": False})
             
             # Extract user info from CF Access JWT
@@ -580,7 +580,7 @@ python -m hypha.server \
 # oauth2_auth_provider.py
 import logging
 import httpx
-import jwt
+from jose import jwt
 from datetime import datetime, timedelta
 from hypha.core import UserInfo, UserPermission
 from hypha.core.auth import create_scope

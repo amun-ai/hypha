@@ -5,20 +5,18 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from hypha.core import UserInfo, UserPermission
 from hypha.core.auth import create_scope
-from datetime import datetime, timedelta
 
 logger = logging.getLogger("custom-auth-provider")
 
 
 async def hypha_startup(server):
     """Startup function to register custom auth provider."""
-    import sys
     print(f"[CUSTOM AUTH] Starting custom auth provider registration", file=sys.stderr)
     logger.info("Registering custom Cloudflare auth provider")
-    
+
     # Create a simple ASGI app for login
     login_app = FastAPI()
-    
+
     @login_app.get("/")
     async def login_page():
         """Custom login page."""
@@ -60,13 +58,13 @@ async def hypha_startup(server):
         </html>
         """
         return HTMLResponse(content=html_content)
-    
+
     @login_app.post("/api/login")
     async def api_login(request: Request):
         """Handle login API requests."""
         data = await request.json()
         token = data.get("token", "")
-        
+
         # Validate token
         if token.startswith("test-cloudflare-token-"):
             user_id = "cf-user-123"
@@ -83,11 +81,11 @@ async def hypha_startup(server):
                 "success": False,
                 "error": "Invalid token"
             }, status_code=401)
-    
+
     async def serve_login_app(args):
         """ASGI wrapper for the login app."""
         await login_app(args["scope"], args["receive"], args["send"])
-    
+
     # Register login app as ASGI service
     await server.register_service({
         "id": "custom-auth-login",
@@ -98,7 +96,7 @@ async def hypha_startup(server):
         },
         "serve": serve_login_app,
     })
-    
+
     # Define auth provider methods
     async def extract_token_from_headers(headers):
         """Extract token from custom headers."""
@@ -106,53 +104,67 @@ async def hypha_startup(server):
         print(f"[CUSTOM AUTH] Headers keys: {list(headers.keys())}", file=sys.stderr)
         # Check for Cloudflare token - case insensitive
         for key, value in headers.items():
-            print(f"[CUSTOM AUTH] Header {key}: {value[:20]}...", file=sys.stderr)
+            print(f"[CUSTOM AUTH] Header {key}: {value[:20] if len(value) > 20 else value}...", file=sys.stderr)
             if key.lower() == "cf-token":
                 print(f"[CUSTOM AUTH] Found CF-Token: {value}", file=sys.stderr)
                 return value
-        
+
         # Check for standard authorization but with CF prefix
         auth = headers.get("authorization", "")
         if auth.startswith("Bearer CF:"):
             return auth.replace("Bearer CF:", "")
-        
+
         return None
-    
+
     async def validate_token(token):
         """Validate the token and return UserInfo."""
-        # Handle tokens that start with "CF:"
-        if token.startswith("CF:"):
-            token = token[3:]
-        
-        # Simple validation for demo
-        if token.startswith("test-cloudflare-token-"):
-            # Extract user info from token (in real implementation, validate with CF API)
-            user_id = "cf-user-123"
-            
-            user_info = UserInfo(
-                id=user_id,
-                is_anonymous=False,
-                email="user@cloudflare.com",
-                parent=None,
-                roles=["cloudflare-user"],
-                scope=create_scope(
-                    workspaces={
-                        f"ws-{user_id}": UserPermission.admin,
-                        "public": UserPermission.read,
-                    },
-                    current_workspace=f"ws-{user_id}",
-                ),
-                expires_at=None,  # No expiration for this demo
-            )
-            return user_info
-        else:
-            # Invalid token
-            raise ValueError(f"Invalid Cloudflare token: {token}")
-    
+        print(f"[CUSTOM AUTH] validate_token called with token: {token[:50]}...", file=sys.stderr)
+
+        # Only handle tokens that are meant for this auth provider
+        # Let other tokens (like JWTs) be handled by the default auth
+        if not (token.startswith("CF:") or token.startswith("test-cloudflare-token-")):
+            print(f"[CUSTOM AUTH] Not a CF token, passing through", file=sys.stderr)
+            # Return None or raise to let default auth handle it
+            raise ValueError("Not a Cloudflare token")
+
+        try:
+            # Handle tokens that start with "CF:"
+            if token.startswith("CF:"):
+                token = token[3:]
+
+            # Simple validation for demo
+            if token.startswith("test-cloudflare-token-"):
+                # Extract user info from token (in real implementation, validate with CF API)
+                user_id = "cf-user-123"
+
+                user_info = UserInfo(
+                    id=user_id,
+                    is_anonymous=False,
+                    email="user@cloudflare.com",
+                    parent=None,
+                    roles=["cloudflare-user"],
+                    scope=create_scope(
+                        workspaces={
+                            f"ws-{user_id}": UserPermission.admin,
+                            "public": UserPermission.read,
+                        },
+                        current_workspace=f"ws-{user_id}",
+                    ),
+                    expires_at=None,  # No expiration for this demo
+                )
+                print(f"[CUSTOM AUTH] Returning user_info for {user_id}", file=sys.stderr)
+                return user_info
+            else:
+                # Invalid CF token
+                raise ValueError(f"Invalid Cloudflare token: {token}")
+        except Exception as e:
+            print(f"[CUSTOM AUTH] validate_token error: {e}", file=sys.stderr)
+            raise
+
     async def get_login_redirect():
         """Get custom login redirect URL."""
         return "https://cloudflare.example.com/login"
-    
+
     # Register auth provider service
     auth_service = await server.register_service({
         "id": "cloudflare-auth-provider",
@@ -166,7 +178,9 @@ async def hypha_startup(server):
         "validate_token": validate_token,
         "get_login_redirect": get_login_redirect,
     })
-    
+
     logger.info(f"Custom auth provider registered: {auth_service['id']}")
     print(f"[CUSTOM AUTH] Registration completed: {auth_service['id']}", file=sys.stderr)
+
+    # Return immediately - don't block startup
     return auth_service
