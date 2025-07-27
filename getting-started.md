@@ -572,7 +572,7 @@ async def start_service(server):
     )
 ```
 
-By default, hypha server uses a user authentication system based on [Auth0](https://auth0.com) controlled by us. You can also setup your own auth0 account to use it with your own hypha server or provide custom authentication providers. See [Authentication](./auth) for more details.
+By default, hypha server uses a user authentication system based on [Auth0](https://auth0.com) controlled by us. You can also setup your own auth0 account to use it with your own hypha server. See [Setup Authentication](./setup-authentication) for more details.
 
 ### Login and Using Services from the HTTP proxy
 
