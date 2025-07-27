@@ -517,6 +517,13 @@ class RedisRPCConnection:
         self._handle_disconnected = None
         self._handle_message = None
         self.manager_id = manager_id
+        
+        # Register this client for targeted subscriptions
+        # Exclude manager clients which need to be accessible across servers
+        self._is_local_client = not client_id.startswith("manager-")
+        if self._is_local_client:
+            # We'll register this asynchronously in on_message to avoid blocking
+            self._registration_task = None
 
     def on_disconnected(self, handler):
         """Register a disconnection event handler."""
@@ -535,6 +542,18 @@ class RedisRPCConnection:
         self._event_bus.on(f"{self._workspace}/{self._client_id}:msg", handler)
         # for broadcast messages
         self._event_bus.on(f"{self._workspace}/*:msg", handler)
+        
+        # Register this client for targeted event subscriptions
+        if self._is_local_client:
+            async def register_client():
+                await self._event_bus.register_local_client(self._workspace, self._client_id)
+                await self._event_bus.subscribe_to_client_events(self._workspace, self._client_id)
+                logger.debug(f"Registered and subscribed to events for {self._workspace}/{self._client_id}")
+            
+            self._registration_task = asyncio.create_task(register_client())
+            background_tasks.add(self._registration_task)
+            self._registration_task.add_done_callback(background_tasks.discard)
+        
         if self._handle_connected:
             task = asyncio.create_task(self._handle_connected(self))
             background_tasks.add(task)
@@ -574,8 +593,11 @@ class RedisRPCConnection:
         )
 
         packed_message = msgpack.packb(message) + data[pos:]
-        # logger.info(f"Sending message to channel {target_id}:msg")
+        
+        # Use the standard event bus routing (will use Redis for cross-server communication)
+        logger.debug(f"Routing message from {source_id} to {target_id}")
         await self._event_bus.emit(f"{target_id}:msg", packed_message)
+            
         RedisRPCConnection._counter.labels(workspace=self._workspace).inc()
 
         # Track client requests
@@ -682,6 +704,21 @@ class RedisRPCConnection:
             self._event_bus.off(f"{self._workspace}/*:msg", self._handle_message)
 
         self._handle_message = None
+        
+        # Unregister this client from local routing and unsubscribe from events
+        if self._is_local_client:
+            try:
+                # Cancel registration task if still running
+                if self._registration_task and not self._registration_task.done():
+                    self._registration_task.cancel()
+                
+                # Unsubscribe from client events and unregister
+                await self._event_bus.unsubscribe_from_client_events(self._workspace, self._client_id)
+                await self._event_bus.unregister_local_client(self._workspace, self._client_id)
+                logger.debug(f"Unsubscribed and unregistered {self._workspace}/{self._client_id}")
+            except Exception as e:
+                logger.warning(f"Error during client cleanup: {e}")
+        
         logger.debug(
             f"Redis Connection Disconnected: {self._workspace}/{self._client_id}"
         )
@@ -733,6 +770,65 @@ class RedisEventBus:
         self._health_check_channel = "health_check:" + str(uuid.uuid4())
         self._health_check_pubsub = None
         self._pubsub_health_future = None
+        # Track local clients for optimized routing
+        self._local_clients = set()  # Set of "workspace/client_id" strings
+        self._subscribed_patterns = set()  # Track which patterns we've subscribed to
+        self._pubsub = None  # Store the pubsub object for dynamic subscriptions
+
+    async def register_local_client(self, workspace: str, client_id: str):
+        """Register a local client for optimized event routing."""
+        client_key = f"{workspace}/{client_id}"
+        self._local_clients.add(client_key)
+        logger.debug(f"Registered local client: {client_key}")
+
+    async def unregister_local_client(self, workspace: str, client_id: str):
+        """Unregister a local client."""
+        client_key = f"{workspace}/{client_id}"
+        self._local_clients.discard(client_key)
+        logger.debug(f"Unregistered local client: {client_key}")
+
+    async def subscribe_to_client_events(self, workspace: str, client_id: str):
+        """Subscribe to events for a specific client using targeted prefix."""
+        client_key = f"{workspace}/{client_id}"
+        # Subscribe to targeted messages for this client
+        pattern = f"targeted:{client_key}:*"
+        if pattern not in self._subscribed_patterns and self._pubsub:
+            try:
+                await self._pubsub.psubscribe(pattern)
+                self._subscribed_patterns.add(pattern)
+                logger.debug(f"Subscribed to client events: {pattern}")
+            except Exception as e:
+                logger.warning(f"Failed to subscribe to client events {pattern}: {e}")
+
+    async def unsubscribe_from_client_events(self, workspace: str, client_id: str):
+        """Unsubscribe from events for a specific client."""
+        client_key = f"{workspace}/{client_id}"
+        pattern = f"targeted:{client_key}:*"
+        if pattern in self._subscribed_patterns and self._pubsub:
+            try:
+                await self._pubsub.punsubscribe(pattern)
+                self._subscribed_patterns.discard(pattern)
+                logger.debug(f"Unsubscribed from client events: {pattern}")
+            except Exception as e:
+                logger.warning(f"Failed to unsubscribe from client events {pattern}: {e}")
+
+    def is_local_client(self, workspace: str, client_id: str) -> bool:
+        """Check if a client is local to this server instance."""
+        client_key = f"{workspace}/{client_id}"
+        return client_key in self._local_clients
+
+    async def _ensure_subscription(self, workspace: str, client_id: str):
+        """Ensure we're subscribed to events for a specific client if it's not local."""
+        client_key = f"{workspace}/{client_id}"
+        if not self.is_local_client(workspace, client_id):
+            pattern = f"event:*:{client_key}:*"
+            if pattern not in self._subscribed_patterns and self._pubsub:
+                try:
+                    await self._pubsub.psubscribe(pattern)
+                    self._subscribed_patterns.add(pattern)
+                    logger.debug(f"Subscribed to pattern: {pattern}")
+                except Exception as e:
+                    logger.warning(f"Failed to subscribe to pattern {pattern}: {e}")
 
     async def init(self):
         """Setup the event bus."""
@@ -811,30 +907,52 @@ class RedisEventBus:
             await local_task
 
     def emit(self, event_name, data):
-        """Emit an event."""
+        """Emit an event with smart routing using prefix-based system."""
         if not self._ready.done():
             self._ready.set_result(True)
+        
         tasks = []
 
-        # Emit locally
+        # Always emit locally first
         local_task = self._local_event_bus.emit(event_name, data)
         if asyncio.iscoroutine(local_task):
             tasks.append(local_task)
 
-        # Emit globally via Redis
-        data_type = "b:"
+        # Determine the appropriate prefix
+        is_targeted_message = event_name.endswith(":msg") and "/" in event_name
+        
+        if is_targeted_message:
+            # Use targeted: prefix for client messages
+            prefix = "targeted:"
+            target_client = event_name[:-4]  # Remove ":msg" suffix
+            if "/" in target_client:
+                workspace, client_id = target_client.split("/", 1)
+                if self.is_local_client(workspace, client_id):
+                    logger.debug(f"Local client message detected: {target_client} (could be optimized)")
+        else:
+            # Use broadcast: prefix for all other events (system events, test events, etc.)
+            prefix = "broadcast:"
+
+        # Emit to Redis with appropriate prefix
         if isinstance(data, dict):
-            data = json.dumps(data)
-            data_type = "d:"
+            data = json.dumps(data).encode("utf-8")
+            data_type_byte = b'd'
         elif isinstance(data, str):
-            data_type = "s:"
             data = data.encode("utf-8")
+            data_type_byte = b's'
         else:
             assert data and isinstance(
                 data, (str, bytes)
             ), "Data must be a string or bytes"
+            if isinstance(data, str):
+                data = data.encode("utf-8")
+            data_type_byte = b'b'
+        
+        # Use prefix-based channel naming with data type encoded in payload
+        redis_channel = prefix + event_name
+        payload = data_type_byte + data
         global_task = self._loop.create_task(
-            self._redis.publish("event:" + data_type + event_name, data)
+            self._redis.publish(redis_channel, payload)
         )
         tasks.append(global_task)
 
@@ -1031,13 +1149,28 @@ class RedisEventBus:
             pubsub = None
             try:
                 pubsub = self._redis.pubsub()
+                self._pubsub = pubsub  # Store reference for dynamic subscriptions
                 self._stop = False
                 semaphore = asyncio.Semaphore(concurrent_tasks)
 
-                # Subscribe to both events and health check channel
-                await pubsub.psubscribe("event:*")
+                # Subscribe to health check channel
                 await pubsub.subscribe(self._health_check_channel)
-
+                
+                # Subscribe to all broadcast messages (server-wide events)
+                await pubsub.psubscribe("broadcast:*")
+                
+                # Subscribe to manager service communications 
+                await pubsub.psubscribe("targeted:*/manager-*:*")
+                
+                # Re-subscribe to any existing targeted client patterns
+                for pattern in list(self._subscribed_patterns):
+                    try:
+                        await pubsub.psubscribe(pattern)
+                        logger.debug(f"Re-subscribed to pattern: {pattern}")
+                    except Exception as e:
+                        logger.warning(f"Failed to re-subscribe to pattern {pattern}: {e}")
+                        self._subscribed_patterns.discard(pattern)
+                
                 self._ready.set_result(True) if not self._ready.done() else None
                 self._counter.labels(event="subscription", status="success").inc()
 
@@ -1081,33 +1214,46 @@ class RedisEventBus:
                         await pubsub.close()
                     except Exception as e:
                         logger.warning(f"Error cleaning up pubsub connection: {str(e)}")
+                self._pubsub = None
+                # Don't clear subscribed_patterns here - we want to re-subscribe on reconnect
 
     async def _process_message(self, msg, semaphore):
         """Process a single message while respecting the semaphore."""
         async with semaphore:
             try:
-                channel = msg["channel"].decode("utf-8")
+                channel = msg["channel"].decode("utf-8") 
                 RedisEventBus._counter.labels(event="*", status="processed").inc()
 
-                if channel.startswith("event:b:"):
-                    event_type = channel[8:]
-                    data = msg["data"]
-                    await self._redis_event_bus.emit(event_type, data)
-                    if ":" not in event_type:
-                        RedisEventBus._counter.labels(
-                            event=event_type, status="processed"
-                        ).inc()
-                elif channel.startswith("event:d:"):
-                    event_type = channel[8:]
-                    data = json.loads(msg["data"])
-                    await self._redis_event_bus.emit(event_type, data)
-                    if ":" not in event_type:
-                        RedisEventBus._counter.labels(
-                            event=event_type, status="processed"
-                        ).inc()
-                elif channel.startswith("event:s:"):
-                    event_type = channel[8:]
-                    data = msg["data"].decode("utf-8")
+                # Handle prefix-based system with data type encoded in payload
+                if channel.startswith("broadcast:") or channel.startswith("targeted:"):
+                    # Extract event name from channel
+                    if channel.startswith("broadcast:"):
+                        event_type = channel[10:]  # len("broadcast:")
+                    else:  # targeted:
+                        event_type = channel[9:]   # len("targeted:")
+                    
+                    # Decode data type from first byte of payload
+                    payload = msg["data"]
+                    if len(payload) == 0:
+                        logger.warning(f"Empty payload for channel: {channel}")
+                        return
+                        
+                    data_type_byte = payload[:1]
+                    data_payload = payload[1:]
+                    
+                    if data_type_byte == b'b':
+                        # Binary data
+                        data = data_payload
+                    elif data_type_byte == b'd':
+                        # JSON data
+                        data = json.loads(data_payload)
+                    elif data_type_byte == b's':
+                        # String data
+                        data = data_payload.decode("utf-8")
+                    else:
+                        logger.warning(f"Unknown data type byte: {data_type_byte} for channel: {channel}")
+                        return
+                    
                     await self._redis_event_bus.emit(event_type, data)
                     if ":" not in event_type:
                         RedisEventBus._counter.labels(

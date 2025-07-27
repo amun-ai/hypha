@@ -72,7 +72,7 @@ async def test_redis_event_handling(event_bus, fake_redis):
 
     event_bus.on_local("local_event", local_handler)
     # Simulate a Redis event
-    await fake_redis.publish("event:d:redis_event", json.dumps({"key": "redis_value"}))
+    await fake_redis.publish("broadcast:redis_event", b'd' + json.dumps({"key": "redis_value"}).encode())
     await asyncio.sleep(0.1)
 
     assert redis_messages == [{"key": "redis_value"}]
@@ -111,7 +111,7 @@ async def test_combined_event_wait(event_bus, fake_redis):
     async def emit_event_redis():
         await asyncio.sleep(0.2)
         await fake_redis.publish(
-            "event:d:combined_event", json.dumps({"key": "combined_redis_value"})
+            "broadcast:combined_event", b'd' + json.dumps({"key": "combined_redis_value"}).encode()
         )
 
     asyncio.create_task(emit_event_local())
