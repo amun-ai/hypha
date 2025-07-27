@@ -646,52 +646,52 @@ async def test_asgi_auth_context(fastapi_server, test_user_token):
 def test_find_nested_function():
     """Test the _find_nested_function helper method."""
     from hypha.http import ASGIRoutingMiddleware
-    
+
     # Create a mock ASGIRoutingMiddleware instance to test the method
-    middleware = ASGIRoutingMiddleware.__new__(ASGIRoutingMiddleware)  # Create without calling __init__
-    
+    middleware = ASGIRoutingMiddleware.__new__(
+        ASGIRoutingMiddleware
+    )  # Create without calling __init__
+
     # Test service with nested functions
     service = {
         "hello": lambda event: {"message": "hello"},
         "api": {
             "v1": {
                 "users": lambda event: {"users": []},
-                "posts": lambda event: {"posts": []}
+                "posts": lambda event: {"posts": []},
             },
-            "v2": {
-                "users": lambda event: {"users": [], "version": "v2"}
-            }
+            "v2": {"users": lambda event: {"users": [], "version": "v2"}},
         },
-        "default": lambda event: {"message": "default"}
+        "default": lambda event: {"message": "default"},
     }
-    
+
     # Test direct function access
     func = middleware._find_nested_function(service, ["hello"])
     assert func is not None
     assert callable(func)
-    
+
     # Test nested function access
     func = middleware._find_nested_function(service, ["api", "v1", "users"])
     assert func is not None
     assert callable(func)
-    
+
     func = middleware._find_nested_function(service, ["api", "v2", "users"])
     assert func is not None
     assert callable(func)
-    
+
     # Test non-existent path
     func = middleware._find_nested_function(service, ["api", "v3", "users"])
     assert func is None
-    
+
     # Test partial path that exists but isn't callable
     func = middleware._find_nested_function(service, ["api"])
     assert func is None  # api is a dict, not callable
-    
+
     # Test default function access
     func = middleware._find_nested_function(service, ["default"])
     assert func is not None
     assert callable(func)
-    
+
     print("✓ _find_nested_function works correctly")
 
 
@@ -763,7 +763,7 @@ api.export(new HyphaApp());
         source=source.strip(),
         wait_for_service="nested-test-functions",
         timeout=30,
-        overwrite=True
+        overwrite=True,
     )
 
     config = await controller.start(config["id"])
@@ -777,7 +777,7 @@ api.export(new HyphaApp());
     ret = response.json()
     assert ret["message"] == "User API v1"
 
-    # Test nested API v1 posts  
+    # Test nested API v1 posts
     response = requests.post(
         f"{SERVER_URL}/{workspace}/apps/nested-test-functions/api/v1/posts",
         headers={"Authorization": f"Bearer {token}"},
@@ -868,7 +868,7 @@ api.export(new HyphaApp());
         source=source.strip(),
         wait_for_service="fallback-test-functions",
         timeout=30,
-        overwrite=True
+        overwrite=True,
     )
     config = await controller.start(config["id"])
     # Test specific function
@@ -977,7 +977,7 @@ api.export(new HyphaApp());
         source=source.strip(),
         wait_for_service="complex-test-functions",
         timeout=30,
-        overwrite=True
+        overwrite=True,
     )
     # Start the app
     config = await controller.start(config["id"])

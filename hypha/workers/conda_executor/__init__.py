@@ -20,4 +20,4 @@ __all__ = [
     "JobStatus",
     "JobInfo",
     "JobResult",
-] 
+]

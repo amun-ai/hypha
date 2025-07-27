@@ -192,7 +192,7 @@ class S3Controller:
         self.store = store
         self.workspace_bucket = workspace_bucket
         self.cleanup_period = cleanup_period
-        
+
         # Use Redis cache for multipart upload info (same as artifact manager)
         self._cache = store.get_redis_cache()
         self._redis = store.get_redis()
@@ -220,13 +220,13 @@ class S3Controller:
 
         store.register_public_service(self.get_s3_service())
         store.set_s3_controller(self)
-        
+
         # Initialize cleanup task as None - will be started when server starts
         self._cleanup_task = None
-        
+
         # Register startup callback to start the cleanup task
         store.get_event_bus().on_local("startup", self._on_startup)
-        
+
         cache = store.get_redis_cache()
 
         router = APIRouter()
@@ -279,8 +279,13 @@ class S3Controller:
         async def create_multipart_upload(
             workspace: str,
             path: str,
-            part_count: int = Query(..., gt=0, description="The total number of parts for the upload."),
-            expires_in: int = Query(3600, description="The number of seconds for the presigned URLs to expire."),
+            part_count: int = Query(
+                ..., gt=0, description="The total number of parts for the upload."
+            ),
+            expires_in: int = Query(
+                3600,
+                description="The number of seconds for the presigned URLs to expire.",
+            ),
             user_info: store.login_optional = Depends(store.login_optional),
         ):
             """Initiate a multipart upload and get presigned URLs for all parts."""
@@ -309,23 +314,27 @@ class S3Controller:
                         "detail": f"Permission denied: {workspace}",
                     },
                 )
-            
+
             full_path = safe_join(workspace, path)
             context = {"ws": workspace, "user": user_info.model_dump()}
-            
+
             try:
                 result = await self.put_file_start_multipart(
                     file_path=full_path,
                     part_count=part_count,
                     expires_in=expires_in,
-                    context=context
+                    context=context,
                 )
                 return JSONResponse(status_code=200, content=result)
             except ValueError as e:
-                return JSONResponse(status_code=400, content={"success": False, "detail": str(e)})
+                return JSONResponse(
+                    status_code=400, content={"success": False, "detail": str(e)}
+                )
             except Exception as e:
                 logger.error(f"Failed to create multipart upload: {e}")
-                return JSONResponse(status_code=500, content={"success": False, "detail": str(e)})
+                return JSONResponse(
+                    status_code=500, content={"success": False, "detail": str(e)}
+                )
 
         @router.post("/{workspace}/complete-multipart-upload")
         async def complete_multipart_upload(
@@ -359,29 +368,41 @@ class S3Controller:
                         "detail": f"Permission denied: {workspace}",
                     },
                 )
-            
+
             upload_id = data.upload_id
             parts = data.parts
             context = {"ws": workspace, "user": user_info.model_dump()}
-            
+
             try:
                 # Convert parts to the format expected by the service function
-                parts_data = [{"part_number": p.part_number, "etag": p.etag} for p in parts]
-                
+                parts_data = [
+                    {"part_number": p.part_number, "etag": p.etag} for p in parts
+                ]
+
                 result = await self.put_file_complete_multipart(
-                    upload_id=upload_id,
-                    parts=parts_data,
-                    context=context
+                    upload_id=upload_id, parts=parts_data, context=context
                 )
                 return JSONResponse(status_code=200, content=result)
             except ValueError as e:
-                return JSONResponse(status_code=400, content={"success": False, "detail": str(e)})
+                return JSONResponse(
+                    status_code=400, content={"success": False, "detail": str(e)}
+                )
             except ClientError as e:
-                logger.error(f"Failed to complete multipart upload: {e.response['Error']['Message']}")
-                return JSONResponse(status_code=400, content={"success": False, "detail": f"Failed to complete multipart upload: {e.response['Error']['Message']}"})
+                logger.error(
+                    f"Failed to complete multipart upload: {e.response['Error']['Message']}"
+                )
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "success": False,
+                        "detail": f"Failed to complete multipart upload: {e.response['Error']['Message']}",
+                    },
+                )
             except Exception as e:
                 logger.error(f"An unexpected error occurred: {e}")
-                return JSONResponse(status_code=500, content={"success": False, "detail": str(e)})
+                return JSONResponse(
+                    status_code=500, content={"success": False, "detail": str(e)}
+                )
 
         if self.enable_s3_proxy:
 
@@ -498,22 +519,22 @@ class S3Controller:
         presigned_url = await self.generate_presigned_url(
             path, client_method="put_object", expiration=3600, context=context
         )
-        
+
         # Stream the request body to the presigned URL
         async with httpx.AsyncClient(timeout=300) as client:
             # Use an async generator to stream chunks
             async def body_generator():
                 async for chunk in request.stream():
                     yield chunk
-            
+
             # Stream the body to the presigned URL
             response = await client.put(
-                presigned_url, 
-                content=body_generator(), 
+                presigned_url,
+                content=body_generator(),
                 headers={
                     "Content-Type": "application/octet-stream",
-                    "Content-Length": request.headers.get("content-length")
-                }
+                    "Content-Length": request.headers.get("content-length"),
+                },
             )
 
         if response.status_code != 200:
@@ -521,15 +542,15 @@ class S3Controller:
                 status_code=response.status_code,
                 content={
                     "success": False,
-                    "detail": f"S3 upload failed with status {response.status_code}: {response.text}"
-                }
+                    "detail": f"S3 upload failed with status {response.status_code}: {response.text}",
+                },
             )
-            
+
         content = json.dumps({"success": True, "message": "File uploaded successfully"})
         headers = {
             "Content-Type": "application/json",
             "Content-Length": str(len(content)),
-            "ETag": response.headers.get("ETag")
+            "ETag": response.headers.get("ETag"),
         }
         return Response(content=content, headers=headers)
 
@@ -898,7 +919,7 @@ class S3Controller:
         """Generate a presigned URL for uploading a file to S3."""
         workspace = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
-        
+
         ws = await self.store.get_workspace_info(workspace, load=True)
         if not ws:
             raise ValueError(f"Workspace {workspace} not found.")
@@ -906,16 +927,16 @@ class S3Controller:
             raise PermissionError("Permission denied: workspace is read-only")
         if not user_info.check_permission(ws.id, UserPermission.read_write):
             raise PermissionError(f"Permission denied: {workspace}")
-        
+
         # Schedule file for deletion if TTL is specified
         if ttl is not None and ttl > 0:
             await self._schedule_file_deletion(file_path, workspace, ttl)
-        
+
         return await self.generate_presigned_url(
-            file_path, 
-            client_method="put_object", 
-            expiration=expires_in, 
-            context=context
+            file_path,
+            client_method="put_object",
+            expiration=expires_in,
+            context=context,
         )
 
     async def get_file(
@@ -929,18 +950,18 @@ class S3Controller:
         """Generate a presigned URL for downloading a file from S3."""
         workspace = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
-        
+
         ws = await self.store.get_workspace_info(workspace, load=True)
         if not ws:
             raise ValueError(f"Workspace {workspace} not found.")
         if not user_info.check_permission(ws.id, UserPermission.read):
             raise PermissionError(f"Permission denied: {workspace}")
-        
+
         return await self.generate_presigned_url(
             file_path,
             client_method="get_object",
             expiration=expires_in,
-            context=context
+            context=context,
         )
 
     async def put_file_start_multipart(
@@ -954,7 +975,7 @@ class S3Controller:
         """Initiate a multipart upload and return presigned URLs for all parts."""
         workspace = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
-        
+
         ws = await self.store.get_workspace_info(workspace, load=True)
         if not ws:
             raise ValueError(f"Workspace {workspace} not found.")
@@ -962,20 +983,19 @@ class S3Controller:
             raise PermissionError("Permission denied: workspace is read-only")
         if not user_info.check_permission(ws.id, UserPermission.read_write):
             raise PermissionError(f"Permission denied: {workspace}")
-        
+
         if part_count <= 0 or part_count > 10000:
             raise ValueError("part_count must be between 1 and 10000")
-        
+
         full_path = safe_join(workspace, file_path)
-        
+
         async with self.create_client_async() as s3_client:
             # Create multipart upload
             response = await s3_client.create_multipart_upload(
-                Bucket=self.workspace_bucket,
-                Key=full_path
+                Bucket=self.workspace_bucket, Key=full_path
             )
             upload_id = response["UploadId"]
-            
+
             # Generate presigned URLs for all parts
             parts = []
             for part_number in range(1, part_count + 1):
@@ -989,29 +1009,27 @@ class S3Controller:
                     },
                     ExpiresIn=expires_in,
                 )
-                
+
                 # Apply S3 proxy replacement if enabled
                 if self.enable_s3_proxy:
                     part_url = f"{self.store.public_base_url}/s3/{self.workspace_bucket}/{full_path}?{part_url.split('?')[1]}"
-                    
-                parts.append({
-                    "part_number": part_number,
-                    "url": part_url
-                })
-            
+
+                parts.append({"part_number": part_number, "url": part_url})
+
             # Cache the upload info for later completion (same as artifact manager)
             cache_key = f"multipart_upload:{upload_id}"
-            await self._cache.set(cache_key, {
-                "file_path": file_path,
-                "full_path": full_path,
-                "workspace": workspace,
-                "ttl": ttl  # Store TTL for scheduling on completion
-            }, ttl=expires_in + 10)
-            
-            return {
-                "upload_id": upload_id,
-                "parts": parts
-            }
+            await self._cache.set(
+                cache_key,
+                {
+                    "file_path": file_path,
+                    "full_path": full_path,
+                    "workspace": workspace,
+                    "ttl": ttl,  # Store TTL for scheduling on completion
+                },
+                ttl=expires_in + 10,
+            )
+
+            return {"upload_id": upload_id, "parts": parts}
 
     async def put_file_complete_multipart(
         self,
@@ -1022,7 +1040,7 @@ class S3Controller:
         """Complete a multipart upload."""
         workspace = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
-        
+
         ws = await self.store.get_workspace_info(workspace, load=True)
         if not ws:
             raise ValueError(f"Workspace {workspace} not found.")
@@ -1030,53 +1048,55 @@ class S3Controller:
             raise PermissionError("Permission denied: workspace is read-only")
         if not user_info.check_permission(ws.id, UserPermission.read_write):
             raise PermissionError(f"Permission denied: {workspace}")
-        
+
         if not parts:
             raise ValueError("Parts list cannot be empty")
-        
+
         # We need to find the file path from the upload_id
         # This is a limitation - we don't have the file path stored with the upload_id
         # For now, we'll let the S3 complete_multipart_upload handle the validation
-        
+
         async with self.create_client_async() as s3_client:
             # Format parts for S3 API
             parts_for_s3 = [
                 {"PartNumber": part["part_number"], "ETag": part["etag"]}
                 for part in parts
             ]
-            
+
             # Get upload info from cache (same as artifact manager)
             cache_key = f"multipart_upload:{upload_id}"
             upload_info = await self._cache.get(cache_key)
             if not upload_info:
                 raise ValueError(f"Upload ID {upload_id} not found or expired")
-            
+
             file_key = upload_info["full_path"]
-            
+
             try:
                 # Complete the multipart upload
                 response = await s3_client.complete_multipart_upload(
                     Bucket=self.workspace_bucket,
                     Key=file_key,
                     UploadId=upload_id,
-                    MultipartUpload={"Parts": parts_for_s3}
+                    MultipartUpload={"Parts": parts_for_s3},
                 )
-                
+
                 # Schedule file for deletion if TTL was specified
                 file_ttl = upload_info.get("ttl")
                 if file_ttl is not None and file_ttl > 0:
-                    await self._schedule_file_deletion(upload_info["file_path"], upload_info["workspace"], file_ttl)
-                
+                    await self._schedule_file_deletion(
+                        upload_info["file_path"], upload_info["workspace"], file_ttl
+                    )
+
                 # Clean up the upload info from cache
                 await self._cache.delete(cache_key)
-                
+
                 return {
                     "success": True,
                     "message": "File uploaded successfully",
                     "etag": response.get("ETag"),
-                    "location": response.get("Location")
+                    "location": response.get("Location"),
                 }
-                
+
             except ClientError as e:
                 # Let the error propagate with S3's error message
                 raise e
@@ -1089,7 +1109,7 @@ class S3Controller:
         """Remove a file or directory from S3. Combines functionality of delete_file and delete_directory."""
         workspace = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
-        
+
         ws = await self.store.get_workspace_info(workspace, load=True)
         if not ws:
             raise ValueError(f"Workspace {workspace} not found.")
@@ -1097,16 +1117,18 @@ class S3Controller:
             raise PermissionError("Permission denied: workspace is read-only")
         if not user_info.check_permission(ws.id, UserPermission.read_write):
             raise PermissionError(f"Permission denied: {workspace}")
-        
+
         if path.startswith("/"):
             # Admin access to root folder
             if not user_info.check_permission("*", UserPermission.admin):
-                raise PermissionError("Permission denied: only admin can access the root folder.")
+                raise PermissionError(
+                    "Permission denied: only admin can access the root folder."
+                )
             # Remove the leading slash
             full_path = path[1:]
         else:
             full_path = safe_join(workspace, path)
-        
+
         async with self.create_client_async() as s3_client:
             try:
                 # Check if it's a directory by looking for a trailing slash or checking if objects exist with this prefix
@@ -1115,24 +1137,30 @@ class S3Controller:
                     # Ensure full_path ends with "/" for remove_objects_async
                     if not full_path.endswith("/"):
                         full_path += "/"
-                    await remove_objects_async(s3_client, self.workspace_bucket, full_path)
+                    await remove_objects_async(
+                        s3_client, self.workspace_bucket, full_path
+                    )
                     return {
                         "success": True,
-                        "message": f"Directory deleted successfully: {path}"
+                        "message": f"Directory deleted successfully: {path}",
                     }
-                
+
                 # Try deleting as a file first - but check if it exists first
                 try:
                     # Check if the file exists
-                    await s3_client.head_object(Bucket=self.workspace_bucket, Key=full_path)
+                    await s3_client.head_object(
+                        Bucket=self.workspace_bucket, Key=full_path
+                    )
                     # If head_object succeeds, the file exists, now delete it
-                    response = await s3_client.delete_object(Bucket=self.workspace_bucket, Key=full_path)
+                    response = await s3_client.delete_object(
+                        Bucket=self.workspace_bucket, Key=full_path
+                    )
                     return {
                         "success": True,
-                        "message": f"File deleted successfully: {path}"
+                        "message": f"File deleted successfully: {path}",
                     }
                 except ClientError as head_error:
-                    if head_error.response['Error']['Code'] == '404':
+                    if head_error.response["Error"]["Code"] == "404":
                         # File doesn't exist, check if it's a directory
                         pass
                     else:
@@ -1140,42 +1168,45 @@ class S3Controller:
                         logger.error(f"Error checking file {full_path}: {head_error}")
                         return {
                             "success": False,
-                            "message": f"Error accessing file: {head_error.response['Error']['Message']}"
+                            "message": f"Error accessing file: {head_error.response['Error']['Message']}",
                         }
-                
+
                 # Check if it's a directory by listing objects with this prefix
                 directory_path = full_path + "/"
-                paginator = s3_client.get_paginator('list_objects_v2')
-                
-                async for page in paginator.paginate(Bucket=self.workspace_bucket, Prefix=directory_path, MaxKeys=1):
-                    if 'Contents' in page and len(page['Contents']) > 0:
+                paginator = s3_client.get_paginator("list_objects_v2")
+
+                async for page in paginator.paginate(
+                    Bucket=self.workspace_bucket, Prefix=directory_path, MaxKeys=1
+                ):
+                    if "Contents" in page and len(page["Contents"]) > 0:
                         # It's a directory with contents
-                        await remove_objects_async(s3_client, self.workspace_bucket, directory_path)
+                        await remove_objects_async(
+                            s3_client, self.workspace_bucket, directory_path
+                        )
                         return {
                             "success": True,
-                            "message": f"Directory deleted successfully: {path}"
+                            "message": f"Directory deleted successfully: {path}",
                         }
-                
+
                 # If we get here, neither file nor directory was found
-                return {
-                    "success": False,
-                    "message": f"Path does not exist: {path}"
-                }
-                    
+                return {"success": False, "message": f"Path does not exist: {path}"}
+
             except ClientError as e:
                 logger.error(f"Failed to remove path {path}: {e}")
                 return {
                     "success": False,
-                    "message": f"Failed to remove path: {e.response['Error']['Message']}"
+                    "message": f"Failed to remove path: {e.response['Error']['Message']}",
                 }
 
-    async def _schedule_file_deletion(self, file_path: str, workspace: str, ttl_seconds: int):
+    async def _schedule_file_deletion(
+        self, file_path: str, workspace: str, ttl_seconds: int
+    ):
         """Schedule a file for deletion after TTL expires."""
         now = time.time()
         expires_at = now + ttl_seconds
         # Store deletion info in Redis with expiration
         full_path = safe_join(workspace, file_path)
-        
+
         # Add to sorted set for efficient range queries
         # Ensure the key is a string, not bytes
         await self._redis.zadd("s3_expiry_index", {str(full_path): expires_at})
@@ -1184,44 +1215,50 @@ class S3Controller:
         """Clean up expired files. Called by periodic task."""
         try:
             now = time.time()
-            
+
             # Get expired files from sorted set
             expired_keys = await self._redis.zrangebyscore("s3_expiry_index", 0, now)
-            
+
             if not expired_keys:
                 return  # No expired files
-            
+
             deleted_count = 0
             async with self.create_client_async() as s3_client:
                 for s3_key in expired_keys:
                     try:
                         # Ensure s3_key is a string, not bytes
-                        s3_key_str = s3_key.decode('utf-8') if isinstance(s3_key, bytes) else str(s3_key)
-                        
+                        s3_key_str = (
+                            s3_key.decode("utf-8")
+                            if isinstance(s3_key, bytes)
+                            else str(s3_key)
+                        )
+
                         # Delete the file from S3
-                        await s3_client.delete_object(Bucket=self.workspace_bucket, Key=s3_key_str)
+                        await s3_client.delete_object(
+                            Bucket=self.workspace_bucket, Key=s3_key_str
+                        )
                         deleted_count += 1
                         logger.info(f"Deleted expired file: {s3_key_str}")
                     except Exception as e:
                         logger.error(f"Failed to delete expired file {s3_key}: {e}")
-                    
+
                     # Remove from expiry index
                     await self._redis.zrem("s3_expiry_index", s3_key)
-            
+
             if deleted_count > 0:
                 logger.info(f"Cleaned up {deleted_count} expired files")
-                
+
         except Exception as e:
             logger.error(f"Error during expired files cleanup: {e}")
 
     async def _periodic_cleanup(self):
         """Periodic task to clean up expired files."""
         cleanup_interval = self.cleanup_period
-        
+
         while True:
             try:
                 await asyncio.sleep(cleanup_interval)
-                
+
                 # Only run cleanup when the system is not too busy
                 # Basic check: if there are too many concurrent connections, skip this round
                 try:
@@ -1229,7 +1266,7 @@ class S3Controller:
                 except Exception as e:
                     logger.error(f"Error in periodic cleanup: {e}")
                     # Continue the loop even if cleanup fails
-                    
+
             except asyncio.CancelledError:
                 logger.info("Periodic cleanup task cancelled")
                 break
@@ -1259,8 +1296,8 @@ class S3Controller:
             "name": "S3 Storage",
             "config": {"visibility": "public", "require_context": True},
             "list_files": self.list_files,
-            "delete_directory": self.delete_directory, # deprecated, use remove_file instead
-            "delete_file": self.delete_file, # deprecated, use remove_file instead
+            "delete_directory": self.delete_directory,  # deprecated, use remove_file instead
+            "delete_file": self.delete_file,  # deprecated, use remove_file instead
             "generate_presigned_url": self.generate_presigned_url,  # deprecated, use put_file or get_file instead
             "put_file": self.put_file,
             "get_file": self.get_file,

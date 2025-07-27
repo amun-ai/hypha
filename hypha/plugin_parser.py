@@ -11,7 +11,17 @@ from lxml import etree
 from hypha_rpc.utils import DefaultObjectProxy
 from hypha.core import ApplicationManifest
 
-tag_types = ["config", "script", "link", "window", "style", "docs", "attachment", "file", "manifest"]
+tag_types = [
+    "config",
+    "script",
+    "link",
+    "window",
+    "style",
+    "docs",
+    "attachment",
+    "file",
+    "manifest",
+]
 
 CONFIGURABLE_FIELDS = [
     "env",
@@ -44,9 +54,17 @@ def parse_imjoy_plugin(source, overwrite_config=None):
                 )
             )
         plugin_comp[tag_type] = values
-    if plugin_comp.config and len(plugin_comp.config) > 0 and plugin_comp.config[0].attrs.lang == "yaml":
+    if (
+        plugin_comp.config
+        and len(plugin_comp.config) > 0
+        and plugin_comp.config[0].attrs.lang == "yaml"
+    ):
         config = yaml.safe_load(plugin_comp.config[0].content)
-    elif plugin_comp.config and len(plugin_comp.config) > 0 and plugin_comp.config[0].attrs.lang == "json":
+    elif (
+        plugin_comp.config
+        and len(plugin_comp.config) > 0
+        and plugin_comp.config[0].attrs.lang == "json"
+    ):
         config = json.loads(plugin_comp.config[0].content)
     elif plugin_comp.config and len(plugin_comp.config) > 0:
         raise Exception(
@@ -128,7 +146,7 @@ def convert_config_to_artifact(plugin_config, plugin_id, source_url=None):
         artifact["source"] = source_url
     tags = plugin_config.get("labels", []) + plugin_config.get("flags", [])
     artifact["tags"] = tags
-    
+
     # Store the original config as a nested dict to preserve app type info
     artifact["config"] = plugin_config
 
@@ -160,30 +178,29 @@ def convert_config_to_artifact(plugin_config, plugin_id, source_url=None):
 
 def extract_files_from_source(source):
     """Extract files from Hypha XML source format.
-    
+
     Converts <manifest> <file> tags to individual files.
-    
+
     Returns:
         tuple: (extracted_files, remaining_source)
         - extracted_files: List of file dictionaries with 'name', 'content', 'type'
         - remaining_source: Source with extracted tags removed
     """
 
-    
     # Check if it's likely raw HTML content that shouldn't be parsed as ImJoy/Hypha XML
     source_lower = source.lower().strip()
     if source_lower.startswith(("<!doctype html", "<html")):
         # Don't try to parse raw HTML as XML - just return as-is
         return [], source
-    
+
     try:
         root = etree.HTML("<html>" + source + "</html>")
     except Exception as e:
         # If XML parsing fails, return original source as-is
         return [], source
-    
+
     extracted_files = []
-    
+
     # Parse all tag types
     plugin_comp = DefaultObjectProxy()
     for tag_type in tag_types:
@@ -197,70 +214,70 @@ def extract_files_from_source(source):
                 )
             )
         plugin_comp[tag_type] = values
-    
+
     # Extract manifest files
     for manifest_elm in plugin_comp.manifest or []:
-        lang = manifest_elm.attrs.get('lang', 'json').lower()
+        lang = manifest_elm.attrs.get("lang", "json").lower()
         content = manifest_elm.content
-        
-        if lang == 'yaml':
-            filename = 'config.yaml'
+
+        if lang == "yaml":
+            filename = "config.yaml"
             # Validate YAML syntax
             try:
-                content=yaml.safe_load(content)
+                content = yaml.safe_load(content)
             except yaml.YAMLError as e:
                 raise Exception(f"Invalid YAML in config: {e}")
-        elif lang == 'json':
-            filename = 'config.json'
+        elif lang == "json":
+            filename = "config.json"
             # Validate JSON syntax
             try:
-                content=json.loads(content)
+                content = json.loads(content)
             except json.JSONDecodeError as e:
                 raise Exception(f"Invalid JSON in config: {e}")
         else:
             raise Exception(f"Unsupported config language: {lang}")
-        
-        extracted_files.append({
-            'name': 'manifest.json',
-            'content': content,
-            'type': 'json'
-        })
-    
+
+        extracted_files.append(
+            {"name": "manifest.json", "content": content, "type": "json"}
+        )
+
     # Extract file elements
     for file_elm in plugin_comp.file or []:
-        name = file_elm.attrs.get('name')
-        format = file_elm.attrs.get('format', 'text').lower()
+        name = file_elm.attrs.get("name")
+        format = file_elm.attrs.get("format", "text").lower()
         content = file_elm.content
-        extracted_files.append({
-            'name': name,
-            'content': content,
-            'type': format
-        })
-    
+        extracted_files.append({"name": name, "content": content, "type": format})
+
     # Create remaining source by removing extracted tags
     remaining_source = source
-    
+
     # Remove manifest tags
     for manifest_elm in plugin_comp.manifest or []:
-        lang = manifest_elm.attrs.get('lang', 'json')
+        lang = manifest_elm.attrs.get("lang", "json")
         content = manifest_elm.content or ""
         # Create regex pattern to match the tag
         pattern = rf'<manifest[^>]*lang=["\']{re.escape(lang)}["\'][^>]*>.*?</manifest>'
-        remaining_source = re.sub(pattern, '', remaining_source, flags=re.DOTALL | re.IGNORECASE)
-        
+        remaining_source = re.sub(
+            pattern, "", remaining_source, flags=re.DOTALL | re.IGNORECASE
+        )
+
         # Also try without lang attribute
-        pattern = rf'<manifest[^>]*>.*?{re.escape(content)}.*?</manifest>'
-        remaining_source = re.sub(pattern, '', remaining_source, flags=re.DOTALL | re.IGNORECASE)
-    
+        pattern = rf"<manifest[^>]*>.*?{re.escape(content)}.*?</manifest>"
+        remaining_source = re.sub(
+            pattern, "", remaining_source, flags=re.DOTALL | re.IGNORECASE
+        )
+
     # Remove file tags
     for file_elm in plugin_comp.file or []:
-        name = file_elm.attrs.get('name', '')
+        name = file_elm.attrs.get("name", "")
         content = file_elm.content or ""
         # Create regex pattern to match the tag
         pattern = rf'<file[^>]*name=["\']{re.escape(name)}["\'][^>]*>.*?</file>'
-        remaining_source = re.sub(pattern, '', remaining_source, flags=re.DOTALL | re.IGNORECASE)
-    
+        remaining_source = re.sub(
+            pattern, "", remaining_source, flags=re.DOTALL | re.IGNORECASE
+        )
+
     # Clean up extra whitespace
-    remaining_source = re.sub(r'\n\s*\n', '\n', remaining_source.strip())
-    
+    remaining_source = re.sub(r"\n\s*\n", "\n", remaining_source.strip())
+
     return extracted_files, remaining_source

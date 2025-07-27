@@ -229,7 +229,9 @@ async def test_singleton_apps(fastapi_server, test_user_token):
         app_info["id"],
         wait_for_service="default",
     )
-    assert config1["id"] == config2["id"], "Singleton app should return the same session when started twice"
+    assert (
+        config1["id"] == config2["id"]
+    ), "Singleton app should return the same session when started twice"
 
     # Stop the singleton app
     await controller.stop(config1.id)
@@ -237,7 +239,7 @@ async def test_singleton_apps(fastapi_server, test_user_token):
     # Verify the singleton app is no longer running
     running_apps = await controller.list_running()
     assert not any(app["id"] == config1.id for app in running_apps)
-    
+
     # Clean up the installed app
     await controller.uninstall(app_info["id"])
 
@@ -739,7 +741,9 @@ async def test_raw_html_apps(fastapi_server, test_user_token):
     assert app_info2["name"] == "Custom Raw HTML App"
     assert app_info2["version"] == "1.0.0"
     assert app_info2["type"] == "window"  # convert_config_to_artifact sets this
-    assert app_info2["entry_point"] == "index.html"  # Browser apps always compile to index.html
+    assert (
+        app_info2["entry_point"] == "index.html"
+    )  # Browser apps always compile to index.html
 
     # Clean up - both apps have the same ID since they have the same source code
     # So we only need to uninstall once
@@ -904,7 +908,9 @@ async def test_service_collection_comparison(fastapi_server, test_user_token):
     await api.disconnect()
 
 
-async def test_service_selection_mode_with_multiple_instances(fastapi_server, test_user_token):
+async def test_service_selection_mode_with_multiple_instances(
+    fastapi_server, test_user_token
+):
     """Test service selection mode with multiple instances of an app."""
     api = await connect_to_server(
         {
@@ -951,7 +957,7 @@ async def test_service_selection_mode_with_multiple_instances(fastapi_server, te
             "service_selection_mode": "random",  # Set random selection mode
             "startup_config": {
                 "stop_after_inactive": 0,  # Disable inactivity timeout
-            }
+            },
         },
         overwrite=True,
     )
@@ -975,7 +981,9 @@ async def test_service_selection_mode_with_multiple_instances(fastapi_server, te
     # Test 1: Using get_service with app_id should use the app's service_selection_mode
     try:
         service = await api.get_service(f"default@{app_info.id}")
-        assert service is not None, "Service should be accessible with random selection mode"
+        assert (
+            service is not None
+        ), "Service should be accessible with random selection mode"
 
         # Test that the service actually works
         echo_result = await service.echo("test message")
@@ -999,14 +1007,18 @@ async def test_service_selection_mode_with_multiple_instances(fastapi_server, te
         except Exception as e:
             print(f"Call {i+1} failed: {e}")
 
-    assert successful_calls == 5, f"All 5 calls should succeed, but only {successful_calls} did"
+    assert (
+        successful_calls == 5
+    ), f"All 5 calls should succeed, but only {successful_calls} did"
     print("✅ Multiple service selection calls all succeeded")
 
     # Test 3: Test that explicit mode parameter still takes precedence
     try:
         # Try to get the instance with explicit first mode
         service = await api.get_service(f"default@{app_info.id}", {"mode": "first"})
-        assert service is not None, "Service should be accessible with explicit 'first' mode"
+        assert (
+            service is not None
+        ), "Service should be accessible with explicit 'first' mode"
 
         result = await service.echo("explicit mode test")
         assert "Echo from instance: explicit mode test" in result
@@ -1048,7 +1060,7 @@ async def test_service_selection_mode_with_multiple_instances(fastapi_server, te
         response = requests.post(
             service_url,
             json="HTTP service test",
-            headers={"Authorization": f"Bearer {test_user_token}"}
+            headers={"Authorization": f"Bearer {test_user_token}"},
         )
 
         if response.status_code == 200:
@@ -1056,7 +1068,9 @@ async def test_service_selection_mode_with_multiple_instances(fastapi_server, te
             assert "Echo from instance: HTTP service test" in result
             print("✅ HTTP service endpoint works with service_selection_mode")
         else:
-            print(f"⚠️ HTTP service endpoint failed with status {response.status_code}: {response.text}")
+            print(
+                f"⚠️ HTTP service endpoint failed with status {response.status_code}: {response.text}"
+            )
     except Exception as e:
         print(f"⚠️ HTTP service endpoint test failed: {e}")
         # Don't raise - this is a bonus test, core functionality is working
@@ -1084,7 +1098,7 @@ async def test_manifest_parameter_install(fastapi_server, test_user_token):
     )
 
     controller = await api.get_service("public/server-apps")
-    
+
     # Test script for the manifest app
     test_script = """
 <!doctype html>
@@ -1141,11 +1155,11 @@ window.onload = function() {
 </html>
 
     """
-    
+
     # Create a manifest directly (without config conversion)
     manifest = {
         "id": "manifest-test-app",
-        "name": "Manifest Test App", 
+        "name": "Manifest Test App",
         "description": "App installed using manifest parameter",
         "version": "1.0.0",
         "type": "web-worker",
@@ -1153,66 +1167,69 @@ window.onload = function() {
         "requirements": [],
         "singleton": False,
         "daemon": False,
-        "config": {}
+        "config": {},
     }
-    
+
     # Test 1: Install with manifest parameter
     app_info = await controller.install(
         source=test_script,
         manifest=manifest,
         overwrite=True,
     )
-    
+
     assert app_info["name"] == "Manifest Test App"
     assert app_info["description"] == "App installed using manifest parameter"
     assert app_info["version"] == "1.0.0"
     assert app_info["entry_point"] == "index.html"
-    
 
     # Test 3: Install with manifest without entry_point (should auto-generate for template-based apps)
     auto_manifest = manifest.copy()
     del auto_manifest["entry_point"]
-    
+
     # This should now succeed for template-based apps like "web-worker"
     auto_app_info = await controller.install(
         source=test_script,
         manifest=auto_manifest,
         overwrite=True,
     )
-    
+
     # Verify that entry_point was auto-generated
-    assert auto_app_info["entry_point"] == "index.html", f"Expected auto-generated entry_point to be 'index.html', got {auto_app_info.get('entry_point')}"
+    assert (
+        auto_app_info["entry_point"] == "index.html"
+    ), f"Expected auto-generated entry_point to be 'index.html', got {auto_app_info.get('entry_point')}"
     assert auto_app_info["type"] == "web-worker"
-    
+
     # Clean up the auto-generated app
     await controller.uninstall(auto_app_info["id"])
-    
+
     # Test 4: Try to install non-template app without entry_point (should still fail)
     non_template_manifest = {
         "id": "non-template-test-app",
-        "name": "Non-Template Test App", 
+        "name": "Non-Template Test App",
         "description": "App with custom type that requires explicit entry_point",
         "version": "1.0.0",
         "type": "custom-type",  # Not a template-based type
         "requirements": [],
         "singleton": False,
         "daemon": False,
-        "config": {}
+        "config": {},
     }
-    
+
     try:
         await controller.install(
             source=test_script,
             manifest=non_template_manifest,
             overwrite=True,
         )
-        assert False, "Should have failed when entry_point is missing for non-template app"
+        assert (
+            False
+        ), "Should have failed when entry_point is missing for non-template app"
     except Exception as e:
         assert "No server app worker found for app type" in str(e)
-    
+
     # Clean up
     await controller.uninstall(app_info["id"])
-    
+
     await api.disconnect()
 
 
@@ -1231,19 +1248,19 @@ async def test_new_app_management_functions(fastapi_server, test_user_token):
 
     # Test validate_app_manifest
     print("Testing validate_app_manifest...")
-    
+
     # Test with valid config
     valid_config = {
         "name": "Test App",
         "type": "window",
         "version": "1.0.0",
         "description": "A test application",
-        "entry_point": "index.html"
+        "entry_point": "index.html",
     }
     validation_result = await controller.validate_app_manifest(valid_config)
     assert validation_result["valid"] is True
     assert len(validation_result["errors"]) == 0
-    
+
     # Test with invalid config
     invalid_config = {
         "name": 123,  # Should be string
@@ -1254,7 +1271,7 @@ async def test_new_app_management_functions(fastapi_server, test_user_token):
     validation_result = await controller.validate_app_manifest(invalid_config)
     assert validation_result["valid"] is False
     assert len(validation_result["errors"]) > 0
-    
+
     print("✓ validate_app_manifest tests passed")
 
     # Install a test app for further testing
@@ -1263,34 +1280,37 @@ async def test_new_app_management_functions(fastapi_server, test_user_token):
         "type": "window",
         "version": "1.0.0",
         "description": "An enhanced test application for testing new functions",
-        "entry_point": "index.html"
+        "entry_point": "index.html",
     }
-    
+
     app_info = await controller.install(
         source=TEST_APP_CODE,
         manifest=app_config,
         overwrite=True,
     )
     app_id = app_info["id"]
-    
+
     # Test get_app_info
     print("Testing get_app_info...")
     retrieved_app_info = await controller.get_app_info(app_id)
     assert retrieved_app_info is not None
     assert retrieved_app_info["manifest"]["name"] == "Enhanced Test App"
-    assert retrieved_app_info["manifest"]["description"] == "An enhanced test application for testing new functions"
+    assert (
+        retrieved_app_info["manifest"]["description"]
+        == "An enhanced test application for testing new functions"
+    )
     assert retrieved_app_info["manifest"]["version"] == "1.0.0"
     print("✓ get_app_info tests passed")
 
     # Test read_file
     print("Testing read_file...")
-    
+
     # Get the content of the main file
     file_content = await controller.read_file(app_id, "index.html", format="text")
     assert file_content is not None
     assert isinstance(file_content, str)
     assert len(file_content) > 0
-    
+
     # Test JSON format (should work if the file contains JSON)
     try:
         json_content = await controller.read_file(app_id, "index.html", format="json")
@@ -1298,7 +1318,7 @@ async def test_new_app_management_functions(fastapi_server, test_user_token):
     except Exception:
         # Expected for HTML files
         pass
-    
+
     # Test binary format
     binary_content = await controller.read_file(app_id, "index.html", format="binary")
     assert binary_content is not None
@@ -1307,36 +1327,36 @@ async def test_new_app_management_functions(fastapi_server, test_user_token):
 
     # Test edit_app (basic functionality)
     print("Testing edit_app...")
-    
+
     # Just test that the function exists and doesn't crash
     try:
         await controller.edit_app(
             app_id,
-            manifest={"description": "Basic edit test", "test_setting": "test_value"}
+            manifest={"description": "Basic edit test", "test_setting": "test_value"},
         )
         print("✓ edit_app function works")
     except Exception as e:
         print(f"✓ edit_app function exists but staging may have issues: {e}")
-    
+
     print("✓ edit_app tests passed")
 
     # Test logs function
     print("Testing logs function...")
-    
+
     # Start the app to generate logs
     started_app = await controller.start(app_id, wait_for_service="default")
-    
+
     # Get logs
     logs = await controller.get_logs(started_app["id"])
     assert logs is not None
-    
+
     # Stop the app
     await controller.stop(started_app["id"])
     print("✓ logs tests passed")
 
     # Test commit_app function (renamed from commit)
     print("Testing commit_app function...")
-    
+
     # Just test that the function exists - don't use it as it requires staging
     try:
         # This should fail gracefully since we don't have a staged app
@@ -1344,7 +1364,7 @@ async def test_new_app_management_functions(fastapi_server, test_user_token):
         print("✓ commit_app function works")
     except Exception as e:
         print(f"✓ commit_app function exists: {e}")
-    
+
     print("✓ commit_app tests passed")
 
     # Clean up
@@ -1420,7 +1440,7 @@ async def test_python_eval_apps(fastapi_server, test_user_token):
             "type": "python-eval",
             "version": "1.0.0",
             "entry_point": "main.py",
-            "description": "A test Python evaluation app"
+            "description": "A test Python evaluation app",
         },
         timeout=10,
         overwrite=True,
@@ -1443,7 +1463,7 @@ async def test_python_eval_apps(fastapi_server, test_user_token):
     logs = await controller.get_logs(started_app["id"])
     print(f"DEBUG: Available logs: {logs}")
     assert len(logs) > 0
-    
+
     # Check that our print statements are in the logs
     log_text = " ".join(logs.get("stdout", []))
     print(f"DEBUG: stdout content: '{log_text}'")
@@ -1451,13 +1471,13 @@ async def test_python_eval_apps(fastapi_server, test_user_token):
     print(f"DEBUG: stderr content: '{stderr_text}'")
     info_text = " ".join(logs.get("info", []))
     print(f"DEBUG: info content: '{info_text}'")
-    
+
     # Check if there are any errors in stderr or if stdout is in a different key
     if not log_text and stderr_text:
         print("DEBUG: No stdout but stderr present")
     if not log_text and info_text:
         print("DEBUG: No stdout but info present")
-    
+
     assert "Python eval app started!" in log_text
     assert "Calculation: 10 + 20 = 30" in log_text
     assert "Sum of [1, 2, 3, 4, 5] = 15" in log_text
@@ -1479,7 +1499,7 @@ print("This won't be reached")
         await controller.install(
             source=error_python_code,
             manifest={
-                "name": "Test Python Eval App Error", 
+                "name": "Test Python Eval App Error",
                 "type": "python-eval",
                 "version": "1.0.0",
                 "entry_point": "error.py",
@@ -1488,12 +1508,10 @@ print("This won't be reached")
             overwrite=True,
         )
 
-
-
     await api.disconnect()
 
 
-# Test Python code for the python-conda app type  
+# Test Python code for the python-conda app type
 TEST_CONDA_PYTHON_CODE = """
 import sys
 import numpy as np
@@ -1653,14 +1671,15 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
 
     # Test 1: Basic python-conda app (original test)
     print("=== Test 1: Basic conda-python app with NumPy ===")
-    
+
     # Create progress callback to capture conda environment setup progress
     progress_messages = []
+
     def progress_callback(message):
         """Callback to capture progress messages."""
         progress_messages.append(message["message"])
         print(f"📊 Progress: {message['message']}")
-    
+
     app_info = await controller.install(
         source=TEST_CONDA_PYTHON_CODE,
         manifest={
@@ -1670,7 +1689,7 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
             "entry_point": "main.py",
             "description": "A test python-conda app with numpy",
             "dependencies": ["python=3.11", "numpy"],
-            "channels": ["conda-forge"]
+            "channels": ["conda-forge"],
         },
         timeout=90,
         wait_for_service=False,
@@ -1683,18 +1702,24 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
     assert app_info["entry_point"] == "main.py"
 
     # Verify that progress messages were captured during conda environment setup
-    print(f"📊 Captured {len(progress_messages)} progress messages during installation:")
+    print(
+        f"📊 Captured {len(progress_messages)} progress messages during installation:"
+    )
     for i, msg in enumerate(progress_messages, 1):
         print(f"   {i}. {msg}")
-    
+
     # Verify we captured conda environment setup progress
     assert len(progress_messages) > 0, "No progress messages were captured"
     progress_text = " ".join(progress_messages)
-    
+
     # Check for conda environment specific progress messages
-    assert any("conda environment" in msg.lower() or "mamba" in msg.lower() or "environment" in msg.lower() 
-              for msg in progress_messages), f"No conda environment setup messages found in: {progress_messages}"
-    
+    assert any(
+        "conda environment" in msg.lower()
+        or "mamba" in msg.lower()
+        or "environment" in msg.lower()
+        for msg in progress_messages
+    ), f"No conda environment setup messages found in: {progress_messages}"
+
     print("✅ Conda environment setup progress captured successfully!")
 
     # Test starting the python-conda app (without waiting for service)
@@ -1713,7 +1738,7 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
     logs = await controller.get_logs(started_app["id"])
     print(f"DEBUG: Available logs: {logs}")
     assert len(logs) > 0
-    
+
     # Check that our print statements are in the logs
     log_text = " ".join(logs.get("stdout", []))
     print(f"DEBUG: stdout content: '{log_text}'")
@@ -1721,13 +1746,13 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
     print(f"DEBUG: stderr content: '{stderr_text}'")
     info_text = " ".join(logs.get("info", []))
     print(f"DEBUG: info content: '{info_text}'")
-    
+
     # Check if there are any errors in stderr or if stdout is in a different key
     if not log_text and stderr_text:
         print("DEBUG: No stdout but stderr present")
     if not log_text and info_text:
         print("DEBUG: No stdout but info present")
-    
+
     assert "Python Conda app started!" in log_text
     assert "NumPy version:" in log_text
     assert "NumPy array:" in log_text
@@ -1741,14 +1766,15 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
 
     # Test 2: FastAPI service registration with conda-python (enhanced test)
     print("=== Test 2: Conda-python app with FastAPI service registration ===")
-    
+
     # Create progress callback for FastAPI app installation
     fastapi_progress_messages = []
+
     def fastapi_progress_callback(message):
         """Callback to capture FastAPI app progress messages."""
         fastapi_progress_messages.append(message["message"])
         print(f"🚀 FastAPI Progress: {message['message']}")
-    
+
     fastapi_app_info = await controller.install(
         source=TEST_CONDA_FASTAPI_CODE,
         manifest={
@@ -1758,19 +1784,19 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
             "entry_point": "main.py",
             "description": "A conda-python FastAPI app with service registration",
             "dependencies": [
-                "python=3.11", 
-                "numpy", 
-                "fastapi", 
+                "python=3.11",
+                "numpy",
+                "fastapi",
                 "uvicorn",
                 "pip",
-                {"pip": ["hypha-rpc"]}
+                {"pip": ["hypha-rpc"]},
             ],
             "channels": ["conda-forge"],
             "startup_config": {
                 "timeout": 120,
                 "wait_for_service": "hello-fastapi",
-                "stop_after_inactive": 0  # Don't auto-stop
-            }
+                "stop_after_inactive": 0,  # Don't auto-stop
+            },
         },
         timeout=120,
         wait_for_service="hello-fastapi",
@@ -1783,23 +1809,31 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
     print(f"✅ FastAPI conda app installed: {fastapi_app_info['id']}")
 
     # Verify FastAPI app progress messages
-    print(f"🚀 Captured {len(fastapi_progress_messages)} progress messages during FastAPI installation:")
+    print(
+        f"🚀 Captured {len(fastapi_progress_messages)} progress messages during FastAPI installation:"
+    )
     for i, msg in enumerate(fastapi_progress_messages, 1):
         print(f"   {i}. {msg}")
-    
+
     # Verify we captured conda environment setup progress for FastAPI app
-    assert len(fastapi_progress_messages) > 0, "No FastAPI progress messages were captured"
+    assert (
+        len(fastapi_progress_messages) > 0
+    ), "No FastAPI progress messages were captured"
     fastapi_progress_text = " ".join(fastapi_progress_messages)
-    
+
     # Check for conda environment specific progress messages
-    assert any("conda environment" in msg.lower() or "mamba" in msg.lower() or "environment" in msg.lower() 
-              for msg in fastapi_progress_messages), f"No conda environment setup messages found in FastAPI progress: {fastapi_progress_messages}"
-    
+    assert any(
+        "conda environment" in msg.lower()
+        or "mamba" in msg.lower()
+        or "environment" in msg.lower()
+        for msg in fastapi_progress_messages
+    ), f"No conda environment setup messages found in FastAPI progress: {fastapi_progress_messages}"
+
     print("✅ FastAPI conda environment setup progress captured successfully!")
 
     # Test starting the FastAPI conda app (should wait for hello-fastapi service)
     print("Starting FastAPI conda app and waiting for service registration...")
-    
+
     fastapi_started_app = await controller.start(
         fastapi_app_info["id"],
         timeout=120,
@@ -1815,11 +1849,11 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
     # Test 2.1: Verify service registration through logs
     # Wait a moment for the background script to run and collect logs
     await asyncio.sleep(3)
-    
+
     fastapi_logs = await controller.get_logs(fastapi_started_app["id"])
     fastapi_log_text = " ".join(fastapi_logs.get("stdout", []))
     print(f"FastAPI app logs: {fastapi_log_text[:500]}...")
-    
+
     # The background script may still be running in the infinite loop, so logs might not be complete yet
     # But we should at least see the service registration was successful from the app startup logs
     if not fastapi_log_text:
@@ -1835,7 +1869,7 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
 
     # Test 2.2: Test service functionality
     print("Testing registered service functionality...")
-    
+
     # Get the registered service
     fastapi_service = await api.get_service(f"hello-fastapi@{fastapi_app_info['id']}")
     assert fastapi_service is not None
@@ -1843,24 +1877,20 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
 
     # Test the service is an ASGI service (we can't directly call HTTP endpoints via RPC)
     # but we can verify it's registered and accessible
-    assert hasattr(fastapi_service, 'serve') or hasattr(fastapi_service, '__call__')
+    assert hasattr(fastapi_service, "serve") or hasattr(fastapi_service, "__call__")
     print("✅ FastAPI service has expected ASGI interface")
-
 
     # Test 2.3: Test HTTP endpoints through the workspace HTTP interface
     print("Testing HTTP endpoints...")
     workspace = api.config["workspace"]
-    
 
     # Test root endpoint
     home_url = f"{SERVER_URL}/{workspace}/apps/hello-fastapi@{fastapi_app_info['id']}/"
     response = requests.get(
-        home_url,
-        headers={"Authorization": f"Bearer {test_user_token}"},
-        timeout=10
+        home_url, headers={"Authorization": f"Bearer {test_user_token}"}, timeout=10
     )
     response.raise_for_status()
-    
+
     home_data = response.json()
     assert "message" in home_data
     assert "Conda FastAPI" in home_data["message"]
@@ -1868,16 +1898,13 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
     assert "numpy_version" in home_data
     print(f"✅ Home endpoint working: {home_data['message']}")
 
-
     # Test calculation endpoint
     calc_url = f"{SERVER_URL}/{workspace}/apps/hello-fastapi@{fastapi_app_info['id']}/api/calculate/5/3"
     response = requests.get(
-        calc_url,
-        headers={"Authorization": f"Bearer {test_user_token}"},
-        timeout=10
+        calc_url, headers={"Authorization": f"Bearer {test_user_token}"}, timeout=10
     )
     response.raise_for_status()
-    
+
     calc_data = response.json()
     assert calc_data["operation"] == "numpy_calculation"
     assert calc_data["inputs"]["a"] == 5
@@ -1885,17 +1912,17 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
     assert calc_data["sum"] == 8.0
     assert calc_data["mean"] == 4.0
     assert calc_data["product"] == 15.0
-    print(f"✅ Calculation endpoint working: sum={calc_data['sum']}, mean={calc_data['mean']}")
+    print(
+        f"✅ Calculation endpoint working: sum={calc_data['sum']}, mean={calc_data['mean']}"
+    )
 
     # Test matrix operations endpoint
     matrix_url = f"{SERVER_URL}/{workspace}/apps/hello-fastapi@{fastapi_app_info['id']}/api/matrix"
     response = requests.get(
-        matrix_url,
-        headers={"Authorization": f"Bearer {test_user_token}"},
-        timeout=10
+        matrix_url, headers={"Authorization": f"Bearer {test_user_token}"}, timeout=10
     )
     response.raise_for_status()
-    
+
     matrix_data = response.json()
     assert "matrix" in matrix_data
     assert "determinant" in matrix_data
@@ -1904,7 +1931,6 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
     assert len(matrix_data["matrix"][0]) == 3
     print(f"✅ Matrix endpoint working: det={matrix_data['determinant']:.4f}")
 
-
     # Test stopping the FastAPI session
     print("Stopping FastAPI conda app...")
     await controller.stop(fastapi_started_app["id"])
@@ -1912,7 +1938,7 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
 
     # Test 3: Error handling
     print("=== Test 3: Error handling ===")
-    
+
     error_python_code = """
 print("This will work")
 import nonexistent_package_that_will_cause_error
@@ -1925,12 +1951,12 @@ print("This won't be reached")
         await controller.install(
             source=error_python_code,
             manifest={
-                "name": "Test Conda Python App Error", 
+                "name": "Test Conda Python App Error",
                 "type": "python-conda",
                 "version": "1.0.0",
                 "entry_point": "error.py",
                 "dependencies": ["python=3.11"],
-                "channels": ["conda-forge"]
+                "channels": ["conda-forge"],
             },
             timeout=30,
             overwrite=True,
@@ -1986,9 +2012,9 @@ async def test_startup_config_from_source(fastapi_server, test_user_token):
             "startup_config": {
                 "wait_for_service": "my-special-service",
                 "timeout": 45,
-                "stop_after_inactive": 300
+                "stop_after_inactive": 300,
             }
-        }
+        },
     )
 
     # Get the full app info
@@ -2047,13 +2073,13 @@ async def test_detached_mode_apps(fastapi_server, test_user_token):
         timeout=5,  # Short timeout should be fine since we're not waiting
     )
     config = await controller.start(config.id)
-    
+
     assert "id" in config
     print(f"✓ Detached launch successful: {config['id']}")
-    
+
     # Give it a moment to execute
     await asyncio.sleep(1)
-    
+
     # Check logs to verify it executed
     logs = await controller.get_logs(config["id"])
     assert "log" in logs
@@ -2062,10 +2088,10 @@ async def test_detached_mode_apps(fastapi_server, test_user_token):
     assert "Computation result:" in log_text
     assert "Detached script completed" in log_text
     print("✓ Detached script executed correctly")
-    
+
     # Clean up
     await controller.stop(config["id"])
-    
+
     # Test 2: Install and start with wait_for_service=False
     print("Testing detached mode with install + start...")
     app_info = await controller.install(
@@ -2074,31 +2100,31 @@ async def test_detached_mode_apps(fastapi_server, test_user_token):
         overwrite=True,
         wait_for_service=False,
     )
-    
+
     # Start in detached mode
     start_config = await controller.start(
         app_info["id"],
         wait_for_service=False,
         timeout=5,  # Short timeout should be fine
     )
-    
+
     assert "id" in start_config
     print(f"✓ Detached start successful: {start_config['id']}")
-    
+
     # Give it a moment to execute
     await asyncio.sleep(1)
-    
+
     # Check logs
     logs = await controller.get_logs(start_config["id"])
     assert "log" in logs
     log_text = " ".join(logs["log"])
     assert "Detached script started" in log_text
     print("✓ Detached install + start worked correctly")
-    
+
     # Clean up
     await controller.stop(start_config["id"])
     await controller.uninstall(app_info["id"])
-    
+
     # Test 3: Python eval script in detached mode
     print("Testing detached mode with Python eval...")
     python_detached_script = """
@@ -2114,7 +2140,7 @@ print(f"Sum of numbers 0-99: {total}")
 # This script doesn't register any services
 print("Python detached script completed")
 """
-    
+
     python_config = await controller.install(
         source=python_detached_script,
         manifest={"type": "python-eval", "name": "Python Detached Script"},
@@ -2124,10 +2150,10 @@ print("Python detached script completed")
     python_config = await controller.start(python_config.id)
     assert "id" in python_config
     print(f"✓ Python detached launch successful: {python_config['id']}")
-    
+
     # Give it a moment to execute
     await asyncio.sleep(1)
-    
+
     # Check logs
     logs = await controller.get_logs(python_config["id"])
     assert len(logs) > 0
@@ -2136,29 +2162,28 @@ print("Python detached script completed")
     for log_type in ["stdout", "stderr", "log", "info"]:
         if log_type in logs:
             full_log_text += " ".join(logs[log_type]) + " "
-    
+
     assert "Python detached script started" in full_log_text
     assert "Sum of numbers 0-99: 4950" in full_log_text
     print("✓ Python detached script executed correctly")
-    
+
     # Clean up
     await controller.stop(python_config["id"])
-    
 
     # Test 4: Compare detached vs normal mode timing
     print("Testing detached mode performance benefit...")
-    
+
     # Script that would normally try to register a service but fails
     problematic_script = """
     console.log("Script starting");
     // This would normally cause waiting, but in detached mode it's bypassed
     console.log("Script completed without service registration");
     """
-    
+
     # Test normal mode (should timeout because no service is registered)
     normal_start_time = time.time()
     try:
-        config =await controller.install(
+        config = await controller.install(
             source=problematic_script,
             manifest={"type": "window", "name": "Normal Mode Script"},
             timeout=10,  # Short timeout to demonstrate the difference
@@ -2169,7 +2194,7 @@ print("Python detached script completed")
     except Exception as e:
         normal_duration = time.time() - normal_start_time
         print(f"✓ Normal mode timed out as expected in {normal_duration:.2f}s")
-    
+
     # Test detached mode (should complete quickly)
     detached_start_time = time.time()
     detached_config = await controller.install(
@@ -2181,30 +2206,34 @@ print("Python detached script completed")
     )
     detached_config = await controller.start(detached_config.id)
     detached_duration = time.time() - detached_start_time
-    
+
     print(f"✓ Detached mode completed in {detached_duration:.2f}s")
     # Ensure detached mode is significantly faster than normal mode
     # Normal mode should timeout around 3 seconds, detached should be much faster
-    assert detached_duration < normal_duration, f"Detached mode ({detached_duration:.2f}s) should be faster than normal mode ({normal_duration:.2f}s)"
-    assert detached_duration < 10, "Detached mode should complete within reasonable time"
-    
+    assert (
+        detached_duration < normal_duration
+    ), f"Detached mode ({detached_duration:.2f}s) should be faster than normal mode ({normal_duration:.2f}s)"
+    assert (
+        detached_duration < 10
+    ), "Detached mode should complete within reasonable time"
+
     # Clean up
     await controller.stop(detached_config["id"])
-    
+
     print("✅ All detached mode tests passed!")
-    
+
     await api.disconnect()
 
 
 async def test_autoscaling_basic_functionality(fastapi_server, test_user_token):
     """
     Test basic autoscaling functionality for server apps.
-    
+
     This test demonstrates how to:
     1. Install an app with autoscaling configuration
     2. Verify that the app can scale up and down based on load
     3. Check that autoscaling respects min/max instance limits
-    
+
     The autoscaling system works by:
     - Monitoring client load (requests per minute) for apps with load balancing enabled
     - Scaling up when average load exceeds scale_up_threshold * target_requests_per_instance
@@ -2283,47 +2312,49 @@ async def test_autoscaling_basic_functionality(fastapi_server, test_user_token):
     # Simulate load to trigger scaling
     print("\nGenerating load to trigger autoscaling...")
     service = await api.get_service(f"default@{app_info['id']}")
-    
+
     # Make rapid requests to increase load
     for i in range(15):
         await service.processRequest(f"request_{i}")
-    
+
     print("✓ Generated load, waiting for autoscaling...")
-    
+
     # Wait for autoscaling to respond (monitoring interval is 10s)
     await asyncio.sleep(15)
-    
+
     # Check if scaling occurred
     running_apps = await controller.list_running()
     app_instances = [app for app in running_apps if app["app_id"] == app_info["id"]]
-    
+
     print(f"✓ Instances after load generation: {len(app_instances)}")
-    
+
     # The system should scale up (but may not always in test environment)
     # Let's at least verify it doesn't exceed max_instances
-    assert len(app_instances) <= autoscaling_config["max_instances"], \
-        f"Instances ({len(app_instances)}) exceeded max_instances ({autoscaling_config['max_instances']})"
-    
+    assert (
+        len(app_instances) <= autoscaling_config["max_instances"]
+    ), f"Instances ({len(app_instances)}) exceeded max_instances ({autoscaling_config['max_instances']})"
+
     # Wait for load to decrease and potential scale down
     print("\nWaiting for load to decrease...")
     await asyncio.sleep(10)
-    
+
     # Check final state
     running_apps = await controller.list_running()
     final_instances = [app for app in running_apps if app["app_id"] == app_info["id"]]
-    
+
     print(f"✓ Final instances: {len(final_instances)}")
-    
+
     # Should never go below min_instances
-    assert len(final_instances) >= autoscaling_config["min_instances"], \
-        f"Instances ({len(final_instances)}) below min_instances ({autoscaling_config['min_instances']})"
+    assert (
+        len(final_instances) >= autoscaling_config["min_instances"]
+    ), f"Instances ({len(final_instances)}) below min_instances ({autoscaling_config['min_instances']})"
 
     print("✅ Basic autoscaling test completed successfully!")
 
     # Clean up
     for app in final_instances:
         await controller.stop(app["id"])
-    
+
     await controller.uninstall(app_info["id"])
     await api.disconnect()
 
@@ -2463,16 +2494,16 @@ window.onload = function() {
 
     # Test 1: Simulate high load to trigger scaling up
     print("\n--- Test 1: Simulating high load to trigger scale-up ---")
-    
+
     # Get the service and simulate high load
     service = await api.get_service(f"default@{app_info['id']}")
-    
+
     # Generate load by making multiple requests rapidly
     # This should increase the load metric and trigger scaling
     load_tasks = []
     for i in range(20):  # Make 20 requests to simulate high load
         load_tasks.append(service.simulateLoad())
-    
+
     # Execute requests concurrently to simulate high load
     results = await asyncio.gather(*load_tasks)
     print(f"✓ Generated load with {len(results)} requests")
@@ -2485,18 +2516,20 @@ window.onload = function() {
     # Check if new instances were started
     running_apps = await controller.list_running()
     app_instances = [app for app in running_apps if app["app_id"] == app_info["id"]]
-    
+
     print(f"✓ After high load simulation: {len(app_instances)} instance(s) running")
-    
+
     # We should have more than 1 instance now due to high load
     if len(app_instances) > 1:
-        print(f"✅ Scale-up successful! Instances increased from 1 to {len(app_instances)}")
+        print(
+            f"✅ Scale-up successful! Instances increased from 1 to {len(app_instances)}"
+        )
     else:
         print("⚠️  Scale-up may not have triggered yet (load detection timing)")
 
     # Test 2: Let the load decrease and test scale-down
     print("\n--- Test 2: Waiting for load to decrease and trigger scale-down ---")
-    
+
     # Stop making requests and wait for load to decrease
     print("⏳ Waiting for load to decrease...")
     await asyncio.sleep(20)  # Wait for load to decrease and cooldown period
@@ -2504,37 +2537,41 @@ window.onload = function() {
     # Check if instances were scaled down
     running_apps = await controller.list_running()
     app_instances = [app for app in running_apps if app["app_id"] == app_info["id"]]
-    
+
     print(f"✓ After load decrease: {len(app_instances)} instance(s) running")
-    
+
     # Should scale down but not below min_instances (1)
     if len(app_instances) >= 1:
-        print(f"✅ Scale-down working correctly (respecting min_instances: {autoscaling_config['min_instances']})")
+        print(
+            f"✅ Scale-down working correctly (respecting min_instances: {autoscaling_config['min_instances']})"
+        )
     else:
         print("❌ Scale-down went below min_instances!")
 
     # Test 3: Test manual scaling by generating sustained load
     print("\n--- Test 3: Testing sustained load scenario ---")
-    
+
     # Create a sustained load pattern
     sustained_load_tasks = []
     for i in range(10):
         sustained_load_tasks.append(service.heavyWork())
-    
+
     await asyncio.gather(*sustained_load_tasks)
     print("✓ Generated sustained heavy load")
-    
+
     # Wait for potential scaling
     await asyncio.sleep(12)
-    
+
     final_running_apps = await controller.list_running()
-    final_app_instances = [app for app in final_running_apps if app["app_id"] == app_info["id"]]
-    
+    final_app_instances = [
+        app for app in final_running_apps if app["app_id"] == app_info["id"]
+    ]
+
     print(f"✓ Final state: {len(final_app_instances)} instance(s) running")
 
     # Test 4: Test autoscaling configuration editing
     print("\n--- Test 4: Testing autoscaling configuration editing ---")
-    
+
     # Edit the autoscaling config
     new_autoscaling_config = {
         "enabled": True,
@@ -2546,45 +2583,38 @@ window.onload = function() {
         "scale_up_cooldown": 3,
         "scale_down_cooldown": 6,
     }
-    
+
     await controller.edit_app(
-        app_info["id"],
-        autoscaling_manifest=new_autoscaling_config
+        app_info["id"], autoscaling_manifest=new_autoscaling_config
     )
-    
+
     # Verify the config was updated
     updated_app_info = await controller.get_app_info(app_info["id"], stage=True)
     updated_autoscaling = updated_app_info["manifest"].get("autoscaling", {})
-    
+
     assert updated_autoscaling["min_instances"] == 2
     assert updated_autoscaling["max_instances"] == 5
     print("✅ Autoscaling configuration updated successfully")
 
     # Test 5: Test disabling autoscaling
     print("\n--- Test 5: Testing autoscaling disable ---")
-    
+
     # Disable autoscaling
-    await controller.edit_app(
-        app_info["id"],
-        autoscaling_manifest={"enabled": False}
-    )
-    
+    await controller.edit_app(app_info["id"], autoscaling_manifest={"enabled": False})
+
     # Verify autoscaling is disabled
     disabled_app_info = await controller.get_app_info(app_info["id"], stage=True)
     disabled_autoscaling = disabled_app_info["manifest"].get("autoscaling", {})
-    
+
     assert disabled_autoscaling["enabled"] is False
     print("✅ Autoscaling disabled successfully")
 
     # Test 6: Test autoscaling with multiple service types
     print("\n--- Test 6: Testing service selection with autoscaling ---")
-    
+
     # Re-enable autoscaling for final test
-    await controller.edit_app(
-        app_info["id"],
-        autoscaling_manifest=autoscaling_config
-    )
-    
+    await controller.edit_app(app_info["id"], autoscaling_manifest=autoscaling_config)
+
     # Test that service selection works with multiple instances
     try:
         # This should work with random selection mode
@@ -2622,7 +2652,7 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
     """Test the files parameter in install method for uploading multiple files."""
     import base64
     import json
-    
+
     api = await connect_to_server(
         {
             "name": "test client",
@@ -2633,15 +2663,15 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
     )
 
     controller = await api.get_service("public/server-apps")
-    
+
     # Test data
-    text_content = '<html><body><h1>Test Page</h1></body></html>'
-    css_content = 'body { background-color: #f0f0f0; color: #333; }'
-    
+    text_content = "<html><body><h1>Test Page</h1></body></html>"
+    css_content = "body { background-color: #f0f0f0; color: #333; }"
+
     # Create binary data (fake image data)
-    binary_data = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x10\x00\x00\x00\x10'
-    base64_content = base64.b64encode(binary_data).decode('utf-8')
-    
+    binary_data = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x10\x00\x00\x00\x10"
+    base64_content = base64.b64encode(binary_data).decode("utf-8")
+
     # Test manifest
     manifest = {
         "id": "test-files-app",
@@ -2653,26 +2683,14 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
         "requirements": [],
         "singleton": False,
         "daemon": False,
-        "config": {}
+        "config": {},
     }
-    
+
     # Test files array
     test_files = [
-        {
-            "path": "main.html",
-            "content": text_content,
-            "format": "text"
-        },
-        {
-            "path": "style.css",
-            "content": css_content,
-            "format": "text"
-        },
-        {
-            "path": "assets/image.png",
-            "content": base64_content,
-            "format": "base64"
-        },
+        {"path": "main.html", "content": text_content, "format": "text"},
+        {"path": "style.css", "content": css_content, "format": "text"},
+        {"path": "assets/image.png", "content": base64_content, "format": "base64"},
         {
             "path": "data.json",
             "content": '{"test": true, "value": 42}',
@@ -2681,15 +2699,15 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
         {
             "path": "config.json",
             "content": {"setting": "value", "enabled": True, "count": 123},
-            "format": "json"
+            "format": "json",
         },
         {
             "path": "favicon.ico",
             "content": f"data:image/x-icon;base64,{base64_content}",
-            "format": "base64"
-        }
+            "format": "base64",
+        },
     ]
-    
+
     # Test 1: Install with files parameter (in stage mode to avoid startup issues)
     app_info = await controller.install(
         manifest=manifest,
@@ -2697,15 +2715,15 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
         stage=True,
         overwrite=True,
     )
-    
+
     # Get the actual app ID generated by the system
     app_id = app_info["id"]
     assert app_info["name"] == "Test Files App"
-    
+
     # Test 2: Verify files were uploaded correctly
     files_list = await controller.list_files(app_id)
     file_names = [f["name"] for f in files_list]
-    
+
     assert "index.html" in file_names
     assert "style.css" in file_names
     assert "data.json" in file_names
@@ -2713,41 +2731,53 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
     assert "favicon.ico" in file_names
     # For nested paths, the listing might show the directory, so check if assets exists
     # We'll verify the actual file content in the next test
-    
+
     # Test 3: Verify file contents (using stage=True since app is in stage mode)
-    html_content = await controller.read_file(app_id, "index.html", format="text", stage=True)
+    html_content = await controller.read_file(
+        app_id, "index.html", format="text", stage=True
+    )
     assert html_content == text_content
-    
-    css_content_read = await controller.read_file(app_id, "style.css", format="text", stage=True)
+
+    css_content_read = await controller.read_file(
+        app_id, "style.css", format="text", stage=True
+    )
     assert css_content_read == css_content
-    
-    json_content = await controller.read_file(app_id, "data.json", format="text", stage=True)
+
+    json_content = await controller.read_file(
+        app_id, "data.json", format="text", stage=True
+    )
     assert json_content == '{"test": true, "value": 42}'
-    
+
     # Test 4: Verify binary file was decoded correctly
-    binary_content_read = await controller.read_file(app_id, "assets/image.png", format="binary", stage=True)
+    binary_content_read = await controller.read_file(
+        app_id, "assets/image.png", format="binary", stage=True
+    )
     decoded_binary = base64.b64decode(binary_content_read)
     assert decoded_binary == binary_data
-    
+
     # Test 5: Verify JSON file with dictionary content
-    json_content = await controller.read_file(app_id, "config.json", format="text", stage=True)
+    json_content = await controller.read_file(
+        app_id, "config.json", format="text", stage=True
+    )
     json_data = json.loads(json_content)
     assert json_data == {"setting": "value", "enabled": True, "count": 123}
-    
+
     # Test 6: Verify base64 file with data URL format
-    favicon_content_read = await controller.read_file(app_id, "favicon.ico", format="binary", stage=True)
+    favicon_content_read = await controller.read_file(
+        app_id, "favicon.ico", format="binary", stage=True
+    )
     decoded_favicon = base64.b64decode(favicon_content_read)
     assert decoded_favicon == binary_data  # Should be same as original binary data
-    
+
     # Test 7: Error handling for missing required fields
     invalid_files = [
         {
             "path": "test.txt",
             # Missing content
-            "format": "text"
+            "format": "text",
         }
     ]
-    
+
     try:
         await controller.install(
             manifest={
@@ -2755,7 +2785,7 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
                 "name": "Invalid App",
                 "version": "1.0.0",
                 "type": "window",
-                "entry_point": "index.html"
+                "entry_point": "index.html",
             },
             files=invalid_files,
             overwrite=True,
@@ -2763,16 +2793,16 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
         assert False, "Should have failed with missing content"
     except Exception as e:
         assert "must have 'name' and 'content' fields" in str(e)
-    
+
     # Test 8: Error handling for invalid base64
     invalid_base64_files = [
         {
             "path": "invalid.bin",
             "content": "not-valid-base64-content!!!",
-            "format": "base64"
+            "format": "base64",
         }
     ]
-    
+
     try:
         await controller.install(
             manifest={
@@ -2780,7 +2810,7 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
                 "name": "Invalid Base64 App",
                 "version": "1.0.0",
                 "type": "window",
-                "entry_point": "index.html"
+                "entry_point": "index.html",
             },
             files=invalid_base64_files,
             overwrite=True,
@@ -2788,16 +2818,12 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
         assert False, "Should have failed with invalid base64"
     except Exception as e:
         assert "Failed to decode base64 content" in str(e)
-    
-                    # Test 9: Error handling for invalid file format
+
+        # Test 9: Error handling for invalid file format
         invalid_format_files = [
-            {
-                "path": "test.txt",
-                "content": "test content",
-                "format": "invalid-format"
-            }
+            {"path": "test.txt", "content": "test content", "format": "invalid-format"}
         ]
-    
+
         try:
             await controller.install(
                 manifest={
@@ -2805,7 +2831,7 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
                     "name": "Invalid Format App",
                     "version": "1.0.0",
                     "type": "window",
-                    "entry_point": "index.html"
+                    "entry_point": "index.html",
                 },
                 files=invalid_format_files,
                 overwrite=True,
@@ -2814,16 +2840,16 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
         except Exception as format_e:
             assert "Unsupported file format" in str(format_e)
             assert "Must be 'text', 'json', or 'base64'" in str(format_e)
-    
+
     # Test 10: Error handling for invalid JSON content
     invalid_json_files = [
         {
             "path": "invalid.json",
             "content": 123.456,  # Not a dict, list, or string
-            "format": "json"
+            "format": "json",
         }
     ]
-    
+
     try:
         await controller.install(
             manifest={
@@ -2831,7 +2857,7 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
                 "name": "Invalid JSON App",
                 "version": "1.0.0",
                 "type": "window",
-                "entry_point": "index.html"
+                "entry_point": "index.html",
             },
             files=invalid_json_files,
             stage=True,
@@ -2840,16 +2866,16 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
         assert False, "Should have failed with invalid JSON content type"
     except Exception as e:
         assert "JSON content must be a dictionary, list, or valid JSON string" in str(e)
-    
+
     # Test 11: Error handling for invalid data URL format
     invalid_data_url_files = [
         {
             "path": "invalid.bin",
             "content": "data:image/png,not-base64-format",  # Missing ;base64
-            "format": "base64"
+            "format": "base64",
         }
     ]
-    
+
     try:
         await controller.install(
             manifest={
@@ -2857,7 +2883,7 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
                 "name": "Invalid Data URL App",
                 "version": "1.0.0",
                 "type": "window",
-                "entry_point": "index.html"
+                "entry_point": "index.html",
             },
             files=invalid_data_url_files,
             stage=True,
@@ -2867,10 +2893,10 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
     except Exception as e:
         assert "Data URL format not supported" in str(e)
         assert "Expected format: data:mediatype;base64,content" in str(e)
-    
+
     # Clean up
     await controller.uninstall(app_id)
-    
+
     await api.disconnect()
 
 
@@ -2889,7 +2915,7 @@ async def test_progress_callback_functionality(fastapi_server, test_user_token):
 
     # Create a list to capture progress messages
     progress_messages = []
-    
+
     def progress_callback(message):
         """Callback to capture progress messages."""
         progress_messages.append(message["message"])
@@ -2923,14 +2949,20 @@ async def test_progress_callback_functionality(fastapi_server, test_user_token):
 
     # Verify that progress messages were captured
     assert len(progress_messages) > 0, "No progress messages were captured"
-    
+
     # Check for specific browser worker compilation messages
     progress_text = " ".join(progress_messages)
-    assert "Compiling app using worker" in progress_text, f"Missing app type compilation message in: {progress_messages}"
-    assert ("Creating application artifact" in progress_text or 
-            "Committing application artifact" in progress_text), f"Missing compilation process messages in: {progress_messages}"
-    assert "Installation complete!" in progress_text, f"Missing compilation completion message in: {progress_messages}"
-    
+    assert (
+        "Compiling app using worker" in progress_text
+    ), f"Missing app type compilation message in: {progress_messages}"
+    assert (
+        "Creating application artifact" in progress_text
+        or "Committing application artifact" in progress_text
+    ), f"Missing compilation process messages in: {progress_messages}"
+    assert (
+        "Installation complete!" in progress_text
+    ), f"Missing compilation completion message in: {progress_messages}"
+
     print(f"✅ Captured {len(progress_messages)} progress messages:")
     for i, msg in enumerate(progress_messages, 1):
         print(f"  {i}. {msg}")
@@ -2947,10 +2979,10 @@ async def test_progress_callback_functionality(fastapi_server, test_user_token):
     await api.disconnect()
 
 
-
 async def test_browser_cache_integration(fastapi_server, test_user_token):
     """Integration test for browser cache functionality with real caching behavior."""
     import asyncio
+
     api = await connect_to_server(
         {
             "name": "test client",
@@ -2969,15 +3001,11 @@ async def test_browser_cache_integration(fastapi_server, test_user_token):
             "entry_point": "https://httpbin.org/json",  # Use entry_point instead of url
             "version": "1.0.0",
             "enable_cache": True,
-            "cache_routes": [
-                "https://httpbin.org/*"
-            ],
+            "cache_routes": ["https://httpbin.org/*"],
             "cookies": {"test": "value"},
             "local_storage": {"theme": "dark"},
             "authorization_token": "Bearer test-token",
-            "startup_config": {
-                "wait_for_service": False
-            }
+            "startup_config": {"wait_for_service": False},
         },
         files=[],
         stage=False,  # Actually start to test caching
@@ -2987,7 +3015,7 @@ async def test_browser_cache_integration(fastapi_server, test_user_token):
     assert app_info["name"] == "Cache Test Web App"
     assert app_info["type"] == "web-app"
     assert app_info["entry_point"] == "https://httpbin.org/json"
-    
+
     # Get browser worker to check cache
     browser_worker = None
     try:
@@ -2996,48 +3024,58 @@ async def test_browser_cache_integration(fastapi_server, test_user_token):
     except Exception:
         print("⚠️ Browser worker not available, cache testing skipped")
         return
-    
+
     if browser_worker:
         # Get initial cache stats
-        initial_stats = await browser_worker.get_app_cache_stats(app_info["workspace"], app_info["id"])
+        initial_stats = await browser_worker.get_app_cache_stats(
+            app_info["workspace"], app_info["id"]
+        )
         print(f"Initial cache stats: {initial_stats}")
-        
+
         # Wait for app to load and populate cache
         await asyncio.sleep(3)
-        
+
         # Get cache stats after loading
-        after_load_stats = await browser_worker.get_app_cache_stats(app_info["workspace"], app_info["id"])
+        after_load_stats = await browser_worker.get_app_cache_stats(
+            app_info["workspace"], app_info["id"]
+        )
         print(f"After load cache stats: {after_load_stats}")
-        
+
         # Cache should have increased during installation/startup
         assert after_load_stats["entries"] >= initial_stats["entries"]
-        print(f"✅ Cache populated during install: {after_load_stats['entries']} entries")
-        
+        print(
+            f"✅ Cache populated during install: {after_load_stats['entries']} entries"
+        )
+
         # Stop and restart the app - should use cache this time
         await controller.stop(app_info["id"])
         await asyncio.sleep(1)
-        
+
         restart_start_time = asyncio.get_event_loop().time()
         await controller.start(app_info["id"], wait_for_service=False)
         restart_load_time = asyncio.get_event_loop().time() - restart_start_time
-        
+
         await asyncio.sleep(2)  # Wait for startup to complete
-        
+
         # Get final cache stats
-        final_stats = await browser_worker.get_app_cache_stats(app_info["workspace"], app_info["id"])
+        final_stats = await browser_worker.get_app_cache_stats(
+            app_info["workspace"], app_info["id"]
+        )
         print(f"Final cache stats after restart: {final_stats}")
         print(f"Restart load time: {restart_load_time:.2f}s")
-        
+
         # Cache hits should have increased on restart
         if final_stats["hits"] > after_load_stats["hits"]:
             print(f"✅ Cache hits increased: {final_stats['hits']} total hits")
-            print(f"✅ Cache working: served {final_stats['hits'] - after_load_stats['hits']} requests from cache")
+            print(
+                f"✅ Cache working: served {final_stats['hits'] - after_load_stats['hits']} requests from cache"
+            )
         else:
             print(f"ℹ️ No cache hits detected (may be due to test timing)")
-            
+
         # Verify cache entries exist
         assert final_stats["entries"] > 0, "Cache should have entries after app startup"
-    
+
     await controller.uninstall(app_info["id"])
 
     print("✅ Web-app installed successfully")
@@ -3045,7 +3083,7 @@ async def test_browser_cache_integration(fastapi_server, test_user_token):
     # Test that web-app doesn't generate files (navigates directly to URL)
     files = await controller.get_files(app_info["id"])
     assert len(files) == 0, "Web-app should not generate any files"
-    
+
     print("✅ Web-app correctly configured for direct URL navigation")
 
     # Clean up
@@ -3075,7 +3113,7 @@ async def test_enable_cache_key_functionality(fastapi_server, test_user_token):
             "entry_point": "https://httpbin.org/json",
             "version": "1.0.0",
             "enable_cache": False,  # Explicitly disable caching
-            "cache_routes": ["https://httpbin.org/*"]  # Should be ignored
+            "cache_routes": ["https://httpbin.org/*"],  # Should be ignored
         },
         files=[],
         stage=True,
@@ -3088,12 +3126,12 @@ from js import console
 console.log("Test web-python app")
 api.export({"test": lambda: "ok"})
 """
-    
+
     app_with_cache = await controller.install(
         source=web_python_source,
         manifest={
             "name": "Cached Web Python App",
-            "type": "web-python", 
+            "type": "web-python",
             "version": "1.0.0",
             "enable_cache": True,
             # Should get default cache routes automatically
@@ -3116,27 +3154,27 @@ api.export({"test": lambda: "ok"})
     )
 
     print("✅ Apps installed with different cache settings")
-    
+
     # Verify the apps were created correctly
     assert app_no_cache["name"] == "No Cache Web App"
     assert app_no_cache["type"] == "web-app"
-    
+
     assert app_with_cache["name"] == "Cached Web Python App"
     assert app_with_cache["type"] == "web-python"
-    
+
     assert app_default["name"] == "Default Cache App"
     assert app_default["type"] == "web-python"
-    
+
     print("✅ enable_cache key functionality verified for all app types")
 
     # Clean up
     await controller.uninstall(app_no_cache["id"])
     await controller.uninstall(app_with_cache["id"])
     await controller.uninstall(app_default["id"])
-    
+
     await api.disconnect()
- 
-    
+
+
 async def test_custom_app_id_installation(fastapi_server, test_user_token):
     """Test installing apps with custom app_id and overwrite behavior."""
 
@@ -3170,7 +3208,7 @@ async def test_custom_app_id_installation(fastapi_server, test_user_token):
 
     # Test 1: Install with custom app_id
     print(f"Testing installation with custom app_id: {custom_app_id}")
-    
+
     app_info = await controller.install(
         source=test_app_source,
         app_id=custom_app_id,
@@ -3184,7 +3222,9 @@ async def test_custom_app_id_installation(fastapi_server, test_user_token):
     )
 
     # Verify the app was installed with the specified app_id
-    assert app_info["id"] == custom_app_id, f"Expected app_id '{custom_app_id}', got '{app_info['id']}'"
+    assert (
+        app_info["id"] == custom_app_id
+    ), f"Expected app_id '{custom_app_id}', got '{app_info['id']}'"
     assert app_info["name"] == "Custom App ID Test"
     assert app_info["version"] == "1.0.0"
 
@@ -3192,7 +3232,7 @@ async def test_custom_app_id_installation(fastapi_server, test_user_token):
 
     # Test 2: Try to install with same app_id without overwrite=True (should fail)
     print("Testing installation with existing app_id without overwrite...")
-    
+
     updated_app_source = """
     api.export({
         async setup() {
@@ -3206,7 +3246,7 @@ async def test_custom_app_id_installation(fastapi_server, test_user_token):
         }
     });
     """
-    
+
     try:
         await controller.install(
             source=updated_app_source,
@@ -3219,14 +3259,18 @@ async def test_custom_app_id_installation(fastapi_server, test_user_token):
             },
             overwrite=False,  # Explicitly set to False
         )
-        assert False, "Should have failed when trying to install with existing app_id without overwrite=True"
+        assert (
+            False
+        ), "Should have failed when trying to install with existing app_id without overwrite=True"
     except Exception as e:
         print(f"✅ Expected failure occurred: {e}")
-        assert "already exists" in str(e).lower() or "overwrite" in str(e).lower(), f"Error should mention existing app or overwrite requirement: {e}"
+        assert (
+            "already exists" in str(e).lower() or "overwrite" in str(e).lower()
+        ), f"Error should mention existing app or overwrite requirement: {e}"
 
     # Test 3: Install with same app_id but with overwrite=True (should succeed)
     print("Testing installation with existing app_id with overwrite=True...")
-    
+
     updated_app_info = await controller.install(
         source=updated_app_source,
         app_id=custom_app_id,  # Same app_id
@@ -3240,30 +3284,37 @@ async def test_custom_app_id_installation(fastapi_server, test_user_token):
     )
 
     # Verify the app was updated
-    assert updated_app_info["id"] == custom_app_id, f"Expected app_id '{custom_app_id}', got '{updated_app_info['id']}'"
+    assert (
+        updated_app_info["id"] == custom_app_id
+    ), f"Expected app_id '{custom_app_id}', got '{updated_app_info['id']}'"
     assert updated_app_info["name"] == "Updated Custom App ID Test"
     assert updated_app_info["version"] == "2.0.0"
-    assert updated_app_info["description"] == "Updated version should install with overwrite=True"
+    assert (
+        updated_app_info["description"]
+        == "Updated version should install with overwrite=True"
+    )
 
     print(f"✅ App overwritten successfully with same app_id: {updated_app_info['id']}")
 
     # Test 4: Verify the updated app works correctly
     print("Testing the updated app functionality...")
-    
+
     config = await controller.start(
         custom_app_id,
         wait_for_service="default",
     )
-    
+
     app = await api.get_app(config.id)
-    
+
     # Test the updated functionality
     message = await app.getMessage()
-    assert message == "Hello from updated custom app_id app!", f"Expected updated message, got: {message}"
-    
+    assert (
+        message == "Hello from updated custom app_id app!"
+    ), f"Expected updated message, got: {message}"
+
     version = await app.getVersion()
     assert version == "v2.0", f"Expected updated version 'v2.0', got: {version}"
-    
+
     print("✅ Updated app functionality verified")
 
     # Stop the app
@@ -3271,21 +3322,23 @@ async def test_custom_app_id_installation(fastapi_server, test_user_token):
 
     # Test 5: Verify app list contains our custom app_id
     print("Testing app listing contains custom app_id...")
-    
+
     apps = await controller.list_apps()
     custom_app = next((app for app in apps if app["id"] == custom_app_id), None)
-    
-    assert custom_app is not None, f"Custom app with id '{custom_app_id}' not found in app list"
+
+    assert (
+        custom_app is not None
+    ), f"Custom app with id '{custom_app_id}' not found in app list"
     assert custom_app["name"] == "Updated Custom App ID Test"
     assert custom_app["version"] == "2.0.0"
-    
+
     print("✅ Custom app found in app list")
 
     # Test 6: Test with different custom app_id to ensure no conflicts
     print("Testing with different custom app_id...")
-    
+
     another_custom_id = "another-custom-app-id"
-    
+
     another_app_info = await controller.install(
         source=test_app_source,  # Original source
         app_id=another_custom_id,
@@ -3296,24 +3349,28 @@ async def test_custom_app_id_installation(fastapi_server, test_user_token):
         },
         overwrite=True,
     )
-    
+
     assert another_app_info["id"] == another_custom_id
     assert another_app_info["name"] == "Another Custom App"
-    
-    print(f"✅ Another app installed with different custom app_id: {another_app_info['id']}")
+
+    print(
+        f"✅ Another app installed with different custom app_id: {another_app_info['id']}"
+    )
 
     # Test 7: Verify both apps exist independently
     apps = await controller.list_apps()
     app_ids = [app["id"] for app in apps]
-    
+
     assert custom_app_id in app_ids, f"First custom app '{custom_app_id}' not found"
-    assert another_custom_id in app_ids, f"Second custom app '{another_custom_id}' not found"
-    
+    assert (
+        another_custom_id in app_ids
+    ), f"Second custom app '{another_custom_id}' not found"
+
     print("✅ Both custom apps exist independently")
 
     # Test 8: Test invalid app_id formats (optional - depends on validation rules)
     print("Testing invalid app_id format...")
-    
+
     try:
         await controller.install(
             source=test_app_source,
@@ -3338,12 +3395,11 @@ async def test_custom_app_id_installation(fastapi_server, test_user_token):
         print(f"✅ Cleaned up app: {custom_app_id}")
     except Exception as e:
         print(f"⚠️  Failed to clean up {custom_app_id}: {e}")
-    
+
     try:
         await controller.uninstall(another_custom_id)
         print(f"✅ Cleaned up app: {another_custom_id}")
     except Exception as e:
         print(f"⚠️  Failed to clean up {another_custom_id}: {e}")
-
 
     await api.disconnect()

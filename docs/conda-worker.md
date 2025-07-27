@@ -1,11 +1,12 @@
 # Hypha Conda Environment Worker
 
-The Hypha Conda Environment Worker is a standalone service that enables executing Python code in isolated conda environments. This worker automatically uses **mamba** when available (falling back to conda), and can be deployed separately from the main Hypha server, allowing for flexible distributed computing setups and better resource management.
+The Hypha Conda Environment Worker is a standalone service that enables executing Python code in isolated conda environments, similar to a Jupyter notebook. This worker automatically uses **mamba** when available (falling back to conda), and can be deployed separately from the main Hypha server, allowing for flexible distributed computing setups and better resource management.
 
 ## Overview
 
 The Conda Environment Worker provides:
-- **Isolated environments**: Each execution runs in a separate conda environment
+- **Jupyter-like execution**: Execute Python code cells and get stdout/stderr output
+- **Isolated environments**: Each session runs in a separate conda environment  
 - **Dependency management**: Automatic installation of conda and pip packages
 - **Environment caching**: Reuses existing environments to improve performance
 - **Remote execution**: Can run on different machines from the Hypha server
@@ -225,29 +226,25 @@ python -m hypha.workers.conda --verbose
 
 ## Usage
 
-Once the worker is running, it can execute Python applications with conda dependencies. Here's how to use it:
+Once the worker is running, it can execute Python code in isolated conda environments, similar to a Jupyter notebook. Here's how to use it:
 
 ### 1. Create a Python Application
 
-Create a Python script with conda dependencies:
+Create a Python script that will run during environment initialization:
 
 ```python
 # main.py
-def execute(input_data):
-    import numpy as np
-    import pandas as pd
-    
-    # Your computation logic here
-    data = np.array(input_data) if input_data else np.array([1, 2, 3, 4, 5])
-    df = pd.DataFrame({'values': data})
-    
-    result = {
-        'mean': float(df['values'].mean()),
-        'std': float(df['values'].std()),
-        'sum': float(df['values'].sum())
-    }
-    
-    return result
+import numpy as np
+import sys
+import platform
+
+print("=== Environment Info ===")
+print(f"Python version: {sys.version_info.major}.{sys.version_info.minor}")
+print(f"Platform: {platform.system()}")
+print(f"NumPy version: {np.__version__}")
+
+# Your initialization code here
+print("Application initialized successfully!")
 ```
 
 ### 2. Create an Application Manifest
@@ -265,10 +262,9 @@ dependencies:
   - pandas
 channels:
   - conda-forge
-  - defaults
 ```
 
-### 3. Deploy and Execute
+### 3. Deploy and Execute Code
 
 ```python
 # Client code to use the conda worker
@@ -300,9 +296,32 @@ async def main():
         # ... other config fields
     })
     
-    # Execute code
-    result = await conda_worker.execute_code(session_id, [1, 2, 3, 4, 5])
-    print("Result:", result.result)
+    # Execute code like in a Jupyter notebook
+    code = """
+import numpy as np
+import pandas as pd
+
+# Create some data
+data = np.array([1, 2, 3, 4, 5])
+df = pd.DataFrame({'values': data})
+
+# Perform calculations
+mean_val = df['values'].mean()
+std_val = df['values'].std()
+sum_val = df['values'].sum()
+
+print(f"Mean: {mean_val}")
+print(f"Standard deviation: {std_val}")
+print(f"Sum: {sum_val}")
+"""
+    
+    result = await conda_worker.execute_code(session_id, code)
+    
+    if result.success:
+        print("Output:", result.stdout)
+    else:
+        print("Error:", result.error)
+        print("Stderr:", result.stderr)
     
     # Stop the session
     await conda_worker.stop(session_id)
@@ -310,14 +329,103 @@ async def main():
 asyncio.run(main())
 ```
 
+## Common Use Cases
+
+### Interactive Data Analysis
+
+```python
+# Execute code for data analysis
+code = """
+import numpy as np
+import pandas as pd
+
+# Create sample data
+data = np.random.randn(100, 3)
+df = pd.DataFrame(data, columns=['A', 'B', 'C'])
+
+# Perform analysis
+print(f"Dataset shape: {df.shape}")
+print(f"Column A mean: {df['A'].mean():.3f}")
+print(f"Column B std: {df['B'].std():.3f}")
+print(df.head())
+"""
+
+result = await conda_worker.execute_code(session_id, code)
+print(result.stdout)
+```
+
+### Environment Information
+
+```python
+# Check environment details
+code = """
+import sys
+import platform
+import numpy as np
+
+print(f"Python version: {sys.version}")
+print(f"Platform: {platform.system()} {platform.release()}")
+print(f"NumPy version: {np.__version__}")
+print(f"Python executable: {sys.executable}")
+"""
+
+result = await conda_worker.execute_code(session_id, code)
+print(result.stdout)
+```
+
+### Package Testing
+
+```python
+# Test if packages are available and working
+code = """
+try:
+    import requests
+    response = requests.get('https://httpbin.org/json')
+    print(f"Requests working: {response.status_code == 200}")
+    print(f"Requests version: {requests.__version__}")
+except ImportError as e:
+    print(f"Requests not available: {e}")
+
+try:
+    import matplotlib.pyplot as plt
+    print(f"Matplotlib available: {plt.__version__}")
+except ImportError as e:
+    print(f"Matplotlib not available: {e}")
+"""
+
+result = await conda_worker.execute_code(session_id, code)
+print(result.stdout)
+```
+
+### Handling Execution Results
+
+The `execute_code()` method returns an `ExecutionResult` object with the following fields:
+
+```python
+result = await conda_worker.execute_code(session_id, code)
+
+if result.success:
+    print("Code executed successfully!")
+    print("Output:", result.stdout)
+else:
+    print("Execution failed!")
+    print("Error:", result.error)
+    print("Stderr:", result.stderr)
+
+# Timing information (if available)
+if result.timing:
+    print(f"Execution time: {result.timing.execution_time:.2f}s")
+```
+
 ## Environment Caching
 
-The worker automatically caches conda environments to improve performance:
+The worker automatically caches conda environments to improve performance. When you start a session, the initialization script runs once, but the environment stays available for multiple `execute_code()` calls:
 
 - **Hash-based caching**: Environments are cached based on dependencies and channels
 - **LRU eviction**: Least recently used environments are removed when cache is full
 - **Age-based cleanup**: Environments older than 30 days are automatically removed
 - **Validation**: Cached environments are validated before reuse
+- **Session isolation**: Each session gets its own Python namespace while sharing the environment
 
 ### Cache Configuration
 
@@ -383,7 +491,19 @@ conda install mamba -n base -c conda-forge
 # Or install miniconda/miniforge if neither is available
 ```
 
-#### 2. Permission Errors
+#### 2. Code Execution Errors
+```
+ExecutionResult.success = False
+```
+**Solution**: Check the `stderr` and `error` fields in the result:
+```python
+result = await conda_worker.execute_code(session_id, code)
+if not result.success:
+    print(f"Error: {result.error}")
+    print(f"Stderr: {result.stderr}")
+```
+
+#### 3. Permission Errors
 ```
 PermissionError: [Errno 13] Permission denied
 ```
@@ -393,7 +513,19 @@ mkdir -p ~/.hypha_conda_cache
 chmod 755 ~/.hypha_conda_cache
 ```
 
-#### 3. Network Connection Issues
+#### 4. Import Errors in Code
+```
+ModuleNotFoundError: No module named 'package_name'
+```
+**Solution**: Add the missing package to your manifest dependencies:
+```yaml
+dependencies:
+  - python=3.11
+  - numpy
+  - package_name  # Add missing package
+```
+
+#### 5. Network Connection Issues
 ```
 Failed to connect to server
 ```
@@ -402,7 +534,7 @@ Failed to connect to server
 - Check network connectivity
 - Ensure token is valid and not expired
 
-#### 4. Environment Creation Failures
+#### 6. Environment Creation Failures
 ```
 Failed to create environment using mamba/conda
 ```
@@ -431,20 +563,37 @@ Failed to create environment using mamba/conda
 
 ### Worker Service Methods
 
-#### `start(config: WorkerConfig) -> str`
-Start a new conda environment session.
+#### `start(config: WorkerConfig) -> str`  
+Start a new conda environment session with the specified dependencies. The initialization script will run during startup.
 
-#### `execute_code(session_id: str, input_data: Any) -> ExecutionResult`
-Execute code in a conda environment session.
+**Parameters:**
+- `config`: Worker configuration including manifest with dependencies, channels, and entry point
+
+**Returns:** Session ID string
+
+#### `execute_code(session_id: str, code: str) -> ExecutionResult`
+Execute Python code in the conda environment session, similar to a Jupyter notebook cell.
+
+**Parameters:**
+- `session_id`: The session ID returned from `start()`
+- `code`: Python code string to execute
+
+**Returns:** ExecutionResult with `success`, `stdout`, `stderr`, and `error` fields
 
 #### `stop(session_id: str) -> None`
-Stop a conda environment session.
+Stop a conda environment session and clean up resources.
 
-#### `get_logs(session_id: str, type: str = None) -> Dict[str, List[str]]`
+#### `get_logs(session_id: str, type: str = None, offset: int = 0, limit: int = None) -> Union[Dict[str, List[str]], List[str]]`
 Get logs for a conda environment session.
 
+**Parameters:**
+- `session_id`: Session ID
+- `type`: Optional log type filter ("stdout", "stderr", "info", "error", "progress")
+- `offset`: Starting position for log entries  
+- `limit`: Maximum number of log entries to return
+
 #### `get_session_info(session_id: str) -> SessionInfo`
-Get information about a conda environment session.
+Get information about a conda environment session including status and metadata.
 
 #### `list_sessions(workspace: str) -> List[SessionInfo]`
 List all conda environment sessions for a workspace.

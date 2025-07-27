@@ -55,7 +55,7 @@ async def test_metrics(fastapi_server, test_user_token):
 
     # Create a unique workspace ID using timestamp to ensure it's always new
     workspace_id = f"my-test-workspace-metrics-{int(time.time() * 1000)}"
-    
+
     # Create a new workspace
     await api.create_workspace(
         {
@@ -74,9 +74,7 @@ async def test_metrics(fastapi_server, test_user_token):
     ), "Active workspace count did not increase."
 
     # Check if a service was added to the workspace
-    active_services = get_metric_value(
-        "active_services", {"workspace": workspace_id}
-    )
+    active_services = get_metric_value("active_services", {"workspace": workspace_id})
     assert active_services is None, "Expected no active services in the new workspace."
 
     # Verify that other services and workspaces haven't changed unexpectedly

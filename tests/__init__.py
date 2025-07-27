@@ -22,7 +22,9 @@ MINIO_SERVER_URL = f"http://127.0.0.1:{MINIO_PORT}"
 MINIO_SERVER_URL_PUBLIC = f"http://localhost:{MINIO_PORT}"
 MINIO_ROOT_USER = "minio"
 # Use a fixed password or get from environment to avoid multiple UUID generations
-MINIO_ROOT_PASSWORD = os.environ.get("TEST_MINIO_ROOT_PASSWORD", "test-minio-password-123")
+MINIO_ROOT_PASSWORD = os.environ.get(
+    "TEST_MINIO_ROOT_PASSWORD", "test-minio-password-123"
+)
 REDIS_PORT = 6338
 
 POSTGRES_PORT = 5432

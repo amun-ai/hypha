@@ -235,7 +235,7 @@ def create_application(args):
         if mcp_startup_function not in args.startup_functions:
             args.startup_functions.append(mcp_startup_function)
             logger.info("Automatically added MCP proxy worker to startup functions")
-    
+
     # Automatically add A2A proxy startup function if A2A is enabled
     if args.enable_a2a:
         a2a_startup_function = "hypha.workers.a2a_proxy:hypha_startup"

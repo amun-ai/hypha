@@ -16,52 +16,52 @@ from . import WS_SERVER_URL, SERVER_URL
 try:
     import mcp.types as types
     from mcp.server.lowlevel import Server
-    
+
     MCP_AVAILABLE = True
 except ImportError:
     MCP_AVAILABLE = False
-    
+
     # Mock types for tests when MCP is not available
     class MockTool:
         def __init__(self, name, description, inputSchema):
             self.name = name
             self.description = description
             self.inputSchema = inputSchema
-    
+
     class MockTextContent:
         def __init__(self, type, text):
             self.type = type
             self.text = text
-    
+
     class MockPrompt:
         def __init__(self, name, description, arguments):
             self.name = name
             self.description = description
             self.arguments = arguments
-    
+
     class MockPromptArgument:
         def __init__(self, name, description, required):
             self.name = name
             self.description = description
             self.required = required
-    
+
     class MockGetPromptResult:
         def __init__(self, description, messages):
             self.description = description
             self.messages = messages
-    
+
     class MockPromptMessage:
         def __init__(self, role, content):
             self.role = role
             self.content = content
-    
+
     class MockResourceTemplate:
         def __init__(self, uriTemplate, name, description, mimeType):
             self.uriTemplate = uriTemplate
             self.name = name
             self.description = description
             self.mimeType = mimeType
-    
+
     # Create a mock types module
     class MockTypes:
         Tool = MockTool
@@ -72,7 +72,7 @@ except ImportError:
         GetPromptResult = MockGetPromptResult
         PromptMessage = MockPromptMessage
         ResourceTemplate = MockResourceTemplate
-    
+
     types = MockTypes()
 
 # All test coroutines will be treated as marked.
@@ -98,12 +98,14 @@ async def test_mcp_service_registration(fastapi_server, test_user_token):
                     "properties": {
                         "text": {"type": "string", "description": "Text to echo"}
                     },
-                    "required": ["text"]
-                }
+                    "required": ["text"],
+                },
             )
         ]
 
-    async def call_tool(name: str, arguments: Dict[str, Any]) -> List[types.ContentBlock]:
+    async def call_tool(
+        name: str, arguments: Dict[str, Any]
+    ) -> List[types.ContentBlock]:
         if name == "echo":
             text = arguments.get("text", "")
             return [types.TextContent(type="text", text=f"Echo: {text}")]
@@ -113,9 +115,7 @@ async def test_mcp_service_registration(fastapi_server, test_user_token):
     async def list_prompts() -> List[types.Prompt]:
         return [
             types.Prompt(
-                name="greeting",
-                description="A simple greeting prompt",
-                arguments=[]
+                name="greeting", description="A simple greeting prompt", arguments=[]
             )
         ]
 
@@ -126,9 +126,11 @@ async def test_mcp_service_registration(fastapi_server, test_user_token):
                 messages=[
                     types.PromptMessage(
                         role="user",
-                        content=types.TextContent(type="text", text="Hello, how are you?")
+                        content=types.TextContent(
+                            type="text", text="Hello, how are you?"
+                        ),
                     )
-                ]
+                ],
             )
         else:
             raise ValueError(f"Unknown prompt: {name}")
@@ -139,11 +141,13 @@ async def test_mcp_service_registration(fastapi_server, test_user_token):
                 uriTemplate="test://resource/{id}",
                 name="Test Resource",
                 description="A test resource template",
-                mimeType="text/plain"
+                mimeType="text/plain",
             )
         ]
 
-    async def progress_notification(progress_token: str, progress: float, total: Optional[float] = None):
+    async def progress_notification(
+        progress_token: str, progress: float, total: Optional[float] = None
+    ):
         # Mock progress notification
         pass
 
@@ -192,13 +196,13 @@ async def test_mcp_schema_function_service(fastapi_server, test_user_token):
                         "operation": {
                             "type": "string",
                             "enum": ["add", "subtract", "multiply", "divide"],
-                            "description": "The operation to perform"
+                            "description": "The operation to perform",
                         },
                         "a": {"type": "number", "description": "First number"},
-                        "b": {"type": "number", "description": "Second number"}
+                        "b": {"type": "number", "description": "Second number"},
                     },
-                    "required": ["operation", "a", "b"]
-                }
+                    "required": ["operation", "a", "b"],
+                },
             }
         ]
 
@@ -209,7 +213,7 @@ async def test_mcp_schema_function_service(fastapi_server, test_user_token):
             operation = arguments.get("operation")
             a = arguments.get("a", 0)
             b = arguments.get("b", 0)
-            
+
             if operation == "add":
                 result = a + b
             elif operation == "subtract":
@@ -222,7 +226,7 @@ async def test_mcp_schema_function_service(fastapi_server, test_user_token):
                 result = a / b
             else:
                 return [{"type": "text", "text": f"Unknown operation: {operation}"}]
-            
+
             return [{"type": "text", "text": f"Result: {result}"}]
         else:
             return [{"type": "text", "text": f"Unknown tool: {name}"}]
@@ -238,9 +242,9 @@ async def test_mcp_schema_function_service(fastapi_server, test_user_token):
                     {
                         "name": "topic",
                         "description": "Math topic to get help with",
-                        "required": True
+                        "required": True,
                     }
-                ]
+                ],
             }
         ]
 
@@ -256,10 +260,10 @@ async def test_mcp_schema_function_service(fastapi_server, test_user_token):
                         "role": "user",
                         "content": {
                             "type": "text",
-                            "text": f"Can you help me with {topic} problems?"
-                        }
+                            "text": f"Can you help me with {topic} problems?",
+                        },
                     }
-                ]
+                ],
             }
         else:
             raise ValueError(f"Unknown prompt: {name}")
@@ -272,7 +276,7 @@ async def test_mcp_schema_function_service(fastapi_server, test_user_token):
                 "uriTemplate": "math://formula/{category}",
                 "name": "Math Formula",
                 "description": "Mathematical formulas by category",
-                "mimeType": "text/plain"
+                "mimeType": "text/plain",
             }
         ]
 
@@ -335,12 +339,9 @@ async def test_mcp_inline_config_service(fastapi_server, test_user_token):
             "messages": [
                 {
                     "role": "user",
-                    "content": {
-                        "type": "text",
-                        "text": f"Help me with {topic}"
-                    }
+                    "content": {"type": "text", "text": f"Help me with {topic}"},
                 }
-            ]
+            ],
         }
 
     # Register MCP service with inline configuration
@@ -363,14 +364,14 @@ async def test_mcp_inline_config_service(fastapi_server, test_user_token):
                             "operation": {
                                 "type": "string",
                                 "enum": ["add", "subtract", "multiply", "divide"],
-                                "description": "The operation to perform"
+                                "description": "The operation to perform",
                             },
                             "a": {"type": "number", "description": "First number"},
-                            "b": {"type": "number", "description": "Second number"}
+                            "b": {"type": "number", "description": "Second number"},
                         },
-                        "required": ["operation", "a", "b"]
+                        "required": ["operation", "a", "b"],
                     },
-                    "handler": simple_tool
+                    "handler": simple_tool,
                 }
             },
             "resources": {
@@ -405,7 +406,11 @@ async def test_mcp_merged_approach(fastapi_server, test_user_token):
     """Test MCP service with merged approach: inline tools/resources/prompts using schema functions."""
     # Connect to the Hypha server
     server = await connect_to_server(
-        {"name": "mcp-merged-test", "server_url": WS_SERVER_URL, "token": test_user_token}
+        {
+            "name": "mcp-merged-test",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token,
+        }
     )
 
     # Define a simple resource read function
@@ -437,9 +442,7 @@ async def test_mcp_merged_approach(fastapi_server, test_user_token):
                 "visibility": "public",
                 "run_in_executor": True,
             },
-            "tools": {
-                "simple_tool": simple_tool
-            },
+            "tools": {"simple_tool": simple_tool},
             "resources": {
                 "test_resource": {
                     "uri": "resource://test",
@@ -464,7 +467,7 @@ async def test_mcp_merged_approach(fastapi_server, test_user_token):
     # Service should be registered successfully
     assert mcp_service_info["type"] == "mcp"
     assert "mcp-merged-features" in mcp_service_info["id"]
-    
+
     print("✓ MCP service with merged approach registered successfully")
 
     await server.disconnect()
@@ -473,77 +476,93 @@ async def test_mcp_merged_approach(fastapi_server, test_user_token):
 async def test_mcp_validation_errors(fastapi_server, test_user_token):
     """Test that validation errors are properly raised for invalid configurations."""
     server = await connect_to_server(
-        {"name": "mcp-validation-test", "server_url": WS_SERVER_URL, "token": test_user_token}
+        {
+            "name": "mcp-validation-test",
+            "server_url": WS_SERVER_URL,
+            "token": test_user_token,
+        }
     )
-    
+
     # Test direct validation by creating HyphaMCPServer directly with invalid configs
     from hypha.mcp import HyphaMCPServer
-    
+
     # Test 1: Tool that is not a schema function should raise error
     def non_schema_tool(text: str) -> str:
         return f"Processed: {text}"
-    
+
     class MockServiceInfo:
         def __init__(self, **kwargs):
             self.id = "test-service"
             self.type = "mcp"
             for k, v in kwargs.items():
                 setattr(self, k, v)
-    
+
     service_info = MockServiceInfo(tools={non_schema_tool.__name__: non_schema_tool})
-    
+
     try:
         HyphaMCPServer({}, service_info)
         assert False, "Should have raised ValueError for non-schema tool"
     except ValueError as e:
         assert "must be a @schema_function decorated function" in str(e)
         print("✓ Tool validation error properly raised")
-    
+
     # Test 2: Resource without read function should raise error
-    service_info = MockServiceInfo(resources={"resource://test": {
-        "uri": "resource://test",
-        "name": "Test Resource",
-        "description": "A test resource",
-    }})
-    
+    service_info = MockServiceInfo(
+        resources={
+            "resource://test": {
+                "uri": "resource://test",
+                "name": "Test Resource",
+                "description": "A test resource",
+            }
+        }
+    )
+
     try:
         HyphaMCPServer({}, service_info)
         assert False, "Should have raised ValueError for resource without read"
     except ValueError as e:
         assert "must have a 'read' key" in str(e)
         print("✓ Resource validation error properly raised")
-    
+
     # Test 3: Resource with non-schema read function should raise error
     def non_schema_read():
         return "content"
-    
-    service_info = MockServiceInfo(resources={"resource://test": {
-        "uri": "resource://test",
-        "name": "Test Resource",
-        "description": "A test resource",
-        "read": non_schema_read,
-    }})
-    
+
+    service_info = MockServiceInfo(
+        resources={
+            "resource://test": {
+                "uri": "resource://test",
+                "name": "Test Resource",
+                "description": "A test resource",
+                "read": non_schema_read,
+            }
+        }
+    )
+
     try:
         HyphaMCPServer({}, service_info)
         assert False, "Should have raised ValueError for non-schema read function"
     except ValueError as e:
         assert "must be a @schema_function decorated function" in str(e)
         print("✓ Resource read validation error properly raised")
-    
+
     # Test 4: Prompt without read function should raise error
-    service_info = MockServiceInfo(prompts={"test_prompt": {
-        "name": "test_prompt",
-        "description": "A test prompt",
-    }})
-    
+    service_info = MockServiceInfo(
+        prompts={
+            "test_prompt": {
+                "name": "test_prompt",
+                "description": "A test prompt",
+            }
+        }
+    )
+
     try:
         HyphaMCPServer({}, service_info)
         assert False, "Should have raised ValueError for prompt without read"
     except ValueError as e:
         assert "must have a 'read' key" in str(e)
         print("✓ Prompt validation error properly raised")
-    
+
     print("✓ All validation errors properly raised")
 
     await server.disconnect()
@@ -551,7 +570,7 @@ async def test_mcp_validation_errors(fastapi_server, test_user_token):
 
 async def test_mcp_http_endpoint_tools(fastapi_server, test_user_token):
     """Test MCP HTTP endpoint for tools functionality."""
-    
+
     api = await connect_to_server(
         {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
     )
@@ -570,15 +589,17 @@ async def test_mcp_http_endpoint_tools(fastapi_server, test_user_token):
                         "format": {
                             "type": "string",
                             "enum": ["unix", "iso"],
-                            "description": "Timestamp format"
+                            "description": "Timestamp format",
                         }
                     },
-                    "required": ["format"]
-                }
+                    "required": ["format"],
+                },
             )
         ]
 
-    async def call_tool(name: str, arguments: Dict[str, Any]) -> List[types.ContentBlock]:
+    async def call_tool(
+        name: str, arguments: Dict[str, Any]
+    ) -> List[types.ContentBlock]:
         if name == "timestamp":
             format_type = arguments.get("format", "unix")
             if format_type == "unix":
@@ -613,7 +634,7 @@ async def test_mcp_http_endpoint_tools(fastapi_server, test_user_token):
                 "jsonrpc": "2.0",
                 "id": "test-1",
                 "method": "tools/list",
-                "params": {}
+                "params": {},
             },
             headers={"Content-Type": "application/json"},
         )
@@ -634,10 +655,7 @@ async def test_mcp_http_endpoint_tools(fastapi_server, test_user_token):
                 "jsonrpc": "2.0",
                 "id": "test-2",
                 "method": "tools/call",
-                "params": {
-                    "name": "timestamp",
-                    "arguments": {"format": "iso"}
-                }
+                "params": {"name": "timestamp", "arguments": {"format": "iso"}},
             },
             headers={"Content-Type": "application/json"},
         )
@@ -675,14 +693,12 @@ async def test_mcp_http_endpoint_prompts(fastapi_server, test_user_token):
                     types.PromptArgument(
                         name="language",
                         description="Programming language",
-                        required=True
+                        required=True,
                     ),
                     types.PromptArgument(
-                        name="code",
-                        description="Code to review",
-                        required=True
-                    )
-                ]
+                        name="code", description="Code to review", required=True
+                    ),
+                ],
             )
         ]
 
@@ -697,10 +713,10 @@ async def test_mcp_http_endpoint_prompts(fastapi_server, test_user_token):
                         role="user",
                         content=types.TextContent(
                             type="text",
-                            text=f"Please review this {language} code:\n\n{code}"
-                        )
+                            text=f"Please review this {language} code:\n\n{code}",
+                        ),
                     )
-                ]
+                ],
             )
         else:
             raise ValueError(f"Unknown prompt: {name}")
@@ -727,7 +743,7 @@ async def test_mcp_http_endpoint_prompts(fastapi_server, test_user_token):
                 "jsonrpc": "2.0",
                 "id": "test-1",
                 "method": "prompts/list",
-                "params": {}
+                "params": {},
             },
             headers={"Content-Type": "application/json"},
         )
@@ -752,9 +768,9 @@ async def test_mcp_http_endpoint_prompts(fastapi_server, test_user_token):
                     "name": "code_review",
                     "arguments": {
                         "language": "python",
-                        "code": "def hello():\n    print('Hello, world!')"
-                    }
-                }
+                        "code": "def hello():\n    print('Hello, world!')",
+                    },
+                },
             },
             headers={"Content-Type": "application/json"},
         )
@@ -788,7 +804,7 @@ async def test_mcp_http_endpoint_resources(fastapi_server, test_user_token):
                 uriTemplate="file://docs/{category}/{filename}",
                 name="Documentation File",
                 description="Access documentation files by category",
-                mimeType="text/markdown"
+                mimeType="text/markdown",
             )
         ]
 
@@ -813,7 +829,7 @@ async def test_mcp_http_endpoint_resources(fastapi_server, test_user_token):
                 "jsonrpc": "2.0",
                 "id": "test-1",
                 "method": "resources/templates/list",
-                "params": {}
+                "params": {},
             },
             headers={"Content-Type": "application/json"},
         )
@@ -848,14 +864,19 @@ async def test_mcp_error_handling(fastapi_server, test_user_token):
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "should_error": {"type": "boolean", "description": "Whether to trigger an error"}
+                        "should_error": {
+                            "type": "boolean",
+                            "description": "Whether to trigger an error",
+                        }
                     },
-                    "required": ["should_error"]
-                }
+                    "required": ["should_error"],
+                },
             )
         ]
 
-    async def call_tool(name: str, arguments: Dict[str, Any]) -> List[types.ContentBlock]:
+    async def call_tool(
+        name: str, arguments: Dict[str, Any]
+    ) -> List[types.ContentBlock]:
         if name == "error_tool":
             should_error = arguments.get("should_error", False)
             if should_error:
@@ -896,7 +917,7 @@ async def test_mcp_error_handling(fastapi_server, test_user_token):
                 "jsonrpc": "2.0",
                 "id": "test-2",
                 "method": "unknown/method",
-                "params": {}
+                "params": {},
             },
             headers={"Content-Type": "application/json"},
         )
@@ -912,10 +933,7 @@ async def test_mcp_error_handling(fastapi_server, test_user_token):
                 "jsonrpc": "2.0",
                 "id": "test-3",
                 "method": "tools/call",
-                "params": {
-                    "name": "error_tool",
-                    "arguments": {"should_error": True}
-                }
+                "params": {"name": "error_tool", "arguments": {"should_error": True}},
             },
             headers={"Content-Type": "application/json"},
         )
@@ -937,7 +955,7 @@ async def test_mcp_nonexistent_service(fastapi_server, test_user_token):
                 "jsonrpc": "2.0",
                 "id": "test-1",
                 "method": "tools/list",
-                "params": {}
+                "params": {},
             },
             headers={"Content-Type": "application/json"},
         )
@@ -969,13 +987,16 @@ async def test_mcp_helpful_404_message(fastapi_server, test_user_token):
             f"{SERVER_URL}/{workspace}/mcp/test-service",
             headers={"Content-Type": "application/json"},
         )
-        
+
         assert response.status_code == 404
         data = response.json()
         assert "error" in data
         assert data["error"] == "MCP endpoint not found"
         assert "available_endpoints" in data
-        assert data["available_endpoints"]["streamable_http"] == f"/{workspace}/mcp/test-service/mcp"
+        assert (
+            data["available_endpoints"]["streamable_http"]
+            == f"/{workspace}/mcp/test-service/mcp"
+        )
         assert "sse" in data["available_endpoints"]["sse"]
         assert "help" in data
 
@@ -1007,7 +1028,7 @@ async def test_mcp_sse_not_implemented(fastapi_server, test_user_token):
             f"{SERVER_URL}/{workspace}/mcp/test-service/sse",
             headers={"Content-Type": "application/json"},
         )
-        
+
         assert response.status_code == 501
         data = response.json()
         assert "error" in data
@@ -1036,16 +1057,16 @@ async def test_mcp_real_client_integration(fastapi_server, test_user_token):
                     "properties": {
                         "location": {
                             "type": "string",
-                            "description": "Location to get weather for"
+                            "description": "Location to get weather for",
                         },
                         "units": {
                             "type": "string",
                             "enum": ["celsius", "fahrenheit"],
-                            "description": "Temperature units"
-                        }
+                            "description": "Temperature units",
+                        },
                     },
-                    "required": ["location"]
-                }
+                    "required": ["location"],
+                },
             ),
             types.Tool(
                 name="time",
@@ -1055,34 +1076,36 @@ async def test_mcp_real_client_integration(fastapi_server, test_user_token):
                     "properties": {
                         "timezone": {
                             "type": "string",
-                            "description": "Timezone (optional)"
+                            "description": "Timezone (optional)",
                         }
-                    }
-                }
-            )
+                    },
+                },
+            ),
         ]
 
-    async def call_tool(name: str, arguments: Dict[str, Any]) -> List[types.ContentBlock]:
+    async def call_tool(
+        name: str, arguments: Dict[str, Any]
+    ) -> List[types.ContentBlock]:
         if name == "weather":
             location = arguments.get("location", "unknown")
             units = arguments.get("units", "celsius")
             temp_symbol = "°C" if units == "celsius" else "°F"
             temp_value = 22 if units == "celsius" else 72
-            return [types.TextContent(
-                type="text",
-                text=f"Weather in {location}: {temp_value}{temp_symbol}, sunny"
-            )]
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Weather in {location}: {temp_value}{temp_symbol}, sunny",
+                )
+            ]
         elif name == "time":
             timezone = arguments.get("timezone", "UTC")
-            return [types.TextContent(
-                type="text",
-                text=f"Current time in {timezone}: 2024-01-15 14:30:00"
-            )]
+            return [
+                types.TextContent(
+                    type="text", text=f"Current time in {timezone}: 2024-01-15 14:30:00"
+                )
+            ]
         else:
-            return [types.TextContent(
-                type="text",
-                text=f"Unknown tool: {name}"
-            )]
+            return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
 
     async def list_prompts() -> List[types.Prompt]:
         return [
@@ -1093,14 +1116,14 @@ async def test_mcp_real_client_integration(fastapi_server, test_user_token):
                     types.PromptArgument(
                         name="destination",
                         description="Travel destination",
-                        required=True
+                        required=True,
                     ),
                     types.PromptArgument(
                         name="duration",
                         description="Trip duration in days",
-                        required=False
-                    )
-                ]
+                        required=False,
+                    ),
+                ],
             )
         ]
 
@@ -1115,10 +1138,10 @@ async def test_mcp_real_client_integration(fastapi_server, test_user_token):
                         role="user",
                         content=types.TextContent(
                             type="text",
-                            text=f"I want to plan a {duration}-day trip to {destination}. Can you help me create an itinerary?"
-                        )
+                            text=f"I want to plan a {duration}-day trip to {destination}. Can you help me create an itinerary?",
+                        ),
                     )
-                ]
+                ],
             )
         else:
             raise ValueError(f"Unknown prompt: {name}")
@@ -1140,69 +1163,71 @@ async def test_mcp_real_client_integration(fastapi_server, test_user_token):
 
     from mcp.client.streamable_http import streamablehttp_client
     from mcp.client.session import ClientSession
-    
+
     # Create MCP client session
     base_url = f"{SERVER_URL}/{workspace}/mcp/weather-service/mcp"
-    
-    async with streamablehttp_client(base_url) as (read_stream, write_stream, get_session_id):
+
+    async with streamablehttp_client(base_url) as (
+        read_stream,
+        write_stream,
+        get_session_id,
+    ):
         async with ClientSession(read_stream, write_stream) as session:
             # Test 1: List tools
             tools_result = await session.list_tools()
             assert tools_result is not None
-            assert hasattr(tools_result, 'tools')
+            assert hasattr(tools_result, "tools")
             assert len(tools_result.tools) == 2
-            
+
             tool_names = [tool.name for tool in tools_result.tools]
             assert "weather" in tool_names
             assert "time" in tool_names
-            
+
             # Find weather tool
-            weather_tool = next(tool for tool in tools_result.tools if tool.name == "weather")
+            weather_tool = next(
+                tool for tool in tools_result.tools if tool.name == "weather"
+            )
             assert weather_tool.description == "Get weather information for a location"
             assert "location" in weather_tool.inputSchema["properties"]
-            
+
             # Test 2: Call weather tool
             weather_result = await session.call_tool(
                 name="weather",
-                arguments={"location": "New York", "units": "fahrenheit"}
+                arguments={"location": "New York", "units": "fahrenheit"},
             )
             assert weather_result is not None
-            assert hasattr(weather_result, 'content')
+            assert hasattr(weather_result, "content")
             assert len(weather_result.content) == 1
             assert weather_result.content[0].type == "text"
             assert "New York" in weather_result.content[0].text
             assert "°F" in weather_result.content[0].text
-            
+
             # Test 3: Call time tool
             time_result = await session.call_tool(
-                name="time",
-                arguments={"timezone": "EST"}
+                name="time", arguments={"timezone": "EST"}
             )
             assert time_result is not None
-            assert hasattr(time_result, 'content')
+            assert hasattr(time_result, "content")
             assert len(time_result.content) == 1
             assert "EST" in time_result.content[0].text
-            
+
             # Test 4: List prompts
             prompts_result = await session.list_prompts()
             assert prompts_result is not None
-            assert hasattr(prompts_result, 'prompts')
+            assert hasattr(prompts_result, "prompts")
             assert len(prompts_result.prompts) == 1
             assert prompts_result.prompts[0].name == "travel_planner"
-            
+
             # Test 5: Get prompt
             prompt_result = await session.get_prompt(
                 name="travel_planner",
-                arguments={"destination": "Tokyo", "duration": "7"}
+                arguments={"destination": "Tokyo", "duration": "7"},
             )
             assert prompt_result is not None
-            assert hasattr(prompt_result, 'messages')
+            assert hasattr(prompt_result, "messages")
             assert len(prompt_result.messages) == 1
             assert prompt_result.messages[0].role == "user"
             assert "Tokyo" in prompt_result.messages[0].content.text
             assert "7-day" in prompt_result.messages[0].content.text
-            
 
     await api.disconnect()
-
-

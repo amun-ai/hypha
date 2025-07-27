@@ -854,6 +854,7 @@ async def test_artifact_alias_pattern(minio_server, fastapi_server, test_user_to
     # Verify the alias pattern is correctly applied
     assert dataset["manifest"]["name"] == "My test data"
 
+
 @pytest.mark.xfail(reason="Zenodo sandbox token may not be available")
 async def test_publish_artifact(minio_server, fastapi_server, test_user_token):
     """Test publishing an artifact."""
@@ -1943,23 +1944,23 @@ async def test_multipart_upload_service_functions(
     file_path = "large_file.txt"
     part_count = 3
     download_weight = 5.0
-    
+
     multipart_info = await artifact_manager.put_file_start_multipart(
         artifact_id=dataset.id,
         file_path=file_path,
         part_count=part_count,
         download_weight=download_weight,
-        expires_in=3600
+        expires_in=3600,
     )
-    
+
     # Verify the response structure
     assert "upload_id" in multipart_info
     assert "parts" in multipart_info
     assert len(multipart_info["parts"]) == part_count
-    
+
     upload_id = multipart_info["upload_id"]
     part_urls = multipart_info["parts"]
-    
+
     # Verify each part has the expected structure
     for i, part in enumerate(part_urls):
         assert part["part_number"] == i + 1
@@ -1972,19 +1973,14 @@ async def test_multipart_upload_service_functions(
     for part in part_urls:
         # Simulate an ETag (normally this would come from the S3 upload response)
         fake_etag = f'"etag-{part["part_number"]}"'
-        parts_data.append({
-            "part_number": part["part_number"],
-            "etag": fake_etag
-        })
+        parts_data.append({"part_number": part["part_number"], "etag": fake_etag})
 
     # Test put_file_complete_multipart service function
     # Note: This will fail in the test because we didn't actually upload the parts
     # but it tests that the service function is properly structured
     try:
         result = await artifact_manager.put_file_complete_multipart(
-            artifact_id=dataset.id,
-            upload_id=upload_id,
-            parts=parts_data
+            artifact_id=dataset.id, upload_id=upload_id, parts=parts_data
         )
         # If this succeeds, verify the response
         assert result["success"] is True
@@ -2001,7 +1997,7 @@ async def test_multipart_upload_service_functions(
         await artifact_manager.put_file_start_multipart(
             artifact_id=dataset.id,
             file_path="test2.txt",
-            part_count=0  # Invalid: should be > 0
+            part_count=0,  # Invalid: should be > 0
         )
         assert False, "Should have raised ValueError for invalid part_count"
     except Exception as e:
@@ -2011,7 +2007,7 @@ async def test_multipart_upload_service_functions(
         await artifact_manager.put_file_start_multipart(
             artifact_id=dataset.id,
             file_path="test3.txt",
-            part_count=10001  # Invalid: too many parts
+            part_count=10001,  # Invalid: too many parts
         )
         assert False, "Should have raised ValueError for too many parts"
     except Exception as e:
@@ -2023,7 +2019,7 @@ async def test_multipart_upload_service_functions(
             artifact_id=dataset.id,
             file_path="test4.txt",
             part_count=2,
-            download_weight=-1  # Invalid: should be non-negative
+            download_weight=-1,  # Invalid: should be non-negative
         )
         assert False, "Should have raised ValueError for negative download_weight"
     except Exception as e:
@@ -2034,7 +2030,7 @@ async def test_multipart_upload_service_functions(
         await artifact_manager.put_file_complete_multipart(
             artifact_id=dataset.id,
             upload_id="invalid-upload-id",
-            parts=[{"part_number": 1, "etag": '"test"'}]
+            parts=[{"part_number": 1, "etag": '"test"'}],
         )
         assert False, "Should have raised ValueError for invalid upload_id"
     except Exception as e:
@@ -5202,7 +5198,10 @@ async def test_delete_version_handling(minio_server, fastapi_server, test_user_t
     # Create a test artifact with multiple versions
     artifact = await artifact_manager.create(
         type="dataset",
-        manifest={"name": "Test Dataset", "description": "Test dataset for delete tests"},
+        manifest={
+            "name": "Test Dataset",
+            "description": "Test dataset for delete tests",
+        },
         stage=True,
     )
 
@@ -5212,7 +5211,9 @@ async def test_delete_version_handling(minio_server, fastapi_server, test_user_t
     v1_artifact = await artifact_manager.commit(artifact.id, version="v1")
 
     # Create a second version
-    await artifact_manager.edit(artifact.id, manifest={"name": "Updated Dataset"}, stage=True, version="new")
+    await artifact_manager.edit(
+        artifact.id, manifest={"name": "Updated Dataset"}, stage=True, version="new"
+    )
     put_url = await artifact_manager.put_file(artifact.id, "test2.txt")
     requests.put(put_url, data=b"test content 2")
     v2_artifact = await artifact_manager.commit(artifact.id, version="v2")
@@ -5236,14 +5237,16 @@ async def test_delete_version_handling(minio_server, fastapi_server, test_user_t
 
     # Test 4: Delete entire artifact (version=None)
     await artifact_manager.delete(artifact.id, delete_files=True)
-    
+
     # Verify artifact is deleted
     with pytest.raises(Exception) as excinfo:
         await artifact_manager.read(artifact.id)
     assert "does not exist" in str(excinfo.value)
 
 
-async def test_delete_staged_version_error(minio_server, fastapi_server, test_user_token):
+async def test_delete_staged_version_error(
+    minio_server, fastapi_server, test_user_token
+):
     """Test that delete raises proper error for staged versions."""
     api = await connect_to_server(
         {"name": "test-client", "token": test_user_token, "server_url": SERVER_URL}
@@ -5253,34 +5256,47 @@ async def test_delete_staged_version_error(minio_server, fastapi_server, test_us
     # Test 1: Create artifact in staging mode
     artifact = await artifact_manager.create(
         type="dataset",
-        manifest={"name": "Test Dataset", "description": "Test dataset for delete tests"},
+        manifest={
+            "name": "Test Dataset",
+            "description": "Test dataset for delete tests",
+        },
         stage=True,
     )
 
     # Test 2: Try to delete staged version - should raise error telling user to use discard
     with pytest.raises(Exception) as excinfo:
         await artifact_manager.delete(artifact.id, version="stage")
-    assert "Cannot delete staged version. The artifact is in staging mode. Please use the 'discard' function instead" in str(excinfo.value)
+    assert (
+        "Cannot delete staged version. The artifact is in staging mode. Please use the 'discard' function instead"
+        in str(excinfo.value)
+    )
 
     # Test 3: Commit the artifact first
     await artifact_manager.commit(artifact.id)
-    
+
     # Test 4: Try to delete staged version when artifact is not in staging mode
     with pytest.raises(Exception) as excinfo:
         await artifact_manager.delete(artifact.id, version="stage")
-    assert "Cannot delete staged version. The artifact is not in staging mode" in str(excinfo.value)
+    assert "Cannot delete staged version. The artifact is not in staging mode" in str(
+        excinfo.value
+    )
 
     # Test 5: Put artifact back in staging mode
-    await artifact_manager.edit(artifact.id, manifest={"name": "Updated Dataset"}, stage=True)
-    
+    await artifact_manager.edit(
+        artifact.id, manifest={"name": "Updated Dataset"}, stage=True
+    )
+
     # Test 6: Try to delete staged version again - should raise error
     with pytest.raises(Exception) as excinfo:
         await artifact_manager.delete(artifact.id, version="stage")
-    assert "Cannot delete staged version. The artifact is in staging mode. Please use the 'discard' function instead" in str(excinfo.value)
+    assert (
+        "Cannot delete staged version. The artifact is in staging mode. Please use the 'discard' function instead"
+        in str(excinfo.value)
+    )
 
     # Test 7: Use discard instead (proper way)
     await artifact_manager.discard(artifact.id)
-    
+
     # Test 8: Now delete the entire artifact
     await artifact_manager.delete(artifact.id, delete_files=True)
 
@@ -5295,15 +5311,20 @@ async def test_delete_version_validation(minio_server, fastapi_server, test_user
     # Create artifact with specific versions
     artifact = await artifact_manager.create(
         type="dataset",
-        manifest={"name": "Test Dataset", "description": "Test dataset for version validation"},
+        manifest={
+            "name": "Test Dataset",
+            "description": "Test dataset for version validation",
+        },
         stage=True,
     )
 
     # Create version v1
     await artifact_manager.commit(artifact.id, version="v1")
-    
+
     # Create version v2
-    await artifact_manager.edit(artifact.id, manifest={"name": "Updated Dataset"}, stage=True, version="new")
+    await artifact_manager.edit(
+        artifact.id, manifest={"name": "Updated Dataset"}, stage=True, version="new"
+    )
     await artifact_manager.commit(artifact.id, version="v2")
 
     # Test 1: Try to delete non-existent version by name
@@ -5325,7 +5346,7 @@ async def test_delete_version_validation(minio_server, fastapi_server, test_user
 
     # Test 4: Delete by valid index
     await artifact_manager.delete(artifact.id, version=0)  # Delete first version (v1)
-    
+
     # Verify version was deleted
     updated_artifact = await artifact_manager.read(artifact.id)
     version_names = [v["version"] for v in updated_artifact["versions"]]
@@ -5334,7 +5355,7 @@ async def test_delete_version_validation(minio_server, fastapi_server, test_user
 
     # Test 5: Delete by valid version name
     await artifact_manager.delete(artifact.id, version="v2")
-    
+
     # Verify version was deleted
     updated_artifact = await artifact_manager.read(artifact.id)
     assert len(updated_artifact["versions"]) == 0
@@ -5343,7 +5364,9 @@ async def test_delete_version_validation(minio_server, fastapi_server, test_user
     await artifact_manager.delete(artifact.id, delete_files=True)
 
 
-async def test_list_files_include_pending(minio_server, fastapi_server, test_user_token):
+async def test_list_files_include_pending(
+    minio_server, fastapi_server, test_user_token
+):
     """Test list_files with include_pending parameter for staging artifacts."""
     api = await connect_to_server(
         {"name": "test-client", "token": test_user_token, "server_url": SERVER_URL}
@@ -5353,7 +5376,10 @@ async def test_list_files_include_pending(minio_server, fastapi_server, test_use
     # Create a test artifact in staging mode
     artifact = await artifact_manager.create(
         type="dataset",
-        manifest={"name": "Test Dataset", "description": "Test dataset for file listing"},
+        manifest={
+            "name": "Test Dataset",
+            "description": "Test dataset for file listing",
+        },
         stage=True,
     )
 
@@ -5362,7 +5388,9 @@ async def test_list_files_include_pending(minio_server, fastapi_server, test_use
     assert len(files) == 0
 
     # List files with include_pending=False (should be empty)
-    files = await artifact_manager.list_files(artifact.id, version="stage", include_pending=False)
+    files = await artifact_manager.list_files(
+        artifact.id, version="stage", include_pending=False
+    )
     assert len(files) == 0
 
     # Add a file to staging manifest (simulate put_file operation)
@@ -5373,30 +5401,40 @@ async def test_list_files_include_pending(minio_server, fastapi_server, test_use
     assert len(files) == 0  # No actual files uploaded yet
 
     # List files with include_pending=True (should show pending files)
-    files = await artifact_manager.list_files(artifact.id, version="stage", include_pending=True)
+    files = await artifact_manager.list_files(
+        artifact.id, version="stage", include_pending=True
+    )
     assert len(files) == 1
     assert files[0]["name"] == "test_file.txt"
     assert files[0]["pending"] is True
     assert files[0]["download_weight"] == 1.0
 
     # Add another file to staging manifest
-    await artifact_manager.put_file(artifact.id, "subfolder/test_file2.txt", download_weight=0.5)
+    await artifact_manager.put_file(
+        artifact.id, "subfolder/test_file2.txt", download_weight=0.5
+    )
 
     # List files with include_pending=True (should show both pending files)
-    files = await artifact_manager.list_files(artifact.id, version="stage", include_pending=True)
+    files = await artifact_manager.list_files(
+        artifact.id, version="stage", include_pending=True
+    )
     assert len(files) == 2
     file_names = [f["name"] for f in files]
     assert "test_file.txt" in file_names
     assert "subfolder/test_file2.txt" in file_names
-    
+
     # Test with directory filtering
-    files = await artifact_manager.list_files(artifact.id, dir_path="subfolder", version="stage", include_pending=True)
+    files = await artifact_manager.list_files(
+        artifact.id, dir_path="subfolder", version="stage", include_pending=True
+    )
     assert len(files) == 1
     assert files[0]["name"] == "test_file2.txt"
     assert files[0]["pending"] is True
 
 
-async def test_remove_file_error_handling(minio_server, fastapi_server, test_user_token):
+async def test_remove_file_error_handling(
+    minio_server, fastapi_server, test_user_token
+):
     """Test remove_file handles non-existent files gracefully."""
     api = await connect_to_server(
         {"name": "test-client", "token": test_user_token, "server_url": SERVER_URL}
@@ -5406,7 +5444,10 @@ async def test_remove_file_error_handling(minio_server, fastapi_server, test_use
     # Create a test artifact in staging mode
     artifact = await artifact_manager.create(
         type="dataset",
-        manifest={"name": "Test Dataset", "description": "Test dataset for file removal"},
+        manifest={
+            "name": "Test Dataset",
+            "description": "Test dataset for file removal",
+        },
         stage=True,
     )
 
@@ -5418,7 +5459,9 @@ async def test_remove_file_error_handling(minio_server, fastapi_server, test_use
     await artifact_manager.remove_file(artifact.id, "test_file.txt")
 
     # Verify file is removed from staging manifest
-    files = await artifact_manager.list_files(artifact.id, version="stage", include_pending=True)
+    files = await artifact_manager.list_files(
+        artifact.id, version="stage", include_pending=True
+    )
     assert len(files) == 0
 
     # Try to remove a file that was never added to staging manifest
@@ -5426,7 +5469,9 @@ async def test_remove_file_error_handling(minio_server, fastapi_server, test_use
     await artifact_manager.remove_file(artifact.id, "nonexistent_file.txt")
 
 
-async def test_list_files_stage_version_index(minio_server, fastapi_server, test_user_token):
+async def test_list_files_stage_version_index(
+    minio_server, fastapi_server, test_user_token
+):
     """Test that list_files uses correct version index for stage version."""
     api = await connect_to_server(
         {"name": "test-client", "token": test_user_token, "server_url": SERVER_URL}
@@ -5436,12 +5481,15 @@ async def test_list_files_stage_version_index(minio_server, fastapi_server, test
     # Create and commit an artifact with a file
     artifact = await artifact_manager.create(
         type="dataset",
-        manifest={"name": "Test Dataset", "description": "Test dataset for version indexing"},
+        manifest={
+            "name": "Test Dataset",
+            "description": "Test dataset for version indexing",
+        },
     )
-    
+
     # Now edit it to add a file and commit
     edited_artifact = await artifact_manager.edit(artifact.id, stage=True)
-    
+
     # The stage version should use len(versions) as version index
     # Since we have 1 version (v0), the stage version should be at index 1
     files = await artifact_manager.list_files(artifact.id, version="stage")
@@ -5455,7 +5503,9 @@ async def test_list_files_stage_version_index(minio_server, fastapi_server, test
     assert len(files) == 0
 
 
-async def test_list_files_with_actual_and_pending_files(minio_server, fastapi_server, test_user_token):
+async def test_list_files_with_actual_and_pending_files(
+    minio_server, fastapi_server, test_user_token
+):
     """Test list_files with mix of actual uploaded files and pending files."""
     api = await connect_to_server(
         {"name": "test-client", "token": test_user_token, "server_url": SERVER_URL}
@@ -5465,12 +5515,17 @@ async def test_list_files_with_actual_and_pending_files(minio_server, fastapi_se
     # Create and commit an artifact with actual files
     artifact = await artifact_manager.create(
         type="dataset",
-        manifest={"name": "Test Dataset", "description": "Test dataset for mixed file listing"},
+        manifest={
+            "name": "Test Dataset",
+            "description": "Test dataset for mixed file listing",
+        },
         stage=True,
     )
 
     # Add and actually upload a file
-    put_url = await artifact_manager.put_file(artifact.id, "actual_file.txt", download_weight=1.0)
+    put_url = await artifact_manager.put_file(
+        artifact.id, "actual_file.txt", download_weight=1.0
+    )
     response = requests.put(put_url, data="actual file content")
     assert response.ok
 
@@ -5481,14 +5536,18 @@ async def test_list_files_with_actual_and_pending_files(minio_server, fastapi_se
     await artifact_manager.edit(artifact.id, stage=True, version="new")
 
     # Add a pending file (not uploaded yet)
-    await artifact_manager.put_file(artifact.id, "pending_file.txt", download_weight=0.5)
+    await artifact_manager.put_file(
+        artifact.id, "pending_file.txt", download_weight=0.5
+    )
 
     # List files without include_pending (should be empty since this is a new version)
     files = await artifact_manager.list_files(artifact.id, version="stage")
     assert len(files) == 0  # New version starts empty
 
     # List files with include_pending=True (should show pending files)
-    files = await artifact_manager.list_files(artifact.id, version="stage", include_pending=True)
+    files = await artifact_manager.list_files(
+        artifact.id, version="stage", include_pending=True
+    )
     assert len(files) == 1  # Only the pending file
     assert files[0]["name"] == "pending_file.txt"
     assert files[0]["pending"] is True
@@ -5511,7 +5570,9 @@ async def test_list_files_with_actual_and_pending_files(minio_server, fastapi_se
     assert len(files) == 0
 
     # List files with include_pending=True (should show pending files)
-    files = await artifact_manager.list_files(artifact.id, version="stage", include_pending=True)
+    files = await artifact_manager.list_files(
+        artifact.id, version="stage", include_pending=True
+    )
     assert len(files) == 1
     assert files[0]["name"] == "update_file.txt"
     assert files[0]["pending"] is True
@@ -5528,27 +5589,27 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
 
     token = test_user_token
     headers = {"Authorization": f"Bearer {token}"}
-    
+
     # Create a site artifact
     manifest = {
         "name": "Test Static Site",
         "description": "A test static website",
-        "type": "site"
+        "type": "site",
     }
-    
+
     config = {
-        "templates": ["index.html", "about.html"],  
+        "templates": ["index.html", "about.html"],
         "template_engine": "jinja2",
         "headers": {
             "Access-Control-Allow-Origin": "*",
-            "Cache-Control": "max-age=3600"
-        }
+            "Cache-Control": "max-age=3600",
+        },
     }
-    
+
     # Create artifact
     ws = api.config.workspace  # Use the actual workspace from the API connection
     artifact_alias = "my-static-site"
-    
+
     # Create and commit an artifact with actual files
     artifact = await artifact_manager.create(
         type="site",
@@ -5557,7 +5618,7 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
         config=config,
         stage=True,
     )
-    
+
     # Add files to the artifact
     # Regular HTML file (non-templated)
     html_content = """<!DOCTYPE html>
@@ -5565,12 +5626,13 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
 <head><title>Test Site</title></head>
 <body><h1>Welcome to Test Site</h1></body>
 </html>"""
-    
+
     file_url = await artifact_manager.put_file(artifact.id, "static.html")
-    response = requests.put(file_url, data=html_content.encode(), headers={"Content-Type": "text/html"})
+    response = requests.put(
+        file_url, data=html_content.encode(), headers={"Content-Type": "text/html"}
+    )
     assert response.ok
-    
-    
+
     # Templated HTML file (with Jinja2)
     template_content = """<!DOCTYPE html>
 <html>
@@ -5585,50 +5647,66 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
     <p>View Count: {{ VIEW_COUNT }}</p>
 </body>
 </html>"""
-    
+
     file_url = await artifact_manager.put_file(artifact.id, "index.html")
-    response = requests.put(file_url, data=template_content.encode(), headers={"Content-Type": "text/html"})
+    response = requests.put(
+        file_url, data=template_content.encode(), headers={"Content-Type": "text/html"}
+    )
     assert response.ok
-    
+
     # CSS file
     css_content = "body { font-family: Arial, sans-serif; }"
     file_url = await artifact_manager.put_file(artifact.id, "style.css")
-    response = requests.put(file_url, data=css_content.encode(), headers={"Content-Type": "text/css"})
+    response = requests.put(
+        file_url, data=css_content.encode(), headers={"Content-Type": "text/css"}
+    )
     assert response.ok
-    
+
     # JSON data file
     json_content = '{"message": "Hello from JSON"}'
     file_url = await artifact_manager.put_file(artifact.id, "data.json")
-    response = requests.put(file_url, data=json_content.encode(), headers={"Content-Type": "application/json"})
+    response = requests.put(
+        file_url,
+        data=json_content.encode(),
+        headers={"Content-Type": "application/json"},
+    )
     assert response.ok
-    
+
     # Commit the artifact
     await artifact_manager.commit(artifact.id)
-    
+
     async with httpx.AsyncClient() as client:
         # Test serving regular static file (non-templated)
-        r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/static.html", headers=headers)
+        r = await client.get(
+            f"{SERVER_URL}/{ws}/site/{artifact_alias}/static.html", headers=headers
+        )
         assert r.status_code == 200  # Should stream content directly
         assert "text/html" in r.headers.get("content-type", "")
         assert "Welcome to Test Site" in r.text
-        
+
         # Test serving CSS file with correct mime type
-        r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/style.css", headers=headers)
+        r = await client.get(
+            f"{SERVER_URL}/{ws}/site/{artifact_alias}/style.css", headers=headers
+        )
         assert r.status_code == 200  # Should stream content directly
         assert "text/css" in r.headers.get("content-type", "")
         assert "font-family: Arial" in r.text
-        
+
         # Test serving JSON file
-        r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/data.json", headers=headers)
+        r = await client.get(
+            f"{SERVER_URL}/{ws}/site/{artifact_alias}/data.json", headers=headers
+        )
         assert r.status_code == 200  # Should stream content directly
         assert "application/json" in r.headers.get("content-type", "")
         assert "Hello from JSON" in r.text
-        
+
         # Test serving templated file (should render template)
-        r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/index.html", headers=headers)
+        r = await client.get(
+            f"{SERVER_URL}/{ws}/site/{artifact_alias}/index.html", headers=headers
+        )
         assert r.status_code == 200
         assert "text/html" in r.headers.get("content-type", "")
-        
+
         # Check template rendering
         content = r.text
         assert "Test Static Site" in content  # From MANIFEST.name
@@ -5636,56 +5714,74 @@ async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_tok
         assert f"/{ws}/site/{artifact_alias}/" in content  # BASE_URL
         assert ws in content  # WORKSPACE (use actual workspace name)
         assert "View Count:" in content  # VIEW_COUNT should be present
-        
+
         # Test default index.html serving
-        r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/", headers=headers)
+        r = await client.get(
+            f"{SERVER_URL}/{ws}/site/{artifact_alias}/", headers=headers
+        )
         assert r.status_code == 200
         assert "Test Static Site" in r.text
-        
+
         # Test CORS headers
-        r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/index.html", headers=headers)
+        r = await client.get(
+            f"{SERVER_URL}/{ws}/site/{artifact_alias}/index.html", headers=headers
+        )
         assert r.headers.get("Access-Control-Allow-Origin") == "*"
         assert r.headers.get("Cache-Control") == "max-age=3600"
-        
+
         # Test non-existent file
-        r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/nonexistent.html", headers=headers)
+        r = await client.get(
+            f"{SERVER_URL}/{ws}/site/{artifact_alias}/nonexistent.html", headers=headers
+        )
         assert r.status_code == 404
-        
+
         # Test artifact with wrong type
         regular_artifact = await artifact_manager.create(
             type="generic",
-            alias="regular-artifact", 
+            alias="regular-artifact",
             manifest={"name": "Regular"},
         )
-        
+
         # Should fail for non-site artifact
-        r = await client.get(f"{SERVER_URL}/{ws}/site/regular-artifact/index.html", headers=headers)
+        r = await client.get(
+            f"{SERVER_URL}/{ws}/site/regular-artifact/index.html", headers=headers
+        )
         assert r.status_code == 400
         assert "not a site artifact" in r.text.lower()
-        
+
         # Test stage parameter (create staged version)
         staged_artifact = await artifact_manager.create(
             type="site",
-            alias="staged-site", 
+            alias="staged-site",
             manifest={"name": "Staged Site"},
             config={"template_engine": "jinja2", "templates": ["index.html"]},
             stage=True,
         )
-        
+
         file_url = await artifact_manager.put_file(staged_artifact.id, "index.html")
-        response = requests.put(file_url, data="<h1>Staged content</h1>", headers={"Content-Type": "text/html"})
+        response = requests.put(
+            file_url,
+            data="<h1>Staged content</h1>",
+            headers={"Content-Type": "text/html"},
+        )
         assert response.ok
-        
-        r = await client.get(f"{SERVER_URL}/{ws}/site/staged-site/index.html?stage=true", headers=headers)
+
+        r = await client.get(
+            f"{SERVER_URL}/{ws}/site/staged-site/index.html?stage=true", headers=headers
+        )
         assert r.status_code == 200
-        
+
         # Test default index.html serving when path is empty
-        r = await client.get(f"{SERVER_URL}/{ws}/site/{artifact_alias}/", headers=headers)
+        r = await client.get(
+            f"{SERVER_URL}/{ws}/site/{artifact_alias}/", headers=headers
+        )
         assert r.status_code == 200
         assert "Test Static Site" in r.text
 
 
-async def test_put_file_endpoint_small_file(minio_server, fastapi_server, test_user_token):
+async def test_put_file_endpoint_small_file(
+    minio_server, fastapi_server, test_user_token
+):
     """Test the HTTP PUT file endpoint with a small file."""
 
     # Connect and get the artifact manager service
@@ -5740,7 +5836,9 @@ async def test_put_file_endpoint_small_file(minio_server, fastapi_server, test_u
         assert response.text == file_contents
 
 
-async def test_put_file_endpoint_large_file_multipart(minio_server, fastapi_server, test_user_token):
+async def test_put_file_endpoint_large_file_multipart(
+    minio_server, fastapi_server, test_user_token
+):
     """Test the HTTP PUT file endpoint with a large file to trigger multipart upload."""
 
     # Connect and get the artifact manager service
@@ -5798,7 +5896,9 @@ async def test_put_file_endpoint_large_file_multipart(minio_server, fastapi_serv
         assert response.text.endswith("AAAA")
 
 
-async def test_put_file_endpoint_streaming_chunked(minio_server, fastapi_server, test_user_token):
+async def test_put_file_endpoint_streaming_chunked(
+    minio_server, fastapi_server, test_user_token
+):
     """Test the HTTP PUT file endpoint with streaming chunked upload."""
 
     # Connect and get the artifact manager service
@@ -5858,7 +5958,9 @@ async def test_put_file_endpoint_streaming_chunked(minio_server, fastapi_server,
         assert response.text == expected_content
 
 
-async def test_put_file_endpoint_nested_directories(minio_server, fastapi_server, test_user_token):
+async def test_put_file_endpoint_nested_directories(
+    minio_server, fastapi_server, test_user_token
+):
     """Test the HTTP PUT file endpoint with nested directory structure."""
 
     # Connect and get the artifact manager service
@@ -5883,7 +5985,7 @@ async def test_put_file_endpoint_nested_directories(minio_server, fastapi_server
     test_files = {
         "root_file.txt": "Root level file content",
         "level1/file1.txt": "Level 1 file content",
-        "level1/level2/file2.txt": "Level 2 file content", 
+        "level1/level2/file2.txt": "Level 2 file content",
         "level1/level2/level3/deep_file.txt": "Deep nested file content",
     }
 
@@ -5901,7 +6003,7 @@ async def test_put_file_endpoint_nested_directories(minio_server, fastapi_server
 
     # Verify all files were uploaded
     files = await artifact_manager.list_files(artifact_id=dataset.id, stage=True)
-    assert len(files) == 2 # 1 file + 1 directory
+    assert len(files) == 2  # 1 file + 1 directory
     uploaded_paths = {f["name"] for f in files}
     assert uploaded_paths == {"root_file.txt", "level1"}
 
@@ -5918,9 +6020,8 @@ async def test_put_file_endpoint_nested_directories(minio_server, fastapi_server
             assert response.status_code == 200
             assert response.text == expected_content
 
-async def test_multipart_upload_endpoint(
-    minio_server, fastapi_server, test_user_token
-):
+
+async def test_multipart_upload_endpoint(minio_server, fastapi_server, test_user_token):
     """Test the two-step multipart upload endpoint."""
     # 1. Set up the connection and create a test artifact
     api = await connect_to_server(
@@ -5972,11 +6073,11 @@ async def test_multipart_upload_endpoint(
             part_number = part_info["part_number"]
             url = part_info["url"]
             chunk_data = file_buffer.read(chunk_size)
-            
+
             # Upload the chunk
             response = await client.put(url, data=chunk_data)
             assert response.status_code == 200
-            
+
             # Save the ETag from the response header
             etag = response.headers["ETag"].strip('"').strip("'")
             uploaded_parts.append({"part_number": part_number, "etag": etag})
@@ -5988,7 +6089,10 @@ async def test_multipart_upload_endpoint(
         response = await client.post(
             f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/complete-multipart-upload",
             json={"upload_id": upload_id, "parts": uploaded_parts},
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
         )
         assert response.status_code == 200
         completion_response = response.json()
@@ -5996,7 +6100,7 @@ async def test_multipart_upload_endpoint(
 
     # 6. Commit and verify the uploaded file
     await artifact_manager.commit(artifact_id=dataset.id)
-    
+
     # Download the file to verify its content
     download_url = f"{SERVER_URL}/{workspace}/artifacts/{dataset.alias}/files/{file_path}?use_proxy=true"
     async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
@@ -6011,7 +6115,10 @@ async def test_multipart_upload_endpoint(
     await artifact_manager.delete(artifact_id=dataset.id)
     await artifact_manager.delete(artifact_id=collection.id)
 
-async def test_put_file_endpoint_download_weight(minio_server, fastapi_server, test_user_token):
+
+async def test_put_file_endpoint_download_weight(
+    minio_server, fastapi_server, test_user_token
+):
     """Test the HTTP PUT file endpoint with download weight parameter."""
 
     # Connect and get the artifact manager service
@@ -6053,7 +6160,9 @@ async def test_put_file_endpoint_download_weight(minio_server, fastapi_server, t
     assert artifact["config"]["download_weights"][file_path] == download_weight
 
 
-async def test_put_file_endpoint_error_handling(minio_server, fastapi_server, test_user_token, test_user_token_2):
+async def test_put_file_endpoint_error_handling(
+    minio_server, fastapi_server, test_user_token, test_user_token_2
+):
     """Test the HTTP PUT file endpoint error handling."""
 
     # Connect and get the artifact manager service
@@ -6118,7 +6227,7 @@ async def test_put_file_endpoint_error_handling(minio_server, fastapi_server, te
         manifest={"name": "committed-dataset", "description": "Committed dataset"},
         config={"permissions": {"@": "rw+"}},
     )
-    
+
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.put(
             f"{SERVER_URL}/{api.config.workspace}/artifacts/{committed_dataset.alias}/files/{file_path}",
@@ -6129,7 +6238,9 @@ async def test_put_file_endpoint_error_handling(minio_server, fastapi_server, te
         assert "Artifact must be in staging mode" in response.text
 
 
-async def test_put_file_endpoint_overwrite_existing(minio_server, fastapi_server, test_user_token):
+async def test_put_file_endpoint_overwrite_existing(
+    minio_server, fastapi_server, test_user_token
+):
     """Test the HTTP PUT file endpoint overwriting existing files."""
 
     # Connect and get the artifact manager service
@@ -6151,7 +6262,7 @@ async def test_put_file_endpoint_overwrite_existing(minio_server, fastapi_server
     )
 
     file_path = "overwrite_test.txt"
-    
+
     # Upload initial file
     initial_content = "Initial file content"
     async with httpx.AsyncClient(timeout=30) as client:

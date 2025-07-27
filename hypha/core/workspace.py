@@ -194,7 +194,9 @@ class WorkspaceManager:
             self._active_ws.dec()
             logger.debug(f"Decremented workspace counter for {workspace_id}")
         else:
-            logger.debug(f"Workspace {workspace_id} was not counted by this instance, skipping decrement")
+            logger.debug(
+                f"Workspace {workspace_id} was not counted by this instance, skipping decrement"
+            )
 
     async def _get_sql_session(self):
         """Return an async session for the database."""
@@ -1042,7 +1044,7 @@ class WorkspaceManager:
         ]
         for item in results["items"]:
             item["id"] = re.sub(r"^[^|]+\|[^:]+:(.+)$", r"\1", item["id"]).split("@")[0]
-        
+
         # Filter out unlisted services if not explicitly requested
         if not include_unlisted:
             filtered_items = []
@@ -1051,7 +1053,7 @@ class WorkspaceManager:
                 if service_visibility != "unlisted":
                     filtered_items.append(item)
             results["items"] = filtered_items
-        
+
         if pagination:
             return results
         else:
@@ -1156,11 +1158,14 @@ class WorkspaceManager:
         original_visibility = query.get("visibility", "*")
         workspace = query.get("workspace", cws)
         if workspace == "*":
-            assert (
-                original_visibility not in ["protected", "unlisted"]
-            ), "Cannot list protected or unlisted services in all workspaces."
+            assert original_visibility not in [
+                "protected",
+                "unlisted",
+            ], "Cannot list protected or unlisted services in all workspaces."
             if include_unlisted:
-                raise PermissionError("Cannot include unlisted services when searching all workspaces.")
+                raise PermissionError(
+                    "Cannot include unlisted services when searching all workspaces."
+                )
             query["visibility"] = "public"
         elif workspace not in ["public", cws]:
             # Check user permission for the specified workspace only once
@@ -1168,12 +1173,16 @@ class WorkspaceManager:
                 raise PermissionError(f"Permission denied for workspace {workspace}")
             # Check permission for including unlisted services
             if include_unlisted and workspace != cws:
-                raise PermissionError(f"Cannot include unlisted services from workspace {workspace}. Only services from your current workspace ({cws}) can include unlisted services.")
-        
+                raise PermissionError(
+                    f"Cannot include unlisted services from workspace {workspace}. Only services from your current workspace ({cws}) can include unlisted services."
+                )
+
         # Validate include_unlisted permissions for current workspace
         if include_unlisted and workspace == cws:
             if not user_info.check_permission(cws, UserPermission.read):
-                raise PermissionError(f"Cannot include unlisted services without read permission for workspace {cws}.")
+                raise PermissionError(
+                    f"Cannot include unlisted services without read permission for workspace {cws}."
+                )
 
         visibility = query.get("visibility", "*")
         client_id = query.get("client_id", "*")
@@ -1217,13 +1226,21 @@ class WorkspaceManager:
         if include_unlisted and workspace == cws:
             # If including unlisted in current workspace, query all visibility types
             for vis in ["public", "protected", "unlisted"]:
-                patterns.append(f"services:{vis}|{type_filter}:{workspace}/{client_id}:{service_id}@{app_id}")
+                patterns.append(
+                    f"services:{vis}|{type_filter}:{workspace}/{client_id}:{service_id}@{app_id}"
+                )
         else:
             # Normal query with specified visibility (may be "*")
-            patterns.append(f"services:{visibility}|{type_filter}:{workspace}/{client_id}:{service_id}@{app_id}")
+            patterns.append(
+                f"services:{visibility}|{type_filter}:{workspace}/{client_id}:{service_id}@{app_id}"
+            )
 
-        assert all(pattern.startswith("services:") for pattern in patterns), "Query patterns do not start with 'services:'."
-        assert all(not any(char in pattern for char in "{}") for pattern in patterns), "Query patterns contain invalid characters."
+        assert all(
+            pattern.startswith("services:") for pattern in patterns
+        ), "Query patterns do not start with 'services:'."
+        assert all(
+            not any(char in pattern for char in "{}") for pattern in patterns
+        ), "Query patterns contain invalid characters."
 
         keys = []
         for pattern in patterns:
@@ -1243,8 +1260,12 @@ class WorkspaceManager:
             service_data = await self._redis.hgetall(key)
             service_dict = ServiceInfo.from_redis_dict(service_data).model_dump()
             service_visibility = service_dict.get("config", {}).get("visibility")
-            service_workspace = service_dict.get("id", "").split("/")[0] if "/" in service_dict.get("id", "") else workspace
-            
+            service_workspace = (
+                service_dict.get("id", "").split("/")[0]
+                if "/" in service_dict.get("id", "")
+                else workspace
+            )
+
             # Check if this is an unlisted service and whether we should include it
             if service_visibility == "unlisted":
                 if not include_unlisted:
@@ -1253,9 +1274,12 @@ class WorkspaceManager:
                 elif service_workspace != cws:
                     # Skip unlisted services from other workspaces
                     continue
-            
+
             # Existing permission check for protected services
-            if service_visibility not in ["public", "unlisted"] and not user_info.check_permission(
+            if service_visibility not in [
+                "public",
+                "unlisted",
+            ] and not user_info.check_permission(
                 service_workspace, UserPermission.read
             ):
                 logger.warning(
@@ -1293,7 +1317,8 @@ class WorkspaceManager:
         self,
         service: ServiceInfo = Field(..., description="Service info"),
         config: Optional[dict] = Field(
-            None, description="Options for registering service, available options: skip_app_id_validation (bool, default: False) - skip validation of app_id during registration"
+            None,
+            description="Options for registering service, available options: skip_app_id_validation (bool, default: False) - skip validation of app_id during registration",
         ),
         context: Optional[dict] = None,
     ):
@@ -1311,12 +1336,12 @@ class WorkspaceManager:
         if "/" not in service.id:
             service.id = f"{ws}/{service.id}"
         assert ":" in service.id, "Service id info must contain ':'"
-        
+
         # Get workspace from service id for validation
         workspace = service.id.split("/")[0]
         service_name = service.id.split(":")[1]
         service.name = service.name or service_name
-        
+
         if service.app_id:
             assert "/" not in service.app_id, "App id info must not contain '/'"
 
@@ -1376,10 +1401,12 @@ class WorkspaceManager:
             if isinstance(service.config.visibility, VisibilityEnum)
             else service.config.visibility
         )
-        
+
         # Handle None app_id by defaulting to "*"
         app_id = service.app_id or "*"
-        service.app_id = app_id  # Store the normalized app_id back to the service object
+        service.app_id = (
+            app_id  # Store the normalized app_id back to the service object
+        )
         key = f"services:{visibility}|{service.type}:{service.id}@{app_id}"
 
         if service_exists:
@@ -1484,11 +1511,21 @@ class WorkspaceManager:
             # If no services found in Redis, try to get from artifact manifest if app_id is provided
             if app_id != "*" and read_app_manifest and self._artifact_manager:
                 try:
-                    artifact = await self._artifact_manager.read(app_id, context=context)
-                    if artifact and artifact.get("manifest") and artifact["manifest"].get("services"):
+                    artifact = await self._artifact_manager.read(
+                        app_id, context=context
+                    )
+                    if (
+                        artifact
+                        and artifact.get("manifest")
+                        and artifact["manifest"].get("services")
+                    ):
                         # Extract service name from service_id (format: workspace/client_id:service_name)
-                        service_name = service_id.split(":")[1] if ":" in service_id else service_id
-                        
+                        service_name = (
+                            service_id.split(":")[1]
+                            if ":" in service_id
+                            else service_id
+                        )
+
                         # Look for the service in the manifest services
                         for svc in artifact["manifest"]["services"]:
                             svc_info = ServiceInfo.model_validate(svc)
@@ -1498,10 +1535,12 @@ class WorkspaceManager:
                                 stored_workspace = svc_info.id.split("/")[0]
                                 if stored_workspace == workspace:
                                     return svc_info
-                                        
+
                 except Exception as e:
-                    logger.warning(f"Failed to read artifact {app_id} for service lookup: {e}")
-            
+                    logger.warning(
+                        f"Failed to read artifact {app_id} for service lookup: {e}"
+                    )
+
             # If no services found in Redis and not found in artifact, raise KeyError to trigger lazy loading
             raise KeyError(f"Service not found: {service_id}@{app_id}")
 
@@ -1820,7 +1859,9 @@ class WorkspaceManager:
                 context={"ws": workspace, "user": user_info.model_dump()},
             )
         except Exception:
-            logger.warning(f"Failed to list applications in workspace {workspace}, error: {traceback.format_exc()}")
+            logger.warning(
+                f"Failed to list applications in workspace {workspace}, error: {traceback.format_exc()}"
+            )
             applications = []
         applications = {
             item["manifest"]["id"]: ApplicationManifest.model_validate(item["manifest"])
@@ -1864,26 +1905,29 @@ class WorkspaceManager:
         # Get application and service info
         # read the info using root user since the user might not able to read it
         app_info, service_info = await self._get_application_by_service_id(
-            app_id, service_id, workspace, context={"user": self._root_user.model_dump(), "ws": workspace}
+            app_id,
+            service_id,
+            workspace,
+            context={"user": self._root_user.model_dump(), "ws": workspace},
         )
 
         if not self._server_app_controller:
             raise Exception(
                 "Failed to launch application: server apps controller is not configured."
             )
-        
+
         # Use startup_context from the app_info if available, otherwise use current context
         startup_context = getattr(app_info, "startup_context", None)
         if startup_context:
             # Create context using the stored workspace and user info from installation time
             launch_context = {
                 "ws": startup_context["ws"],
-                "user": startup_context["user"]
+                "user": startup_context["user"],
             }
         else:
             # Fallback to current context if no startup_context is available
             launch_context = context
-        
+
         client_info = await self._server_app_controller.start(
             app_id,
             wait_for_service=service_id,
@@ -1950,7 +1994,9 @@ class WorkspaceManager:
             assert service_api, f"Failed to get service: {svc_info.id}"
             workspace = svc_info.id.split("/")[0]
             service_api["config"]["workspace"] = workspace
-            service_api["config"]["url"] = f"{self._server_info['public_base_url']}/{workspace}/services/{svc_info.id.split('/')[-1]}"
+            service_api["config"][
+                "url"
+            ] = f"{self._server_info['public_base_url']}/{workspace}/services/{svc_info.id.split('/')[-1]}"
             return service_api
         except KeyError as exp:
             if "@" in service_id:
@@ -2439,6 +2485,7 @@ class WorkspaceManager:
 
                 # Get client load
                 from hypha.core import RedisRPCConnection
+
                 workspace = service_info.id.split("/")[0]
                 client_id = service_info.id.split("/")[1].split(":")[0]
                 load = RedisRPCConnection.get_client_load(workspace, client_id)
@@ -2466,8 +2513,6 @@ class WorkspaceManager:
             raise ValueError(f"Unknown selection criteria: {criteria}")
 
         return selected_key
-
-
 
     async def _select_service_by_function(
         self, keys: List[bytes], criteria: str, function_name: str, timeout: float = 2.0

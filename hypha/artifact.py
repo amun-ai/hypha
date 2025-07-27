@@ -79,13 +79,16 @@ logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("artifact")
 logger.setLevel(LOGLEVEL)
 
+
 class PartETag(BaseModel):
     part_number: int
     etag: str
 
+
 class CompleteMultipartUploadRequest(BaseModel):
     upload_id: str
     parts: List[PartETag]
+
 
 def make_json_safe(data):
     if isinstance(data, dict):
@@ -640,7 +643,9 @@ class ArtifactController:
                     user_info = await self.store.parse_user_token(token)
 
                 if stage:
-                    assert version is None or version == "stage", "You cannot specify a version when using stage mode."
+                    assert (
+                        version is None or version == "stage"
+                    ), "You cannot specify a version when using stage mode."
                     version = "stage"
 
                 if "/~/" in zip_file_path:
@@ -749,7 +754,9 @@ class ArtifactController:
                     artifact_alias, {"ws": workspace}
                 )
                 if stage:
-                    assert version is None or version == "stage", "You cannot specify a version when using stage mode."
+                    assert (
+                        version is None or version == "stage"
+                    ), "You cannot specify a version when using stage mode."
                     version = "stage"
                 session = await self._get_session(read_only=True)
                 if token:
@@ -851,8 +858,13 @@ class ArtifactController:
             artifact_alias: str,
             path: str,
             download_weight: float = 0,
-            part_count: int = Query(..., gt=0, description="The total number of parts for the upload."),
-            expires_in: int = Query(3600, description="The number of seconds for the presigned URLs to expire."),
+            part_count: int = Query(
+                ..., gt=0, description="The total number of parts for the upload."
+            ),
+            expires_in: int = Query(
+                3600,
+                description="The number of seconds for the presigned URLs to expire.",
+            ),
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """
@@ -860,7 +872,7 @@ class ArtifactController:
             """
             context = {"ws": workspace, "user": user_info.model_dump()}
             artifact_id = self._validate_artifact_id(artifact_alias, context=context)
-            
+
             try:
                 return await self.put_file_start_multipart(
                     artifact_id=artifact_id,
@@ -868,7 +880,7 @@ class ArtifactController:
                     part_count=part_count,
                     download_weight=download_weight,
                     expires_in=expires_in,
-                    context=context
+                    context=context,
                 )
             except HTTPException:
                 raise
@@ -881,8 +893,10 @@ class ArtifactController:
             except Exception as e:
                 logger.error(f"Failed to create multipart upload: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
-        
-        @router.post("/{workspace}/artifacts/{artifact_alias}/complete-multipart-upload")
+
+        @router.post(
+            "/{workspace}/artifacts/{artifact_alias}/complete-multipart-upload"
+        )
         async def complete_multipart_upload(
             workspace: str,
             artifact_alias: str,
@@ -897,24 +911,31 @@ class ArtifactController:
             upload_id = data.upload_id
             parts = data.parts
             artifact_id = self._validate_artifact_id(artifact_alias, context=context)
-            
+
             try:
                 # Convert parts to the format expected by the service function
-                parts_data = [{"part_number": p.part_number, "etag": p.etag} for p in parts]
-                
+                parts_data = [
+                    {"part_number": p.part_number, "etag": p.etag} for p in parts
+                ]
+
                 return await self.put_file_complete_multipart(
                     artifact_id=artifact_id,
                     upload_id=upload_id,
                     parts=parts_data,
-                    context=context
+                    context=context,
                 )
             except HTTPException:
                 raise
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
             except ClientError as e:
-                logger.error(f"Failed to complete multipart upload: {e.response['Error']['Message']}")
-                raise HTTPException(status_code=400, detail=f"Failed to complete multipart upload: {e.response['Error']['Message']}")
+                logger.error(
+                    f"Failed to complete multipart upload: {e.response['Error']['Message']}"
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to complete multipart upload: {e.response['Error']['Message']}",
+                )
             except KeyError:
                 raise HTTPException(status_code=404, detail="Artifact not found")
             except PermissionError:
@@ -922,8 +943,7 @@ class ArtifactController:
             except Exception as e:
                 logger.error(f"An unexpected error occurred: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
-                
-        
+
         # HTTP endpoint for uploading files to an artifact
         @router.put("/{workspace}/artifacts/{artifact_alias}/files/{file_path:path}")
         async def upload_file(
@@ -944,24 +964,48 @@ class ArtifactController:
             """
             context = {"ws": workspace, "user": user_info.model_dump()}
             try:
-                artifact_id = self._validate_artifact_id(artifact_alias, context=context)
-                presigned_url = await self.put_file(artifact_id=artifact_id, file_path=file_path, download_weight=download_weight, use_proxy=False, use_local_url=False, expires_in=3600, context=context)
+                artifact_id = self._validate_artifact_id(
+                    artifact_alias, context=context
+                )
+                presigned_url = await self.put_file(
+                    artifact_id=artifact_id,
+                    file_path=file_path,
+                    download_weight=download_weight,
+                    use_proxy=False,
+                    use_local_url=False,
+                    expires_in=3600,
+                    context=context,
+                )
                 # stream the request.stream() to the url
                 async with httpx.AsyncClient() as client:
                     # Use an async generator to stream chunks
                     async def body_generator():
                         async for chunk in request.stream():
                             yield chunk
+
                     # Stream the body to the presigned URL
-                    response = await client.put(presigned_url, content=body_generator(), headers={"Content-Type": "application/octet-stream", "Content-Length": request.headers.get("content-length")})
+                    response = await client.put(
+                        presigned_url,
+                        content=body_generator(),
+                        headers={
+                            "Content-Type": "application/octet-stream",
+                            "Content-Length": request.headers.get("content-length"),
+                        },
+                    )
 
                 if not (200 == response.status_code):
-                    raise HTTPException(status_code=response.status_code, detail=f"S3 upload failed with status {response.status_code}: {response.text}", headers=response.headers)
-                content = json.dumps({"success": True, "message": f"File uploaded successfully"})
+                    raise HTTPException(
+                        status_code=response.status_code,
+                        detail=f"S3 upload failed with status {response.status_code}: {response.text}",
+                        headers=response.headers,
+                    )
+                content = json.dumps(
+                    {"success": True, "message": f"File uploaded successfully"}
+                )
                 headers = {
                     "Content-Type": "application/json",
                     "Content-Length": str(len(content)),
-                    "ETag": response.headers.get("ETag")
+                    "ETag": response.headers.get("ETag"),
                 }
                 return Response(content=content, headers=headers)
             except HTTPException:
@@ -975,11 +1019,16 @@ class ArtifactController:
             except AssertionError as e:
                 raise HTTPException(status_code=400, detail=str(e))
             except ClientError as e:
-                raise HTTPException(status_code=400, detail=f"Failed to upload file: {e.response['Error']['Message']}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to upload file: {e.response['Error']['Message']}",
+                )
             except Exception as e:
                 logger.error(f"Unhandled exception in upload_file: {str(e)}")
-                raise HTTPException(status_code=500, detail=f"Failed to upload file: {traceback.format_exc()}")
-
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to upload file: {traceback.format_exc()}",
+                )
 
         # HTTP endpoint for serving static sites
         @router.get("/{workspace}/site/{artifact_alias}/{file_path:path}")
@@ -998,15 +1047,17 @@ class ArtifactController:
                 artifact_id = self._validate_artifact_id(
                     artifact_alias, {"ws": workspace}
                 )
-                
+
                 if stage:
-                    assert version is None or version == "stage", "You cannot specify a version when using stage mode."
+                    assert (
+                        version is None or version == "stage"
+                    ), "You cannot specify a version when using stage mode."
                     version = "stage"
-                    
+
                 session = await self._get_session(read_only=True)
                 if token:
                     user_info = await self.store.parse_user_token(token)
-                
+
                 async with session.begin():
                     # Fetch artifact and check permissions
                     (
@@ -1015,28 +1066,28 @@ class ArtifactController:
                     ) = await self._get_artifact_with_permission(
                         user_info, artifact_id, "get_file", session
                     )
-                    
+
                     # Verify this is a site artifact
                     if artifact.type != "site":
                         raise HTTPException(
-                            status_code=400, 
-                            detail="This artifact is not a site artifact"
+                            status_code=400,
+                            detail="This artifact is not a site artifact",
                         )
-                    
+
                     # Default to index.html if file_path is empty or just "/"
                     if not file_path or file_path == "/":
                         file_path = "index.html"
-                    
+
                     # Increment view count for the artifact
                     await self._increment_stat(session, artifact.id, "view_count")
                     await session.commit()
-                    
+
                     # Get artifact configuration
                     config = artifact.config or {}
                     templates = config.get("templates", [])
                     template_engine = config.get("template_engine")
                     custom_headers = config.get("headers", {})
-                    
+
                     version_index = self._get_version_index(artifact, version)
                     s3_config = self._get_s3_config(artifact, parent_artifact)
                     file_key = safe_join(
@@ -1044,12 +1095,14 @@ class ArtifactController:
                         f"{artifact.id}/v{version_index}",
                         file_path,
                     )
-                    
+
                     # Check if file needs template rendering
-                    if (template_engine and 
-                        template_engine == "jinja2" and 
-                        file_path in templates):
-                        
+                    if (
+                        template_engine
+                        and template_engine == "jinja2"
+                        and file_path in templates
+                    ):
+
                         # Get file content for template rendering
                         async with self._create_client_async(s3_config) as s3_client:
                             try:
@@ -1057,19 +1110,23 @@ class ArtifactController:
                                     Bucket=s3_config["bucket"], Key=file_key
                                 )
                                 content = await obj_info["Body"].read()
-                                content = content.decode('utf-8')
+                                content = content.decode("utf-8")
                             except ClientError:
                                 raise HTTPException(
-                                    status_code=404, 
-                                    detail=f"File not found: {file_path}"
+                                    status_code=404,
+                                    detail=f"File not found: {file_path}",
                                 )
-                        
+
                         # Prepare Jinja2 template context
-                        artifact_data = self._generate_artifact_data(artifact, parent_artifact)
-                        
+                        artifact_data = self._generate_artifact_data(
+                            artifact, parent_artifact
+                        )
+
                         # Exclude secrets from config for template context
-                        config_for_template = {k: v for k, v in config.items() if k != "secrets"}
-                        
+                        config_for_template = {
+                            k: v for k, v in config.items() if k != "secrets"
+                        }
+
                         template_context = {
                             "PUBLIC_BASE_URL": self.store.public_base_url,
                             "LOCAL_BASE_URL": self.store.local_base_url,
@@ -1079,9 +1136,13 @@ class ArtifactController:
                             "MANIFEST": artifact_data.get("manifest", {}),
                             "CONFIG": config_for_template,
                             "WORKSPACE": workspace,
-                            "USER": user_info.model_dump() if user_info and not user_info.is_anonymous else None,
+                            "USER": (
+                                user_info.model_dump()
+                                if user_info and not user_info.is_anonymous
+                                else None
+                            ),
                         }
-                        
+
                         # Render template
                         try:
                             rendered = Template(content).render(**template_context)
@@ -1089,69 +1150,74 @@ class ArtifactController:
                             logger.error(f"Template rendering error: {e}")
                             raise HTTPException(
                                 status_code=500,
-                                detail=f"Template rendering failed: {str(e)}"
+                                detail=f"Template rendering failed: {str(e)}",
                             )
-                        
+
                         # Get MIME type
                         mime_type, _ = mimetypes.guess_type(file_path)
                         mime_type = mime_type or "text/html"
-                        
+
                         # Prepare headers
                         response_headers = {}
-                        
+
                         # Add custom headers from config
                         if custom_headers:
                             for key, value in custom_headers.items():
                                 # Special handling for CORS origin
-                                if key == "Access-Control-Allow-Origin" and value == "*":
+                                if (
+                                    key == "Access-Control-Allow-Origin"
+                                    and value == "*"
+                                ):
                                     response_headers[key] = value
                                 else:
                                     response_headers[key] = value
-                        
+
                         return Response(
                             content=rendered,
                             media_type=mime_type,
-                            headers=response_headers
+                            headers=response_headers,
                         )
-                    
+
                     else:
-                        # Regular file (non-templated) - stream through proxy 
+                        # Regular file (non-templated) - stream through proxy
                         try:
                             # Use S3 proxy streaming for proper content delivery
                             s3_client = self._create_client_async(s3_config)
-                            
+
                             # Get MIME type for proper content-type header
                             mime_type, _ = mimetypes.guess_type(file_path)
                             mime_type = mime_type or "application/octet-stream"
-                            
+
                             # Prepare custom headers
                             response_headers = {}
                             if custom_headers:
                                 for key, value in custom_headers.items():
                                     # Special handling for CORS origin
-                                    if key == "Access-Control-Allow-Origin" and value == "*":
+                                    if (
+                                        key == "Access-Control-Allow-Origin"
+                                        and value == "*"
+                                    ):
                                         response_headers[key] = value
                                     else:
                                         response_headers[key] = value
-                            
+
                             # Set content-type header
                             response_headers["Content-Type"] = mime_type
-                            
+
                             # Return streaming response using FSFileResponse for proper range support
                             return FSFileResponse(
-                                s3_client, 
-                                s3_config["bucket"], 
+                                s3_client,
+                                s3_config["bucket"],
                                 file_key,
                                 media_type=mime_type,
-                                headers=response_headers
+                                headers=response_headers,
                             )
-                            
+
                         except ClientError:
                             raise HTTPException(
-                                status_code=404, 
-                                detail=f"File not found: {file_path}"
+                                status_code=404, detail=f"File not found: {file_path}"
                             )
-                
+
             except HTTPException:
                 raise
             except KeyError:
@@ -1161,8 +1227,7 @@ class ArtifactController:
             except Exception as e:
                 logger.error(f"Unhandled exception in serve_site_file: {str(e)}")
                 raise HTTPException(
-                    status_code=500, 
-                    detail=f"Internal server error: {str(e)}"
+                    status_code=500, detail=f"Internal server error: {str(e)}"
                 )
             finally:
                 await session.close()
@@ -2461,12 +2526,14 @@ class ArtifactController:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
         user_info = UserInfo.model_validate(context["user"])
-        
+
         # Handle stage parameter
         if stage:
-            assert version is None or version == "stage", "You cannot specify a version when using stage mode."
+            assert (
+                version is None or version == "stage"
+            ), "You cannot specify a version when using stage mode."
             version = "stage"
-        
+
         session = await self._get_session()
         try:
             async with session.begin():
@@ -2596,7 +2663,7 @@ class ArtifactController:
 
                         # Files are always placed at staging version index by put_file
                         staging_version = len(artifact.versions or [])
-                        
+
                         # Determine final target version based on intent
                         if has_new_version_intent:
                             # Files will be moved to new version index
@@ -2610,7 +2677,7 @@ class ArtifactController:
                             s3_config["prefix"],
                             f"{artifact.id}/v{staging_version}/{file_info['path']}",
                         )
-                        
+
                         # Check if we need to move the file to a different location
                         if staging_version != final_target_version:
                             # Move file from staging to final location
@@ -2618,19 +2685,22 @@ class ArtifactController:
                                 s3_config["prefix"],
                                 f"{artifact.id}/v{final_target_version}/{file_info['path']}",
                             )
-                            
+
                             # Copy file from staging to final location
                             await s3_client.copy_object(
                                 Bucket=s3_config["bucket"],
-                                CopySource={'Bucket': s3_config["bucket"], 'Key': staging_file_key},
-                                Key=final_file_key
+                                CopySource={
+                                    "Bucket": s3_config["bucket"],
+                                    "Key": staging_file_key,
+                                },
+                                Key=final_file_key,
                             )
-                            
+
                             # Delete the staging file
                             await s3_client.delete_object(
                                 Bucket=s3_config["bucket"], Key=staging_file_key
                             )
-                            
+
                             file_key = final_file_key
                         else:
                             # File is already in the right place
@@ -3094,7 +3164,9 @@ class ArtifactController:
         user_info = UserInfo.model_validate(context["user"])
         session = await self._get_session()
         if download_weight < 0:
-            raise ValueError("Download weight must be a non-negative number: {download_weight}")
+            raise ValueError(
+                "Download weight must be a non-negative number: {download_weight}"
+            )
         try:
             async with session.begin():
                 artifact, parent_artifact = await self._get_artifact_with_permission(
@@ -3105,7 +3177,7 @@ class ArtifactController:
                 # For staging mode, always use the staging version index
                 # This ensures files are properly staged and can be found by list_files
                 target_version_index = len(artifact.versions or [])
-                
+
                 # Check if there's intent to create a new version for commit behavior
                 staging_list = artifact.staging or []
                 has_new_version_intent = any(
@@ -3146,7 +3218,8 @@ class ArtifactController:
                         elif s3_config["public_endpoint_url"]:
                             # Use public proxy URL
                             presigned_url = presigned_url.replace(
-                                s3_config["endpoint_url"], s3_config["public_endpoint_url"]
+                                s3_config["endpoint_url"],
+                                s3_config["public_endpoint_url"],
                             )
                     elif use_local_url and not use_proxy:
                         # For S3 direct access with local URL, use the endpoint_url as-is
@@ -3192,37 +3265,41 @@ class ArtifactController:
         """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
-        
+
         artifact_id = self._validate_artifact_id(artifact_id, context)
         user_info = UserInfo.model_validate(context["user"])
-        
+
         if download_weight < 0:
-            raise ValueError(f"Download weight must be a non-negative number: {download_weight}")
+            raise ValueError(
+                f"Download weight must be a non-negative number: {download_weight}"
+            )
         if part_count <= 0:
             raise ValueError("Part count must be greater than 0")
         if part_count > 10000:
             raise ValueError("The maximum number of parts is 10,000.")
-        
+
         session = await self._get_session()
         try:
             # First call put_file to ensure we can put the file and perform permission checks
             await self.put_file(
-                artifact_id=artifact_id, 
-                file_path=file_path, 
-                download_weight=download_weight, 
-                use_proxy=False, 
-                use_local_url=False, 
-                expires_in=expires_in, 
-                context=context
+                artifact_id=artifact_id,
+                file_path=file_path,
+                download_weight=download_weight,
+                use_proxy=False,
+                use_local_url=False,
+                expires_in=expires_in,
+                context=context,
             )
-            
+
             async with session.begin():
                 artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "put_file", session
                 )
                 version_index = self._get_version_index(artifact, "stage")
                 s3_config = self._get_s3_config(artifact, parent_artifact)
-                s3_key = safe_join(s3_config["prefix"], f"{artifact.id}/v{version_index}/{file_path}")
+                s3_key = safe_join(
+                    s3_config["prefix"], f"{artifact.id}/v{version_index}/{file_path}"
+                )
 
                 async with self._create_client_async(s3_config) as s3_client:
                     # Create the multipart upload to get an UploadId
@@ -3247,10 +3324,14 @@ class ArtifactController:
                         part_urls.append({"part_number": i, "url": url})
 
                     # Cache the upload info for later completion
-                    await self._cache.set(f"multipart_upload:{upload_id}", {
-                        "s3_key": s3_key,
-                        "parts": part_urls,
-                    }, ttl=expires_in + 10)
+                    await self._cache.set(
+                        f"multipart_upload:{upload_id}",
+                        {
+                            "s3_key": s3_key,
+                            "parts": part_urls,
+                        },
+                        ttl=expires_in + 10,
+                    )
 
                     return {
                         "upload_id": upload_id,
@@ -3271,7 +3352,7 @@ class ArtifactController:
         """
         Complete the multipart upload and finalize the file in S3.
         This is a service function that can be called from hypha-rpc.
-        
+
         Args:
             artifact_id: The artifact ID
             upload_id: The upload ID returned from put_file_start_multipart
@@ -3280,43 +3361,44 @@ class ArtifactController:
         """
         if context is None or "ws" not in context:
             raise ValueError("Context must include 'ws' (workspace).")
-        
+
         artifact_id = self._validate_artifact_id(artifact_id, context)
         user_info = UserInfo.model_validate(context["user"])
-        
+
         # Get upload info from cache
         cache_key = f"multipart_upload:{upload_id}"
         upload_info = await self._cache.get(cache_key)
         if not upload_info:
             raise ValueError("Upload session expired or not found")
-        
+
         session = await self._get_session()
         try:
             s3_key = upload_info["s3_key"]
-            
+
             async with session.begin():
                 artifact, parent_artifact = await self._get_artifact_with_permission(
                     user_info, artifact_id, "put_file", session
                 )
                 s3_config = self._get_s3_config(artifact, parent_artifact)
-                
+
                 # Sort parts by part number and format for S3
                 sorted_parts = sorted(parts, key=lambda p: p["part_number"])
-                formatted_parts = [{"ETag": p["etag"], "PartNumber": p["part_number"]} for p in sorted_parts]
+                formatted_parts = [
+                    {"ETag": p["etag"], "PartNumber": p["part_number"]}
+                    for p in sorted_parts
+                ]
 
                 async with self._create_client_async(s3_config) as s3_client:
                     await s3_client.complete_multipart_upload(
                         Bucket=s3_config["bucket"],
                         Key=s3_key,
-                        MultipartUpload={
-                            "Parts": formatted_parts
-                        },
-                        UploadId=upload_id
+                        MultipartUpload={"Parts": formatted_parts},
+                        UploadId=upload_id,
                     )
-                
+
                 # Clean up cache
                 await self._cache.delete(cache_key)
-                
+
                 return {"success": True, "message": "File uploaded successfully"}
         except Exception as e:
             raise e
@@ -3401,12 +3483,14 @@ class ArtifactController:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
         user_info = UserInfo.model_validate(context["user"])
-        
+
         # Handle stage parameter
         if stage:
-            assert version is None or version == "stage", "You cannot specify a version when using stage mode."
+            assert (
+                version is None or version == "stage"
+            ), "You cannot specify a version when using stage mode."
             version = "stage"
-        
+
         session = await self._get_session()
         try:
             async with session.begin():
@@ -3449,7 +3533,8 @@ class ArtifactController:
                         elif s3_config["public_endpoint_url"]:
                             # Use public proxy URL
                             presigned_url = presigned_url.replace(
-                                s3_config["endpoint_url"], s3_config["public_endpoint_url"]
+                                s3_config["endpoint_url"],
+                                s3_config["public_endpoint_url"],
                             )
                     elif use_local_url and not use_proxy:
                         # For S3 direct access with local URL, use the endpoint_url as-is
@@ -3491,12 +3576,14 @@ class ArtifactController:
             raise ValueError("Context must include 'ws' (workspace).")
         artifact_id = self._validate_artifact_id(artifact_id, context)
         user_info = UserInfo.model_validate(context["user"])
-        
+
         # Handle stage parameter
         if stage:
-            assert version is None or version == "stage", "You cannot specify a version when using stage mode."
+            assert (
+                version is None or version == "stage"
+            ), "You cannot specify a version when using stage mode."
             version = "stage"
-        
+
         session = await self._get_session()
         try:
             async with session.begin():
@@ -3536,12 +3623,16 @@ class ArtifactController:
                         full_path,
                         max_length=limit,
                     )
-                    
+
                     # If include_pending is True and we're in staging mode, add pending files from staging manifest
-                    if include_pending and version == "stage" and artifact.staging is not None:
+                    if (
+                        include_pending
+                        and version == "stage"
+                        and artifact.staging is not None
+                    ):
                         staging_files = [f for f in artifact.staging if "path" in f]
                         pending_files = []
-                        
+
                         for file_info in staging_files:
                             file_path = file_info["path"]
                             # Filter by dir_path if specified
@@ -3549,32 +3640,36 @@ class ArtifactController:
                                 if not file_path.startswith(dir_path + "/"):
                                     continue
                                 # Remove dir_path prefix for display
-                                display_path = file_path[len(dir_path) + 1:]
+                                display_path = file_path[len(dir_path) + 1 :]
                             else:
                                 display_path = file_path
-                            
+
                             # Check if this file is already in the S3 items list
                             if not any(item["name"] == display_path for item in items):
-                                pending_files.append({
-                                    "name": display_path,
-                                    "type": "file",
-                                    "size": 0,  # We don't know the size yet
-                                    "last_modified": None,
-                                    "etag": None,
-                                    "pending": True,  # Mark as pending
-                                    "download_weight": file_info.get("download_weight", 0)
-                                })
-                        
+                                pending_files.append(
+                                    {
+                                        "name": display_path,
+                                        "type": "file",
+                                        "size": 0,  # We don't know the size yet
+                                        "last_modified": None,
+                                        "etag": None,
+                                        "pending": True,  # Mark as pending
+                                        "download_weight": file_info.get(
+                                            "download_weight", 0
+                                        ),
+                                    }
+                                )
+
                         # Add pending files to the items list
                         items.extend(pending_files)
-                        
+
                         # Sort items by name for consistent ordering
                         items.sort(key=lambda x: x["name"])
-                        
+
                         # Limit the results if needed
                         if len(items) > limit:
                             items = items[:limit]
-                    
+
             return items
         except Exception as e:
             raise e

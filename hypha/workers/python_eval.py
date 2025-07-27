@@ -8,7 +8,14 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
-from hypha.workers.base import BaseWorker, WorkerConfig, SessionStatus, SessionInfo, SessionNotFoundError, WorkerError
+from hypha.workers.base import (
+    BaseWorker,
+    WorkerConfig,
+    SessionStatus,
+    SessionInfo,
+    SessionNotFoundError,
+    WorkerError,
+)
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -28,7 +35,7 @@ class PythonEvalRunner(BaseWorker):
         super().__init__()
         self.controller_id = str(PythonEvalRunner.instance_counter)
         PythonEvalRunner.instance_counter += 1
-        
+
         # Session management
         self._sessions: Dict[str, SessionInfo] = {}
         self._session_data: Dict[str, Dict[str, Any]] = {}
@@ -53,21 +60,31 @@ class PythonEvalRunner(BaseWorker):
         """Return whether the worker requires a context."""
         return True
 
-    async def compile(self, manifest: dict, files: list, config: dict = None, context: Optional[Dict[str, Any]] = None) -> tuple[dict, list]:
+    async def compile(
+        self,
+        manifest: dict,
+        files: list,
+        config: dict = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> tuple[dict, list]:
         """Compile Python evaluation application - no compilation needed."""
         return manifest, files
 
-    async def start(self, config: Union[WorkerConfig, Dict[str, Any]], context: Optional[Dict[str, Any]] = None) -> str:
+    async def start(
+        self,
+        config: Union[WorkerConfig, Dict[str, Any]],
+        context: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Start a new Python evaluation session."""
         # Handle both pydantic model and dict input for RPC compatibility
         if isinstance(config, dict):
             config = WorkerConfig(**config)
-        
+
         session_id = config.id
-        
+
         if session_id in self._sessions:
             raise WorkerError(f"Session {session_id} already exists")
-        
+
         # Create session info
         session_info = SessionInfo(
             session_id=session_id,
@@ -78,29 +95,31 @@ class PythonEvalRunner(BaseWorker):
             app_type=config.manifest.get("type", "unknown"),
             entry_point=config.entry_point,
             created_at=datetime.now().isoformat(),
-            metadata=config.manifest
+            metadata=config.manifest,
         )
-        
+
         self._sessions[session_id] = session_info
-        
+
         script_url = f"{config.app_files_base_url}/{config.manifest['entry_point']}?use_proxy=true"
         # use httpx to get artifact files
         async with httpx.AsyncClient() as client:
-            response = await client.get(script_url, headers={"Authorization": f"Bearer {config.token}"})
+            response = await client.get(
+                script_url, headers={"Authorization": f"Bearer {config.token}"}
+            )
             # raise error if response is not 200
             response.raise_for_status()
             script = response.content
-        
+
         try:
             session_data = await self._start_python_session(script, config)
             self._session_data[session_id] = session_data
-            
+
             # Update session status
             session_info.status = SessionStatus.RUNNING
             logger.info(f"Started Python eval session {session_id}")
-            
+
             return session_id
-            
+
         except Exception as e:
             session_info.status = SessionStatus.FAILED
             session_info.error = str(e)
@@ -109,15 +128,17 @@ class PythonEvalRunner(BaseWorker):
             self._sessions.pop(session_id, None)
             raise
 
-    async def _start_python_session(self, script: str, config: WorkerConfig) -> Dict[str, Any]:
+    async def _start_python_session(
+        self, script: str, config: WorkerConfig
+    ) -> Dict[str, Any]:
         """Start a Python evaluation session."""
         assert script is not None, "Script is not found"
 
         # Execute Python code in subprocess
         try:
             process = await asyncio.create_subprocess_exec(
-                sys.executable, 
-                "-c", 
+                sys.executable,
+                "-c",
                 script,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -127,65 +148,67 @@ class PythonEvalRunner(BaseWorker):
                     "HYPHA_WORKSPACE": config.workspace,
                     "HYPHA_CLIENT_ID": config.client_id,
                     "HYPHA_TOKEN": config.token,
-                }
+                },
             )
-            
+
             # Wait for completion with timeout
             try:
                 stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), 
-                    timeout=config.timeout
+                    process.communicate(), timeout=config.timeout
                 )
             except asyncio.TimeoutError:
                 process.kill()
                 await process.wait()
                 raise Exception("Python execution timed out")
-            
+
             # Decode output
-            stdout_text = stdout.decode('utf-8') if stdout else ""
-            stderr_text = stderr.decode('utf-8') if stderr else ""
-            
+            stdout_text = stdout.decode("utf-8") if stdout else ""
+            stderr_text = stderr.decode("utf-8") if stderr else ""
+
             # Store logs
             logs = {
                 "stdout": [stdout_text] if stdout_text else [],
                 "stderr": [stderr_text] if stderr_text else [],
-                "info": [f"Python code executed with return code: {process.returncode}"]
+                "info": [
+                    f"Python code executed with return code: {process.returncode}"
+                ],
             }
-            
+
             return {
                 "process_id": process.pid,
                 "return_code": process.returncode,
                 "logs": logs,
-                "python_code": script
+                "python_code": script,
             }
-            
+
         except Exception as e:
-            logs = {
-                "error": [f"Failed to execute Python code: {str(e)}"],
-                "info": []
-            }
+            logs = {"error": [f"Failed to execute Python code: {str(e)}"], "info": []}
             return {
                 "process_id": None,
                 "return_code": -1,
                 "logs": logs,
-                "python_code": script
+                "python_code": script,
             }
 
-    async def stop(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> None:
+    async def stop(
+        self, session_id: str, context: Optional[Dict[str, Any]] = None
+    ) -> None:
         """Stop a Python evaluation session."""
         if session_id not in self._sessions:
-            logger.warning(f"Python eval session {session_id} not found for stopping, may have already been cleaned up")
+            logger.warning(
+                f"Python eval session {session_id} not found for stopping, may have already been cleaned up"
+            )
             return
-        
+
         session_info = self._sessions[session_id]
         session_info.status = SessionStatus.STOPPING
-        
+
         try:
             # Python processes are typically short-lived and already completed
             # Nothing special to clean up for eval sessions
             session_info.status = SessionStatus.STOPPED
             logger.info(f"Stopped Python eval session {session_id}")
-            
+
         except Exception as e:
             session_info.status = SessionStatus.FAILED
             session_info.error = str(e)
@@ -196,26 +219,31 @@ class PythonEvalRunner(BaseWorker):
             self._sessions.pop(session_id, None)
             self._session_data.pop(session_id, None)
 
-    async def list_sessions(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> List[SessionInfo]:
+    async def list_sessions(
+        self, workspace: str, context: Optional[Dict[str, Any]] = None
+    ) -> List[SessionInfo]:
         """List all Python eval sessions for a workspace."""
         return [
-            session_info for session_info in self._sessions.values()
+            session_info
+            for session_info in self._sessions.values()
             if session_info.workspace == workspace
         ]
 
-    async def get_session_info(self, session_id: str, context: Optional[Dict[str, Any]] = None) -> SessionInfo:
+    async def get_session_info(
+        self, session_id: str, context: Optional[Dict[str, Any]] = None
+    ) -> SessionInfo:
         """Get information about a Python eval session."""
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"Python eval session {session_id} not found")
         return self._sessions[session_id]
 
     async def get_logs(
-        self, 
-        session_id: str, 
+        self,
+        session_id: str,
         type: Optional[str] = None,
         offset: int = 0,
         limit: Optional[int] = None,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
     ) -> Union[Dict[str, List[str]], List[str]]:
         """Get logs for a Python eval session."""
         if session_id not in self._sessions:
@@ -226,15 +254,23 @@ class PythonEvalRunner(BaseWorker):
             return {} if type is None else []
 
         logs = session_data.get("logs", {})
-        
+
         if type:
             target_logs = logs.get(type, [])
-            end_idx = len(target_logs) if limit is None else min(offset + limit, len(target_logs))
+            end_idx = (
+                len(target_logs)
+                if limit is None
+                else min(offset + limit, len(target_logs))
+            )
             return target_logs[offset:end_idx]
         else:
             result = {}
             for log_type_key, log_entries in logs.items():
-                end_idx = len(log_entries) if limit is None else min(offset + limit, len(log_entries))
+                end_idx = (
+                    len(log_entries)
+                    if limit is None
+                    else min(offset + limit, len(log_entries))
+                )
                 result[log_type_key] = log_entries[offset:end_idx]
             return result
 
@@ -242,26 +278,33 @@ class PythonEvalRunner(BaseWorker):
         self,
         session_id: str,
         format: str = "png",
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
     ) -> bytes:
         """Take a screenshot - not supported for Python eval."""
-        raise NotImplementedError("Screenshots not supported for Python evaluation sessions")
+        raise NotImplementedError(
+            "Screenshots not supported for Python evaluation sessions"
+        )
 
-    async def prepare_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
+    async def prepare_workspace(
+        self, workspace: str, context: Optional[Dict[str, Any]] = None
+    ) -> None:
         """Prepare workspace for Python eval operations."""
         logger.info(f"Preparing workspace {workspace} for Python eval worker")
         pass
 
-    async def close_workspace(self, workspace: str, context: Optional[Dict[str, Any]] = None) -> None:
+    async def close_workspace(
+        self, workspace: str, context: Optional[Dict[str, Any]] = None
+    ) -> None:
         """Close all Python eval sessions for a workspace."""
         logger.info(f"Closing workspace {workspace} for Python eval worker")
-        
+
         # Stop all sessions for this workspace
         sessions_to_stop = [
-            session_id for session_id, session_info in self._sessions.items()
+            session_id
+            for session_id, session_info in self._sessions.items()
             if session_info.workspace == workspace
         ]
-        
+
         for session_id in sessions_to_stop:
             try:
                 await self.stop(session_id)
@@ -271,7 +314,7 @@ class PythonEvalRunner(BaseWorker):
     async def shutdown(self, context: Optional[Dict[str, Any]] = None) -> None:
         """Shutdown the Python eval worker."""
         logger.info("Shutting down Python eval worker...")
-        
+
         # Stop all sessions
         session_ids = list(self._sessions.keys())
         for session_id in session_ids:
@@ -279,7 +322,7 @@ class PythonEvalRunner(BaseWorker):
                 await self.stop(session_id)
             except Exception as e:
                 logger.warning(f"Failed to stop Python eval session {session_id}: {e}")
-        
+
         logger.info("Python eval worker shutdown complete")
 
     def get_worker_service(self) -> Dict[str, Any]:
@@ -300,15 +343,19 @@ async def hypha_startup(server):
 async def start_worker(server_url, workspace, token):
     """Start Python eval worker standalone."""
     from hypha_rpc import connect
-    
+
     server = await connect(server_url, workspace=workspace, token=token)
     worker = PythonEvalRunner(server.rpc)
-    logger.info(f"Python eval worker started, server: {server_url}, workspace: {workspace}")
-    
+    logger.info(
+        f"Python eval worker started, server: {server_url}, workspace: {workspace}"
+    )
+
     return worker
+
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--server-url", type=str, required=True)
     parser.add_argument("--workspace", type=str, required=True)

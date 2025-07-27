@@ -38,6 +38,7 @@ except ImportError:
         """Stub function when A2A SDK is not available."""
         raise ImportError("A2A client SDK not available - ensure a2a-sdk is installed")
 
+
 # All test coroutines will be treated as marked.
 pytestmark = pytest.mark.asyncio
 

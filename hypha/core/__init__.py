@@ -32,7 +32,7 @@ from prometheus_client import Counter, Gauge
 
 class AutoscalingConfig(BaseModel):
     """Represent autoscaling configuration for apps."""
-    
+
     enabled: bool = False
     min_instances: int = 1
     max_instances: int = 10
@@ -44,6 +44,7 @@ class AutoscalingConfig(BaseModel):
     scale_down_cooldown: int = 600  # Cooldown period in seconds for scale down
     metric_type: str = "load"  # Can be "load" or "custom"
     custom_metric_function: Optional[str] = None  # For custom metrics
+
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -481,8 +482,16 @@ class RedisRPCConnection:
     """Represent a Redis connection for handling RPC-like messaging."""
 
     _counter = Counter("rpc_call", "Counts the RPC calls", ["workspace"])
-    _client_request_counter = Counter("client_requests_total", "Total requests from clients", ["workspace", "client_id"])
-    _client_load_gauge = Gauge("client_load", "Current load per client (requests per minute)", ["workspace", "client_id"])
+    _client_request_counter = Counter(
+        "client_requests_total",
+        "Total requests from clients",
+        ["workspace", "client_id"],
+    )
+    _client_load_gauge = Gauge(
+        "client_load",
+        "Current load per client (requests per minute)",
+        ["workspace", "client_id"],
+    )
     _tracker = None
 
     @classmethod
@@ -568,16 +577,16 @@ class RedisRPCConnection:
         # logger.info(f"Sending message to channel {target_id}:msg")
         await self._event_bus.emit(f"{target_id}:msg", packed_message)
         RedisRPCConnection._counter.labels(workspace=self._workspace).inc()
-        
+
         # Track client requests
         RedisRPCConnection._client_request_counter.labels(
             workspace=self._workspace, client_id=self._client_id
         ).inc()
-        
+
         # Update load based on message rate (requests per minute) only for load balancing enabled clients
         if self._is_load_balancing_enabled():
             self._update_load_metric()
-        
+
         await RedisRPCConnection._tracker.reset_timer(
             self._workspace + "/" + self._client_id, "client"
         )
@@ -593,45 +602,51 @@ class RedisRPCConnection:
             current_requests = RedisRPCConnection._client_request_counter.labels(
                 workspace=self._workspace, client_id=self._client_id
             )._value._value
-            
+
             # Calculate requests per minute based on recent activity
             # We'll use a simple approach: current timestamp and request count
             current_time = time.time()
-            
+
             # Store the last update time and request count for this client
             client_key = f"{self._workspace}/{self._client_id}"
-            if not hasattr(RedisRPCConnection, '_client_metrics'):
+            if not hasattr(RedisRPCConnection, "_client_metrics"):
                 RedisRPCConnection._client_metrics = {}
-            
+
             if client_key not in RedisRPCConnection._client_metrics:
                 RedisRPCConnection._client_metrics[client_key] = {
-                    'last_time': current_time,
-                    'last_requests': current_requests
+                    "last_time": current_time,
+                    "last_requests": current_requests,
                 }
                 load = 0.0
             else:
-                last_time = RedisRPCConnection._client_metrics[client_key]['last_time']
-                last_requests = RedisRPCConnection._client_metrics[client_key]['last_requests']
-                
+                last_time = RedisRPCConnection._client_metrics[client_key]["last_time"]
+                last_requests = RedisRPCConnection._client_metrics[client_key][
+                    "last_requests"
+                ]
+
                 # Calculate time difference in minutes
                 time_diff = (current_time - last_time) / 60.0
-                
+
                 if time_diff > 0:
                     # Calculate requests per minute
                     request_diff = current_requests - last_requests
                     load = request_diff / time_diff
                 else:
                     load = 0.0
-                
+
                 # Update stored values
-                RedisRPCConnection._client_metrics[client_key]['last_time'] = current_time
-                RedisRPCConnection._client_metrics[client_key]['last_requests'] = current_requests
-            
+                RedisRPCConnection._client_metrics[client_key][
+                    "last_time"
+                ] = current_time
+                RedisRPCConnection._client_metrics[client_key][
+                    "last_requests"
+                ] = current_requests
+
             # Set the load gauge
             RedisRPCConnection._client_load_gauge.labels(
                 workspace=self._workspace, client_id=self._client_id
             ).set(load)
-            
+
         except Exception as e:
             logger.warning(f"Failed to update load metric: {e}")
 
@@ -649,9 +664,11 @@ class RedisRPCConnection:
             # Only return load for load balancing enabled clients
             if not client_id.endswith("__rlb"):
                 return 0.0
-            
-            metric = cls._client_load_gauge.labels(workspace=workspace, client_id=client_id)
-            return metric._value._value if hasattr(metric, '_value') else 0.0
+
+            metric = cls._client_load_gauge.labels(
+                workspace=workspace, client_id=client_id
+            )
+            return metric._value._value if hasattr(metric, "_value") else 0.0
         except Exception:
             return 0.0
 
@@ -674,13 +691,16 @@ class RedisRPCConnection:
         await RedisRPCConnection._tracker.remove_entity(
             self._workspace + "/" + self._client_id, "client"
         )
-        
+
         # Clean up metrics for load balancing enabled clients only
         if self._is_load_balancing_enabled():
             client_key = f"{self._workspace}/{self._client_id}"
-            if hasattr(RedisRPCConnection, '_client_metrics') and client_key in RedisRPCConnection._client_metrics:
+            if (
+                hasattr(RedisRPCConnection, "_client_metrics")
+                and client_key in RedisRPCConnection._client_metrics
+            ):
                 del RedisRPCConnection._client_metrics[client_key]
-            
+
             RedisRPCConnection._client_load_gauge.labels(
                 workspace=self._workspace, client_id=self._client_id
             ).set(0)

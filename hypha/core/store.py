@@ -327,7 +327,8 @@ class RedisStore:
                     "description": f"Workspace for user {user_info.id}",
                     "persistent": not user_info.is_anonymous,
                     "owners": [user_info.id],
-                    "read_only": user_info.is_anonymous and not self._enable_s3_for_anonymous_users,
+                    "read_only": user_info.is_anonymous
+                    and not self._enable_s3_for_anonymous_users,
                 }
             )
         else:

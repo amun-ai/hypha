@@ -278,7 +278,8 @@ class ASGIRoutingMiddleware:
                             await send(
                                 {
                                     "type": "http.response.body",
-                                    "body": b"Invalid service type: " + str(service_type).encode(),
+                                    "body": b"Invalid service type: "
+                                    + str(service_type).encode(),
                                     "more_body": False,
                                 }
                             )
@@ -321,23 +322,23 @@ class ASGIRoutingMiddleware:
         path = path.strip("/")
         if not path:
             path = "index"
-        
+
         path_parts = path.split("/")
-        
+
         # Try to find the exact function match (including nested)
         func = self._find_nested_function(service, path_parts)
-        
+
         # If no exact match, try index function for directory-style access
         if not func and len(path_parts) > 1:
             index_parts = path_parts + ["index"]
             func = self._find_nested_function(service, index_parts)
-        
+
         # If still no match, try the default function as fallback
         if not func and "default" in service and callable(service["default"]):
             func = service["default"]
             # For default function, we pass the original path in the scope
             scope["function_path"] = "/" + path if path != "index" else "/"
-        
+
         if func:
             scope["query_string"] = scope["query_string"].decode("utf-8")
             scope["raw_path"] = scope["raw_path"].decode("latin-1")
@@ -347,7 +348,7 @@ class ASGIRoutingMiddleware:
             while event.get("more_body"):
                 body += await receive()["body"]
             scope["body"] = body or None
-            
+
             try:
                 result = await func(scope)
                 headers = MutableHeaders(headers=result.get("headers"))
