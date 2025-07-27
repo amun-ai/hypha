@@ -1823,6 +1823,64 @@ class ServerAppController:
             raise Exception(f"Server app instance not found: {session_id}")
 
     @schema_method
+    async def execute(
+        self,
+        session_id: str = Field(
+            ...,
+            description="The session ID of the running application instance. This is typically in the format 'workspace/client_id'.",
+        ),
+        script: str = Field(
+            ...,
+            description="The script/code to execute in the session. For Python sessions, this is Python code. For browser sessions, this is JavaScript code.",
+        ),
+        config: Optional[Dict[str, Any]] = Field(
+            None,
+            description="Optional execution configuration specific to the worker type.",
+        ),
+        progress_callback: Any = Field(
+            None,
+            description="Callback function to receive progress updates during execution.",
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system.",
+        ),
+    ) -> Any:
+        """Execute a script in a running server app instance.
+        
+        This method allows you to interact with running application sessions by executing scripts.
+        The behavior depends on the worker type:
+        - Conda worker: Executes Python code via Jupyter kernel
+        - Browser worker: Executes JavaScript code via Playwright
+        - Other workers: May not support this method
+        
+        Returns the execution results in a format specific to the worker implementation.
+        """
+        user_info = UserInfo.model_validate(context["user"])
+        workspace = context["ws"]
+        if not user_info.check_permission(workspace, UserPermission.read_write):
+            raise Exception(
+                f"User {user_info.id} does not have permission"
+                f" to execute scripts in app {session_id} in workspace {workspace}."
+            )
+        if session_id in self._sessions:
+            worker = self._sessions[session_id]["_worker"]
+            if hasattr(worker, "execute"):
+                return await worker.execute(
+                    session_id, 
+                    script=script, 
+                    config=config,
+                    progress_callback=progress_callback,
+                    context=context
+                )
+            else:
+                raise NotImplementedError(
+                    f"Worker for session {session_id} does not support the execute method"
+                )
+        else:
+            raise Exception(f"Server app instance not found: {session_id}")
+
+    @schema_method
     async def list_running(
         self,
         context: Optional[dict] = Field(
@@ -2365,6 +2423,7 @@ class ServerAppController:
             "list_running": self.list_running,
             "get_logs": self.get_logs,
             "take_screenshot": self.take_screenshot,
+            "execute": self.execute,
             "edit_file": self.edit_file,
             "remove_file": self.remove_file,
             "list_files": self.list_files,

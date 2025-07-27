@@ -134,14 +134,14 @@ async def test_conda_worker_service_registration(fastapi_server, test_user_token
     assert worker_service is not None
     assert hasattr(worker_service, "start")
     assert hasattr(worker_service, "stop")
-    assert hasattr(worker_service, "execute_code")
+    assert hasattr(worker_service, "execute")
     assert hasattr(worker_service, "get_logs")
     assert hasattr(worker_service, "list_sessions")
 
     print("✓ Conda worker registered successfully")
 
     # Test supported types
-    assert "python-conda" in worker.supported_types
+    assert "conda-jupyter-kernel" in worker.supported_types
     print(f"✓ Conda worker supports types: {worker.supported_types}")
 
     # Test worker info
@@ -253,7 +253,7 @@ async def test_conda_worker_session_lifecycle(fastapi_server, test_user_token):
         "entry_point": "main.py",
         "artifact_id": f"{workspace}/test-conda-app",
         "manifest": {
-            "type": "python-conda",
+            "type": "conda-jupyter-kernel",
             "name": "Test Conda App",
             "entry_point": "main.py",
             "dependencies": ["python=3.11", "numpy"],

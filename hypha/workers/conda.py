@@ -24,7 +24,8 @@ from hypha.workers.base import (
     SessionNotFoundError,
     WorkerError,
 )
-from hypha.workers.conda_executor import CondaEnvExecutor, ExecutionResult
+from hypha.workers.conda_executor import CondaEnvExecutor
+from hypha.workers.conda_kernel import CondaKernel
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -245,7 +246,7 @@ class CondaWorker(BaseWorker):
     @property
     def supported_types(self) -> List[str]:
         """Return list of supported application types."""
-        return ["python-conda"]
+        return ["conda-jupyter-kernel"]
 
     @property
     def name(self) -> str:
@@ -290,6 +291,17 @@ class CondaWorker(BaseWorker):
         # Always ensure pip is available
         if "pip" not in dependencies:
             dependencies.append("pip")
+
+        # Always ensure ipykernel is available for Jupyter kernel support
+        ipykernel_found = False
+        for dep in dependencies:
+            if isinstance(dep, str) and dep == "ipykernel":
+                ipykernel_found = True
+                break
+        
+        if not ipykernel_found:
+            dependencies.append("ipykernel")
+            logger.info("Automatically added ipykernel to dependencies")
 
         # Always ensure hypha-rpc is available via pip
         hypha_rpc_found = False
@@ -563,16 +575,42 @@ class CondaWorker(BaseWorker):
             self._env_cache.add_cached_env(dependencies, channels, executor.env_path)
             logger.info(f"Cached new conda environment: {executor.env_path}")
 
-        # Phase 3: Start initialization script in background (non-blocking)
+        # Phase 3: Start Jupyter kernel
         progress_callback_wrapper(
             {
                 "type": "info",
-                "message": "Starting initialization script in background...",
+                "message": "Starting Jupyter kernel...",
             }
         )
 
-        # Start the script execution in background without waiting for completion
-        # This allows long-running services (like FastAPI apps) to keep running
+        # Create and start the Jupyter kernel
+        kernel = CondaKernel(executor.env_path)
+        try:
+            await kernel.start(timeout=30.0)
+            progress_callback_wrapper(
+                {
+                    "type": "success",
+                    "message": "Jupyter kernel started successfully",
+                }
+            )
+        except Exception as e:
+            progress_callback_wrapper(
+                {
+                    "type": "error",
+                    "message": f"Failed to start Jupyter kernel: {str(e)}",
+                }
+            )
+            raise
+
+        # Phase 4: Run initialization script in the kernel
+        progress_callback_wrapper(
+            {
+                "type": "info",
+                "message": "Running initialization script in kernel...",
+            }
+        )
+
+        # Prepare the hypha config
         hypha_config = {
             "server_url": config.server_url,
             "workspace": config.workspace,
@@ -580,187 +618,206 @@ class CondaWorker(BaseWorker):
             "token": config.token,
         }
 
-        # Determine if script has execute function for later interactive calls
+        # Execute initialization script in the kernel
+        init_code = f"""
+import os
+import sys
 
-        # Create a task to run the script in background with the wrapper callback
-        script_task = asyncio.create_task(
-            self._run_script_in_background(
-                executor, script, hypha_config, progress_callback_wrapper, config.id
+# Set up Hypha configuration
+hypha_config = {repr(hypha_config)}
+os.environ['HYPHA_SERVER_URL'] = hypha_config['server_url']
+os.environ['HYPHA_WORKSPACE'] = hypha_config['workspace']
+os.environ['HYPHA_CLIENT_ID'] = hypha_config['client_id']
+os.environ['HYPHA_TOKEN'] = hypha_config['token']
+
+# Execute the user's script
+exec('''{script}''')
+"""
+
+        try:
+            result = await kernel.execute(init_code, timeout=60.0)
+            
+            # Process kernel outputs into logs
+            for output in result.get("outputs", []):
+                if output["type"] == "stream":
+                    if output["name"] == "stdout":
+                        logs["stdout"].append(output["text"])
+                    elif output["name"] == "stderr":
+                        logs["stderr"].append(output["text"])
+                elif output["type"] == "error":
+                    logs["error"].append("\n".join(output.get("traceback", [])))
+                elif output["type"] == "execute_result":
+                    # Convert execute results to string representation
+                    data = output.get("data", {})
+                    if "text/plain" in data:
+                        logs["info"].append(f"Result: {data['text/plain']}")
+            
+            if result["status"] == "ok":
+                progress_callback_wrapper(
+                    {
+                        "type": "success",
+                        "message": "Initialization script executed successfully",
+                    }
+                )
+            else:
+                progress_callback_wrapper(
+                    {
+                        "type": "error",
+                        "message": "Initialization script failed",
+                    }
+                )
+                
+        except Exception as e:
+            progress_callback_wrapper(
+                {
+                    "type": "error",
+                    "message": f"Failed to execute initialization script: {str(e)}",
+                }
             )
-        )
+            # Don't raise here - we want the session to continue even if init fails
+            logs["error"].append(f"Initialization error: {str(e)}")
 
         progress_callback_wrapper(
             {
                 "type": "success",
-                "message": "Conda environment session started, initialization script running in background",
+                "message": "Conda environment session with Jupyter kernel ready",
             }
         )
 
         return {
             "executor": executor,
+            "kernel": kernel,
             "script": script,
             "dependencies": dependencies,
             "channels": channels,
-            "script_task": script_task,  # Keep reference to the background task
             "logs": logs,
             "hypha_config": hypha_config,
         }
 
-    async def _run_script_in_background(
-        self,
-        executor: CondaEnvExecutor,
-        script: str,
-        hypha_config: dict,
-        progress_callback=None,
-        session_id: str = None,
-    ):
-        """Run the initialization script in background without blocking session startup."""
-        try:
-            if progress_callback:
-                progress_callback(
-                    {"type": "info", "message": "Executing initialization script..."}
-                )
 
-            # Execute the script in a thread pool to avoid blocking
-            execute_func = functools.partial(executor.execute, script, hypha_config)
-            result = await asyncio.get_event_loop().run_in_executor(None, execute_func)
-
-            # Update session logs with the background execution results
-            if session_id and session_id in self._session_data:
-                session_data = self._session_data[session_id]
-                logs = session_data.get("logs", {})
-
-                if result.success:
-                    if result.stdout:
-                        logs.setdefault("stdout", []).append(result.stdout)
-                    logs.setdefault("info", []).append(
-                        "Background script execution completed successfully"
-                    )
-                    if result.timing:
-                        logs.setdefault("info", []).append(
-                            f"Background script execution time: {result.timing.execution_time:.2f}s"
-                        )
-                else:
-                    if result.error:
-                        logs.setdefault("error", []).append(result.error)
-                    if result.stderr:
-                        logs.setdefault("stderr", []).append(result.stderr)
-                    logs.setdefault("error", []).append(
-                        "Background script execution failed"
-                    )
-
-            if progress_callback:
-                if result.success:
-                    progress_callback(
-                        {
-                            "type": "success",
-                            "message": "Initialization script executed successfully",
-                        }
-                    )
-                else:
-                    progress_callback(
-                        {
-                            "type": "error",
-                            "message": f"Initialization script failed: {result.error or 'Unknown error'}",
-                        }
-                    )
-
-            # Log the result for debugging
-            if result.success:
-                logger.info("Background script execution completed successfully")
-                if result.timing:
-                    logger.info(
-                        f"Script execution time: {result.timing.execution_time:.2f}s"
-                    )
-            else:
-                logger.error(f"Background script execution failed: {result.error}")
-
-            return result
-
-        except Exception as e:
-            logger.error(f"Background script execution failed with exception: {e}")
-
-            # Update session logs with the exception
-            if session_id and session_id in self._session_data:
-                session_data = self._session_data[session_id]
-                logs = session_data.get("logs", {})
-                logs.setdefault("error", []).append(
-                    f"Background script execution failed: {str(e)}"
-                )
-
-            if progress_callback:
-                progress_callback(
-                    {
-                        "type": "error",
-                        "message": f"Background script execution failed: {str(e)}",
-                    }
-                )
-            return None
-
-    async def execute_code(
+    async def execute(
         self,
         session_id: str,
-        code: str = None,
+        script: str,
+        config: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Any] = None,
         context: Optional[Dict[str, Any]] = None,
-    ) -> ExecutionResult:
-        """Execute code in a conda environment session."""
+    ) -> Dict[str, Any]:
+        """Execute a script in the running Jupyter kernel session.
+        
+        This implements the new execute API method for interacting with running sessions.
+        
+        Args:
+            session_id: The session to execute in
+            script: The Python code to execute
+            config: Optional execution configuration
+            progress_callback: Optional callback for execution progress
+            context: Optional context information
+            
+        Returns:
+            Dictionary containing execution results with Jupyter-like output format
+        """
         if session_id not in self._sessions:
             raise SessionNotFoundError(
                 f"Conda environment session {session_id} not found"
             )
 
         session_data = self._session_data.get(session_id)
-        if not session_data or not session_data.get("executor"):
-            raise WorkerError(f"No executor available for session {session_id}")
+        if not session_data or not session_data.get("kernel"):
+            raise WorkerError(f"No kernel available for session {session_id}")
 
-        executor = session_data["executor"]
-        hypha_config = session_data.get("hypha_config", {})
+        kernel = session_data["kernel"]
+        
+        # Check if kernel is still alive
+        if not await kernel.is_alive():
+            raise WorkerError(f"Kernel for session {session_id} is not alive")
 
-        if not code:
-            raise WorkerError(f"No code provided to execute")
+        if progress_callback:
+            progress_callback(
+                {"type": "info", "message": "Executing code in Jupyter kernel..."}
+            )
 
         try:
-            # Execute the provided code directly
-            execute_func = functools.partial(executor.execute, code, hypha_config)
-            result = await asyncio.get_event_loop().run_in_executor(None, execute_func)
+            # Configure execution options from config
+            timeout = config.get("timeout", 30.0) if config else 30.0
+            silent = config.get("silent", False) if config else False
+            store_history = config.get("store_history", True) if config else True
+            
+            # Execute the code in the kernel
+            result = await kernel.execute(
+                script, 
+                silent=silent,
+                store_history=store_history,
+                timeout=timeout
+            )
 
-            # Update logs
-            if session_data["logs"] is None:
-                session_data["logs"] = {
-                    "stdout": [],
-                    "stderr": [],
-                    "info": [],
-                    "error": [],
+            # Update session logs
+            logs = session_data.get("logs", {})
+            
+            # Process outputs for logging
+            for output in result.get("outputs", []):
+                if output["type"] == "stream":
+                    if output["name"] == "stdout":
+                        logs.setdefault("stdout", []).append(output["text"])
+                    elif output["name"] == "stderr":
+                        logs.setdefault("stderr", []).append(output["text"])
+                elif output["type"] == "error":
+                    logs.setdefault("error", []).append("\n".join(output.get("traceback", [])))
+
+            # Add execution info
+            logs.setdefault("info", []).append(
+                f"Code executed at {datetime.now().isoformat()} - Status: {result['status']}"
+            )
+
+            if progress_callback:
+                if result["status"] == "ok":
+                    progress_callback(
+                        {"type": "success", "message": "Code executed successfully"}
+                    )
+                else:
+                    progress_callback(
+                        {"type": "error", "message": "Code execution failed"}
+                    )
+
+            return result
+
+        except asyncio.TimeoutError:
+            error_msg = f"Code execution timed out after {timeout} seconds"
+            if progress_callback:
+                progress_callback({"type": "error", "message": error_msg})
+            
+            logs = session_data.get("logs", {})
+            logs.setdefault("error", []).append(error_msg)
+            
+            return {
+                "status": "error",
+                "outputs": [],
+                "error": {
+                    "ename": "TimeoutError",
+                    "evalue": error_msg,
+                    "traceback": [error_msg]
                 }
-
-            # Ensure all log types exist
-            for log_type in ["stdout", "stderr", "info", "error"]:
-                if log_type not in session_data["logs"]:
-                    session_data["logs"][log_type] = []
-
-            if result.success:
-                if result.stdout:
-                    session_data["logs"]["stdout"].append(result.stdout)
-                session_data["logs"]["info"].append(
-                    f"Code executed successfully at {datetime.now().isoformat()}"
-                )
-            else:
-                if result.stderr:
-                    session_data["logs"]["stderr"].append(result.stderr)
-                if result.error:
-                    session_data["logs"]["error"].append(result.error)
-
-            return result
-
+            }
         except Exception as e:
+            error_msg = f"Failed to execute code: {str(e)}"
             logger.error(f"Failed to execute code in session {session_id}: {e}")
-            result = ExecutionResult(success=False, error=str(e))
-            if session_data.get("logs"):
-                # Ensure error log type exists
-                if "error" not in session_data["logs"]:
-                    session_data["logs"]["error"] = []
-                session_data["logs"]["error"].append(str(e))
-            return result
+            
+            if progress_callback:
+                progress_callback({"type": "error", "message": error_msg})
+            
+            logs = session_data.get("logs", {})
+            logs.setdefault("error", []).append(error_msg)
+            
+            return {
+                "status": "error",
+                "outputs": [],
+                "error": {
+                    "ename": type(e).__name__,
+                    "evalue": str(e),
+                    "traceback": [error_msg]
+                }
+            }
+
 
     async def stop(
         self, session_id: str, context: Optional[Dict[str, Any]] = None
@@ -779,18 +836,15 @@ class CondaWorker(BaseWorker):
             # Cleanup session data
             session_data = self._session_data.get(session_id)
             if session_data:
-                # Cancel the background script task if it's still running
-                script_task = session_data.get("script_task")
-                if script_task and not script_task.done():
-                    logger.info(
-                        f"Cancelling background script task for session {session_id}"
-                    )
-                    script_task.cancel()
+                # Shutdown the Jupyter kernel
+                kernel = session_data.get("kernel")
+                if kernel:
+                    logger.info(f"Shutting down Jupyter kernel for session {session_id}")
                     try:
-                        await script_task
-                    except asyncio.CancelledError:
-                        logger.info(
-                            f"Background script task cancelled for session {session_id}"
+                        await kernel.shutdown()
+                    except Exception as e:
+                        logger.warning(
+                            f"Error shutting down kernel for session {session_id}: {e}"
                         )
 
                 # Note: We don't cleanup the executor environment since it's cached
@@ -911,16 +965,7 @@ class CondaWorker(BaseWorker):
         """Shutdown the conda environment worker."""
         logger.info("Shutting down conda environment worker...")
 
-        # Cancel all background script tasks first
-        for session_id, session_data in self._session_data.items():
-            script_task = session_data.get("script_task")
-            if script_task and not script_task.done():
-                logger.info(
-                    f"Cancelling background script task for session {session_id}"
-                )
-                script_task.cancel()
-
-        # Stop all sessions
+        # Stop all sessions (which will shutdown kernels)
         session_ids = list(self._sessions.keys())
         for session_id in session_ids:
             try:
@@ -936,7 +981,6 @@ class CondaWorker(BaseWorker):
         """Get the service configuration for registration with conda-specific methods."""
         service_config = super().get_worker_service()
         # Add conda environment specific methods
-        service_config["execute_code"] = self.execute_code
         service_config["take_screenshot"] = self.take_screenshot
         return service_config
 

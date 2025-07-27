@@ -49,6 +49,7 @@ REQUIREMENTS = [
     "stream-zip>=0.0.83",
     "prompt-toolkit>=3.0.50",
     "ptpython>=3.0.29",
+    "jupyter_client>=8.6.0",
 ]
 
 ROOT_DIR = Path(__file__).parent.resolve()

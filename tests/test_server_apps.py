@@ -1302,7 +1302,7 @@ async def test_service_selection_mode_with_multiple_instances(
     try:
         response = requests.post(
             service_url,
-            json="HTTP service test",
+            json=["HTTP service test"],
             headers={"Authorization": f"Bearer {test_user_token}"},
         )
 
@@ -1754,8 +1754,8 @@ print("This won't be reached")
     await api.disconnect()
 
 
-# Test Python code for the python-conda app type
-TEST_CONDA_PYTHON_CODE = """
+# Test Python code for the conda-jupyter-kernel app type
+TEST_CONDA_JUPYTER_KERNEL = """
 import sys
 import numpy as np
 
@@ -1784,14 +1784,14 @@ def execute(input_data=None):
     \"\"\"Simple execute function for interactive calls.\"\"\"
     if input_data is None:
         return {
-            "message": "Hello from python-conda app!",
+            "message": "Hello from conda-jupyter-kernel app!",
             "numpy_version": np.__version__,
             "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
         }
     return {"input": input_data, "processed": True}
 """
 
-# Test Python code for conda-python app with FastAPI service registration
+# Test Python code for conda-jupyter-kernel app with FastAPI service registration
 TEST_CONDA_FASTAPI_CODE = """
 import sys
 import os
@@ -1899,8 +1899,8 @@ while True:
 """
 
 
-async def test_conda_python_apps(fastapi_server, test_user_token, conda_available):
-    """Test python-conda app installation and execution."""
+async def test_conda_jupyter_kernel_apps(fastapi_server, test_user_token, conda_available):
+    """Test conda-jupyter-kernel app installation and execution."""
     api = await connect_to_server(
         {
             "name": "test client",
@@ -1912,8 +1912,8 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
 
     controller = await api.get_service("public/server-apps")
 
-    # Test 1: Basic python-conda app (original test)
-    print("=== Test 1: Basic conda-python app with NumPy ===")
+    # Test 1: Basic conda-jupyter-kernel app (original test)
+    print("=== Test 1: Basic conda-jupyter-kernel app with NumPy ===")
 
     # Create progress callback to capture conda environment setup progress
     progress_messages = []
@@ -1924,13 +1924,13 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
         print(f"📊 Progress: {message['message']}")
 
     app_info = await controller.install(
-        source=TEST_CONDA_PYTHON_CODE,
+        source=TEST_CONDA_JUPYTER_KERNEL,
         manifest={
             "name": "Test Conda Python App",
-            "type": "python-conda",
+            "type": "conda-jupyter-kernel",
             "version": "1.0.0",
             "entry_point": "main.py",
-            "description": "A test python-conda app with numpy",
+            "description": "A test conda-jupyter-kernel app with numpy",
             "dependencies": ["python=3.11", "numpy"],
             "channels": ["conda-forge"],
         },
@@ -1941,7 +1941,7 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
     )
 
     assert app_info["name"] == "Test Conda Python App"
-    assert app_info["type"] == "python-conda"
+    assert app_info["type"] == "conda-jupyter-kernel"
     assert app_info["entry_point"] == "main.py"
 
     # Verify that progress messages were captured during conda environment setup
@@ -1965,7 +1965,7 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
 
     print("✅ Conda environment setup progress captured successfully!")
 
-    # Test starting the python-conda app (without waiting for service)
+    # Test starting the conda-jupyter-kernel app (without waiting for service)
     started_app = await controller.start(
         app_info["id"],
         timeout=90,
@@ -2005,10 +2005,10 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
     await controller.stop(started_app["id"])
     await controller.uninstall(app_info["id"])
 
-    print("✅ Basic conda-python app test completed")
+    print("✅ Basic conda-jupyter-kernel app test completed")
 
-    # Test 2: FastAPI service registration with conda-python (enhanced test)
-    print("=== Test 2: Conda-python app with FastAPI service registration ===")
+    # Test 2: FastAPI service registration with conda-jupyter-kernel (enhanced test)
+    print("=== Test 2: conda-jupyter-kernel app with FastAPI service registration ===")
 
     # Create progress callback for FastAPI app installation
     fastapi_progress_messages = []
@@ -2022,10 +2022,10 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
         source=TEST_CONDA_FASTAPI_CODE,
         manifest={
             "name": "Test Conda FastAPI App",
-            "type": "python-conda",
+            "type": "conda-jupyter-kernel",
             "version": "1.0.0",
             "entry_point": "main.py",
-            "description": "A conda-python FastAPI app with service registration",
+            "description": "A conda-jupyter-kernel FastAPI app with service registration",
             "dependencies": [
                 "python=3.11",
                 "numpy",
@@ -2048,7 +2048,7 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
     )
 
     assert fastapi_app_info["name"] == "Test Conda FastAPI App"
-    assert fastapi_app_info["type"] == "python-conda"
+    assert fastapi_app_info["type"] == "conda-jupyter-kernel"
     print(f"✅ FastAPI conda app installed: {fastapi_app_info['id']}")
 
     # Verify FastAPI app progress messages
@@ -2195,7 +2195,7 @@ print("This won't be reached")
             source=error_python_code,
             manifest={
                 "name": "Test Conda Python App Error",
-                "type": "python-conda",
+                "type": "conda-jupyter-kernel",
                 "version": "1.0.0",
                 "entry_point": "error.py",
                 "dependencies": ["python=3.11"],
@@ -2206,7 +2206,7 @@ print("This won't be reached")
         )
 
     print("✅ Error handling test completed")
-    print("🎉 All conda-python app tests completed successfully!")
+    print("🎉 All conda-jupyter-kernel app tests completed successfully!")
 
     await api.disconnect()
 
