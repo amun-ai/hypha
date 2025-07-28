@@ -7,8 +7,18 @@ import pytest
 import pytest_asyncio
 from pathlib import Path
 
-from hypha.workers.conda_kernel import CondaKernel
-from hypha.workers.conda import CondaWorker, get_available_package_manager
+# Early check for conda availability
+try:
+    from hypha.workers.conda_kernel import CondaKernel
+    from hypha.workers.conda import CondaWorker, get_available_package_manager
+    # Try to detect package manager early
+    try:
+        get_available_package_manager()
+    except RuntimeError:
+        # If we can't find conda/mamba, skip all tests in this module
+        pytest.skip("Conda/Mamba not available - skipping all conda kernel tests", allow_module_level=True)
+except ImportError as e:
+    pytest.skip(f"Cannot import conda kernel modules: {e}", allow_module_level=True)
 
 
 @pytest_asyncio.fixture
