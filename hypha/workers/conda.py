@@ -305,26 +305,37 @@ class CondaWorker(BaseWorker):
 
         # Always ensure hypha-rpc is available via pip
         hypha_rpc_found = False
+        pip_dep_index = None
+        pip_packages = []
 
-        # Check if hypha-rpc is already specified
-        for dep in dependencies:
+        # Check if hypha-rpc is already specified and find existing pip dependencies
+        for i, dep in enumerate(dependencies):
             if isinstance(dep, dict) and "pip" in dep:
-                pip_packages = dep["pip"]
-                if isinstance(pip_packages, list):
-                    if "hypha-rpc" in pip_packages:
+                pip_dep_index = i
+                current_pip_packages = dep["pip"]
+                if isinstance(current_pip_packages, list):
+                    pip_packages.extend(current_pip_packages)
+                    if "hypha-rpc" in current_pip_packages:
                         hypha_rpc_found = True
-                        break
-                elif isinstance(pip_packages, str) and pip_packages == "hypha-rpc":
-                    hypha_rpc_found = True
-                    break
+                elif isinstance(current_pip_packages, str):
+                    pip_packages.append(current_pip_packages)
+                    if current_pip_packages == "hypha-rpc":
+                        hypha_rpc_found = True
             elif isinstance(dep, str) and dep == "hypha-rpc":
                 hypha_rpc_found = True
-                break
 
         # Add hypha-rpc via pip if not found
         if not hypha_rpc_found:
-            dependencies.append({"pip": ["hypha-rpc"]})
-            logger.info("Automatically added hypha-rpc to dependencies via pip")
+            if pip_dep_index is not None:
+                # Merge with existing pip dependencies
+                if "hypha-rpc" not in pip_packages:
+                    pip_packages.append("hypha-rpc")
+                dependencies[pip_dep_index] = {"pip": pip_packages}
+                logger.info("Added hypha-rpc to existing pip dependencies")
+            else:
+                # Create new pip dependency entry
+                dependencies.append({"pip": ["hypha-rpc"]})
+                logger.info("Automatically added hypha-rpc to dependencies via pip")
 
         # Update manifest with normalized values
         manifest["dependencies"] = dependencies
