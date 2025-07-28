@@ -22,10 +22,9 @@ from hypha.core import UserInfo, UserTokenInfo, ScopeInfo, UserPermission, Works
 from hypha.utils import random_id
 from hypha import __version__
 
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("auth")
-logger.setLevel(LOGLEVEL)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="auth")
 
 ENV_FILE = find_dotenv()
 if ENV_FILE:

@@ -38,10 +38,9 @@ except ImportError:
     pass
 
 
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("server")
-logger.setLevel(LOGLEVEL)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="server")
 
 ENV_FILE = find_dotenv()
 if ENV_FILE:

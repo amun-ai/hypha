@@ -23,6 +23,144 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+import sys
+import logging
+from pathlib import Path
+import asyncio
+import importlib
+import importlib.util
+from io import StringIO
+from typing import Dict, Any
+
+# Add the new logging configuration function
+class SafeStreamHandler(logging.StreamHandler):
+    """A stream handler that doesn't fail when the stream is closed."""
+    
+    def __init__(self, stream=None):
+        # Initialize with the original stream
+        super().__init__(stream)
+        self._original_stream = stream or sys.stdout
+        self._fallback_attempted = False
+    
+    def emit(self, record):
+        try:
+            # Check if the current stream is closed before attempting to write
+            if hasattr(self.stream, 'closed') and self.stream.closed:
+                self._attempt_fallback()
+            
+            super().emit(record)
+            
+        except (ValueError, OSError, AttributeError) as e:
+            # Handle cases where the stream is closed or invalid
+            error_str = str(e)
+            if ("I/O operation on closed file" in error_str or 
+                "Bad file descriptor" in error_str or
+                "'NoneType' object has no attribute" in error_str):
+                
+                self._attempt_fallback()
+                
+                # Try to emit again with the fallback stream
+                try:
+                    if not (hasattr(self.stream, 'closed') and self.stream.closed):
+                        super().emit(record)
+                except (ValueError, OSError, AttributeError):
+                    # If all else fails, just ignore the log message silently
+                    pass
+            else:
+                # Some other error, re-raise it
+                raise
+    
+    def _attempt_fallback(self):
+        """Attempt to fallback to a working stream."""
+        if self._fallback_attempted:
+            return
+            
+        self._fallback_attempted = True
+        
+        # Try stderr first
+        if not (hasattr(sys.stderr, 'closed') and sys.stderr.closed):
+            self.stream = sys.stderr
+            return
+        
+        # Try stdout if stderr is also closed
+        if not (hasattr(sys.stdout, 'closed') and sys.stdout.closed):
+            self.stream = sys.stdout
+            return
+        
+        # If both are closed, create a null stream
+        try:
+            import os
+            self.stream = open(os.devnull, 'w')
+        except:
+            # If even that fails, set to None and handle in emit
+            self.stream = None
+
+class ProductionFormatter(logging.Formatter):
+    """Production-ready formatter with timezone support and consistent formatting."""
+    
+    def __init__(self):
+        # Get timezone setting from environment
+        use_utc = os.environ.get("HYPHA_LOG_UTC", "false").lower() == "true"
+        
+        if use_utc:
+            # UTC format for production deployments
+            fmt = '%(asctime)s.%(msecs)03dZ [%(process)d:%(thread)d] %(levelname)-8s %(name)-20s: %(message)s'
+            datefmt = '%Y-%m-%dT%H:%M:%S'
+        else:
+            # Local time format for development
+            fmt = '%(asctime)s.%(msecs)03d [%(process)d:%(thread)d] %(levelname)-8s %(name)-20s: %(message)s'
+            datefmt = '%Y-%m-%d %H:%M:%S'
+        
+        super().__init__(fmt=fmt, datefmt=datefmt)
+        self.use_utc = use_utc
+    
+    def formatTime(self, record, datefmt=None):
+        """Override to use UTC time when requested."""
+        if self.use_utc:
+            # Convert to UTC
+            ct = time.gmtime(record.created)
+        else:
+            # Use local time
+            ct = time.localtime(record.created)
+        
+        if datefmt:
+            s = time.strftime(datefmt, ct)
+        else:
+            s = time.strftime(self.default_time_format, ct)
+        
+        return s
+
+def configure_logging(level=None, module_name=None):
+    """Configure logging with a safe stream handler that doesn't fail on closed streams."""
+    if level is None:
+        level = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+    
+    # Only configure the root logger once to avoid duplicate handlers
+    root_logger = logging.getLogger()
+    if not any(isinstance(h, SafeStreamHandler) for h in root_logger.handlers):
+        # Remove any existing handlers that might use unsafe streams
+        for handler in root_logger.handlers[:]:
+            if isinstance(handler, logging.StreamHandler) and not isinstance(handler, SafeStreamHandler):
+                root_logger.removeHandler(handler)
+        
+        # Create a safe stream handler
+        handler = SafeStreamHandler(sys.stdout)
+        
+        # Use our production-ready formatter
+        formatter = ProductionFormatter()
+        handler.setFormatter(formatter)
+        
+        root_logger.addHandler(handler)
+        root_logger.setLevel(level)
+    
+    # Return a logger for the specific module if requested
+    if module_name:
+        logger = logging.getLogger(module_name)
+        logger.setLevel(level)
+        return logger
+    
+    return root_logger
+
 _os_alt_seps: List[str] = list(
     sep for sep in [os.path.sep, os.path.altsep] if sep is not None and sep != "/"
 )

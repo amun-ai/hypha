@@ -74,10 +74,9 @@ from jinja2 import Template
 from pydantic import BaseModel
 
 # Logger setup
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("artifact")
-logger.setLevel(LOGLEVEL)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="artifact")
 
 
 class PartETag(BaseModel):

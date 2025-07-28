@@ -27,10 +27,9 @@ except ImportError:
 from redis.commands.search.query import Query
 from redis.commands.search.query import Query
 
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("vectors")
-logger.setLevel(LOGLEVEL)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="vectors")
 
 FIELD_TYPE_MAPPING = {
     "TAG": TagField,

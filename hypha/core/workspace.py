@@ -42,10 +42,9 @@ from hypha.vectors import VectorSearchEngine
 from hypha.core.auth import generate_presigned_token, create_scope, parse_token
 from hypha.utils import EventBus, random_id
 
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("workspace")
-logger.setLevel(LOGLEVEL)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="workspace")
 
 SERVICE_SUMMARY_FIELD = ["id", "name", "type", "description", "config"]
 ANONYMOUS_USER_WS_PREFIX = "ws-user-anonymouz-"

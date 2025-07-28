@@ -46,10 +46,9 @@ class AutoscalingConfig(BaseModel):
     custom_metric_function: Optional[str] = None  # For custom metrics
 
 
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("core")
-logger.setLevel(LOGLEVEL)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="core")
 
 
 class VisibilityEnum(str, Enum):

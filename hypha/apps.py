@@ -33,10 +33,9 @@ from hypha.core import WorkspaceInfo
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
 
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "INFO").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("apps")
-logger.setLevel(LOGLEVEL)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="apps")
 
 multihash.CodecReg.register("base58", base58.b58encode, base58.b58decode)
 

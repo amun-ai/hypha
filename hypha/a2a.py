@@ -15,7 +15,9 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Scope, Receive, Send
 import json
 
-logger = logging.getLogger(__name__)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name=__name__)
 
 try:
     from a2a.server.apps.jsonrpc.starlette_app import A2AStarletteApplication, AgentCard

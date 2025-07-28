@@ -8,7 +8,9 @@ from typing import Any, Dict, List, Optional, Union, Protocol, Callable
 
 from pydantic import BaseModel, Field, field_serializer
 
-logger = logging.getLogger(__name__)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name=__name__)
 
 
 class SessionStatus(Enum):

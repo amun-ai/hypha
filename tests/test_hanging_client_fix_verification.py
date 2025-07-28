@@ -8,8 +8,9 @@ import logging
 # Import the server URL from the test constants
 from . import WS_SERVER_URL
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name=__name__)
 
 
 @pytest.mark.asyncio

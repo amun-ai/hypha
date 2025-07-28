@@ -19,10 +19,9 @@ from hypha.core.auth import (
 )
 
 
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("websocket-server")
-logger.setLevel(LOGLEVEL)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="websocket-server")
 
 _gauge = Gauge(
     "websocket_connections", "Number of websocket connections", ["workspace"]
