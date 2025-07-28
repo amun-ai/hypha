@@ -6,12 +6,34 @@ import pytest
 import pytest_asyncio
 from datetime import datetime, timedelta
 from hypha_rpc import connect_to_server
+from prometheus_client import CollectorRegistry, REGISTRY
 
 from hypha.core.store import RedisStore
 
 from . import SIO_PORT, find_item
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(autouse=True)
+def clear_prometheus_registry():
+    """Clear Prometheus registry before each test to prevent metric name collisions."""
+    # Clear all collectors from the default registry
+    collectors = list(REGISTRY._collector_to_names.keys())
+    for collector in collectors:
+        try:
+            REGISTRY.unregister(collector)
+        except KeyError:
+            # Collector might have already been unregistered
+            pass
+    yield
+    # Clean up after test as well
+    collectors = list(REGISTRY._collector_to_names.keys())
+    for collector in collectors:
+        try:
+            REGISTRY.unregister(collector)
+        except KeyError:
+            pass
 
 
 @pytest_asyncio.fixture(name="redis_store")
@@ -87,6 +109,137 @@ async def test_redis_store(redis_store):
     assert callable(service.echo)
     assert await service.echo("hello") == "hello"
     assert await service.echo("hello") == "hello"
+
+
+async def test_redis_event_subscription_lifecycle(redis_store):
+    """Test that RedisRPCConnection properly manages targeted event subscriptions without memory leaks."""
+    
+    # First create the workspace
+    await redis_store.register_workspace(
+        dict(
+            name="test-sub-lifecycle",
+            description="test workspace for subscription lifecycle",
+            owners=[],
+            persistent=True,
+            read_only=False,
+        ),
+        overwrite=True,
+    )
+    
+    # Get event bus reference
+    event_bus = redis_store._event_bus
+    
+    # Ensure clean state by waiting for any pending operations
+    await asyncio.sleep(0.1)
+    
+    # Get initial state (don't assume specific values, just track changes)
+    initial_patterns = set(event_bus._subscribed_patterns)
+    initial_clients = set(event_bus._local_clients)
+    
+    # Connect first client and track what gets added
+    api1 = await redis_store.connect_to_workspace("test-sub-lifecycle", client_id="client-1")
+    await asyncio.sleep(0.3)  # Give more time for async registration
+    
+    # Verify first client was added
+    patterns_after_client1 = set(event_bus._subscribed_patterns)
+    clients_after_client1 = set(event_bus._local_clients)
+    
+    new_patterns_1 = patterns_after_client1 - initial_patterns
+    new_clients_1 = clients_after_client1 - initial_clients
+    
+    assert len(new_patterns_1) == 1, f"Expected 1 new pattern, got {len(new_patterns_1)}: {new_patterns_1}"
+    assert len(new_clients_1) == 1, f"Expected 1 new client, got {len(new_clients_1)}: {new_clients_1}"
+    assert "targeted:test-sub-lifecycle/client-1:*" in new_patterns_1
+    assert "test-sub-lifecycle/client-1" in new_clients_1
+    
+    # Connect second client
+    api2 = await redis_store.connect_to_workspace("test-sub-lifecycle", client_id="client-2") 
+    await asyncio.sleep(0.3)  # Give more time for async registration
+    
+    # Verify second client was added
+    patterns_after_client2 = set(event_bus._subscribed_patterns)
+    clients_after_client2 = set(event_bus._local_clients)
+    
+    new_patterns_2 = patterns_after_client2 - patterns_after_client1  
+    new_clients_2 = clients_after_client2 - clients_after_client1
+    
+    assert len(new_patterns_2) == 1, f"Expected 1 new pattern for client-2, got {len(new_patterns_2)}: {new_patterns_2}"
+    assert len(new_clients_2) == 1, f"Expected 1 new client for client-2, got {len(new_clients_2)}: {new_clients_2}"
+    assert "targeted:test-sub-lifecycle/client-2:*" in new_patterns_2
+    assert "test-sub-lifecycle/client-2" in new_clients_2
+    
+    # Connect a manager client (should now be treated as local like any other client)
+    api_manager = await redis_store.connect_to_workspace("test-sub-lifecycle", client_id="manager-123")
+    await asyncio.sleep(0.3)  # Give more time for async registration
+    
+    # Verify manager client was added
+    patterns_after_manager = set(event_bus._subscribed_patterns)
+    clients_after_manager = set(event_bus._local_clients)
+    
+    new_patterns_mgr = patterns_after_manager - patterns_after_client2
+    new_clients_mgr = clients_after_manager - clients_after_client2
+    
+    assert len(new_patterns_mgr) == 1, f"Expected 1 new pattern for manager, got {len(new_patterns_mgr)}: {new_patterns_mgr}"
+    assert len(new_clients_mgr) == 1, f"Expected 1 new client for manager, got {len(new_clients_mgr)}: {new_clients_mgr}"
+    assert "targeted:test-sub-lifecycle/manager-123:*" in new_patterns_mgr
+    assert "test-sub-lifecycle/manager-123" in new_clients_mgr
+    
+    # Disconnect first client
+    await api1.disconnect()
+    await asyncio.sleep(0.2)  # Wait for cleanup
+    
+    # Verify first client was removed
+    patterns_after_disc1 = set(event_bus._subscribed_patterns)
+    clients_after_disc1 = set(event_bus._local_clients)
+    
+    assert "targeted:test-sub-lifecycle/client-1:*" not in patterns_after_disc1
+    assert "test-sub-lifecycle/client-1" not in clients_after_disc1
+    # But others should still be there
+    assert "targeted:test-sub-lifecycle/client-2:*" in patterns_after_disc1
+    assert "test-sub-lifecycle/client-2" in clients_after_disc1
+    assert "targeted:test-sub-lifecycle/manager-123:*" in patterns_after_disc1
+    assert "test-sub-lifecycle/manager-123" in clients_after_disc1
+    
+    # Disconnect second client
+    await api2.disconnect()
+    await asyncio.sleep(0.2)  # Wait for cleanup
+    
+    # Verify second client was removed
+    patterns_after_disc2 = set(event_bus._subscribed_patterns)
+    clients_after_disc2 = set(event_bus._local_clients)
+    
+    assert "targeted:test-sub-lifecycle/client-2:*" not in patterns_after_disc2
+    assert "test-sub-lifecycle/client-2" not in clients_after_disc2
+    # Manager should still be there
+    assert "targeted:test-sub-lifecycle/manager-123:*" in patterns_after_disc2
+    assert "test-sub-lifecycle/manager-123" in clients_after_disc2
+    
+    # Disconnect manager client
+    await api_manager.disconnect()
+    await asyncio.sleep(0.2)  # Wait for cleanup
+    
+    # Verify manager was removed and we're back to initial state
+    final_patterns = set(event_bus._subscribed_patterns)
+    final_clients = set(event_bus._local_clients)
+    
+    assert "targeted:test-sub-lifecycle/manager-123:*" not in final_patterns
+    assert "test-sub-lifecycle/manager-123" not in final_clients
+    
+    # Verify we removed all our test-specific patterns and clients
+    assert final_patterns == initial_patterns, (
+        f"Pattern sets don't match after cleanup:\n"
+        f"Initial: {initial_patterns}\n"
+        f"Final: {final_patterns}\n"
+        f"Added but not removed: {final_patterns - initial_patterns}\n"
+        f"Removed but shouldn't be: {initial_patterns - final_patterns}"
+    )
+    assert final_clients == initial_clients, (
+        f"Client sets don't match after cleanup:\n"
+        f"Initial: {initial_clients}\n"
+        f"Final: {final_clients}\n"
+        f"Added but not removed: {final_clients - initial_clients}\n"
+        f"Removed but shouldn't be: {initial_clients - final_clients}"
+    )
 
 
 async def test_websocket_server(fastapi_server, test_user_token_7):
