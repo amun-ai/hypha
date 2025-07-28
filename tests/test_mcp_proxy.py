@@ -530,3 +530,115 @@ async def test_mcp_lazy_service_one_instance(fastapi_server, test_user_token):
     await controller.uninstall(app_info.id)
     await api.unregister_service(original_service_info["id"])
     await api.disconnect()
+
+
+async def test_mcp_ghost_services_after_stop(fastapi_server, test_user_token):
+    """Test that MCP services are properly cleaned up after stopping and don't become ghost services."""
+    
+    # Connect to the Hypha server
+    api = await connect_to_server(
+        {
+            "name": "test client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 30,
+            "token": test_user_token,
+        }
+    )
+
+    workspace = api.config.workspace
+    controller = await api.get_service("public/server-apps")
+
+    # Step 1: Create a simple MCP service to use as backend
+    @schema_function
+    def test_tool(value: str) -> str:
+        """A test tool that returns the input value."""
+        return f"Processed: {value}"
+
+    # Register the backend MCP service
+    backend_service_info = await api.register_service(
+        {
+            "id": "ghost-test-backend",
+            "name": "Ghost Test Backend Service",
+            "description": "Backend service for ghost service test",
+            "type": "mcp",
+            "config": {"visibility": "public"},
+            "tools": {"test_tool": test_tool},
+        }
+    )
+
+    # Step 2: Create and install an MCP app that connects to the backend service
+    mcp_endpoint_url = f"{SERVER_URL}/{workspace}/mcp/{backend_service_info['id'].split('/')[-1]}/mcp"
+
+    mcp_app_config = {
+        "type": "mcp-server",
+        "name": "Ghost Test MCP App",
+        "description": "Test app for checking ghost services",
+        "mcpServers": {
+            "ghost-test-server": {
+                "type": "streamable-http",
+                "url": mcp_endpoint_url,
+            }
+        },
+    }
+
+    # Install the MCP app
+    app_info = await controller.install(manifest=mcp_app_config, overwrite=True, stage=True)
+    await controller.commit_app(app_info.id)
+
+    # Step 3: Start the MCP app to register services
+    print("Starting MCP app...")
+    start_result = await controller.start(app_info.id, timeout=30)
+    session_id = start_result["id"]
+    
+    print(f"MCP app started with session ID: {session_id}")
+
+    # Step 4: Verify that services are registered and visible
+    print("Checking services before stopping...")
+    initial_services = await api.list_services()
+    mcp_services_before = [s for s in initial_services if "ghost-test-server" in s.get("id", "")]
+    
+    print(f"Found {len(mcp_services_before)} MCP services before stopping:")
+    for service in mcp_services_before:
+        print(f"  - {service['id']}")
+    
+    # There should be at least one MCP service registered
+    assert len(mcp_services_before) > 0, "No MCP services found after starting the app"
+
+    # Step 5: Get the service to make sure it works
+    mcp_service = await api.get_service(f"ghost-test-server@{app_info.id}")
+    assert mcp_service is not None, "Could not get MCP service"
+    assert "test_tool" in mcp_service.tools, "test_tool not found in MCP service"
+    
+    # Test the service works
+    result = await mcp_service.tools.test_tool("hello")
+    assert result == "Processed: hello", f"Unexpected result: {result}"
+    
+    print("MCP service is working correctly")
+
+    # Step 6: Stop the MCP app
+    print(f"Stopping MCP app with session ID: {session_id}")
+    await controller.stop(session_id)
+    
+    print("MCP app stopped")
+
+    # Step 7: Wait a moment for cleanup to complete
+    await asyncio.sleep(2)
+
+    # Step 8: Check if ghost services remain
+    print("Checking services after stopping...")
+    final_services = await api.list_services()
+    mcp_services_after = [s for s in final_services if "ghost-test-server" in s.get("id", "")]
+    
+    print(f"Found {len(mcp_services_after)} MCP services after stopping:")
+    for service in mcp_services_after:
+        print(f"  - {service['id']} (this is a GHOST SERVICE)")
+
+    # Step 9: Verify that all MCP services have been cleaned up
+    assert len(mcp_services_after) == 0, f"Ghost services detected! {len(mcp_services_after)} MCP services still exist after stopping: {[s['id'] for s in mcp_services_after]}"
+
+    print("✅ No ghost services detected - cleanup was successful")
+
+    # Cleanup
+    await controller.uninstall(app_info.id)
+    await api.unregister_service(backend_service_info["id"])
+    await api.disconnect()
