@@ -374,6 +374,40 @@
 
     <!-- Render the App component -->
     <script type="text/babel" data-presets="env,react" data-env-targets="defaults, safari >= 12">
+        // Utility function to check if a file should be included based on hidden file settings
+        const shouldIncludeFile = (fileName, includeHidden = false) => {
+            if (includeHidden) return true;
+            
+            // Extract just the filename from path
+            const name = fileName.split('/').pop();
+            return !name.startsWith('.');
+        };
+
+        // Utility function to filter file list based on hidden file settings
+        const filterFiles = (files, includeHidden = false) => {
+            if (includeHidden) return files;
+            
+            return files.filter(file => {
+                // For File objects from file input
+                if (file instanceof File) {
+                    // Check both the file name and any path components
+                    const fileName = file.name;
+                    const relativePath = file.webkitRelativePath || fileName;
+                    
+                    // Split path and check each component
+                    const pathComponents = relativePath.split('/');
+                    return pathComponents.every(component => !component.startsWith('.'));
+                }
+                
+                // For other file objects, check the name property
+                if (file.name) {
+                    return shouldIncludeFile(file.name, includeHidden);
+                }
+                
+                return true;
+            });
+        };
+
         const Sidebar = ({ isCollapsed, onToggle, setActivePanel, enabledPanels }) => {
             return (
                 <div className={`sidebar ${isCollapsed ? 'collapsed' : ''}`}>
@@ -1696,16 +1730,37 @@
             const [workspace, setWorkspace] = React.useState(workspaceId);
             const [expiryTime, setExpiryTime] = React.useState(3600);
             const [clientId, setClientId] = React.useState(null);
+            const [permission, setPermission] = React.useState('read_write');
+            const [extraScopes, setExtraScopes] = React.useState([]);
+            const [newScope, setNewScope] = React.useState('');
             const [generatedToken, setGeneratedToken] = React.useState('');
             const [showSnackBar, setShowSnackBar] = React.useState(false);
 
             const handleGenerateToken = async () => {
                 try {
-                    const token = await onGenerateToken(workspace, expiryTime, clientId);
+                    const token = await onGenerateToken(workspace, expiryTime, clientId, permission, extraScopes);
                     setGeneratedToken(token);
                 } catch (error) {
                     console.error("Failed to generate token:", error);
                     alert("Failed to generate token. Please try again later.");
+                }
+            };
+
+            const addExtraScope = () => {
+                if (newScope.trim() && !extraScopes.includes(newScope.trim())) {
+                    setExtraScopes([...extraScopes, newScope.trim()]);
+                    setNewScope('');
+                }
+            };
+
+            const removeExtraScope = (index) => {
+                setExtraScopes(extraScopes.filter((_, i) => i !== index));
+            };
+
+            const handleNewScopeKeyPress = (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addExtraScope();
                 }
             };
         
@@ -1729,6 +1784,25 @@
                             value={workspace}
                             onChange={(e) => setWorkspace(e.target.value)}
                         />
+                    </div>
+                    <div className="mt-4">
+                        <label htmlFor="permission" className="block text-sm font-medium text-gray-300">
+                            Permission Level
+                            <p className="text-gray-500 text-xs mt-1">
+                                Permission level for the workspace: read, read_write, or admin.
+                            </p>
+                        </label>
+                        <select
+                            id="permission"
+                            name="permission"
+                            className="text-black mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                            value={permission}
+                            onChange={(e) => setPermission(e.target.value)}
+                        >
+                            <option value="read">Read Only</option>
+                            <option value="read_write">Read & Write</option>
+                            <option value="admin">Admin</option>
+                        </select>
                     </div>
                     <div className="mt-4">
                         <label htmlFor="expiry-time" className="block text-sm font-medium text-gray-300">
@@ -1762,8 +1836,53 @@
                         />
                     </div>
                     <div className="mt-4">
+                        <label className="block text-sm font-medium text-gray-300">
+                            Extra Scopes (Optional)
+                            <p className="text-gray-500 text-xs mt-1">
+                                Additional scopes for specialized access, e.g., "dataset:read", "model:write".
+                            </p>
+                        </label>
+                        <div className="mt-2 flex gap-2">
+                            <input
+                                type="text"
+                                className="text-black flex-1 px-3 py-2 border border-gray-300 rounded-md"
+                                placeholder="e.g., dataset:read"
+                                value={newScope}
+                                onChange={(e) => setNewScope(e.target.value)}
+                                onKeyPress={handleNewScopeKeyPress}
+                            />
+                            <button
+                                type="button"
+                                className="bg-green-500 hover:bg-green-600 text-white px-3 py-2 rounded-md transition duration-200"
+                                onClick={addExtraScope}
+                                disabled={!newScope.trim()}
+                            >
+                                <i className="fas fa-plus"></i>
+                            </button>
+                        </div>
+                        {extraScopes.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                                {extraScopes.map((scope, index) => (
+                                    <span
+                                        key={index}
+                                        className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
+                                    >
+                                        {scope}
+                                        <button
+                                            type="button"
+                                            className="ml-1 text-blue-600 hover:text-blue-800"
+                                            onClick={() => removeExtraScope(index)}
+                                        >
+                                            <i className="fas fa-times"></i>
+                                        </button>
+                                    </span>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    <div className="mt-4">
                         <button
-                            className="bg-blue-500 text-white py-2 px-4 rounded"
+                            className="bg-blue-500 hover:bg-blue-600 text-white py-2 px-4 rounded transition duration-200"
                             onClick={handleGenerateToken}
                         >
                             Generate Token
@@ -2225,7 +2344,7 @@
                 if (loading) return;
                 try {
                     setLoading(true);
-                    const fileList = await listFiles(artifact.id, "");
+                    const fileList = await listFiles(currentArtifact.id, "");
                     setFiles(fileList);
                     setExpandedDirs({});
                 } catch (error) {
@@ -2257,10 +2376,11 @@
         
                 try {
                     window.showLoadingSpinner(`Deleting ${filePath}...`);
-                    await am.removeFile(artifact.id, filePath);
+                    // Use the correct method name with proper parameters
+                    await am.removeFile({artifact_id: currentArtifact.id, file_path: filePath, _rkwargs: true});
                     
                     // Refresh the file list
-                    const updatedFiles = await listFiles(artifact.id, "");
+                    const updatedFiles = await listFiles(currentArtifact.id, "");
                     setFiles(updatedFiles);
                     
                     // Clear expanded state if we deleted a folder
@@ -2295,89 +2415,119 @@
                     setUploading(true);
                     setUploadProgress(0);
                     
-                    window.addProgressLog(`Starting parallel upload of ${fileList.length} files with 10 workers...`, 'info');
+                    window.addProgressLog(`Starting upload of ${fileList.length} files...`, 'info');
                     
-                    // Reset upload manager
-                    window.globalUploadManager.reset();
+                    // Create simple, dedicated upload solution for artifacts (no shared state conflicts)
+                    console.log('Starting direct artifact upload - bypassing global upload manager to avoid conflicts');
                     
-                    let completedFiles = 0;
-                    let failedFiles = 0;
+                    // Filter files based on hidden file setting
+                    const filteredFiles = filterFiles(fileList, includeHiddenFiles);
+                    window.addProgressLog(`Filtered ${fileList.length} files to ${filteredFiles.length} (hidden files ${includeHiddenFiles ? 'included' : 'excluded'})`, 'info');
                     
-                    // Set up progress tracking
-                    window.globalUploadManager.onProgress = (progress) => {
-                        const percentage = progress.bytesPercentage;
+                    let completedCount = 0;
+                    let failedCount = 0;
+                    let totalBytes = filteredFiles.reduce((sum, file) => sum + file.size, 0);
+                    let uploadedBytes = 0;
+                    
+                    const updateProgress = () => {
+                        const percentage = totalBytes > 0 ? Math.round((uploadedBytes / totalBytes) * 100) : 0;
                         setUploadProgress(percentage);
-                        
-                        if (progress.completed > completedFiles) {
-                            completedFiles = progress.completed;
-                            window.addProgressLog(`Completed: ${progress.completed}/${progress.total} files (${progress.failed} failed, ${progress.active} active)`, 'info');
-                        }
+                        window.addProgressLog(`Progress: ${completedCount + failedCount}/${filteredFiles.length} files (${percentage}%)`, 'info');
                     };
                     
-                    window.globalUploadManager.onComplete = async (stats) => {
-                        window.addProgressLog(`Upload complete! ${stats.completed} succeeded, ${stats.failed} failed`, stats.failed > 0 ? 'warning' : 'success');
+                    const finishUpload = async () => {
+                        window.addProgressLog(`Upload complete! ${completedCount} succeeded, ${failedCount} failed`, failedCount > 0 ? 'warning' : 'success');
                         
                         try {
+                            console.log('Refreshing artifact file list for artifact:', currentArtifact.id);
                             // Refresh the file list
-                            const updatedFiles = await listFiles(artifact.id, "");
+                            const updatedFiles = await listFiles(currentArtifact.id, "");
+                            console.log('Got updated files:', updatedFiles?.length || 0, 'files');
                             setFiles(updatedFiles);
                             
-                            // If we uploaded to a subfolder, refresh that folder too
+                            // If we uploaded to a subfolder, refresh that folder too  
                             if (targetPath && expandedDirs[targetPath]) {
-                                const updatedFolderFiles = await listFiles(artifact.id, targetPath);
+                                console.log('Refreshing expanded directory:', targetPath);
+                                const updatedFolderFiles = await listFiles(currentArtifact.id, targetPath);
                                 setExpandedDirs(prev => ({ ...prev, [targetPath]: updatedFolderFiles }));
                             }
                             
-                            window.addProgressLog('File list refreshed', 'info');
+                            window.addProgressLog('File list refreshed successfully!', 'success');
                         } catch (error) {
+                            console.error('Error refreshing file list:', error);
                             window.addProgressLog(`Failed to refresh file list: ${error.message}`, 'error');
                         }
                         
+                        // Update spinner with final status
                         setTimeout(() => {
-                            if (stats.failed === 0) {
+                            if (failedCount === 0) {
+                                window.updateProgressSpinner('Upload completed successfully!');
                                 window.enableProgressClose();
-                                window.updateProgressSpinner('All files uploaded successfully!');
                             } else {
-                                window.updateProgressSpinner(`Upload completed with ${stats.failed} errors`);
-                                // Don't enable close yet - wait for retry decision
+                                window.updateProgressSpinner(`Upload completed with ${failedCount} errors`);
+                                window.enableProgressClose();
                             }
                         }, 1000);
                         
                         setUploading(false);
                         setUploadProgress(0);
                     };
-
-                    window.globalUploadManager.onRetryAvailable = (failedCount) => {
-                        window.addProgressLog(`${failedCount} uploads failed. You can retry them.`, 'warning');
-                        window.addRetryButton(() => {
-                            window.addProgressLog('Retrying failed uploads...', 'info');
-                            window.globalUploadManager.retryFailedUploads();
-                        });
-                    };
                     
-                    window.globalUploadManager.onError = (job, error) => {
-                        window.addProgressLog(`Failed to upload ${job.file.name}: ${error.message}`, 'error');
-                    };
+                    // Upload each file directly with XMLHttpRequest
+                    const uploadPromises = filteredFiles.map(async (file, index) => {
+                        try {
+                            const filePath = targetPath ? `${targetPath}/${file.name}` : file.name;
+                            window.addProgressLog(`Starting upload: ${file.name}`, 'info');
+                            
+                            // Get upload URL
+                            const uploadUrl = await am.putFile(currentArtifact.id, filePath);
+                            
+                            // Create promise for this file upload
+                            return new Promise((resolve, reject) => {
+                                const xhr = new XMLHttpRequest();
+                                
+                                xhr.upload.addEventListener('progress', (e) => {
+                                    if (e.lengthComputable) {
+                                        // Update bytes for this file (simple approximation)
+                                        updateProgress();
+                                    }
+                                });
+                                
+                                xhr.addEventListener('load', () => {
+                                    if (xhr.status >= 200 && xhr.status < 300) {
+                                        completedCount++;
+                                        uploadedBytes += file.size;
+                                        window.addProgressLog(`✓ ${file.name} (${(file.size / 1024).toFixed(1)} KB)`, 'success');
+                                        resolve();
+                                    } else {
+                                        failedCount++;
+                                        window.addProgressLog(`✗ ${file.name}: HTTP ${xhr.status}`, 'error');
+                                        reject(new Error(`HTTP ${xhr.status}`));
+                                    }
+                                });
+                                
+                                xhr.addEventListener('error', () => {
+                                    failedCount++;
+                                    window.addProgressLog(`✗ ${file.name}: Network error`, 'error');
+                                    reject(new Error('Network error'));
+                                });
+                                
+                                xhr.open('PUT', uploadUrl);
+                                xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+                                xhr.send(file);
+                            });
+                        } catch (error) {
+                            failedCount++;
+                            window.addProgressLog(`✗ ${file.name}: ${error.message}`, 'error');
+                            throw error;
+                        }
+                    });
                     
-                    // Filter files based on hidden file setting and add to upload queue
-                    const filteredFiles = filterFiles(fileList, includeHiddenFiles);
-                    window.addProgressLog(`Filtered ${fileList.length} files to ${filteredFiles.length} (hidden files ${includeHiddenFiles ? 'included' : 'excluded'})`, 'info');
+                    // Wait for all uploads to complete
+                    await Promise.allSettled(uploadPromises);
                     
-                    for (const file of filteredFiles) {
-                        window.globalUploadManager.addUpload({
-                            file: file,
-                            targetPath: targetPath,
-                            getUploadUrl: async (filePath) => {
-                                return await am.put_file(artifact.id, filePath);
-                            },
-                            onFileComplete: (job) => {
-                                window.addProgressLog(`✓ ${job.file.name} (${(job.file.size / 1024).toFixed(1)} KB)`, 'success');
-                            },
-                            onFileError: (job, error) => {
-                                window.addProgressLog(`✗ ${job.file.name}: ${error.message}`, 'error');
-                            }
-                        });
-                    }
+                    // Finish up
+                    await finishUpload();
                     
                 } catch (error) {
                     console.error("Failed to upload files:", error);
@@ -2431,23 +2581,35 @@
                     
                     // Create a .keep file to represent the folder
                     const keepFile = new Blob([''], { type: 'text/plain' });
-                    const uploadUrl = await am.put_file(artifact.id, keepFilePath);
+                    const presignedUrl = await s3.putFile(keepFilePath);
                     
-                    await axios.put(uploadUrl, keepFile, {
-                        headers: { "Content-Type": "text/plain" },
+                    const response = await axios.put(presignedUrl, keepFile, {
+                        headers: {
+                            "Content-Type": "text/plain",
+                        },
                     });
                     
-                    // Refresh the appropriate file list
-                    if (parentPath) {
-                        const updatedFiles = await listFiles(artifact.id, parentPath);
-                        setExpandedDirs(prev => ({ ...prev, [parentPath]: updatedFiles }));
+                    if (response.status === 200) {
+                        console.log(`Folder ${sanitizedFolderName} created successfully`);
+                        
+                        // Refresh the appropriate file list
+                        if (parentPath) {
+                            const updatedFiles = await listFiles(parentPath);
+                            setExpandedDirs(prev => ({
+                                ...prev,
+                                [parentPath]: updatedFiles
+                            }));
+                        } else {
+                            const updatedFiles = await listFiles();
+                            setFileList(updatedFiles);
+                        }
                     } else {
-                        const updatedFiles = await listFiles(artifact.id, "");
-                        setFiles(updatedFiles);
+                        console.error("Folder creation failed", response.statusText);
+                        alert("Folder creation failed: " + response.statusText);
                     }
                 } catch (error) {
-                    console.error("Failed to create folder:", error);
-                    alert(`Failed to create folder: ${error}`);
+                    console.error("Folder creation failed", error);
+                    alert(`Folder creation failed: ${error}`);
                 } finally {
                     window.hideLoadingSpinner();
                 }
@@ -2592,7 +2754,7 @@
                             targetPath: fileTargetPath,
                             relativePath: file.webkitRelativePath || file.name,
                             getUploadUrl: async (filePath) => {
-                                return await am.put_file(currentArtifact.id, filePath);
+                                return await am.putFile(currentArtifact.id, filePath);
                             },
                             onFileComplete: (job) => {
                                 window.addProgressLog(`✓ ${job.relativePath} (${(job.file.size / 1024).toFixed(1)} KB)`, 'success');
@@ -2640,7 +2802,14 @@
             };
 
             const artifactListFiles = async (dirPath = "") => {
-                return await listFiles(artifact.id, dirPath);
+                console.log("artifactListFiles called with dirPath:", dirPath);
+                console.log("currentArtifact available:", !!currentArtifact);
+                if (!currentArtifact) {
+                    console.error("currentArtifact is not available in artifactListFiles");
+                    return [];
+                }
+                console.log("Calling listFiles with artifact ID:", currentArtifact.id, "and dirPath:", dirPath);
+                return await listFiles(currentArtifact.id, dirPath);
             };
 
             // Stage/Commit/Version handlers
@@ -2650,11 +2819,9 @@
                     setOperationLoading('stage');
                     await am.edit(currentArtifact.id, { stage: true, _rkwargs: true });
                     
-                    // Update local artifact state
-                    setCurrentArtifact(prev => ({
-                        ...prev,
-                        staging: [] // Empty staging array indicates it's now staged
-                    }));
+                    // Refresh artifact state from backend instead of optimistic update
+                    const updatedArtifact = await am.read(currentArtifact.id, { stage: true, _rkwargs: true });
+                    setCurrentArtifact(updatedArtifact);
                 } catch (error) {
                     console.error('Failed to stage artifact:', error);
                     alert(`Failed to stage artifact: ${error.message || error}`);
@@ -2665,22 +2832,16 @@
 
             const handleCommitArtifact = async () => {
                 if (operationLoading) return;
-                const version = prompt('Enter version name (optional):');
                 try {
                     setOperationLoading('commit');
                     
-                    const commitParams = version && version.trim() 
-                        ? { version: version.trim(), _rkwargs: true }
-                        : { _rkwargs: true };
+                    const commitParams =  { _rkwargs: true };
                     
                     await am.commit(currentArtifact.id, commitParams);
                     
-                    // Update local artifact state
-                    setCurrentArtifact(prev => ({
-                        ...prev,
-                        staging: null, // null staging means it's committed
-                        last_modified: Math.floor(Date.now() / 1000)
-                    }));
+                    // Refresh artifact state from backend instead of optimistic update
+                    const updatedArtifact = await am.read(currentArtifact.id, { stage: false, _rkwargs: true });
+                    setCurrentArtifact(updatedArtifact);
                     
                     // Clear files since they may have changed
                     setFiles(null);
@@ -2701,14 +2862,11 @@
                 
                 try {
                     setOperationLoading('discard');
-                    await am.discard(currentArtifact.id);
+                    await am.discard(currentArtifact.id, { _rkwargs: true });
                     
-                    // Update local artifact state - discard returns to committed state
-                    setCurrentArtifact(prev => ({
-                        ...prev,
-                        staging: null, // null staging means it's committed
-                        last_modified: Math.floor(Date.now() / 1000)
-                    }));
+                    // Refresh artifact state from backend instead of optimistic update
+                    const updatedArtifact = await am.read(currentArtifact.id, { stage: false, _rkwargs: true });
+                    setCurrentArtifact(updatedArtifact);
                     
                     // Clear the file list since files may have been discarded
                     setFiles(null);
@@ -2727,12 +2885,9 @@
                     setOperationLoading('new-version');
                     await am.edit(currentArtifact.id, { stage: true, version: "new", _rkwargs: true });
                     
-                    // Update local artifact state
-                    setCurrentArtifact(prev => ({
-                        ...prev,
-                        staging: [], // Empty staging array indicates it's now staged
-                        last_modified: Math.floor(Date.now() / 1000)
-                    }));
+                    // Refresh artifact state from backend instead of optimistic update
+                    const updatedArtifact = await am.read(currentArtifact.id, { stage: true, _rkwargs: true });
+                    setCurrentArtifact(updatedArtifact);
                     
                     // Clear files since this is a new version
                     setFiles(null);
@@ -3461,7 +3616,7 @@ license: "MIT"`);
                     if (am) {
                         setLoading(true);
                         try {
-                            const topLevelArtifacts = await am.list();
+                            const topLevelArtifacts = await am.list({stage: 'all', _rkwargs: true});
                         setArtifacts(topLevelArtifacts);
                         } catch (error) {
                             console.error("Failed to fetch artifacts:", error);
@@ -3475,7 +3630,7 @@ license: "MIT"`);
         
             const listArtifacts = async (parentId) => {
                 try {
-                    const children = await am.list(parentId);
+                    const children = await am.list({"parent_id": parentId, "stage": 'all', "_rkwargs": true});
                     return children;
                 } catch (error) {
                     console.error("Failed to list artifacts:", error);
@@ -3483,9 +3638,24 @@ license: "MIT"`);
                 }
             };
         
-            const listFiles = async (artifactId, dir) => {
+            const listFiles = async (artifactId, dir, useStaging = null) => {
                 try {
-                    return await am.listFiles(artifactId, dir);
+                    // If useStaging is not provided, determine it from currentArtifact (if available)
+                    if (useStaging === null) {
+                        const currentArtifact = await am.read({artifact_id: artifactId, stage: true, _rkwargs: true});
+                        useStaging = currentArtifact && currentArtifact.staging !== null;
+                    }
+                    
+                    console.log(`listFiles: artifactId=${artifactId}, dir=${dir}, useStaging=${useStaging}`);
+                    
+                    if (!artifactId) {
+                        console.error("listFiles called without artifactId");
+                        return [];
+                    }
+                    
+                    const files = await am.listFiles({artifact_id: artifactId, dir_path: dir, stage: useStaging, _rkwargs: true});
+                    console.log(`listFiles result: ${files.length} files found`);
+                    return files;
                 } catch (error) {
                     console.error("Failed to list files:", error);
                     return [];
@@ -3496,7 +3666,7 @@ license: "MIT"`);
                 if (am) {
                     setLoading(true);
                     try {
-                        const topLevelArtifacts = await am.list();
+                        const topLevelArtifacts = await am.list({stage: 'all', _rkwargs: true});
                         setArtifacts(topLevelArtifacts);
                     } catch (error) {
                         console.error("Failed to refresh artifacts:", error);
@@ -3514,7 +3684,7 @@ license: "MIT"`);
             
                         if (parentId) {
                             // If the artifact is a child, refresh the parent's children
-                            const updatedChildren = await am.list(parentId);
+                            const updatedChildren = await am.list(parentId, {stage: 'all', _rkwargs: true});
                             setExpandedArtifacts((prevState) => ({
                                 ...prevState,
                                 [parentId]: updatedChildren,
@@ -4219,7 +4389,7 @@ license: "MIT"`);
                     window.showLoadingSpinner(`Uploading ${file.name}...`);
                 }
                 const filePath = targetPath ? `${targetPath}/${file.name}` : file.name;
-                const presignedUrl = await globalS3.generatePresignedUrl(filePath, "put_object");
+                                    const presignedUrl = await globalS3.putFile(filePath);
 
                 const response = await axios.put(presignedUrl, file, {
                     headers: {
@@ -4258,7 +4428,7 @@ license: "MIT"`);
             try {
                 const keepFilePath = folderPath ? `${folderPath}/.keep` : `.keep`;
                 const keepFile = new Blob([''], { type: 'text/plain' });
-                const presignedUrl = await globalS3.generatePresignedUrl(keepFilePath, "put_object");
+                const presignedUrl = await globalS3.putFile(keepFilePath);
                 
                 const response = await axios.put(presignedUrl, keepFile, {
                     headers: {
@@ -4382,7 +4552,7 @@ license: "MIT"`);
                         const keepFile = new Blob([''], { type: 'text/plain' });
                         // Create the .keep file directly in the folder path
                         const keepFilePath = `${entryPath}/.keep`;
-                        const presignedUrl = await globalS3.generatePresignedUrl(keepFilePath, "put_object");
+                        const presignedUrl = await globalS3.putFile(keepFilePath);
                         await axios.put(presignedUrl, keepFile, {
                             headers: { "Content-Type": "text/plain" }
                         });
@@ -4398,17 +4568,14 @@ license: "MIT"`);
 
 
         // Enhanced utility function to process dropped items with parallel upload
-        const processDroppedItems = async (items, targetPath = "") => {
+        const processDroppedItems = async (items, targetPath = "", includeHiddenFiles = false) => {
             try {
                 window.showProgressSpinner('Processing dropped items...', { 
                     showLogs: true,
-                    title: "Parallel File Upload"
+                    title: "Direct File Upload"
                 });
                 
                 window.addProgressLog(`Processing ${items.length} dropped items...`, 'info');
-                
-                // Reset upload manager
-                window.globalUploadManager.reset();
                 
                 const filesToUpload = [];
                 const emptyFolders = [];
@@ -4420,7 +4587,7 @@ license: "MIT"`);
                     if (item.webkitGetAsEntry) {
                         const entry = item.webkitGetAsEntry();
                         if (entry) {
-                                await processDirectoryEntryForCollection(entry, targetPath, filesToUpload, emptyFolders, filesIncludeHiddenFiles);
+                                await processDirectoryEntryForCollection(entry, targetPath, filesToUpload, emptyFolders, includeHiddenFiles);
                         }
                     } else if (item.getAsFile) {
                         const file = item.getAsFile();
@@ -4443,89 +4610,112 @@ license: "MIT"`);
                     try {
                         const keepFile = new Blob([''], { type: 'text/plain' });
                         const keepFilePath = `${folderPath}/.keep`;
-                        const presignedUrl = await globalS3.generatePresignedUrl(keepFilePath, "put_object");
-                        await axios.put(presignedUrl, keepFile, {
-                            headers: { "Content-Type": "text/plain" }
+                        const uploadUrl = await globalS3.putFile(keepFilePath);
+                        
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('PUT', uploadUrl);
+                        xhr.setRequestHeader('Content-Type', 'text/plain');
+                        await new Promise((resolve, reject) => {
+                            xhr.addEventListener('load', () => {
+                                if (xhr.status >= 200 && xhr.status < 300) {
+                                    window.addProgressLog(`Created empty folder: ${folderPath}`, 'info');
+                                    resolve();
+                                } else {
+                                    reject(new Error(`HTTP ${xhr.status}`));
+                                }
+                            });
+                            xhr.addEventListener('error', () => reject(new Error('Network error')));
+                            xhr.send(keepFile);
                         });
-                        window.addProgressLog(`Created empty folder: ${folderPath}`, 'info');
                     } catch (error) {
                         window.addProgressLog(`Failed to create empty folder ${folderPath}: ${error.message}`, 'error');
                     }
                 }
                 
                 if (filesToUpload.length === 0) {
-                await refreshFileList(targetPath);
+                    await refreshFileList(targetPath);
                     window.enableProgressClose();
                     window.updateProgressSpinner('Folders created successfully!');
                     return;
                 }
                 
-                // Set up progress tracking
-                let completedFiles = 0;
-                window.globalUploadManager.onProgress = (progress) => {
-                    if (progress.completed > completedFiles) {
-                        completedFiles = progress.completed;
-                        window.addProgressLog(`Completed: ${progress.completed}/${progress.total} files (${progress.failed} failed, ${progress.active} active)`, 'info');
-                    }
-                };
+                let completedCount = 0;
+                let failedCount = 0;
+
+                // Filter files based on hidden file setting
+                const filteredUploads = filesToUpload.filter(({ file }) => 
+                    shouldIncludeFile(file.webkitRelativePath || file.name, includeHiddenFiles)
+                );
                 
-                window.globalUploadManager.onComplete = async (stats) => {
-                    window.addProgressLog(`Upload complete! ${stats.completed} succeeded, ${stats.failed} failed`, stats.failed > 0 ? 'warning' : 'success');
+                window.addProgressLog(`Filtered ${filesToUpload.length} files to ${filteredUploads.length} (hidden files ${includeHiddenFiles ? 'included' : 'excluded'})`, 'info');
+                
+                const finishUpload = async () => {
+                    window.addProgressLog(`Upload complete! ${completedCount} succeeded, ${failedCount} failed`, failedCount > 0 ? 'warning' : 'success');
                     
                     try {
                         await refreshFileList(targetPath);
-                        window.addProgressLog('File list refreshed', 'info');
-            } catch (error) {
+                        window.addProgressLog('File list refreshed successfully!', 'success');
+                    } catch (error) {
                         window.addProgressLog(`Failed to refresh file list: ${error.message}`, 'error');
                     }
                     
                     setTimeout(() => {
-                        if (stats.failed === 0) {
-                            window.enableProgressClose();
+                        if (failedCount === 0) {
                             window.updateProgressSpinner('All files uploaded successfully!');
+                            window.enableProgressClose();
                         } else {
-                            window.updateProgressSpinner(`Upload completed with ${stats.failed} errors`);
-                            // Don't enable close yet - wait for retry decision
+                            window.updateProgressSpinner(`Upload completed with ${failedCount} errors`);
+                            window.enableProgressClose();
                         }
                     }, 1000);
                 };
-
-                window.globalUploadManager.onRetryAvailable = (failedCount) => {
-                    window.addProgressLog(`${failedCount} uploads failed. You can retry them.`, 'warning');
-                    window.addRetryButton(() => {
-                        window.addProgressLog('Retrying failed uploads...', 'info');
-                        window.globalUploadManager.retryFailedUploads();
-                    });
-                };
                 
-                window.globalUploadManager.onError = (job, error) => {
-                    window.addProgressLog(`Failed to upload ${job.relativePath || job.file.name}: ${error.message}`, 'error');
-                };
+                // Upload each file directly
+                const uploadPromises = filteredUploads.map(async ({ file, targetPath: fileTargetPath }) => {
+                    try {
+                        const relativePath = file.webkitRelativePath || file.name;
+                        window.addProgressLog(`Starting upload: ${relativePath}`, 'info');
+                        
+                        // Get upload URL
+                        const uploadUrl = await globalS3.putFile(fileTargetPath);
+                        
+                        return new Promise((resolve, reject) => {
+                            const xhr = new XMLHttpRequest();
+                            
+                            xhr.addEventListener('load', () => {
+                                if (xhr.status >= 200 && xhr.status < 300) {
+                                    completedCount++;
+                                    window.addProgressLog(`✓ ${relativePath} (${(file.size / 1024).toFixed(1)} KB)`, 'success');
+                                    resolve();
+                                } else {
+                                    failedCount++;
+                                    window.addProgressLog(`✗ ${relativePath}: HTTP ${xhr.status}`, 'error');
+                                    reject(new Error(`HTTP ${xhr.status}`));
+                                }
+                            });
+                            
+                            xhr.addEventListener('error', () => {
+                                failedCount++;
+                                window.addProgressLog(`✗ ${relativePath}: Network error`, 'error');
+                                reject(new Error('Network error'));
+                            });
+                            
+                            xhr.open('PUT', uploadUrl);
+                            xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+                            xhr.send(file);
+                        });
+                    } catch (error) {
+                        failedCount++;
+                        window.addProgressLog(`✗ ${file.webkitRelativePath || file.name}: ${error.message}`, 'error');
+                        throw error;
+                    }
+                });
                 
-                // Filter files based on hidden file setting
-                const filteredUploads = filesToUpload.filter(({ file }) => 
-                    shouldIncludeFile(file.webkitRelativePath || file.name, filesIncludeHiddenFiles)
-                );
+                // Wait for all uploads to complete
+                await Promise.allSettled(uploadPromises);
                 
-                window.addProgressLog(`Filtered ${filesToUpload.length} files to ${filteredUploads.length} (hidden files ${filesIncludeHiddenFiles ? 'included' : 'excluded'})`, 'info');
-                
-                // Add filtered files to the upload queue
-                for (const { file, targetPath: fileTargetPath } of filteredUploads) {
-                    window.globalUploadManager.addUpload({
-                        file: file,
-                        targetPath: fileTargetPath,
-                        relativePath: file.webkitRelativePath || file.name,
-                        getUploadUrl: async (filePath) => {
-                            return await globalS3.generatePresignedUrl(filePath, "put_object");
-                        },
-                        onFileComplete: (job) => {
-                            window.addProgressLog(`✓ ${job.relativePath} (${(job.file.size / 1024).toFixed(1)} KB)`, 'success');
-                        },
-                        onFileError: (job, error) => {
-                            window.addProgressLog(`✗ ${job.relativePath}: ${error.message}`, 'error');
-                        }
-                    });
-                }
+                // Finish up
+                await finishUpload();
                 
             } catch (error) {
                 console.error("Failed to process dropped items:", error);
@@ -4559,90 +4749,112 @@ license: "MIT"`);
             const items = Array.from(e.dataTransfer.items);
             if (items.length > 0) {
                 // Use existing processDroppedItems for directory handling
-                await processDroppedItems(items, targetPath);
-            } else {
-                // Use parallel upload for file-only drops
-                const files = Array.from(e.dataTransfer.files);
-                if (files.length > 0) {
-                    await handleParallelFileUpload(files, targetPath);
+                // Note: filesIncludeHiddenFiles not available in global scope, using default false
+                await processDroppedItems(items, targetPath, false);
+                            } else {
+                    // Use parallel upload for file-only drops
+                    const files = Array.from(e.dataTransfer.files);
+                    if (files.length > 0) {
+                        // Note: filesIncludeHiddenFiles not available in global scope, using default false
+                        await handleParallelFileUpload(files, targetPath, false);
+                    }
                 }
-            }
         };
 
-        const handleParallelFileUpload = async (files, targetPath = "") => {
+        const handleParallelFileUpload = async (files, targetPath = "", includeHiddenFiles = false) => {
             try {
                 window.showProgressSpinner(`Uploading ${files.length} files...`, { 
                     showLogs: true,
-                    title: "Parallel File Upload"
+                    title: "Direct File Upload"
                 });
                 
-                window.addProgressLog(`Starting parallel upload of ${files.length} files to ${targetPath || 'root'}...`, 'info');
+                window.addProgressLog(`Starting upload of ${files.length} files to ${targetPath || 'root'}...`, 'info');
                 
-                // Reset upload manager
-                window.globalUploadManager.reset();
+                // Filter files based on hidden file setting
+                const filteredFiles = filterFiles(files, includeHiddenFiles);
+                window.addProgressLog(`Filtered ${files.length} files to ${filteredFiles.length} (hidden files ${includeHiddenFiles ? 'included' : 'excluded'})`, 'info');
                 
-                let completedFiles = 0;
+                let completedCount = 0;
+                let failedCount = 0;
+                let totalBytes = filteredFiles.reduce((sum, file) => sum + file.size, 0);
+                let uploadedBytes = 0;
                 
-                // Set up progress tracking
-                window.globalUploadManager.onProgress = (progress) => {
-                    if (progress.completed > completedFiles) {
-                        completedFiles = progress.completed;
-                        window.addProgressLog(`Completed: ${progress.completed}/${progress.total} files (${progress.failed} failed, ${progress.active} active)`, 'info');
-                    }
-                };
-                
-                window.globalUploadManager.onComplete = async (stats) => {
-                    window.addProgressLog(`Upload complete! ${stats.completed} succeeded, ${stats.failed} failed`, stats.failed > 0 ? 'warning' : 'success');
+                const finishUpload = async () => {
+                    window.addProgressLog(`Upload complete! ${completedCount} succeeded, ${failedCount} failed`, failedCount > 0 ? 'warning' : 'success');
                     
                     try {
                         await refreshFileList(targetPath);
-                        window.addProgressLog('File list refreshed', 'info');
+                        window.addProgressLog('File list refreshed successfully!', 'success');
                     } catch (error) {
                         window.addProgressLog(`Failed to refresh file list: ${error.message}`, 'error');
                     }
                     
                     setTimeout(() => {
-                        if (stats.failed === 0) {
+                        if (failedCount === 0) {
+                            window.updateProgressSpinner('Upload completed successfully!');
                             window.enableProgressClose();
-                            window.updateProgressSpinner('All files uploaded successfully!');
                         } else {
-                            window.updateProgressSpinner(`Upload completed with ${stats.failed} errors`);
-                            // Don't enable close yet - wait for retry decision
+                            window.updateProgressSpinner(`Upload completed with ${failedCount} errors`);
+                            window.enableProgressClose();
                         }
                     }, 1000);
                 };
-
-                window.globalUploadManager.onRetryAvailable = (failedCount) => {
-                    window.addProgressLog(`${failedCount} uploads failed. You can retry them.`, 'warning');
-                    window.addRetryButton(() => {
-                        window.addProgressLog('Retrying failed uploads...', 'info');
-                        window.globalUploadManager.retryFailedUploads();
-                    });
-                };
                 
-                window.globalUploadManager.onError = (job, error) => {
-                    window.addProgressLog(`Failed to upload ${job.file.name}: ${error.message}`, 'error');
-                };
+                // Upload each file directly with XMLHttpRequest
+                const uploadPromises = filteredFiles.map(async (file) => {
+                    try {
+                        const filePath = targetPath ? `${targetPath}/${file.name}` : file.name;
+                        window.addProgressLog(`Starting upload: ${file.name}`, 'info');
+                        
+                        // Get upload URL
+                        const uploadUrl = await globalS3.putFile(filePath);
+                        
+                        return new Promise((resolve, reject) => {
+                            const xhr = new XMLHttpRequest();
+                            
+                            xhr.upload.addEventListener('progress', (e) => {
+                                if (e.lengthComputable) {
+                                    // Simple progress update
+                                    const percentage = totalBytes > 0 ? Math.round((uploadedBytes / totalBytes) * 100) : 0;
+                                    // Note: This is approximate since we're updating from multiple concurrent uploads
+                                }
+                            });
+                            
+                            xhr.addEventListener('load', () => {
+                                if (xhr.status >= 200 && xhr.status < 300) {
+                                    completedCount++;
+                                    uploadedBytes += file.size;
+                                    window.addProgressLog(`✓ ${file.name} (${(file.size / 1024).toFixed(1)} KB)`, 'success');
+                                    resolve();
+                                } else {
+                                    failedCount++;
+                                    window.addProgressLog(`✗ ${file.name}: HTTP ${xhr.status}`, 'error');
+                                    reject(new Error(`HTTP ${xhr.status}`));
+                                }
+                            });
+                            
+                            xhr.addEventListener('error', () => {
+                                failedCount++;
+                                window.addProgressLog(`✗ ${file.name}: Network error`, 'error');
+                                reject(new Error('Network error'));
+                            });
+                            
+                            xhr.open('PUT', uploadUrl);
+                            xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+                            xhr.send(file);
+                        });
+                    } catch (error) {
+                        failedCount++;
+                        window.addProgressLog(`✗ ${file.name}: ${error.message}`, 'error');
+                        throw error;
+                    }
+                });
                 
-                // Filter files based on hidden file setting and add to upload queue
-                const filteredFiles = filterFiles(files, filesIncludeHiddenFiles);
-                window.addProgressLog(`Filtered ${files.length} files to ${filteredFiles.length} (hidden files ${filesIncludeHiddenFiles ? 'included' : 'excluded'})`, 'info');
+                // Wait for all uploads to complete
+                await Promise.allSettled(uploadPromises);
                 
-                for (const file of filteredFiles) {
-                    window.globalUploadManager.addUpload({
-                        file: file,
-                        targetPath: targetPath,
-                        getUploadUrl: async (filePath) => {
-                            return await globalS3.generatePresignedUrl(filePath, "put_object");
-                        },
-                        onFileComplete: (job) => {
-                            window.addProgressLog(`✓ ${job.file.name} (${(job.file.size / 1024).toFixed(1)} KB)`, 'success');
-                        },
-                        onFileError: (job, error) => {
-                            window.addProgressLog(`✗ ${job.file.name}: ${error.message}`, 'error');
-                        }
-                    });
-                }
+                // Finish up
+                await finishUpload();
                 
             } catch (error) {
                 console.error("Failed to upload files:", error);
@@ -4661,35 +4873,36 @@ license: "MIT"`);
                 const files = Array.from(event.target.files);
                 if (files.length === 0) return;
                 
-                await handleParallelFolderUpload(files, folderPath);
+                // Note: filesIncludeHiddenFiles not available in global scope, using default false
+                await handleParallelFolderUpload(files, folderPath, false);
             };
             fileInput.click();
         };
 
-        const handleParallelFolderUpload = async (files, baseFolderPath) => {
+        const handleParallelFolderUpload = async (files, baseFolderPath, includeHiddenFiles = false) => {
             try {
                 window.showProgressSpinner(`Uploading folder with ${files.length} files...`, { 
                     showLogs: true,
-                    title: "Parallel Folder Upload"
+                    title: "Direct Folder Upload"
                 });
                 
-                window.addProgressLog(`Starting parallel upload of ${files.length} files to ${baseFolderPath || 'root'}...`, 'info');
+                window.addProgressLog(`Starting upload of ${files.length} files to ${baseFolderPath || 'root'}...`, 'info');
                 
-                // Reset upload manager
-                window.globalUploadManager.reset();
+                // Filter files based on hidden file setting
+                const filteredFiles = filterFiles(files, includeHiddenFiles);
+                window.addProgressLog(`Filtered ${files.length} files to ${filteredFiles.length} (hidden files ${includeHiddenFiles ? 'included' : 'excluded'})`, 'info');
                 
-                let completedFiles = 0;
-                const emptyFolders = new Set();
+                let completedCount = 0;
+                let failedCount = 0;
                 
                 // Analyze folder structure and identify empty folders (considering only visible files)
                 const folderContents = new Map();
-                const filteredFilesForAnalysis = filterFiles(files, filesIncludeHiddenFiles);
-                for (const file of filteredFilesForAnalysis) {
-                        const relativePath = file.webkitRelativePath;
-                        const pathParts = relativePath.split('/');
-                        const fileName = pathParts.pop();
-                        const fileFolderPath = pathParts.join('/');
-                        
+                for (const file of filteredFiles) {
+                    const relativePath = file.webkitRelativePath;
+                    const pathParts = relativePath.split('/');
+                    const fileName = pathParts.pop();
+                    const fileFolderPath = pathParts.join('/');
+                    
                     // Track folder contents
                     if (fileFolderPath) {
                         if (!folderContents.has(fileFolderPath)) {
@@ -4706,89 +4919,106 @@ license: "MIT"`);
                             const fullFolderPath = baseFolderPath ? `${baseFolderPath}/${folderPath}` : folderPath;
                             const keepFile = new Blob([''], { type: 'text/plain' });
                             const keepFilePath = `${fullFolderPath}/.keep`;
-                            const presignedUrl = await globalS3.generatePresignedUrl(keepFilePath, "put_object");
-                            await axios.put(presignedUrl, keepFile, {
-                                headers: { "Content-Type": "text/plain" }
+                            const uploadUrl = await globalS3.putFile(keepFilePath);
+                            
+                            const xhr = new XMLHttpRequest();
+                            xhr.open('PUT', uploadUrl);
+                            xhr.setRequestHeader('Content-Type', 'text/plain');
+                            await new Promise((resolve, reject) => {
+                                xhr.addEventListener('load', () => {
+                                    if (xhr.status >= 200 && xhr.status < 300) {
+                                        window.addProgressLog(`Created empty folder: ${fullFolderPath}`, 'info');
+                                        resolve();
+                                    } else {
+                                        reject(new Error(`HTTP ${xhr.status}`));
+                                    }
+                                });
+                                xhr.addEventListener('error', () => reject(new Error('Network error')));
+                                xhr.send(keepFile);
                             });
-                            window.addProgressLog(`Created empty folder: ${fullFolderPath}`, 'info');
                         } catch (error) {
                             window.addProgressLog(`Failed to create empty folder ${folderPath}: ${error.message}`, 'error');
                         }
                     }
                 }
                 
-                // Set up progress tracking
-                window.globalUploadManager.onProgress = (progress) => {
-                    if (progress.completed > completedFiles) {
-                        completedFiles = progress.completed;
-                        window.addProgressLog(`Completed: ${progress.completed}/${progress.total} files (${progress.failed} failed, ${progress.active} active)`, 'info');
-                    }
-                };
-                
-                window.globalUploadManager.onComplete = async (stats) => {
-                    window.addProgressLog(`Folder upload complete! ${stats.completed} succeeded, ${stats.failed} failed`, stats.failed > 0 ? 'warning' : 'success');
+                const finishUpload = async () => {
+                    window.addProgressLog(`Folder upload complete! ${completedCount} succeeded, ${failedCount} failed`, failedCount > 0 ? 'warning' : 'success');
                     
                     try {
-                        await refreshFileList(baseFolderPath);
-                        window.addProgressLog('File list refreshed', 'info');
-                } catch (error) {
+                        await refreshFileList();
+                        window.addProgressLog('File list refreshed successfully!', 'success');
+                    } catch (error) {
                         window.addProgressLog(`Failed to refresh file list: ${error.message}`, 'error');
                     }
                     
                     setTimeout(() => {
-                        if (stats.failed === 0) {
-                            window.enableProgressClose();
+                        if (failedCount === 0) {
                             window.updateProgressSpinner('Folder uploaded successfully!');
+                            window.enableProgressClose();
                         } else {
-                            window.updateProgressSpinner(`Folder upload completed with ${stats.failed} errors`);
-                            // Don't enable close yet - wait for retry decision
+                            window.updateProgressSpinner(`Folder upload completed with ${failedCount} errors`);
+                            window.enableProgressClose();
                         }
                     }, 1000);
                 };
-
-                window.globalUploadManager.onRetryAvailable = (failedCount) => {
-                    window.addProgressLog(`${failedCount} uploads failed. You can retry them.`, 'warning');
-                    window.addRetryButton(() => {
-                        window.addProgressLog('Retrying failed uploads...', 'info');
-                        window.globalUploadManager.retryFailedUploads();
-                    });
-                };
                 
-                window.globalUploadManager.onError = (job, error) => {
-                    window.addProgressLog(`Failed to upload ${job.relativePath}: ${error.message}`, 'error');
-                };
+                // Upload each file directly with XMLHttpRequest
+                const uploadPromises = filteredFiles.map(async (file) => {
+                    try {
+                        const relativePath = file.webkitRelativePath;
+                        const pathParts = relativePath.split('/');
+                        const fileName = pathParts.pop();
+                        const fileFolderPath = pathParts.join('/');
+                        const fullPath = baseFolderPath ? 
+                            (fileFolderPath ? `${baseFolderPath}/${fileFolderPath}/${fileName}` : `${baseFolderPath}/${fileName}`) :
+                            relativePath;
+                        
+                        window.addProgressLog(`Starting upload: ${relativePath}`, 'info');
+                        
+                        // Get upload URL
+                        const uploadUrl = await globalS3.putFile(fullPath);
+                        
+                        return new Promise((resolve, reject) => {
+                            const xhr = new XMLHttpRequest();
+                            
+                            xhr.addEventListener('load', () => {
+                                if (xhr.status >= 200 && xhr.status < 300) {
+                                    completedCount++;
+                                    window.addProgressLog(`✓ ${relativePath} (${(file.size / 1024).toFixed(1)} KB)`, 'success');
+                                    resolve();
+                                } else {
+                                    failedCount++;
+                                    window.addProgressLog(`✗ ${relativePath}: HTTP ${xhr.status}`, 'error');
+                                    reject(new Error(`HTTP ${xhr.status}`));
+                                }
+                            });
+                            
+                            xhr.addEventListener('error', () => {
+                                failedCount++;
+                                window.addProgressLog(`✗ ${relativePath}: Network error`, 'error');
+                                reject(new Error('Network error'));
+                            });
+                            
+                            xhr.open('PUT', uploadUrl);
+                            xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+                            xhr.send(file);
+                        });
+                    } catch (error) {
+                        failedCount++;
+                        window.addProgressLog(`✗ ${file.webkitRelativePath}: ${error.message}`, 'error');
+                        throw error;
+                    }
+                });
                 
-                // Filter files based on hidden file setting and add to upload queue
-                const filteredFiles = filterFiles(files, filesIncludeHiddenFiles);
-                window.addProgressLog(`Filtered ${files.length} files to ${filteredFiles.length} (hidden files ${filesIncludeHiddenFiles ? 'included' : 'excluded'})`, 'info');
+                // Wait for all uploads to complete
+                await Promise.allSettled(uploadPromises);
                 
-                for (const file of filteredFiles) {
-                    const relativePath = file.webkitRelativePath;
-                    const pathParts = relativePath.split('/');
-                    const fileName = pathParts.pop();
-                    const fileFolderPath = pathParts.join('/');
-                    
-                    // Create full target path
-                    const targetFolderPath = baseFolderPath ? `${baseFolderPath}/${fileFolderPath}` : fileFolderPath;
-                    
-                    window.globalUploadManager.addUpload({
-                        file: file,
-                        targetPath: targetFolderPath,
-                        relativePath: relativePath, // Keep for logging
-                        getUploadUrl: async (filePath) => {
-                            return await globalS3.generatePresignedUrl(filePath, "put_object");
-                        },
-                        onFileComplete: (job) => {
-                            window.addProgressLog(`✓ ${job.relativePath} (${(job.file.size / 1024).toFixed(1)} KB)`, 'success');
-                        },
-                        onFileError: (job, error) => {
-                            window.addProgressLog(`✗ ${job.relativePath}: ${error.message}`, 'error');
-                        }
-                    });
-                }
+                // Finish up
+                await finishUpload();
                 
             } catch (error) {
-                console.error("Failed to upload folder:", error);
+                console.error("Folder upload failed:", error);
                 window.addProgressLog(`Folder upload failed: ${error.message}`, 'error');
                 window.enableProgressClose();
                 window.updateProgressSpinner('Folder upload failed');
@@ -4994,15 +5224,15 @@ license: "MIT"`);
 
         
             // Enhanced single file upload using parallel upload manager
-            const handleFileUpload = async (file, targetPath = "") => {
+            const handleFileUpload = async (file, targetPath = "", includeHiddenFiles = false) => {
                 if (file) {
-                    await handleParallelFileUpload([file], targetPath);
+                    await handleParallelFileUpload([file], targetPath, includeHiddenFiles);
                 }
             };
         
             const handleFileDownload = async (filePath) => {
                 try {
-                    const presignedUrl = await s3.generatePresignedUrl(filePath, "get_object");
+                    const presignedUrl = await s3.getFile(filePath);
                     window.open(presignedUrl, '_blank'); // Trigger file download
                 } catch (error) {
                     console.error("Failed to generate download link", error);
@@ -5074,10 +5304,10 @@ license: "MIT"`);
                     // Use parallel upload for multiple files, fallback to single upload for one file
                     if (files.length === 1) {
                         // Single file - use existing method for quick uploads
-                        await handleFileUpload(files[0], folderPath);
+                        await handleFileUpload(files[0], folderPath, filesIncludeHiddenFiles);
                     } else {
                         // Multiple files - use parallel upload manager
-                        await handleParallelFileUpload(files, folderPath);
+                        await handleParallelFileUpload(files, folderPath, filesIncludeHiddenFiles);
                     }
                 };
                 fileInput.click();
@@ -5104,7 +5334,7 @@ license: "MIT"`);
                     
                     // Create a .keep file to represent the folder
                     const keepFile = new Blob([''], { type: 'text/plain' });
-                    const presignedUrl = await s3.generatePresignedUrl(keepFilePath, "put_object");
+                    const presignedUrl = await s3.putFile(keepFilePath);
                     
                     const response = await axios.put(presignedUrl, keepFile, {
                         headers: {
@@ -5866,10 +6096,18 @@ license: "MIT"`);
                             </h2>
                             <TokenPanel
                                 workspaceId={workspaceId}
-                                onGenerateToken={async (workspace, expiryTime, clientId) => {
+                                onGenerateToken={async (workspace, expiryTime, clientId, permission, extraScopes) => {
                                     const tokenConfig = { expires_in: expiryTime, workspace };
                                     if (clientId && clientId.trim()) {
                                         tokenConfig.client_id = clientId.trim();
+                                    }
+                                    if (permission && permission !== 'read_write') {
+                                        // Map user-friendly permission names to enum values
+                                        const permissionMap = { "read": "r", "read_write": "rw", "admin": "a" };
+                                        tokenConfig.permission = permissionMap[permission] || permission;
+                                    }
+                                    if (extraScopes && extraScopes.length > 0) {
+                                        tokenConfig.extra_scopes = extraScopes;
                                     }
                                     const token = await ws.generateToken(tokenConfig);
                                     return token;
@@ -6113,6 +6351,7 @@ license: "MIT"`);
             // Adaptive Parallel File Upload Manager
             class ParallelUploadManager {
                 constructor(maxWorkers = 10) {
+                    this.instanceId = Math.random().toString(36).substr(2, 9); // Add unique ID
                     this.maxWorkers = maxWorkers;
                     this.queue = [];
                     this.activeUploads = new Map();
@@ -6192,7 +6431,7 @@ license: "MIT"`);
                                 job.status = 'completed';
                                 job.endTime = Date.now();
                                 this.stats.completed++;
-                                this.stats.bytes.uploaded += job.file.size;
+                                // Don't add bytes here - they're already tracked in progress handler or executeUpload
                                 this.completedUploads.push(job);
                                 
                                 if (job.onFileComplete) {
@@ -6204,6 +6443,8 @@ license: "MIT"`);
                                 job.endTime = Date.now();
                                 job.error = error;
                                 this.stats.failed++;
+                                // Subtract any bytes that were uploaded but failed
+                                this.stats.bytes.uploaded -= job.bytesUploaded;
                                 this.failedUploads.push(job);
                                 
                                 console.error(`Upload failed for ${job.file.name}:`, error);
@@ -6230,12 +6471,19 @@ license: "MIT"`);
                     
                     console.log(`Worker ${workerId}: Uploading ${file.name} to ${targetPath || 'root'}`);
                     
-                    // Get upload URL
-                    const filePath = targetPath ? `${targetPath}/${file.name}` : file.name;
-                    const uploadUrl = await getUploadUrl(filePath);
-                    
-                    // Create XMLHttpRequest for progress tracking
-                    return new Promise((resolve, reject) => {
+                    try {
+                        // Get upload URL
+                        const filePath = targetPath ? `${targetPath}/${file.name}` : file.name;
+                        const uploadUrl = await getUploadUrl(filePath);
+                        
+                        if (!uploadUrl) {
+                            throw new Error('Failed to get upload URL');
+                        }
+                        
+                        console.log(`Worker ${workerId}: Got upload URL for ${file.name}`);
+                        
+                        // Create XMLHttpRequest for progress tracking
+                        return new Promise((resolve, reject) => {
                         const xhr = new XMLHttpRequest();
                         
                         xhr.upload.addEventListener('progress', (event) => {
@@ -6250,7 +6498,14 @@ license: "MIT"`);
                         });
                         
                         xhr.addEventListener('load', () => {
+                            console.log(`Worker ${workerId}: Upload completed for ${file.name} with status ${xhr.status}`);
                             if (xhr.status >= 200 && xhr.status < 300) {
+                                // Ensure final byte count is correct
+                                if (job.bytesUploaded < job.file.size) {
+                                    const remaining = job.file.size - job.bytesUploaded;
+                                    job.bytesUploaded = job.file.size;
+                                    this.stats.bytes.uploaded += remaining;
+                                }
                                 resolve();
                             } else {
                                 reject(new Error(`Upload failed with status ${xhr.status}: ${xhr.statusText}`));
@@ -6258,17 +6513,25 @@ license: "MIT"`);
                         });
                         
                         xhr.addEventListener('error', () => {
+                            console.error(`Worker ${workerId}: Network error uploading ${file.name}`);
                             reject(new Error('Upload failed due to network error'));
                         });
                         
                         xhr.addEventListener('abort', () => {
+                            console.error(`Worker ${workerId}: Upload aborted for ${file.name}`);
                             reject(new Error('Upload aborted'));
                         });
                         
+                        console.log(`Worker ${workerId}: Starting XMLHttpRequest for ${file.name}`);
                         xhr.open('PUT', uploadUrl);
                         xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
                         xhr.send(file);
                     });
+                        
+                    } catch (error) {
+                        console.error(`Worker ${workerId}: Exception in executeUpload for ${file.name}:`, error);
+                        throw error;
+                    }
                 }
 
                 updateProgress() {
@@ -6289,10 +6552,19 @@ license: "MIT"`);
                     }
                     
                     // Check if all uploads are complete
+                    console.log(`Progress check: completed=${this.stats.completed}, failed=${this.stats.failed}, total=${this.stats.total}, queue=${this.queue.length}, active=${this.activeUploads.size}`);
                     if (this.stats.completed + this.stats.failed >= this.stats.total && this.queue.length === 0 && this.activeUploads.size === 0) {
+                        console.log('All uploads complete, triggering callbacks');
                         this.stop();
                         if (this.onComplete) {
-                            this.onComplete(this.stats);
+                            console.log('Calling onComplete callback');
+                            try {
+                                this.onComplete(this.stats);
+                            } catch (error) {
+                                console.error('Error in onComplete callback:', error);
+                            }
+                        } else {
+                            console.warn('No onComplete callback registered');
                         }
                         
                         // Notify if retry is available
@@ -6383,40 +6655,6 @@ license: "MIT"`);
             // Global upload manager instance
             window.globalUploadManager = new ParallelUploadManager(10);
 
-            // Utility function to check if a file should be included based on hidden file settings
-            const shouldIncludeFile = (fileName, includeHidden = false) => {
-                if (includeHidden) return true;
-                
-                // Extract just the filename from path
-                const name = fileName.split('/').pop();
-                return !name.startsWith('.');
-            };
-
-            // Utility function to filter file list based on hidden file settings
-            const filterFiles = (files, includeHidden = false) => {
-                if (includeHidden) return files;
-                
-                return files.filter(file => {
-                    // For File objects from file input
-                    if (file instanceof File) {
-                        // Check both the file name and any path components
-                        const fileName = file.name;
-                        const relativePath = file.webkitRelativePath || fileName;
-                        
-                        // Split path and check each component
-                        const pathComponents = relativePath.split('/');
-                        return pathComponents.every(component => !component.startsWith('.'));
-                    }
-                    
-                    // For other file objects, check the name property
-                    if (file.name) {
-                        return shouldIncludeFile(file.name, includeHidden);
-                    }
-                    
-                    return true;
-                });
-            };
-            
             // Keep backward compatibility
             window.showInstallSpinner = (message = 'Installing Application...') => {
                 window.showProgressSpinner(message, { showLogs: true, title: "Installing Application" });

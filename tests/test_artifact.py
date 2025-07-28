@@ -5565,18 +5565,24 @@ async def test_list_files_with_actual_and_pending_files(
     # Add a pending file for updating existing version
     await artifact_manager.put_file(artifact.id, "update_file.txt", download_weight=0.3)
 
-    # List files without include_pending (should be empty - files are at different version index)
+    # List files without include_pending (should show existing files from current version)
     files = await artifact_manager.list_files(artifact.id, version="stage")
-    assert len(files) == 0
+    assert len(files) == 1  # Should show the existing file from v0
+    assert files[0]["name"] == "actual_file.txt"
 
-    # List files with include_pending=True (should show pending files)
+    # List files with include_pending=True (should show both existing and pending files)
     files = await artifact_manager.list_files(
         artifact.id, version="stage", include_pending=True
     )
-    assert len(files) == 1
-    assert files[0]["name"] == "update_file.txt"
-    assert files[0]["pending"] is True
-    assert files[0]["download_weight"] == 0.3
+    assert len(files) == 2  # Both existing and pending files
+    file_names = [f["name"] for f in files]
+    assert "actual_file.txt" in file_names
+    assert "update_file.txt" in file_names
+    
+    # Find the pending file
+    pending_file = next(f for f in files if f["name"] == "update_file.txt")
+    assert pending_file["pending"] is True
+    assert pending_file["download_weight"] == 0.3
 
 
 async def test_site_serving_endpoint(minio_server, fastapi_server, test_user_token):
@@ -6301,3 +6307,530 @@ async def test_put_file_endpoint_overwrite_existing(
         )
         assert response.status_code == 200
         assert response.text == new_content
+
+
+async def test_remove_file_complete_lifecycle(minio_server, fastapi_server, test_user_token):
+    """Test the complete lifecycle of remove_file functionality."""
+    api = await connect_to_server(
+        {"name": "test-client", "token": test_user_token, "server_url": SERVER_URL}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a test artifact in staging mode
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={
+            "name": "Test Dataset",
+            "description": "Test dataset for file removal",
+        },
+        stage=True,
+    )
+
+    # Add a file to staging manifest
+    put_url = await artifact_manager.put_file(
+        artifact.id, "test_file.txt", download_weight=1.0
+    )
+    response = requests.put(put_url, data="actual file content", timeout=10)
+    assert response.ok
+
+    await artifact_manager.commit(artifact.id)
+
+    files = await artifact_manager.list_files(artifact.id)
+    assert len(files) == 1  # One file should be present after put_file
+
+    await artifact_manager.edit(artifact.id, stage=True)
+
+    # Remove the file from staging manifest
+    await artifact_manager.remove_file(artifact.id, "test_file.txt")
+
+    await artifact_manager.commit(artifact.id)
+
+    # Verify file is removed from staging manifest
+    files = await artifact_manager.list_files(artifact.id, include_pending=True)
+    assert len(files) == 0  # No files should be present after removal
+
+
+async def test_remove_file_with_multiple_files(minio_server, fastapi_server, test_user_token):
+    """Test remove_file with multiple files to ensure only the specified file is removed."""
+    api = await connect_to_server(
+        {"name": "test-client", "token": test_user_token, "server_url": SERVER_URL}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a test artifact in staging mode
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={
+            "name": "Test Dataset Multi Files",
+            "description": "Test dataset for multiple file removal",
+        },
+        stage=True,
+    )
+
+    # Add multiple files
+    files_to_add = ["file1.txt", "file2.txt", "subdir/file3.txt"]
+    file_contents = {"file1.txt": "content1", "file2.txt": "content2", "subdir/file3.txt": "content3"}
+    
+    for file_path, content in file_contents.items():
+        put_url = await artifact_manager.put_file(artifact.id, file_path, download_weight=1.0)
+        response = requests.put(put_url, data=content, timeout=10)
+        assert response.ok
+
+    # Commit the artifact with all files
+    await artifact_manager.commit(artifact.id)
+
+    # Verify all files are present
+    files = await artifact_manager.list_files(artifact.id)
+    file_names = {f["name"] for f in files if f.get("type") != "directory"}
+    expected_files = {"file1.txt", "file2.txt", "file3.txt"}  # file3.txt should be in root level listing
+    assert len(file_names.intersection(expected_files)) > 0
+
+    # Edit back to staging mode
+    await artifact_manager.edit(artifact.id, stage=True)
+
+    # Remove only one file
+    await artifact_manager.remove_file(artifact.id, "file1.txt")
+
+    # Commit the changes
+    await artifact_manager.commit(artifact.id)
+
+    # Verify only file1.txt was removed
+    files = await artifact_manager.list_files(artifact.id)
+    file_names = {f["name"] for f in files if f.get("type") != "directory"}
+    assert "file1.txt" not in file_names
+    assert len([f for f in files if f["name"] == "file2.txt"]) > 0  # file2 should still exist
+
+
+async def test_remove_file_with_new_version_intent(minio_server, fastapi_server, test_user_token):
+    """Test remove_file when creating a new version vs updating existing version."""
+    api = await connect_to_server(
+        {"name": "test-client", "token": test_user_token, "server_url": SERVER_URL}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create and commit initial version with files
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Version Test Dataset"},
+        stage=True,
+    )
+
+    # Add files to initial version
+    put_url = await artifact_manager.put_file(artifact.id, "initial_file.txt")
+    response = requests.put(put_url, data="initial content", timeout=10)
+    assert response.ok
+
+    await artifact_manager.commit(artifact.id, version="v1")
+
+    # Test 1: Update existing version (no version="new")
+    await artifact_manager.edit(artifact.id, stage=True)  # Edit existing version
+    
+    # Add a new file and remove existing file
+    put_url = await artifact_manager.put_file(artifact.id, "new_file.txt")
+    response = requests.put(put_url, data="new content", timeout=10)
+    assert response.ok
+    
+    await artifact_manager.remove_file(artifact.id, "initial_file.txt")
+    await artifact_manager.commit(artifact.id)
+
+    # Verify the file removal worked for existing version update
+    files = await artifact_manager.list_files(artifact.id)
+    file_names = {f["name"] for f in files}
+    assert "initial_file.txt" not in file_names
+    assert "new_file.txt" in file_names
+
+    # Test 2: Create new version (version="new")
+    await artifact_manager.edit(artifact.id, stage=True, version="new")
+    
+    # Add another file and remove existing file
+    put_url = await artifact_manager.put_file(artifact.id, "newer_file.txt")
+    response = requests.put(put_url, data="newer content", timeout=10)
+    assert response.ok
+    
+    await artifact_manager.remove_file(artifact.id, "new_file.txt")
+    await artifact_manager.commit(artifact.id, version="v2")
+
+    # Verify the file removal worked for new version creation
+    files = await artifact_manager.list_files(artifact.id)
+    file_names = {f["name"] for f in files}
+    assert "new_file.txt" not in file_names
+    assert "newer_file.txt" in file_names
+
+
+async def test_remove_file_staging_only(minio_server, fastapi_server, test_user_token):
+    """Test remove_file when file only exists in staging (never committed)."""
+    api = await connect_to_server(
+        {"name": "test-client", "token": test_user_token, "server_url": SERVER_URL}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create artifact and add file but don't commit
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Staging Only Test"},
+        stage=True,
+    )
+
+    # Add file to staging
+    put_url = await artifact_manager.put_file(artifact.id, "staging_only.txt")
+    response = requests.put(put_url, data="staging content", timeout=10)
+    assert response.ok
+
+    # Verify file exists in staging
+    files = await artifact_manager.list_files(artifact.id, include_pending=True)
+    assert len(files) == 1
+    assert files[0]["name"] == "staging_only.txt"
+
+    # Remove the file before committing
+    await artifact_manager.remove_file(artifact.id, "staging_only.txt")
+
+    # Verify file is removed from staging
+    files = await artifact_manager.list_files(artifact.id, include_pending=True)
+    assert len(files) == 0
+
+    # Commit should work without issues
+    await artifact_manager.commit(artifact.id)
+
+    # Final verification - no files should exist
+    files = await artifact_manager.list_files(artifact.id)
+    assert len(files) == 0
+
+
+async def test_remove_file_original_colleague_test(minio_server, fastapi_server, test_user_token):
+    """Test the exact scenario described by the colleague in the bug report."""
+    api = await connect_to_server(
+        {"name": "test-client", "token": test_user_token, "server_url": SERVER_URL}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a test artifact in staging mode
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={
+            "name": "Test Dataset",
+            "description": "Test dataset for file removal",
+        },
+        stage=True,
+    )
+
+    # Add a file to staging manifest
+    put_url = await artifact_manager.put_file(
+        artifact.id, "test_file.txt", download_weight=1.0
+    )
+    response = requests.put(put_url, data="actual file content", timeout=10)
+    assert response.ok
+
+    await artifact_manager.commit(artifact.id)
+
+    files = await artifact_manager.list_files(artifact.id)
+    assert len(files) == 1  # One file should be present after put_file
+
+    await artifact_manager.edit(artifact.id, stage=True)
+
+    # Remove the file from staging manifest
+    await artifact_manager.remove_file(artifact.id, "test_file.txt")
+
+    await artifact_manager.commit(artifact.id)
+
+    # Verify file is removed from staging manifest
+    files = await artifact_manager.list_files(artifact.id, include_pending=True)
+    assert len(files) == 0  # No files should be present after removal
+
+
+async def test_remove_file_comprehensive_edge_cases(minio_server, fastapi_server, test_user_token):
+    """Comprehensive test covering all edge cases for remove_file functionality."""
+    api = await connect_to_server(
+        {"name": "test-client", "token": test_user_token, "server_url": SERVER_URL}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create a test artifact
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={
+            "name": "Comprehensive Remove Test",
+            "description": "Test dataset for comprehensive file removal testing",
+        },
+        stage=True,
+    )
+
+    # ==== CASE 1: Remove file that was put_file'd but never uploaded ====
+    # put_file only generates a presigned URL, file isn't added to staging until uploaded
+    put_url = await artifact_manager.put_file(artifact.id, "not_uploaded.txt")
+    
+    # Verify no files exist yet (since nothing was uploaded)
+    files = await artifact_manager.list_files(artifact.id, include_pending=True)
+    assert len(files) == 0
+    
+    # Actually upload the file to add it to staging
+    response = requests.put(put_url, data="test content", timeout=10)
+    assert response.ok
+    
+    # Now verify the file exists in staging
+    files = await artifact_manager.list_files(artifact.id, include_pending=True)
+    assert len(files) == 1
+    assert files[0]["name"] == "not_uploaded.txt"
+    
+    # Remove the file from staging manifest
+    await artifact_manager.remove_file(artifact.id, "not_uploaded.txt")
+    
+    # Verify it's removed from staging
+    files = await artifact_manager.list_files(artifact.id, include_pending=True)
+    assert len(files) == 0
+    
+
+    # ==== CASE 2: Remove actually uploaded files ====
+    # Upload multiple files to different directories
+    files_to_upload = {
+        "root_file.txt": "root file content",
+        "dir1/file1.txt": "directory 1 file content", 
+        "dir1/subdir/deep_file.txt": "deep nested file content",
+        "dir2/file2.txt": "directory 2 file content",
+        "dir2/another_file.txt": "another file in dir2"
+    }
+    
+    for file_path, content in files_to_upload.items():
+        put_url = await artifact_manager.put_file(artifact.id, file_path)
+        response = requests.put(put_url, data=content, timeout=10)
+        assert response.ok
+    
+    # Commit to create a base version
+    await artifact_manager.commit(artifact.id, version="v1")
+    
+    # Verify all files are present by checking each directory level
+    # Root level
+    root_files = await artifact_manager.list_files(artifact.id)
+    root_file_names = {f["name"] for f in root_files if f.get("type") != "directory"}
+    assert "root_file.txt" in root_file_names
+    
+    # dir1 level  
+    dir1_files = await artifact_manager.list_files(artifact.id, dir_path="dir1")
+    dir1_file_names = {f["name"] for f in dir1_files if f.get("type") != "directory"}
+    assert "file1.txt" in dir1_file_names
+    
+    # dir1/subdir level
+    subdir_files = await artifact_manager.list_files(artifact.id, dir_path="dir1/subdir")
+    subdir_file_names = {f["name"] for f in subdir_files if f.get("type") != "directory"}
+    assert "deep_file.txt" in subdir_file_names
+    
+    # dir2 level
+    dir2_files = await artifact_manager.list_files(artifact.id, dir_path="dir2")
+    dir2_file_names = {f["name"] for f in dir2_files if f.get("type") != "directory"}
+    assert "file2.txt" in dir2_file_names
+    assert "another_file.txt" in dir2_file_names
+    
+
+    # ==== CASE 3: Edit existing version and remove files ====
+    await artifact_manager.edit(artifact.id, stage=True)
+    
+    # Remove one file from root and one from directory
+    await artifact_manager.remove_file(artifact.id, "root_file.txt")
+    await artifact_manager.remove_file(artifact.id, "dir1/file1.txt")
+    
+    # Commit the changes
+    await artifact_manager.commit(artifact.id)
+    
+    # Verify files are removed by checking appropriate directories
+    # Root level - root_file.txt should be removed
+    root_files = await artifact_manager.list_files(artifact.id)
+    root_file_names = {f["name"] for f in root_files if f.get("type") != "directory"}
+    assert "root_file.txt" not in root_file_names
+    
+    # dir1 level - file1.txt should be removed
+    dir1_files = await artifact_manager.list_files(artifact.id, dir_path="dir1")
+    dir1_file_names = {f["name"] for f in dir1_files if f.get("type") != "directory"}
+    assert "file1.txt" not in dir1_file_names
+    
+    # dir1/subdir level - deep_file.txt should still exist
+    subdir_files = await artifact_manager.list_files(artifact.id, dir_path="dir1/subdir")
+    subdir_file_names = {f["name"] for f in subdir_files if f.get("type") != "directory"}
+    assert "deep_file.txt" in subdir_file_names
+    
+    # dir2 level - both files should still exist
+    dir2_files = await artifact_manager.list_files(artifact.id, dir_path="dir2")
+    dir2_file_names = {f["name"] for f in dir2_files if f.get("type") != "directory"}
+    assert "file2.txt" in dir2_file_names
+    assert "another_file.txt" in dir2_file_names
+    
+
+    # ==== CASE 4: Create new version and mix operations ====
+    await artifact_manager.edit(artifact.id, stage=True, version="new")
+    
+    # Add some new files (both uploaded and not uploaded)
+    put_url = await artifact_manager.put_file(artifact.id, "new_uploaded_file.txt")
+    response = requests.put(put_url, data="new content", timeout=10)
+    assert response.ok
+    
+    # Add a file path but don't upload it  
+    put_url2 = await artifact_manager.put_file(artifact.id, "new_not_uploaded.txt")
+    response2 = requests.put(put_url2, data="temp content", timeout=10)
+    assert response2.ok
+    
+    # Remove the new file that was uploaded (to test removal from new version)
+    await artifact_manager.remove_file(artifact.id, "new_not_uploaded.txt")
+    
+    # Verify the state before commit - check root level files
+    files = await artifact_manager.list_files(artifact.id, version="stage", include_pending=True)
+    file_names = {f["name"] for f in files if f.get("type") != "directory"}
+    assert "new_uploaded_file.txt" in file_names  # Uploaded new file should be there
+    assert "new_not_uploaded.txt" not in file_names  # Uploaded then removed
+    
+    # Commit the new version
+    await artifact_manager.commit(artifact.id, version="v2")
+    
+    # Verify final state by checking each directory
+    # New version should ONLY have the files we added (not inheriting from previous version)
+    # Root level - should ONLY have new_uploaded_file.txt
+    root_files = await artifact_manager.list_files(artifact.id)
+    root_file_names = {f["name"] for f in root_files if f.get("type") != "directory"}
+    assert "new_uploaded_file.txt" in root_file_names
+    assert "root_file.txt" not in root_file_names  # Not inherited from previous version
+    assert "new_not_uploaded.txt" not in root_file_names  # Was removed
+    
+    # All subdirectories should be empty in the new version (no inheritance)
+    dir1_files = await artifact_manager.list_files(artifact.id, dir_path="dir1")
+    dir1_file_names = {f["name"] for f in dir1_files if f.get("type") != "directory"}
+    assert len(dir1_file_names) == 0  # New version starts empty
+    
+    dir2_files = await artifact_manager.list_files(artifact.id, dir_path="dir2")
+    dir2_file_names = {f["name"] for f in dir2_files if f.get("type") != "directory"}
+    assert len(dir2_file_names) == 0  # New version starts empty
+    
+
+    # ==== CASE 5: Test editing the current version (should update current v2) ====
+    await artifact_manager.edit(artifact.id, stage=True)
+    
+    # Add another file to the current version
+    put_url3 = await artifact_manager.put_file(artifact.id, "another_new_file.txt")
+    response3 = requests.put(put_url3, data="another content", timeout=10)
+    assert response3.ok
+    
+    # Remove the existing file from current version
+    await artifact_manager.remove_file(artifact.id, "new_uploaded_file.txt")
+    
+    await artifact_manager.commit(artifact.id)
+    
+    # Verify the changes were applied to current version
+    # Root level - should have another_new_file.txt, should NOT have new_uploaded_file.txt
+    root_files = await artifact_manager.list_files(artifact.id)
+    root_file_names = {f["name"] for f in root_files if f.get("type") != "directory"}
+    assert "another_new_file.txt" in root_file_names
+    assert "new_uploaded_file.txt" not in root_file_names  # Was removed
+    
+
+    # ==== CASE 6: Error handling - try to remove non-existent files ====
+    await artifact_manager.edit(artifact.id, stage=True)
+    
+    # This should not raise an error (graceful handling)
+    await artifact_manager.remove_file(artifact.id, "totally_non_existent_file.txt")
+    await artifact_manager.remove_file(artifact.id, "non_existent_dir/non_existent_file.txt")
+    
+    # Should be able to commit without issues
+    await artifact_manager.commit(artifact.id)
+    
+    # Final verification - should have the final state after all operations
+    # Root level - should have another_new_file.txt
+    root_files = await artifact_manager.list_files(artifact.id)
+    root_file_names = {f["name"] for f in root_files if f.get("type") != "directory"}
+    assert "another_new_file.txt" in root_file_names
+    assert len(root_file_names) == 1  # Only the final file should remain
+
+
+async def test_remove_file_directory_edge_cases(minio_server, fastapi_server, test_user_token):
+    """Test remove_file with various directory structure scenarios."""
+    api = await connect_to_server(
+        {"name": "test-client", "token": test_user_token, "server_url": SERVER_URL}
+    )
+    artifact_manager = await api.get_service("public/artifact-manager")
+
+    # Create artifact with nested directory structure
+    artifact = await artifact_manager.create(
+        type="dataset",
+        manifest={"name": "Directory Structure Test"},
+        stage=True,
+    )
+
+    # Create a complex directory structure
+    directory_files = {
+        "level1/file_a.txt": "content a",
+        "level1/level2/file_b.txt": "content b", 
+        "level1/level2/file_c.txt": "content c",
+        "level1/level2/level3/file_d.txt": "content d",
+        "level1/other_file.txt": "other content",
+        "different_dir/file_e.txt": "content e",
+    }
+    
+    # Upload all files
+    for file_path, content in directory_files.items():
+        put_url = await artifact_manager.put_file(artifact.id, file_path)
+        response = requests.put(put_url, data=content, timeout=10)
+        assert response.ok
+    
+    await artifact_manager.commit(artifact.id)
+    
+    # Verify all files are present by checking each directory level
+    # level1 files
+    level1_files = await artifact_manager.list_files(artifact.id, dir_path="level1")
+    level1_file_names = {f["name"] for f in level1_files if f.get("type") != "directory"}
+    assert "file_a.txt" in level1_file_names
+    assert "other_file.txt" in level1_file_names
+    
+    # level1/level2 files  
+    level2_files = await artifact_manager.list_files(artifact.id, dir_path="level1/level2")
+    level2_file_names = {f["name"] for f in level2_files if f.get("type") != "directory"}
+    assert "file_b.txt" in level2_file_names
+    assert "file_c.txt" in level2_file_names
+    
+    # level1/level2/level3 files
+    level3_files = await artifact_manager.list_files(artifact.id, dir_path="level1/level2/level3")
+    level3_file_names = {f["name"] for f in level3_files if f.get("type") != "directory"}
+    assert "file_d.txt" in level3_file_names
+    
+    # different_dir files
+    diff_dir_files = await artifact_manager.list_files(artifact.id, dir_path="different_dir")
+    diff_dir_file_names = {f["name"] for f in diff_dir_files if f.get("type") != "directory"}
+    assert "file_e.txt" in diff_dir_file_names
+    
+    # Test removing files from different directory levels
+    await artifact_manager.edit(artifact.id, stage=True)
+    
+    # Remove files from different levels
+    await artifact_manager.remove_file(artifact.id, "level1/file_a.txt")  # Level 1
+    await artifact_manager.remove_file(artifact.id, "level1/level2/file_b.txt")  # Level 2  
+    await artifact_manager.remove_file(artifact.id, "level1/level2/level3/file_d.txt")  # Level 3
+    
+    await artifact_manager.commit(artifact.id)
+    
+    # Verify selective removal worked by checking each directory
+    # level1 - file_a.txt should be removed, other_file.txt should remain
+    level1_files = await artifact_manager.list_files(artifact.id, dir_path="level1")
+    level1_file_names = {f["name"] for f in level1_files if f.get("type") != "directory"}
+    assert "file_a.txt" not in level1_file_names  # Should be removed
+    assert "other_file.txt" in level1_file_names  # Should remain
+    
+    # level1/level2 - file_b.txt should be removed, file_c.txt should remain
+    level2_files = await artifact_manager.list_files(artifact.id, dir_path="level1/level2")
+    level2_file_names = {f["name"] for f in level2_files if f.get("type") != "directory"}
+    assert "file_b.txt" not in level2_file_names  # Should be removed
+    assert "file_c.txt" in level2_file_names  # Should remain
+    
+    # level1/level2/level3 - file_d.txt should be removed
+    level3_files = await artifact_manager.list_files(artifact.id, dir_path="level1/level2/level3")
+    level3_file_names = {f["name"] for f in level3_files if f.get("type") != "directory"}
+    assert "file_d.txt" not in level3_file_names  # Should be removed
+    
+    # different_dir - file_e.txt should remain
+    diff_dir_files = await artifact_manager.list_files(artifact.id, dir_path="different_dir")
+    diff_dir_file_names = {f["name"] for f in diff_dir_files if f.get("type") != "directory"}
+    assert "file_e.txt" in diff_dir_file_names  # Should remain
+    
+    # Test directory listing still works correctly
+    level2_files = await artifact_manager.list_files(artifact.id, dir_path="level1/level2")
+    level2_file_names = {f["name"] for f in level2_files if f.get("type") != "directory"}
+    assert "file_c.txt" in level2_file_names
+    assert "file_b.txt" not in level2_file_names
+    
+    # Test that empty directory path still exists but no files
+    level3_files = await artifact_manager.list_files(artifact.id, dir_path="level1/level2/level3")
+    level3_file_names = {f["name"] for f in level3_files if f.get("type") != "directory"}
+    assert len(level3_file_names) == 0  # No files should remain in level3

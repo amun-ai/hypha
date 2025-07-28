@@ -255,7 +255,7 @@ class WebsocketServer:
                 if user_info.scope.current_workspace and workspace:
                     assert (
                         workspace == user_info.scope.current_workspace
-                    ), f"Current workspace encoded in the token ({user_info.scope.current_workspace}) does not the specified workspace ({workspace})"
+                    ), f"Current workspace encoded in the token ({user_info.scope.current_workspace}) does not match the specified workspace ({workspace})"
                 if not workspace and user_info.scope.current_workspace:
                     workspace = user_info.scope.current_workspace
             else:
