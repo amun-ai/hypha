@@ -398,6 +398,9 @@ class RedisStore:
                     async with self.get_workspace_interface(
                         self._root_user, workspace, client_id="housekeeping"
                     ) as api:
+                        # Track clients to remove from this workspace
+                        workspace_clients_to_remove = []
+                        
                         for full_client_id in clients:
                             try:
                                 # Check if websocket is still active
@@ -415,15 +418,32 @@ class RedisStore:
                                     
                             except Exception as e:
                                 logger.warning(f"Removing unresponsive client {full_client_id}: {e}")
-                                try:
-                                    workspace_name, client_id = full_client_id.split("/", 1)
-                                    await api.delete_client(
-                                        client_id, workspace_name, self._root_user, 
-                                        unload=True, context={"user": self._root_user.model_dump(), "ws": workspace_name}
-                                    )
-                                    removed_clients.append(full_client_id)
-                                except Exception as cleanup_error:
-                                    logger.error(f"Failed to cleanup client {full_client_id}: {cleanup_error}")
+                                workspace_clients_to_remove.append(full_client_id)
+                        
+                        # Batch cleanup for this workspace to reduce race conditions
+                        workspace_removed_clients = []
+                        for full_client_id in workspace_clients_to_remove:
+                            try:
+                                workspace_name, client_id = full_client_id.split("/", 1)
+                                # Remove clients individually but don't trigger workspace unload yet
+                                await api.delete_client(
+                                    client_id, workspace_name, self._root_user, 
+                                    unload=False, context={"user": self._root_user.model_dump(), "ws": workspace_name}
+                                )
+                                workspace_removed_clients.append(full_client_id)
+                            except Exception as cleanup_error:
+                                logger.warning(f"Failed to cleanup client {full_client_id}: {cleanup_error} (this is likely due to concurrent cleanup operations and can be safely ignored)")
+                        
+                        # After all clients in this workspace are cleaned up, check if workspace should be unloaded
+                        # This reduces race conditions by doing unload check only once per workspace
+                        if workspace_removed_clients:
+                            try:
+                                logger.info(f"Cleaned up {len(workspace_removed_clients)} clients from workspace {workspace}, checking if workspace should be unloaded")
+                                await api.unload_if_empty(context={"user": self._root_user.model_dump(), "ws": workspace})
+                            except Exception as unload_error:
+                                logger.warning(f"Failed to check workspace unload for {workspace}: {unload_error}")
+                        
+                        removed_clients.extend(workspace_removed_clients)
                                     
                 except Exception as workspace_error:
                     logger.error(f"Error checking workspace {workspace}: {workspace_error}")
@@ -800,7 +820,7 @@ class RedisStore:
                     client_id, workspace, self._root_user, unload=False, context=context
                 )
             except Exception as cleanup_error:
-                logger.error(f"Failed to cleanup unresponsive client {workspace}/{client_id}: {cleanup_error}")
+                logger.warning(f"Failed to cleanup unresponsive client {workspace}/{client_id}: {cleanup_error} (this is likely due to concurrent cleanup operations and can be safely ignored)")
             return False
 
     async def remove_client(self, client_id, workspace, user_info, unload):

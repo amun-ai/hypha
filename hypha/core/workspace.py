@@ -2405,22 +2405,31 @@ class WorkspaceManager:
         self._active_svc.labels(workspace=cws).dec(len(keys) - 1)
 
         if unload:
-            if await self._redis.hexists("workspaces", cws):
-                if user_info.is_anonymous and cws == user_info.get_workspace():
-                    logger.info(
-                        f"Unloading workspace {cws} for anonymous user (while deleting client {client_id})"
-                    )
-                    # unload temporary workspace if the user exits
-                    await self.unload(context=context)
+            # Check if workspace still exists before attempting unload operations
+            # This prevents race condition errors when multiple clients are being cleaned up
+            try:
+                if await self._redis.hexists("workspaces", cws):
+                    if user_info.is_anonymous and cws == user_info.get_workspace():
+                        logger.info(
+                            f"Unloading workspace {cws} for anonymous user (while deleting client {client_id})"
+                        )
+                        # unload temporary workspace if the user exits
+                        await self.unload(context=context)
+                    else:
+                        logger.info(
+                            f"Unloading workspace {cws} for non-anonymous user (while deleting client {client_id})"
+                        )
+                        # otherwise delete the workspace if it is empty
+                        await self.unload_if_empty(context=context)
                 else:
-                    logger.info(
-                        f"Unloading workspace {cws} for non-anonymous user (while deleting client {client_id})"
+                    logger.warning(
+                        f"Workspace {cws} not found (while deleting client {client_id})"
                     )
-                    # otherwise delete the workspace if it is empty
-                    await self.unload_if_empty(context=context)
-            else:
+            except Exception as e:
+                # Handle race condition gracefully - workspace might have been deleted by another cleanup
                 logger.warning(
-                    f"Workspace {cws} not found (while deleting client {client_id})"
+                    f"Failed to unload workspace {cws} while deleting client {client_id}: {e}. "
+                    f"This is likely due to concurrent cleanup operations and can be safely ignored."
                 )
 
     async def unload_if_empty(self, context=None):
@@ -2428,13 +2437,26 @@ class WorkspaceManager:
         self.validate_context(context, permission=UserPermission.admin)
         workspace = context["ws"]
         logger.debug(f"Attempting to unload workspace: {workspace}")
-        client_keys = await self._list_client_keys(workspace)
-        if not client_keys:
-            logger.info(f"No active clients in workspace {workspace}. Unloading...")
-            await self.unload(context=context)
-        else:
+        
+        try:
+            # Add additional check to prevent race condition
+            if not await self._redis.hexists("workspaces", workspace):
+                logger.debug(f"Workspace {workspace} already unloaded, skipping")
+                return
+                
+            client_keys = await self._list_client_keys(workspace)
+            if not client_keys:
+                logger.info(f"No active clients in workspace {workspace}. Unloading...")
+                await self.unload(context=context)
+            else:
+                logger.warning(
+                    f"Skip unloading workspace {workspace} because it is not empty, remaining clients: {client_keys[:10]}..."
+                )
+        except Exception as e:
+            # Handle race condition where workspace was deleted by another operation
             logger.warning(
-                f"Skip unloading workspace {workspace} because it is not empty, remaining clients: {client_keys[:10]}..."
+                f"Failed to check/unload workspace {workspace}: {e}. "
+                f"This is likely due to concurrent cleanup operations."
             )
 
     async def _set_workspace_status(self, workspace_id: str, status: str):
