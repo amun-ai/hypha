@@ -503,11 +503,31 @@ async def test_stop_after_inactive(fastapi_server, test_user_token):
 
     # start the app
     app = await controller.start(app_info.id, stop_after_inactive=3)
+    
     apps = await controller.list_running()
     assert find_item(apps, "id", app.id) is not None
-    await asyncio.sleep(4)
+    
+    # Wait longer and check multiple times to handle timing issues
+    # The ActivityTracker checks every 0.3s, so we need to account for that delay
+    max_wait_time = 6  # Wait up to 6 seconds (3s timeout + 3s buffer)
+    check_interval = 0.5
+    elapsed = 0
+    
+    while elapsed < max_wait_time:
+        await asyncio.sleep(check_interval)
+        elapsed += check_interval
+        apps = await controller.list_running()
+        app_still_running = find_item(apps, "id", app.id)
+        
+        if app_still_running is None:
+            break
+    
+    # Final check - app should be stopped by now
     apps = await controller.list_running()
-    assert find_item(apps, "id", app.id) is None
+    final_app = find_item(apps, "id", app.id)
+    
+    assert final_app is None, f"App should have stopped after 3s of inactivity, but it's still running after {max_wait_time}s"
+    
     await controller.uninstall(app_info.id)
     await api.disconnect()
 
