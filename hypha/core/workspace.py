@@ -2280,7 +2280,7 @@ class WorkspaceManager:
                 f"Permission denied for workspace {workspace}, user: {user_info.id}"
             )
         logger.info(f"Cleaning up workspace {workspace_info.id}...")
-        # list all the clients and ping them
+        # list all the clients and check their connection status
         # If they are not responding, delete them
         client_keys = await self._list_client_keys(workspace)
         if len(client_keys) <= 0 and not workspace_info.persistent:
@@ -2293,14 +2293,27 @@ class WorkspaceManager:
             unload = True
         else:
             unload = False
+        
+        # Get websocket server to check connection states
+        websocket_server = self._store.get_websocket_server()
+        
         for client in client_keys:
             try:
-                assert (
-                    await self.ping_client(client, timeout=timeout, context=context)
-                    == "pong"
-                )
+                # First check if client has an active websocket connection
+                # This avoids sending RPC messages that would reset activity timers
+                is_connected = client in websocket_server.get_websockets()
+                
+                if is_connected:
+                    # Only ping if websocket is connected - this is a fallback check
+                    ping_result = await self.ping_client(client, timeout=timeout, context=context)
+                    if ping_result != "pong":
+                        raise Exception(f"Ping failed: {ping_result}")
+                else:
+                    # No websocket connection, consider client dead
+                    raise Exception("No websocket connection found")
+                    
             except Exception as e:
-                logger.error(f"Failed to ping client {client}: {e}")
+                logger.error(f"Client {client} appears dead: {e}")
                 user_info = UserInfo.model_validate(context["user"])
                 # Remove dead client
                 await self.delete_client(

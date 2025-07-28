@@ -255,9 +255,12 @@ class RedisStore:
 
         self._shared_anonymous_user = None
 
+    def get_websocket_server(self):
+        """Get the websocket server instance."""
+        return self._websocket_server
+
     def set_websocket_server(self, websocket_server):
-        """Set the websocket server."""
-        assert self._websocket_server is None, "Websocket server already set"
+        """Set the websocket server instance."""
         self._websocket_server = websocket_server
 
     @schema_method
@@ -360,24 +363,76 @@ class RedisStore:
             asyncio.get_running_loop().stop()
 
     async def housekeeping(self):
-        """Perform housekeeping tasks."""
+        """Perform housekeeping tasks for clients connected to this server."""
         try:
             logger.info(f"Running housekeeping task at {datetime.datetime.now()}")
-            async with self.get_workspace_interface(
-                self._root_user, "ws-user-root", client_id="housekeeping"
-            ) as api:
-                # admin = await api.get_service("admin-utils")
-                workspaces = await api.list_workspaces()
-                for workspace in workspaces:
-                    try:
-                        logger.info(f"Cleaning up workspace {workspace.id}...")
-                        summary = await api.cleanup(workspace.id)
-                        if "removed_clients" in summary:
-                            logger.info(
-                                f"Removed {len(summary['removed_clients'])} clients from workspace {workspace.id}"
-                            )
-                    except Exception as e:
-                        logger.exception(f"Error in housekeeping {workspace.id}: {e}")
+            
+            # Only check clients connected to THIS server via websockets
+            if not self._websocket_server:
+                logger.debug("No websocket server available, skipping housekeeping")
+                return
+                
+            connected_clients = list(self._websocket_server.get_websockets().keys())
+            if not connected_clients:
+                logger.debug("No clients connected to this server, skipping housekeeping")
+                return
+                
+            logger.info(f"Checking {len(connected_clients)} clients connected to this server")
+            
+            # Group clients by workspace for efficient processing
+            workspace_clients = {}
+            for full_client_id in connected_clients:
+                if "/" in full_client_id:
+                    workspace, client_id = full_client_id.split("/", 1)
+                    if workspace not in workspace_clients:
+                        workspace_clients[workspace] = []
+                    workspace_clients[workspace].append(full_client_id)
+            
+            removed_clients = []
+            
+            # Check each workspace's connected clients
+            for workspace, clients in workspace_clients.items():
+                try:
+                    logger.debug(f"Checking {len(clients)} clients in workspace {workspace}")
+                    
+                    async with self.get_workspace_interface(
+                        self._root_user, workspace, client_id="housekeeping"
+                    ) as api:
+                        for full_client_id in clients:
+                            try:
+                                # Check if websocket is still active
+                                is_connected = full_client_id in self._websocket_server.get_websockets()
+                                
+                                if is_connected:
+                                    # Websocket exists, do a quick ping to verify responsiveness
+                                    # This is minimal and only for truly unresponsive clients
+                                    ping_result = await api.ping_client(full_client_id, timeout=2)
+                                    if ping_result != "pong":
+                                        raise Exception(f"Ping failed: {ping_result}")
+                                else:
+                                    # No websocket connection, client is definitely dead
+                                    raise Exception("Websocket connection lost")
+                                    
+                            except Exception as e:
+                                logger.warning(f"Removing unresponsive client {full_client_id}: {e}")
+                                try:
+                                    workspace_name, client_id = full_client_id.split("/", 1)
+                                    await api.delete_client(
+                                        client_id, workspace_name, self._root_user, 
+                                        unload=True, context={"user": self._root_user.model_dump(), "ws": workspace_name}
+                                    )
+                                    removed_clients.append(full_client_id)
+                                except Exception as cleanup_error:
+                                    logger.error(f"Failed to cleanup client {full_client_id}: {cleanup_error}")
+                                    
+                except Exception as workspace_error:
+                    logger.error(f"Error checking workspace {workspace}: {workspace_error}")
+                    
+            if removed_clients:
+                logger.info(f"Housekeeping completed: removed {len(removed_clients)} unresponsive clients")
+            else:
+                logger.debug("Housekeeping completed: all clients responsive")
+                
         except Exception as exp:
             logger.error(f"Failed to run housekeeping task, error: {exp}")
 
