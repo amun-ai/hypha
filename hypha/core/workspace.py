@@ -818,6 +818,8 @@ class WorkspaceManager:
         ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
         config = config or TokenConfig()
+        if isinstance(config, dict):
+            config = TokenConfig.model_validate(config)
         assert isinstance(config, TokenConfig)
 
         extra_scopes = config.extra_scopes or []

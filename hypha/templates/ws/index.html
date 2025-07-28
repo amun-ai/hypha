@@ -6102,9 +6102,7 @@ license: "MIT"`);
                                         tokenConfig.client_id = clientId.trim();
                                     }
                                     if (permission && permission !== 'read_write') {
-                                        // Map user-friendly permission names to enum values
-                                        const permissionMap = { "read": "r", "read_write": "rw", "admin": "a" };
-                                        tokenConfig.permission = permissionMap[permission] || permission;
+                                        tokenConfig.permission = permission;
                                     }
                                     if (extraScopes && extraScopes.length > 0) {
                                         tokenConfig.extra_scopes = extraScopes;
