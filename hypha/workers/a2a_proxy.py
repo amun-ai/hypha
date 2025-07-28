@@ -313,6 +313,9 @@ class A2AClientRunner(BaseWorker):
                 "message": f"A2A proxy initialized successfully with {len(session_data['a2a_clients'])} agent(s)",
             }
         )
+
+        # Store the client in session_data for use in stop method
+        session_data["client"] = client
         return session_data
 
     async def _connect_and_register_a2a_service(
@@ -599,13 +602,18 @@ class A2AClientRunner(BaseWorker):
         try:
             session_data = self._session_data.get(session_id)
             if session_data:
+                # Get the client from session data, not self.server
+                client = session_data.get("client")
+                
                 # Unregister services
                 services = session_data.get("services", [])
                 for service_name in services:
                     try:
-                        if self.server:
-                            await self.server.unregister_service(service_name)
+                        if client:
+                            await client.unregister_service(service_name)
                             logger.info(f"Unregistered service: {service_name}")
+                        else:
+                            logger.warning(f"No client available to unregister service {service_name}")
                     except Exception as e:
                         logger.warning(
                             f"Error unregistering service {service_name}: {e}"
