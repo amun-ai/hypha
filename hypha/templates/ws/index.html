@@ -942,7 +942,7 @@
                     )}
                     
                     <div className="flex gap-2 w-full justify-end">
-                        {(app.type === 'window' || app.type === 'iframe' || app.type === 'web-app') && (
+                        {(app.app_type === 'window' || app.app_type === 'iframe' || app.app_type === 'web-app') && (
                             <button
                                 className="bg-yellow-600 hover:bg-yellow-500 text-white font-bold py-2 px-4 rounded transition duration-300 flex items-center"
                                 onClick={() => onTakeScreenshot(app.id, app.name || 'Untitled App')}
