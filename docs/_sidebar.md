@@ -16,4 +16,5 @@
  * [Model Context Protocol](/mcp)
  * [Conda Environment Worker](/conda-worker)
  * [Vector Search](/vector-search)
+ * [Authentication](/auth)
  * [Development](/development)
