@@ -4,19 +4,20 @@ import asyncio
 import os
 import tempfile
 import pytest
+import pytest_asyncio
 from pathlib import Path
 
 from hypha.workers.conda_kernel import CondaKernel
 from hypha.workers.conda import CondaWorker, get_available_package_manager
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def test_env_path():
     """Create a test conda environment with ipykernel installed."""
     # Use the system Python for testing if no conda is available
     if os.environ.get("CI") == "true":
-        # In CI, use system Python
-        yield Path("/usr/bin")
+        # In CI, skip these tests as they need a real conda environment
+        pytest.skip("Skipping conda kernel tests in CI - requires real conda environment")
     else:
         # For local testing, try to create a minimal conda env
         try:
@@ -251,6 +252,7 @@ async def test_conda_worker_execute_api():
         async def get(self, *args, **kwargs):
             return await mock_get(*args, **kwargs)
     
+    session_id = None
     try:
         hypha.workers.conda.httpx.AsyncClient = MockAsyncClient
         
@@ -318,7 +320,8 @@ async def test_conda_worker_execute_api():
         hypha.workers.conda.httpx.AsyncClient = original_client
         
         # Cleanup
-        await worker.stop(session_id)
+        if session_id:
+            await worker.stop(session_id)
 
 
 @pytest.mark.asyncio
@@ -362,6 +365,7 @@ async def test_conda_worker_session_persistence():
                     return "# Initialization"
             return MockResponse()
     
+    session_id = None
     try:
         hypha.workers.conda.httpx.AsyncClient = MockAsyncClient
         
@@ -389,7 +393,8 @@ async def test_conda_worker_session_persistence():
         
     finally:
         hypha.workers.conda.httpx.AsyncClient = original_client
-        await worker.stop(session_id)
+        if session_id:
+            await worker.stop(session_id)
 
 
 if __name__ == "__main__":
