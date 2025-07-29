@@ -2,7 +2,7 @@
 
 import pytest
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from hypha.workers.browser_cache import BrowserCache
 
 # Mark all async functions in this module as asyncio tests

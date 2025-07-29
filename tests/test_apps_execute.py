@@ -2,7 +2,7 @@
 
 import asyncio
 import pytest
-from unittest.mock import Mock, AsyncMock, MagicMock
+from unittest.mock import Mock, AsyncMock
 
 from hypha.apps import ServerAppController
 from hypha.core import UserInfo, UserPermission

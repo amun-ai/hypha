@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from hypha_rpc import connect_to_server
 from hypha.workers.base import (
     BaseWorker,
     WorkerConfig,
@@ -694,6 +695,31 @@ exec('''{script}''')
                 "message": "Conda environment session with Jupyter kernel ready",
             }
         )
+        # progress_callback_wrapper(
+        #     {"type": "info", "message": "Connecting to Hypha server..."}
+        # )
+        # client = await connect_to_server(
+        #     {
+        #         "server_url": config.server_url,
+        #         "client_id": config.client_id,
+        #         "token": config.token,
+        #         "workspace": config.workspace,
+        #     }
+        # )
+        
+        # svc = await client.register_service({
+        #     "name": "conda-kernel",
+        #     "description": "Conda kernel for executing Python code in isolated conda environments",
+        #     "id": "default",
+        #     "execute": kernel.execute,
+        # })
+
+        # progress_callback_wrapper(
+        #     {
+        #         "type": "success",
+        #         "message": f"Conda kernel service registered successfully, service id: {svc.id}x",
+        #     }
+        # )
 
         return {
             "executor": executor,
@@ -1130,7 +1156,7 @@ Examples:
     async def run_worker():
         """Run the conda environment worker."""
         try:
-            from hypha_rpc import connect_to_server
+            
 
             # Override cache directory if specified
             if args.cache_dir:

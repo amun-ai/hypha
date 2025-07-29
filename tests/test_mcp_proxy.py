@@ -5,7 +5,6 @@ import json
 import pytest
 import httpx
 import time
-from unittest.mock import Mock, AsyncMock, MagicMock, patch
 from hypha_rpc import connect_to_server
 from hypha_rpc.utils.schema import schema_function
 

@@ -3,12 +3,13 @@
 import asyncio
 import json
 import os
+import sys
 import subprocess
 import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Callable
 
 from jupyter_client import AsyncKernelClient, KernelConnectionInfo
 from jupyter_client.manager import AsyncKernelManager
@@ -24,12 +25,14 @@ class CondaKernel:
             conda_env_path: Path to the conda environment
         """
         self.conda_env_path = Path(conda_env_path)
-        self.python_path = self.conda_env_path / "bin" / "python"
-        
         # Verify the environment exists
-        if not self.python_path.exists():
+        if sys.platform == "win32":
             # Try Windows path
             self.python_path = self.conda_env_path / "python.exe"
+            if not self.python_path.exists():
+                raise ValueError(f"Python not found in conda environment: {conda_env_path}")
+        else:
+            self.python_path = self.conda_env_path / "bin" / "python"
             if not self.python_path.exists():
                 raise ValueError(f"Python not found in conda environment: {conda_env_path}")
         
@@ -73,7 +76,8 @@ class CondaKernel:
         code: str, 
         silent: bool = False,
         store_history: bool = True,
-        timeout: Optional[float] = None
+        timeout: Optional[float] = None,
+        iopub_callback: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         """Execute code in the kernel and return results.
         
@@ -121,6 +125,9 @@ class CondaKernel:
                 if timeout and (time.time() - start_time) > timeout:
                     raise TimeoutError(f"Execution timed out after {timeout} seconds")
                 continue
+            
+            if iopub_callback:
+                iopub_callback(msg)
             
             msg_type = msg["msg_type"]
             content = msg["content"]

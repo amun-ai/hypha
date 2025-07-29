@@ -1891,11 +1891,6 @@ server.register_service({
 
 print("Registered hello-fastapi service!", flush=True)
 print("SUCCESS: Conda FastAPI app setup completed!", flush=True)
-
-# Keep the process running so the FastAPI service remains available
-import time
-while True:
-    time.sleep(1)
 """
 
 
@@ -2085,13 +2080,6 @@ async def test_conda_jupyter_kernel_apps(fastapi_server, test_user_token, conda_
 
     assert "id" in fastapi_started_app
     print(f"✅ FastAPI conda app started: {fastapi_started_app['id']}")
-
-    # Give time for service registration to complete
-    await asyncio.sleep(5)
-
-    # Test 2.1: Verify service registration through logs
-    # Wait a moment for the background script to run and collect logs
-    await asyncio.sleep(3)
 
     fastapi_logs = await controller.get_logs(fastapi_started_app["id"])
     fastapi_log_text = " ".join(fastapi_logs.get("stdout", []))
