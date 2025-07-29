@@ -46,9 +46,8 @@ class CondaKernel:
         fd, self.connection_file = tempfile.mkstemp(suffix=".json", prefix="kernel_")
         os.close(fd)
         
-        # Create kernel manager
+        # Create kernel manager with standard python3 kernel
         self.kernel_manager = AsyncKernelManager(
-            kernel_name='python3',
             connection_file=self.connection_file,
         )
         
