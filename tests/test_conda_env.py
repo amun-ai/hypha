@@ -256,7 +256,7 @@ class TestCondaWorkerIntegration:
     """Integration tests for conda environment worker using real conda environments."""
 
     async def test_real_conda_basic_execution(
-        self, conda_integration_server, conda_test_workspace
+        self, conda_test_workspace
     ):
         """Test basic conda environment creation and code execution."""
         from hypha.workers.conda import CondaWorker, EnvironmentCache
@@ -400,7 +400,7 @@ print(f"Result2: {result}")
                 raise
 
     async def test_real_conda_package_installation(
-        self, conda_integration_server, conda_test_workspace
+        self, conda_test_workspace
     ):
         """Test conda environment with additional dependencies."""
         from hypha.workers.conda import CondaWorker, EnvironmentCache
@@ -526,7 +526,7 @@ print(f"NumPy result: {result}")
                 raise
 
     async def test_real_conda_caching_behavior(
-        self, conda_integration_server, conda_test_workspace
+        self, conda_test_workspace
     ):
         """Test that conda environments are properly cached and reused."""
         from hypha.workers.conda import CondaWorker, EnvironmentCache
@@ -689,7 +689,7 @@ print(f"Cache test result 2: {result}")
                 raise
 
     async def test_real_conda_mixed_dependencies(
-        self, conda_integration_server, conda_test_workspace
+        self, conda_test_workspace
     ):
         """Test conda environment with both conda and pip dependencies."""
         from hypha.workers.conda import CondaWorker, EnvironmentCache
@@ -842,7 +842,7 @@ print(f"Mixed dependencies result: {result}")
                 raise
 
     async def test_real_conda_standalone_script(
-        self, conda_integration_server, conda_test_workspace
+        self, conda_test_workspace
     ):
         """Test conda environment with a standalone script (no execute function)."""
         from hypha.workers.conda import CondaWorker, EnvironmentCache

@@ -591,7 +591,7 @@ class WorkspaceManager:
         if not config.get("name"):
             config["name"] = config["id"]
         user_info = UserInfo.model_validate(context["user"])
-        if user_info.is_anonymous:
+        if user_info.is_anonymous == True:
             raise Exception(
                 f"Only registered user can create workspace, {user_info.id} is anonymous"
             )
