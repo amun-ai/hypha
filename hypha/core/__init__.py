@@ -536,9 +536,13 @@ class RedisRPCConnection:
     def on_message(self, handler: Callable):
         """Set message handler."""
         self._handle_message = handler
-        self._event_bus.on(f"{self._workspace}/{self._client_id}:msg", handler)
-        # for broadcast messages
-        self._event_bus.on(f"{self._workspace}/*:msg", handler)
+        
+        # Register handler directly with the event bus for local delivery
+        self._event_bus.register_local_message_handler(self._workspace, self._client_id, handler)
+        
+        # Only subscribe to Redis events (not local events to avoid duplication)
+        self._event_bus._redis_event_bus.on(f"{self._workspace}/{self._client_id}:msg", handler)
+        self._event_bus._redis_event_bus.on(f"{self._workspace}/*:msg", handler)
         
         # Register this client for targeted event subscriptions
         async def register_client():
@@ -566,7 +570,12 @@ class RedisRPCConnection:
         message = unpacker.unpack()
         pos = unpacker.tell()
         target_id = message.get("to")
-        if "/" not in target_id:
+        
+        # Handle broadcast messages within workspace
+        if target_id == "*":
+            # Convert * to workspace/* for proper workspace isolation
+            target_id = f"{self._workspace}/*"
+        elif "/" not in target_id:
             if "/ws-" in target_id:
                 raise ValueError(
                     f"Invalid target ID: {target_id}, it appears that the target is a workspace manager (target_id should starts with */)"
@@ -605,9 +614,10 @@ class RedisRPCConnection:
         if self._is_load_balancing_enabled():
             self._update_load_metric()
 
-        await RedisRPCConnection._tracker.reset_timer(
-            self._workspace + "/" + self._client_id, "client"
-        )
+        if RedisRPCConnection._tracker:
+            await RedisRPCConnection._tracker.reset_timer(
+                self._workspace + "/" + self._client_id, "client"
+            )
 
     def _is_load_balancing_enabled(self):
         """Check if load balancing is enabled for this client."""
@@ -694,10 +704,11 @@ class RedisRPCConnection:
         """Handle disconnection."""
         self._stop = True
         if self._handle_message:
-            self._event_bus.off(
+            # Unregister from Redis event bus only
+            self._event_bus._redis_event_bus.off(
                 f"{self._workspace}/{self._client_id}:msg", self._handle_message
             )
-            self._event_bus.off(f"{self._workspace}/*:msg", self._handle_message)
+            self._event_bus._redis_event_bus.off(f"{self._workspace}/*:msg", self._handle_message)
 
         self._handle_message = None
         
@@ -720,9 +731,10 @@ class RedisRPCConnection:
         if self._handle_disconnected:
             await self._handle_disconnected(reason)
 
-        await RedisRPCConnection._tracker.remove_entity(
-            self._workspace + "/" + self._client_id, "client"
-        )
+        if RedisRPCConnection._tracker:
+            await RedisRPCConnection._tracker.remove_entity(
+                self._workspace + "/" + self._client_id, "client"
+            )
 
         # Clean up metrics for load balancing enabled clients only
         if self._is_load_balancing_enabled():
@@ -767,6 +779,7 @@ class RedisEventBus:
         self._pubsub_health_future = None
         # Track local clients for optimized routing
         self._local_clients = set()  # Set of "workspace/client_id" strings
+        self._local_message_handlers = {}  # Map of "workspace/client_id:msg" -> handler function
         self._subscribed_patterns = set()  # Track which patterns we've subscribed to
         self._pubsub = None  # Store the pubsub object for dynamic subscriptions
 
@@ -775,11 +788,39 @@ class RedisEventBus:
         client_key = f"{workspace}/{client_id}"
         self._local_clients.add(client_key)
         logger.debug(f"Registered local client: {client_key}")
+    
+    def register_local_message_handler(self, workspace: str, client_id: str, handler):
+        """Register a message handler for a local client."""
+        # Register handler for specific messages
+        self._local_message_handlers[f"{workspace}/{client_id}:msg"] = handler
+        
+        # For broadcast messages, we need to track all handlers per workspace
+        broadcast_key = f"{workspace}/*:msg"
+        if broadcast_key not in self._local_message_handlers:
+            self._local_message_handlers[broadcast_key] = []
+        
+        # Store a tuple of (client_id, handler) for broadcast messages
+        self._local_message_handlers[broadcast_key].append((client_id, handler))
+        logger.debug(f"Registered local message handler for {workspace}/{client_id}")
 
     async def unregister_local_client(self, workspace: str, client_id: str):
         """Unregister a local client."""
         client_key = f"{workspace}/{client_id}"
         self._local_clients.discard(client_key)
+        # Remove specific message handler
+        self._local_message_handlers.pop(f"{workspace}/{client_id}:msg", None)
+        
+        # Remove from broadcast handlers list
+        broadcast_key = f"{workspace}/*:msg"
+        if broadcast_key in self._local_message_handlers:
+            handlers_list = self._local_message_handlers[broadcast_key]
+            self._local_message_handlers[broadcast_key] = [
+                (cid, h) for cid, h in handlers_list if cid != client_id
+            ]
+            # Clean up empty lists
+            if not self._local_message_handlers[broadcast_key]:
+                del self._local_message_handlers[broadcast_key]
+        
         logger.debug(f"Unregistered local client: {client_key}")
 
     async def subscribe_to_client_events(self, workspace: str, client_id: str):
@@ -911,30 +952,74 @@ class RedisEventBus:
         
         tasks = []
 
-        # Always emit locally first
-        local_task = self._local_event_bus.emit(event_name, data)
-        if asyncio.iscoroutine(local_task):
-            tasks.append(local_task)
-
-        # Check if this is a targeted message to a local client
-        is_targeted_message = event_name.endswith(":msg") and "/" in event_name
+        # Check if this is a message event that can be directly delivered
+        is_message_event = event_name.endswith(":msg")
         is_broadcast_message = event_name.endswith("/*:msg")
-        skip_redis = False
         
-        if is_targeted_message and not is_broadcast_message:
-            # Extract target client info
-            target_client = event_name[:-4]  # Remove ":msg" suffix
-            if "/" in target_client:
-                workspace, client_id = target_client.split("/", 1)
-                if self.is_local_client(workspace, client_id):
-                    # Skip Redis for local clients - direct routing!
+        if is_message_event:
+            # Try direct local delivery first
+            local_delivery_count = 0
+            
+            if is_broadcast_message:
+                # For broadcast messages, use the handlers list
+                if event_name in self._local_message_handlers:
+                    handlers_list = self._local_message_handlers[event_name]
+                    for client_id, handler in handlers_list:
+                        try:
+                            result = handler(data)
+                            if asyncio.iscoroutine(result):
+                                tasks.append(result)
+                            local_delivery_count += 1
+                        except Exception as e:
+                            logger.error(f"Error in local message handler for {client_id}: {e}")
+            else:
+                # For targeted messages, check if handler exists
+                if event_name in self._local_message_handlers:
+                    handler = self._local_message_handlers[event_name]
+                    try:
+                        result = handler(data)
+                        if asyncio.iscoroutine(result):
+                            tasks.append(result)
+                        local_delivery_count += 1
+                    except Exception as e:
+                        logger.error(f"Error in local message handler: {e}")
+            
+            # Check if we need to send to Redis
+            skip_redis = False
+            if not is_broadcast_message:
+                # For targeted messages, skip Redis if we delivered locally
+                target_client = event_name[:-4]  # Remove ":msg" suffix
+                if "/" in target_client:
+                    workspace, client_id = target_client.split("/", 1)
+                    if self.is_local_client(workspace, client_id):
+                        skip_redis = True
+                        logger.debug(f"Direct routing to local client: {target_client} (bypassing Redis)")
+            else:
+                # For broadcast messages, check if we have any local clients in the workspace
+                # If we delivered to local clients, we still need to send to Redis for remote clients
+                # but we'll mark it so that local clients don't process it again
+                workspace = event_name.split("/")[0]
+                
+                # Count total clients in workspace
+                total_workspace_clients = sum(1 for c in self._local_clients if c.startswith(f"{workspace}/"))
+                
+                # If all clients in workspace are local and we delivered to all of them, skip Redis
+                if local_delivery_count > 0 and local_delivery_count == total_workspace_clients:
                     skip_redis = True
-                    logger.debug(f"Direct routing to local client: {target_client} (bypassing Redis)")
+                    logger.debug(f"All clients in {workspace} are local, skipping Redis for broadcast")
+                else:
+                    skip_redis = False
+        else:
+            # Non-message events go through normal event bus
+            local_task = self._local_event_bus.emit(event_name, data)
+            if asyncio.iscoroutine(local_task):
+                tasks.append(local_task)
+            skip_redis = False
         
-        # Only publish to Redis if not a local client message
+        # Only publish to Redis if not skipped
         if not skip_redis:
             # Determine the appropriate prefix
-            if is_targeted_message and not is_broadcast_message:
+            if is_message_event and not is_broadcast_message:
                 prefix = "targeted:"
             else:
                 # Use broadcast: prefix for broadcast messages and system events
