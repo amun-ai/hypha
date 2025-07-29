@@ -2566,3 +2566,37 @@ committed = await artifact_manager.commit(artifact_id=artifact.id)
 - **Predictable**: No surprise version creation from simply adding files
 - **Performance**: Fast, metadata-only commit operations
 - **S3 Optimized**: Eliminates expensive file duplication in cloud storage
+
+### Version Index Behavior
+
+The Artifact Manager uses version indices internally to determine where files should be stored. Understanding this behavior is crucial for working with staging and versions:
+
+1. **Version Index Calculation**
+   - **Creating New Version** (`version="new"` + `stage=True`): Version index = `len(artifact.versions)` (the next version)
+   - **Editing Current Version** (`stage=True` without `version="new"`): Version index = `len(artifact.versions) - 1` (current version)
+   - This index determines the S3 path where files are stored: `v{version_index}/`
+
+2. **File Storage Location**
+   - Files are always placed directly in their final destination based on the version intent
+   - When creating a new version: Files go to `v{next_index}/` (e.g., if you have v0, files go to `v1/`)
+   - When editing current version: Files go to `v{current_index}/` (e.g., if latest is v0, files go to `v0/`)
+   - No file copying occurs during commit - the version index ensures files are already in the right place
+
+3. **Practical Examples**
+   ```python
+   # Scenario 1: Editing current version
+   await artifact_manager.edit(artifact_id=artifact.id, stage=True)
+   # Version index = len(versions) - 1 (current version)
+   # Files uploaded will go to the current version's directory
+   
+   # Scenario 2: Creating new version
+   await artifact_manager.edit(artifact_id=artifact.id, version="new", stage=True)
+   # Version index = len(versions) (next version)
+   # Files uploaded will go to the new version's directory
+   ```
+
+4. **Important Implications**
+   - The version index is determined at edit time, not commit time
+   - All file operations (put, list, remove) respect this version index
+   - This ensures consistency and prevents file duplication
+   - The commit operation simply finalizes the metadata without moving files
