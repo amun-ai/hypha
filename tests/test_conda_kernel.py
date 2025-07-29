@@ -229,10 +229,10 @@ async def test_conda_worker_execute_api():
         "client_id": "test-client",
         "server_url": "http://localhost:9527",
         "token": "test-token",
-        "entry_point": "main.py",
         "artifact_id": "test-workspace/test-app",
         "manifest": {
             "name": "Test App",
+            "entry_point": "main.py",
             "type": "conda-jupyter-kernel",
             "dependencies": ["python=3.9", "numpy"],
             "channels": ["conda-forge"]
@@ -346,10 +346,10 @@ async def test_conda_worker_session_persistence():
         "client_id": "test-client-2",
         "server_url": "http://localhost:9527",
         "token": "test-token",
-        "entry_point": "main.py",
         "artifact_id": "test-workspace/test-app-2",
         "manifest": {
             "name": "Test App 2",
+            "entry_point": "main.py",
             "type": "conda-jupyter-kernel",
             "dependencies": ["python=3.9"],
             "channels": ["conda-forge"]

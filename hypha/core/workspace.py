@@ -592,7 +592,9 @@ class WorkspaceManager:
             config["name"] = config["id"]
         user_info = UserInfo.model_validate(context["user"])
         if user_info.is_anonymous:
-            raise Exception("Only registered user can create workspace.")
+            raise Exception(
+                f"Only registered user can create workspace, {user_info.id} is anonymous"
+            )
 
         # Check if workspace exists (only if overwrite=True)
         exists = False

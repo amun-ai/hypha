@@ -695,32 +695,6 @@ exec('''{script}''')
                 "message": "Conda environment session with Jupyter kernel ready",
             }
         )
-        # progress_callback_wrapper(
-        #     {"type": "info", "message": "Connecting to Hypha server..."}
-        # )
-        # client = await connect_to_server(
-        #     {
-        #         "server_url": config.server_url,
-        #         "client_id": config.client_id,
-        #         "token": config.token,
-        #         "workspace": config.workspace,
-        #     }
-        # )
-        
-        # svc = await client.register_service({
-        #     "name": "conda-kernel",
-        #     "description": "Conda kernel for executing Python code in isolated conda environments",
-        #     "id": "default",
-        #     "execute": kernel.execute,
-        # })
-
-        # progress_callback_wrapper(
-        #     {
-        #         "type": "success",
-        #         "message": f"Conda kernel service registered successfully, service id: {svc.id}x",
-        #     }
-        # )
-
         return {
             "executor": executor,
             "kernel": kernel,
