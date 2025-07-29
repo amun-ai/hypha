@@ -611,7 +611,7 @@ class WorkspaceManager:
                 raise RuntimeError(f"Workspace already exists: {config['id']}")
 
         config["persistent"] = config.get("persistent") or False
-        if user_info.is_anonymous and config["persistent"]:
+        if user_info.is_anonymous == True and config["persistent"] == True:
             raise Exception("Only registered user can create persistent workspace.")
         workspace = WorkspaceInfo.model_validate(config)
         if user_info.id not in workspace.owners:

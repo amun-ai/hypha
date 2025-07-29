@@ -614,19 +614,6 @@ def conda_available_fixture():
     """Check if conda or mamba is available and skip tests if not."""
     import shutil
 
-    # Skip if we're in a tox environment (conda won't be available)
-    # Tox sets TOX_WORK_DIR and other TOX_* variables
-    is_tox = any(key.startswith("TOX_") for key in os.environ)
-    is_ci = os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true"
-    
-    # Also check if we're in a virtualenv that's not conda
-    in_virtualenv = os.environ.get("VIRTUAL_ENV") and not os.environ.get("CONDA_PREFIX")
-    
-    if (is_tox or in_virtualenv) and is_ci:
-        pytest.skip(
-            "Conda tests skipped in CI tox/virtualenv environment - conda not accessible from isolated environment"
-        )
-
     # Check for mamba first (preferred)
     mamba_path = shutil.which("mamba")
     if mamba_path is not None:
