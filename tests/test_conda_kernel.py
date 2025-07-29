@@ -7,59 +7,39 @@ import pytest
 import pytest_asyncio
 from pathlib import Path
 
-# Early check for conda availability
-try:
-    from hypha.workers.conda_kernel import CondaKernel
-    from hypha.workers.conda import CondaWorker, get_available_package_manager
-    # Try to detect package manager early
-    try:
-        get_available_package_manager()
-    except RuntimeError:
-        # If we can't find conda/mamba, skip all tests in this module
-        pytest.skip("Conda/Mamba not available - skipping all conda kernel tests", allow_module_level=True)
-except ImportError as e:
-    pytest.skip(f"Cannot import conda kernel modules: {e}", allow_module_level=True)
+from hypha.workers.conda_kernel import CondaKernel
+from hypha.workers.conda import get_available_package_manager
 
 
 @pytest_asyncio.fixture
 async def test_env_path():
     """Create a test conda environment with ipykernel installed."""
-    # Use the system Python for testing if no conda is available
-    if os.environ.get("CI") == "true":
-        # In CI, skip these tests as they need a real conda environment
-        pytest.skip("Skipping conda kernel tests in CI - requires real conda environment")
-    else:
-        # For local testing, try to create a minimal conda env
-        try:
-            package_manager = get_available_package_manager()
-            with tempfile.TemporaryDirectory() as tmpdir:
-                env_path = Path(tmpdir) / "test_env"
-                
-                # Create minimal conda environment
-                cmd = [
-                    package_manager,
-                    "create",
-                    "-p", str(env_path),
-                    "-y",
-                    "-c", "conda-forge",
-                    "python=3.9",
-                    "ipykernel",
-                ]
-                
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                
-                stdout, stderr = await process.communicate()
-                
-                if process.returncode != 0:
-                    pytest.skip(f"Failed to create test environment: {stderr.decode()}")
-                
-                yield env_path
-        except:
-            pytest.skip("Conda not available for testing")
+    package_manager = get_available_package_manager()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        env_path = Path(tmpdir) / "test_env"
+        
+        cmd = [
+            package_manager,
+            "create",
+            "-p", str(env_path),
+            "-y",
+            "-c", "conda-forge",
+            "python=3.9",
+            "ipykernel",
+        ]
+        
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode != 0:
+            pytest.skip(f"Failed to create test environment: {stderr.decode()}")
+        
+        yield env_path
 
 
 @pytest.mark.asyncio

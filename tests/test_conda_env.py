@@ -9,26 +9,12 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-# Early check for conda availability
-try:
-    from hypha.workers.conda import CondaWorker, EnvironmentCache, get_available_package_manager
-    # Try to detect package manager early
-    try:
-        get_available_package_manager()
-    except RuntimeError:
-        # If we can't find conda/mamba, skip all tests in this module
-        pytest.skip("Conda/Mamba not available - skipping all conda tests", allow_module_level=True)
-except ImportError as e:
-    pytest.skip(f"Cannot import conda worker modules: {e}", allow_module_level=True)
+from hypha.workers.conda import CondaWorker, EnvironmentCache
 
 from hypha.workers.base import (
     WorkerConfig,
     SessionStatus,
-    SessionInfo,
-    SessionNotFoundError,
-    WorkerError,
 )
-from hypha.workers.conda_executor import TimingInfo
 
 # Mark all async functions in this module as asyncio tests
 pytestmark = pytest.mark.asyncio
