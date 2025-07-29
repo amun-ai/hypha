@@ -364,7 +364,7 @@ async def test_websocket_server(fastapi_server, test_user_token_7):
     assert len(rpc2._object_store) > 0
 
     # It should fail because add_one is not a service and will be destroyed after the session
-    with pytest.raises(Exception, match=r".*Method not found:.*"):
+    with pytest.raises(Exception, match=r".*Session not found:.*"):
         assert await svc4.add_one(99) == 100
 
     svc5_info = await rpc2.register_service(

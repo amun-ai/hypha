@@ -58,15 +58,37 @@
                             <button class="bg-gray-500 text-white py-1 px-4 rounded mr-2" onclick="copyToken()">Copy Token</button>
                         </div>
                         <div class="mt-4">
-                            <label for="workspace" class="block text-sm font-medium text-gray-700" value="3600">Workspace Name</label>
+                            <label for="workspace" class="block text-sm font-medium text-gray-700">Workspace Name</label>
                             <input type="text" id="workspace" name="workspace" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
                         </div>
                         <div class="mt-4">
-                            <label for="expiry-time" class="block text-sm font-medium text-gray-700" value="3600">Expiry Time (seconds)</label>
+                            <label for="permission" class="block text-sm font-medium text-gray-700">Permission Level</label>
+                            <select id="permission" name="permission" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                                <option value="read">Read Only</option>
+                                <option value="read_write" selected>Read & Write</option>
+                                <option value="admin">Admin</option>
+                            </select>
+                            <p class="mt-1 text-xs text-gray-500">Permission level for the workspace: read, read_write, or admin.</p>
+                        </div>
+                        <div class="mt-4">
+                            <label for="expiry-time" class="block text-sm font-medium text-gray-700">Expiry Time (seconds)</label>
                             <input type="number" id="expiry-time" name="expiry-time" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" placeholder="3600">
                         </div>
-                        <div class="mt-2 flex items-center">
-                            <button class="bg-blue-500 text-white py-1 px-4 rounded" onclick="generateToken()">Generate New Token</button>
+                        <div class="mt-4">
+                            <label class="block text-sm font-medium text-gray-700">Extra Scopes (Optional)</label>
+                            <p class="mt-1 text-xs text-gray-500">Additional scopes for specialized access, e.g., "dataset:read", "model:write".</p>
+                            <div class="mt-2 flex gap-2">
+                                <input type="text" id="new-scope" placeholder="e.g., dataset:read" class="flex-1 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                                <button type="button" class="bg-green-500 hover:bg-green-600 text-white px-3 py-2 rounded-md transition duration-200" onclick="addExtraScope()">
+                                    <i class="fas fa-plus"></i>
+                                </button>
+                            </div>
+                            <div id="extra-scopes-container" class="mt-2 flex flex-wrap gap-2" style="display: none;">
+                                <!-- Extra scope tags will be inserted here -->
+                            </div>
+                        </div>
+                        <div class="mt-4 flex items-center">
+                            <button class="bg-blue-500 hover:bg-blue-600 text-white py-2 px-4 rounded transition duration-200" onclick="generateToken()">Generate New Token</button>
                         </div>
                     </details>
                     
@@ -143,14 +165,80 @@
                 console.log("Not logged in, showing login button.");
             }
             
+            // Add Enter key support for adding scopes
+            const newScopeInput = document.getElementById('new-scope');
+            if (newScopeInput) {
+                newScopeInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        addExtraScope();
+                    }
+                });
+            }
         });
 
-        const _generateToken = async (workspace, expires_in, accessToken) =>{
+        // Extra scopes management
+        let extraScopes = [];
+
+        window.addExtraScope = () => {
+            const newScopeInput = document.getElementById('new-scope');
+            const scope = newScopeInput.value.trim();
+            
+            if (scope && !extraScopes.includes(scope)) {
+                extraScopes.push(scope);
+                newScopeInput.value = '';
+                updateExtraScopesDisplay();
+            }
+        };
+
+        const removeExtraScope = (index) => {
+            extraScopes.splice(index, 1);
+            updateExtraScopesDisplay();
+        };
+
+        const updateExtraScopesDisplay = () => {
+            const container = document.getElementById('extra-scopes-container');
+            
+            if (extraScopes.length === 0) {
+                container.style.display = 'none';
+                return;
+            }
+            
+            container.style.display = 'flex';
+            container.innerHTML = extraScopes.map((scope, index) => `
+                <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                    ${scope}
+                    <button type="button" class="ml-1 text-blue-600 hover:text-blue-800" onclick="removeExtraScope(${index})">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </span>
+            `).join('');
+        };
+
+        window.removeExtraScope = removeExtraScope;
+
+
+
+        const _generateToken = async (workspace, expires_in, accessToken, permission, extraScopes) =>{
             const generate_token_url = "{{ generate_token_url }}";
             if(!generate_token_url.startsWith("http")){
                 throw new Error("Invalid generate token URL");
             }
-            // make a post request with {config: {expires_in, workspace}}
+            
+            // Build token configuration
+            const tokenConfig = { expires_in, workspace };
+            
+            if (permission && permission !== 'read_write') {
+                // Map user-friendly permission names to enum values
+                const permissionMap = { "read": "r", "read_write": "rw", "admin": "a" };
+                tokenConfig.permission = permissionMap[permission] || permission;
+            }
+            
+            if (extraScopes && extraScopes.length > 0) {
+                tokenConfig.extra_scopes = extraScopes;
+            }
+            
+            // make a post request with {config: tokenConfig}
             // add auth bearer token to the request
             const response = await fetch(generate_token_url, {
                 method: "POST",
@@ -158,7 +246,7 @@
                     "Content-Type": "application/json",
                     "Authorization": `Bearer ${accessToken}`,
                 },
-                body: JSON.stringify({ config: { expires_in, workspace } }),
+                body: JSON.stringify({ config: tokenConfig }),
             });
             if (response.ok) {
                 const token = await response.json();
@@ -172,9 +260,11 @@
         window.generateToken = async () => {
             const expires_in = document.getElementById("expiry-time").value || 3600; // Default to 1 hour if not specified
             const workspace = document.getElementById("workspace").value || "";
+            const permission = document.getElementById("permission").value || "read_write";
             const accessToken = await auth0.getTokenSilently({ audience: AUTH0_AUDIENCE });
+            
             try {
-                const token = await _generateToken(workspace, expires_in, accessToken);
+                const token = await _generateToken(workspace, expires_in, accessToken, permission, extraScopes);
                 document.getElementById("access-token").innerHTML = token;
                 document.getElementById("info-panel").style.display = "block";
                 const toastElement = document.getElementById("toast");

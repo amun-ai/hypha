@@ -566,7 +566,12 @@ class RedisRPCConnection:
         message = unpacker.unpack()
         pos = unpacker.tell()
         target_id = message.get("to")
-        if "/" not in target_id:
+        
+        # Handle broadcast messages within workspace
+        if target_id == "*":
+            # Convert * to workspace/* for proper workspace isolation
+            target_id = f"{self._workspace}/*"
+        elif "/" not in target_id:
             if "/ws-" in target_id:
                 raise ValueError(
                     f"Invalid target ID: {target_id}, it appears that the target is a workspace manager (target_id should starts with */)"
@@ -605,9 +610,10 @@ class RedisRPCConnection:
         if self._is_load_balancing_enabled():
             self._update_load_metric()
 
-        await RedisRPCConnection._tracker.reset_timer(
-            self._workspace + "/" + self._client_id, "client"
-        )
+        if RedisRPCConnection._tracker:
+            await RedisRPCConnection._tracker.reset_timer(
+                self._workspace + "/" + self._client_id, "client"
+            )
 
     def _is_load_balancing_enabled(self):
         """Check if load balancing is enabled for this client."""
@@ -720,9 +726,10 @@ class RedisRPCConnection:
         if self._handle_disconnected:
             await self._handle_disconnected(reason)
 
-        await RedisRPCConnection._tracker.remove_entity(
-            self._workspace + "/" + self._client_id, "client"
-        )
+        if RedisRPCConnection._tracker:
+            await RedisRPCConnection._tracker.remove_entity(
+                self._workspace + "/" + self._client_id, "client"
+            )
 
         # Clean up metrics for load balancing enabled clients only
         if self._is_load_balancing_enabled():
