@@ -2426,13 +2426,22 @@
                     
                     let completedCount = 0;
                     let failedCount = 0;
-                    let totalBytes = filteredFiles.reduce((sum, file) => sum + file.size, 0);
+                    const totalBytes = filteredFiles.reduce((sum, file) => sum + file.size, 0);
                     let uploadedBytes = 0;
+                    const fileProgresses = new Map(); // Track progress per file
                     
+                    let lastProgressLog = -1;
                     const updateProgress = () => {
+                        // Calculate total uploaded bytes from all file progresses
+                        uploadedBytes = Array.from(fileProgresses.values()).reduce((sum, bytes) => sum + bytes, 0);
                         const percentage = totalBytes > 0 ? Math.round((uploadedBytes / totalBytes) * 100) : 0;
                         setUploadProgress(percentage);
-                        window.addProgressLog(`Progress: ${completedCount + failedCount}/${filteredFiles.length} files (${percentage}%)`, 'info');
+                        // Only log progress when it has changed by at least 10% or when files complete
+                        const currentProgress = Math.floor(percentage / 10) * 10;
+                        if (currentProgress !== lastProgressLog || completedCount + failedCount === filteredFiles.length) {
+                            lastProgressLog = currentProgress;
+                            window.addProgressLog(`Progress: ${completedCount + failedCount}/${filteredFiles.length} files (${percentage}%)`, 'info');
+                        }
                     };
                     
                     const finishUpload = async () => {
@@ -2475,6 +2484,9 @@
                     
                     // Upload each file directly with XMLHttpRequest
                     const uploadPromises = filteredFiles.map(async (file, index) => {
+                        const fileId = `${file.name}-${index}`;
+                        fileProgresses.set(fileId, 0);
+                        
                         try {
                             const filePath = targetPath ? `${targetPath}/${file.name}` : file.name;
                             window.addProgressLog(`Starting upload: ${file.name}`, 'info');
@@ -2488,7 +2500,7 @@
                                 
                                 xhr.upload.addEventListener('progress', (e) => {
                                     if (e.lengthComputable) {
-                                        // Update bytes for this file (simple approximation)
+                                        fileProgresses.set(fileId, e.loaded);
                                         updateProgress();
                                     }
                                 });
@@ -2496,8 +2508,10 @@
                                 xhr.addEventListener('load', () => {
                                     if (xhr.status >= 200 && xhr.status < 300) {
                                         completedCount++;
-                                        uploadedBytes += file.size;
+                                        // Ensure we've counted all bytes for this file
+                                        fileProgresses.set(fileId, file.size);
                                         window.addProgressLog(`✓ ${file.name} (${(file.size / 1024).toFixed(1)} KB)`, 'success');
+                                        updateProgress();
                                         resolve();
                                     } else {
                                         failedCount++;
@@ -2519,6 +2533,7 @@
                         } catch (error) {
                             failedCount++;
                             window.addProgressLog(`✗ ${file.name}: ${error.message}`, 'error');
+                            fileProgresses.delete(fileId);
                             throw error;
                         }
                     });
@@ -2664,15 +2679,23 @@
             // Process dropped items with folder support for artifacts
             const processArtifactDroppedItems = async (items, targetPath = "") => {
                 try {
+                    // CRITICAL: Stop any running upload manager to prevent conflicts
+                    if (window.globalUploadManager) {
+                        window.globalUploadManager.stop();
+                        window.globalUploadManager.reset();
+                        // Clear all callbacks to prevent the "No onComplete callback registered" error
+                        window.globalUploadManager.onComplete = null;
+                        window.globalUploadManager.onProgress = null;
+                        window.globalUploadManager.onError = null;
+                        window.globalUploadManager.onRetryAvailable = null;
+                    }
+                    
                     window.showProgressSpinner('Processing dropped items...', { 
                         showLogs: true,
                         title: "Processing Upload"
                     });
                     
                     window.addProgressLog(`Processing ${items.length} dropped items...`, 'info');
-                    
-                    // Reset upload manager
-                    window.globalUploadManager.reset();
                     
                     const filesToUpload = [];
                     
@@ -2701,68 +2724,23 @@
                     
                     window.addProgressLog(`Found ${filesToUpload.length} files to upload`, 'info');
                     
-                    // Set up progress tracking
-                    let completedFiles = 0;
-                    window.globalUploadManager.onProgress = (progress) => {
-                        if (progress.completed > completedFiles) {
-                            completedFiles = progress.completed;
-                            window.addProgressLog(`Completed: ${progress.completed}/${progress.total} files (${progress.failed} failed, ${progress.active} active)`, 'info');
+                    // Group files by their target directory
+                    const filesByDirectory = new Map();
+                    
+                    for (const { file, targetPath: itemTargetPath } of filesToUpload) {
+                        const key = itemTargetPath || targetPath || "";
+                        if (!filesByDirectory.has(key)) {
+                            filesByDirectory.set(key, []);
                         }
-                    };
+                        filesByDirectory.get(key).push(file);
+                    }
                     
-                    window.globalUploadManager.onComplete = async (stats) => {
-                        window.addProgressLog(`Upload complete! ${stats.completed} succeeded, ${stats.failed} failed`, stats.failed > 0 ? 'warning' : 'success');
-                        
-                        try {
-                            // Refresh the file list
-                            const updatedFiles = await listFiles(currentArtifact.id, "");
-                            setFiles(updatedFiles);
-                            setExpandedDirs({});
-                            window.addProgressLog('File list refreshed', 'info');
-                        } catch (error) {
-                            window.addProgressLog(`Failed to refresh file list: ${error.message}`, 'error');
-                        }
-                        
-                        setTimeout(() => {
-                            window.enableProgressClose();
-                            if (stats.failed === 0) {
-                                window.updateProgressSpinner('All files uploaded successfully!');
-                            } else {
-                                window.updateProgressSpinner(`Upload completed with ${stats.failed} errors`);
-                            }
-                        }, 1000);
-                        
-                        setUploading(false);
-                        setUploadProgress(0);
-                    };
+                    // Close current spinner
+                    window.hideProgressSpinner();
                     
-                    window.globalUploadManager.onError = (job, error) => {
-                        window.addProgressLog(`Failed to upload ${job.relativePath || job.file.name}: ${error.message}`, 'error');
-                    };
-                    
-                    // Filter files based on hidden file setting
-                    const filteredUploads = filesToUpload.filter(({ file }) => 
-                        shouldIncludeFile(file.webkitRelativePath || file.name, includeHiddenFiles)
-                    );
-                    
-                    window.addProgressLog(`Filtered ${filesToUpload.length} files to ${filteredUploads.length} (hidden files ${includeHiddenFiles ? 'included' : 'excluded'})`, 'info');
-                    
-                    // Add filtered files to the upload queue
-                    for (const { file, targetPath: fileTargetPath } of filteredUploads) {
-                        window.globalUploadManager.addUpload({
-                            file: file,
-                            targetPath: fileTargetPath,
-                            relativePath: file.webkitRelativePath || file.name,
-                            getUploadUrl: async (filePath) => {
-                                return await am.putFile(currentArtifact.id, filePath);
-                            },
-                            onFileComplete: (job) => {
-                                window.addProgressLog(`✓ ${job.relativePath} (${(job.file.size / 1024).toFixed(1)} KB)`, 'success');
-                            },
-                            onFileError: (job, error) => {
-                                window.addProgressLog(`✗ ${job.relativePath}: ${error.message}`, 'error');
-                            }
-                        });
+                    // Upload files directory by directory to maintain structure
+                    for (const [dirPath, files] of filesByDirectory) {
+                        await handleUploadFiles(files, dirPath);
                     }
                     
                 } catch (error) {
@@ -6388,9 +6366,11 @@ license: "MIT"`);
                     this.stats.total++;
                     this.stats.bytes.total += job.file.size;
                     
-                    if (!this.isRunning) {
-                        this.start();
-                    }
+                    // DISABLED AUTO-START to prevent conflicts with artifact uploads
+                    // The caller must explicitly call start() when ready
+                    // if (!this.isRunning) {
+                    //     this.start();
+                    // }
                     
                     return jobId;
                 }

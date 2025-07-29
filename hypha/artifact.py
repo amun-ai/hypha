@@ -2009,6 +2009,11 @@ class ArtifactController:
         manifest = manifest and make_json_safe(manifest)
         config = config and make_json_safe(config)
 
+        # for backward compatibility, if version is "stage", set stage to True and version to None
+        if version == "stage":
+            stage = True
+            version = None
+
         if alias:
             alias = alias.strip()
             if "/" in alias:
@@ -2156,9 +2161,9 @@ class ArtifactController:
                 config["permissions"] = permissions
 
                 # Determine if we should be in staging mode
-                is_staging = stage or (version == "stage")
+
                 versions = []
-                if not is_staging:  # Only create initial version if not in staging mode
+                if not stage:  # Only create initial version if not in staging mode
                     if version in [
                         None,
                         "new",
@@ -2187,8 +2192,8 @@ class ArtifactController:
                     parent_id=parent_id,
                     alias=alias,
                     staging=(
-                        [] if is_staging else None
-                    ),  # Set staging based on is_staging
+                        [] if stage else None
+                    ),  # Set staging based on stage
                     manifest=manifest,
                     created_by=user_info.id,
                     created_at=created_at,
@@ -2200,7 +2205,7 @@ class ArtifactController:
                 )
 
                 version_index = (
-                    len(versions) if is_staging else 0
+                    len(versions) if stage else 0
                 )  # Use appropriate version index
                 if overwrite:
                     await session.merge(new_artifact)
@@ -2230,7 +2235,7 @@ class ArtifactController:
                     s3_config,
                 )
 
-                if is_staging:
+                if stage:
                     logger.info(
                         f"Created artifact with ID: {id} (staged), alias: {alias}, parent: {parent_id}"
                     )
