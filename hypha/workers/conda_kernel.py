@@ -1,10 +1,8 @@
 """Jupyter kernel management for conda environments."""
 
 import asyncio
-import json
 import os
 import sys
-import subprocess
 import tempfile
 import time
 import uuid
