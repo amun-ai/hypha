@@ -839,11 +839,14 @@ class RedisEventBus:
         await self._ready
 
     def on(self, event_name, func):
-        """Register a callback for an event from Redis."""
+        """Register a callback for an event from both local and Redis event buses."""
+        # Subscribe to both local and Redis events to support direct routing
+        self._local_event_bus.on(event_name, func)
         self._redis_event_bus.on(event_name, func)
 
     def off(self, event_name, func=None):
-        """Unregister a callback for an event from Redis."""
+        """Unregister a callback for an event from both local and Redis event buses."""
+        self._local_event_bus.off(event_name, func)
         self._redis_event_bus.off(event_name, func)
 
     def once(self, event_name, func):
@@ -851,10 +854,10 @@ class RedisEventBus:
 
         def once_wrapper(*args, **kwargs):
             result = func(*args, **kwargs)
-            self._redis_event_bus.off(event_name, once_wrapper)
+            self.off(event_name, once_wrapper)  # Use self.off to remove from both buses
             return result
 
-        self._redis_event_bus.on(event_name, once_wrapper)
+        self.on(event_name, once_wrapper)  # Use self.on to register on both buses
 
     async def wait_for(self, event_name, match=None, timeout=None):
         """Wait for an event from either local or Redis event bus."""
@@ -913,46 +916,52 @@ class RedisEventBus:
         if asyncio.iscoroutine(local_task):
             tasks.append(local_task)
 
-        # Determine the appropriate prefix
+        # Check if this is a targeted message to a local client
         is_targeted_message = event_name.endswith(":msg") and "/" in event_name
-        
-        # Special case: broadcast messages (workspace/*:msg) should use broadcast prefix
         is_broadcast_message = event_name.endswith("/*:msg")
+        skip_redis = False
         
         if is_targeted_message and not is_broadcast_message:
-            # Use targeted: prefix for specific client messages
-            prefix = "targeted:"
+            # Extract target client info
             target_client = event_name[:-4]  # Remove ":msg" suffix
             if "/" in target_client:
                 workspace, client_id = target_client.split("/", 1)
                 if self.is_local_client(workspace, client_id):
-                    logger.debug(f"Local client message detected: {target_client} (could be optimized)")
-        else:
-            # Use broadcast: prefix for broadcast messages and system events
-            prefix = "broadcast:"
-
-        # Emit to Redis with appropriate prefix
-        if isinstance(data, dict):
-            data = json.dumps(data).encode("utf-8")
-            data_type_byte = b'd'
-        elif isinstance(data, str):
-            data = data.encode("utf-8")
-            data_type_byte = b's'
-        else:
-            assert data and isinstance(
-                data, (str, bytes)
-            ), "Data must be a string or bytes"
-            if isinstance(data, str):
-                data = data.encode("utf-8")
-            data_type_byte = b'b'
+                    # Skip Redis for local clients - direct routing!
+                    skip_redis = True
+                    logger.debug(f"Direct routing to local client: {target_client} (bypassing Redis)")
         
-        # Use prefix-based channel naming with data type encoded in payload
-        redis_channel = prefix + event_name
-        payload = data_type_byte + data
-        global_task = self._loop.create_task(
-            self._redis.publish(redis_channel, payload)
-        )
-        tasks.append(global_task)
+        # Only publish to Redis if not a local client message
+        if not skip_redis:
+            # Determine the appropriate prefix
+            if is_targeted_message and not is_broadcast_message:
+                prefix = "targeted:"
+            else:
+                # Use broadcast: prefix for broadcast messages and system events
+                prefix = "broadcast:"
+
+            # Emit to Redis with appropriate prefix
+            if isinstance(data, dict):
+                data = json.dumps(data).encode("utf-8")
+                data_type_byte = b'd'
+            elif isinstance(data, str):
+                data = data.encode("utf-8")
+                data_type_byte = b's'
+            else:
+                assert data and isinstance(
+                    data, (str, bytes)
+                ), "Data must be a string or bytes"
+                if isinstance(data, str):
+                    data = data.encode("utf-8")
+                data_type_byte = b'b'
+            
+            # Use prefix-based channel naming with data type encoded in payload
+            redis_channel = prefix + event_name
+            payload = data_type_byte + data
+            global_task = self._loop.create_task(
+                self._redis.publish(redis_channel, payload)
+            )
+            tasks.append(global_task)
 
         if tasks:
             return asyncio.gather(*tasks)
