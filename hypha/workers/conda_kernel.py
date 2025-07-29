@@ -48,6 +48,7 @@ class CondaKernel:
         
         # Create kernel manager with standard python3 kernel
         self.kernel_manager = AsyncKernelManager(
+            kernel_name="", # important to skip loading from spec name
             connection_file=self.connection_file,
         )
         
