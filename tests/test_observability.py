@@ -67,6 +67,9 @@ async def test_metrics(fastapi_server, test_user_token):
         overwrite=False,  # Changed to False since we're using unique IDs
     )
 
+    # Small delay to ensure metrics are updated
+    await asyncio.sleep(0.5)
+
     # Check if the number of active workspaces has increased
     active_workspaces = get_metric_value("active_workspaces", {})
     assert (
