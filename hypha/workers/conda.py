@@ -142,7 +142,7 @@ class EnvironmentCache:
             env_path = Path(cache_entry["path"])
 
             # Check if environment still exists and is valid
-            if env_path.exists() and (env_path / "bin" / "python").exists():
+            if env_path.exists() and ((env_path / "bin" / "python").exists() or (env_path / "python.exe").exists()):
                 # Update last access time for LRU
                 cache_entry["last_accessed"] = time.time()
                 self._save_index()
