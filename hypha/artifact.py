@@ -4262,11 +4262,11 @@ class ArtifactController:
                         # For PostgreSQL, smart ordering: numeric values first, then text values
                         order_clause = f"""
                         CASE 
-                            WHEN manifest->>'{json_key}' ~ '^-?[0-9]+\.?[0-9]*$' 
+                            WHEN manifest->>'{json_key}' ~ '^-?[0-9]+\\.?[0-9]*$' 
                             THEN (manifest->>'{json_key}')::numeric 
                         END {'ASC' if ascending else 'DESC'} NULLS LAST,
                         CASE 
-                            WHEN manifest->>'{json_key}' !~ '^-?[0-9]+\.?[0-9]*$' 
+                            WHEN manifest->>'{json_key}' !~ '^-?[0-9]+\\.?[0-9]*$' 
                             THEN manifest->>'{json_key}' 
                         END {'ASC' if ascending else 'DESC'} NULLS LAST
                         """
@@ -4290,11 +4290,11 @@ class ArtifactController:
                         # For PostgreSQL, smart ordering: numeric values first, then text values
                         order_clause = f"""
                         CASE 
-                            WHEN config->>'{json_key}' ~ '^-?[0-9]+\.?[0-9]*$' 
+                            WHEN config->>'{json_key}' ~ '^-?[0-9]+\\.?[0-9]*$' 
                             THEN (config->>'{json_key}')::numeric 
                         END {'ASC' if ascending else 'DESC'} NULLS LAST,
                         CASE 
-                            WHEN config->>'{json_key}' !~ '^-?[0-9]+\.?[0-9]*$' 
+                            WHEN config->>'{json_key}' !~ '^-?[0-9]+\\.?[0-9]*$' 
                             THEN config->>'{json_key}' 
                         END {'ASC' if ascending else 'DESC'} NULLS LAST
                         """
