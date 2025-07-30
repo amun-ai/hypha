@@ -383,6 +383,13 @@ class GZipMiddleware:
         """Call the middleware."""
         if scope["type"] == "http":
             headers = Headers(scope=scope)
+            path = scope.get("path", "")
+            
+            # Skip gzip compression for S3 proxy requests
+            if path.startswith("/s3/"):
+                await self.app(scope, receive, send)
+                return
+
             # Make sure we're not already gzipping
             if (
                 "gzip" in headers.get("Accept-Encoding", "")
