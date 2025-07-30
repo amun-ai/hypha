@@ -19,6 +19,7 @@
   window.env.set("HYPHA_WORKSPACE", config.workspace)
   window.env.set("HYPHA_CLIENT_ID", config.client_id)
   window.env.set("HYPHA_TOKEN", config.token)
+  window.env.set("HYPHA_APP_ID", config.app_id)
 
   const hyphaWebsocketClient = await import(cfg.server_url + '/assets/hypha-rpc-websocket.mjs');
   hyphaWebsocketClient.connectToServer(cfg).then(async (api)=>{

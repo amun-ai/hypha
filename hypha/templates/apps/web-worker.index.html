@@ -19,6 +19,7 @@ self.env.set("HYPHA_SERVER_URL", config.server_url)
 self.env.set("HYPHA_WORKSPACE", config.workspace)
 self.env.set("HYPHA_CLIENT_ID", config.client_id)
 self.env.set("HYPHA_TOKEN", config.token)
+self.env.set("HYPHA_APP_ID", config.app_id)
 const api = await hyphaWebsocketClient.connectToServer(config)
 await hyphaWebsocketClient.loadRequirements([{% for req in requirements %}"{{req}}", {% endfor %}])
 {{ script | safe }}

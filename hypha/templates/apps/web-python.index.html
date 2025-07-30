@@ -63,6 +63,7 @@ async def run():
     os.environ["HYPHA_WORKSPACE"] = config.get("workspace", "")
     os.environ["HYPHA_CLIENT_ID"] = config.get("client_id", "")
     os.environ["HYPHA_TOKEN"] = config.get("token", "")
+    os.environ["HYPHA_APP_ID"] = config.get("app_id", "")
     try:
         hypha_rpc = await patch_hypha_rpc(config)
         exec(script_src, globals())

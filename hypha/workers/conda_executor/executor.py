@@ -762,6 +762,8 @@ class CondaEnvExecutor:
                     env["HYPHA_CLIENT_ID"] = hypha_config["client_id"]
                 if hypha_config.get("token"):
                     env["HYPHA_TOKEN"] = hypha_config["token"]
+                if hypha_config.get("app_id"):
+                    env["HYPHA_APP_ID"] = hypha_config["app_id"]
 
             # Execute the script
             python_path = os.path.join(self.env_path, "bin", "python")
