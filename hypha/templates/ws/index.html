@@ -2118,7 +2118,7 @@
             return (
                 <div 
                     className={`border border-gray-600 rounded-lg bg-gray-750 hover:bg-gray-700 transition-all duration-200 ${
-                        isDirectory && isDragOver ? 'border-blue-400 bg-blue-900 bg-opacity-20' : ''
+                        isDirectory ? 'border-blue-400 bg-blue-900 bg-opacity-20' : ''
                     }`}
                     onDragOver={isDirectory ? onDragOver : undefined}
                     onDragEnter={isDirectory ? onDragEnter : undefined}
