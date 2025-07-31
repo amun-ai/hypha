@@ -547,7 +547,7 @@ class BrowserWorker(BaseWorker):
         4. Returns updated manifest and files
         """
         # Extract progress_callback from config
-        progress_callback = config.get("progress_callback") if config else None
+        progress_callback = config.get("progress_callback") if config else lambda x: None
 
         progress_callback(
             {"type": "info", "message": "Starting browser app compilation..."}
@@ -793,7 +793,10 @@ class BrowserWorker(BaseWorker):
             k: final_config[k] for k in final_config if k in PLUGIN_CONFIG_FIELDS
         }
         template_config["server_url"] = server_url
-
+        if "required_artifact_files" in template_config and app_type != "web-python":
+            raise ValueError(
+                "required_artifact_files is only supported for web-python apps"
+            )
         # For web-app type, include additional fields needed by the template
         if app_type == "web-app":
             template_config.update(
