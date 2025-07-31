@@ -93,7 +93,7 @@ kubectl get svc -n hypha
 
 ### Secrets Management
 
-All sensitive data (passwords, tokens, keys) is stored in Kubernetes secrets. The `.env.example` file contains ONLY secret values:
+All sensitive data (passwords, tokens, keys) is stored in Kubernetes secrets. The `.env` file should contains ONLY secret values:
 
 - **JWT Secret**: Authentication token secret
 - **Database Passwords**: PostgreSQL credentials  
@@ -112,13 +112,13 @@ All other configuration (domains, ports, feature flags, etc.) is now in `values.
    - Feature flags and settings
    - Resource limits
    - Performance tuning
-   - Authentication provider configuration (non-secret parts)
-   - SMTP configuration (non-secret parts)
 3. **`create-secrets.sh`** - Script that creates Kubernetes secrets from `.env`
 
 
 
 ## Ingress Configuration
+
+To enable access to hypha externally, you need to configure the ingress in `values.yaml`. This depends on your kubernetes setup.
 
 ### For Cloud Providers (AWS, GCP, Azure)
 
@@ -221,6 +221,8 @@ hypha-server:
 ```
 
 Access Hypha directly at: `http://<any-node-ip>:30080`
+
+**Note**: The `nodePort` field is now properly supported in the service template. When `type: NodePort` is set, you can specify a custom `nodePort` value (must be in range 30000-32767) or let Kubernetes assign one automatically.
 
 #### Option 2: NGINX Ingress with NodePort
 

@@ -40,7 +40,9 @@ hypha-server:
   
   service:
     type: ClusterIP
+    # type: NodePort  # For bare metal deployments without ingress
     port: 9520
+    # nodePort: 30080  # Only used when type is NodePort (must be 30000-32767)
   
   resources:
     limits:

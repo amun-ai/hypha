@@ -43,7 +43,9 @@ securityContext:
 service:
   type: ClusterIP
   # type: LoadBalancer
+  # type: NodePort
   port: 9520
+  # nodePort: 30080  # Only used when type is NodePort (must be 30000-32767)
 
 ingress:
   enabled: true
