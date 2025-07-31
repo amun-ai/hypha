@@ -2420,6 +2420,12 @@ async def test_version_handling_rules(minio_server, fastapi_server, test_user_to
     assert edited["staging"] is not None
     assert len(edited["versions"]) == 1  # Still has v0
 
+    # Discard the staged version
+    await artifact_manager.discard(artifact_id=artifact.id)
+    staged = await artifact_manager.read(artifact_id=artifact.id, version="stage")
+    assert staged["manifest"]["name"] == "Version Rules Test"
+    assert staged["staging"] is None
+
     # Test Case 4: Edit with stage=True is equivalent to using staging mode
     await artifact_manager.edit(
         artifact_id=artifact.id,
@@ -3052,6 +3058,12 @@ async def test_edit_version_behavior(minio_server, fastapi_server, test_user_tok
     staged = await artifact_manager.read(artifact_id=artifact.id, version="stage")
     assert staged["manifest"]["name"] == "Staged Version"
     assert staged["staging"] is not None
+    
+    # Discard the staged version
+    await artifact_manager.discard(artifact_id=artifact.id)
+    staged = await artifact_manager.read(artifact_id=artifact.id, version="stage")
+    assert staged["manifest"]["name"] == "New Version"
+    assert staged["staging"] is None
 
     # Case 7: Edit with stage=True and version="new" should stage with intent for new version
     await artifact_manager.edit(
@@ -3066,6 +3078,12 @@ async def test_edit_version_behavior(minio_server, fastapi_server, test_user_tok
     staged = await artifact_manager.read(artifact_id=artifact.id, version="stage")
     assert staged["manifest"]["name"] == "Staged New Version"
     assert staged["staging"] is not None
+    
+    # Discard the staged version
+    await artifact_manager.discard(artifact_id=artifact.id)
+    staged = await artifact_manager.read(artifact_id=artifact.id, version="stage")
+    assert staged["manifest"]["name"] == "New Version"
+    assert staged["staging"] is None
 
     # Case 8: version="stage" is equivalent to stage=True
     await artifact_manager.edit(
@@ -3075,7 +3093,7 @@ async def test_edit_version_behavior(minio_server, fastapi_server, test_user_tok
     )
     staged = await artifact_manager.read(artifact_id=artifact.id, version="stage")
     assert staged["manifest"]["name"] == "Stage Version"
-    assert staged["staging"] is not None
+    assert staged["staging"] is None
 
     # Case 9: Try to edit with invalid version while staging (should fail)
     with pytest.raises(Exception, match=r".*Invalid version.*"):
