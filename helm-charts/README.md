@@ -47,7 +47,7 @@ This is ideal for:
 cd helm-charts/hypha-server-kit
 cp .env.example .env
 # Edit .env with your configuration
-./apply-env.sh .env hypha
+./create-secrets.sh .env hypha
 helm install hypha-server-kit . --namespace hypha
 ```
 
