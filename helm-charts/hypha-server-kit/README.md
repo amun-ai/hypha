@@ -2,21 +2,6 @@
 
 A comprehensive Helm chart that bundles Hypha Server with all its dependencies (MinIO, PostgreSQL, Redis) in a single deployment package. This guide provides detailed instructions for beginners to advanced users on deploying and configuring Hypha in various environments.
 
-## Table of Contents
-- [Overview](#overview)
-- [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-- [Installation](#installation)
-- [Configuration Management](#configuration-management)
-- [Ingress Configuration](#ingress-configuration)
-- [Security and Secrets](#security-and-secrets)
-- [Authentication Service](#authentication-service)
-- [Environment Variables](#environment-variables)
-- [Production Deployment](#production-deployment)
-- [Monitoring and Maintenance](#monitoring-and-maintenance)
-- [Troubleshooting](#troubleshooting)
-- [Support](#support)
-
 ## Overview
 
 This chart simplifies the deployment of Hypha by including:
@@ -627,15 +612,6 @@ hypha-server:
     # - name: HYPHA_ENABLE_SERVICE_SEARCH
     #   value: "true"
     
-    # Authentication (optional)
-    # - name: HYPHA_AUTH_PROVIDERS
-    #   value: "password,github,google"
-    # - name: HYPHA_AUTH_GITHUB_CLIENT_ID
-    #   valueFrom:
-    #     secretKeyRef:
-    #       name: hypha-auth-secrets
-    #       key: github-client-id
-    
     # Performance tuning (optional)
     # - name: HYPHA_WORKER_THREADS
     #   value: "4"
@@ -1083,13 +1059,3 @@ chmod +x health-check.sh
 For issues and questions:
 - **GitHub Issues**: https://github.com/amun-ai/hypha/issues
 - **Documentation**: https://docs.amun.ai
-- **Community Chat**: https://gitter.im/amun-ai/hypha
-- **Email Support**: support@amun.ai
-
-### Contributing
-
-We welcome contributions! Please see our [Contributing Guide](https://github.com/amun-ai/hypha/blob/main/CONTRIBUTING.md) for details.
-
-### License
-
-This Helm chart is released under the MIT License. See the [LICENSE](https://github.com/amun-ai/hypha/blob/main/LICENSE) file for details.
