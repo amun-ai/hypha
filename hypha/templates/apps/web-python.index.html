@@ -23,6 +23,7 @@ from types import ModuleType
 import inspect
 from js import console
 import traceback
+import micropip
 from hypha_rpc.utils import ObjectProxy
 from hypha_rpc import connect_to_server
 
@@ -56,6 +57,64 @@ async def patch_hypha_rpc(default_config):
     return hypha_rpc
 
 
+async def prepare_artifact_files(config):
+    """Prepare artifact files if required_artifact_files is specified."""
+    required_files = config.get("required_artifact_files", [])
+    if not required_files:
+        return
+    # Install hypha-artifact if not already available
+    from hypha_artifact import AsyncHyphaArtifact
+    # Get environment variables
+    workspace = config.get("workspace")
+    token = config.get("token")
+    app_id = config.get("app_id")
+    server_url = config.get("server_url")
+    if not all([workspace, token, app_id]):
+        error_msg = "Missing required environment variables for artifact access"
+        console.error(error_msg)
+        raise RuntimeError(error_msg)
+    
+    console.log(f"🔗 Connecting to artifact: {app_id}")
+    artifact = AsyncHyphaArtifact(
+        server_url=server_url,
+        artifact_id=app_id,
+        workspace=workspace,
+        token=token
+    )
+    
+    # Process each required file/directory
+    failed_files = []
+    for file_path in required_files:
+        target_dir = f"/tmp/custom_modules_{file_path.replace('/', '_')}"
+        
+        console.log(f"📂 Processing artifact path: {file_path}")
+        
+        try:
+            # Download files
+            console.log(f"⬇️ Downloading {file_path} to {target_dir}...")
+            n_downloaded = await artifact.get(file_path, target_dir, recursive=True)
+            console.log(f"✅ Downloaded {n_downloaded if isinstance(n_downloaded, int) else 'all'} files to {target_dir}")
+            
+            # Add to Python path
+            if target_dir not in sys.path:
+                sys.path.insert(0, target_dir)
+                console.log(f"🛤️ Added {target_dir} to sys.path")
+                
+        except Exception as e:
+            error_msg = f"Failed to process artifact path {file_path}: {str(e)}"
+            console.error(f"❌ {error_msg}")
+            print(error_msg)
+            failed_files.append((file_path, str(e)))
+    
+    # If any files failed to download, raise an error
+    if failed_files:
+        error_details = "; ".join([f"{path}: {error}" for path, error in failed_files])
+        raise RuntimeError(f"Failed to download required artifact files: {error_details}")
+    
+    console.log("🚀 Artifact preparation completed!")
+
+
+
 async def run():
     from js import config, script_src
     config = config.to_py()
@@ -65,6 +124,10 @@ async def run():
     os.environ["HYPHA_TOKEN"] = config.get("token", "")
     os.environ["HYPHA_APP_ID"] = config.get("app_id", "")
     try:
+        # Prepare artifact files first if needed
+        await prepare_artifact_files(config)
+        
+        # Then run the main application
         hypha_rpc = await patch_hypha_rpc(config)
         exec(script_src, globals())
     except Exception as exp:
@@ -97,7 +160,27 @@ del m
 
 async def run():
     try:
-        await micropip.install(["numpy", "pydantic", "hypha-rpc=={{ hypha_hypha_rpc_version }}", {% for req in requirements %}"{{req}}", {% endfor %}])
+        # Check if hypha-artifact is needed
+        config = js.config.to_py()
+        required_files = config.get("required_artifact_files", [])
+        
+        # Base packages to install
+        packages = ["numpy", "pydantic", "hypha-rpc=={{ hypha_hypha_rpc_version }}"]
+        
+        # Add hypha-artifact if required_artifact_files is specified
+        if required_files:
+            packages.append("hypha-artifact")
+            console.log("📦 Will install hypha-artifact for artifact file access")
+        
+        # Add other requirements
+        {% for req in requirements %}
+        packages.append("{{req}}")
+        {% endfor %}
+        
+        console.log(f"📦 Installing packages: {packages}")
+        await micropip.install(packages)
+        console.log("✅ Package installation completed")
+        
     except Exception as e:
         console.error("Failed to install packages: ", traceback.format_exc())
         raise e

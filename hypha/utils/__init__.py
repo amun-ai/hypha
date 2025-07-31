@@ -56,6 +56,7 @@ PLUGIN_CONFIG_FIELDS = [
     "outputs",
     "dependencies",
     "app_id",
+    "required_artifact_files",
 ]
 
 

@@ -107,6 +107,133 @@ await controller.stop(started_app.id)
 await controller.uninstall(app_info.id)
 ```
 
+---
+
+## Development Tools
+
+### CLI Development Tool
+
+For easier development and deployment, we provide a CLI tool that allows you to develop code in your favorite IDE (e.g., VS Code) and install/start server apps directly from the command line.
+
+**Installation:**
+
+You can find a demo project with the cli module included:
+
+```bash
+git clone https://github.com/oeway/hypha-apps-cli
+```
+
+For example, to start an app, you can run:
+```bash
+python -m hypha_apps_cli install --app-id hello --manifest=manifest.yaml --source=main.py
+```
+
+For more information and advanced usage, see the [hypha-apps-cli repository](https://github.com/oeway/hypha-apps-cli).
+
+---
+
+## Automatic Python Module Mounting
+
+When working with Python applications in Hypha, you can automatically mount Python modules and access artifact files associated with your app. This feature is particularly useful for web-python applications that need to access additional Python code or data files.
+
+### Accessing Artifact Files
+
+To access artifact files associated with your `web-python` app, you can use the `hypha-artifact` Python package. This package provides easy access to files stored in your app's artifact storage.
+
+**Installation:**
+For `web-python` app, include `hypha-artifact` in your `requirements` field in your app manifest.
+
+Or you can install it via:
+```python
+import micropip
+await micropip.install(["hypha-artifact"])
+```
+
+**Basic Usage:**
+```python
+import os
+from hypha_artifact import AsyncHyphaArtifact
+
+# Get environment variables provided by Hypha
+app_id = os.environ.get("HYPHA_APP_ID")
+server_url = os.environ.get("HYPHA_SERVER_URL")
+workspace = os.environ.get("HYPHA_WORKSPACE")
+token = os.environ.get("HYPHA_TOKEN")
+
+# Create artifact client
+artifact = AsyncHyphaArtifact(
+    server_url=server_url,
+    artifact_id=app_id,
+    workspace=workspace,
+    token=token
+)
+
+# List files in the artifact
+files = await artifact.ls()
+print(f"Available files: {files}")
+
+# Download a specific file to /tmp
+await artifact.get("models/model.py", "/tmp/model.py")
+print(f"Model content: {content}")
+
+# Upload a new file
+await artifact.put("/tmp/processed.csv", "remote_dir/processed.csv")
+```
+
+### Environment Variables
+
+Hypha automatically provides the following environment variables to your Python applications:
+
+- `HYPHA_APP_ID`: The unique identifier of your app
+- `HYPHA_SERVER_URL`: The URL of the Hypha server
+- `HYPHA_WORKSPACE`: The workspace where your app is running
+- `HYPHA_TOKEN`: Authentication token for accessing Hypha services
+
+### Example: Web Python App with Artifact Access
+
+```python
+from hypha_rpc import api
+import os
+from hypha_artifact import AsyncHyphaArtifact
+
+async def setup():
+    """Setup function - called before main application."""
+    print("🚀 Setting up web-python app with artifact access...")
+    
+    # Initialize artifact client
+    artifact = AsyncHyphaArtifact(
+        server_url=os.environ.get("HYPHA_SERVER_URL"),
+        artifact_id=os.environ.get("HYPHA_APP_ID"),
+        workspace=os.environ.get("HYPHA_WORKSPACE"),
+        token=os.environ.get("HYPHA_TOKEN")
+    )
+    
+    # List available files
+    files = await artifact.list_files()
+    print(f"Available artifact files: {files}")
+    
+    # Download and use a model file
+    if "models/model.py" in files:
+        model_content = await artifact.get_file("models/model.py")
+        # Execute or import the model code
+        exec(model_content, globals())
+    
+    print("✅ Setup completed successfully")
+
+async def process_data(data):
+    """Process data using files from artifact."""
+    # Your processing logic here
+    return {"processed": data, "status": "success"}
+
+# Export the functions
+api.export({
+    "setup": setup,
+    "process_data": process_data
+})
+```
+
+For more information about the `hypha-artifact` package, see the [hypha-artifact repository](https://github.com/aicell-lab/hypha-artifact/).
+
 
 ## 🌐 **Building HTTP Endpoints & Web Applications**
 

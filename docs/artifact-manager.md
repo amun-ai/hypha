@@ -2600,3 +2600,58 @@ The Artifact Manager uses version indices internally to determine where files sh
    - All file operations (put, list, remove) respect this version index
    - This ensures consistency and prevents file duplication
    - The commit operation simply finalizes the metadata without moving files
+
+---
+
+## Python Integration
+
+### hypha-artifact Package
+
+For easier access to artifact files, we provide a Python package `hypha-artifact` that simplifies common operations like listing files, downloading, uploading, reading, and writing files.
+
+**Installation:**
+```bash
+pip install hypha-artifact
+```
+
+**Basic Usage:**
+```python
+from hypha_artifact import AsyncHyphaArtifact
+
+# Create artifact client
+artifact = AsyncHyphaArtifact(
+    server_url="https://hypha.aicell.io",
+    artifact_id="workspace/my-artifact",
+    workspace="workspace",
+    token="your-token"
+)
+
+# List all files in the artifact
+files = await artifact.list_files()
+print(f"Available files: {files}")
+
+# Download a file
+content = await artifact.get_file("data/example.csv")
+print(f"File content: {content}")
+
+# Upload a file
+await artifact.upload_file("data/new_file.txt", "Hello, World!")
+
+# Read file content
+with await artifact.open_file("data/example.csv") as f:
+    content = await f.read()
+    print(f"File content: {content}")
+
+# Write to a file
+async with await artifact.open_file("data/output.txt", "w") as f:
+    await f.write("New content")
+```
+
+**Advanced Features:**
+- **File Operations**: List, download, upload, read, and write files
+- **Directory Support**: Navigate through artifact directories
+- **Async/Await**: Full async support for efficient I/O operations
+- **Error Handling**: Comprehensive error handling and retry logic
+- **Authentication**: Automatic token management and authentication
+
+For more information and advanced usage examples, see the [hypha-artifact repository](https://github.com/aicell-lab/hypha-artifact/).
