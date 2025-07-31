@@ -62,7 +62,7 @@ spec:
       volumes:
         - name: {{ .Values.persistence.volumeName }}
           persistentVolumeClaim:
-            claimName: {{ .Values.persistence.claimName }}
+            claimName: {{ include "hypha-server.fullname" . }}-data-pvc
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

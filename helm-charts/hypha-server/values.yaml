@@ -8,7 +8,7 @@ image:
   repository: ghcr.io/amun-ai/hypha
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "0.20.60"
+  tag: "0.20.80"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -143,5 +143,10 @@ startupCommand:
 # Persistence Configuration
 persistence:
   volumeName: hypha-app-storage
-  claimName: hypha-data-pvc
   mountPath: /data
+  # storageClass: ""
+  # PVC Configuration
+  accessModes:
+    - ReadWriteMany
+  size: 10Gi
+  # storageClass: "" # Uncomment and set to use a specific storage class
