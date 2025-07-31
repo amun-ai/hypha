@@ -13,7 +13,7 @@ DB_USER = "hypha-admin"
 DB_PASSWORD = os.getenv("POSTGRES_PASSWORD")
 DB_NAME = "hypha-db"
 DB_HOST = "localhost"  # Using localhost with port-forwarding 
-DB_PORT = "5433"       # Using port 5433 to avoid conflicts
+DB_PORT = "5432"       # Using standard PostgreSQL port
 
 # Create connection URL
 DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"

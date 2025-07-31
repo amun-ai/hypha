@@ -87,14 +87,16 @@ To use PostgreSQL, you need to:
 ```yaml
 env:
   # ... existing environment variables ...
-  - name: DATABASE_URI
-    value: "postgresql+asyncpg://hypha-admin:$(POSTGRES_PASSWORD)@hypha-sql-database-postgresql.hypha.svc.cluster.local:5432/hypha-db"
   - name: POSTGRES_PASSWORD
     valueFrom:
       secretKeyRef:
         name: hypha-secrets
         key: POSTGRES_PASSWORD
+  - name: HYPHA_DATABASE_URI
+    value: "postgresql+asyncpg://hypha-admin:$(POSTGRES_PASSWORD)@hypha-sql-database-postgresql.hypha.svc.cluster.local:5432/hypha-db"
 ```
+
+**Note**: The `POSTGRES_PASSWORD` environment variable must be defined before `HYPHA_DATABASE_URI` for the password interpolation to work correctly.
 
 3. **Disable persistence** for the Hypha application:
 
@@ -216,21 +218,24 @@ python test_db.py
 
 After installing PostgreSQL, update your Hypha configuration:
 
-1. **Update the Hypha values** to use PostgreSQL:
+1. **Update the Hypha values** to use PostgreSQL. Edit your `hypha-server/values.yaml` file:
+
 ```yaml
 env:
   # ... existing environment variables ...
-  - name: DATABASE_URI
-    value: "postgresql+asyncpg://hypha-admin:$(POSTGRES_PASSWORD)@hypha-sql-database-postgresql.hypha.svc.cluster.local:5432/hypha-db"
   - name: POSTGRES_PASSWORD
     valueFrom:
       secretKeyRef:
         name: hypha-secrets
         key: POSTGRES_PASSWORD
+  - name: HYPHA_DATABASE_URI
+    value: "postgresql+asyncpg://hypha-admin:$(POSTGRES_PASSWORD)@hypha-sql-database-postgresql.hypha.svc.cluster.local:5432/hypha-db"
 
 persistence:
   enabled: false  # Disable persistence since PostgreSQL handles storage
 ```
+
+**Note**: The `POSTGRES_PASSWORD` environment variable must be defined before `HYPHA_DATABASE_URI` for the password interpolation to work correctly.
 
 2. **Upgrade the Hypha deployment**:
 ```bash
@@ -333,7 +338,7 @@ Then add the Bitnami repository and install the MinIO helm chart:
 helm repo add bitnami https://charts.bitnami.com/bitnami
 helm repo update
 cd minio
-helm dependency build
+helm dependency update
 helm install minio . --namespace=hypha
 ```
 
@@ -432,6 +437,74 @@ helm install minio . --namespace=hypha -f minio-values.yaml
 ```
 
 For more MinIO configuration options, see the [MinIO chart documentation](helm-charts/minio/README.md).
+
+## Complete Configuration Example
+
+Here's an example of a complete `hypha-server/values.yaml` configuration using PostgreSQL, MinIO, and Redis:
+
+```yaml
+env:
+  # JWT Secret
+  - name: HYPHA_JWT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: hypha-secrets
+        key: HYPHA_JWT_SECRET
+  
+  # Basic configuration
+  - name: HYPHA_HOST
+    value: "0.0.0.0"
+  - name: HYPHA_PORT
+    value: "9520"
+  - name: HYPHA_PUBLIC_BASE_URL
+    value: "https://hypha.amun.ai"
+  
+  # PostgreSQL configuration
+  - name: POSTGRES_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: hypha-secrets
+        key: POSTGRES_PASSWORD
+  - name: HYPHA_DATABASE_URI
+    value: "postgresql+asyncpg://hypha-admin:$(POSTGRES_PASSWORD)@hypha-sql-database-postgresql.hypha.svc.cluster.local:5432/hypha-db"
+  
+  # Redis configuration (for scaling)
+  - name: HYPHA_REDIS_URI
+    value: "redis://redis.hypha.svc.cluster.local:6379/0"
+  
+  # MinIO S3 configuration
+  - name: HYPHA_ENABLE_S3
+    value: "true"
+  - name: HYPHA_ACCESS_KEY_ID
+    valueFrom:
+      secretKeyRef:
+        name: minio-credentials
+        key: ACCESS_KEY_ID
+  - name: HYPHA_SECRET_ACCESS_KEY
+    valueFrom:
+      secretKeyRef:
+        name: minio-credentials
+        key: SECRET_ACCESS_KEY
+  - name: HYPHA_ENDPOINT_URL
+    value: "http://minio.hypha.svc.cluster.local:9000"
+  - name: HYPHA_S3_ADMIN_TYPE
+    value: "minio"
+  - name: HYPHA_ENABLE_S3_PROXY
+    value: "true"
+  
+  # Server ID for multiple instances
+  - name: HYPHA_SERVER_ID
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.uid
+
+# Disable persistence when using PostgreSQL
+persistence:
+  enabled: false
+
+# Enable multiple replicas when using Redis
+replicaCount: 3
+```
 
 ## Setting up on Azure Kubernetes Service (AKS)
 
