@@ -27,6 +27,7 @@ async def enhanced_event_bus(fake_redis):
     await event_bus.stop()
 
 
+@pytest.mark.asyncio
 async def test_local_client_tracking(enhanced_event_bus):
     """Test that local client tracking works correctly."""
     # Register local clients
@@ -44,6 +45,7 @@ async def test_local_client_tracking(enhanced_event_bus):
     assert enhanced_event_bus.is_local_client("workspace2", "client2")
 
 
+@pytest.mark.asyncio
 async def test_smart_routing_optimization(enhanced_event_bus):
     """Test that smart routing prefers local delivery for targeted messages."""
     local_messages = []
@@ -73,6 +75,7 @@ async def test_smart_routing_optimization(enhanced_event_bus):
     # it could be skipped for local clients
     
 
+@pytest.mark.asyncio
 async def test_non_targeted_message_routing(enhanced_event_bus):
     """Test that non-targeted messages still go through Redis."""
     local_messages = []
@@ -97,6 +100,7 @@ async def test_non_targeted_message_routing(enhanced_event_bus):
     assert redis_messages == [{"key": "value"}]
 
 
+@pytest.mark.asyncio
 async def test_performance_improvement_simulation():
     """Simulate performance improvement with local routing."""
     from fakeredis import aioredis
@@ -143,6 +147,7 @@ async def test_performance_improvement_simulation():
     assert local_time <= redis_time * 1.1  # Allow 10% tolerance
 
 
+@pytest.mark.asyncio
 async def test_scalability_demonstration():
     """Demonstrate how the system scales with multiple server instances."""
     from fakeredis import aioredis
@@ -209,6 +214,7 @@ async def test_scalability_demonstration():
     await server2_bus.stop()
 
 
+@pytest.mark.asyncio
 async def test_redis_subscription_optimization():
     """Test that the system can optimize Redis subscriptions."""
     from fakeredis import aioredis
@@ -233,6 +239,7 @@ async def test_redis_subscription_optimization():
     await event_bus.stop()
 
 
+@pytest.mark.asyncio
 async def test_targeted_subscription_debug():
     """Debug the targeted subscription system to understand message routing."""
     from fakeredis import aioredis
