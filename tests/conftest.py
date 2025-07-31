@@ -676,17 +676,3 @@ def conda_test_workspace_fixture(conda_available):
     except Exception as e:
         print(f"Error cleaning up conda test workspace: {e}")
 
-
-@pytest_asyncio.fixture(name="conda_integration_server")
-def conda_integration_server_fixture():
-    """Provide a mock server for conda integration tests."""
-
-    class MockIntegrationServer:
-        def __init__(self):
-            self.registered_services = []
-
-        async def register_service(self, service_config):
-            self.registered_services.append(service_config)
-            return {"id": service_config.get("id", "test-service")}
-
-    yield MockIntegrationServer()

@@ -4,9 +4,8 @@ import time
 import numpy as np
 import pytest
 import pytest_asyncio
-from datetime import datetime, timedelta
 from hypha_rpc import connect_to_server
-from prometheus_client import CollectorRegistry, REGISTRY
+from prometheus_client import REGISTRY
 
 from hypha.core.store import RedisStore
 

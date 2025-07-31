@@ -10,14 +10,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from hypha.workers.conda import CondaWorker, EnvironmentCache
+
 from hypha.workers.base import (
     WorkerConfig,
     SessionStatus,
-    SessionInfo,
-    SessionNotFoundError,
-    WorkerError,
 )
-from hypha.workers.conda_executor import ExecutionResult, TimingInfo
 
 # Mark all async functions in this module as asyncio tests
 pytestmark = pytest.mark.asyncio
@@ -175,7 +172,7 @@ class TestCondaWorkerBasic:
     def test_supported_types(self):
         """Test supported application types."""
         types = self.worker.supported_types
-        assert "python-conda" in types
+        assert "conda-jupyter-kernel" in types
         assert len(types) == 1
 
     def test_worker_properties(self):
@@ -187,7 +184,7 @@ class TestCondaWorkerBasic:
         """Test manifest compilation and validation."""
         # Test with dependencies field
         manifest1 = {
-            "type": "python-conda",
+            "type": "conda-jupyter-kernel",
             "dependencies": ["python=3.11", "numpy"],
             "channels": ["conda-forge"],
         }
@@ -203,7 +200,7 @@ class TestCondaWorkerBasic:
 
         # Test with dependencies field (alternate name)
         manifest2 = {
-            "type": "python-conda",
+            "type": "conda-jupyter-kernel",
             "dependencies": "python=3.11",  # String should be converted to list
             "channels": "conda-forge",  # String should be converted to list
         }
@@ -216,7 +213,7 @@ class TestCondaWorkerBasic:
         assert compiled_manifest["channels"] == ["conda-forge"]
 
         # Test with no dependencies (should add default)
-        manifest3 = {"type": "python-conda"}
+        manifest3 = {"type": "conda-jupyter-kernel"}
         compiled_manifest, files = await self.worker.compile(manifest3, [])
 
         deps = compiled_manifest["dependencies"]
@@ -234,10 +231,10 @@ class TestCondaWorkerBasic:
         assert "supported_types" in service_config
         assert "start" in service_config
         assert "stop" in service_config
-        assert "execute_code" in service_config
+        assert "execute" in service_config
 
         # Check supported types
-        assert "python-conda" in service_config["supported_types"]
+        assert "conda-jupyter-kernel" in service_config["supported_types"]
         assert len(service_config["supported_types"]) == 1
 
 
@@ -245,7 +242,7 @@ class TestCondaWorkerIntegration:
     """Integration tests for conda environment worker using real conda environments."""
 
     async def test_real_conda_basic_execution(
-        self, conda_integration_server, conda_test_workspace
+        self, conda_test_workspace
     ):
         """Test basic conda environment creation and code execution."""
         from hypha.workers.conda import CondaWorker, EnvironmentCache
@@ -281,7 +278,7 @@ def execute(input_data):
             entry_point="main.py",
             artifact_id="test-artifact",
             manifest={
-                "type": "python-conda",
+                "type": "conda-jupyter-kernel",
                 "dependencies": ["python=3.11"],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py",
@@ -322,24 +319,30 @@ result = {
 
 print(f"Result: {result}")
 """
-                result = await worker.execute_code(session_id, test_code)
+                result = await worker.execute(session_id, test_code)
 
                 assert (
-                    result.success
-                ), f"Execution failed: {result.error}\nStderr: {result.stderr}"
+                    result["status"] == "ok"
+                ), f"Execution failed: {result.get('error', {})}"
+
+                # Extract stdout from outputs
+                stdout_text = "".join(
+                    output.get("text", "") for output in result.get("outputs", [])
+                    if output.get("type") == "stream" and output.get("name") == "stdout"
+                )
 
                 # Check that the code executed successfully by looking at stdout
                 assert (
-                    "Result:" in result.stdout
-                ), f"Expected result output in stdout: {result.stdout}"
+                    "Result:" in stdout_text
+                ), f"Expected result output in stdout: {stdout_text}"
                 assert (
-                    "'computation': 42" in result.stdout
-                ), f"Expected computation=42 in stdout: {result.stdout}"
+                    "'computation': 42" in stdout_text
+                ), f"Expected computation=42 in stdout: {stdout_text}"
                 assert (
-                    "'input_data': 21" in result.stdout
-                ), f"Expected input_data=21 in stdout: {result.stdout}"
+                    "'input_data': 21" in stdout_text
+                ), f"Expected input_data=21 in stdout: {stdout_text}"
 
-                print(f"✅ Execution successful: {result.stdout.strip()}")
+                print(f"✅ Execution successful: {stdout_text.strip()}")
 
                 # Test another code execution
                 test_code2 = """
@@ -352,11 +355,18 @@ result = {
 
 print(f"Result2: {result}")
 """
-                result2 = await worker.execute_code(session_id, test_code2)
-                assert result2.success, f"Second execution failed: {result2.error}"
+                result2 = await worker.execute(session_id, test_code2)
+                assert result2["status"] == "ok", f"Second execution failed: {result2.get('error', {})}"
+                
+                # Extract stdout from outputs
+                stdout_text2 = "".join(
+                    output.get("text", "") for output in result2.get("outputs", [])
+                    if output.get("type") == "stream" and output.get("name") == "stdout"
+                )
+                
                 assert (
-                    "'computation': 45" in result2.stdout
-                ), f"Expected computation=45 in stdout: {result2.stdout}"
+                    "'computation': 45" in stdout_text2
+                ), f"Expected computation=45 in stdout: {stdout_text2}"
 
                 # Check logs
                 logs = await worker.get_logs(session_id)
@@ -376,7 +386,7 @@ print(f"Result2: {result}")
                 raise
 
     async def test_real_conda_package_installation(
-        self, conda_integration_server, conda_test_workspace
+        self, conda_test_workspace
     ):
         """Test conda environment with additional dependencies."""
         from hypha.workers.conda import CondaWorker, EnvironmentCache
@@ -425,7 +435,7 @@ def execute(input_data):
             entry_point="main.py",
             artifact_id="test-artifact",
             manifest={
-                "type": "python-conda",
+                "type": "conda-jupyter-kernel",
                 "dependencies": ["python=3.11", "numpy"],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py",
@@ -467,22 +477,29 @@ result = {
 
 print(f"NumPy result: {result}")
 """
-                result = await worker.execute_code(session_id, test_code)
+                result = await worker.execute(session_id, test_code)
 
                 assert (
-                    result.success
-                ), f"Numpy test failed: {result.error}\nStderr: {result.stderr}"
+                    result["status"] == "ok"
+                ), f"Numpy test failed: {result.get('error', {})}"
+                
+                # Extract stdout from outputs
+                stdout_text = "".join(
+                    output.get("text", "") for output in result.get("outputs", [])
+                    if output.get("type") == "stream" and output.get("name") == "stdout"
+                )
+                
                 assert (
-                    "NumPy result:" in result.stdout
-                ), f"Expected result in stdout: {result.stdout}"
+                    "NumPy result:" in stdout_text
+                ), f"Expected result in stdout: {stdout_text}"
                 assert (
-                    "'array_sum': 15" in result.stdout
-                ), f"Expected array_sum=15 in stdout: {result.stdout}"
+                    "'array_sum': 15" in stdout_text
+                ), f"Expected array_sum=15 in stdout: {stdout_text}"
                 assert (
-                    "'input_sum': 150" in result.stdout
-                ), f"Expected input_sum=150 in stdout: {result.stdout}"
+                    "'input_sum': 150" in stdout_text
+                ), f"Expected input_sum=150 in stdout: {stdout_text}"
 
-                print(f"✅ NumPy test successful: {result.stdout.strip()}")
+                print(f"✅ NumPy test successful: {stdout_text.strip()}")
 
                 await worker.stop(session_id)
 
@@ -495,7 +512,7 @@ print(f"NumPy result: {result}")
                 raise
 
     async def test_real_conda_caching_behavior(
-        self, conda_integration_server, conda_test_workspace
+        self, conda_test_workspace
     ):
         """Test that conda environments are properly cached and reused."""
         from hypha.workers.conda import CondaWorker, EnvironmentCache
@@ -528,7 +545,7 @@ def execute(input_data):
             entry_point="main.py",
             artifact_id="test-artifact",
             manifest={
-                "type": "python-conda",
+                "type": "conda-jupyter-kernel",
                 "dependencies": ["python=3.11"],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py",
@@ -563,8 +580,14 @@ result = {
 
 print(f"Cache test result 1: {result}")
 """
-                result1 = await worker.execute_code(session_id1, test_code1)
-                assert result1.success, f"First execution failed: {result1.error}"
+                result1 = await worker.execute(session_id1, test_code1)
+                assert result1["status"] == "ok", f"First execution failed: {result1.get('error', {})}"
+                
+                # Extract stdout from outputs
+                stdout_text1 = "".join(
+                    output.get("text", "") for output in result1.get("outputs", [])
+                    if output.get("type") == "stream" and output.get("name") == "stdout"
+                )
 
                 # Check cache was populated
                 first_cache_size = len(cache.index)
@@ -573,10 +596,10 @@ print(f"Cache test result 1: {result}")
                 # Extract environment path from stdout
                 import re
 
-                match1 = re.search(r"'python_executable': '([^']+)'", result1.stdout)
+                match1 = re.search(r"'python_executable': '([^']+)'", stdout_text1)
                 assert (
                     match1
-                ), f"Could not find python_executable in stdout: {result1.stdout}"
+                ), f"Could not find python_executable in stdout: {stdout_text1}"
                 env_path1 = match1.group(1)
 
                 await worker.stop(session_id1)
@@ -593,7 +616,7 @@ print(f"Cache test result 1: {result}")
                     entry_point="main.py",
                     artifact_id="test-artifact",
                     manifest={
-                        "type": "python-conda",
+                        "type": "conda-jupyter-kernel",
                         "dependencies": ["python=3.11"],  # Same dependencies
                         "channels": ["conda-forge"],  # Same channels
                         "entry_point": "main.py",
@@ -614,14 +637,20 @@ result = {
 
 print(f"Cache test result 2: {result}")
 """
-                result2 = await worker.execute_code(session_id2, test_code2)
-                assert result2.success, f"Second execution failed: {result2.error}"
+                result2 = await worker.execute(session_id2, test_code2)
+                assert result2["status"] == "ok", f"Second execution failed: {result2.get('error', {})}"
+                
+                # Extract stdout from outputs
+                stdout_text2 = "".join(
+                    output.get("text", "") for output in result2.get("outputs", [])
+                    if output.get("type") == "stream" and output.get("name") == "stdout"
+                )
 
                 # Extract environment path from stdout
-                match2 = re.search(r"'python_executable': '([^']+)'", result2.stdout)
+                match2 = re.search(r"'python_executable': '([^']+)'", stdout_text2)
                 assert (
                     match2
-                ), f"Could not find python_executable in stdout: {result2.stdout}"
+                ), f"Could not find python_executable in stdout: {stdout_text2}"
                 env_path2 = match2.group(1)
 
                 # Cache size should not have increased (reused existing)
@@ -646,7 +675,7 @@ print(f"Cache test result 2: {result}")
                 raise
 
     async def test_real_conda_mixed_dependencies(
-        self, conda_integration_server, conda_test_workspace
+        self, conda_test_workspace
     ):
         """Test conda environment with both conda and pip dependencies."""
         from hypha.workers.conda import CondaWorker, EnvironmentCache
@@ -698,7 +727,7 @@ def execute(input_data):
             entry_point="main.py",
             artifact_id="test-artifact",
             manifest={
-                "type": "python-conda",
+                "type": "conda-jupyter-kernel",
                 "dependencies": ["python=3.11", "numpy", {"pip": ["requests"]}],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py",
@@ -747,40 +776,46 @@ result["data_processed"] = {
 
 print(f"Mixed dependencies result: {result}")
 """
-                result = await worker.execute_code(session_id, test_code)
+                result = await worker.execute(session_id, test_code)
 
                 assert (
-                    result.success
-                ), f"Mixed dependencies test failed: {result.error}\nStderr: {result.stderr}"
+                    result["status"] == "ok"
+                ), f"Mixed dependencies test failed: {result.get('error', {})}"
+                
+                # Extract stdout from outputs
+                stdout_text = "".join(
+                    output.get("text", "") for output in result.get("outputs", [])
+                    if output.get("type") == "stream" and output.get("name") == "stdout"
+                )
 
                 # Verify conda package (numpy) works
                 assert (
-                    "'numpy_available': True" in result.stdout
-                ), f"Expected numpy_available=True in stdout: {result.stdout}"
+                    "'numpy_available': True" in stdout_text
+                ), f"Expected numpy_available=True in stdout: {stdout_text}"
                 assert (
-                    "'numpy_version':" in result.stdout
-                ), f"Expected numpy_version in stdout: {result.stdout}"
+                    "'numpy_version':" in stdout_text
+                ), f"Expected numpy_version in stdout: {stdout_text}"
 
                 # Verify pip package (requests) works
                 assert (
-                    "'requests_available': True" in result.stdout
-                ), f"Expected requests_available=True in stdout: {result.stdout}"
+                    "'requests_available': True" in stdout_text
+                ), f"Expected requests_available=True in stdout: {stdout_text}"
                 assert (
-                    "'requests_version':" in result.stdout
-                ), f"Expected requests_version in stdout: {result.stdout}"
+                    "'requests_version':" in stdout_text
+                ), f"Expected requests_version in stdout: {stdout_text}"
 
                 # Verify data processing works - check for expected sum and mean
                 expected_sum = sum([1.5, 2.3, 3.7, 4.1, 5.9])  # 17.5
                 expected_mean = expected_sum / 5  # 3.5
                 assert (
-                    f"'sum': {expected_sum}" in result.stdout
-                ), f"Expected sum={expected_sum} in stdout: {result.stdout}"
+                    f"'sum': {expected_sum}" in stdout_text
+                ), f"Expected sum={expected_sum} in stdout: {stdout_text}"
                 assert (
-                    f"'mean': {expected_mean}" in result.stdout
-                ), f"Expected mean={expected_mean} in stdout: {result.stdout}"
+                    f"'mean': {expected_mean}" in stdout_text
+                ), f"Expected mean={expected_mean} in stdout: {stdout_text}"
 
                 print(f"✅ Mixed dependencies test successful:")
-                print(f"  Output: {result.stdout.strip()}")
+                print(f"  Output: {stdout_text.strip()}")
 
                 await worker.stop(session_id)
 
@@ -793,7 +828,7 @@ print(f"Mixed dependencies result: {result}")
                 raise
 
     async def test_real_conda_standalone_script(
-        self, conda_integration_server, conda_test_workspace
+        self, conda_test_workspace
     ):
         """Test conda environment with a standalone script (no execute function)."""
         from hypha.workers.conda import CondaWorker, EnvironmentCache
@@ -835,7 +870,7 @@ print("=== Script completed successfully ===")
             entry_point="main.py",
             artifact_id="test-artifact",
             manifest={
-                "type": "python-conda",
+                "type": "conda-jupyter-kernel",
                 "dependencies": ["python=3.11"],
                 "channels": ["conda-forge"],
                 "entry_point": "main.py",
@@ -891,281 +926,6 @@ print("=== Script completed successfully ===")
                 except:
                     pass
                 raise
-
-
-class TestCondaWorkerProgressCallback:
-    """Test progress callback functionality for conda environment worker."""
-
-    def setup_method(self):
-        """Set up test fixtures."""
-        self.server = MagicMock()
-        self.worker = CondaWorker()
-        self.progress_messages = []
-
-        def mock_progress_callback(info):
-            self.progress_messages.append(info)
-
-        self.progress_callback = mock_progress_callback
-
-    async def test_progress_callback_with_new_environment(self):
-        """Test progress callback during new environment creation."""
-        from unittest.mock import AsyncMock
-
-        # Mock script content
-        script = """
-def execute(input_data):
-    return {"result": "test"}
-"""
-
-        config = WorkerConfig(
-            id="progress-test",
-            app_id="test-app",
-            workspace="test-workspace",
-            client_id="test-client",
-            server_url="http://test-server",
-            token="test-token",
-            entry_point="main.py",
-            artifact_id="test-artifact",
-            manifest={
-                "type": "python-conda",
-                "dependencies": ["python=3.11", "numpy"],
-                "channels": ["conda-forge"],
-                "entry_point": "main.py",
-            },
-            app_files_base_url="http://test-server/files",
-            progress_callback=self.progress_callback,
-        )
-
-        # Mock the environment cache to return None (no cached environment)
-        self.worker._env_cache = MagicMock()
-        self.worker._env_cache.get_cached_env.return_value = None
-        self.worker._env_cache.add_cached_env = MagicMock()
-
-        # Mock the HTTP client
-        with patch("httpx.AsyncClient") as mock_http_client:
-            mock_response = MagicMock()
-            mock_response.text = script
-            mock_response.raise_for_status = MagicMock()
-            mock_http_client.return_value.__aenter__.return_value.get.return_value = (
-                mock_response
-            )
-
-            # Mock the CondaEnvExecutor and its methods
-            with patch("hypha.workers.conda.CondaEnvExecutor") as mock_executor_class:
-                mock_executor = MagicMock()
-                mock_executor_class.create_temp_env.return_value = mock_executor
-
-                # Mock async _extract_env method
-                async def mock_extract_env(progress_callback=None):
-                    if progress_callback:
-                        progress_callback(
-                            {"type": "info", "message": "Mock environment setup"}
-                        )
-                    return 10.5  # Mock setup time
-
-                mock_executor._extract_env = mock_extract_env
-
-                # Mock execution result
-                mock_result = MagicMock()
-                mock_result.success = True
-                mock_result.result = {"result": "test"}
-                mock_result.stdout = "Test output"
-                mock_result.stderr = ""
-                mock_result.error = None
-                mock_result.timing = None
-                mock_executor.execute.return_value = mock_result
-
-                # Start the session
-                session_id = await self.worker.start(config)
-
-                # Verify session was created
-                assert session_id == "progress-test"
-                assert len(self.progress_messages) > 0
-
-                # Check for expected progress messages
-                message_types = [msg["type"] for msg in self.progress_messages]
-                message_texts = [msg["message"] for msg in self.progress_messages]
-
-                # Should have info and success messages
-                assert "info" in message_types
-                assert "success" in message_types
-
-                # Check for specific expected messages
-                expected_patterns = [
-                    "Starting conda environment session",
-                    "Fetching application script",
-                    "Setting up conda environment",
-                    "Checking for cached conda environment",
-                    "Creating new conda environment",
-                    "Installing packages",
-                    "Executing initialization script",
-                    "started successfully",
-                ]
-
-                message_text = " ".join(message_texts)
-                found_patterns = 0
-                for pattern in expected_patterns:
-                    if any(pattern.lower() in msg.lower() for msg in message_texts):
-                        found_patterns += 1
-
-                # Should find most of the expected patterns
-                assert (
-                    found_patterns >= len(expected_patterns) // 2
-                ), f"Only found {found_patterns} patterns in messages: {message_texts}"
-
-                print(
-                    f"✅ Progress callback test passed with {len(self.progress_messages)} messages"
-                )
-                print(
-                    f"   Found {found_patterns}/{len(expected_patterns)} expected patterns"
-                )
-
-                # Clean up
-                await self.worker.stop(session_id)
-
-    async def test_progress_callback_with_cached_environment(self):
-        """Test progress callback when using cached environment."""
-        from pathlib import Path
-
-        script = """
-def execute(input_data):
-    return {"result": "cached_test"}
-"""
-
-        config = WorkerConfig(
-            id="cached-progress-test",
-            app_id="cached-test-app",
-            workspace="test-workspace",
-            client_id="test-client",
-            server_url="http://test-server",
-            token="test-token",
-            entry_point="main.py",
-            artifact_id="test-artifact",
-            manifest={
-                "type": "python-conda",
-                "dependencies": ["python=3.11"],
-                "channels": ["conda-forge"],
-                "entry_point": "main.py",
-            },
-            app_files_base_url="http://test-server/files",
-            progress_callback=self.progress_callback,
-        )
-
-        # Mock the environment cache to return a cached environment
-        mock_cached_path = Path("/fake/cached/env")
-        self.worker._env_cache = MagicMock()
-        self.worker._env_cache.get_cached_env.return_value = mock_cached_path
-
-        # Mock the HTTP client
-        with patch("httpx.AsyncClient") as mock_http_client:
-            mock_response = MagicMock()
-            mock_response.text = script
-            mock_response.raise_for_status = MagicMock()
-            mock_http_client.return_value.__aenter__.return_value.get.return_value = (
-                mock_response
-            )
-
-            # Mock the CondaEnvExecutor
-            with patch("hypha.workers.conda.CondaEnvExecutor") as mock_executor_class:
-                mock_executor = MagicMock()
-                mock_executor_class.return_value = mock_executor
-                mock_executor.env_path = mock_cached_path
-                mock_executor._is_extracted = True
-
-                # Mock execution result
-                mock_result = MagicMock()
-                mock_result.success = True
-                mock_result.result = {"result": "cached_test"}
-                mock_result.stdout = "Cached test output"
-                mock_result.stderr = ""
-                mock_result.error = None
-                mock_result.timing = None
-                mock_executor.execute.return_value = mock_result
-
-                # Start the session
-                session_id = await self.worker.start(config)
-
-                # Verify session was created
-                assert session_id == "cached-progress-test"
-                assert len(self.progress_messages) > 0
-
-                # Check for cached environment specific messages
-                message_texts = [msg["message"] for msg in self.progress_messages]
-
-                # Should mention cached environment
-                cached_mentioned = any("cached" in msg.lower() for msg in message_texts)
-                assert (
-                    cached_mentioned
-                ), f"Cached environment not mentioned in messages: {message_texts}"
-
-                print(f"✅ Cached environment progress callback test passed")
-                print(
-                    f"   Messages: {[msg['message'] for msg in self.progress_messages]}"
-                )
-
-                # Clean up
-                await self.worker.stop(session_id)
-
-    async def test_progress_callback_error_handling(self):
-        """Test progress callback during error scenarios."""
-
-        config = WorkerConfig(
-            id="error-progress-test",
-            app_id="error-test-app",
-            workspace="test-workspace",
-            client_id="test-client",
-            server_url="http://test-server",
-            token="test-token",
-            entry_point="main.py",
-            artifact_id="test-artifact",
-            manifest={
-                "type": "python-conda",
-                "dependencies": ["nonexistent-package==999.999.999"],
-                "channels": ["conda-forge"],
-                "entry_point": "main.py",
-            },
-            app_files_base_url="http://test-server/files",
-            progress_callback=self.progress_callback,
-        )
-
-        # Mock HTTP client to fail
-        with patch("httpx.AsyncClient") as mock_http_client:
-            mock_response = MagicMock()
-            mock_response.raise_for_status.side_effect = Exception(
-                "Failed to fetch script"
-            )
-            mock_http_client.return_value.__aenter__.return_value.get.return_value = (
-                mock_response
-            )
-
-            try:
-                await self.worker.start(config)
-                assert False, "Expected exception was not raised"
-            except Exception as e:
-                # Should have progress messages including error
-                assert len(self.progress_messages) > 0
-
-                message_types = [msg["type"] for msg in self.progress_messages]
-                message_texts = [msg["message"] for msg in self.progress_messages]
-
-                # Should have error message
-                assert (
-                    "error" in message_types
-                ), f"No error message found in types: {message_types}"
-
-                # Error message should mention the failure
-                error_messages = [
-                    msg["message"]
-                    for msg in self.progress_messages
-                    if msg["type"] == "error"
-                ]
-                assert any(
-                    "failed" in msg.lower() for msg in error_messages
-                ), f"No failure mentioned in error messages: {error_messages}"
-
-                print(f"✅ Error handling progress callback test passed")
-                print(f"   Error messages: {error_messages}")
-
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

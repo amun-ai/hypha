@@ -252,7 +252,7 @@ print("Application initialized successfully!")
 ```yaml
 # manifest.yaml
 name: My Conda App
-type: python-conda
+type: conda-jupyter-kernel
 version: 1.0.0
 description: A Python app with conda dependencies
 entry_point: main.py
@@ -288,7 +288,7 @@ async def main():
         "app_id": "my-conda-app",
         "workspace": "my-workspace",
         "manifest": {
-            "type": "python-conda",
+            "type": "conda-jupyter-kernel",
             "dependencies": ["python=3.11", "numpy", "pandas"],
             "channels": ["conda-forge"],
             "entry_point": "main.py"
@@ -315,13 +315,15 @@ print(f"Standard deviation: {std_val}")
 print(f"Sum: {sum_val}")
 """
     
-    result = await conda_worker.execute_code(session_id, code)
+    result = await conda_worker.execute(session_id, code)
     
-    if result.success:
-        print("Output:", result.stdout)
+    if result["status"] == "ok":
+        # Print all text outputs
+        for output in result["outputs"]:
+            if output["type"] == "stream" and output["name"] == "stdout":
+                print("Output:", output["text"])
     else:
-        print("Error:", result.error)
-        print("Stderr:", result.stderr)
+        print("Error:", result.get("error", {}))
     
     # Stop the session
     await conda_worker.stop(session_id)
@@ -350,7 +352,7 @@ print(f"Column B std: {df['B'].std():.3f}")
 print(df.head())
 """
 
-result = await conda_worker.execute_code(session_id, code)
+result = await conda_worker.execute(session_id, code)
 print(result.stdout)
 ```
 
@@ -369,7 +371,7 @@ print(f"NumPy version: {np.__version__}")
 print(f"Python executable: {sys.executable}")
 """
 
-result = await conda_worker.execute_code(session_id, code)
+result = await conda_worker.execute(session_id, code)
 print(result.stdout)
 ```
 
@@ -393,33 +395,34 @@ except ImportError as e:
     print(f"Matplotlib not available: {e}")
 """
 
-result = await conda_worker.execute_code(session_id, code)
+result = await conda_worker.execute(session_id, code)
 print(result.stdout)
 ```
 
 ### Handling Execution Results
 
-The `execute_code()` method returns an `ExecutionResult` object with the following fields:
+The `execute()` method returns a Jupyter-like result object with the following fields:
 
 ```python
-result = await conda_worker.execute_code(session_id, code)
+result = await conda_worker.execute(session_id, code)
 
-if result.success:
+if result["status"] == "ok":
     print("Code executed successfully!")
-    print("Output:", result.stdout)
+    # Process outputs
+    for output in result["outputs"]:
+        if output["type"] == "stream":
+            print(f"{output['name']}: {output['text']}")
+        elif output["type"] == "execute_result":
+            print("Result:", output["data"]["text/plain"])
 else:
     print("Execution failed!")
-    print("Error:", result.error)
-    print("Stderr:", result.stderr)
-
-# Timing information (if available)
-if result.timing:
-    print(f"Execution time: {result.timing.execution_time:.2f}s")
+    if "error" in result:
+        print(f"Error: {result['error']['ename']}: {result['error']['evalue']}")
 ```
 
 ## Environment Caching
 
-The worker automatically caches conda environments to improve performance. When you start a session, the initialization script runs once, but the environment stays available for multiple `execute_code()` calls:
+The worker automatically caches conda environments to improve performance. When you start a session, the initialization script runs once, but the environment stays available for multiple `execute()` calls:
 
 - **Hash-based caching**: Environments are cached based on dependencies and channels
 - **LRU eviction**: Least recently used environments are removed when cache is full
@@ -464,7 +467,7 @@ Starting Hypha Conda Environment Worker...
 
 ✅ Conda Environment Worker (using mamba) registered successfully!
    Service ID: my-conda-worker
-   Supported types: ['python-conda']
+   Supported types: ['conda-jupyter-kernel']
    Visibility: public
 
 Worker is ready to process conda environment requests...
@@ -493,14 +496,15 @@ conda install mamba -n base -c conda-forge
 
 #### 2. Code Execution Errors
 ```
-ExecutionResult.success = False
+result["status"] == "error"
 ```
-**Solution**: Check the `stderr` and `error` fields in the result:
+**Solution**: Check the `error` and output fields in the result:
 ```python
-result = await conda_worker.execute_code(session_id, code)
-if not result.success:
-    print(f"Error: {result.error}")
-    print(f"Stderr: {result.stderr}")
+result = await conda_worker.execute(session_id, code)
+if result["status"] == "error":
+    print(f"Error: {result['error']['ename']}: {result['error']['evalue']}")
+    for line in result['error']['traceback']:
+        print(line)
 ```
 
 #### 3. Permission Errors
@@ -571,14 +575,21 @@ Start a new conda environment session with the specified dependencies. The initi
 
 **Returns:** Session ID string
 
-#### `execute_code(session_id: str, code: str) -> ExecutionResult`
+#### `execute(session_id: str, script: str, config: Dict = None, progress_callback: Callable = None, context: Dict = None) -> Dict`
 Execute Python code in the conda environment session, similar to a Jupyter notebook cell.
 
 **Parameters:**
 - `session_id`: The session ID returned from `start()`
-- `code`: Python code string to execute
+- `script`: Python code string to execute
+- `config`: Optional configuration dict (e.g., `{"timeout": 30.0}`)
+- `progress_callback`: Optional callback for execution progress
+- `context`: Optional context dict
 
-**Returns:** ExecutionResult with `success`, `stdout`, `stderr`, and `error` fields
+**Returns:** Dict with Jupyter-like execution results:
+- `status`: "ok" or "error"
+- `outputs`: List of output objects (stream, execute_result, error, etc.)
+- `execution_count`: Execution counter
+- `error`: Error details if status is "error"
 
 #### `stop(session_id: str) -> None`
 Stop a conda environment session and clean up resources.
