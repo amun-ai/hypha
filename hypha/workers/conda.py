@@ -26,10 +26,9 @@ from hypha.workers.base import (
 )
 from hypha.workers.conda_executor import CondaEnvExecutor, ExecutionResult
 
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("conda")
-logger.setLevel(LOGLEVEL)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="conda")
 
 
 def get_available_package_manager() -> str:
@@ -1050,11 +1049,7 @@ Examples:
 
     # Set up logging
     if args.verbose:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        )
-        logger.setLevel(logging.INFO)
+        configure_logging(level="INFO")
 
     # Detect package manager early for better error reporting
     try:

@@ -2,15 +2,11 @@ import asyncio
 import logging
 import os
 import sys
-
-
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("services")
-logger.setLevel(LOGLEVEL)
-
 import importlib.util
 from importlib import import_module
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="services")
 
 
 def _load_function(module_path, entrypoint):

@@ -11,7 +11,9 @@ from urllib.parse import urlparse
 from aiocache.backends.redis import RedisCache
 from aiocache.serializers import PickleSerializer
 
-logger = logging.getLogger(__name__)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name=__name__)
 
 
 class CacheEntry:

@@ -32,7 +32,9 @@ import os
 import zlib
 
 # Setup logger
-logger = logging.getLogger("zip_utils")
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="zip_utils")
 
 
 async def fetch_zip_tail(

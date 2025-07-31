@@ -42,10 +42,9 @@ from hypha.vectors import VectorSearchEngine
 from hypha.core.auth import generate_presigned_token, create_scope, parse_token
 from hypha.utils import EventBus, random_id
 
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("workspace")
-logger.setLevel(LOGLEVEL)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="workspace")
 
 SERVICE_SUMMARY_FIELD = ["id", "name", "type", "description", "config"]
 ANONYMOUS_USER_WS_PREFIX = "ws-user-anonymouz-"
@@ -268,8 +267,40 @@ class WorkspaceManager:
                 ],
                 overwrite=True,
             )
+
         self._initialized = True
+        
+        # Start periodic cleanup of orphaned services
+        self._cleanup_task = None
+        if not hasattr(self, '_cleanup_interval'):
+            self._cleanup_interval = 300  # 5 minutes default
+        
+        async def periodic_cleanup():
+            """Periodically clean up orphaned services from disconnected clients."""
+            while True:
+                try:
+                    await asyncio.sleep(self._cleanup_interval)
+                    await self._cleanup_orphaned_services()
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"Error in periodic cleanup: {e}")
+        
+        # Start the cleanup task
+        self._cleanup_task = asyncio.create_task(periodic_cleanup())
+        
         return rpc
+    
+    async def shutdown(self):
+        """Shutdown the workspace manager and cleanup resources."""
+        if hasattr(self, '_cleanup_task') and self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
+            logger.info("Stopped periodic cleanup task")
 
     @schema_method
     async def log_event(
@@ -893,6 +924,84 @@ class WorkspaceManager:
             client_keys.add(workspace + "/" + client_id)
         return list(client_keys)
 
+    async def _cleanup_orphaned_services(self):
+        """Clean up services from clients that are no longer connected."""
+        try:
+            # Get all workspaces
+            workspace_keys = await self._redis.hkeys("workspaces")
+            
+            for ws_key in workspace_keys:
+                workspace = ws_key.decode('utf-8') if isinstance(ws_key, bytes) else ws_key
+                
+                # Skip system workspaces
+                if workspace in ["public", "private"]:
+                    continue
+                
+                try:
+                    # Get all services in this workspace
+                    pattern = f"services:*|*:{workspace}/*:*@*"
+                    service_keys = await self._redis.keys(pattern)
+                    
+                    # Group services by client
+                    clients_to_check = {}
+                    for key in service_keys:
+                        key_str = key.decode('utf-8') if isinstance(key, bytes) else key
+                        # Extract client_id from service key
+                        # Format: services:visibility|type:workspace/client:service@app
+                        parts = key_str.split(":")
+                        if len(parts) >= 3:
+                            ws_client_service = parts[2].split("@")[0]  # workspace/client:service
+                            ws_client = ws_client_service.rsplit(":", 1)[0]  # workspace/client
+                            if "/" in ws_client:
+                                _, client_id = ws_client.split("/", 1)
+                                if client_id not in clients_to_check:
+                                    clients_to_check[client_id] = []
+                                clients_to_check[client_id].append(key_str)
+                    
+                    # Check each client and clean up if not connected
+                    for client_id, service_keys in clients_to_check.items():
+                        if not await self._is_client_connected(f"{workspace}/{client_id}", workspace):
+                            # Client is not connected, check if it has a built-in service
+                            has_builtin = any(":built-in@" in key for key in service_keys)
+                            
+                            if has_builtin:
+                                # This is an orphaned client with services
+                                logger.info(f"Cleaning up orphaned services for disconnected client {workspace}/{client_id}")
+                                try:
+                                    context = {"user": self._root_user.model_dump(), "ws": workspace}
+                                    await self.delete_client(client_id, workspace, self._root_user, unload=False, context=context)
+                                except Exception as e:
+                                    logger.error(f"Failed to clean up client {workspace}/{client_id}: {e}")
+                
+                except Exception as e:
+                    logger.error(f"Error processing workspace {workspace} during cleanup: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Error during orphaned service cleanup: {e}")
+
+    async def _is_client_connected(self, client_id: str, workspace: str) -> bool:
+        """Check if a client has an active websocket connection.
+        
+        This method checks both:
+        1. If the websocket server has an active connection for this client
+        2. If the client responds to a ping (fallback check)
+        """
+        # First check if the websocket server knows about this client
+        if hasattr(self._store, '_websocket_server') and self._store._websocket_server:
+            websocket_server = self._store._websocket_server
+            ws_key = f"{workspace}/{client_id.split('/')[-1]}"
+            if ws_key in websocket_server.get_websockets():
+                return True
+        
+        # Fallback: Try to ping the client to verify it's responsive
+        try:
+            full_client_id = client_id if "/" in client_id else f"{workspace}/{client_id}"
+            context = {"ws": workspace, "user": self._root_user.model_dump()}
+            result = await self.ping_client(full_client_id, timeout=2, context=context)
+            return result == "pong"
+        except Exception:
+            return False
+
     @schema_method
     async def ping_client(
         self,
@@ -1386,16 +1495,26 @@ class WorkspaceManager:
                         f"A singleton service with the same name ({service_name}) has already exists in the workspace ({workspace}), please remove it first or use a different name."
                     )
 
-        # Check if the clients exists if not a built-in service
-        if ":built-in" not in service.id and ws not in ["ws-user-root", "public"]:
-            builtins = await self._redis.keys(f"services:*|*:{client_id}:built-in@*")
-            if not builtins:
-                logger.warning(
-                    "Refuse to add service %s, client %s has been removed.",
-                    service.id,
-                    client_id,
+        # Check if the client has an active websocket connection
+        # This prevents ghost services from disconnected clients while allowing new registrations
+        if await self._is_client_connected(client_id, ws):
+            logger.debug(f"Client {client_id} has active websocket connection, proceeding with service registration")
+        else:
+            # For new clients (no built-in service yet), allow registration
+            # This solves the chicken-and-egg problem
+            pattern = f"services:*|*:{client_id}:built-in@*"
+            has_builtin = await self._redis.keys(pattern)
+            
+            if has_builtin:
+                # Client had a built-in service but no active connection - it's a ghost client
+                logger.warning(f"Detected ghost client {client_id} - cleaning up stale services")
+                # Clean up all services from this ghost client
+                await self.delete_client(
+                    client_id.split('/')[-1], ws, user_info, unload=False, context=context
                 )
-                return
+                # Allow the new registration to proceed
+            else:
+                logger.debug(f"New client {client_id} registering first service")
         # Check if the service already exists
         service_exists = await self._redis.keys(f"services:*|*:{service.id}@*")
         visibility = (
@@ -2282,7 +2401,7 @@ class WorkspaceManager:
                 f"Permission denied for workspace {workspace}, user: {user_info.id}"
             )
         logger.info(f"Cleaning up workspace {workspace_info.id}...")
-        # list all the clients and ping them
+        # list all the clients and check their connection status
         # If they are not responding, delete them
         client_keys = await self._list_client_keys(workspace)
         if len(client_keys) <= 0 and not workspace_info.persistent:
@@ -2295,14 +2414,27 @@ class WorkspaceManager:
             unload = True
         else:
             unload = False
+        
+        # Get websocket server to check connection states
+        websocket_server = self._store.get_websocket_server()
+        
         for client in client_keys:
             try:
-                assert (
-                    await self.ping_client(client, timeout=timeout, context=context)
-                    == "pong"
-                )
+                # First check if client has an active websocket connection
+                # This avoids sending RPC messages that would reset activity timers
+                is_connected = client in websocket_server.get_websockets()
+                
+                if is_connected:
+                    # Only ping if websocket is connected - this is a fallback check
+                    ping_result = await self.ping_client(client, timeout=timeout, context=context)
+                    if ping_result != "pong":
+                        raise Exception(f"Ping failed: {ping_result}")
+                else:
+                    # No websocket connection, consider client dead
+                    raise Exception("No websocket connection found")
+                    
             except Exception as e:
-                logger.error(f"Failed to ping client {client}: {e}")
+                logger.error(f"Client {client} appears dead: {e}")
                 user_info = UserInfo.model_validate(context["user"])
                 # Remove dead client
                 await self.delete_client(
@@ -2394,22 +2526,31 @@ class WorkspaceManager:
         self._active_svc.labels(workspace=cws).dec(len(keys) - 1)
 
         if unload:
-            if await self._redis.hexists("workspaces", cws):
-                if user_info.is_anonymous and cws == user_info.get_workspace():
-                    logger.info(
-                        f"Unloading workspace {cws} for anonymous user (while deleting client {client_id})"
-                    )
-                    # unload temporary workspace if the user exits
-                    await self.unload(context=context)
+            # Check if workspace still exists before attempting unload operations
+            # This prevents race condition errors when multiple clients are being cleaned up
+            try:
+                if await self._redis.hexists("workspaces", cws):
+                    if user_info.is_anonymous and cws == user_info.get_workspace():
+                        logger.info(
+                            f"Unloading workspace {cws} for anonymous user (while deleting client {client_id})"
+                        )
+                        # unload temporary workspace if the user exits
+                        await self.unload(context=context)
+                    else:
+                        logger.info(
+                            f"Unloading workspace {cws} for non-anonymous user (while deleting client {client_id})"
+                        )
+                        # otherwise delete the workspace if it is empty
+                        await self.unload_if_empty(context=context)
                 else:
-                    logger.info(
-                        f"Unloading workspace {cws} for non-anonymous user (while deleting client {client_id})"
+                    logger.warning(
+                        f"Workspace {cws} not found (while deleting client {client_id})"
                     )
-                    # otherwise delete the workspace if it is empty
-                    await self.unload_if_empty(context=context)
-            else:
+            except Exception as e:
+                # Handle race condition gracefully - workspace might have been deleted by another cleanup
                 logger.warning(
-                    f"Workspace {cws} not found (while deleting client {client_id})"
+                    f"Failed to unload workspace {cws} while deleting client {client_id}: {e}. "
+                    f"This is likely due to concurrent cleanup operations and can be safely ignored."
                 )
 
     async def unload_if_empty(self, context=None):
@@ -2417,13 +2558,34 @@ class WorkspaceManager:
         self.validate_context(context, permission=UserPermission.admin)
         workspace = context["ws"]
         logger.debug(f"Attempting to unload workspace: {workspace}")
-        client_keys = await self._list_client_keys(workspace)
-        if not client_keys:
-            logger.info(f"No active clients in workspace {workspace}. Unloading...")
-            await self.unload(context=context)
-        else:
+        
+        try:
+            # Add additional check to prevent race condition
+            if not await self._redis.hexists("workspaces", workspace):
+                logger.debug(f"Workspace {workspace} already unloaded, skipping")
+                return
+                
+            # Load workspace info to check if it's persistent
+            workspace_info = await self.load_workspace_info(workspace, load=False)
+            
+            # Skip unloading persistent workspaces
+            if workspace_info.persistent:
+                logger.debug(f"Workspace {workspace} is persistent, skipping unload")
+                return
+                
+            client_keys = await self._list_client_keys(workspace)
+            if not client_keys:
+                logger.info(f"No active clients in workspace {workspace}. Unloading...")
+                await self.unload(context=context)
+            else:
+                logger.warning(
+                    f"Skip unloading workspace {workspace} because it is not empty, remaining clients: {client_keys[:10]}..."
+                )
+        except Exception as e:
+            # Handle race condition where workspace was deleted by another operation
             logger.warning(
-                f"Skip unloading workspace {workspace} because it is not empty, remaining clients: {client_keys[:10]}..."
+                f"Failed to check/unload workspace {workspace}: {e}. "
+                f"This is likely due to concurrent cleanup operations."
             )
 
     async def _set_workspace_status(self, workspace_id: str, status: str):
@@ -2587,3 +2749,4 @@ class WorkspaceManager:
             raise ValueError(f"Unknown selection criteria: {criteria}")
 
         return selected_key
+

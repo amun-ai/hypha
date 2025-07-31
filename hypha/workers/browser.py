@@ -23,10 +23,9 @@ from hypha.plugin_parser import parse_imjoy_plugin
 from hypha import hypha_rpc_version
 from hypha.utils import PLUGIN_CONFIG_FIELDS, safe_join
 
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("browser")
-logger.setLevel(LOGLEVEL)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="browser")
 
 MAXIMUM_LOG_ENTRIES = 2048
 
@@ -1093,11 +1092,7 @@ Examples:
 
     # Set up logging
     if args.verbose:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        )
-        logger.setLevel(logging.INFO)
+        configure_logging(level="INFO")
 
     print(f"Starting Hypha Browser Worker...")
     print(f"  Server URL: {args.server_url}")

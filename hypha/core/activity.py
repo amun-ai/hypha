@@ -5,10 +5,9 @@ from typing import Callable, Dict, Optional, List
 import logging
 import sys
 
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("activity-tracker")
-logger.setLevel(LOGLEVEL)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="activity-tracker")
 
 
 class ActivityTracker:

@@ -43,10 +43,9 @@ except ImportError:
             handle.cancel()
 
 
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "INFO").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("mcp_proxy")
-logger.setLevel(LOGLEVEL)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="mcp_proxy")
 
 # Try to import MCP SDK
 try:

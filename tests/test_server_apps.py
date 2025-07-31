@@ -751,6 +751,7 @@ async def test_stop_after_inactive(fastapi_server, test_user_token):
     await asyncio.sleep(4)
     apps = await controller.list_running()
     assert find_item(apps, "id", app.id) is None
+    
     await controller.uninstall(app_info.id)
     await api.disconnect()
 

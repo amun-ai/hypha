@@ -21,10 +21,9 @@ from hypha.workers.base import (
     WorkerError,
 )
 
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "INFO").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("a2a_proxy")
-logger.setLevel(LOGLEVEL)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="a2a_proxy")
 
 # Try to import A2A SDK
 try:

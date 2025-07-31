@@ -17,10 +17,9 @@ from hypha.workers.browser import BrowserWorker
 from hypha.workers.mcp_proxy import MCPClientRunner
 
 
-LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
-logger = logging.getLogger("app-worker")
-logger.setLevel(LOGLEVEL)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name="app-worker")
 
 
 async def export_service(app_api, config, hypha_rpc):

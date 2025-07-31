@@ -20,8 +20,9 @@ from dataclasses import dataclass
 from uuid import uuid4
 from pydantic import AnyUrl
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name=__name__)
 
 
 def unwrap_object_proxy(obj):

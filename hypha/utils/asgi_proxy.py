@@ -42,7 +42,9 @@ from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-logger = logging.getLogger(__name__)
+from hypha.utils import configure_logging
+
+logger = configure_logging(module_name=__name__)
 
 Headerlike = Union[dict, Headers]
 
