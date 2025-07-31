@@ -1,0 +1,148 @@
+# Default values for minio chart
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# MinIO configuration using Bitnami chart
+minio:
+  # Enable MinIO deployment
+  enabled: true
+  
+  # MinIO architecture
+  architecture: standalone
+  
+  # Authentication
+  auth:
+    # Root user credentials - use secrets for production
+    # Option 1: Use existing secret (recommended)
+    existingSecret: "minio-credentials"
+    existingSecretKeys:
+      rootUser: "ACCESS_KEY_ID"
+      rootPassword: "SECRET_ACCESS_KEY"
+    
+    # Option 2: Hardcoded credentials (for development only)
+    # rootUser: "minioadmin"
+    # rootPassword: "minioadmin"
+  
+  # Service configuration
+  service:
+    type: ClusterIP
+    port: 9000
+    apiPort: 9000
+    consolePort: 9001
+  
+  # Persistence configuration
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 8Gi
+    accessMode: ReadWriteOnce
+  
+  # Resources
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  
+  # Security context
+  securityContext:
+    enabled: true
+    fsGroup: 1001
+    runAsUser: 1001
+  
+  # Container security context
+  containerSecurityContext:
+    enabled: true
+    runAsUser: 1001
+    runAsNonRoot: true
+  
+  # Ingress configuration (optional)
+  ingress:
+    enabled: false
+    # ingressClassName: nginx
+    # hosts:
+    #   - host: minio.local
+    #     paths:
+    #       - path: /
+    #         pathType: Prefix
+    # tls:
+    #   - secretName: minio-tls
+    #     hosts:
+    #       - minio.local
+  
+  # Metrics configuration
+  metrics:
+    enabled: false
+    # serviceMonitor:
+    #   enabled: false
+  
+  # Network policy
+  networkPolicy:
+    enabled: false
+  
+  # Pod annotations
+  podAnnotations: {}
+  
+  # Service annotations
+  serviceAnnotations: {}
+  
+  # Node selector
+  nodeSelector: {}
+  
+  # Tolerations
+  tolerations: []
+  
+  # Affinity
+  affinity: {}
+  
+  # Extra environment variables
+  extraEnvVars: []
+  
+  # Extra volume mounts
+  extraVolumeMounts: []
+  
+  # Extra volumes
+  extraVolumes: []
+  
+  # Pod disruption budget
+  pdb:
+    enabled: false
+    minAvailable: 1
+  
+  # Update strategy
+  updateStrategy:
+    type: RollingUpdate
+  
+  # Pod security context
+  podSecurityContext:
+    enabled: true
+    fsGroup: 1001
+  
+  # Liveness probe
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+  
+  # Readiness probe
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+    successThreshold: 1
+  
+  # Startup probe
+  startupProbe:
+    enabled: false
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 1
+    failureThreshold: 30
+    successThreshold: 1 

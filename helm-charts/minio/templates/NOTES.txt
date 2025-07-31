@@ -1,0 +1,40 @@
+Thank you for installing {{ .Chart.Name }}.
+
+Your release is named {{ .Release.Name }}.
+
+To learn more about the release, try:
+
+  $ helm status {{ .Release.Name }}
+  $ helm get all {{ .Release.Name }}
+
+{{- if .Values.minio.enabled }}
+MinIO is being deployed with the following configuration:
+
+  Architecture: {{ .Values.minio.architecture }}
+  Root User: {{ .Values.minio.auth.rootUser }}
+  Service Type: {{ .Values.minio.service.type }}
+  Persistence: {{ if .Values.minio.persistence.enabled }}Enabled{{ else }}Disabled{{ end }}
+  {{- if .Values.minio.persistence.enabled }}
+  Storage Size: {{ .Values.minio.persistence.size }}
+  {{- end }}
+
+To access MinIO:
+
+1. Port forward the service:
+   $ kubectl port-forward svc/{{ .Release.Name }}-minio 9000:9000
+   $ kubectl port-forward svc/{{ .Release.Name }}-minio 9001:9001
+
+2. Access MinIO:
+   - API: http://localhost:9000
+   - Console: http://localhost:9001
+
+3. Login with:
+   - Username: {{ .Values.minio.auth.rootUser }}
+   - Password: {{ .Values.minio.auth.rootPassword }}
+
+{{- if .Values.minio.ingress.enabled }}
+4. Or access via Ingress at: {{ (index .Values.minio.ingress.hosts 0).host }}
+{{- end }}
+
+For more information, visit: https://min.io/docs/
+{{- end }} 

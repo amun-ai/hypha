@@ -50,19 +50,23 @@ spec:
                 fieldRef:
                   fieldPath: metadata.uid
             {{- end }}
+          {{- if .Values.persistence.enabled }}
           volumeMounts:
             - name: {{ .Values.persistence.volumeName }}
               mountPath: {{ .Values.persistence.mountPath }}
+          {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      {{- if .Values.persistence.enabled }}
       volumes:
         - name: {{ .Values.persistence.volumeName }}
           persistentVolumeClaim:
             claimName: {{ include "hypha-server.fullname" . }}-data-pvc
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
