@@ -2355,6 +2355,19 @@ class ArtifactController:
                             raise ValueError(
                                 f"When in staging mode, version must be None, 'new', or 'stage', got '{version}'"
                             )
+                        
+                        # Special check: if already in staging mode and user tries to create new version
+                        if artifact.staging is not None and stage and version == "new":
+                            raise ValueError(
+                                "The artifact is already in stage mode. Please commit or discard the changes to continue new version creation."
+                            )
+                        
+                        # If artifact is already in staging mode and user calls edit with stage=true and version=None
+                        # This should do nothing - just return the artifact as is
+                        if artifact.staging is not None and stage and version is None:
+                            logger.info(f"Artifact {artifact_id} is already in staging mode, no changes needed")
+                            # We'll still continue to allow updates to manifest/config if provided
+                        
                         version = (
                             "stage"  # Force version to be "stage" when in staging mode
                         )
