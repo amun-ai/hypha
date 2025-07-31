@@ -54,11 +54,60 @@ To uninstall the chart:
 helm uninstall hypha-server --namespace=hypha
 ```
 
-## Persistence Configuration
+## Database Configuration
 
-Hypha uses persistent storage by default to store the application database and other data. You can configure persistence options in the `values.yaml` file:
+Hypha supports two database backends: **SQLite** (default) and **PostgreSQL**. The choice of database affects your persistence requirements:
 
-### Disable Persistence
+### SQLite (Default) - Requires Persistent Storage
+
+When using SQLite (the default), Hypha stores the database file on the local filesystem. This requires persistent storage to be enabled:
+
+```yaml
+persistence:
+  enabled: true
+  volumeName: hypha-app-storage
+  mountPath: /data
+  size: 20Gi
+  accessModes:
+    - ReadWriteOnce
+  storageClass: "fast-ssd"
+```
+
+**Important**: If you disable persistence with SQLite, your data will be lost when the pod restarts.
+
+### PostgreSQL - No Persistent Storage Required
+
+When using PostgreSQL, Hypha connects to an external database, so you don't need persistent storage for the Hypha application itself. The PostgreSQL database handles its own persistence.
+
+To use PostgreSQL, you need to:
+
+1. **Install PostgreSQL** (see section below)
+2. **Configure the DATABASE_URI** in your Hypha values:
+
+```yaml
+env:
+  # ... existing environment variables ...
+  - name: DATABASE_URI
+    value: "postgresql+asyncpg://hypha-admin:$(POSTGRES_PASSWORD)@hypha-sql-database-postgresql.hypha.svc.cluster.local:5432/hypha-db"
+  - name: POSTGRES_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: hypha-secrets
+        key: POSTGRES_PASSWORD
+```
+
+3. **Disable persistence** for the Hypha application:
+
+```yaml
+persistence:
+  enabled: false
+```
+
+### Persistence Configuration for SQLite
+
+If you're using SQLite (default), you can configure persistence options in the `values.yaml` file:
+
+#### Disable Persistence (Not Recommended for SQLite)
 
 For testing or development environments, you can disable persistence entirely:
 
@@ -67,7 +116,9 @@ persistence:
   enabled: false
 ```
 
-### Customize Persistence
+**Warning**: This will cause data loss when pods restart if you are not using postgresql, nor the persistence setting.
+
+#### Customize Persistence
 
 You can customize the persistence configuration:
 
@@ -80,6 +131,129 @@ persistence:
   accessModes:
     - ReadWriteMany  # For shared storage
   storageClass: "fast-ssd"  # Use specific storage class
+```
+
+## Install PostgreSQL for Production Use
+
+For production deployments, it's recommended to use PostgreSQL instead of SQLite. PostgreSQL provides better performance, concurrent access, and data integrity.
+
+### Prerequisites
+
+Before installing PostgreSQL, you need to add the PostgreSQL password to your `hypha-secrets`:
+
+```bash
+# Add PostgreSQL password to existing secrets
+kubectl patch secret hypha-secrets --namespace=hypha --type='json' -p='[{"op": "add", "path": "/data/POSTGRES_PASSWORD", "value": "'$(echo -n "your-secure-password" | base64)'"}]'
+```
+
+### Installing PostgreSQL
+
+1. **Add the Bitnami Helm repository**:
+```bash
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo update
+```
+
+2. **Navigate to the PostgreSQL chart directory**:
+```bash
+cd postgresql
+```
+
+3. **Deploy PostgreSQL using Helm**:
+```bash
+helm upgrade --install hypha-sql-database bitnami/postgresql \
+  -f values.yaml \
+  --namespace hypha \
+  --version 16.1.0
+```
+
+### PostgreSQL Configuration
+
+The provided `values.yaml` file configures PostgreSQL with:
+- **Security**: Non-root user, proper security contexts
+- **Storage**: 10Gi persistent volume using `retainer` storage class
+- **Authentication**: Uses the existing `hypha-secrets` for passwords
+- **Database**: Creates `hypha-db` database with `hypha-admin` user
+
+### Connecting to PostgreSQL
+
+#### From Inside the Cluster
+
+For Hypha to connect to PostgreSQL, use this hostname:
+```
+hypha-sql-database-postgresql.hypha.svc.cluster.local:5432
+```
+
+#### From Your Local Machine
+
+To connect directly to PostgreSQL for debugging:
+
+```bash
+# Forward the PostgreSQL port
+kubectl port-forward --namespace hypha svc/hypha-sql-database-postgresql 5432:5432
+
+# Get the password from secrets
+export POSTGRES_PASSWORD=$(kubectl get secret --namespace hypha hypha-secrets -o jsonpath="{.data.POSTGRES_PASSWORD}" | base64 -d)
+
+# Connect using psql
+PGPASSWORD="$POSTGRES_PASSWORD" psql --host 127.0.0.1 -U hypha-admin -d hypha-db -p 5432
+```
+
+### Testing PostgreSQL Connection
+
+You can test the PostgreSQL connection using the provided test script:
+
+```bash
+# Set the password environment variable
+export POSTGRES_PASSWORD=$(kubectl get secret --namespace hypha hypha-secrets -o jsonpath="{.data.POSTGRES_PASSWORD}" | base64 -d)
+
+# Run the test script
+cd postgresql
+python test_db.py
+```
+
+### Upgrading Hypha to Use PostgreSQL
+
+After installing PostgreSQL, update your Hypha configuration:
+
+1. **Update the Hypha values** to use PostgreSQL:
+```yaml
+env:
+  # ... existing environment variables ...
+  - name: DATABASE_URI
+    value: "postgresql+asyncpg://hypha-admin:$(POSTGRES_PASSWORD)@hypha-sql-database-postgresql.hypha.svc.cluster.local:5432/hypha-db"
+  - name: POSTGRES_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: hypha-secrets
+        key: POSTGRES_PASSWORD
+
+persistence:
+  enabled: false  # Disable persistence since PostgreSQL handles storage
+```
+
+2. **Upgrade the Hypha deployment**:
+```bash
+helm upgrade hypha-server ./hypha-server --namespace=hypha
+```
+
+### PostgreSQL Customization
+
+You can customize PostgreSQL by modifying the `postgresql/values.yaml` file:
+
+```yaml
+primary:
+  persistence:
+    size: 20Gi  # Increase storage size
+    storageClass: "fast-ssd"  # Use different storage class
+  
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
 ```
 
 ### Install Released Helm Charts
@@ -226,10 +400,10 @@ You can customize MinIO by creating a custom values file (`minio-values.yaml`):
 minio:
   auth:
     # Use custom secret with different key names
-    existingSecret: "my-minio-secret"
+    existingSecret: "minio-credentials"
     existingSecretKeys:
-      rootUser: "USERNAME"
-      rootPassword: "PASSWORD"
+      rootUser: "ACCESS_KEY_ID"
+      rootPassword: "SECRET_ACCESS_KEY"
   persistence:
     size: 20Gi
   resources:
