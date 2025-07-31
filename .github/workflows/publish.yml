@@ -43,10 +43,8 @@ jobs:
         python setup.py sdist bdist_wheel
       shell: bash -l {0}
 
-    - name: Upload to PyPI
-      if: success()
-      env:
-        TWINE_USERNAME: __token__
-        # You'll need to add this secret in your GitHub repository settings
-        TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-      run: python -m twine upload --skip-existing dist/*
+    - name: Publish package on PyPI
+      uses: pypa/gh-action-pypi-publish@v1.9.0
+      with:
+        user: __token__
+        password: "${{ secrets.PYPI_TOKEN }}"
