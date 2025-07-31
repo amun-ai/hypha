@@ -12,7 +12,7 @@ Make sure you have the following installed:
 
 First, clone this repository:
 ```bash
-git clone https://amun-ai.github.com/hypha.git
+git clone https://github.com/amun-ai/hypha.git
 cd hypha/helm-charts
 ```
 
