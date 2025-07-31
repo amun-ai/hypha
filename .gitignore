@@ -1,6 +1,7 @@
 examples/
 minio-data/
 helm-charts/*.tgz
+helm-charts/*/charts/
 **/.minio.sys
 *.DS_Store
 *.app

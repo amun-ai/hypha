@@ -1,0 +1,45 @@
+apiVersion: v2
+name: hypha-server-kit
+description: A comprehensive Helm chart for Hypha server with integrated dependencies
+type: application
+version: 0.1.0
+appVersion: "0.20.80"
+
+dependencies:
+  - name: hypha-server
+    version: "0.20.60"
+    repository: "file://../hypha-server"
+    condition: hypha-server.enabled
+  
+  - name: minio
+    version: "17.0.16"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: minio.enabled
+  
+  - name: postgresql
+    version: "16.3.2"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled
+  
+  - name: redis
+    version: "21.2.13"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled
+
+maintainers:
+  - name: Hypha Team
+    email: hypha@amun.ai
+
+keywords:
+  - hypha
+  - ai
+  - rpc
+  - microservices
+  - s3
+  - postgresql
+  - redis
+  - minio
+
+home: https://github.com/amun-ai/hypha
+sources:
+  - https://github.com/amun-ai/hypha

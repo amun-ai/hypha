@@ -1,0 +1,3 @@
+{{- if index .Values "hypha-server" "enabled" -}}
+# This file is no longer needed - we'll pass env directly in values
+{{- end -}}

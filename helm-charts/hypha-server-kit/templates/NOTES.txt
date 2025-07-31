@@ -1,0 +1,135 @@
+Thank you for installing {{ .Chart.Name }}!
+
+Your release is named {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+## Component Status
+
+{{- if index .Values "hypha-server" "enabled" }}
+✅ Hypha Server: ENABLED
+{{- else }}
+❌ Hypha Server: DISABLED
+{{- end }}
+
+{{- if .Values.minio.enabled }}
+✅ MinIO (S3 Storage): ENABLED
+{{- else }}
+❌ MinIO (S3 Storage): DISABLED
+{{- end }}
+
+{{- if .Values.postgresql.enabled }}
+✅ PostgreSQL: ENABLED
+{{- else }}
+❌ PostgreSQL: DISABLED (Using SQLite)
+{{- end }}
+
+{{- if .Values.redis.enabled }}
+✅ Redis: ENABLED
+{{- else }}
+❌ Redis: DISABLED
+{{- end }}
+
+## Getting Started
+
+1. Check deployment status:
+   ```
+   kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+   ```
+
+2. Wait for all pods to be ready:
+   ```
+   kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance={{ .Release.Name }} -n {{ .Release.Namespace }} --timeout=300s
+   ```
+
+## Accessing Services
+
+### Hypha Server
+{{- if index .Values "hypha-server" "enabled" }}
+{{- if index .Values "hypha-server" "ingress" "enabled" }}
+
+External URL:
+{{- range $host := index .Values "hypha-server" "ingress" "hosts" }}
+  {{- range .paths }}
+  http{{ if index $.Values "hypha-server" "ingress" "tls" }}s{{ end }}://{{ $host.host }}{{ .path }}
+  {{- end }}
+{{- end }}
+{{- else }}
+
+Port-forward to access locally:
+```
+kubectl port-forward -n {{ .Release.Namespace }} svc/{{ .Release.Name }}-hypha-server 9520:9520
+```
+Then access at: http://localhost:9520
+{{- end }}
+{{- end }}
+
+### MinIO Console
+{{- if .Values.minio.enabled }}
+{{- if .Values.minio.ingress.enabled }}
+
+External URL: http{{ if .Values.minio.ingress.tls }}s{{ end }}://{{ .Values.minio.ingress.hostname }}
+{{- else }}
+
+Port-forward to access MinIO console:
+```
+kubectl port-forward -n {{ .Release.Namespace }} svc/{{ .Release.Name }}-minio 9001:9001
+```
+Then access at: http://localhost:9001
+
+Credentials:
+- Username: {{ .Values.minio.auth.rootUser }}
+- Password: [hidden - check your values file]
+{{- end }}
+{{- end }}
+
+### Database Connection
+{{- if .Values.postgresql.enabled }}
+
+PostgreSQL is available at:
+- Host: {{ .Release.Name }}-postgresql
+- Port: 5432
+- Database: {{ .Values.postgresql.auth.database }}
+- Username: {{ .Values.postgresql.auth.username }}
+{{- else }}
+
+Using SQLite database at: /data/hypha-app-database.db
+{{- end }}
+
+### Redis Connection
+{{- if .Values.redis.enabled }}
+
+Redis is available at:
+- Host: {{ .Release.Name }}-redis-master
+- Port: 6379
+{{- if .Values.redis.auth.enabled }}
+- Authentication: Required (password configured)
+{{- end }}
+{{- end }}
+
+## Important Security Notes
+
+⚠️  **WARNING**: This deployment uses default passwords!
+
+{{- if or .Values.minio.enabled .Values.postgresql.enabled .Values.redis.enabled }}
+Please update the following passwords in production:
+{{- if .Values.minio.enabled }}
+- MinIO root password
+{{- end }}
+{{- if .Values.postgresql.enabled }}
+- PostgreSQL passwords
+{{- end }}
+{{- if .Values.redis.enabled }}
+- Redis password
+{{- end }}
+- Hypha JWT secret
+{{- end }}
+
+## Next Steps
+
+1. Update passwords and secrets for production use
+2. Configure proper ingress with TLS certificates
+3. Set up monitoring and backups
+4. Review resource limits and adjust as needed
+
+For more information, visit:
+- Documentation: https://docs.amun.ai
+- GitHub: https://github.com/amun-ai/hypha

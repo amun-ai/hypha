@@ -1,0 +1,244 @@
+# Hypha Server Kit - Unified deployment configuration
+# This chart bundles Hypha Server with its dependencies (MinIO, PostgreSQL, Redis)
+
+# Global configuration
+global:
+  # Namespace to deploy resources (used for internal service discovery)
+  namespace: hypha
+  # Storage class for persistent volumes
+  storageClass: ""
+
+# Hypha Server configuration
+hypha-server:
+  enabled: true
+  
+  replicaCount: 1
+  
+  image:
+    repository: ghcr.io/amun-ai/hypha
+    pullPolicy: IfNotPresent
+    tag: "0.20.80"
+  
+  ingress:
+    enabled: true
+    className: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+      nginx.ingress.kubernetes.io/proxy-body-size: 8192m
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      nginx.ingress.kubernetes.io/websocket-services: "hypha-server-kit"
+    hosts:
+      - host: hypha-kit.scilifelab-2-dev.sys.kth.se
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hypha-server-kit
+                port:
+                  number: 9520
+    tls:
+      - hosts:
+          - hypha-kit.scilifelab-2-dev.sys.kth.se
+        secretName: hypha-kit.scilifelab-2-dev.sys.kth.se-tls
+  
+  service:
+    type: ClusterIP
+    port: 9520
+  
+  resources:
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+  
+  persistence:
+    enabled: true
+    size: 10Gi
+    mountPath: /data
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+  
+  env:
+    - name: HOME
+      value: "/data"
+    - name: HYPHA_HOST
+      value: "0.0.0.0"
+    - name: HYPHA_PORT
+      value: "9520"
+    - name: HYPHA_JWT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: hypha-server-kit-secrets
+          key: JWT_SECRET
+    - name: HYPHA_PUBLIC_BASE_URL
+      value: "https://hypha-kit.scilifelab-2-dev.sys.kth.se"
+    - name: HYPHA_DATABASE_URI
+      valueFrom:
+        configMapKeyRef:
+          name: hypha-server-kit-config
+          key: database-uri
+    - name: HYPHA_REDIS_URI
+      valueFrom:
+        configMapKeyRef:
+          name: hypha-server-kit-config
+          key: redis-uri
+    - name: HYPHA_ENABLE_S3
+      valueFrom:
+        configMapKeyRef:
+          name: hypha-server-kit-config
+          key: s3-enabled
+    - name: HYPHA_ENDPOINT_URL
+      valueFrom:
+        configMapKeyRef:
+          name: hypha-server-kit-config
+          key: s3-endpoint
+    - name: HYPHA_ENDPOINT_URL_PUBLIC
+      valueFrom:
+        configMapKeyRef:
+          name: hypha-server-kit-config
+          key: s3-endpoint-public
+    - name: HYPHA_S3_ADMIN_TYPE
+      valueFrom:
+        configMapKeyRef:
+          name: hypha-server-kit-config
+          key: s3-admin-type
+    - name: HYPHA_ENABLE_S3_PROXY
+      valueFrom:
+        configMapKeyRef:
+          name: hypha-server-kit-config
+          key: s3-proxy-enabled
+    - name: HYPHA_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: hypha-server-kit-secrets
+          key: S3_ACCESS_KEY
+    - name: HYPHA_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: hypha-server-kit-secrets
+          key: S3_SECRET_KEY
+
+# MinIO configuration
+minio:
+  enabled: true
+  
+  auth:
+    rootUser: admin
+    rootPassword: changeme123  # Change this in production!
+  
+  mode: standalone
+  
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: ""
+  
+  service:
+    type: ClusterIP
+    ports:
+      api: 9000
+      console: 9001
+  
+  # Optionally enable MinIO ingress
+  ingress:
+    enabled: false
+    hostname: minio-kit.local
+    ingressClassName: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+    tls: false
+  
+  # Create default buckets
+  defaultBuckets: "hypha-storage"
+  
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 250m
+    limits:
+      memory: 1Gi
+      cpu: 500m
+
+# PostgreSQL configuration
+postgresql:
+  enabled: true
+  
+  auth:
+    username: hypha
+    password: changeme456  # Change this in production!
+    database: hypha_db
+    postgresPassword: changeme789  # Change this in production!
+  
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClass: ""
+    
+    resources:
+      requests:
+        memory: 256Mi
+        cpu: 250m
+      limits:
+        memory: 512Mi
+        cpu: 500m
+  
+  metrics:
+    enabled: false
+
+# Redis configuration
+redis:
+  enabled: true
+  
+  architecture: standalone
+  
+  auth:
+    enabled: true
+    password: changeme101112  # Change this in production!
+  
+  master:
+    persistence:
+      enabled: true
+      size: 8Gi
+      storageClass: ""
+    
+    resources:
+      requests:
+        memory: 256Mi
+        cpu: 100m
+      limits:
+        memory: 512Mi
+        cpu: 250m
+  
+  metrics:
+    enabled: false
+
+# Shared secrets configuration
+secrets:
+  # Whether to create secrets automatically
+  create: true
+  
+  # JWT secret for Hypha authentication
+  jwtSecret: "change-this-to-a-secure-random-string"  # Change this in production!
+  
+  # S3/MinIO credentials - will use MinIO's rootUser/rootPassword if MinIO is enabled
+  s3AccessKey: ""  # Will be auto-populated from MinIO if enabled
+  s3SecretKey: ""  # Will be auto-populated from MinIO if enabled
+
+# Additional configuration options
+monitoring:
+  enabled: false
+  prometheus:
+    enabled: false
+  grafana:
+    enabled: false
+
+backup:
+  enabled: false
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  retention: 7  # Keep backups for 7 days
