@@ -1,14 +1,71 @@
-# Minimal Hypha Helm Chart
+# Hypha Helm Charts
 
-This is a **minimal helm chart** to deploy Hypha on a Kubernetes cluster. This does not include standalone redis or s3, if you are interested in more advanced deployment, please refer to the [hypha-helm-charts](https://github.com/amun-ai/hypha-helm-charts) repository.
+This repository contains two Helm charts for deploying Hypha on Kubernetes:
 
-## Prerequisites
+1. **[Hypha Server (Minimal)](#minimal-hypha-server)** - A lightweight deployment of Hypha Server only
+2. **[Hypha Server Kit (Full)](#hypha-server-kit-full)** - Complete deployment with PostgreSQL, Redis, and MinIO included
+
+## Comparison
+
+| Feature | Minimal Version | Kit Version |
+|---------|-----------------|-------------|
+| **Hypha Server** | ✅ Included | ✅ Included |
+| **PostgreSQL** | ❌ Not included | ✅ Included |
+| **Redis** | ❌ Not included | ✅ Included |
+| **MinIO (S3)** | ❌ Not included | ✅ Included |
+| **Default Storage** | SQLite (local file) | PostgreSQL |
+| **Production Ready** | Requires external services | ✅ All-in-one |
+| **Configuration** | Manual setup | Automated via `.env` |
+| **Best For** | Development, custom setups | Quick deployment, production |
+
+## Minimal Hypha Server
+
+The minimal chart (`./hypha-server`) deploys only the Hypha Server application. This is suitable when you:
+- Already have PostgreSQL, Redis, or S3 storage available
+- Want a lightweight deployment for development/testing
+- Need fine-grained control over your infrastructure
+
+**Note**: By default, the minimal version uses SQLite for storage. For production use, we recommend configuring an external PostgreSQL database.
+
+## Hypha Server Kit (Full)
+
+The kit chart (`./hypha-server-kit`) provides a complete, production-ready deployment including:
+- **Hypha Server** - Core application
+- **PostgreSQL** - Database backend
+- **Redis** - Cache and message broker for scaling
+- **MinIO** - S3-compatible object storage
+
+This is ideal for:
+- Quick production deployments
+- Proof of concepts
+- Development environments
+- When you need all components configured and working together
+
+### Quick Start - Kit Version
+
+```bash
+cd helm-charts/hypha-server-kit
+cp .env.example .env
+# Edit .env with your configuration
+./apply-env.sh .env hypha
+helm install hypha-server-kit . --namespace hypha
+```
+
+For detailed instructions, see the [Hypha Server Kit README](./hypha-server-kit/README.md).
+
+---
+
+## Minimal Version Deployment Guide
+
+Below are the instructions for deploying the minimal Hypha Server chart.
+
+### Prerequisites
 
 Make sure you have the following installed:
 - [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl/)
 - [helm](https://helm.sh/docs/intro/install/)
 
-## Usage
+### Usage
 
 First, clone this repository:
 ```bash

@@ -29,19 +29,14 @@ hypha-server:
       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
       nginx.ingress.kubernetes.io/websocket-services: "hypha-server-kit"
     hosts:
-      - host: hypha-kit.scilifelab-2-dev.sys.kth.se
+      - host: hypha-server-kit.scilifelab-2-dev.sys.kth.se
         paths:
           - path: /
             pathType: Prefix
-            backend:
-              service:
-                name: hypha-server-kit
-                port:
-                  number: 9520
     tls:
-      - hosts:
-          - hypha-kit.scilifelab-2-dev.sys.kth.se
-        secretName: hypha-kit.scilifelab-2-dev.sys.kth.se-tls
+      - secretName: hypha-server-kit-tls
+        hosts:
+          - hypha-server-kit.scilifelab-2-dev.sys.kth.se
   
   service:
     type: ClusterIP
@@ -63,73 +58,72 @@ hypha-server:
     accessModes:
       - ReadWriteOnce
   
+  # Hypha environment configuration - matching the actual hypha-server chart
   env:
     - name: HOME
       value: "/data"
+    - name: HYPHA_LOGLEVEL
+      value: "INFO"
+    - name: HYPHA_JWT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: hypha-secrets
+          key: HYPHA_JWT_SECRET
     - name: HYPHA_HOST
       value: "0.0.0.0"
     - name: HYPHA_PORT
       value: "9520"
-    - name: HYPHA_JWT_SECRET
-      valueFrom:
-        secretKeyRef:
-          name: hypha-server-kit-secrets
-          key: JWT_SECRET
     - name: HYPHA_PUBLIC_BASE_URL
-      value: "https://hypha-kit.scilifelab-2-dev.sys.kth.se"
+      value: "https://hypha-server-kit.scilifelab-2-dev.sys.kth.se"
     - name: HYPHA_DATABASE_URI
       valueFrom:
-        configMapKeyRef:
-          name: hypha-server-kit-config
-          key: database-uri
+        secretKeyRef:
+          name: hypha-secrets
+          key: HYPHA_DATABASE_URI
     - name: HYPHA_REDIS_URI
       valueFrom:
-        configMapKeyRef:
-          name: hypha-server-kit-config
-          key: redis-uri
+        secretKeyRef:
+          name: hypha-secrets
+          key: HYPHA_REDIS_URI
+    - name: HYPHA_ENABLE_SERVER_APPS
+      value: "true"
     - name: HYPHA_ENABLE_S3
-      valueFrom:
-        configMapKeyRef:
-          name: hypha-server-kit-config
-          key: s3-enabled
-    - name: HYPHA_ENDPOINT_URL
-      valueFrom:
-        configMapKeyRef:
-          name: hypha-server-kit-config
-          key: s3-endpoint
-    - name: HYPHA_ENDPOINT_URL_PUBLIC
-      valueFrom:
-        configMapKeyRef:
-          name: hypha-server-kit-config
-          key: s3-endpoint-public
-    - name: HYPHA_S3_ADMIN_TYPE
-      valueFrom:
-        configMapKeyRef:
-          name: hypha-server-kit-config
-          key: s3-admin-type
-    - name: HYPHA_ENABLE_S3_PROXY
-      valueFrom:
-        configMapKeyRef:
-          name: hypha-server-kit-config
-          key: s3-proxy-enabled
+      value: "true"
     - name: HYPHA_ACCESS_KEY_ID
       valueFrom:
         secretKeyRef:
-          name: hypha-server-kit-secrets
-          key: S3_ACCESS_KEY
+          name: hypha-secrets
+          key: HYPHA_ACCESS_KEY_ID
     - name: HYPHA_SECRET_ACCESS_KEY
       valueFrom:
         secretKeyRef:
-          name: hypha-server-kit-secrets
-          key: S3_SECRET_KEY
+          name: hypha-secrets
+          key: HYPHA_SECRET_ACCESS_KEY
+    - name: HYPHA_ENDPOINT_URL
+      value: "http://hypha-server-kit-minio:9000"
+    - name: HYPHA_ENDPOINT_URL_PUBLIC
+      value: "https://s3.example.com"  # CHANGE THIS for public S3 access
+    - name: HYPHA_S3_ADMIN_TYPE
+      value: "minio"
+    - name: HYPHA_ENABLE_S3_PROXY
+      value: "true"
+    - name: HYPHA_ENABLE_MCP
+      value: "true"
+    - name: HYPHA_ENABLE_A2A
+      value: "true"
+    # - name: HYPHA_ENABLE_SERVICE_SEARCH
+    #   value: "false"
 
 # MinIO configuration
 minio:
   enabled: true
   
   auth:
-    rootUser: admin
-    rootPassword: changeme123  # Change this in production!
+    # Use existing secret for credentials
+    existingSecret: hypha-secrets
+    existingSecretKeys:
+      rootUser: root-user
+      rootPassword: root-password
   
   mode: standalone
   
@@ -170,9 +164,12 @@ postgresql:
   
   auth:
     username: hypha
-    password: changeme456  # Change this in production!
     database: hypha_db
-    postgresPassword: changeme789  # Change this in production!
+    # Use existing secret for password
+    existingSecret: hypha-secrets
+    secretKeys:
+      adminPasswordKey: POSTGRES_PASSWORD
+      userPasswordKey: POSTGRES_PASSWORD
   
   primary:
     persistence:
@@ -199,7 +196,9 @@ redis:
   
   auth:
     enabled: true
-    password: changeme101112  # Change this in production!
+    # Use existing secret for password
+    existingSecret: hypha-secrets
+    existingSecretPasswordKey: REDIS_PASSWORD
   
   master:
     persistence:
@@ -218,17 +217,11 @@ redis:
   metrics:
     enabled: false
 
-# Shared secrets configuration
-secrets:
-  # Whether to create secrets automatically
-  create: true
-  
-  # JWT secret for Hypha authentication
-  jwtSecret: "change-this-to-a-secure-random-string"  # Change this in production!
-  
-  # S3/MinIO credentials - will use MinIO's rootUser/rootPassword if MinIO is enabled
-  s3AccessKey: ""  # Will be auto-populated from MinIO if enabled
-  s3SecretKey: ""  # Will be auto-populated from MinIO if enabled
+# Configuration Notes:
+# 1. All sensitive data is stored in the 'hypha-secrets' secret
+# 2. Create secrets using: ./create-secrets.sh .env hypha
+# 3. Update domain names in ingress and HYPHA_PUBLIC_BASE_URL
+# 4. For production, ensure all passwords in .env are changed from defaults
 
 # Additional configuration options
 monitoring:

@@ -1,151 +1,122 @@
 # Hypha Server Kit Helm Chart
 
-A comprehensive Helm chart that bundles Hypha Server with all its dependencies (MinIO, PostgreSQL, Redis) in a single deployment package. This guide provides detailed instructions for beginners to advanced users on deploying and configuring Hypha in various environments.
+A comprehensive Helm chart that bundles Hypha Server with all its dependencies (MinIO, PostgreSQL, Redis) in a single deployment package.
 
-## Overview
+## What's Included
 
-This chart simplifies the deployment of Hypha by including:
-- **Hypha Server**: The core application for building computational workflows
-- **MinIO**: S3-compatible object storage for file management (optional)
-- **PostgreSQL**: Database backend for persistent data storage (optional)
-- **Redis**: Cache and message broker for real-time features (optional)
+This kit includes:
 
-Each dependency can be enabled/disabled independently, with automatic configuration when enabled.
+- **Hypha Server**: Core application
+- **PostgreSQL**: Database backend (persistent storage)
+- **Redis**: Cache and message broker (for scaling)
+- **MinIO**: S3-compatible object storage
+
+Each component is pre-configured to work together seamlessly.
+
 
 ## Prerequisites
 
 - Kubernetes 1.19+ cluster
 - Helm 3.2.0+ installed
 - kubectl configured to access your cluster
-- PV provisioner support in the underlying infrastructure (for persistence)
-- (Optional) cert-manager for automatic TLS certificates
 - (Optional) NGINX Ingress Controller for web access
-
-### Installing Prerequisites
+- (Optional) cert-manager for automatic TLS certificates
 
 ```bash
 # Install Helm
 curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
-# Install NGINX Ingress Controller
+# Install NGINX Ingress Controller if needed
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
 helm repo update
 helm install ingress-nginx ingress-nginx/ingress-nginx \
   --namespace ingress-nginx --create-namespace
 
-# Install cert-manager (for automatic TLS certificates)
+# Install cert-manager (for automatic TLS certificates) if needed
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.12.0/cert-manager.yaml
 ```
 
 ## Quick Start
 
-For a quick deployment with default settings:
+### 1. Clone and Navigate
 
 ```bash
-# Clone the repository
 git clone https://github.com/amun-ai/hypha.git
-cd hypha
-
-# Deploy with default configuration
-helm install hypha-server-kit ./helm-charts/hypha-server-kit \
-  --namespace hypha --create-namespace
-
-# Check deployment status
-kubectl get pods -n hypha
+cd hypha/helm-charts/hypha-server-kit
 ```
 
-## Installation
-
-### Basic Installation
-
-```bash
-# Install from local directory
-helm install hypha-server-kit ./helm-charts/hypha-server-kit \
-  --namespace hypha \
-  --create-namespace
-```
-
-### Installation with Custom Values
-
-```bash
-# Create custom values file
-cat > my-values.yaml <<EOF
-hypha-server:
-  ingress:
-    hosts:
-      - host: hypha.example.com
-        paths:
-          - path: /
-            pathType: Prefix
-  persistence:
-    size: 50Gi
-
-postgresql:
-  auth:
-    password: my-secure-password
-    postgresPassword: my-secure-admin-password
-
-redis:
-  auth:
-    password: my-redis-password
-
-minio:
-  auth:
-    rootUser: myadmin
-    rootPassword: my-minio-password
-EOF
-
-# Install with custom values
-helm install hypha-server-kit ./helm-charts/hypha-server-kit \
-  --namespace hypha \
-  --create-namespace \
-  -f my-values.yaml
-```
-
-## Configuration Management
-
-### Using Environment Variables with ConfigMap
-
-We provide a script to generate ConfigMaps from .env files. First, copy the example environment file:
+### 2. Create Secrets
 
 ```bash
 # Copy the example environment file
 cp .env.example .env
 
-# Edit the .env file with your specific configuration
-vim .env  # or use your preferred editor
+# Edit the .env file and update all passwords and secrets
+# IMPORTANT: This file now contains ONLY secrets - all other config is in values.yaml
+nano .env
+
+# Create Kubernetes secrets from your .env file
+./create-secrets.sh .env hypha
 ```
 
-Then use the provided script to create a ConfigMap:
+### 3. Configure Values
 
 ```bash
-# Create ConfigMap from your .env file
-./create-configmap-from-env.sh .env hypha-config hypha
+# Edit values.yaml to customize your deployment
+nano values.yaml
+
+# Key settings to update:
+# - hypha-server.ingress.hosts[0].host: Your domain name
+# - hypha-server.env: Update HYPHA_PUBLIC_BASE_URL and other configuration
+# - hypha-server.env: Update HYPHA_ENDPOINT_URL_PUBLIC for S3 access (if using)
+# - All non-secret configuration is now in values.yaml
 ```
 
-### Integrating ConfigMap with Helm Deployment
+### 4. Install Hypha Server Kit
 
 ```bash
-# Create ConfigMap from .env file
-./create-configmap-from-env.sh .env.production hypha-config hypha
-
-# Update your values.yaml to use the ConfigMap
-cat > custom-values.yaml <<EOF
-hypha-server:
-  env:
-    - name: HYPHA_HOST
-      valueFrom:
-        configMapKeyRef:
-          name: hypha-config
-          key: HYPHA_HOST
-    - name: HYPHA_PORT
-      valueFrom:
-        configMapKeyRef:
-          name: hypha-config
-          key: HYPHA_PORT
-    # Add more environment variables as needed
-EOF
+# Install the chart
+helm install hypha-server-kit . --namespace hypha
 ```
+
+### 5. Verify Installation
+
+```bash
+# Check all pods are running
+kubectl get pods -n hypha
+
+# Check services
+kubectl get svc -n hypha
+```
+
+## Configuration
+
+### Secrets Management
+
+All sensitive data (passwords, tokens, keys) is stored in Kubernetes secrets. The `.env.example` file contains ONLY secret values:
+
+- **JWT Secret**: Authentication token secret
+- **Database Passwords**: PostgreSQL credentials  
+- **Redis Password**: Cache authentication
+- **MinIO Credentials**: S3-compatible storage access
+- **OAuth Secrets**: Optional authentication provider secrets
+- **SMTP Password**: Optional email sending password
+
+All other configuration (domains, ports, feature flags, etc.) is now in `values.yaml`.
+
+### Configuration Files
+
+1. **`.env`** - Contains ONLY secret values like passwords and tokens (create from `.env.example`)
+2. **`values.yaml`** - All non-secret configuration including:
+   - Domain names and URLs
+   - Feature flags and settings
+   - Resource limits
+   - Performance tuning
+   - Authentication provider configuration (non-secret parts)
+   - SMTP configuration (non-secret parts)
+3. **`create-secrets.sh`** - Script that creates Kubernetes secrets from `.env`
+
+
 
 ## Ingress Configuration
 
@@ -298,164 +269,63 @@ hypha-server:
             pathType: Prefix
 ```
 
-## Security and Secrets
 
-### Managing Secrets Securely
+## Common Operations
 
-#### Option 1: Using Kubernetes Secrets (Manual)
+### Access Hypha
+
+If using ingress:
+```bash
+# Open in browser
+https://hypha.example.com
+```
+
+For local testing without ingress:
+```bash
+# Port forward
+kubectl port-forward svc/hypha-server-kit 9520:9520 -n hypha
+# Access at http://localhost:9520
+```
+
+### Update Configuration
 
 ```bash
-# Create secrets manually
-kubectl create secret generic hypha-secrets \
-  --from-literal=JWT_SECRET=$(openssl rand -base64 32) \
-  --from-literal=POSTGRES_PASSWORD=$(openssl rand -base64 16) \
-  --from-literal=REDIS_PASSWORD=$(openssl rand -base64 16) \
-  --from-literal=MINIO_ROOT_PASSWORD=$(openssl rand -base64 16) \
-  --namespace hypha
+# Edit your .env file with new secret values
+nano .env
+
+# Re-create the secrets
+./create-secrets.sh .env hypha
+
+# For non-secret configuration changes, edit values.yaml
+nano values.yaml
+
+# Apply the changes
+helm upgrade hypha-server-kit . --namespace hypha
+
+# Or restart pods to pick up secret changes
+kubectl rollout restart deployment -n hypha
 ```
 
-#### Option 2: Using Sealed Secrets
+### Upgrade the Chart
 
 ```bash
-# Install Sealed Secrets controller
-kubectl apply -f https://github.com/bitnami-labs/sealed-secrets/releases/download/v0.18.0/controller.yaml
+# Update values if needed
+nano values.yaml
 
-# Install kubeseal CLI
-brew install kubeseal  # On macOS
-# Or download from GitHub releases
-
-# Create a secret and seal it
-echo -n 'mypassword' | kubectl create secret generic hypha-secrets \
-  --dry-run=client \
-  --from-file=password=/dev/stdin \
-  -o yaml | kubeseal -o yaml > sealed-secrets.yaml
-
-# Apply sealed secret
-kubectl apply -f sealed-secrets.yaml
+# Upgrade the release
+helm upgrade hypha-server-kit . --namespace hypha
 ```
 
-#### Option 3: Using External Secrets Operator
+### Uninstall
 
 ```bash
-# Install External Secrets Operator
-helm repo add external-secrets https://charts.external-secrets.io
-helm install external-secrets \
-  external-secrets/external-secrets \
-  -n external-secrets-system \
-  --create-namespace
+# Remove the chart
+helm uninstall hypha-server-kit --namespace hypha
 
-# Example: Using AWS Secrets Manager
-cat <<EOF | kubectl apply -f -
-apiVersion: external-secrets.io/v1beta1
-kind: SecretStore
-metadata:
-  name: hypha-secret-store
-  namespace: hypha
-spec:
-  provider:
-    aws:
-      service: SecretsManager
-      region: us-east-1
-      auth:
-        secretRef:
-          accessKeyIDSecretRef:
-            name: awssm-secret
-            key: access-key
-          secretAccessKeySecretRef:
-            name: awssm-secret
-            key: secret-access-key
----
-apiVersion: external-secrets.io/v1beta1
-kind: ExternalSecret
-metadata:
-  name: hypha-secrets
-  namespace: hypha
-spec:
-  refreshInterval: 1h
-  secretStoreRef:
-    name: hypha-secret-store
-    kind: SecretStore
-  target:
-    name: hypha-secrets
-  data:
-  - secretKey: JWT_SECRET
-    remoteRef:
-      key: hypha/jwt-secret
-  - secretKey: POSTGRES_PASSWORD
-    remoteRef:
-      key: hypha/postgres-password
-EOF
+# Optionally remove the namespace
+kubectl delete namespace hypha
 ```
 
-### Security Best Practices
-
-1. **Generate Strong Secrets**:
-```bash
-# Generate secure random passwords
-JWT_SECRET=$(openssl rand -base64 32)
-DB_PASSWORD=$(openssl rand -base64 24)
-REDIS_PASSWORD=$(openssl rand -base64 24)
-MINIO_PASSWORD=$(openssl rand -base64 24)
-```
-
-2. **Rotate Secrets Regularly**:
-```bash
-# Create a script for secret rotation
-cat > rotate-secrets.sh <<'EOF'
-#!/bin/bash
-NAMESPACE=hypha
-
-# Backup current secrets
-kubectl get secret hypha-secrets -n $NAMESPACE -o yaml > secrets-backup-$(date +%Y%m%d).yaml
-
-# Generate new secrets
-JWT_SECRET=$(openssl rand -base64 32)
-
-# Update secrets
-kubectl patch secret hypha-secrets -n $NAMESPACE --type='json' \
-  -p='[{"op": "replace", "path": "/data/JWT_SECRET", "value": "'$(echo -n $JWT_SECRET | base64)'"}]'
-
-# Restart pods to pick up new secrets
-kubectl rollout restart deployment -n $NAMESPACE
-EOF
-```
-
-3. **RBAC Configuration**:
-```yaml
-# Create service account with minimal permissions
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: hypha-sa
-  namespace: hypha
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: hypha-role
-  namespace: hypha
-rules:
-- apiGroups: [""]
-  resources: ["pods", "services"]
-  verbs: ["get", "list", "watch"]
-- apiGroups: [""]
-  resources: ["configmaps", "secrets"]
-  verbs: ["get", "list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: hypha-rolebinding
-  namespace: hypha
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: hypha-role
-subjects:
-- kind: ServiceAccount
-  name: hypha-sa
-  namespace: hypha
-```
 
 ## Authentication Service
 
@@ -625,434 +495,46 @@ hypha-server:
     #   value: "true"
 ```
 
-### Creating the Required Secrets
-
-Before deploying with the above configuration, create the necessary secrets:
-
-```bash
-# Create the main secrets
-kubectl create secret generic hypha-secrets \
-  --from-literal=JWT_SECRET=$(openssl rand -base64 32) \
-  --from-literal=ACCESS_KEY_ID=your-s3-access-key \
-  --from-literal=SECRET_ACCESS_KEY=your-s3-secret-key \
-  --from-literal=ENDPOINT_URL=http://minio:9000 \
-  --from-literal=ENDPOINT_URL_PUBLIC=https://s3.example.com \
-  --from-literal=PUBLIC_BASE_URL=https://hypha.example.com \
-  --from-literal=HYPHA_DATABASE_URI="postgresql://hypha:password@postgresql:5432/hypha_db" \
-  --namespace hypha
-```
-
-## Production Deployment
-
-### Production Checklist
-
-- [ ] **Security**
-  - [ ] Change all default passwords
-  - [ ] Enable TLS/SSL for all services
-  - [ ] Configure network policies
-  - [ ] Enable pod security policies
-  - [ ] Set up RBAC properly
-  - [ ] Scan images for vulnerabilities
-
-- [ ] **High Availability**
-  - [ ] Configure multiple replicas for Hypha
-  - [ ] Enable PostgreSQL replication
-  - [ ] Configure Redis Sentinel or Cluster
-  - [ ] Set up MinIO in distributed mode
-
-- [ ] **Persistence**
-  - [ ] Configure storage classes
-  - [ ] Set up backup procedures
-  - [ ] Test restore procedures
-  - [ ] Configure snapshot policies
-
-- [ ] **Monitoring**
-  - [ ] Deploy Prometheus and Grafana
-  - [ ] Configure alerts
-  - [ ] Set up log aggregation
-  - [ ] Enable distributed tracing
-
-- [ ] **Resource Management**
-  - [ ] Set resource requests and limits
-  - [ ] Configure HPA (Horizontal Pod Autoscaler)
-  - [ ] Set up node affinity rules
-  - [ ] Configure PodDisruptionBudgets
-
-### Production Values Example
-
-```yaml
-# production-values.yaml
-global:
-  storageClass: "fast-ssd"
-
-hypha-server:
-  replicaCount: 3
-  
-  image:
-    pullPolicy: Always
-  
-  ingress:
-    enabled: true
-    className: nginx
-    annotations:
-      cert-manager.io/cluster-issuer: letsencrypt-prod
-      nginx.ingress.kubernetes.io/rate-limit: "100"
-    hosts:
-      - host: hypha.production.com
-    tls:
-      - secretName: hypha-tls
-        hosts:
-          - hypha.production.com
-  
-  resources:
-    requests:
-      cpu: "2"
-      memory: "4Gi"
-    limits:
-      cpu: "4"
-      memory: "8Gi"
-  
-  autoscaling:
-    enabled: true
-    minReplicas: 3
-    maxReplicas: 10
-    targetCPUUtilizationPercentage: 70
-    targetMemoryUtilizationPercentage: 80
-  
-  persistence:
-    size: 100Gi
-    storageClass: "fast-ssd"
-  
-  podSecurityContext:
-    runAsNonRoot: true
-    runAsUser: 1000
-    fsGroup: 1000
-
-postgresql:
-  architecture: replication
-  
-  auth:
-    database: hypha_prod
-    username: hypha_prod_user
-    existingSecret: postgresql-secrets
-  
-  primary:
-    persistence:
-      size: 500Gi
-      storageClass: "fast-ssd"
-    
-    resources:
-      requests:
-        cpu: "4"
-        memory: "8Gi"
-      limits:
-        cpu: "8"
-        memory: "16Gi"
-  
-  readReplicas:
-    replicaCount: 2
-    persistence:
-      size: 500Gi
-    resources:
-      requests:
-        cpu: "2"
-        memory: "4Gi"
-
-redis:
-  architecture: replication
-  
-  auth:
-    existingSecret: redis-secrets
-  
-  master:
-    persistence:
-      size: 50Gi
-      storageClass: "fast-ssd"
-    resources:
-      requests:
-        cpu: "1"
-        memory: "2Gi"
-  
-  replica:
-    replicaCount: 2
-    persistence:
-      size: 50Gi
-    resources:
-      requests:
-        cpu: "500m"
-        memory: "1Gi"
-
-minio:
-  mode: distributed
-  
-  auth:
-    existingSecret: minio-secrets
-  
-  persistence:
-    size: 1Ti
-    storageClass: "fast-ssd"
-  
-  resources:
-    requests:
-      cpu: "2"
-      memory: "4Gi"
-    limits:
-      cpu: "4"
-      memory: "8Gi"
-
-monitoring:
-  enabled: true
-  prometheus:
-    enabled: true
-    retention: 30d
-  grafana:
-    enabled: true
-    adminExistingSecret: grafana-admin-secret
-
-backup:
-  enabled: true
-  schedule: "0 2 * * *"
-  retention: 30
-  s3:
-    bucket: hypha-backups
-    endpoint: s3.amazonaws.com
-    existingSecret: backup-s3-secret
-```
-
-## Monitoring and Maintenance
-
-### Setting Up Monitoring Stack
-
-```bash
-# Install Prometheus Operator
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
-  --namespace monitoring --create-namespace
-
-# Configure ServiceMonitors for Hypha
-cat <<EOF | kubectl apply -f -
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: hypha-metrics
-  namespace: hypha
-spec:
-  selector:
-    matchLabels:
-      app: hypha-server
-  endpoints:
-  - port: metrics
-    interval: 30s
-    path: /metrics
-EOF
-```
-
-### Log Aggregation with EFK Stack
-
-```bash
-# Install Elasticsearch
-helm repo add elastic https://helm.elastic.co
-helm install elasticsearch elastic/elasticsearch \
-  --namespace logging --create-namespace
-
-# Install Kibana
-helm install kibana elastic/kibana \
-  --namespace logging
-
-# Install Filebeat
-helm install filebeat elastic/filebeat \
-  --namespace logging \
-  --set filebeatConfig.filebeat\.yml.output.elasticsearch.hosts=["elasticsearch-master:9200"]
-```
-
-### Backup Procedures
-
-```bash
-# Create backup script
-cat > backup-hypha.sh <<'EOF'
-#!/bin/bash
-NAMESPACE=hypha
-BACKUP_DIR=/backups/$(date +%Y%m%d-%H%M%S)
-
-# Create backup directory
-mkdir -p $BACKUP_DIR
-
-# Backup PostgreSQL
-kubectl exec -n $NAMESPACE hypha-postgresql-0 -- \
-  pg_dump -U postgres hypha_db | gzip > $BACKUP_DIR/postgres.sql.gz
-
-# Backup MinIO data
-kubectl exec -n $NAMESPACE hypha-minio-0 -- \
-  mc mirror minio/hypha-storage $BACKUP_DIR/minio/
-
-# Backup Hypha data volume
-kubectl exec -n $NAMESPACE hypha-server-0 -- \
-  tar czf - /data | gzip > $BACKUP_DIR/hypha-data.tar.gz
-
-# Upload to S3
-aws s3 sync $BACKUP_DIR s3://hypha-backups/$(date +%Y%m%d-%H%M%S)/
-
-echo "Backup completed: $BACKUP_DIR"
-EOF
-
-# Schedule with CronJob
-kubectl create cronjob hypha-backup \
-  --image=amazon/aws-cli:latest \
-  --schedule="0 2 * * *" \
-  --namespace=hypha \
-  -- /scripts/backup-hypha.sh
-```
 
 ## Troubleshooting
 
-### Common Issues and Solutions
-
-#### 1. Pods Stuck in Pending State
-
+### Check Pod Status
 ```bash
-# Check PVC status
-kubectl get pvc -n hypha
-
-# Check events
+kubectl get pods -n hypha
 kubectl describe pod <pod-name> -n hypha
-
-# Solution: Check storage class
-kubectl get storageclass
-
-# If no default storage class, set one:
-kubectl patch storageclass <storage-class-name> \
-  -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+kubectl logs <pod-name> -n hypha
 ```
 
-#### 2. Connection Refused Errors
-
+### Verify Secrets
 ```bash
-# Check service endpoints
-kubectl get endpoints -n hypha
-
-# Check pod logs
-kubectl logs -l app=hypha-server -n hypha
-
-# Test internal connectivity
-kubectl run -it --rm debug --image=busybox --restart=Never -n hypha -- \
-  wget -O- http://hypha-server-kit:9520/health
+kubectl get secret hypha-secrets -n hypha
+kubectl describe secret hypha-secrets -n hypha
 ```
 
-#### 3. Authentication Issues
-
+### Test Connectivity
 ```bash
-# Verify secrets are created
-kubectl get secrets -n hypha
-
-# Check secret contents (base64 encoded)
-kubectl get secret hypha-secrets -n hypha -o yaml
-
-# Regenerate JWT secret
-kubectl patch secret hypha-secrets -n hypha \
-  --type='json' -p='[{"op": "replace", "path": "/data/JWT_SECRET", 
-  "value": "'$(openssl rand -base64 32 | base64)'"}]'
-
-# Restart pods to pick up new secret
-kubectl rollout restart deployment hypha-server -n hypha
-```
-
-#### 4. Performance Issues
-
-```bash
-# Check resource usage
-kubectl top pods -n hypha
-kubectl top nodes
-
-# Check for throttling
-kubectl describe pod <pod-name> -n hypha | grep -A 5 "Limits:"
-
-# Scale up if needed
-kubectl scale deployment hypha-server --replicas=5 -n hypha
-```
-
-#### 5. Storage Issues
-
-```bash
-# Check disk usage
-kubectl exec -it <pod-name> -n hypha -- df -h
-
-# Expand PVC (if storage class supports it)
-kubectl patch pvc <pvc-name> -n hypha \
-  -p '{"spec":{"resources":{"requests":{"storage":"100Gi"}}}}'
-
-# Clean up old data
-kubectl exec -it <pod-name> -n hypha -- \
-  find /data -name "*.log" -mtime +30 -delete
-```
-
-### Debug Commands
-
-```bash
-# Get all resources in namespace
-kubectl get all -n hypha
-
-# Describe all pods
-kubectl describe pods -n hypha
-
-# Get logs from all containers
-kubectl logs -l app=hypha-server -n hypha --all-containers=true
-
-# Access pod shell
-kubectl exec -it <pod-name> -n hypha -- /bin/bash
-
-# Port forward for local debugging
-kubectl port-forward svc/hypha-server-kit 9520:9520 -n hypha
-
-# Check cluster DNS
-kubectl run -it --rm debug --image=busybox --restart=Never -- \
-  nslookup hypha-server-kit.hypha.svc.cluster.local
-```
-
-### Health Checks
-
-```bash
-# Create health check script
-cat > health-check.sh <<'EOF'
-#!/bin/bash
-NAMESPACE=hypha
-
-echo "Checking Hypha deployment health..."
-
-# Check pods
-echo -e "\n=== Pod Status ==="
-kubectl get pods -n $NAMESPACE
-
-# Check services
-echo -e "\n=== Service Status ==="
-kubectl get svc -n $NAMESPACE
-
-# Check endpoints
-echo -e "\n=== Endpoints ==="
-kubectl get endpoints -n $NAMESPACE
-
 # Test Hypha API
-echo -e "\n=== Hypha API Test ==="
-kubectl run -it --rm api-test --image=curlimages/curl --restart=Never -n $NAMESPACE -- \
-  curl -s http://hypha-server-kit:9520/health
-
-# Test MinIO
-echo -e "\n=== MinIO Test ==="
-kubectl run -it --rm minio-test --image=minio/mc --restart=Never -n $NAMESPACE -- \
-  mc alias set minio http://hypha-server-kit-minio:9000 admin changeme123
+kubectl run -it --rm test --image=curlimages/curl --restart=Never -n hypha -- \
+  curl http://hypha-server-kit:9520/health
 
 # Test PostgreSQL
-echo -e "\n=== PostgreSQL Test ==="
-kubectl exec -it hypha-server-kit-postgresql-0 -n $NAMESPACE -- \
+kubectl exec -it hypha-server-kit-postgresql-0 -n hypha -- \
   pg_isready -U hypha -d hypha_db
 
 # Test Redis
-echo -e "\n=== Redis Test ==="
-kubectl exec -it hypha-server-kit-redis-master-0 -n $NAMESPACE -- \
+kubectl exec -it hypha-server-kit-redis-master-0 -n hypha -- \
   redis-cli ping
-EOF
-
-chmod +x health-check.sh
 ```
+
+
+## Production Considerations
+
+1. **Change All Default Passwords**: Update all passwords in `.env` before deploying
+2. **Configure Ingress**: Set up proper domain names and TLS certificates
+3. **Resource Limits**: Adjust CPU/memory in `values.yaml` based on your needs
+4. **Persistence**: Ensure your cluster has appropriate storage classes
+5. **Backups**: Implement backup strategies for PostgreSQL and MinIO data
+6. **Monitoring**: Consider adding Prometheus/Grafana for monitoring
 
 ## Support
 
