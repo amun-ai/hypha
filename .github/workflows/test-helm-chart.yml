@@ -36,6 +36,10 @@ jobs:
     - name: Package Helm chart
       run: |
         cd helm-charts
+        # Update dependencies for hypha-server-kit
+        cd hypha-server-kit
+        helm dependency update
+        cd ..
         helm package hypha-server
         mkdir -p ../dist
         mv hypha-server-*.tgz ../dist
