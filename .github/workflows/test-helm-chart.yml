@@ -41,18 +41,21 @@ jobs:
         mv hypha-server-*.tgz ../dist
         helm package redis
         mv redis-*.tgz ../dist
+        helm package hypha-server-kit
+        mv hypha-server-kit-*.tgz ../dist
         helm repo index ../dist --url https://hypha-server.github.io/helm-charts/
 
     - name: Install Hypha Helm chart from packaged .tgz
       run: |
         helm install redis ./dist/redis-*.tgz --namespace=hypha
         helm install hypha-server ./dist/hypha-server-*.tgz --namespace=hypha
-        
+        helm install hypha-server-kit ./dist/hypha-server-kit-*.tgz --namespace=hypha
 
     - name: Uninstall Hypha Helm chart
       run: |
         helm uninstall hypha-server --namespace=hypha
         helm uninstall redis --namespace=hypha
+        helm uninstall hypha-server-kit --namespace=hypha
 
     - name: Upload to GitHub Pages
       uses: peaceiris/actions-gh-pages@v3
