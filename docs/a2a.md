@@ -86,7 +86,7 @@ async def main():
             "visibility": "public"
         },
         "agent_card": {
-            "protocolVersion": "0.2.9",
+            "protocolVersion": "0.3.0",
             "name": "Text Generation Agent",
             "description": "A simple text generation agent that can create various types of content",
             "version": "1.0.0",
@@ -169,7 +169,7 @@ async def main():
             "require_context": True  # Enable user context
         },
         "agent_card": {
-            "protocolVersion": "0.2.9",
+            "protocolVersion": "0.3.0",
             "name": "Streaming Chat Agent",
             "description": "An AI chat agent with streaming response capabilities",
             "version": "1.0.0",
@@ -239,7 +239,7 @@ class AgentProvider(BaseModel):
     url: str
 
 class AgentCard(BaseModel):
-    protocolVersion: str = "0.2.9"
+    protocolVersion: str = "0.3.0"
     name: str
     description: str
     version: str
@@ -412,7 +412,7 @@ The `agent_card` field can be either a dictionary or a function that returns a d
 
 ```python
 agent_card = {
-    "protocolVersion": "0.2.9",  # Required: A2A protocol version
+    "protocolVersion": "0.3.0",  # Required: A2A protocol version
     "name": "Your Agent Name",   # Required: Human-readable name
     "description": "Agent description",  # Required: Description of capabilities
     "version": "1.0.0",         # Required: Agent version
@@ -606,7 +606,7 @@ async def main():
             "visibility": "public"
         },
         "agent_card": {
-            "protocolVersion": "0.2.9",
+            "protocolVersion": "0.3.0",
             "name": "File Processing Agent",
             "description": "Process and analyze various file types including images and documents",
             "version": "1.0.0",
@@ -820,7 +820,7 @@ async def main():
             "visibility": "public"
         },
         "agent_card": {
-            "protocolVersion": "0.2.9",
+            "protocolVersion": "0.3.0",
             "name": "Long Running Agent",
             "description": "An agent that handles long-running background tasks",
             "version": "1.0.0",
@@ -1101,7 +1101,7 @@ The A2A proxy system consists of:
 
 ### Features
 
-- **Automatic Agent Discovery**: Resolves A2A agent cards from `/.well-known/agent.json` endpoints
+- **Automatic Agent Discovery**: Resolves A2A agent cards from `/.well-known/agent-card.json` endpoints
 - **Skill Wrapping**: Converts A2A skills to callable Hypha functions with proper schemas
 - **Session Management**: Full lifecycle management with logging and error handling
 - **Reversible Communication**: Enables full round-trip communication chains
@@ -1267,7 +1267,7 @@ result = await a2a_service.skills[0](text="Hello, A2A agent!")
 ### Key Features
 
 - **Skill Wrapping**: A2A agent skills are automatically wrapped as callable Hypha services with proper JSON schemas
-- **Agent Card Resolution**: Automatic resolution of agent cards from `/.well-known/agent.json` endpoints
+- **Agent Card Resolution**: Automatic resolution of agent cards from `/.well-known/agent-card.json` endpoints
 - **Error Handling**: Graceful handling of connection failures and invalid configurations
 - **Session Management**: Full lifecycle management with proper cleanup and logging
 - **Reversibility**: Create chains of A2A communication where Hypha services can be exposed as A2A agents and vice versa
@@ -1300,7 +1300,7 @@ await api.register_service({
     "skills": [echo_skill],
     "run": a2a_run,
     "agent_card": {
-        "protocolVersion": "0.2.9",
+        "protocolVersion": "0.3.0",
         "name": "My A2A Agent",
         "description": "A reversible agent for testing",
         "url": f"http://localhost:9527/workspace/a2a/my-a2a-service",

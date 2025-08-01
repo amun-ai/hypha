@@ -356,11 +356,11 @@ class A2AClientRunner(BaseWorker):
             }
 
             # Resolve agent card and create A2A client
-            agent_card_url = f"{agent_url}/.well-known/agent.json"
+            agent_card_url = f"{agent_url}/.well-known/agent-card.json"
             resolver = A2ACardResolver(
                 httpx_client=http_client,
                 base_url=agent_url,
-                agent_card_path="/.well-known/agent.json",
+                agent_card_path="/.well-known/agent-card.json",
             )
 
             agent_card = await resolver.get_agent_card()
