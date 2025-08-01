@@ -28,7 +28,7 @@ logger.setLevel(LOGLEVEL)
 
 # Try to import A2A SDK
 try:
-    from a2a.client.client import A2AClient, A2ACardResolver
+    from a2a.client import A2AClient, A2ACardResolver
     from a2a.types import SendMessageRequest, MessageSendParams, Message, TextPart, Role
 
     A2A_SDK_AVAILABLE = True
