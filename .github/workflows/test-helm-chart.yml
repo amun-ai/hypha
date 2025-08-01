@@ -51,15 +51,18 @@ jobs:
 
     - name: Install Hypha Helm chart from packaged .tgz
       run: |
+        # Test individual charts
         helm install redis ./dist/redis-*.tgz --namespace=hypha
         helm install hypha-server ./dist/hypha-server-*.tgz --namespace=hypha
-        helm install hypha-server-kit ./dist/hypha-server-kit-*.tgz --namespace=hypha
+        
+        # Test the parent chart (hypha-server-kit) which includes all dependencies
+        helm install hypha-server-kit ./dist/hypha-server-kit-*.tgz --namespace=hypha --set hypha-server.enabled=true --set redis.enabled=true --set minio.enabled=true --set postgresql.enabled=true
 
     - name: Uninstall Hypha Helm chart
       run: |
-        helm uninstall hypha-server --namespace=hypha
-        helm uninstall redis --namespace=hypha
-        helm uninstall hypha-server-kit --namespace=hypha
+        helm uninstall hypha-server-kit --namespace=hypha || true
+        helm uninstall hypha-server --namespace=hypha || true
+        helm uninstall redis --namespace=hypha || true
 
     - name: Upload to GitHub Pages
       uses: peaceiris/actions-gh-pages@v3
