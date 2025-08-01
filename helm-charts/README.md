@@ -47,6 +47,16 @@ kubectl create secret generic hypha-secrets --from-literal=HYPHA_JWT_SECRET=$HYP
 helm install hypha-server ./hypha-server --namespace=hypha
 ```
 
+### Configurations and Ingress
+
+Hypha uses Environment Variables to configure most of its behavior.
+
+For comprehensive documentation on:
+- **Environment Variables**: All available Hypha configuration options
+- **Ingress Settings**: Detailed setup for various cloud providers (AWS, GCP, Azure) and bare metal
+
+See the [Hypha Server Kit README](./hypha-server-kit/README.md).
+
 ### Custom Domain Configuration
 
 To use your own domain, edit the `values.yaml` file and replace `hypha.amun.ai` with your domain name, then configure ingress appropriately.
