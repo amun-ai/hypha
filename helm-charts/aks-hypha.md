@@ -194,16 +194,22 @@ env:
       secretKeyRef:
         name: hypha-secrets
         key: HYPHA_JWT_SECRET
-  - name: PUBLIC_BASE_URL
+  - name: HYPHA_HOST
+    value: "0.0.0.0"
+  - name: HYPHA_PORT
+    value: "9520"
+  - name: HYPHA_PUBLIC_BASE_URL
     value: "https://hypha.my-company.com"
+  - name: HYPHA_DATABASE_URI
+    value: "sqlite+aiosqlite:////data/hypha-app-database.db"
+  # Uncomment to enable Redis for scaling
+  # - name: HYPHA_REDIS_URI
+  #   value: "redis://redis.hypha.svc.cluster.local:6379/0"
 
 startupCommand:
   command: ["python", "-m", "hypha.server"]
   args:
-    - "--host=0.0.0.0"
-    - "--port=9520"
-    - "--public-base-url=$(PUBLIC_BASE_URL)"
-    # - "--redis-uri=redis://redis.hypha.svc.cluster.local:6379/0"
+    - "--from-env"
 ```
 
 Replace all instances of `hypha.my-company.com` with your own domain.
@@ -218,12 +224,27 @@ First, install the Redis Helm chart:
 helm install redis ./redis --namespace hypha
 ```
 
-This will install Redis in the `hypha` namespace, make sure you update the `values.yaml` file to add the `redis-uri` to the `startupCommand`, set the `replicaCount` to more than 1, and add the `HYPHA_SERVER_ID` environment variable (using the pod id).
+This will install Redis in the `hypha` namespace, make sure you update the `values.yaml` file to add the `HYPHA_REDIS_URI` environment variable, set the `replicaCount` to more than 1, and add the `HYPHA_SERVER_ID` environment variable (using the pod id).
   
 ```yaml
 replicaCount: 2
 
 env:
+  - name: HYPHA_JWT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: hypha-secrets
+        key: HYPHA_JWT_SECRET
+  - name: HYPHA_HOST
+    value: "0.0.0.0"
+  - name: HYPHA_PORT
+    value: "9520"
+  - name: HYPHA_PUBLIC_BASE_URL
+    value: "https://hypha.my-company.com"
+  - name: HYPHA_DATABASE_URI
+    value: "sqlite+aiosqlite:////data/hypha-app-database.db"
+  - name: HYPHA_REDIS_URI
+    value: "redis://redis.hypha.svc.cluster.local:6379/0"
   - name: HYPHA_SERVER_ID
     valueFrom:
       fieldRef:
@@ -233,10 +254,7 @@ env:
 startupCommand:
   command: ["python", "-m", "hypha.server"]
   args:
-    - "--host=0.0.0.0"
-    - "--port=9520"
-    - "--public-base-url=$(PUBLIC_BASE_URL)"
-    - "--redis-uri=redis://redis.hypha.svc.cluster.local:6379/0"
+    - "--from-env"
 ```
 
 #### Step 6: Install Hypha Using Helm

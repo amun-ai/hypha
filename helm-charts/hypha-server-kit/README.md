@@ -445,7 +445,9 @@ hypha-server:
     #   value: "redis://redis.hypha.svc.cluster.local:6379/0"
     # - name: HYPHA_RESET_REDIS
     #   value: "true"
-    
+    # - name: HYPHA_REDIS_MAX_CONNECTIONS
+    #   value: "1000"
+
     # S3/MinIO Configuration
     - name: HYPHA_ENABLE_S3
       value: "true"
@@ -483,18 +485,7 @@ hypha-server:
       value: "true"
     # - name: HYPHA_ENABLE_SERVICE_SEARCH
     #   value: "true"
-    
-    # Performance tuning (optional)
-    # - name: HYPHA_WORKER_THREADS
-    #   value: "4"
-    # - name: HYPHA_MAX_CONNECTIONS
-    #   value: "1000"
-    
-    # Monitoring (optional)
-    # - name: HYPHA_ENABLE_METRICS
-    #   value: "true"
-    # - name: HYPHA_ENABLE_TRACING
-    #   value: "true"
+
 ```
 
 

@@ -344,15 +344,12 @@ First, install the Redis helm chart:
 helm install redis ./redis --namespace=hypha
 ```
 
-Now change the `values.yaml` file to add the `redis-uri` to the `startupCommand`:
+Now change the `values.yaml` file to add the `HYPHA_REDIS_URI` environment variable:
 ```yaml
-startupCommand:
-  command: ["python", "-m", "hypha.server"]
-  args:
-    - "--host=0.0.0.0"
-    - "--port=9520"
-    - "--public-base-url=$(PUBLIC_BASE_URL)"
-    - "--redis-uri=redis://redis.hypha.svc.cluster.local:6379/0"
+env:
+  # ... existing environment variables ...
+  - name: HYPHA_REDIS_URI
+    value: "redis://redis.hypha.svc.cluster.local:6379/0"
 ```
 
 To actually support multiple server instances, you need to set the `replicaCount` to more than 1 in the `values.yaml` file:

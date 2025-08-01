@@ -106,17 +106,40 @@ env:
     value: "0.0.0.0"
   - name: HYPHA_PORT
     value: "9520"
+  - name: HYPHA_ALLOW_ORIGINS
+    value: "*"
+  - name: HYPHA_BASE_PATH
+    value: "/"
   - name: HYPHA_PUBLIC_BASE_URL
     value: "https://hypha.amun.ai"
   - name: HYPHA_DATABASE_URI
     value: "sqlite+aiosqlite:////data/hypha-app-database.db"
-  # Uncomment to enable Redis for scaling
+  
+  # Redis configuration (uncomment to enable)
   # - name: HYPHA_REDIS_URI
   #   value: "redis://redis.hypha.svc.cluster.local:6379/0"
-
-  # Uncomment to enable S3 storage with MinIO
+  # - name: HYPHA_RESET_REDIS
+  #   value: "false"
+  
+  # Triton servers configuration
+  # - name: HYPHA_TRITON_SERVERS
+  #   value: "triton-server1:8000,triton-server2:8000"
+  
+  # Server apps configuration
+  # - name: HYPHA_ENABLE_SERVER_APPS
+  #   value: "true"
+  
+  # S3 configuration (uncomment to enable)
   # - name: HYPHA_ENABLE_S3
   #   value: "true"
+  # - name: HYPHA_S3_ADMIN_TYPE
+  #   value: "minio"
+  # - name: HYPHA_ENDPOINT_URL
+  #   value: "http://minio.hypha.svc.cluster.local:9000"
+  # - name: HYPHA_ENDPOINT_URL_PUBLIC
+  #   value: "https://minio.my-domain.com"
+  # - name: HYPHA_REGION_NAME
+  #   value: "EU"
   # - name: HYPHA_ACCESS_KEY_ID
   #   valueFrom:
   #     secretKeyRef:
@@ -127,13 +150,92 @@ env:
   #     secretKeyRef:
   #       name: minio-credentials
   #       key: SECRET_ACCESS_KEY
-  # - name: HYPHA_ENDPOINT_URL
-  #   value: "http://minio.hypha.svc.cluster.local:9000"
-  # - name: HYPHA_S3_ADMIN_TYPE
-  #   value: "minio"
   # - name: HYPHA_ENABLE_S3_PROXY
   #   value: "true"
-    
+  # - name: HYPHA_WORKSPACE_BUCKET
+  #   value: "hypha-workspaces"
+  # - name: HYPHA_S3_CLEANUP_PERIOD
+  #   value: "300"
+  # - name: HYPHA_ENABLE_S3_FOR_ANONYMOUS_USERS
+  #   value: "false"
+  
+  # Ollama configuration
+  # - name: HYPHA_OLLAMA_HOST
+  #   value: "http://ollama.hypha.svc.cluster.local:11434"
+  
+  # OpenAI configuration
+  # - name: HYPHA_OPENAI_BASE_URL
+  #   value: "https://api.openai.com/v1"
+  # - name: HYPHA_OPENAI_API_KEY
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: openai-credentials
+  #       key: API_KEY
+  
+  # Database migration
+  # - name: HYPHA_MIGRATE_DATABASE
+  #   value: "head"
+  
+  # Executable path
+  # - name: HYPHA_EXECUTABLE_PATH
+  #   value: "bin"
+  
+  # Static mounts (space-separated list)
+  # - name: HYPHA_STATIC_MOUNTS
+  #   value: "/mystatic:./static/ /docs:./docs/"
+  
+  # Startup functions (space-separated list)
+  # - name: HYPHA_STARTUP_FUNCTIONS
+  #   value: "my_module:startup_function another_module:init_function"
+  
+  # Server ID (auto-generated when autoscaling is enabled)
+  # - name: HYPHA_SERVER_ID
+  #   valueFrom:
+  #     fieldRef:
+  #       fieldPath: metadata.uid
+  
+  # Cache directory
+  # - name: HYPHA_CACHE_DIR
+  #   value: "/cache"
+  
+  # Feature flags
+  # - name: HYPHA_ENABLE_SERVICE_SEARCH
+  #   value: "false"
+  # - name: HYPHA_ENABLE_A2A
+  #   value: "false"
+  # - name: HYPHA_ENABLE_MCP
+  #   value: "false"
+  # - name: HYPHA_IN_DOCKER
+  #   value: "true"
+  
+  # Interactive mode
+  # - name: HYPHA_INTERACTIVE
+  #   value: "false"
+  # - name: HYPHA_ENABLE_SERVER
+  #   value: "false"
+  
+  # MinIO server configuration (for built-in MinIO)
+  # - name: HYPHA_START_MINIO_SERVER
+  #   value: "false"
+  # - name: HYPHA_MINIO_WORKDIR
+  #   value: "/data/minio"
+  # - name: HYPHA_MINIO_PORT
+  #   value: "9000"
+  # - name: HYPHA_MINIO_ROOT_USER
+  #   value: "minioadmin"
+  # - name: HYPHA_MINIO_ROOT_PASSWORD
+  #   value: "minioadmin"
+  # - name: HYPHA_MINIO_VERSION
+  #   value: "latest"
+  # - name: HYPHA_MC_VERSION
+  #   value: "latest"
+  # - name: HYPHA_MINIO_FILE_SYSTEM_MODE
+  #   value: "false"
+  
+  # Housekeeping configuration
+  # - name: HYPHA_HOUSEKEEPING_INTERVAL
+  #   value: "300"
+
 # Define command-line arguments here
 startupCommand:
   command: ["python", "-m", "uvicorn"]
