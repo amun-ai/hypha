@@ -14,7 +14,7 @@ import datetime
 import numpy as np
 
 from fakeredis import aioredis
-from prometheus_client import Gauge
+
 
 from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
@@ -171,9 +171,6 @@ class WorkspaceManager:
         else:
             self.SessionLocal = None
         self._enable_service_search = enable_service_search
-        
-        # Prometheus metrics - these will be updated based on Redis data
-        self._active_ws_gauge = Gauge("active_workspaces", "Number of active workspaces")
 
 
 
@@ -181,19 +178,7 @@ class WorkspaceManager:
         """Return an async session for the database."""
         return self.SessionLocal()
 
-    async def update_metrics_from_redis(self):
-        """Update Prometheus metrics based on current Redis data."""
-        try:
-            await self._update_workspace_metrics()
-        except Exception as e:
-            logger.error(f"Failed to update metrics from Redis: {e}")
 
-    async def _update_workspace_metrics(self):
-        """Update active workspace count from Redis."""
-        workspace_keys = await self._redis.hkeys("workspaces")
-        active_count = len(workspace_keys)
-        self._active_ws_gauge.set(active_count)
-        logger.debug(f"Updated active workspaces metric: {active_count}")
 
     def get_client_id(self):
         assert self._client_id, "client id must not be empty."
@@ -263,8 +248,7 @@ class WorkspaceManager:
             )
         self._initialized = True
         
-        # Initialize metrics from current Redis state
-        await self.update_metrics_from_redis()
+
         
         return rpc
 
@@ -674,8 +658,7 @@ class WorkspaceManager:
             background_tasks.add(task)
             task.add_done_callback(background_tasks.discard)
         
-        # Update metrics after workspace creation
-        await self.update_metrics_from_redis()
+
         
         return workspace.model_dump()
 
@@ -710,8 +693,7 @@ class WorkspaceManager:
             await self._update_workspace(user_workspace, user_info)
         logger.info("Workspace %s removed by %s", workspace, user_info.id)
         
-        # Update metrics after workspace deletion
-        await self.update_metrics_from_redis()
+
 
     @schema_method
     async def register_service_type(
@@ -1470,8 +1452,7 @@ class WorkspaceManager:
                 )
                 logger.info(f"Adding service {service.id}")
                 
-        # Update metrics after service registration
-        await self.update_metrics_from_redis()
+
 
 
     @schema_method
@@ -1673,8 +1654,7 @@ class WorkspaceManager:
             logger.warning(f"Service {key} does not exist and cannot be removed.")
             raise KeyError(f"Service not found: {service.id}")
         
-        # Update metrics after service unregistration
-        await self.update_metrics_from_redis()
+
 
     def _create_rpc(
         self,
