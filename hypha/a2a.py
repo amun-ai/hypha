@@ -165,7 +165,7 @@ class HyphaAgentExecutor(AgentExecutor):
             return {
                 "parts": parts,
                 "role": message.role,
-                "messageId": message.messageId,
+                "messageId": message.message_id,
             }
         except Exception as e:
             logger.exception(f"Error converting A2A message: {e}")
@@ -257,17 +257,18 @@ async def create_a2a_app_from_service(service, service_info):
     else:
         # Create default agent card from service info
         agent_card_data = {
+            "protocol_version": "0.3.0",
             "name": service_info.id,
             "description": f"A2A agent for Hypha service {service_info.id}",
             "url": f"http://localhost:9876/a2a/{service_info.id}",  # Will be updated by middleware
             "version": "1.0.0",
             "capabilities": {
                 "streaming": True,
-                "pushNotifications": False,
-                "stateTransitionHistory": False,
+                "push_notifications": False,
+                "state_transition_history": False,
             },
-            "defaultInputModes": ["text"],
-            "defaultOutputModes": ["text"],
+                            "default_input_modes": ["text"],
+            "default_output_modes": ["text"],
             "skills": [
                 {
                     "id": "chat",
@@ -284,15 +285,15 @@ async def create_a2a_app_from_service(service, service_info):
     if "capabilities" not in agent_card_data:
         agent_card_data["capabilities"] = {
             "streaming": True,
-            "pushNotifications": False,
-            "stateTransitionHistory": False,
+            "push_notifications": False,
+            "state_transition_history": False,
         }
 
-    if "defaultInputModes" not in agent_card_data:
-        agent_card_data["defaultInputModes"] = ["text"]
+        if "default_input_modes" not in agent_card_data:
+            agent_card_data["default_input_modes"] = ["text"]
 
-    if "defaultOutputModes" not in agent_card_data:
-        agent_card_data["defaultOutputModes"] = ["text"]
+        if "default_output_modes" not in agent_card_data:
+            agent_card_data["default_output_modes"] = ["text"]
 
     if "skills" not in agent_card_data:
         agent_card_data["skills"] = [

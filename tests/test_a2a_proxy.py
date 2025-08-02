@@ -101,14 +101,14 @@ async def test_a2a_round_trip_service_consistency(fastapi_server, test_user_toke
                 "run_in_executor": True,
             },
             "agent_card": {
-                "protocolVersion": "0.3.0",
+                "protocol_version": "0.3.0",
                 "name": "Test A2A Agent",
                 "description": "A test agent for A2A round-trip testing",
                 "url": f"{SERVER_URL}/{workspace}/a2a/a2a-test-service",
                 "version": "1.0.0",
-                "capabilities": {"streaming": False, "pushNotifications": False},
-                "defaultInputModes": ["text/plain"],
-                "defaultOutputModes": ["text/plain"],
+                "capabilities": {"streaming": False, "push_notifications": False},
+                "default_input_modes": ["text/plain"],
+                "default_output_modes": ["text/plain"],
                 "skills": [
                     {
                         "id": "echo",
@@ -281,14 +281,14 @@ async def test_a2a_double_round_trip_reversibility(fastapi_server, test_user_tok
                 "run_in_executor": True,
             },
             "agent_card": {
-                "protocolVersion": "0.3.0",
+                "protocol_version": "0.3.0",
                 "name": "Reversible A2A Agent",
                 "description": "A reversible agent for testing",
                 "url": f"{SERVER_URL}/{workspace}/a2a/reversible-test-service",
                 "version": "1.0.0",
-                "capabilities": {"streaming": False, "pushNotifications": False},
-                "defaultInputModes": ["text/plain"],
-                "defaultOutputModes": ["text/plain"],
+                "capabilities": {"streaming": False, "push_notifications": False},
+                "default_input_modes": ["text/plain"],
+                "default_output_modes": ["text/plain"],
                 "skills": [
                     {
                         "id": "reversible",
