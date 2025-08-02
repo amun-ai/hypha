@@ -1,6 +1,6 @@
 # Hypha Server with Docker Compose
 
-This directory contains a Docker Compose setup for running Hypha Server with MinIO as the S3 storage backend.
+This directory contains a comprehensive Docker Compose setup for running Hypha Server with all its dependencies: PostgreSQL (database), Redis (cache/messaging), and MinIO (S3 storage).
 
 ## Prerequisites
 
@@ -10,97 +10,276 @@ This directory contains a Docker Compose setup for running Hypha Server with Min
 ## Quick Start
 
 1. Clone the repository and navigate to the docker-compose directory:
+
    ```bash
    git clone https://github.com/amun-ai/hypha.git
    cd hypha/docker-compose
    ```
 
 2. Configure the environment variables:
+
    ```bash
    cp .env-docker .env
    ```
-   
-   Open the `.env` file and modify the values as needed:
-   - `HYPHA_JWT_SECRET`: Change to a secure random string
-   - `HYPHA_ACCESS_KEY_ID`: MinIO access key (default: minioadmin)
-   - `HYPHA_SECRET_ACCESS_KEY`: MinIO secret key (default: minioadmin)
+
+   **IMPORTANT**: Open the `.env` file and update the default passwords and secrets:
+   - `HYPHA_JWT_SECRET`: Change to a secure random string (32+ characters)
+   - `POSTGRES_PASSWORD`: PostgreSQL database password
+   - `REDIS_PASSWORD`: Redis cache password
+   - `HYPHA_ACCESS_KEY_ID` & `HYPHA_SECRET_ACCESS_KEY`: MinIO credentials
 
 3. Create data directories:
+
    ```bash
-   mkdir -p ./data/hypha ./data/minio
+   mkdir -p ./data/{hypha,postgres,redis,minio}
    ```
 
 4. Start the services:
+
    ```bash
    docker-compose up -d
    ```
 
-5. Access the services:
-   - Hypha Server: http://localhost:9520
-   - MinIO Console: http://localhost:9001 (login with HYPHA_ACCESS_KEY_ID/HYPHA_SECRET_ACCESS_KEY)
+5. Check that all services are running:
+
+   ```bash
+   docker-compose ps
+   ```
+
+6. Access the services:
+   - **Hypha Server**: <http://localhost:9527>
+   - **MinIO Console**: <http://localhost:9001> (login with HYPHA_ACCESS_KEY_ID/HYPHA_SECRET_ACCESS_KEY)
+   - **PostgreSQL**: localhost:5432 (use POSTGRES_USER/POSTGRES_PASSWORD)
+   - **Redis**: localhost:6379 (use REDIS_PASSWORD)
 
 ## Services
 
 ### Hypha Server
 
-The Hypha Server provides the backend API for the Hypha application.
+The main Hypha application server with full feature set enabled.
 
-- Image: `ghcr.io/amun-ai/hypha:0.20.60`
-- Port: 9520
-- Data: Stored in the local directory `./data/hypha`
+- **Image**: `ghcr.io/amun-ai/hypha:0.20.80`
+- **Port**: 9527
+- **Features Enabled**:
+  - Server Apps
+  - MCP (Model Context Protocol)
+  - A2A (App-to-App communication)
+  - S3 Storage with proxy
+  - Database migrations
+- **Data**: Stored in `./data/hypha`
+- **Dependencies**: PostgreSQL, Redis, MinIO
 
-### MinIO
+### PostgreSQL Database
 
-MinIO provides S3-compatible object storage for Hypha.
+Primary database for Hypha's persistent data.
 
-- Image: `minio/minio:RELEASE.2025-03-12T18-04-18Z-cpuv1`
-- Ports:
+- **Image**: `postgres:15-alpine`
+- **Port**: 5432
+- **Database**: `hypha_db`
+- **Data**: Stored in `./data/postgres`
+- **Features**: 
+  - Automatic health checks
+  - Persistent storage
+  - Configurable credentials
+
+### Redis Cache
+
+In-memory cache and message broker for scaling and performance.
+
+- **Image**: `redis:7-alpine`
+- **Port**: 6379
+- **Data**: Stored in `./data/redis` (with persistence)
+- **Features**:
+  - Password protection
+  - Append-only file (AOF) persistence
+  - Health checks
+
+### MinIO S3 Storage
+
+S3-compatible object storage for artifacts and files.
+
+- **Image**: `minio/minio:RELEASE.2025-03-12T18-04-18Z-cpuv1`
+- **Ports**:
   - 9000: S3 API
   - 9001: Web Console
-- Data: Stored in the local directory `./data/minio`
+- **Data**: Stored in `./data/minio`
+- **Features**:
+  - Default bucket creation
+  - Management console
+  - Health monitoring
 
 ## Configuration
 
 ### Environment Variables
 
-The Hypha Server is configured to use MinIO as the S3 backend. The following environment variables are set:
+All configuration is managed through environment variables in the `.env` file:
 
-- `HYPHA_ACCESS_KEY_ID`: The access key for MinIO
-- `HYPHA_SECRET_ACCESS_KEY`: The secret key for MinIO
-- `ENDPOINT_URL`: The URL of the MinIO server (http://minio:9000)
-- `HYPHA_ENDPOINT_URL_PUBLIC`: The publicly accessible URL of the MinIO server (http://localhost:9000)
+#### Core Settings
+- `HYPHA_JWT_SECRET`: JWT token secret (required, 32+ chars)
+- `HYPHA_PUBLIC_BASE_URL`: Public URL for the server
+- `HYPHA_LOGLEVEL`: Logging level (DEBUG, INFO, WARNING, ERROR)
 
-### Data Storage
+#### Database Settings
+- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`: PostgreSQL credentials
+- Database connection is automatically configured
 
-By default, this setup uses local directories for data storage:
+#### Cache Settings
+- `REDIS_PASSWORD`: Password for Redis authentication
+- `HYPHA_RESET_REDIS`: Whether to reset Redis on startup
 
-- `HYPHA_DATA_DIR`: Directory where Hypha Server stores its data (default: `./data/hypha`)
-- `MINIO_DATA_DIR`: Directory where MinIO stores its data (default: `./data/minio`)
+#### Storage Settings
+- `HYPHA_ACCESS_KEY_ID`, `HYPHA_SECRET_ACCESS_KEY`: MinIO credentials
+- `HYPHA_WORKSPACE_BUCKET`: Default bucket name
+- `HYPHA_ENDPOINT_URL_PUBLIC`: Public URL for S3 access
 
-You can customize these directories in the `.env` file:
+### Data Persistence
 
-```
-HYPHA_DATA_DIR=/path/to/your/hypha/data
-MINIO_DATA_DIR=/path/to/your/minio/data
-```
+All services use persistent storage with local directories:
 
-Using local directories makes it easier to:
-- Access your data directly from the host system
-- Back up your data using standard file system tools
-- Share data between different container setups
-- Mount network storage or external drives
-
-## Stopping the Services
-
-To stop the services, run:
 ```bash
+./data/
+├── hypha/      # Hypha server data and cache
+├── postgres/   # PostgreSQL database files
+├── redis/      # Redis persistent data
+└── minio/      # MinIO object storage
+```
+
+You can customize these paths in the `.env` file:
+
+```bash
+HYPHA_DATA_DIR=/path/to/hypha/data
+POSTGRES_DATA_DIR=/path/to/postgres/data
+REDIS_DATA_DIR=/path/to/redis/data
+MINIO_DATA_DIR=/path/to/minio/data
+```
+
+### Health Checks
+
+All services include health checks with appropriate startup periods:
+- **Hypha**: HTTP health endpoints
+- **PostgreSQL**: `pg_isready` checks
+- **Redis**: PING command
+- **MinIO**: HTTP health endpoint
+
+### Service Dependencies
+
+Services start in the correct order:
+1. PostgreSQL, Redis, MinIO (in parallel)
+2. Hypha Server (after all dependencies are healthy)
+
+## Advanced Configuration
+
+### Feature Flags
+
+Enable/disable features via environment variables:
+
+```bash
+HYPHA_ENABLE_SERVICE_SEARCH=true    # Service discovery
+HYPHA_STARTUP_FUNCTIONS=...         # Custom startup functions
+HYPHA_STATIC_MOUNTS=...            # Static file mounts
+HYPHA_TRITON_SERVERS=...           # Triton inference servers
+```
+
+### Production Deployment
+
+For production use:
+
+1. **Security**: Change all default passwords
+2. **Networking**: Use Docker secrets for sensitive data
+3. **Storage**: Consider using named volumes or external storage
+4. **Monitoring**: Add health monitoring and log aggregation
+5. **Backup**: Implement regular database and storage backups
+
+## Operations
+
+### Viewing Logs
+
+```bash
+# All services
+docker-compose logs -f
+
+# Specific service
+docker-compose logs -f hypha-server
+docker-compose logs -f postgres
+docker-compose logs -f redis
+docker-compose logs -f minio
+```
+
+### Database Operations
+
+```bash
+# Connect to PostgreSQL
+docker-compose exec postgres psql -U postgres -d hypha_db
+
+# Database backup
+docker-compose exec postgres pg_dump -U postgres hypha_db > backup.sql
+
+# Database restore
+docker-compose exec -T postgres psql -U postgres -d hypha_db < backup.sql
+```
+
+### Redis Operations
+
+```bash
+# Connect to Redis
+docker-compose exec redis redis-cli -a your_redis_password
+
+# Monitor Redis
+docker-compose exec redis redis-cli -a your_redis_password monitor
+```
+
+### Stopping Services
+
+```bash
+# Stop all services
 docker-compose down
+
+# Stop and remove volumes (WARNING: deletes all data)
+docker-compose down -v
 ```
 
-## Upgrading
+### Upgrading
 
-To upgrade to a newer version of Hypha Server, update the image tag in the `docker-compose.yml` file and run:
 ```bash
+# Update images
 docker-compose pull
+
+# Restart with new images
 docker-compose up -d
-``` 
+
+# Check updated services
+docker-compose ps
+```
+
+## Troubleshooting
+
+### Service Won't Start
+
+1. Check logs: `docker-compose logs [service-name]`
+2. Verify environment variables in `.env`
+3. Ensure data directories exist and have correct permissions
+4. Check port conflicts with `docker-compose ps`
+
+### Connection Issues
+
+1. Verify all services are healthy: `docker-compose ps`
+2. Check network connectivity between services
+3. Validate credentials in `.env` file
+4. Review firewall and port forwarding settings
+
+### Performance Issues
+
+1. Monitor resource usage: `docker stats`
+2. Adjust resource limits in docker-compose.yml
+3. Optimize PostgreSQL and Redis configurations
+4. Consider scaling with multiple replicas
+
+## Development
+
+This setup is ideal for:
+- Local development and testing
+- Feature development with full stack
+- Integration testing
+- Production-like environment simulation
+
+For minimal development, you can disable services by commenting them out in docker-compose.yml.
