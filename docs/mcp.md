@@ -91,9 +91,9 @@ async def main():
             "visibility": "public",
             "run_in_executor": True,
         },
-        "tools": [calculate_tool],
-        "resources": [
-            {
+        "tools": {"calculate_tool": calculate_tool},
+        "resources": {
+            "calculator_resource": {
                 "uri": "resource://calculator",
                 "name": "Calculator Resource", 
                 "description": "Calculator help documentation",
@@ -101,15 +101,15 @@ async def main():
                 "mime_type": "text/plain",
                 "read": resource_read,
             }
-        ],
-        "prompts": [
-            {
+        },
+        "prompts": {
+            "calculation_help": {
                 "name": "calculation_help",
                 "description": "Help with calculations",
                 "tags": ["calculator", "prompt"],
                 "read": prompt_read,
             }
-        ],
+        },
     })
 
     print(f"MCP service registered: {service['id']}")
@@ -222,9 +222,8 @@ async def main():
             "visibility": "public",
             "run_in_executor": True,
         },
-        "tools": [
-            {
-                "name": "simple_tool",
+        "tools": {
+            "simple_tool": {
                 "description": "Simple arithmetic tool",
                 "inputSchema": {
                     "type": "object",
@@ -241,9 +240,9 @@ async def main():
                 },
                 "handler": simple_tool
             }
-        ],
-        "resources": [
-            {
+        },
+        "resources": {
+            "test_resource": {
                 "uri": "resource://test",
                 "name": "Test Resource",
                 "description": "A test resource",
@@ -251,7 +250,7 @@ async def main():
                 "mime_type": "text/plain",
                 "read": resource_read,
             }
-        ],
+        },
     })
 
 if __name__ == "__main__":
@@ -419,13 +418,11 @@ async def use_hypha_mcp():
     
     async with streamablehttp_client(base_url) as (read_stream, write_stream, get_session_id):
         async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-            
-            # List tools
+            # Test 1: List tools
             tools_result = await session.list_tools()
             print(f"Available tools: {[tool.name for tool in tools_result.tools]}")
             
-            # Call a tool
+            # Test 2: Call a tool
             result = await session.call_tool(
                 name="calculate_tool",
                 arguments={"operation": "multiply", "a": 7, "b": 6}

@@ -28,7 +28,8 @@ logger.setLevel(LOGLEVEL)
 
 # Try to import A2A SDK
 try:
-    from a2a.client.client import A2AClient, A2ACardResolver
+    from a2a.types import AgentCard
+    from a2a.client import A2AClient, A2ACardResolver
     from a2a.types import SendMessageRequest, MessageSendParams, Message, TextPart, Role
 
     A2A_SDK_AVAILABLE = True
@@ -356,14 +357,14 @@ class A2AClientRunner(BaseWorker):
             }
 
             # Resolve agent card and create A2A client
-            agent_card_url = f"{agent_url}/.well-known/agent.json"
+            agent_card_url = f"{agent_url}/.well-known/agent-card.json"
             resolver = A2ACardResolver(
                 httpx_client=http_client,
                 base_url=agent_url,
-                agent_card_path="/.well-known/agent.json",
+                agent_card_path="/.well-known/agent-card.json",
             )
 
-            agent_card = await resolver.get_agent_card()
+            agent_card: AgentCard = await resolver.get_agent_card()
             if not agent_card:
                 raise ValueError(f"Failed to resolve agent card for {agent_name}")
 
@@ -518,7 +519,7 @@ class A2AClientRunner(BaseWorker):
         return skill_wrappers
 
     async def _register_unified_a2a_service(
-        self, session_data: dict, agent_name: str, agent_card, skills: List, client
+        self, session_data: dict, agent_name: str, agent_card: AgentCard, skills: List, client
     ):
         """Register a unified A2A service with skills."""
         try:
@@ -553,21 +554,21 @@ class A2AClientRunner(BaseWorker):
                     "capabilities": (
                         {
                             "streaming": bool(agent_card.capabilities.streaming),
-                            "pushNotifications": bool(
-                                agent_card.capabilities.pushNotifications
+                                                    "push_notifications": bool(
+                            agent_card.capabilities.push_notifications
                             ),
                         }
                         if agent_card.capabilities
                         else {}
                     ),
-                    "defaultInputModes": (
-                        [str(mode) for mode in agent_card.defaultInputModes]
-                        if agent_card.defaultInputModes
+                                    "default_input_modes": (
+                    [str(mode) for mode in agent_card.default_input_modes]
+                    if agent_card.default_input_modes
                         else []
                     ),
-                    "defaultOutputModes": (
-                        [str(mode) for mode in agent_card.defaultOutputModes]
-                        if agent_card.defaultOutputModes
+                    "default_output_modes": (
+                        [str(mode) for mode in agent_card.default_output_modes]
+                        if agent_card.default_output_modes
                         else []
                     ),
                 },

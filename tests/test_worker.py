@@ -825,8 +825,8 @@ async def test_a2a_worker_integration(fastapi_server, test_user_token):
                 "version": "1.0.0",
                 "url": f"{SERVER_URL}/{workspace}/a2a/test-a2a-service",
                 "capabilities": {"streaming": False},
-                "defaultInputModes": ["text/plain"],
-                "defaultOutputModes": ["text/plain"],
+                "default_input_modes": ["text/plain"],
+                "default_output_modes": ["text/plain"],
             },
         }
     )

@@ -3,40 +3,29 @@
 import asyncio
 import json
 import time
-from typing import Dict, Any, Union, AsyncGenerator
 
 import pytest
-import requests
 import httpx
 from hypha_rpc import connect_to_server
 
-from . import WS_SERVER_URL, SERVER_URL, find_item
+from . import WS_SERVER_URL, SERVER_URL
 
 # A2A client imports
-try:
-    from a2a.client.client import A2AClient, A2ACardResolver
-    from a2a.types import SendMessageRequest, MessageSendParams, Message, TextPart, Role
-    import uuid
+from a2a.client import A2AClient, A2ACardResolver
+from a2a.types import SendMessageRequest, MessageSendParams, Message, TextPart, Role
+import uuid
 
-    def create_text_message(text: str) -> SendMessageRequest:
-        """Helper function to create a properly formatted A2A text message request."""
-        message = Message(
-            messageId=str(uuid.uuid4()),
-            role=Role.user,
-            parts=[TextPart(kind="text", text=text)],
-        )
+def create_text_message(text: str) -> SendMessageRequest:
+    """Helper function to create a properly formatted A2A text message request."""
+    message = Message(
+        message_id=str(uuid.uuid4()),
+        role=Role.user,
+        parts=[TextPart(kind="text", text=text)],
+    )
 
-        params = MessageSendParams(message=message)
+    params = MessageSendParams(message=message)
 
-        return SendMessageRequest(id=str(uuid.uuid4()), params=params)
-
-    A2A_CLIENT_AVAILABLE = True
-except ImportError:
-    A2A_CLIENT_AVAILABLE = False
-
-    def create_text_message(text: str):
-        """Stub function when A2A SDK is not available."""
-        raise ImportError("A2A client SDK not available - ensure a2a-sdk is installed")
+    return SendMessageRequest(id=str(uuid.uuid4()), params=params)
 
 
 # All test coroutines will be treated as marked.
@@ -53,14 +42,14 @@ async def test_a2a_agent_registration(fastapi_server, test_user_token):
 
     # Define a simple agent card
     agent_card = {
-        "protocolVersion": "0.2.9",
+        "protocol_version": "0.3.0",
         "name": "Test Agent",
         "description": "A simple test agent for unit testing",
         "url": f"http://localhost:9527/{workspace}/a2a/test-agent",
         "version": "1.0.0",
-        "capabilities": {"streaming": False, "pushNotifications": False},
-        "defaultInputModes": ["text/plain"],
-        "defaultOutputModes": ["text/plain"],
+        "capabilities": {"streaming": False, "push_notifications": False},
+        "default_input_modes": ["text/plain"],
+        "default_output_modes": ["text/plain"],
         "skills": [
             {
                 "id": "echo",
@@ -117,14 +106,14 @@ async def test_a2a_agent_card_endpoint(fastapi_server, test_user_token):
 
     # Define agent card
     agent_card = {
-        "protocolVersion": "0.2.9",
+        "protocol_version": "0.3.0",
         "name": "Card Test Agent",
         "description": "Agent for testing card endpoint",
         "url": f"http://localhost:9527/{workspace}/a2a/card-agent",
         "version": "1.0.0",
-        "capabilities": {"streaming": True, "pushNotifications": False},
-        "defaultInputModes": ["text/plain", "application/json"],
-        "defaultOutputModes": ["text/plain", "application/json"],
+        "capabilities": {"streaming": True, "push_notifications": False},
+        "default_input_modes": ["text/plain", "application/json"],
+        "default_output_modes": ["text/plain", "application/json"],
         "skills": [
             {
                 "id": "test-skill",
@@ -151,16 +140,16 @@ async def test_a2a_agent_card_endpoint(fastapi_server, test_user_token):
 
     # Test agent card endpoint
     async with httpx.AsyncClient() as client:
-        # Test /.well-known/agent.json endpoint (A2A standard)
+        # Test /.well-known/agent-card.json endpoint (A2A standard)
         response = await client.get(
-            f"{SERVER_URL}/{workspace}/a2a/card-agent/.well-known/agent.json"
+            f"{SERVER_URL}/{workspace}/a2a/card-agent/.well-known/agent-card.json"
         )
         assert response.status_code == 200
         assert response.headers["content-type"] == "application/json"
 
         card = response.json()
         assert card["name"] == "Card Test Agent"
-        assert card["protocolVersion"] == "0.2.9"
+        assert card["protocolVersion"] == "0.3.0"
         assert card["url"] == f"http://localhost:9527/{workspace}/a2a/card-agent"
         assert card["capabilities"]["streaming"] is True
         assert len(card["skills"]) == 1
@@ -179,14 +168,14 @@ async def test_a2a_message_send(fastapi_server, test_user_token):
 
     # Define agent card
     agent_card = {
-        "protocolVersion": "0.2.9",
+        "protocol_version": "0.3.0",
         "name": "Message Test Agent",
         "description": "Agent for testing message sending",
         "url": f"http://localhost:9527/{workspace}/a2a/msg-agent",
         "version": "1.0.0",
-        "capabilities": {"streaming": False, "pushNotifications": False},
-        "defaultInputModes": ["text/plain"],
-        "defaultOutputModes": ["text/plain"],
+        "capabilities": {"streaming": False, "push_notifications": False},
+        "default_input_modes": ["text/plain"],
+        "default_output_modes": ["text/plain"],
         "skills": [
             {
                 "id": "respond",
@@ -280,14 +269,14 @@ async def test_a2a_task_management(fastapi_server, test_user_token):
 
     # Define agent card for task-based agent
     agent_card = {
-        "protocolVersion": "0.2.9",
+        "protocol_version": "0.3.0",
         "name": "Task Test Agent",
         "description": "Agent for testing task management",
         "url": f"http://localhost:9527/{workspace}/a2a/task-agent",
         "version": "1.0.0",
-        "capabilities": {"streaming": False, "pushNotifications": False},
-        "defaultInputModes": ["text/plain"],
-        "defaultOutputModes": ["text/plain"],
+        "capabilities": {"streaming": False, "push_notifications": False},
+        "default_input_modes": ["text/plain"],
+        "default_output_modes": ["text/plain"],
         "skills": [
             {
                 "id": "process",
@@ -396,14 +385,14 @@ async def test_a2a_dynamic_agent_card(fastapi_server, test_user_token):
     # Define a function that returns agent card
     def create_dynamic_agent_card():
         return {
-            "protocolVersion": "0.2.9",
+            "protocol_version": "0.3.0",
             "name": "Dynamic Agent",
             "description": f"Agent with dynamic card created at {time.time()}",
             "url": f"http://localhost:9527/{workspace}/a2a/dynamic-agent",
             "version": "1.0.0",
-            "capabilities": {"streaming": False, "pushNotifications": False},
-            "defaultInputModes": ["text/plain"],
-            "defaultOutputModes": ["text/plain"],
+            "capabilities": {"streaming": False, "push_notifications": False},
+            "default_input_modes": ["text/plain"],
+            "default_output_modes": ["text/plain"],
             "skills": [
                 {
                     "id": "dynamic",
@@ -431,7 +420,7 @@ async def test_a2a_dynamic_agent_card(fastapi_server, test_user_token):
     # Test that agent card is generated correctly
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{SERVER_URL}/{workspace}/a2a/dynamic-agent/.well-known/agent.json"
+            f"{SERVER_URL}/{workspace}/a2a/dynamic-agent/.well-known/agent-card.json"
         )
         assert response.status_code == 200
 
@@ -453,14 +442,14 @@ async def test_a2a_error_handling(fastapi_server, test_user_token):
 
     # Register a simple agent
     agent_card = {
-        "protocolVersion": "0.2.9",
+        "protocol_version": "0.3.0",
         "name": "Error Test Agent",
         "description": "Agent for testing error handling",
         "url": f"http://localhost:9527/{workspace}/a2a/error-agent",
         "version": "1.0.0",
-        "capabilities": {"streaming": False, "pushNotifications": False},
-        "defaultInputModes": ["text/plain"],
-        "defaultOutputModes": ["text/plain"],
+        "capabilities": {"streaming": False, "push_notifications": False},
+        "default_input_modes": ["text/plain"],
+        "default_output_modes": ["text/plain"],
         "skills": [
             {
                 "id": "error-test",
@@ -568,7 +557,7 @@ async def test_a2a_nonexistent_service(fastapi_server, test_user_token):
     async with httpx.AsyncClient() as client:
         # Try to access agent card for nonexistent service
         response = await client.get(
-            f"{SERVER_URL}/ws-user-user-1/a2a/nonexistent/.well-known/agent.json"
+            f"{SERVER_URL}/ws-user-user-1/a2a/nonexistent/.well-known/agent-card.json"
         )
         assert response.status_code == 404
 
@@ -594,7 +583,6 @@ async def test_a2a_nonexistent_service(fastapi_server, test_user_token):
         assert response.status_code == 404
 
 
-@pytest.mark.skipif(not A2A_CLIENT_AVAILABLE, reason="A2A client SDK not available")
 async def test_a2a_client_sdk(fastapi_server, test_user_token):
     """Test A2A interaction using the official A2A client SDK.
 
@@ -620,14 +608,14 @@ async def test_a2a_client_sdk(fastapi_server, test_user_token):
 
     # Define agent card for our test agent
     agent_card = {
-        "protocolVersion": "0.2.9",
+        "protocol_version": "0.3.0",
         "name": "SDK Test Agent",
         "description": "Agent for testing A2A SDK client integration",
         "url": f"{SERVER_URL}/{workspace}/a2a/sdk-agent",
         "version": "1.0.0",
-        "capabilities": {"streaming": True, "pushNotifications": False},
-        "defaultInputModes": ["text/plain", "application/json"],
-        "defaultOutputModes": ["text/plain", "application/json"],
+        "capabilities": {"streaming": True, "push_notifications": False},
+        "default_input_modes": ["text/plain", "application/json"],
+        "default_output_modes": ["text/plain", "application/json"],
         "skills": [
             {
                 "id": "greet",
@@ -698,13 +686,13 @@ async def test_a2a_client_sdk(fastapi_server, test_user_token):
         resolver = A2ACardResolver(
             httpx_client=httpx_client,
             base_url=base_url,
-            agent_card_path="/.well-known/agent.json",
+            agent_card_path="/.well-known/agent-card.json",
         )
 
         resolved_card = await resolver.get_agent_card()
         assert resolved_card is not None
         assert resolved_card.name == "SDK Test Agent"
-        assert resolved_card.protocolVersion == "0.2.9"
+        assert resolved_card.protocol_version == "0.3.0"
         assert len(resolved_card.skills) == 2
         assert resolved_card.capabilities.streaming is True
 
