@@ -15,6 +15,7 @@ import numpy as np
 
 from fakeredis import aioredis
 from prometheus_client import Gauge
+
 from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
 from pydantic import BaseModel, Field
@@ -169,38 +170,30 @@ class WorkspaceManager:
             )
         else:
             self.SessionLocal = None
-        self._active_ws = Gauge("active_workspaces", "Number of active workspaces")
-        self._active_svc = Gauge(
-            "active_services", "Number of active services", ["workspace"]
-        )
-        self._active_clients = Gauge(
-            "active_clients", "Number of active clients", ["workspace"]
-        )
         self._enable_service_search = enable_service_search
-        # Track which workspaces were counted by this instance
-        self._counted_workspaces: set = set()
+        
+        # Prometheus metrics - these will be updated based on Redis data
+        self._active_ws_gauge = Gauge("active_workspaces", "Number of active workspaces")
 
-    def _increment_workspace_counter(self, workspace_id: str):
-        """Increment the workspace counter and track the workspace."""
-        if workspace_id not in self._counted_workspaces:
-            self._counted_workspaces.add(workspace_id)
-            self._active_ws.inc()
-            logger.debug(f"Incremented workspace counter for {workspace_id}")
 
-    def _decrement_workspace_counter(self, workspace_id: str):
-        """Decrement the workspace counter only if it was counted by this instance."""
-        if workspace_id in self._counted_workspaces:
-            self._counted_workspaces.remove(workspace_id)
-            self._active_ws.dec()
-            logger.debug(f"Decremented workspace counter for {workspace_id}")
-        else:
-            logger.debug(
-                f"Workspace {workspace_id} was not counted by this instance, skipping decrement"
-            )
 
     async def _get_sql_session(self):
         """Return an async session for the database."""
         return self.SessionLocal()
+
+    async def update_metrics_from_redis(self):
+        """Update Prometheus metrics based on current Redis data."""
+        try:
+            await self._update_workspace_metrics()
+        except Exception as e:
+            logger.error(f"Failed to update metrics from Redis: {e}")
+
+    async def _update_workspace_metrics(self):
+        """Update active workspace count from Redis."""
+        workspace_keys = await self._redis.hkeys("workspaces")
+        active_count = len(workspace_keys)
+        self._active_ws_gauge.set(active_count)
+        logger.debug(f"Updated active workspaces metric: {active_count}")
 
     def get_client_id(self):
         assert self._client_id, "client id must not be empty."
@@ -269,6 +262,10 @@ class WorkspaceManager:
                 overwrite=True,
             )
         self._initialized = True
+        
+        # Initialize metrics from current Redis state
+        await self.update_metrics_from_redis()
+        
         return rpc
 
     @schema_method
@@ -640,7 +637,7 @@ class WorkspaceManager:
         await self._redis.hset("workspaces", workspace.id, workspace.model_dump_json())
 
         if not exists:
-            self._increment_workspace_counter(workspace.id)
+            pass
 
         # Skip S3 setup for anonymous users
         if (
@@ -676,6 +673,10 @@ class WorkspaceManager:
             task = asyncio.create_task(self._prepare_workspace(workspace))
             background_tasks.add(task)
             task.add_done_callback(background_tasks.discard)
+        
+        # Update metrics after workspace creation
+        await self.update_metrics_from_redis()
+        
         return workspace.model_dump()
 
     @schema_method
@@ -708,6 +709,9 @@ class WorkspaceManager:
             ]
             await self._update_workspace(user_workspace, user_info)
         logger.info("Workspace %s removed by %s", workspace, user_info.id)
+        
+        # Update metrics after workspace deletion
+        await self.update_metrics_from_redis()
 
     @schema_method
     async def register_service_type(
@@ -1456,7 +1460,7 @@ class WorkspaceManager:
                     "client_connected", {"id": client_id, "workspace": ws}
                 )
                 logger.info(f"Adding built-in service: {service.id}")
-                self._active_clients.labels(workspace=ws).inc()
+
             else:
                 # Remove the service embedding from the config
                 if service.config and service.config.service_embedding is not None:
@@ -1465,7 +1469,10 @@ class WorkspaceManager:
                     "service_added", service.model_dump(mode="json")
                 )
                 logger.info(f"Adding service {service.id}")
-                self._active_svc.labels(workspace=ws).inc()
+                
+        # Update metrics after service registration
+        await self.update_metrics_from_redis()
+
 
     @schema_method
     async def get_service_info(
@@ -1658,13 +1665,16 @@ class WorkspaceManager:
                 await self._event_bus.emit(
                     "client_disconnected", {"id": client_id, "workspace": ws}
                 )
-                self._active_clients.labels(workspace=ws).dec()
+
             else:
                 await self._event_bus.emit("service_removed", service.model_dump())
-                self._active_svc.labels(workspace=ws).dec()
+
         else:
             logger.warning(f"Service {key} does not exist and cannot be removed.")
             raise KeyError(f"Service not found: {service.id}")
+        
+        # Update metrics after service unregistration
+        await self.update_metrics_from_redis()
 
     def _create_rpc(
         self,
@@ -1733,7 +1743,7 @@ class WorkspaceManager:
         Args:
             workspace: The workspace ID to load
             load: Whether to attempt loading from S3 if not found in Redis
-            increment_counter: Whether to increment the active_workspaces counter when loading from S3
+            increment_counter: Deprecated parameter, kept for compatibility
         """
         assert workspace is not None
 
@@ -1766,8 +1776,7 @@ class WorkspaceManager:
             await self._redis.hset(
                 "workspaces", workspace_info.id, workspace_info.model_dump_json()
             )
-            if increment_counter:
-                self._increment_workspace_counter(workspace_info.id)
+
             return workspace_info
 
         logger.info(f"Workspace {workspace} not found in Redis, trying to load from S3")
@@ -1796,8 +1805,7 @@ class WorkspaceManager:
             background_tasks.add(task)
             task.add_done_callback(background_tasks.discard)
 
-            if increment_counter:
-                self._increment_workspace_counter(workspace_info.id)
+
 
             await self._s3_controller.setup_workspace(workspace_info)
             await self._event_bus.emit("workspace_loaded", workspace_info.model_dump())
@@ -2208,10 +2216,8 @@ class WorkspaceManager:
                         f"Skipping cleanup of persistent workspace {ws} because S3 controller is not available"
                     )
 
-            self._decrement_workspace_counter(ws)
             try:
-                self._active_clients.remove(ws)
-                self._active_svc.remove(ws)
+                pass
             except KeyError:
                 pass
 
@@ -2390,8 +2396,7 @@ class WorkspaceManager:
         await self._event_bus.emit(
             "client_disconnected", {"id": client_id, "workspace": cws}
         )
-        self._active_clients.labels(workspace=cws).dec()
-        self._active_svc.labels(workspace=cws).dec(len(keys) - 1)
+
 
         if unload:
             if await self._redis.hexists("workspaces", cws):
