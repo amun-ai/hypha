@@ -44,18 +44,20 @@ class CondaKernel:
         fd, self.connection_file = tempfile.mkstemp(suffix=".json", prefix="kernel_")
         os.close(fd)
         
-        # Create kernel manager - use default kernel spec (no kernel_name="" to avoid None kernel_spec)
+        # Create kernel manager with a minimal setup to avoid kernel spec issues
         self.kernel_manager = AsyncKernelManager(
             connection_file=self.connection_file,
         )
         
-        # Override the kernel command to use our conda environment's Python
-        # Set this before calling start_kernel
-        self.kernel_manager.kernel_cmd = [
-            str(self.python_path),
-            "-m", "ipykernel_launcher",
-            "-f", "{connection_file}"
-        ]
+        # Override kernel_spec to avoid NoSuchKernel error
+        from jupyter_client.kernelspec import KernelSpec
+        self.kernel_manager._kernel_spec = KernelSpec(
+            argv=[str(self.python_path), "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+            display_name=f"Python ({self.conda_env_path.name})",
+            language="python",
+        )
+        
+        # kernel_cmd is already set via the KernelSpec above
         
         # Start the kernel
         await self.kernel_manager.start_kernel()
