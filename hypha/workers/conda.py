@@ -762,6 +762,126 @@ class CondaWorker(BaseWorker):
                 session_data["logs"]["error"].append(str(e))
             return result
 
+    async def execute(
+        self,
+        session_id: str,
+        script: str,
+        config: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Any] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Execute a script in the running Jupyter kernel session.
+        
+        This implements the new execute API method for interacting with running sessions.
+        
+        Args:
+            session_id: The session to execute in
+            script: The Python code to execute
+            config: Optional execution configuration
+            progress_callback: Optional callback for execution progress
+            context: Optional context information
+            
+        Returns:
+            Dictionary containing execution results with Jupyter-like output format
+        """
+        if session_id not in self._sessions:
+            raise SessionNotFoundError(
+                f"Conda environment session {session_id} not found"
+            )
+
+        session_data = self._session_data.get(session_id)
+        if not session_data or not session_data.get("kernel"):
+            raise WorkerError(f"No kernel available for session {session_id}")
+
+        kernel = session_data["kernel"]
+        
+        # Check if kernel is still alive
+        if not await kernel.is_alive():
+            raise WorkerError(f"Kernel for session {session_id} is not alive")
+
+        if progress_callback:
+            progress_callback(
+                {"type": "info", "message": "Executing code in Jupyter kernel..."}
+            )
+
+        try:
+            # Configure execution options from config
+            timeout = config.get("timeout", 30.0) if config else 30.0
+            
+            # Execute the code in the kernel
+            result = await kernel.execute(
+                script, 
+                timeout=timeout,
+                progress_callback=progress_callback
+            )
+
+            # Update session logs
+            logs = session_data.get("logs", {})
+            
+            # Process outputs for logging
+            for output in result.get("outputs", []):
+                if output["type"] == "stream":
+                    if output["name"] == "stdout":
+                        logs.setdefault("stdout", []).append(output["text"])
+                    elif output["name"] == "stderr":
+                        logs.setdefault("stderr", []).append(output["text"])
+                elif output["type"] == "error":
+                    logs.setdefault("error", []).append("\n".join(output.get("traceback", [])))
+
+            # Add execution info
+            logs.setdefault("info", []).append(
+                f"Code executed at {datetime.now().isoformat()} - Status: {result['status']}"
+            )
+
+            if progress_callback:
+                if result["status"] == "ok":
+                    progress_callback(
+                        {"type": "success", "message": "Code executed successfully"}
+                    )
+                else:
+                    progress_callback(
+                        {"type": "error", "message": "Code execution failed"}
+                    )
+
+            return result
+
+        except asyncio.TimeoutError:
+            error_msg = f"Code execution timed out after {timeout} seconds"
+            if progress_callback:
+                progress_callback({"type": "error", "message": error_msg})
+            
+            logs = session_data.get("logs", {})
+            logs.setdefault("error", []).append(error_msg)
+            
+            return {
+                "status": "error",
+                "outputs": [],
+                "error": {
+                    "ename": "TimeoutError",
+                    "evalue": error_msg,
+                    "traceback": [error_msg]
+                }
+            }
+        except Exception as e:
+            error_msg = f"Failed to execute code: {str(e)}"
+            logger.error(f"Failed to execute code in session {session_id}: {e}")
+            
+            if progress_callback:
+                progress_callback({"type": "error", "message": error_msg})
+            
+            logs = session_data.get("logs", {})
+            logs.setdefault("error", []).append(error_msg)
+            
+            return {
+                "status": "error",
+                "outputs": [],
+                "error": {
+                    "ename": type(e).__name__,
+                    "evalue": str(e),
+                    "traceback": [error_msg]
+                }
+            }
+
     async def stop(
         self, session_id: str, context: Optional[Dict[str, Any]] = None
     ) -> None:
