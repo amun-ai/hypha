@@ -7,7 +7,7 @@ appVersion: "0.20.80"
 
 dependencies:
   - name: hypha-server
-    version: "0.20.60"
+    version: "0.20.80"
     repository: "file://../hypha-server"
     condition: hypha-server.enabled
   

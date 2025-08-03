@@ -18,7 +18,8 @@ import json
 logger = logging.getLogger(__name__)
 
 try:
-    from a2a.server.apps.jsonrpc.starlette_app import A2AStarletteApplication, AgentCard
+    from a2a.types import AgentCard
+    from a2a.server.apps.jsonrpc.starlette_app import A2AStarletteApplication
     from a2a.server.request_handlers.default_request_handler import (
         DefaultRequestHandler,
         AgentExecutor,
@@ -26,12 +27,12 @@ try:
         EventQueue,
     )
     from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
-    from a2a.types import Message, Task, TaskStatus, TaskState
+    from a2a.types import Message
     from a2a.utils import new_agent_text_message
 
     A2A_SDK_AVAILABLE = True
-except ImportError:
-    logger.warning("A2A SDK not available. Install with: pip install a2a-sdk")
+except ImportError as exp:
+    logger.warning(f"A2A SDK not available. Install with: pip install a2a-sdk. Error: {exp}")
     A2A_SDK_AVAILABLE = False
 
     # Define dummy classes for type hints
@@ -164,7 +165,7 @@ class HyphaAgentExecutor(AgentExecutor):
             return {
                 "parts": parts,
                 "role": message.role,
-                "messageId": message.messageId,
+                "messageId": message.message_id,
             }
         except Exception as e:
             logger.exception(f"Error converting A2A message: {e}")
@@ -203,6 +204,9 @@ async def create_a2a_app_from_service(service, service_info):
     Returns:
         ASGI application that can be called with (scope, receive, send)
     """
+
+    assert A2A_SDK_AVAILABLE, "A2A SDK is not available. Install with: pip install a2a-sdk"
+
     logger.info(
         f"create_a2a_app_from_service called with service type: {type(service)}"
     )
@@ -253,17 +257,18 @@ async def create_a2a_app_from_service(service, service_info):
     else:
         # Create default agent card from service info
         agent_card_data = {
+            "protocol_version": "0.3.0",
             "name": service_info.id,
             "description": f"A2A agent for Hypha service {service_info.id}",
             "url": f"http://localhost:9876/a2a/{service_info.id}",  # Will be updated by middleware
             "version": "1.0.0",
             "capabilities": {
                 "streaming": True,
-                "pushNotifications": False,
-                "stateTransitionHistory": False,
+                "push_notifications": False,
+                "state_transition_history": False,
             },
-            "defaultInputModes": ["text"],
-            "defaultOutputModes": ["text"],
+                            "default_input_modes": ["text"],
+            "default_output_modes": ["text"],
             "skills": [
                 {
                     "id": "chat",
@@ -280,15 +285,15 @@ async def create_a2a_app_from_service(service, service_info):
     if "capabilities" not in agent_card_data:
         agent_card_data["capabilities"] = {
             "streaming": True,
-            "pushNotifications": False,
-            "stateTransitionHistory": False,
+            "push_notifications": False,
+            "state_transition_history": False,
         }
 
-    if "defaultInputModes" not in agent_card_data:
-        agent_card_data["defaultInputModes"] = ["text"]
+        if "default_input_modes" not in agent_card_data:
+            agent_card_data["default_input_modes"] = ["text"]
 
-    if "defaultOutputModes" not in agent_card_data:
-        agent_card_data["defaultOutputModes"] = ["text"]
+        if "default_output_modes" not in agent_card_data:
+            agent_card_data["default_output_modes"] = ["text"]
 
     if "skills" not in agent_card_data:
         agent_card_data["skills"] = [

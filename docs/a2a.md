@@ -86,17 +86,17 @@ async def main():
             "visibility": "public"
         },
         "agent_card": {
-            "protocolVersion": "0.2.9",
+            "protocol_version": "0.3.0",
             "name": "Text Generation Agent",
             "description": "A simple text generation agent that can create various types of content",
             "version": "1.0.0",
             "capabilities": {
                 "streaming": True,
-                "pushNotifications": False,
-                "stateTransitionHistory": False
+                "push_notifications": False,
+                "state_transition_history": False
             },
-            "defaultInputModes": ["text/plain", "application/json"],
-            "defaultOutputModes": ["text/plain", "text/markdown"],
+            "default_input_modes": ["text/plain", "application/json"],
+            "default_output_modes": ["text/plain", "text/markdown"],
             "skills": [
                 {
                     "id": "text-generation",
@@ -169,24 +169,24 @@ async def main():
             "require_context": True  # Enable user context
         },
         "agent_card": {
-            "protocolVersion": "0.2.9",
+            "protocol_version": "0.3.0",
             "name": "Streaming Chat Agent",
             "description": "An AI chat agent with streaming response capabilities",
             "version": "1.0.0",
             "capabilities": {
                 "streaming": True,
-                "pushNotifications": False,
-                "stateTransitionHistory": False
+                "push_notifications": False,
+                "state_transition_history": False
             },
-            "securitySchemes": {
+            "security_schemes": {
                 "bearerAuth": {
                     "type": "http",
                     "scheme": "bearer"
                 }
             },
             "security": [{"bearerAuth": []}],
-            "defaultInputModes": ["text/plain", "application/json"],
-            "defaultOutputModes": ["text/plain", "text/markdown"],
+            "default_input_modes": ["text/plain", "application/json"],
+            "default_output_modes": ["text/plain", "text/markdown"],
             "skills": [
                 {
                     "id": "chat",
@@ -231,24 +231,24 @@ class AgentSkill(BaseModel):
 
 class AgentCapabilities(BaseModel):
     streaming: bool = False
-    pushNotifications: bool = False
-    stateTransitionHistory: bool = False
+    push_notifications: bool = False
+    state_transition_history: bool = False
 
 class AgentProvider(BaseModel):
     organization: str
     url: str
 
 class AgentCard(BaseModel):
-    protocolVersion: str = "0.2.9"
+    protocol_version: str = "0.3.0"
     name: str
     description: str
     version: str
     capabilities: AgentCapabilities
-    defaultInputModes: List[str]
-    defaultOutputModes: List[str]
+    default_input_modes: List[str]
+    default_output_modes: List[str]
     skills: List[AgentSkill]
     provider: Optional[AgentProvider] = None
-    securitySchemes: Optional[Dict[str, Any]] = None
+    security_schemes: Optional[Dict[str, Any]] = None
     security: Optional[List[Dict[str, List[str]]]] = None
 
 async def math_agent(message, context=None):
@@ -277,10 +277,10 @@ def create_agent_card():
         version="1.0.0",
         capabilities=AgentCapabilities(
             streaming=False,
-            pushNotifications=False
+            push_notifications=False
         ),
-        defaultInputModes=["text/plain"],
-        defaultOutputModes=["text/plain"],
+        default_input_modes=["text/plain"],
+        default_output_modes=["text/plain"],
         skills=[
             AgentSkill(
                 id="basic-math",
@@ -326,7 +326,7 @@ def create_dynamic_agent_card(enable_streaming=False, user_permissions=None):
     """Dynamically create agent card based on conditions."""
     capabilities = AgentCapabilities(
         streaming=enable_streaming,
-        pushNotifications=False
+        push_notifications=False
     )
     
     skills = [
@@ -357,7 +357,7 @@ def create_dynamic_agent_card(enable_streaming=False, user_permissions=None):
         version="2.0.0",
         capabilities=capabilities,
         defaultInputModes=["text/plain", "application/json"],
-        defaultOutputModes=["text/plain"],
+        default_output_modes=["text/plain"],
         skills=skills
     ).model_dump()
 
@@ -412,7 +412,7 @@ The `agent_card` field can be either a dictionary or a function that returns a d
 
 ```python
 agent_card = {
-    "protocolVersion": "0.2.9",  # Required: A2A protocol version
+    "protocol_version": "0.3.0",  # Required: A2A protocol version
     "name": "Your Agent Name",   # Required: Human-readable name
     "description": "Agent description",  # Required: Description of capabilities
     "version": "1.0.0",         # Required: Agent version
@@ -420,13 +420,13 @@ agent_card = {
     # Required: Capabilities supported by your agent
     "capabilities": {
         "streaming": True,              # Support for SSE streaming
-        "pushNotifications": False,     # Support for webhook notifications
-        "stateTransitionHistory": False # Support for task history
+        "push_notifications": False,     # Support for webhook notifications
+        "state_transition_history": False # Support for task history
     },
     
     # Required: Input/output media types
-    "defaultInputModes": ["text/plain", "application/json"],
-    "defaultOutputModes": ["text/plain", "text/markdown"],
+    "default_input_modes": ["text/plain", "application/json"],
+    "default_output_modes": ["text/plain", "text/markdown"],
     
     # Required: Agent skills/capabilities
     "skills": [
@@ -440,7 +440,7 @@ agent_card = {
     ],
     
     # Optional: Authentication requirements
-    "securitySchemes": {
+    "security_schemes": {
         "bearerAuth": {
             "type": "http",
             "scheme": "bearer"
@@ -606,17 +606,17 @@ async def main():
             "visibility": "public"
         },
         "agent_card": {
-            "protocolVersion": "0.2.9",
+            "protocol_version": "0.3.0",
             "name": "File Processing Agent",
             "description": "Process and analyze various file types including images and documents",
             "version": "1.0.0",
             "capabilities": {
                 "streaming": False,
-                "pushNotifications": False,
-                "stateTransitionHistory": False
+                "push_notifications": False,
+                "state_transition_history": False
             },
-            "defaultInputModes": ["text/plain", "application/json", "image/*", "application/pdf"],
-            "defaultOutputModes": ["text/plain", "application/json"],
+            "default_input_modes": ["text/plain", "application/json", "image/*", "application/pdf"],
+            "default_output_modes": ["text/plain", "application/json"],
             "skills": [
                 {
                     "id": "image-analysis",
@@ -758,7 +758,7 @@ service_info = await server.register_service({
     },
     "agent_card": {
         # ... other fields ...
-        "securitySchemes": {
+        "security_schemes": {
             "bearerAuth": {
                 "type": "http",
                 "scheme": "bearer"
@@ -820,17 +820,17 @@ async def main():
             "visibility": "public"
         },
         "agent_card": {
-            "protocolVersion": "0.2.9",
+            "protocol_version": "0.3.0",
             "name": "Long Running Agent",
             "description": "An agent that handles long-running background tasks",
             "version": "1.0.0",
             "capabilities": {
                 "streaming": False,
-                "pushNotifications": False,  # Server handles push notifications 
-                "stateTransitionHistory": False
+                "push_notifications": False,  # Server handles push notifications 
+                "state_transition_history": False
             },
-            "defaultInputModes": ["text/plain"],
-            "defaultOutputModes": ["text/plain"],
+            "default_input_modes": ["text/plain"],
+            "default_output_modes": ["text/plain"],
             "skills": [
                 {
                     "id": "background-processing",
@@ -1101,7 +1101,7 @@ The A2A proxy system consists of:
 
 ### Features
 
-- **Automatic Agent Discovery**: Resolves A2A agent cards from `/.well-known/agent.json` endpoints
+- **Automatic Agent Discovery**: Resolves A2A agent cards from `/.well-known/agent-card.json` endpoints
 - **Skill Wrapping**: Converts A2A skills to callable Hypha functions with proper schemas
 - **Session Management**: Full lifecycle management with logging and error handling
 - **Reversible Communication**: Enables full round-trip communication chains
@@ -1267,7 +1267,7 @@ result = await a2a_service.skills[0](text="Hello, A2A agent!")
 ### Key Features
 
 - **Skill Wrapping**: A2A agent skills are automatically wrapped as callable Hypha services with proper JSON schemas
-- **Agent Card Resolution**: Automatic resolution of agent cards from `/.well-known/agent.json` endpoints
+- **Agent Card Resolution**: Automatic resolution of agent cards from `/.well-known/agent-card.json` endpoints
 - **Error Handling**: Graceful handling of connection failures and invalid configurations
 - **Session Management**: Full lifecycle management with proper cleanup and logging
 - **Reversibility**: Create chains of A2A communication where Hypha services can be exposed as A2A agents and vice versa
@@ -1300,12 +1300,12 @@ await api.register_service({
     "skills": [echo_skill],
     "run": a2a_run,
     "agent_card": {
-        "protocolVersion": "0.2.9",
+        "protocol_version": "0.3.0",
         "name": "My A2A Agent",
         "description": "A reversible agent for testing",
         "url": f"http://localhost:9527/workspace/a2a/my-a2a-service",
         "version": "1.0.0",
-        "capabilities": {"streaming": False, "pushNotifications": False},
+                    "capabilities": {"streaming": False, "push_notifications": False},
         "skills": [{"id": "echo", "name": "Echo", "description": "Echoes text"}]
     }
 })

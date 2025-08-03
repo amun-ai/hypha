@@ -36,6 +36,10 @@ jobs:
     - name: Package Helm chart
       run: |
         cd helm-charts
+        # Update dependencies for hypha-server-kit
+        cd hypha-server-kit
+        helm dependency update
+        cd ..
         helm package hypha-server
         mkdir -p ../dist
         mv hypha-server-*.tgz ../dist
@@ -47,15 +51,36 @@ jobs:
 
     - name: Install Hypha Helm chart from packaged .tgz
       run: |
-        helm install redis ./dist/redis-*.tgz --namespace=hypha
-        helm install hypha-server ./dist/hypha-server-*.tgz --namespace=hypha
-        helm install hypha-server-kit ./dist/hypha-server-kit-*.tgz --namespace=hypha
+        # Find the exact chart files
+        REDIS_CHART=$(ls ./dist/redis-*.tgz)
+        HYPHA_SERVER_CHART=$(ls ./dist/hypha-server-*.tgz | grep -v kit)
+        HYPHA_SERVER_KIT_CHART=$(ls ./dist/hypha-server-kit-*.tgz)
+        
+        echo "Found charts:"
+        echo "Redis: $REDIS_CHART"
+        echo "Hypha Server: $HYPHA_SERVER_CHART" 
+        echo "Hypha Server Kit: $HYPHA_SERVER_KIT_CHART"
+        
+        # Test individual charts first
+        helm install redis "$REDIS_CHART" --namespace=hypha
+        helm install hypha-server "$HYPHA_SERVER_CHART" --namespace=hypha
+        
+        # Clean up individual charts before testing the kit
+        helm uninstall hypha-server --namespace=hypha
+        helm uninstall redis --namespace=hypha
+        
+        # Test the parent chart (hypha-server-kit) which includes all dependencies
+        helm install hypha-server-kit "$HYPHA_SERVER_KIT_CHART" --namespace=hypha \
+          --set hypha-server.enabled=true \
+          --set redis.enabled=true \
+          --set minio.enabled=true \
+          --set postgresql.enabled=true
 
     - name: Uninstall Hypha Helm chart
       run: |
-        helm uninstall hypha-server --namespace=hypha
-        helm uninstall redis --namespace=hypha
-        helm uninstall hypha-server-kit --namespace=hypha
+        helm uninstall hypha-server-kit --namespace=hypha || true
+        helm uninstall hypha-server --namespace=hypha || true
+        helm uninstall redis --namespace=hypha || true
 
     - name: Upload to GitHub Pages
       uses: peaceiris/actions-gh-pages@v3
