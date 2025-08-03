@@ -122,6 +122,26 @@ async def extracted_kwargs(
                 "Invalid content-type (supported types: "
                 "application/msgpack, application/json, text/plain)",
             )
+        # Handle different JSON input types for HTTP service calls
+        if isinstance(kwargs, list):
+            # Convert positional arguments array to a dictionary for internal processing
+            # e.g., ["arg1", "arg2"] becomes {"0": "arg1", "1": "arg2"}
+            kwargs = {str(i): arg for i, arg in enumerate(kwargs)}
+        elif not isinstance(kwargs, dict):
+            # For single primitive values, treat as a single positional argument
+            # e.g., "hello" becomes {"0": "hello"}
+            if isinstance(kwargs, (str, int, float, bool)) or kwargs is None:
+                kwargs = {"0": kwargs}
+            else:
+                raise RuntimeError(
+                    f"Invalid JSON format for HTTP service call. "
+                    f"Expected a dictionary (object), array, or primitive value, but got {type(kwargs).__name__}: {kwargs!r}. "
+                    f"Examples: "
+                    f"Array format: ['arg1', 'arg2'] "
+                    f"Object format: {{'param1': 'value1', 'param2': 'value2'}} "
+                    f"Single value: 'hello'"
+                )
+        
         if use_function_kwargs:
             kwargs = kwargs.get("function_kwargs", {})
         else:
