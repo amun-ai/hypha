@@ -115,78 +115,151 @@ class CondaKernel:
         outputs = []
         error = None
         status = "ok"
+        execution_finished = False
         
         start_time = time.time()
         
-        while True:
-            if time.time() - start_time > timeout:
-                status = "timeout"
-                error = {"ename": "TimeoutError", "evalue": f"Execution timed out after {timeout}s", "traceback": []}
-                break
-                
-            try:
-                # Get message with short timeout to check for timeout
-                msg = await asyncio.wait_for(
-                    self.kernel_client.get_iopub_msg(timeout=1.0), 
-                    timeout=1.0
-                )
-                
-                if msg['parent_header'].get('msg_id') != msg_id:
-                    continue
+        # Create tasks for both shell and iopub channels
+        async def collect_messages():
+            nonlocal outputs, error, status, execution_finished
+            
+            # Track if we've seen the execution status (idle) message
+            seen_idle = False
+            
+            while not execution_finished and (time.time() - start_time) < timeout:
+                try:
+                    messages_found = False
                     
-                msg_type = msg['msg_type']
-                content = msg['content']
-                
-                if progress_callback:
-                    progress_callback({
-                        "type": "message",
-                        "message": f"Received {msg_type} message"
-                    })
-                
-                if msg_type == 'stream':
-                    outputs.append({
-                        "type": "stream",
-                        "name": content.get("name", "stdout"),
-                        "text": content.get("text", "")
-                    })
-                elif msg_type == 'display_data':
-                    outputs.append({
-                        "type": "display_data", 
-                        "data": content.get("data", {}),
-                        "metadata": content.get("metadata", {})
-                    })
-                elif msg_type == 'execute_result':
-                    outputs.append({
-                        "type": "execute_result",
-                        "data": content.get("data", {}),
-                        "metadata": content.get("metadata", {}),
-                        "execution_count": content.get("execution_count", 0)
-                    })
-                elif msg_type == 'error':
+                    # Check for iopub messages (outputs, errors, status)
+                    try:
+                        iopub_msg = await asyncio.wait_for(
+                            self.kernel_client.get_iopub_msg(timeout=0.1), 
+                            timeout=0.1
+                        )
+                        messages_found = True
+                        
+                        if iopub_msg['parent_header'].get('msg_id') == msg_id:
+                            msg_type = iopub_msg['msg_type']
+                            content = iopub_msg['content']
+                            
+                            if progress_callback:
+                                progress_callback({
+                                    "type": "message", 
+                                    "message": f"Received {msg_type} message"
+                                })
+                            
+                            if msg_type == 'stream':
+                                outputs.append({
+                                    "type": "stream",
+                                    "name": content.get("name", "stdout"),
+                                    "text": content.get("text", "")
+                                })
+                            elif msg_type == 'display_data':
+                                outputs.append({
+                                    "type": "display_data", 
+                                    "data": content.get("data", {}),
+                                    "metadata": content.get("metadata", {})
+                                })
+                            elif msg_type == 'execute_result':
+                                outputs.append({
+                                    "type": "execute_result",
+                                    "data": content.get("data", {}),
+                                    "metadata": content.get("metadata", {}),
+                                    "execution_count": content.get("execution_count", 0)
+                                })
+                            elif msg_type == 'error':
+                                status = "error"
+                                error = {
+                                    "ename": content.get("ename", "Unknown"),
+                                    "evalue": content.get("evalue", "Unknown error"),
+                                    "traceback": content.get("traceback", [])
+                                }
+                            elif msg_type == 'status':
+                                # Track kernel status - execution is done when it goes to 'idle'
+                                if content.get('execution_state') == 'idle':
+                                    seen_idle = True
+                                    
+                    except asyncio.TimeoutError:
+                        pass  # No iopub message available
+                    
+                    # Check for shell messages (execution completion)
+                    try:
+                        shell_msg = await asyncio.wait_for(
+                            self.kernel_client.get_shell_msg(timeout=0.1),
+                            timeout=0.1
+                        )
+                        messages_found = True
+                        
+                        if (shell_msg['parent_header'].get('msg_id') == msg_id and 
+                            shell_msg['msg_type'] == 'execute_reply'):
+                            content = shell_msg['content']
+                            
+                            if content.get('status') == 'error' and not error:
+                                status = "error"
+                                error = {
+                                    "ename": content.get("ename", "Unknown"), 
+                                    "evalue": content.get("evalue", "Unknown error"),
+                                    "traceback": content.get("traceback", [])
+                                }
+                            
+                            # Execution is finished when we get the execute_reply
+                            # We'll wait a bit more for any remaining iopub messages
+                            execution_finished = True
+                            
+                            # Give a small window for any remaining iopub messages
+                            await asyncio.sleep(0.1)
+                            
+                            # Process any remaining iopub messages
+                            try:
+                                while True:
+                                    iopub_msg = await asyncio.wait_for(
+                                        self.kernel_client.get_iopub_msg(timeout=0.1), 
+                                        timeout=0.1
+                                    )
+                                    
+                                    if iopub_msg['parent_header'].get('msg_id') == msg_id:
+                                        msg_type = iopub_msg['msg_type']
+                                        content = iopub_msg['content']
+                                        
+                                        if msg_type == 'stream':
+                                            outputs.append({
+                                                "type": "stream",
+                                                "name": content.get("name", "stdout"),
+                                                "text": content.get("text", "")
+                                            })
+                                        elif msg_type == 'execute_result':
+                                            outputs.append({
+                                                "type": "execute_result",
+                                                "data": content.get("data", {}),
+                                                "metadata": content.get("metadata", {}),
+                                                "execution_count": content.get("execution_count", 0)
+                                            })
+                            except asyncio.TimeoutError:
+                                pass  # No more messages
+                                
+                            break
+                            
+                    except asyncio.TimeoutError:
+                        pass  # No shell message available
+                    
+                    # If no messages found, sleep a bit longer to avoid busy waiting
+                    if not messages_found:
+                        await asyncio.sleep(0.05)
+                    else:
+                        await asyncio.sleep(0.01)
+                    
+                except Exception as e:
                     status = "error"
-                    error = {
-                        "ename": content.get("ename", "Unknown"),
-                        "evalue": content.get("evalue", "Unknown error"),
-                        "traceback": content.get("traceback", [])
-                    }
-                elif msg_type == 'execute_reply':
-                    # This indicates the end of execution
-                    if content.get('status') == 'error' and not error:
-                        status = "error"
-                        error = {
-                            "ename": content.get("ename", "Unknown"), 
-                            "evalue": content.get("evalue", "Unknown error"),
-                            "traceback": content.get("traceback", [])
-                        }
+                    error = {"ename": type(e).__name__, "evalue": str(e), "traceback": []}
+                    execution_finished = True
                     break
-                    
-            except asyncio.TimeoutError:
-                # Short timeout hit, continue loop to check overall timeout
-                continue
-            except Exception as e:
-                status = "error"
-                error = {"ename": type(e).__name__, "evalue": str(e), "traceback": []}
-                break
+        
+        # Run message collection with overall timeout
+        try:
+            await asyncio.wait_for(collect_messages(), timeout=timeout)
+        except asyncio.TimeoutError:
+            status = "timeout"
+            error = {"ename": "TimeoutError", "evalue": f"Execution timed out after {timeout}s", "traceback": []}
         
         result = {
             "status": status,
