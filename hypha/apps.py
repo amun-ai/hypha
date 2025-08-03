@@ -967,6 +967,12 @@ class ServerAppController:
             put_url = await self.artifact_manager.put_file(
                 artifact["id"], file_path=file_path, use_proxy=False, context=context
             )
+            progress_callback(
+                {
+                    "type": "info",
+                    "message": f"Uploading file {file_path}...",
+                }
+            )
             async with httpx.AsyncClient() as client:
                 response = await client.put(put_url, data=file_data)
                 assert response.status_code == 200, f"Failed to upload file {file_path}"
