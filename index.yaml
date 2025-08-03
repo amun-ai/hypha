@@ -3,23 +3,66 @@ entries:
   hypha-server:
   - apiVersion: v2
     appVersion: 0.20.14
-    created: "2025-07-31T17:00:01.098066197Z"
+    created: "2025-08-03T05:19:07.211495074Z"
     description: A Helm chart for deploying Hypha Server to Kubernetes
-    digest: 30a537435e30b1a2fa3f4a66a750353934275b2eec9d59120ebb8ec4fd7072d8
+    digest: bde1601aa30d803f75f800f75cf009f384b1f176b1fe91d600cd71338a4fe547
     name: hypha-server
     type: application
     urls:
-    - https://hypha-server.github.io/helm-charts/hypha-server-0.20.60.tgz
-    version: 0.20.60
+    - https://hypha-server.github.io/helm-charts/hypha-server-0.20.80.tgz
+    version: 0.20.80
+  hypha-server-kit:
+  - apiVersion: v2
+    appVersion: 0.20.80
+    created: "2025-08-03T05:19:07.228872813Z"
+    dependencies:
+    - condition: hypha-server.enabled
+      name: hypha-server
+      repository: file://../hypha-server
+      version: 0.20.80
+    - condition: minio.enabled
+      name: minio
+      repository: https://charts.bitnami.com/bitnami
+      version: 17.0.16
+    - condition: postgresql.enabled
+      name: postgresql
+      repository: https://charts.bitnami.com/bitnami
+      version: 16.3.2
+    - condition: redis.enabled
+      name: redis
+      repository: https://charts.bitnami.com/bitnami
+      version: 21.2.13
+    description: A comprehensive Helm chart for Hypha server with integrated dependencies
+    digest: 3865c1d1a5fffc56448e449ba15bd9b419adf012cbfc29538cc59dd22d020e29
+    home: https://github.com/amun-ai/hypha
+    keywords:
+    - hypha
+    - ai
+    - rpc
+    - microservices
+    - s3
+    - postgresql
+    - redis
+    - minio
+    maintainers:
+    - email: hypha@amun.ai
+      name: Hypha Team
+    name: hypha-server-kit
+    sources:
+    - https://github.com/amun-ai/hypha
+    type: application
+    urls:
+    - https://hypha-server.github.io/helm-charts/hypha-server-kit-0.1.0.tgz
+    version: 0.1.0
   redis:
   - apiVersion: v2
     appVersion: 5.0.8
-    created: "2025-07-31T17:00:01.098382403Z"
+    created: "2025-08-03T05:19:07.229006333Z"
     description: A Helm chart for deploying Redis to Kubernetes
-    digest: 48497bf15b0c6b4be61e52c309460a198ff803d77142037e2b2d0b3533339e71
+    digest: f7f62f1359fb42f3bcdc79acde676d477ea689811f1b9f0e0528ec8a4fbaaaca
     name: redis
     type: application
     urls:
     - https://hypha-server.github.io/helm-charts/redis-0.1.0.tgz
     version: 0.1.0
-generated: "2025-07-31T17:00:01.097176317Z"
+generated: "2025-08-03T05:19:07.21081228Z"
