@@ -2263,18 +2263,12 @@ async def test_conda_worker_registration_and_discovery(fastapi_server_sqlite, te
     
     print(f"✅ Found {len(conda_services)} conda service(s): {[s['id'] for s in conda_services]}")
     
-    # Try to verify via list_workers() but don't fail the test if there are context issues
-    try:
-        workers = await controller.list_workers()
-        print(f"📋 Found {len(workers)} workers in workspace via list_workers()")
-        conda_workers = [w for w in workers if 'conda-jupyter-kernel' in w.get('supported_types', [])]
-        if conda_workers:
-            print(f"✅ list_workers() found {len(conda_workers)} conda worker(s): {[w['id'] for w in conda_workers]}")
-        else:
-            print("⚠️  list_workers() didn't return conda workers due to context issues, but service is registered")
-            print(f"   Available worker types: {[w.get('supported_types') for w in workers]}")
-    except Exception as e:
-        print(f"⚠️  list_workers() failed: {e}")
+    # Verify via list_workers()
+    workers = await controller.list_workers()
+    print(f"📋 Found {len(workers)} workers in workspace via list_workers()")
+    conda_workers = [w for w in workers if 'conda-jupyter-kernel' in w.get('supported_types', [])]
+    assert len(conda_workers) >= 1, f"No conda workers found via list_workers(). Available worker types: {[w.get('supported_types') for w in workers]}"
+    print(f"✅ list_workers() found {len(conda_workers)} conda worker(s): {[w['id'] for w in conda_workers]}")
     
     print("✅ Worker registration verified - proceeding to test app installation (the main goal)")  
     
@@ -2364,64 +2358,35 @@ print("SUCCESS: Worker discovery test app setup completed!", flush=True)
         progress_messages.append(message["message"])
         print(f"📊 Progress: {message['message']}")
     
-    # Try to install the app - this will test worker discovery
-    try:
-        app_info = await controller.install(
-            app_id="test-worker-discovery-app",
-            manifest={
-                "name": "Test Worker Discovery App",
-                "type": "conda-jupyter-kernel",  # This should trigger our worker
-                "version": "1.0.0",
-                "entry_point": "main.py",
-                "description": "Test app for verifying conda worker discovery",
-                "dependencies": [
-                    "python=3.11",
-                    "fastapi",
-                    "uvicorn",
-                    "pip",
-                    {"pip": ["hypha-rpc"]}
-                ],
-                "channels": ["conda-forge"],
-                "startup_config": {
-                    "timeout": 120,
-                    "wait_for_service": "test-worker-discovery-service",
-                    "stop_after_inactive": 0
-                }
-            },
-            files=[{"name": "main.py", "content": test_app_code}],
-            timeout=120,
-            progress_callback=progress_callback,
-            overwrite=True
-        )
-        print("✅ App installation succeeded completely!")
-        
-        # If we get here, continue with the full test
-        installation_succeeded = True
-        
-    except Exception as e:
-        error_message = str(e)
-        print(f"📝 App installation error: {error_message}")
-        
-        # Check if we get the original "No server app worker found" error or a different error
-        if "No server app worker found for app type: conda-jupyter-kernel" in error_message:
-            # This is the original error - the fix didn't work
-            raise AssertionError(f"❌ Original worker discovery issue still exists: {error_message}")
-        elif "User info is required" in error_message or "Failed to get full workspace service info" in error_message:
-            # This is expected - the worker was found but there's a user context issue
-            print("✅ Worker discovery fix verified! Worker was found but failed on user context (expected)")
-            print("✅ The original 'No server app worker found' issue has been resolved")
-            installation_succeeded = False
-        else:
-            # Some other unexpected error
-            print(f"⚠️  Unexpected error during installation: {error_message}")
-            installation_succeeded = False
-            
-    # Only continue with the rest of the test if installation fully succeeded
-    if not installation_succeeded:
-        print("🎯 Test goal achieved: Worker discovery issue resolved!")
-        print("📝 Note: Full installation failed due to user context issues, but core fix is verified")
-        await api.disconnect()
-        return
+    # Install the app - this will test worker discovery
+    app_info = await controller.install(
+        app_id="test-worker-discovery-app",
+        manifest={
+            "name": "Test Worker Discovery App",
+            "type": "conda-jupyter-kernel",  # This should trigger our worker
+            "version": "1.0.0",
+            "entry_point": "main.py",
+            "description": "Test app for verifying conda worker discovery",
+            "dependencies": [
+                "python=3.11",
+                "fastapi",
+                "uvicorn",
+                "pip",
+                {"pip": ["hypha-rpc"]}
+            ],
+            "channels": ["conda-forge"],
+            "startup_config": {
+                "timeout": 120,
+                "wait_for_service": "test-worker-discovery-service",
+                "stop_after_inactive": 0
+            }
+        },
+        files=[{"name": "main.py", "content": test_app_code}],
+        timeout=120,
+        progress_callback=progress_callback,
+        overwrite=True
+    )
+    print("✅ App installation succeeded completely!")
     
     assert app_info["name"] == "Test Worker Discovery App"
     assert app_info["type"] == "conda-jupyter-kernel"
@@ -2446,22 +2411,17 @@ print("SUCCESS: Worker discovery test app setup completed!", flush=True)
     await asyncio.sleep(3)
     
     # Check if our service was registered
-    try:
-        test_service = await api.get_service("test-worker-discovery-service")
-        assert test_service is not None
-        print("✅ Service registration successful!")
-        
-        # Try to call the service
-        response = await test_service.serve({
-            "scope": {"type": "http", "method": "GET", "path": "/health"},
-            "receive": lambda: {"type": "http.request", "body": b""},
-            "send": lambda x: None
-        })
-        print("✅ Service is callable!")
-        
-    except Exception as e:
-        print(f"⚠️  Service verification failed (may be timing): {e}")
-        # This is not critical for the worker discovery test
+    test_service = await api.get_service("test-worker-discovery-service")
+    assert test_service is not None
+    print("✅ Service registration successful!")
+    
+    # Try to call the service
+    response = await test_service.serve({
+        "scope": {"type": "http", "method": "GET", "path": "/health"},
+        "receive": lambda: {"type": "http.request", "body": b""},
+        "send": lambda x: None
+    })
+    print("✅ Service is callable!")
     
     # Step 6: Verify logs contain expected output
     print("📝 Step 6: Checking app logs...")
@@ -2479,13 +2439,10 @@ print("SUCCESS: Worker discovery test app setup completed!", flush=True)
     # Step 7: Clean up
     print("🧹 Step 7: Cleaning up...")
     
-    try:
-        await controller.stop(started_app["id"])
-        await controller.uninstall(app_info["id"])
-        await api.unregister_service(worker_id)
-        print("✅ Cleanup completed!")
-    except Exception as e:
-        print(f"⚠️  Cleanup warning: {e}")
+    await controller.stop(started_app["id"])
+    await controller.uninstall(app_info["id"])
+    await api.unregister_service(worker_id)
+    print("✅ Cleanup completed!")
     
     await api.disconnect()
     
