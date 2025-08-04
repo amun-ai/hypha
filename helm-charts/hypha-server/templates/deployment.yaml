@@ -27,7 +27,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "hypha-server.serviceAccountName" . }}
+      serviceAccountName: {{ if .Values.k8sWorker.enabled }}{{ include "hypha-server.serviceAccountName" . }}-k8s-worker{{ else }}{{ include "hypha-server.serviceAccountName" . }}{{ end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -49,6 +49,16 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.uid
+            {{- end }}
+            {{- if .Values.k8sWorker.enabled }}
+            - name: HYPHA_ENABLE_K8S_WORKER
+              value: "true"
+            - name: HYPHA_K8S_NAMESPACE
+              value: {{ .Values.k8sWorker.namespace | default .Release.Namespace | quote }}
+            - name: HYPHA_K8S_DEFAULT_TIMEOUT
+              value: {{ .Values.k8sWorker.defaultTimeout | quote }}
+            - name: HYPHA_K8S_IMAGE_PULL_POLICY
+              value: {{ .Values.k8sWorker.imagePullPolicy | quote }}
             {{- end }}
           {{- if .Values.persistence.enabled }}
           volumeMounts:
