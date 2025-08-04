@@ -272,7 +272,7 @@ print("Application initialized successfully!")
 ```yaml
 # manifest.yaml
 name: My Conda App
-type: python-conda
+type: conda-jupyter-kernel
 version: 1.0.0
 description: A Python app with conda dependencies
 entry_point: main.py
@@ -308,7 +308,7 @@ async def main():
         "app_id": "my-conda-app",
         "workspace": "my-workspace",
         "manifest": {
-            "type": "python-conda",
+            "type": "conda-jupyter-kernel",
             "dependencies": ["python=3.11", "numpy", "pandas"],
             "channels": ["conda-forge"],
             "entry_point": "main.py"
@@ -551,27 +551,32 @@ if result["status"] == "ok":
 
 ### Handling Execution Results
 
-The `execute_code()` method returns an `ExecutionResult` object with the following fields:
+The `execute()` method returns a dictionary with Jupyter-compatible output format:
 
 ```python
 result = await conda_worker.execute(session_id, code)
 
-if result.success:
+if result["status"] == "ok":
     print("Code executed successfully!")
-    print("Output:", result.stdout)
+    # Extract outputs from the result
+    for output in result.get("outputs", []):
+        if output["type"] == "stream" and output["name"] == "stdout":
+            print("Output:", output["text"])
 else:
     print("Execution failed!")
-    print("Error:", result.error)
-    print("Stderr:", result.stderr)
-
-# Timing information (if available)
-if result.timing:
-    print(f"Execution time: {result.timing.execution_time:.2f}s")
+    error = result.get("error", {})
+    print("Error:", error.get("ename", "Unknown"))
+    print("Error message:", error.get("evalue", ""))
+    # Print traceback if available
+    if "traceback" in error:
+        print("Traceback:")
+        for line in error["traceback"]:
+            print(line)
 ```
 
 ## Environment Caching
 
-The worker automatically caches conda environments to improve performance. When you start a session, the initialization script runs once, but the environment stays available for multiple `execute_code()` calls:
+The worker automatically caches conda environments to improve performance. When you start a session, the initialization script runs once, but the environment stays available for multiple `execute()` calls:
 
 - **Hash-based caching**: Environments are cached based on dependencies and channels
 - **LRU eviction**: Least recently used environments are removed when cache is full
@@ -616,7 +621,7 @@ Starting Hypha Conda Environment Worker...
 
 ✅ Conda Environment Worker (using mamba) registered successfully!
    Service ID: my-conda-worker
-   Supported types: ['python-conda']
+   Supported types: ['conda-jupyter-kernel']
    Visibility: public
 
 Worker is ready to process conda environment requests...
@@ -645,14 +650,20 @@ conda install mamba -n base -c conda-forge
 
 #### 2. Code Execution Errors
 ```
-ExecutionResult.success = False
+result["status"] == "error"
 ```
-**Solution**: Check the `stderr` and `error` fields in the result:
+**Solution**: Check the error details and outputs in the result:
 ```python
 result = await conda_worker.execute(session_id, code)
-if not result.success:
-    print(f"Error: {result.error}")
-    print(f"Stderr: {result.stderr}")
+if result["status"] == "error":
+    error = result.get("error", {})
+    print(f"Error: {error.get('ename', 'Unknown')}")
+    print(f"Error message: {error.get('evalue', '')}")
+    
+    # Check stderr from outputs
+    for output in result.get("outputs", []):
+        if output["type"] == "stream" and output["name"] == "stderr":
+            print(f"Stderr: {output['text']}")
 ```
 
 #### 3. Permission Errors

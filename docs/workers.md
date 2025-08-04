@@ -1244,10 +1244,7 @@ The `config` parameter supports various execution options:
 
 ```python
 config = {
-    "timeout": 30.0,          # Execution timeout in seconds
-    "silent": False,          # Whether to suppress output
-    "store_history": True,    # Whether to store in execution history
-    # Worker-specific options...
+    "timeout": 30.0,
 }
 ```
 
