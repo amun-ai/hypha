@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+import shortuuid
 import subprocess
 import sys
 import time
@@ -224,6 +225,7 @@ class CondaWorker(BaseWorker):
     def __init__(self):
         """Initialize the conda environment worker."""
         super().__init__()
+        self.instance_id = f"conda-jupyter-kernel-{shortuuid.uuid()}"
         self.controller_id = str(CondaWorker.instance_counter)
         CondaWorker.instance_counter += 1
 
