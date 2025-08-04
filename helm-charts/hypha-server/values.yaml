@@ -208,16 +208,6 @@ env:
   # - name: HYPHA_IN_DOCKER
   #   value: "true"
   
-  # Kubernetes worker configuration
-  # - name: HYPHA_ENABLE_K8S_WORKER
-  #   value: "false"
-  # - name: HYPHA_K8S_NAMESPACE
-  #   value: "default"
-  # - name: HYPHA_K8S_DEFAULT_TIMEOUT
-  #   value: "3600"
-  # - name: HYPHA_K8S_IMAGE_PULL_POLICY
-  #   value: "IfNotPresent"
-  
   # Interactive mode
   # - name: HYPHA_INTERACTIVE
   #   value: "false"
@@ -265,15 +255,3 @@ persistence:
     - ReadWriteMany
   size: 10Gi
   # storageClass: "" # Uncomment and set to use a specific storage class
-
-# Kubernetes Worker Configuration
-k8sWorker:
-  # Enable Kubernetes worker for launching pods
-  enabled: false
-  # Kubernetes namespace where worker pods will be created
-  # If not specified, uses the same namespace as the helm release
-  namespace: ""
-  # Default timeout for pods in seconds
-  defaultTimeout: 3600
-  # Image pull policy for worker pods
-  imagePullPolicy: "IfNotPresent"
