@@ -467,6 +467,7 @@ class TokenConfig(BaseModel):
     )
 
     @field_validator("extra_scopes")
+    @classmethod
     def validate_scopes(cls, v):
         if ":" in v and v.count(":") == 1:
             prefix = v.split(":")[0]
@@ -480,6 +481,8 @@ background_tasks = set()
 
 class RedisRPCConnection:
     """Represent a Redis connection for handling RPC-like messaging."""
+    
+    _connections = {}  # Global registry of active connections: {workspace/client_id: connection}
 
     _counter = Counter("rpc_call", "Counts the RPC calls", ["workspace"])
     _client_request_counter = Counter(
@@ -505,6 +508,7 @@ class RedisRPCConnection:
         client_id: str,
         user_info: UserInfo,
         manager_id: str,
+        readonly: bool = False,
     ):
         """Initialize Redis RPC Connection."""
         assert workspace and "/" not in client_id, "Invalid workspace or client ID"
@@ -517,10 +521,26 @@ class RedisRPCConnection:
         self._handle_disconnected = None
         self._handle_message = None
         self.manager_id = manager_id
+        self._subscriptions = set()  # Local subscription state
+        self._readonly = readonly  # Store readonly flag for security checks
+        
+        # Register this connection in the global registry
+        connection_key = f"{self._workspace}/{self._client_id}"
+        RedisRPCConnection._connections[connection_key] = self
         
         # Register this client for targeted subscriptions
         # We'll register this asynchronously in on_message to avoid blocking
         self._registration_task = None
+
+    def subscribe(self, event_type: str):
+        """Subscribe to an event type."""
+        self._subscriptions.add(event_type)
+        logger.debug(f"Client {self._workspace}/{self._client_id} subscribed to: {event_type}")
+
+    def unsubscribe(self, event_type: str):
+        """Unsubscribe from an event type."""
+        self._subscriptions.discard(event_type)
+        logger.debug(f"Client {self._workspace}/{self._client_id} unsubscribed from: {event_type}")
 
     def on_disconnected(self, handler):
         """Register a disconnection event handler."""
@@ -536,9 +556,32 @@ class RedisRPCConnection:
     def on_message(self, handler: Callable):
         """Set message handler."""
         self._handle_message = handler
+        # Direct messages: always forward
         self._event_bus.on(f"{self._workspace}/{self._client_id}:msg", handler)
-        # for broadcast messages
-        self._event_bus.on(f"{self._workspace}/*:msg", handler)
+        
+        # Broadcast messages: filter by subscription
+        async def filtered_handler(message):
+            # Extract message content to check event type
+            message_dict = message
+            if isinstance(message, bytes):
+                try:
+                    unpacker = msgpack.Unpacker(io.BytesIO(message))
+                    message_dict = unpacker.unpack()
+                except Exception:
+                    # If we can't unpack, forward anyway to avoid breaking existing functionality
+                    result = handler(message)
+                    if asyncio.iscoroutine(result):
+                        await result
+                    return
+            
+            event_type = message_dict.get("type")
+            if event_type and event_type in self._subscriptions:
+                result = handler(message)  # Forward to client
+                if asyncio.iscoroutine(result):
+                    await result
+            # else: ignore (save bandwidth)
+        
+        self._event_bus.on(f"{self._workspace}/*:msg", filtered_handler)
         
         # Register this client for targeted event subscriptions
         async def register_client():
@@ -566,6 +609,13 @@ class RedisRPCConnection:
         message = unpacker.unpack()
         pos = unpacker.tell()
         target_id = message.get("to")
+        
+        # Security check: Block broadcast messages for readonly clients
+        if self._readonly and target_id == "*":
+            raise PermissionError(
+                f"Read-only client {self._workspace}/{self._client_id} cannot broadcast messages. "
+                f"Only point-to-point messages are allowed for read-only clients."
+            )
         
         # Handle broadcast messages within workspace
         if target_id == "*":
@@ -682,6 +732,12 @@ class RedisRPCConnection:
             ).set(load_value)
 
     @classmethod
+    def get_connection(cls, workspace: str, client_id: str):
+        """Get a connection by workspace and client_id."""
+        connection_key = f"{workspace}/{client_id}"
+        return cls._connections.get(connection_key)
+
+    @classmethod
     def get_client_load(cls, workspace: str, client_id: str) -> float:
         """Get the current load for a specific client (requests per minute)."""
         try:
@@ -699,6 +755,10 @@ class RedisRPCConnection:
     async def disconnect(self, reason=None):
         """Handle disconnection."""
         self._stop = True
+        
+        # Unregister this connection from the global registry
+        connection_key = f"{self._workspace}/{self._client_id}"
+        RedisRPCConnection._connections.pop(connection_key, None)
         if self._handle_message:
             self._event_bus.off(
                 f"{self._workspace}/{self._client_id}:msg", self._handle_message
@@ -908,6 +968,18 @@ class RedisEventBus:
         if asyncio.iscoroutine(local_task):
             await local_task
 
+    async def broadcast(self, workspace: str, event_type: str, data: dict):
+        """Broadcast a system event to all clients in a workspace."""
+        message = {
+            "type": event_type,
+            "to": "*",
+            "data": data
+        }
+        event_name = f"{workspace}/*:msg"
+        emit_result = self.emit(event_name, message)
+        if asyncio.iscoroutine(emit_result):
+            await emit_result
+    
     def emit(self, event_name, data):
         """Emit an event with smart routing using prefix-based system."""
         if not self._ready.done():

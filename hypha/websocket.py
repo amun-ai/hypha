@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import json
+import msgpack
 
 from fastapi import Query, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
@@ -286,7 +287,12 @@ class WebsocketServer:
         assert (
             user_info.scope.current_workspace == workspace
         ), f"Workspace mismatch: {workspace} != {user_info.current_workspace}"
-        conn = RedisRPCConnection(event_bus, workspace, client_id, user_info, None)
+        
+        # Determine if client has read-only permissions
+        user_permission = user_info.get_permission(workspace)
+        is_readonly = user_permission == UserPermission.read if user_permission else False
+        
+        conn = RedisRPCConnection(event_bus, workspace, client_id, user_info, None, readonly=is_readonly)
         self._websockets[f"{workspace}/{client_id}"] = websocket
         try:
             _gauge.labels(workspace=workspace).inc()
@@ -294,6 +300,11 @@ class WebsocketServer:
 
             async def send_bytes(data):
                 try:
+                    # Handle both bytes and dict data
+                    if isinstance(data, dict):
+                        data = msgpack.packb(data)
+                    elif isinstance(data, str):
+                        data = data.encode('utf-8')
                     await websocket.send_bytes(data)
                 except Exception as e:
                     logger.error("Failed to send message via websocket: %s", str(e))

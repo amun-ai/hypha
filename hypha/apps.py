@@ -26,6 +26,7 @@ from hypha.core import (
 from hypha.utils import (
     random_id,
 )
+from hypha.worker_manager import WorkerManager
 import base58
 import random
 from hypha.plugin_parser import extract_files_from_source
@@ -391,11 +392,15 @@ class ServerAppController:
         )
         self.templates_dir = Path(__file__).parent / "templates"
         self.autoscaling_manager = AutoscalingManager(self)
+        self.worker_manager = WorkerManager(store)
 
         def shutdown(_) -> None:
             asyncio.ensure_future(self.shutdown())
 
         self.event_bus.on_local("shutdown", shutdown)
+        
+        # Worker manager will be started later when event loop is available
+        self._worker_manager_started = False
 
         async def client_disconnected(info: dict) -> None:
             """Handle client disconnected event."""
@@ -417,6 +422,16 @@ class ServerAppController:
         self.event_bus.on_local("client_disconnected", client_disconnected)
         store.set_server_app_controller(self)
 
+    async def _ensure_worker_manager_started(self):
+        """Ensure worker manager is started when event loop is available."""
+        if not self._worker_manager_started:
+            try:
+                await self.worker_manager.start()
+                self._worker_manager_started = True
+                logger.debug("Worker manager started successfully")
+            except Exception as e:
+                logger.error("Failed to start worker manager: %s", e)
+
     async def get_server_app_workers(
         self, 
         app_type: str = None, 
@@ -424,6 +439,9 @@ class ServerAppController:
         selection_config: Optional[WorkerSelectionConfig] = None,
         context: dict = None, 
     ):
+        # Ensure worker manager is started
+        await self._ensure_worker_manager_started()
+        
         workspace = context.get("ws") if context else None
 
         # Get workspace service info first (fast, no get_service calls yet)
@@ -531,17 +549,14 @@ class ServerAppController:
         workers = []
         for svc in selected_svcs:
             try:
-                if use_workspace:
-                    # For workspace services, get through workspace interface
-                    user_info = UserInfo.model_validate(context["user"])
-                    async with self.store.get_workspace_interface(
-                        user_info, workspace
-                    ) as ws:
-                        worker = await ws.get_service(svc["id"])
-                else:
-                    # For public services, use public API
-                    worker = await server.get_service(svc["id"])
-                workers.append(worker)
+                # Use WorkerManager for persistent connections
+                # If use_workspace is True, use workspace from context, otherwise use public
+                from_workspace = None if use_workspace else "public"
+                worker = await self.worker_manager.get_worker_ref(
+                    svc["id"], context, from_workspace=from_workspace
+                )
+                if worker is not None:
+                    workers.append(worker)
             except Exception as e:
                 logger.warning(f"Failed to get worker service {svc['id']}: {e}")
 
@@ -596,27 +611,25 @@ class ServerAppController:
             return workers
 
     async def get_worker_by_id(self, worker_id: str, context: dict = None):
-        """Get a specific worker by ID."""
-        workspace = context.get("ws") if context else None
+        """Get a specific worker by ID with persistent connection management."""
+        # Ensure worker manager is started
+        await self._ensure_worker_manager_started()
         
-        # Try to get from workspace first
-        if context:
-            try:
-                # Properly validate user info before passing to get_workspace_interface
-                user_info = UserInfo.model_validate(context["user"])
-                async with self.store.get_workspace_interface(user_info, workspace) as ws:
-                    worker = await ws.get_service(worker_id)
-                    return worker
-            except Exception as e:
-                logger.debug(f"Worker {worker_id} not found in workspace {workspace}: {e}")
+        # Try to get worker with persistent connection from current workspace
+        worker = await self.worker_manager.get_worker_ref(
+            worker_id, context, from_workspace=None
+        )
         
-        # Try public workers
-        try:
-            server = await self.store.get_public_api()
-            worker = await server.get_service(worker_id)
+        if worker is not None:
             return worker
-        except Exception as e:
-            logger.debug(f"Worker {worker_id} not found in public workspace: {e}")
+            
+        # If workspace failed and we have context, try public fallback
+        if context:
+            worker = await self.worker_manager.get_worker_ref(
+                worker_id, context, from_workspace="public"
+            )
+            if worker is not None:
+                return worker
             
         return None
 
@@ -1027,11 +1040,31 @@ class ServerAppController:
                     "progress_callback": progress_callback,
                 }
 
-                compiled_manifest, app_files = await worker.compile(
-                    artifact_obj, app_files, config=compile_config, context=context
-                )
-                # merge the compiled manifest into the artifact_obj
-                artifact_obj.update(compiled_manifest)
+                # Use WorkerManager context manager for the compile operation to ensure connection stays alive
+                worker_id = getattr(worker, '_hypha_worker_id', None)
+                if not worker_id:
+                    # Try to get ID from worker object
+                    worker_id = getattr(worker, 'id', None)
+                    if not worker_id and hasattr(worker, 'get'):
+                        worker_id = worker.get('id', None)
+                
+                if worker_id:
+                    async with self.worker_manager.get_worker(
+                        worker_id, context, from_workspace=None
+                    ) as active_worker:
+                        compiled_manifest, app_files = await active_worker.compile(
+                            artifact_obj, app_files, config=compile_config, context=context
+                        )
+                        # merge the compiled manifest into the artifact_obj
+                        artifact_obj.update(compiled_manifest)
+                else:
+                    # Fallback to using the original worker (may fail with connection closed error)
+                    logger.warning("Could not determine worker_id, using original worker (may fail)")
+                    compiled_manifest, app_files = await worker.compile(
+                        artifact_obj, app_files, config=compile_config, context=context
+                    )
+                    # merge the compiled manifest into the artifact_obj
+                    artifact_obj.update(compiled_manifest)
 
                 logger.info(f"Worker compiled app with type {app_type}")
             except Exception as e:
@@ -2603,6 +2636,9 @@ class ServerAppController:
 
         for app in self._sessions.values():
             await self.stop(app["id"], raise_exception=False)
+            
+        # Shutdown worker manager
+        await self.worker_manager.shutdown()
 
     async def prepare_workspace(self, workspace_info: WorkspaceInfo):
         """Prepare the workspace."""
