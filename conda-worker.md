@@ -32,6 +32,26 @@ According to the [mamba documentation](https://raw.githubusercontent.com/mamba-o
 - Network access to the Hypha server
 - Valid authentication token for the target workspace
 
+## Quick Start with CLI
+
+The fastest way to start a Conda Environment Worker is using the built-in CLI:
+
+```bash
+# Basic usage with command line arguments
+python -m hypha.workers.conda \
+  --server-url https://hypha.aicell.io \
+  --workspace my-workspace \
+  --token your-token-here
+
+# Or using environment variables
+export HYPHA_SERVER_URL=https://hypha.aicell.io
+export HYPHA_WORKSPACE=my-workspace  
+export HYPHA_TOKEN=your-token-here
+python -m hypha.workers.conda --verbose
+```
+
+This will start a conda worker that connects to the specified Hypha server and registers itself as a service. The CLI supports various configuration options detailed in the [Configuration Options](#configuration-options) section below.
+
 ## Installation Methods
 
 ### Method 1: Manual Conda Setup
@@ -296,7 +316,7 @@ async def main():
         # ... other config fields
     })
     
-    # Execute code like in a Jupyter notebook
+    # Method 1: Execute code directly via conda worker
     code = """
 import numpy as np
 import pandas as pd
@@ -315,18 +335,141 @@ print(f"Standard deviation: {std_val}")
 print(f"Sum: {sum_val}")
 """
     
-    result = await conda_worker.execute_code(session_id, code)
+    result = await conda_worker.execute(
+        session_id=session_id,
+        script=code,
+        config={"timeout": 30.0}
+    )
     
-    if result.success:
-        print("Output:", result.stdout)
+    if result["status"] == "ok":
+        # Print all outputs from the execution
+        for output in result.get("outputs", []):
+            if output["type"] == "stream" and output["name"] == "stdout":
+                print("Output:", output["text"])
     else:
-        print("Error:", result.error)
-        print("Stderr:", result.stderr)
+        print("Error:", result.get("error", {}))
+    
+    # Method 2: Execute code via server apps controller (recommended)
+    app_controller = await server.get_service("public/server-apps")
+    
+    result = await app_controller.execute(
+        session_id=session_id,
+        script=code,
+        config={"timeout": 30.0}
+    )
+    
+    if result["status"] == "ok":
+        for output in result.get("outputs", []):
+            if output["type"] == "stream" and output["name"] == "stdout":
+                print("Output:", output["text"])
     
     # Stop the session
     await conda_worker.stop(session_id)
 
 asyncio.run(main())
+```
+
+## Interactive Code Execution
+
+The Conda Environment Worker supports **interactive code execution** via the `execute()` method, allowing you to run Python code in an already-running conda environment session, similar to executing cells in a Jupyter notebook.
+
+### Execute Method Overview
+
+The execute method provides Jupyter-like functionality with the following features:
+
+- **Real-time execution**: Execute Python code in running sessions
+- **Jupyter-compatible outputs**: Returns structured output including stdout, stderr, and display data
+- **Progress callbacks**: Optional progress reporting during execution
+- **Timeout handling**: Configurable execution timeouts
+- **Error handling**: Comprehensive error reporting with tracebacks
+
+### Execute Method API
+
+```python
+# Direct worker execution
+result = await conda_worker.execute(
+    session_id="my-session",
+    script="print('Hello World!')",
+    config={
+        "timeout": 30.0,    # Execution timeout in seconds
+    },
+    progress_callback=lambda info: print(f"📍 {info['message']}")
+)
+
+# Server-side execution (recommended)
+result = await app_controller.execute(
+    session_id="my-workspace/my-session", 
+    script="print('Hello World!')",
+    config={"timeout": 30.0}
+)
+```
+
+### Execution Results Format
+
+The execute method returns results in Jupyter notebook format:
+
+```python
+{
+    "status": "ok",  # or "error"
+    "outputs": [
+        {
+            "type": "stream",
+            "name": "stdout", 
+            "text": "Hello World!\n"
+        },
+        {
+            "type": "execute_result",
+            "data": {"text/plain": "42"},
+            "metadata": {},
+            "execution_count": 1
+        }
+    ],
+    "error": None  # or error details if status == "error"
+}
+```
+
+### Error Handling in Execute
+
+When code execution fails, the result includes detailed error information:
+
+```python
+# Example error result
+{
+    "status": "error",
+    "outputs": [],
+    "error": {
+        "ename": "NameError",
+        "evalue": "name 'undefined_var' is not defined",
+        "traceback": [
+            "Traceback (most recent call last):",
+            "  File \"<stdin>\", line 1, in <module>",
+            "NameError: name 'undefined_var' is not defined"
+        ]
+    }
+}
+```
+
+### Progress Callbacks for Execute
+
+Monitor execution progress with callbacks:
+
+```python
+def execution_progress(info):
+    """Handle execution progress updates."""
+    emoji_map = {
+        "info": "ℹ️",
+        "success": "✅", 
+        "error": "❌",
+        "warning": "⚠️"
+    }
+    emoji = emoji_map.get(info.get("type", ""), "🔸")
+    print(f"{emoji} {info.get('message', '')}")
+
+result = await conda_worker.execute(
+    session_id=session_id,
+    script="import time; time.sleep(2); print('Done!')",
+    progress_callback=execution_progress
+)
 ```
 
 ## Common Use Cases
@@ -350,8 +493,11 @@ print(f"Column B std: {df['B'].std():.3f}")
 print(df.head())
 """
 
-result = await conda_worker.execute_code(session_id, code)
-print(result.stdout)
+result = await conda_worker.execute(session_id, code)
+if result["status"] == "ok":
+    for output in result.get("outputs", []):
+        if output["type"] == "stream" and output["name"] == "stdout":
+            print(output["text"])
 ```
 
 ### Environment Information
@@ -369,8 +515,11 @@ print(f"NumPy version: {np.__version__}")
 print(f"Python executable: {sys.executable}")
 """
 
-result = await conda_worker.execute_code(session_id, code)
-print(result.stdout)
+result = await conda_worker.execute(session_id, code)
+if result["status"] == "ok":
+    for output in result.get("outputs", []):
+        if output["type"] == "stream" and output["name"] == "stdout":
+            print(output["text"])
 ```
 
 ### Package Testing
@@ -393,8 +542,11 @@ except ImportError as e:
     print(f"Matplotlib not available: {e}")
 """
 
-result = await conda_worker.execute_code(session_id, code)
-print(result.stdout)
+result = await conda_worker.execute(session_id, code)
+if result["status"] == "ok":
+    for output in result.get("outputs", []):
+        if output["type"] == "stream" and output["name"] == "stdout":
+            print(output["text"])
 ```
 
 ### Handling Execution Results
@@ -402,7 +554,7 @@ print(result.stdout)
 The `execute_code()` method returns an `ExecutionResult` object with the following fields:
 
 ```python
-result = await conda_worker.execute_code(session_id, code)
+result = await conda_worker.execute(session_id, code)
 
 if result.success:
     print("Code executed successfully!")
@@ -497,7 +649,7 @@ ExecutionResult.success = False
 ```
 **Solution**: Check the `stderr` and `error` fields in the result:
 ```python
-result = await conda_worker.execute_code(session_id, code)
+result = await conda_worker.execute(session_id, code)
 if not result.success:
     print(f"Error: {result.error}")
     print(f"Stderr: {result.stderr}")
@@ -571,14 +723,30 @@ Start a new conda environment session with the specified dependencies. The initi
 
 **Returns:** Session ID string
 
-#### `execute_code(session_id: str, code: str) -> ExecutionResult`
+#### `execute(session_id: str, script: str, config: Optional[Dict[str, Any]] = None, progress_callback: Optional[Callable] = None, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]`
 Execute Python code in the conda environment session, similar to a Jupyter notebook cell.
 
 **Parameters:**
 - `session_id`: The session ID returned from `start()`
-- `code`: Python code string to execute
+- `script`: Python code string to execute
+- `config`: Optional execution configuration (e.g., `{"timeout": 30.0}`)
+- `progress_callback`: Optional callback for execution progress updates
+- `context`: Optional context information
 
-**Returns:** ExecutionResult with `success`, `stdout`, `stderr`, and `error` fields
+**Returns:** Dictionary with Jupyter-compatible output format:
+```python
+{
+    "status": "ok",  # or "error"
+    "outputs": [     # List of output objects
+        {
+            "type": "stream",
+            "name": "stdout",
+            "text": "output text"
+        }
+    ],
+    "error": None    # Error details if status == "error"
+}
+```
 
 #### `stop(session_id: str) -> None`
 Stop a conda environment session and clean up resources.
@@ -687,4 +855,4 @@ spec:
 For issues and questions:
 - GitHub Issues: [https://github.com/amun-ai/hypha/issues](https://github.com/amun-ai/hypha/issues)
 - Documentation: [https://amun-ai.github.io/hypha/](https://amun-ai.github.io/hypha/)
-- Community: Join our Discord or forum discussions 
+- Community: Join our Discord or forum discussions
