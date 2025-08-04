@@ -149,6 +149,7 @@ class WorkspaceManager:
         enable_service_search: bool = False,
         cache_dir: str = None,
         enable_s3_for_anonymous_users: bool = False,
+        activity_tracker: Optional[Any] = None,
     ):
         self._redis = redis
         self._store = store
@@ -171,6 +172,8 @@ class WorkspaceManager:
         else:
             self.SessionLocal = None
         self._enable_service_search = enable_service_search
+        self._activity_tracker = activity_tracker
+        self._workspace_cleanup_registrations = {}  # Track activity registrations for cleanup
 
 
 
@@ -1734,6 +1737,8 @@ class WorkspaceManager:
                 workspace_info = WorkspaceInfo.model_validate(
                     json.loads(workspace_info.decode())
                 )
+                # Reset activity timer for user workspaces when accessed
+                await self._reset_user_workspace_activity(workspace)
                 return workspace_info
         except Exception as e:
             logger.error(f"Failed to load workspace info from Redis: {e}")
@@ -1790,6 +1795,8 @@ class WorkspaceManager:
             await self._s3_controller.setup_workspace(workspace_info)
             await self._event_bus.emit("workspace_loaded", workspace_info.model_dump())
 
+            # Reset activity timer for user workspaces when loaded from S3
+            await self._reset_user_workspace_activity(workspace)
             return workspace_info
 
         except Exception as e:
@@ -2184,13 +2191,17 @@ class WorkspaceManager:
                     await self._s3_controller.cleanup_workspace(winfo)
                 await self._redis.hdel("workspaces", ws)
             else:
-                # For persistent workspaces, only clean up if S3 controller is available
+                # For persistent workspaces, clean up service data but preserve workspace info
                 if self._s3_controller:
                     keys = await self._redis.keys(f"{ws}:*")
                     for key in keys:
                         await self._redis.delete(key)
                     await self._s3_controller.cleanup_workspace(winfo)
-                    await self._redis.hdel("workspaces", ws)
+                    # For user workspaces, register with activity tracker for intelligent cleanup
+                    if ws.startswith("ws-user-"):
+                        await self._register_user_workspace_for_cleanup(ws)
+                    else:
+                        await self._redis.hdel("workspaces", ws)
                 else:
                     logger.warning(
                         f"Skipping cleanup of persistent workspace {ws} because S3 controller is not available"
@@ -2410,6 +2421,63 @@ class WorkspaceManager:
             logger.warning(
                 f"Skip unloading workspace {workspace} because it is not empty, remaining clients: {client_keys[:10]}..."
             )
+
+    async def _register_user_workspace_for_cleanup(self, workspace_id: str):
+        """Register a user workspace with activity tracker for intelligent cleanup."""
+        if not self._activity_tracker:
+            logger.warning("Activity tracker not available, cannot register workspace for cleanup")
+            return
+        
+        try:
+            # Create cleanup callback for this workspace
+            async def on_inactive_cleanup():
+                await self._cleanup_inactive_user_workspace(workspace_id)
+            
+            # Register with 5-minute inactivity period (300 seconds)
+            reg_id = self._activity_tracker.register(
+                entity_id=workspace_id,
+                inactive_period=300,  # 5 minutes
+                on_inactive=on_inactive_cleanup,
+                entity_type="user_workspace"
+            )
+            
+            # Store the registration ID for later cleanup
+            self._workspace_cleanup_registrations[workspace_id] = reg_id
+            logger.debug(f"Registered user workspace {workspace_id} for activity-based cleanup")
+            
+        except Exception as e:
+            logger.error(f"Failed to register user workspace {workspace_id} for cleanup: {e}")
+
+    async def _cleanup_inactive_user_workspace(self, workspace_id: str):
+        """Cleanup callback for inactive user workspaces."""
+        try:
+            # Double-check that workspace still exists and has no active clients
+            if await self._redis.hexists("workspaces", workspace_id):
+                client_keys = await self._list_client_keys(workspace_id)
+                if not client_keys:
+                    # Safe to delete - no active clients
+                    await self._redis.hdel("workspaces", workspace_id)
+                    logger.info(f"Cleaned up inactive user workspace: {workspace_id}")
+                else:
+                    # Workspace has active clients, reset activity timer
+                    logger.debug(f"User workspace {workspace_id} still has active clients, resetting activity timer")
+                    if self._activity_tracker:
+                        await self._activity_tracker.reset_timer(workspace_id, "user_workspace")
+            
+            # Remove from our tracking
+            self._workspace_cleanup_registrations.pop(workspace_id, None)
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up inactive user workspace {workspace_id}: {e}")
+
+    async def _reset_user_workspace_activity(self, workspace_id: str):
+        """Reset activity timer for a user workspace when it's accessed."""
+        if self._activity_tracker and workspace_id.startswith("ws-user-"):
+            try:
+                await self._activity_tracker.reset_timer(workspace_id, "user_workspace")
+                logger.debug(f"Reset activity timer for user workspace: {workspace_id}")
+            except Exception as e:
+                logger.debug(f"Failed to reset activity timer for {workspace_id}: {e}")
 
     async def _set_workspace_status(self, workspace_id: str, status: str):
         """Set the status of a workspace."""

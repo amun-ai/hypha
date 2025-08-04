@@ -814,6 +814,7 @@ class RedisStore:
             self._enable_service_search,
             self._cache_dir,
             self._enable_s3_for_anonymous_users,
+            self._tracker,
         )
         await manager.setup()
         return manager
