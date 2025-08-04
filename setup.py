@@ -90,6 +90,9 @@ setup(
             "asyncpg>=0.30.0",
             "fastembed>=0.4.2",
         ],
+        "k8s": [
+            "kubernetes>=24.2.0",
+        ],
     },
     zip_safe=False,
     entry_points={
