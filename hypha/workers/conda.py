@@ -1165,10 +1165,33 @@ Examples:
             service_config = worker.get_worker_service()
             if args.service_id:
                 service_config["id"] = args.service_id
-            service_config["visibility"] = args.visibility
+            # Set visibility in the correct location (inside config)
+            service_config["config"]["visibility"] = args.visibility
 
             # Register the service
-            await server.rpc.register_service(service_config)
+            print(f"🔄 Registering conda worker with config:")
+            print(f"   Service ID: {service_config['id']}")
+            print(f"   Type: {service_config['type']}")
+            print(f"   Supported types: {service_config['supported_types']}")
+            print(f"   Visibility: {service_config.get('config', {}).get('visibility', 'N/A')}")
+            print(f"   Config: {service_config.get('config', {})}")
+            print(f"   Workspace: {args.workspace}")
+            
+            registration_result = await server.register_service(service_config)
+            print(f"   Registrated service id: {registration_result.id}")
+
+            # Verify registration by listing services
+            try:
+                services = await server.list_services({"type": "server-app-worker"})
+                print(f"   Found {len(services)} server-app-worker services in workspace")
+                conda_workers = [s for s in services if s.get('id').endswith(service_config['id'])]
+                if conda_workers:
+                    print(f"   ✅ Worker found in service list")
+                else:
+                    print(f"   ⚠️  Worker NOT found in service list!")
+                    print(f"   Available workers: {[s.get('id') for s in services]}")
+            except Exception as e:
+                print(f"   ⚠️  Failed to verify registration: {e}")
 
             print(f"✅ Conda Environment Worker registered successfully!")
             print(f"   Service ID: {service_config['id']}")
