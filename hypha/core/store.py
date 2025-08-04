@@ -681,41 +681,75 @@ class RedisStore:
         return self._public_workspace_interface
 
     async def client_exists(self, client_id: str, workspace: str = None):
-        """Check if a client exists AND is responsive."""
+        """Check if a client exists in Redis (fast, no side effects)."""
         assert workspace is not None, "Workspace must be provided."
         assert client_id and "/" not in client_id, "Invalid client id: " + client_id
         pattern = f"services:*|*:{workspace}/{client_id}:built-in@*"
         keys = await self._redis.keys(pattern)
+        return bool(keys)
+
+    async def verify_client_responsive(self, client_id: str, workspace: str = None, cleanup_if_hanging: bool = True, timeout: float = None):
+        """Verify if a client exists AND is responsive, with optional cleanup.
         
-        if not keys:
+        Args:
+            client_id: The client ID to verify
+            workspace: The workspace name
+            cleanup_if_hanging: Whether to clean up unresponsive clients (default: True)  
+            timeout: Ping timeout in seconds (default: from environment or 2.0)
+            
+        Returns:
+            bool: True if client exists and is responsive, False otherwise
+        """
+        assert workspace is not None, "Workspace must be provided."
+        assert client_id and "/" not in client_id, "Invalid client id: " + client_id
+        
+        # First check if client exists in Redis
+        if not await self.client_exists(client_id, workspace):
             return False
+            
+        # Use configurable timeout (can be set via HYPHA_HANGING_CLIENT_TIMEOUT env var)
+        if timeout is None:
+            timeout = float(os.environ.get("HYPHA_HANGING_CLIENT_TIMEOUT", "2.0"))
         
-        # Also verify the client is actually responsive
+        # Verify the client is actually responsive
+        full_client_id = f"{workspace}/{client_id}"
         try:
-            full_client_id = f"{workspace}/{client_id}"
             ping_result = await self._workspace_manager.ping_client(
-                full_client_id, timeout=2
+                full_client_id, timeout=timeout
             )
-            if ping_result != "pong":
-                # Client exists in Redis but is unresponsive - clean it up
+            if ping_result == "pong":
+                return True
+                
+            # Client exists but is unresponsive
+            if cleanup_if_hanging:
                 logger.warning(f"Found unresponsive client {full_client_id}, cleaning up stale Redis entries")
-                context = {"user": self._root_user.model_dump(), "ws": workspace}
-                await self._workspace_manager.delete_client(
-                    client_id, workspace, self._root_user, unload=False, context=context
-                )
-                return False
-            return True
-        except Exception as e:
-            # If ping fails, client is not responsive - clean up stale entries
-            logger.warning(f"Client {workspace}/{client_id} ping failed: {e}, cleaning up")
-            try:
-                context = {"user": self._root_user.model_dump(), "ws": workspace}
-                await self._workspace_manager.delete_client(
-                    client_id, workspace, self._root_user, unload=False, context=context
-                )
-            except Exception as cleanup_error:
-                logger.error(f"Failed to cleanup unresponsive client {workspace}/{client_id}: {cleanup_error}")
+                await self._cleanup_unresponsive_client(client_id, workspace, f"unresponsive: {ping_result}")
             return False
+            
+        except asyncio.TimeoutError:
+            # Ping timed out
+            if cleanup_if_hanging:
+                logger.warning(f"Client {full_client_id} ping timed out after {timeout}s, cleaning up")
+                await self._cleanup_unresponsive_client(client_id, workspace, "ping timeout")
+            return False
+            
+        except Exception as e:
+            # Other ping failures
+            if cleanup_if_hanging:
+                logger.warning(f"Client {full_client_id} ping failed: {e}, cleaning up")
+                await self._cleanup_unresponsive_client(client_id, workspace, f"ping error: {e}")
+            return False
+
+    async def _cleanup_unresponsive_client(self, client_id: str, workspace: str, reason: str):
+        """Clean up an unresponsive client (internal helper method)."""
+        try:
+            context = {"user": self._root_user.model_dump(), "ws": workspace}
+            await self._workspace_manager.delete_client(
+                client_id, workspace, self._root_user, unload=False, context=context
+            )
+            logger.info(f"Successfully cleaned up unresponsive client {workspace}/{client_id} (reason: {reason})")
+        except Exception as cleanup_error:
+            logger.error(f"Failed to cleanup unresponsive client {workspace}/{client_id}: {cleanup_error}")
 
     async def remove_client(self, client_id, workspace, user_info, unload):
         """Remove a client."""
