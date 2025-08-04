@@ -15,6 +15,5 @@
  * [Agent2Agent](/a2a)
  * [Model Context Protocol](/mcp)
  * [Conda Environment Worker](/conda-worker)
- * [Kubernetes Worker](/k8s)
  * [Vector Search](/vector-search)
  * [Development](/development)
