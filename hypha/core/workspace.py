@@ -1903,6 +1903,19 @@ class WorkspaceManager:
                 )
                 # Reset activity timer for user workspaces when accessed
                 await self._activity_manager.reset_activity(workspace)
+                
+                # If workspace exists but isn't ready (status=None from unload), prepare it
+                if workspace_info.status is None and workspace_info.persistent:
+                    logger.info(f"Re-preparing previously unloaded workspace: {workspace}")
+                    # Set loading status first
+                    workspace_info.status = {"ready": False, "status": WorkspaceStatus.LOADING}
+                    await self._redis.hset("workspaces", workspace, workspace_info.model_dump_json())
+                    
+                    # Trigger preparation in background
+                    task = asyncio.create_task(self._prepare_workspace(workspace_info))
+                    background_tasks.add(task)
+                    task.add_done_callback(background_tasks.discard)
+                
                 return workspace_info
         except Exception as e:
             logger.error(f"Failed to load workspace info from Redis: {e}")
