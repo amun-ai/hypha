@@ -8,8 +8,8 @@ Get started with Hypha in one command:
 kubectl create namespace hypha
 export HYPHA_JWT_SECRET=$(openssl rand -base64 32)
 kubectl create secret generic hypha-secrets --from-literal=HYPHA_JWT_SECRET=$HYPHA_JWT_SECRET --namespace=hypha
-helm repo add hypha https://amun-ai.github.io/hypha
-helm install hypha-server hypha/hypha-server --namespace=hypha
+helm repo add amun-ai https://docs.amun.ai
+helm install hypha-server amun-ai/hypha-server --namespace=hypha
 ```
 
 This deploys a single-instance Hypha server with SQLite storage - perfect for getting started!
@@ -24,8 +24,8 @@ For production use, you'll likely need:
 Use the complete server kit:
 
 ```bash
-helm repo add hypha https://amun-ai.github.io/hypha
-helm install hypha-server-kit hypha/hypha-server-kit --namespace=hypha
+helm repo add amun-ai https://docs.amun.ai
+helm install hypha-server-kit amun-ai/hypha-server-kit --namespace=hypha
 ```
 
 Or build from source: see the [Hypha Server Kit README](./hypha-server-kit/README.md) for detailed configuration.
@@ -110,7 +110,7 @@ For a complete production setup with all services included, use the **Hypha Serv
 
 ```bash
 # Upgrade
-helm upgrade hypha-server hypha/hypha-server --namespace=hypha
+helm upgrade hypha-server amun-ai/hypha-server --namespace=hypha
 
 # Uninstall  
 helm uninstall hypha-server --namespace=hypha

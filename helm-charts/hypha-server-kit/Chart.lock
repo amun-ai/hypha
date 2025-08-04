@@ -1,7 +1,7 @@
 dependencies:
 - name: hypha-server
   repository: file://../hypha-server
-  version: 0.20.80
+  version: 0.20.82
 - name: minio
   repository: https://charts.bitnami.com/bitnami
   version: 17.0.16
@@ -11,5 +11,5 @@ dependencies:
 - name: redis
   repository: https://charts.bitnami.com/bitnami
   version: 21.2.13
-digest: sha256:06fbdcf71847cb4b62f7ddeb78b81ccc503ed0f530e023a0c4562e4176dfa6cb
-generated: "2025-07-31T12:16:04.734002-07:00"
+digest: sha256:e0e7df14ca22ac72599b61718991d44f096afab722505254bf161842e0f131b7
+generated: "2025-08-03T21:41:03.15059-07:00"

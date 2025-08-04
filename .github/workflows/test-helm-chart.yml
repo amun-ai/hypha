@@ -47,7 +47,7 @@ jobs:
         mv redis-*.tgz ../dist
         helm package hypha-server-kit
         mv hypha-server-kit-*.tgz ../dist
-        helm repo index ../dist --url https://hypha-server.github.io/helm-charts/
+        helm repo index ../dist --url https://docs.amun.ai
 
     - name: Install Hypha Helm chart from packaged .tgz
       run: |
