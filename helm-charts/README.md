@@ -9,6 +9,7 @@ kubectl create namespace hypha
 export HYPHA_JWT_SECRET=$(openssl rand -base64 32)
 kubectl create secret generic hypha-secrets --from-literal=HYPHA_JWT_SECRET=$HYPHA_JWT_SECRET --namespace=hypha
 helm repo add amun-ai https://docs.amun.ai
+helm repo update
 helm install hypha-server amun-ai/hypha-server --namespace=hypha
 ```
 
@@ -25,6 +26,7 @@ Use the complete server kit:
 
 ```bash
 helm repo add amun-ai https://docs.amun.ai
+helm repo update
 helm install hypha-server-kit amun-ai/hypha-server-kit --namespace=hypha
 ```
 

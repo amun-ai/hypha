@@ -38,6 +38,40 @@ kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/
 
 ## Quick Start
 
+### Option 1: Install from Helm Repository (Recommended)
+
+The easiest way to install Hypha Server Kit:
+
+```bash
+# 1. Create namespace
+kubectl create namespace hypha
+
+# 2. Add Helm repository
+helm repo add amun-ai https://docs.amun.ai
+helm repo update
+
+# 3. Create minimal secrets (you'll want to customize these for production)
+export HYPHA_JWT_SECRET=$(openssl rand -base64 32)
+kubectl create secret generic hypha-secrets \
+  --from-literal=HYPHA_JWT_SECRET=$HYPHA_JWT_SECRET \
+  --from-literal=POSTGRES_PASSWORD=$(openssl rand -base64 32) \
+  --from-literal=REDIS_PASSWORD=$(openssl rand -base64 32) \
+  --from-literal=MINIO_ROOT_PASSWORD=$(openssl rand -base64 32) \
+  --namespace=hypha
+
+# 4. Install with default configuration
+helm install hypha-server-kit amun-ai/hypha-server-kit --namespace=hypha
+
+# 5. Verify installation
+kubectl get pods -n hypha
+```
+
+**Note**: This uses default configuration. For production deployments, customize the `values.yaml` file or use `--set` flags to override specific values.
+
+### Option 2: Install from Source (Advanced)
+
+For advanced users who want to customize the deployment extensively:
+
 ### 1. Clone and Navigate
 
 ```bash
