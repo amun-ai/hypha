@@ -31,7 +31,8 @@ import random
 from hypha.plugin_parser import extract_files_from_source
 from hypha.core import WorkspaceInfo
 from hypha_rpc.utils.schema import schema_method
-from pydantic import Field
+from pydantic import BaseModel, Field
+from typing import List, Optional
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "INFO").upper()
 logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
@@ -39,6 +40,21 @@ logger = logging.getLogger("apps")
 logger.setLevel(LOGLEVEL)
 
 multihash.CodecReg.register("base58", base58.b58encode, base58.b58decode)
+
+
+class WorkerSelectionConfig(BaseModel):
+    mode: Optional[str] = Field(
+        None,
+        description="Mode for selecting the worker. Can be 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function' format (e.g., 'select:min:get_load', 'select:max:get_cpu_usage')",
+    )
+    timeout: Optional[float] = Field(
+        10.0,
+        description="The timeout duration in seconds for fetching the worker. This determines how long the function will wait for a worker to respond before considering it a timeout.",
+    )
+    select_timeout: Optional[float] = Field(
+        2.0,
+        description="The timeout duration in seconds for calling worker functions when using select mode.",
+    )
 
 
 def merge_startup_config(manifest_config: dict, **kwargs) -> dict:
@@ -402,7 +418,11 @@ class ServerAppController:
         store.set_server_app_controller(self)
 
     async def get_server_app_workers(
-        self, app_type: str = None, context: dict = None, random_select: bool = False
+        self, 
+        app_type: str = None, 
+        context: dict = None, 
+        random_select: bool = False,
+        selection_config: Optional[WorkerSelectionConfig] = None
     ):
         workspace = context.get("ws") if context else None
 
@@ -507,12 +527,6 @@ class ServerAppController:
         if not selected_svcs:
             return [] if not random_select else None
 
-        # Random selection if requested
-        if random_select:
-            selected_svc = random.choice(selected_svcs)
-            logger.info(f"Randomly selected service: {selected_svc['id']}")
-            selected_svcs = [selected_svc]
-
         # Now get the actual worker objects (slow operation, but only for selected services)
         workers = []
         for svc in selected_svcs:
@@ -531,10 +545,186 @@ class ServerAppController:
             except Exception as e:
                 logger.warning(f"Failed to get worker service {svc['id']}: {e}")
 
-        if random_select:
-            return workers[0] if workers else None
+        if not workers:
+            return [] if not random_select else None
+
+        # Apply worker selection logic
+        if random_select or (selection_config and selection_config.mode == "random"):
+            selected_worker = random.choice(workers)
+            logger.info(f"Randomly selected worker: {selected_worker.get('id')}")
+            return selected_worker if random_select else [selected_worker]
+        elif selection_config and selection_config.mode:
+            # Apply selection mode
+            mode = selection_config.mode
+            if mode == "first":
+                selected_worker = workers[0]
+                logger.debug(f"Selected first worker: {selected_worker.get('id')}")
+            elif mode == "last":
+                selected_worker = workers[-1]
+                logger.debug(f"Selected last worker: {selected_worker.get('id')}")
+            elif mode == "exact":
+                if len(workers) != 1:
+                    raise ValueError(
+                        f"Multiple workers found for app_type {app_type}, but mode is 'exact'. "
+                        f"Found workers: {[w.get('id') for w in workers[:5]]}. "
+                        f"You can specify mode as 'random', 'first', 'last', 'min_load', or use 'select:criteria:function' format."
+                    )
+                selected_worker = workers[0]
+                logger.debug(f"Selected exact worker: {selected_worker.get('id')}")
+            elif mode == "min_load":
+                selected_worker = await self._select_worker_by_load(workers, "min")
+                logger.debug(f"Selected worker with minimum load: {selected_worker.get('id')}")
+            elif mode.startswith("select:"):
+                # Parse the select syntax: select:criteria:function
+                parts = mode.split(":")
+                if len(parts) != 3:
+                    raise ValueError(
+                        f"Invalid select mode format: {mode}. Expected 'select:criteria:function'"
+                    )
+                _, criteria, function_name = parts
+                selected_worker = await self._select_worker_by_function(
+                    workers, criteria, function_name, selection_config.select_timeout
+                )
+                logger.debug(f"Selected worker using {function_name}: {selected_worker.get('id')}")
+            else:
+                raise ValueError(
+                    f"Invalid selection mode: {mode}. Mode must be 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function' format (e.g., 'select:min:get_load')"
+                )
+            return selected_worker if random_select else [selected_worker]
         else:
+            # No selection mode specified, return all workers
             return workers
+
+    async def get_worker_by_id(self, worker_id: str, context: dict = None):
+        """Get a specific worker by ID."""
+        workspace = context.get("ws") if context else None
+        
+        # Try to get from workspace first
+        if context:
+            try:
+                workspace_server = await self.store.get_workspace_interface(
+                    context.get("user"), context.get("ws"), context.get("from")
+                )
+                worker = await workspace_server.get_service(worker_id)
+                return worker
+            except Exception as e:
+                logger.debug(f"Worker {worker_id} not found in workspace {workspace}: {e}")
+        
+        # Try public workers
+        try:
+            server = await self.store.get_public_api()
+            worker = await server.get_service(worker_id)
+            return worker
+        except Exception as e:
+            logger.debug(f"Worker {worker_id} not found in public workspace: {e}")
+            
+        return None
+
+    @schema_method
+    async def list_workers(
+        self,
+        app_type: Optional[str] = Field(
+            None,
+            description="Filter workers by supported app type. If not provided, lists all available workers.",
+        ),
+        context: Optional[dict] = Field(
+            None,
+            description="Additional context information including user and workspace details. Usually provided automatically by the system.",
+        ),
+    ) -> List[Dict[str, str]]:
+        """List available server app workers.
+        
+        This method returns basic information about available workers:
+        1. Gets all workspace workers of type "server-app-worker"
+        2. Falls back to public workers if no workspace workers found
+        3. Optionally filters by supported app type
+        4. Returns basic info: id, name, description, supported_types
+        
+        Returns a list of worker dictionaries with keys:
+        - id: Worker service ID
+        - name: Worker display name
+        - description: Worker description  
+        - supported_types: List of app types this worker supports
+        """
+        workspace = context.get("ws") if context else None
+        workers_info = []
+
+        # Get workspace service info first
+        workspace_svcs = []
+        if context:
+            try:
+                workspace_svcs = await self.store._workspace_manager.list_services(
+                    {"type": "server-app-worker"}, context=context
+                )
+                logger.info(
+                    f"Found {len(workspace_svcs)} server-app-worker services in workspace {workspace}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to get workspace workers: {e}")
+
+        # Process workspace workers
+        if workspace_svcs:
+            for svc in workspace_svcs:
+                try:
+                    # Get the full service info
+                    workspace_server = await self.store.get_workspace_interface(
+                        context.get("user"), context.get("ws"), context.get("from")
+                    )
+                    full_svc = await workspace_server.get_service(svc["id"])
+                    supported_types = full_svc.get("supported_types", [])
+                    
+                    # Filter by type if specified
+                    if app_type and app_type not in supported_types:
+                        continue
+                        
+                    worker_info = {
+                        "id": svc["id"],
+                        "name": full_svc.get("name", svc["id"]),
+                        "description": full_svc.get("description", ""),
+                        "supported_types": supported_types,
+                    }
+                    workers_info.append(worker_info)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to get full workspace worker info for {svc['id']}: {e}"
+                    )
+                    continue
+
+        # Fallback to public workers if no workspace workers found
+        if not workers_info:
+            try:
+                server = await self.store.get_public_api()
+                public_svcs = await server.list_services({"type": "server-app-worker"})
+                logger.info(
+                    f"Found {len(public_svcs)} server-app-worker services in public workspace"
+                )
+
+                for svc in public_svcs:
+                    try:
+                        # Get the full service info
+                        full_svc = await server.get_service(svc["id"])
+                        supported_types = full_svc.get("supported_types", [])
+                        
+                        # Filter by type if specified
+                        if app_type and app_type not in supported_types:
+                            continue
+                            
+                        worker_info = {
+                            "id": svc["id"],
+                            "name": full_svc.get("name", svc["id"]),
+                            "description": full_svc.get("description", ""),
+                            "supported_types": supported_types,
+                        }
+                        workers_info.append(worker_info)
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to get full public worker info for {svc['id']}: {e}"
+                        )
+                        continue
+            except Exception as e:
+                logger.warning(f"Failed to get public workers: {e}")
+
+        return workers_info
 
     async def setup_applications_collection(self, overwrite=True, context=None):
         """Set up the workspace."""
@@ -612,6 +802,14 @@ class ServerAppController:
         ),
         additional_kwargs: Optional[dict] = Field(
             None, description="Additional keyword arguments to pass to the app worker."
+        ),
+        worker_id: Optional[str] = Field(
+            None,
+            description="Specific worker ID to use for installation. If provided, the worker type must match the app type. If not provided, a worker will be selected automatically.",
+        ),
+        worker_selection_mode: Optional[str] = Field(
+            None,
+            description="Mode for selecting the worker. Can be 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function' format (e.g., 'select:min:get_load', 'select:max:get_cpu_usage'). Only used when worker_id is not specified.",
         ),
         context: Optional[dict] = Field(
             None,
@@ -784,11 +982,30 @@ class ServerAppController:
             artifact_obj["entry_point"] = "source"
 
         # Try to get worker that supports this app type
-        worker = await self.get_server_app_workers(
-            app_type, context, random_select=True
-        )
-        if not worker:
-            raise Exception(f"No server app worker found for app type: {app_type}")
+        if worker_id:
+            # Use specific worker if provided
+            worker = await self.get_worker_by_id(worker_id, context)
+            if not worker:
+                raise ValueError(f"Worker with ID '{worker_id}' not found")
+            
+            # Verify the worker supports the app type
+            supported_types = worker.get("supported_types", [])
+            if app_type not in supported_types:
+                raise ValueError(
+                    f"Worker '{worker_id}' does not support app type '{app_type}'. "
+                    f"Supported types: {supported_types}"
+                )
+        else:
+            # Use automatic worker selection
+            selection_config = None
+            if worker_selection_mode:
+                selection_config = WorkerSelectionConfig(mode=worker_selection_mode)
+            
+            worker = await self.get_server_app_workers(
+                app_type, context, random_select=True, selection_config=selection_config
+            )
+            if not worker:
+                raise Exception(f"No server app worker found for app type: {app_type}")
 
         progress_callback(
             {
@@ -1216,6 +1433,8 @@ class ServerAppController:
         manifest: dict = None,
         progress_callback: Any = None,
         additional_kwargs: Optional[dict] = None,
+        worker: Any = None,
+        worker_selection_mode: Optional[str] = None,
         context: dict = None,
     ):
         """Start the app by type using the appropriate worker."""
@@ -1223,12 +1442,17 @@ class ServerAppController:
             {"type": "info", "message": f"Initializing {app_type} worker..."}
         )
 
-        # Get a random worker that supports this app type
-        worker = await self.get_server_app_workers(
-            app_type, context, random_select=True
-        )
+        # Use provided worker or get a worker that supports this app type
         if not worker:
-            raise Exception(f"No server app worker found for type: {app_type}")
+            selection_config = None
+            if worker_selection_mode:
+                selection_config = WorkerSelectionConfig(mode=worker_selection_mode)
+            
+            worker = await self.get_server_app_workers(
+                app_type, context, random_select=True, selection_config=selection_config
+            )
+            if not worker:
+                raise Exception(f"No server app worker found for type: {app_type}")
 
         progress_callback(
             {"type": "info", "message": f"Starting {app_type} application..."}
@@ -1334,6 +1558,14 @@ class ServerAppController:
         ),
         additional_kwargs: Optional[dict] = Field(
             None, description="Additional keyword arguments to pass to the app worker."
+        ),
+        worker_id: Optional[str] = Field(
+            None,
+            description="Specific worker ID to use for starting the app. If provided, the worker type must match the app type. If not provided, a worker will be selected automatically.",
+        ),
+        worker_selection_mode: Optional[str] = Field(
+            None,
+            description="Mode for selecting the worker. Can be 'random', 'first', 'last', 'exact', 'min_load', or 'select:criteria:function' format (e.g., 'select:min:get_load', 'select:max:get_cpu_usage'). Only used when worker_id is not specified.",
         ),
         context: Optional[dict] = Field(
             None,
@@ -1517,6 +1749,29 @@ class ServerAppController:
                 self.event_bus.on_local("client_connected", client_connected)
 
         try:
+            # Get worker if worker_id is specified, otherwise use selection mode
+            selected_worker = None
+            if worker_id:
+                selected_worker = await self.get_worker_by_id(worker_id, context)
+                if not selected_worker:
+                    raise ValueError(f"Worker with ID '{worker_id}' not found")
+                
+                # Verify the worker supports the app type
+                supported_types = selected_worker.get("supported_types", [])
+                if app_type not in supported_types:
+                    raise ValueError(
+                        f"Worker '{worker_id}' does not support app type '{app_type}'. "
+                        f"Supported types: {supported_types}"
+                    )
+            elif worker_selection_mode:
+                # Use worker selection mode
+                selection_config = WorkerSelectionConfig(mode=worker_selection_mode)
+                selected_worker = await self.get_server_app_workers(
+                    app_type, context, random_select=True, selection_config=selection_config
+                )
+                if not selected_worker:
+                    raise Exception(f"No server app worker found for app type: {app_type}")
+            
             # Start the app using the new start_by_type function
             server_url = self.local_base_url or f"http://127.0.0.1:{self.port}"
             logger.debug(
@@ -1534,6 +1789,8 @@ class ServerAppController:
                 manifest=manifest,
                 progress_callback=progress_callback,
                 additional_kwargs=additional_kwargs,
+                worker=selected_worker,
+                worker_selection_mode=worker_selection_mode if not selected_worker else None,
                 context=context,
             )
 
@@ -2413,6 +2670,125 @@ class ServerAppController:
             "Launch is deprecated, use install then start instead"
         )
 
+    async def _select_worker_by_load(
+        self, workers: List[dict], criteria: str = "min"
+    ) -> dict:
+        """Select worker by client load.
+
+        Args:
+            workers: List of worker dictionaries
+            criteria: Selection criteria ('min' or 'max')
+
+        Returns:
+            dict: The selected worker
+        """
+        if len(workers) == 1:
+            return workers[0]
+
+        worker_values = []
+
+        for worker in workers:
+            try:
+                # Extract workspace and client_id from worker id
+                worker_id = worker.get("id", "")
+                if "/" in worker_id:
+                    workspace = worker_id.split("/")[0]
+                    client_id = worker_id.split("/")[1].split(":")[0] if ":" in worker_id else worker_id.split("/")[1]
+                else:
+                    # Handle case where worker_id doesn't have the expected format
+                    logger.warning(f"Worker ID {worker_id} doesn't have expected format")
+                    continue
+
+                # Get client load
+                from hypha.core import RedisRPCConnection
+                load = RedisRPCConnection.get_client_load(workspace, client_id)
+                worker_values.append((worker, load))
+
+            except Exception as e:
+                logger.warning(f"Failed to get load for worker {worker.get('id')}: {e}")
+                continue
+
+        if not worker_values:
+            logger.warning(
+                f"No workers responded for load check, falling back to random selection"
+            )
+            return random.choice(workers)
+
+        # Apply selection criteria
+        if criteria == "min":
+            selected_worker, value = min(worker_values, key=lambda x: float(x[1]))
+            logger.debug(f"Selected worker with minimum load: {value}")
+        elif criteria == "max":
+            selected_worker, value = max(worker_values, key=lambda x: float(x[1]))
+            logger.debug(f"Selected worker with maximum load: {value}")
+        else:
+            raise ValueError(f"Unknown selection criteria: {criteria}")
+
+        return selected_worker
+
+    async def _select_worker_by_function(
+        self, workers: List[dict], criteria: str, function_name: str, timeout: float = 2.0
+    ) -> dict:
+        """Select worker by calling a function on each worker and applying selection criteria.
+
+        Args:
+            workers: List of worker dictionaries
+            criteria: Selection criteria ('min', 'max', 'first_success', etc.)
+            function_name: Name of the function to call on each worker
+            timeout: Timeout for function calls
+
+        Returns:
+            dict: The selected worker
+        """
+        if len(workers) == 1:
+            return workers[0]
+
+        # Call the specified function on each worker
+        worker_values = []
+
+        for worker in workers:
+            try:
+                # Check if the worker has the required function
+                if not hasattr(worker, function_name):
+                    logger.warning(
+                        f"Worker {worker.get('id')} does not have function '{function_name}', skipping"
+                    )
+                    continue
+
+                # Call the function
+                func = getattr(worker, function_name)
+                result = await asyncio.wait_for(func(), timeout=timeout)
+
+                worker_values.append((worker, result))
+
+            except Exception as e:
+                logger.warning(f"Failed to call {function_name} on worker {worker.get('id')}: {e}")
+                continue
+
+        if not worker_values:
+            logger.warning(
+                f"No workers responded to {function_name}, falling back to random selection"
+            )
+            return random.choice(workers)
+
+        # Apply selection criteria
+        if criteria == "min":
+            # Select worker with minimum value
+            selected_worker, value = min(worker_values, key=lambda x: float(x[1]))
+            logger.debug(f"Selected worker with minimum {function_name}: {value}")
+        elif criteria == "max":
+            # Select worker with maximum value
+            selected_worker, value = max(worker_values, key=lambda x: float(x[1]))
+            logger.debug(f"Selected worker with maximum {function_name}: {value}")
+        elif criteria == "first_success":
+            # Select first worker that successfully responded
+            selected_worker, value = worker_values[0]
+            logger.debug(f"Selected first successful worker: {value}")
+        else:
+            raise ValueError(f"Unknown selection criteria: {criteria}")
+
+        return selected_worker
+
     def get_service_api(self) -> Dict[str, Any]:
         """Get a list of service API endpoints."""
         return {
@@ -2427,6 +2803,7 @@ class ServerAppController:
             "stop": self.stop,
             "list_apps": self.list_apps,
             "list_running": self.list_running,
+            "list_workers": self.list_workers,
             "get_logs": self.get_logs,
             "take_screenshot": self.take_screenshot,
             "execute": self.execute,
