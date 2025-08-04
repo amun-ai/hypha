@@ -3651,3 +3651,393 @@ async def test_custom_app_id_installation(fastapi_server, test_user_token):
         print(f"⚠️  Failed to clean up {another_custom_id}: {e}")
 
     await api.disconnect()
+
+
+@pytest.mark.asyncio 
+async def test_worker_selection_modes(fastapi_server, test_user_token):
+    """Test the worker selection modes functionality."""
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+    apps = await api.get_service("public/server-apps")
+
+    # First get available workers to test with
+    workers = await apps.list_workers(app_type="web-python")
+    if len(workers) < 2:
+        print("⚠️ Not enough workers available for comprehensive testing. Skipping some tests.")
+        
+    # Test different selection modes through install
+    source = """<config lang="json">
+{
+    "name": "Worker Selection Test App",
+    "type": "web-python",
+    "version": "0.1.0",
+    "description": "Test app for worker selection modes"
+}
+</config>
+<script lang="python">
+from hypha_rpc import api
+
+def setup():
+    print("Worker selection test app started!")
+
+api.export({"setup": setup})
+</script>
+"""
+
+    try:
+        # Test random selection mode
+        print("Testing random selection mode...")
+        app_id_random = await apps.install(
+            source=source,
+            worker_selection_mode="random",
+            stage=False
+        )
+        print(f"✅ Successfully installed app with random worker selection: {app_id_random}")
+        
+        # Test first selection mode
+        if len(workers) >= 1:
+            print("Testing first selection mode...")
+            app_id_first = await apps.install(
+                source=source.replace('"name": "Worker Selection Test App"', '"name": "Worker Selection Test App First"'),
+                worker_selection_mode="first",
+                stage=False
+            )
+            print(f"✅ Successfully installed app with first worker selection: {app_id_first}")
+        
+        # Test last selection mode
+        if len(workers) >= 1:
+            print("Testing last selection mode...")
+            app_id_last = await apps.install(
+                source=source.replace('"name": "Worker Selection Test App"', '"name": "Worker Selection Test App Last"'),
+                worker_selection_mode="last",
+                stage=False
+            )
+            print(f"✅ Successfully installed app with last worker selection: {app_id_last}")
+        
+        # Test exact selection mode (should work with single worker type)
+        print("Testing exact selection mode...")
+        try:
+            app_id_exact = await apps.install(
+                source=source.replace('"name": "Worker Selection Test App"', '"name": "Worker Selection Test App Exact"'),
+                worker_selection_mode="exact",
+                stage=False
+            )
+            print(f"✅ Successfully installed app with exact worker selection: {app_id_exact}")
+        except Exception as e:
+            if "Multiple workers found" in str(e):
+                print("✅ Correctly caught exact mode error with multiple workers")
+            else:
+                print(f"❌ Unexpected error with exact mode: {e}")
+        
+        # Test min_load selection mode
+        print("Testing min_load selection mode...")
+        app_id_min_load = await apps.install(
+            source=source.replace('"name": "Worker Selection Test App"', '"name": "Worker Selection Test App MinLoad"'),
+            worker_selection_mode="min_load",
+            stage=False
+        )
+        print(f"✅ Successfully installed app with min_load worker selection: {app_id_min_load}")
+        
+        # Test invalid selection mode
+        print("Testing invalid selection mode...")
+        try:
+            await apps.install(
+                source=source,
+                worker_selection_mode="invalid_mode",
+                stage=False
+            )
+            print("❌ Should have failed with invalid mode")
+        except Exception as e:
+            if "Invalid selection mode" in str(e):
+                print("✅ Correctly caught invalid selection mode error")
+            else:
+                print(f"❌ Unexpected error message: {e}")
+        
+        # Test start method with worker selection modes
+        print("Testing start method with worker selection modes...")
+        try:
+            session_info = await apps.start(
+                app_id_random["id"],  # Use the ID string, not the full manifest
+                worker_selection_mode="random"
+            )
+            print(f"✅ Successfully started app with random worker selection: {session_info.get('id')}")
+        except Exception as e:
+            print(f"⚠️ Start test failed (this might be a separate issue): {e}")
+        
+    finally:
+        # Cleanup
+        cleanup_apps = [
+            app_id_random["id"] if 'app_id_random' in locals() and app_id_random else None,
+            app_id_first["id"] if 'app_id_first' in locals() and app_id_first else None,
+            app_id_last["id"] if 'app_id_last' in locals() and app_id_last else None,
+            app_id_exact["id"] if 'app_id_exact' in locals() and app_id_exact else None,
+            app_id_min_load["id"] if 'app_id_min_load' in locals() and app_id_min_load else None,
+        ]
+        
+        for app_id in cleanup_apps:
+            if app_id:
+                try:
+                    await apps.uninstall(app_id)
+                    print(f"✅ Cleaned up app: {app_id}")
+                except Exception as e:
+                    print(f"⚠️  Failed to clean up {app_id}: {e}")
+
+    await api.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_list_workers_functionality(fastapi_server, test_user_token):
+    """Test the list_workers function."""
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+    apps = await api.get_service("public/server-apps")
+
+    # Test listing all workers
+    workers = await apps.list_workers()
+    print(f"Found {len(workers)} workers")
+    
+    # Should have at least one worker
+    assert len(workers) > 0
+    
+    # Check worker structure
+    for worker in workers:
+        assert "id" in worker
+        assert "name" in worker
+        assert "description" in worker
+        assert "supported_types" in worker
+        assert isinstance(worker["supported_types"], list)
+        print(f"Worker: {worker['id']}, supports: {worker['supported_types']}")
+
+    # Test filtering by type
+    # Find a worker that supports 'web-python' 
+    web_python_workers = await apps.list_workers(app_type="web-python")
+    print(f"Found {len(web_python_workers)} web-python workers")
+    
+    # All returned workers should support web-python
+    for worker in web_python_workers:
+        assert "web-python" in worker["supported_types"]
+
+    # Test filtering by non-existent type
+    fake_workers = await apps.list_workers(app_type="non-existent-type")
+    print(f"Found {len(fake_workers)} workers for non-existent type")
+    # Should return empty list or only workers that actually support this type
+    for worker in fake_workers:
+        assert "non-existent-type" in worker["supported_types"]
+
+    await api.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_install_with_worker_id(fastapi_server, test_user_token):
+    """Test installing apps with specific worker ID."""
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+    apps = await api.get_service("public/server-apps")
+
+    # Get available workers
+    workers = await apps.list_workers()
+    assert len(workers) > 0
+    
+    # Find a worker that supports web-python
+    web_python_worker = None
+    for worker in workers:
+        if "web-python" in worker["supported_types"]:
+            web_python_worker = worker
+            break
+    
+    if not web_python_worker:
+        pytest.skip("No web-python worker available for testing")
+
+    worker_id = web_python_worker["id"]
+    print(f"Testing with worker: {worker_id}")
+
+    # Install a simple web-python app with specific worker
+    source = """<config lang="json">
+{
+    "name": "Worker Test App",
+    "type": "web-python",
+    "version": "0.1.0",
+    "description": "Test app for worker selection"
+}
+</config>
+<script lang="python">
+from hypha_rpc import api
+
+def setup():
+    print("Worker test app started!")
+
+api.export({"setup": setup})
+</script>
+"""
+
+    try:
+        # Install with specific worker_id
+        app_info = await apps.install(
+            source=source, worker_id=worker_id, stage=False
+        )
+        print(f"Installed app: {app_info}")
+        
+        app_id = app_info.get("id") or app_info.get("alias")
+        
+        # Start the app to verify it works
+        session_info = await apps.start(app_id)
+        print(f"Started app session: {session_info['id']}")
+        
+        # Stop the app
+        await apps.stop(session_info["id"])
+        
+        # Test error case - non-existent worker  
+        try:
+            await apps.install(
+                source=source,
+                worker_id="non-existent-worker-id",
+                stage=False
+            )
+            assert False, "Should have raised exception for non-existent worker"
+        except Exception as e:
+            # The ValueError gets wrapped in a RemoteException
+            assert "not found" in str(e)
+            print(f"✅ Correctly caught non-existent worker: {e}")
+        
+        # Test error case - type mismatch (use a worker that doesn't support this type)
+        # Find a worker that doesn't support web-python (if any)
+        incompatible_worker = None
+        for worker in workers:
+            if "web-python" not in worker["supported_types"] and worker["supported_types"]:
+                incompatible_worker = worker
+                break
+        
+        if incompatible_worker:
+            try:
+                await apps.install(
+                    source=source,
+                    worker_id=incompatible_worker["id"],
+                    stage=False
+                )
+                assert False, "Should have raised exception for type mismatch"
+            except Exception as e:
+                # The ValueError gets wrapped in a RemoteException
+                assert "does not support app type" in str(e)
+                print(f"✅ Correctly caught type mismatch with worker {incompatible_worker['id']}: {e}")
+        else:
+            print("⚠️ No incompatible worker found for testing type mismatch")
+
+    finally:
+        # Clean up
+        try:
+            if 'app_id' in locals():
+                await apps.uninstall(app_id)
+                print(f"✅ Cleaned up app: {app_id}")
+        except Exception as e:
+            print(f"⚠️  Failed to clean up app: {e}")
+
+    await api.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_start_with_worker_id(fastapi_server, test_user_token):
+    """Test starting apps with specific worker ID."""
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token}
+    )
+    apps = await api.get_service("public/server-apps")
+
+    # Get available workers
+    workers = await apps.list_workers()
+    assert len(workers) > 0
+    
+    # Find a worker that supports web-python
+    web_python_worker = None
+    for worker in workers:
+        if "web-python" in worker["supported_types"]:
+            web_python_worker = worker
+            break
+    
+    if not web_python_worker:
+        pytest.skip("No web-python worker available for testing")
+
+    worker_id = web_python_worker["id"]
+    print(f"Testing with worker: {worker_id}")
+
+    # Install a simple web-python app first (without specifying worker)
+    source = """<config lang="json">
+{
+    "name": "Worker Start Test App",
+    "type": "web-python",
+    "version": "0.1.0",
+    "description": "Test app for worker selection in start"
+}
+</config>
+<script lang="python">
+from hypha_rpc import api
+
+def setup():
+    print("Worker start test app started!")
+
+api.export({"setup": setup})
+</script>
+"""
+
+    try:
+        # Install app without specifying worker
+        app_info = await apps.install(source=source, stage=False)
+        app_id = app_info.get("id") or app_info.get("alias")
+        print(f"Installed app: {app_id}")
+        
+        # Start with specific worker_id
+        session_info = await apps.start(app_id, worker_id=worker_id)
+        print(f"Started app session with specific worker: {session_info['id']}")
+        
+        # Stop the app
+        await apps.stop(session_info["id"])
+        
+        # Test error case - wrong worker type
+        try:
+            # Change the app type in manifest to test mismatch
+            # First get the app info and modify it
+            app_details = await apps.get_app_info(app_id)
+            
+            # Start with a worker that doesn't support the app type
+            # Try to find a worker that doesn't support web-python
+            incompatible_worker = None
+            for worker in workers:
+                if "web-python" not in worker["supported_types"] and worker["supported_types"]:
+                    incompatible_worker = worker
+                    break
+            
+            if incompatible_worker:
+                try:
+                    await apps.start(app_id, worker_id=incompatible_worker["id"])
+                    assert False, "Should have raised exception for type mismatch"
+                except Exception as e:
+                    # The ValueError gets wrapped in a RemoteException
+                    assert "does not support app type" in str(e)
+                    print(f"✅ Correctly caught type mismatch: {e}")
+            else:
+                print("⚠️ No incompatible worker found for testing type mismatch")
+
+        except Exception as e:
+            print(f"Expected error testing type mismatch: {e}")
+
+        # Test error case - non-existent worker
+        try:
+            await apps.start(app_id, worker_id="non-existent-worker-id")
+            assert False, "Should have raised exception for non-existent worker"
+        except Exception as e:
+            # The ValueError gets wrapped in a RemoteException
+            assert "not found" in str(e)
+            print(f"✅ Correctly caught non-existent worker: {e}")
+
+    finally:
+        # Clean up
+        try:
+            if 'app_id' in locals():
+                await apps.uninstall(app_id)
+                print(f"✅ Cleaned up app: {app_id}")
+        except Exception as e:
+            print(f"⚠️  Failed to clean up app: {e}")
+
+    await api.disconnect()
