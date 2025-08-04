@@ -73,7 +73,7 @@ async def test_conda_kernel_execute_with_result(test_env_path):
         # Test simple execution
         result = await kernel.execute("print('Hello, World!')", timeout=10.0)
         
-        assert result["status"] == "ok"
+        assert result["success"] == True
         assert len(result["outputs"]) > 0
         
         # Check for stdout output
@@ -100,7 +100,7 @@ async def test_conda_kernel_error_handling(test_env_path):
         # Test error execution
         result = await kernel.execute("raise ValueError('Test error')", timeout=10.0)
         
-        assert result["status"] == "error"
+        assert result["success"] == False
         assert "error" in result
         assert result["error"]["ename"] == "ValueError"
         assert "Test error" in result["error"]["evalue"]
@@ -137,7 +137,7 @@ async def test_conda_kernel_restart(test_env_path):
         
         # Execute some code to establish state
         result = await kernel.execute("x = 42", timeout=10.0)
-        assert result["status"] == "ok"
+        assert result["success"] == True
         
         # Restart the kernel
         await kernel.restart()
@@ -147,7 +147,7 @@ async def test_conda_kernel_restart(test_env_path):
         
         # Verify state was reset (x should not exist)
         result = await kernel.execute("print(x)", timeout=10.0)
-        assert result["status"] == "error"
+        assert result["success"] == False
         assert "NameError" in result["error"]["ename"]
         
     finally:

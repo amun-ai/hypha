@@ -211,7 +211,7 @@ class BaseWorker(ABC):
     @property
     def service_id(self) -> str:
         """Return the service id."""
-        return f"{self.name.lower().replace(' ', '-')}-{self.instance_id}"
+        return f"{self.instance_id}"
 
     # Workers must implement these methods directly
     @abstractmethod
