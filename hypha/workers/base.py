@@ -137,6 +137,37 @@ class WorkerProtocol(Protocol):
         """Close workspace and cleanup sessions."""
         ...
 
+    async def execute(
+        self,
+        session_id: str,
+        script: str,
+        config: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Execute a script in the running session.
+        
+        This method allows interaction with running sessions by executing scripts.
+        Different workers may implement this differently:
+        - Conda worker: Execute Python code via Jupyter kernel
+        - Browser worker: Execute JavaScript via Playwright
+        - Other workers: May not implement this method
+        
+        Args:
+            session_id: The session to execute in
+            script: The script/code to execute
+            config: Optional execution configuration
+            progress_callback: Optional callback for execution progress
+            context: Optional context information
+            
+        Returns:
+            Execution results (format depends on worker implementation)
+            
+        Raises:
+            NotImplementedError: If the worker doesn't support execution
+        """
+        ...
+
 
 class BaseWorker(ABC):
     """Minimal base class for workers - provides only common utilities."""
@@ -253,6 +284,23 @@ class BaseWorker(ABC):
         """
         return manifest, files
 
+    async def execute(
+        self,
+        session_id: str,
+        script: str,
+        config: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Execute a script in the running session.
+        
+        Optional method that workers can implement to interact with running sessions.
+        Default implementation raises NotImplementedError.
+        """
+        raise NotImplementedError(
+            f"Worker {self.name} does not support the execute method"
+        )
+
     def get_worker_service(self) -> Dict[str, Any]:
         """Get the service configuration for registration."""
         return {
@@ -274,6 +322,7 @@ class BaseWorker(ABC):
             "prepare_workspace": self.prepare_workspace,
             "close_workspace": self.close_workspace,
             "compile": self.compile,
+            "execute": self.execute,
             "shutdown": self.shutdown,
         }
 

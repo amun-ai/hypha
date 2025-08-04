@@ -87,6 +87,68 @@ echo_result = await app_service.echo("Hello, World!")
 print(f"Echo result: {echo_result}")
 ```
 
+### Step 3.5: Interactive Code Execution (For Supported Apps)
+
+Some application types support **interactive code execution**, allowing you to execute scripts in already-running sessions. This is particularly useful for applications with conda environments, Python interpreters, or other execution contexts.
+
+```python
+# For apps that support interactive execution (e.g., conda environments)
+# You can execute code in running sessions using the server apps controller
+
+# Execute Python code in a running conda session
+result = await controller.execute(
+    session_id=started_app.id,  # Use the running session ID
+    script="""
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Generate some data
+x = np.linspace(0, 10, 100)
+y = np.sin(x)
+
+# Perform calculation
+mean_y = np.mean(y)
+max_y = np.max(y)
+
+print(f"Mean value: {mean_y:.3f}")
+print(f"Maximum value: {max_y:.3f}")
+print("Calculation completed successfully!")
+""",
+    config={"timeout": 30.0}  # Optional execution timeout
+)
+
+# Check execution results
+if result["status"] == "ok":
+    print("Code executed successfully!")
+    # Print outputs (stdout, stderr, display data, etc.)
+    for output in result.get("outputs", []):
+        if output["type"] == "stream" and output["name"] == "stdout":
+            print("Output:", output["text"])
+else:
+    print("Execution failed:")
+    error_info = result.get("error", {})
+    print(f"Error: {error_info.get('evalue', 'Unknown error')}")
+    
+# You can execute multiple code blocks in the same session
+result2 = await controller.execute(
+    session_id=started_app.id,
+    script="print(f'Previous mean value was: {mean_y:.3f}')",  # Variables persist
+    config={"timeout": 10.0}
+)
+```
+
+**Execute Method Features:**
+- **Session Persistence**: Variables and state persist between executions in the same session
+- **Jupyter-Compatible Output**: Returns structured output including stdout, stderr, and display data
+- **Timeout Control**: Configure execution timeouts to prevent hanging
+- **Error Handling**: Comprehensive error reporting with tracebacks
+- **Progress Callbacks**: Optional progress reporting during execution
+
+**Supported Application Types:**
+- **Conda Environments**: Execute Python code in isolated conda environments (see [Conda Worker Documentation](conda-worker.md))
+- **Python Interpreters**: Run Python scripts in various Python contexts
+- **Custom Workers**: Any worker that implements the execute method (see [Worker API Documentation](workers.md))
+
 ### Step 4: Managing Apps
 
 You can list, stop, and uninstall apps as needed.
@@ -736,7 +798,7 @@ Depending on your use case, you might want to consider different approaches:
 You can extend the Server Apps service with custom workers to support new application types. Custom workers handle the execution of specific application types and integrate seamlessly with the Server Apps system.
 
 > **Detailed Worker Documentation:**
-> For comprehensive documentation on the worker API, interface specifications, and implementation examples, see the [Worker API Documentation](workers.md).
+> For comprehensive documentation on the worker API, interface specifications, implementation examples, and the new execute method functionality, see the [Worker API Documentation](workers.md).
 
 ### Creating a Custom Worker
 
@@ -853,6 +915,66 @@ async def close_workspace(workspace):
     for session_id in sessions_to_stop:
         await stop(session_id)
 
+async def execute(session_id, script, config=None, progress_callback=None, context=None):
+    """Execute a script in a running session (optional method)."""
+    if session_id not in worker_sessions:
+        raise Exception(f"Session {session_id} not found")
+    
+    session_data = worker_sessions[session_id]
+    
+    if progress_callback:
+        progress_callback({"type": "info", "message": "Executing script..."})
+    
+    try:
+        # Your custom script execution logic here
+        # This is a placeholder - implement based on your worker's capabilities
+        execution_env = session_data.get("execution_env", {})
+        
+        # Example: execute script in your custom environment
+        result = await execute_script_in_environment(script, execution_env)
+        
+        if progress_callback:
+            progress_callback({"type": "success", "message": "Script executed successfully"})
+        
+        # Return results in a structured format
+        return {
+            "status": "ok",
+            "outputs": [
+                {
+                    "type": "stream",
+                    "name": "stdout",
+                    "text": str(result)
+                }
+            ],
+            "error": None
+        }
+        
+    except Exception as e:
+        error_msg = f"Script execution failed: {str(e)}"
+        
+        if progress_callback:
+            progress_callback({"type": "error", "message": error_msg})
+        
+        return {
+            "status": "error",
+            "outputs": [],
+            "error": {
+                "ename": type(e).__name__,
+                "evalue": str(e),
+                "traceback": [error_msg]
+            }
+        }
+
+async def execute_script_in_environment(script, env):
+    """Execute script in your custom environment (helper function)."""
+    # Implement your custom script execution logic here
+    # This could involve:
+    # - Running code in a subprocess
+    # - Executing in a container
+    # - Calling a specialized interpreter
+    # - etc.
+    return f"Executed script: {script[:50]}..."
+
 # Helper functions for your custom logic
 async def fetch_app_source(config):
     """Fetch application source code."""
@@ -899,6 +1021,7 @@ async def hypha_startup(server):
         "get_session_info": get_session_info,
         "prepare_workspace": prepare_workspace,
         "close_workspace": close_workspace,
+        "execute": execute,  # Optional: enables interactive code execution
     })
     
     print(f"Custom worker registered: {service.id}")
@@ -1064,7 +1187,7 @@ For more details on server startup options, see the [Getting Started documentati
 
 ### Worker Interface Requirements
 
-All custom workers must implement these simple functions:
+All custom workers must implement these core functions:
 
 - `start(config)`: Start an application session
 - `stop(session_id)`: Stop a session  
@@ -1073,6 +1196,16 @@ All custom workers must implement these simple functions:
 - `get_session_info(session_id)`: Get session information
 - `close_workspace(workspace)`: Clean up workspace sessions
 - `prepare_workspace(workspace)`: Prepare workspace for use
+
+**Optional functions for enhanced functionality:**
+- `execute(session_id, script, config, progress_callback, context)`: Execute scripts in running sessions (enables interactive code execution)
+
+Workers that implement the `execute` method enable powerful interactive capabilities, allowing users to execute code, scripts, or commands in already-running application sessions. This is particularly valuable for:
+
+- **Development environments**: Execute code in running conda environments or interpreters
+- **Interactive computing**: Jupyter-like functionality for data analysis and exploration  
+- **Remote execution**: Run scripts in containerized or isolated environments
+- **Debugging and testing**: Execute diagnostic commands in live applications
 
 That's it! Just implement these functions and register them as a service with:
 - `supported_types`: List of application types your worker supports
@@ -1097,6 +1230,15 @@ app_info = await controller.install(
 
 # Start the app - will automatically use your custom worker
 session = await controller.start(app_info.id)
+
+# If your custom worker supports the execute method, you can run scripts interactively
+if hasattr(your_custom_worker, 'execute'):
+    result = await controller.execute(
+        session_id=session.id,
+        script="your_custom_script_or_command",
+        config={"timeout": 30.0}
+    )
+    print("Execution result:", result)
 ```
 
 ---

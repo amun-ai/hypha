@@ -133,6 +133,164 @@ class WorkspaceStatus:
     CLOSED = "closed"
 
 
+class WorkspaceActivityManager:
+    """Manages intelligent cleanup of persistent workspaces based on activity tracking."""
+    
+    def __init__(self, activity_tracker, redis, workspace_manager, 
+                 inactive_period: int = 300, check_interval: int = 60):
+        """
+        Initialize workspace activity manager.
+        
+        Args:
+            activity_tracker: The ActivityTracker instance
+            redis: Redis connection
+            workspace_manager: WorkspaceManager instance (for callbacks)
+            inactive_period: Seconds of inactivity before cleanup (default: 5 minutes)
+            check_interval: How often to check for cleanup opportunities (default: 1 minute)
+        """
+        self._tracker = activity_tracker
+        self._redis = redis
+        self._workspace_manager = workspace_manager
+        self._inactive_period = inactive_period
+        self._check_interval = check_interval
+        self._registrations = {}  # workspace_id -> registration_id
+        self._enabled = activity_tracker is not None
+        
+        # System workspaces that should never be deleted via activity tracking
+        self._protected_workspaces = {
+            "public",           # Public shared workspace
+            "ws-user-root",     # Root user workspace  
+            "ws-anonymous",     # Anonymous shared workspace
+        }
+        
+        if self._enabled:
+            logger.info(f"WorkspaceActivityManager initialized with {inactive_period}s inactive period")
+
+    def is_enabled(self) -> bool:
+        """Check if activity tracking is enabled."""
+        return self._enabled
+
+    async def register_for_cleanup(self, workspace_id: str) -> bool:
+        """
+        Register a persistent workspace for activity-based cleanup.
+        
+        Args:
+            workspace_id: The workspace ID to track
+            
+        Returns:
+            True if successfully registered, False otherwise
+        """
+        if not self._enabled or workspace_id in self._protected_workspaces:
+            return False
+            
+        try:
+            # Create cleanup callback for this workspace
+            async def cleanup_callback():
+                await self._cleanup_inactive_workspace(workspace_id)
+            
+            # Register with activity tracker
+            reg_id = self._tracker.register(
+                entity_id=workspace_id,
+                inactive_period=self._inactive_period,
+                on_inactive=cleanup_callback,
+                entity_type="workspace"
+            )
+            
+            # Store registration for tracking
+            self._registrations[workspace_id] = reg_id
+            logger.debug(f"Registered workspace {workspace_id} for activity-based cleanup")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to register workspace {workspace_id} for cleanup: {e}")
+            return False
+
+    async def reset_activity(self, workspace_id: str) -> bool:
+        """
+        Reset activity timer for a workspace when it's accessed.
+        
+        Args:
+            workspace_id: The workspace ID to reset activity for
+            
+        Returns:
+            True if successfully reset, False otherwise
+        """
+        if not self._enabled or workspace_id in self._protected_workspaces:
+            return False
+            
+        try:
+            await self._tracker.reset_timer(workspace_id, "workspace") 
+            logger.debug(f"Reset activity timer for workspace: {workspace_id}")
+            return True
+        except Exception as e:
+            logger.debug(f"Failed to reset activity timer for {workspace_id}: {e}")
+            return False
+
+    async def unregister(self, workspace_id: str) -> bool:
+        """
+        Unregister a workspace from activity tracking.
+        
+        Args:
+            workspace_id: The workspace ID to unregister
+            
+        Returns:
+            True if successfully unregistered, False otherwise
+        """
+        if not self._enabled:
+            return False
+            
+        try:
+            if workspace_id in self._registrations:
+                reg_id = self._registrations.pop(workspace_id)
+                self._tracker.unregister(workspace_id, reg_id, "workspace")
+                logger.debug(f"Unregistered workspace {workspace_id} from activity tracking")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to unregister workspace {workspace_id}: {e}")
+            
+        return False
+
+    async def _cleanup_inactive_workspace(self, workspace_id: str):
+        """
+        Internal cleanup callback for inactive user workspaces.
+        
+        Args:
+            workspace_id: The workspace ID to potentially clean up
+        """
+        try:
+            # Double-check workspace still exists and has no active clients
+            if await self._redis.hexists("workspaces", workspace_id):
+                client_keys = await self._workspace_manager._list_client_keys(workspace_id)
+                if not client_keys:
+                    # Safe to delete - no active clients
+                    await self._redis.hdel("workspaces", workspace_id)
+                    logger.info(f"Cleaned up inactive workspace: {workspace_id}")
+                else:
+                    # Workspace has active clients, reset activity timer
+                    logger.debug(f"Workspace {workspace_id} still has active clients, resetting timer")
+                    await self.reset_activity(workspace_id)
+                    return  # Don't unregister, keep tracking
+            
+            # Remove from our tracking
+            self._registrations.pop(workspace_id, None)
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up inactive workspace {workspace_id}: {e}")
+
+    def get_tracked_workspaces(self) -> List[str]:
+        """Get list of currently tracked workspace IDs."""
+        return list(self._registrations.keys())
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get activity manager statistics."""
+        return {
+            "enabled": self._enabled,
+            "inactive_period": self._inactive_period,
+            "tracked_workspaces": len(self._registrations),
+            "workspace_ids": list(self._registrations.keys()) if self._enabled else []
+        }
+
+
 class WorkspaceManager:
     def __init__(
         self,
@@ -149,6 +307,7 @@ class WorkspaceManager:
         enable_service_search: bool = False,
         cache_dir: str = None,
         enable_s3_for_anonymous_users: bool = False,
+        activity_tracker: Optional[Any] = None,
     ):
         self._redis = redis
         self._store = store
@@ -171,6 +330,14 @@ class WorkspaceManager:
         else:
             self.SessionLocal = None
         self._enable_service_search = enable_service_search
+        # Initialize elegant activity-based workspace cleanup
+        self._activity_manager = WorkspaceActivityManager(
+            activity_tracker=activity_tracker,
+            redis=redis,
+            workspace_manager=self,
+            inactive_period=300,  # 5 minutes - configurable in future
+            check_interval=60     # 1 minute - configurable in future
+        )
 
 
 
@@ -1734,6 +1901,21 @@ class WorkspaceManager:
                 workspace_info = WorkspaceInfo.model_validate(
                     json.loads(workspace_info.decode())
                 )
+                # Reset activity timer for user workspaces when accessed
+                await self._activity_manager.reset_activity(workspace)
+                
+                # If workspace exists but isn't ready (status=None from unload), prepare it
+                if workspace_info.status is None and workspace_info.persistent:
+                    logger.info(f"Re-preparing previously unloaded workspace: {workspace}")
+                    # Set loading status first
+                    workspace_info.status = {"ready": False, "status": WorkspaceStatus.LOADING}
+                    await self._redis.hset("workspaces", workspace, workspace_info.model_dump_json())
+                    
+                    # Trigger preparation in background
+                    task = asyncio.create_task(self._prepare_workspace(workspace_info))
+                    background_tasks.add(task)
+                    task.add_done_callback(background_tasks.discard)
+                
                 return workspace_info
         except Exception as e:
             logger.error(f"Failed to load workspace info from Redis: {e}")
@@ -1790,6 +1972,8 @@ class WorkspaceManager:
             await self._s3_controller.setup_workspace(workspace_info)
             await self._event_bus.emit("workspace_loaded", workspace_info.model_dump())
 
+            # Reset activity timer for user workspaces when loaded from S3
+            await self._activity_manager.reset_activity(workspace)
             return workspace_info
 
         except Exception as e:
@@ -2184,13 +2368,19 @@ class WorkspaceManager:
                     await self._s3_controller.cleanup_workspace(winfo)
                 await self._redis.hdel("workspaces", ws)
             else:
-                # For persistent workspaces, only clean up if S3 controller is available
+                # For persistent workspaces, clean up service data but preserve workspace info
                 if self._s3_controller:
                     keys = await self._redis.keys(f"{ws}:*")
                     for key in keys:
                         await self._redis.delete(key)
                     await self._s3_controller.cleanup_workspace(winfo)
-                    await self._redis.hdel("workspaces", ws)
+                    # For persistent workspaces, register with activity manager for intelligent cleanup
+                    # System workspaces are protected and won't be registered
+                    if await self._activity_manager.register_for_cleanup(ws):
+                        logger.debug(f"Registered persistent workspace {ws} for activity-based cleanup")
+                    else:
+                        # Either activity manager disabled or protected workspace - delete immediately
+                        await self._redis.hdel("workspaces", ws)
                 else:
                     logger.warning(
                         f"Skipping cleanup of persistent workspace {ws} because S3 controller is not available"
@@ -2410,6 +2600,11 @@ class WorkspaceManager:
             logger.warning(
                 f"Skip unloading workspace {workspace} because it is not empty, remaining clients: {client_keys[:10]}..."
             )
+
+    @property
+    def activity_manager_stats(self) -> Dict[str, Any]:
+        """Get activity manager statistics for monitoring and debugging."""
+        return self._activity_manager.get_stats()
 
     async def _set_workspace_status(self, workspace_id: str, status: str):
         """Set the status of a workspace."""

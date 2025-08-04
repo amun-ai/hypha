@@ -88,7 +88,7 @@ TEST_RAW_HTML_APP = """
 async def test_server_apps_workspace_removal(
     fastapi_server, test_user_token_5, root_user_token
 ):
-    """Test the server apps."""
+    """Test that server app workspaces persist with activity-based cleanup."""
     api = await connect_to_server(
         {
             "name": "test client",
@@ -121,14 +121,19 @@ async def test_server_apps_workspace_removal(
     await api.disconnect()
     await asyncio.sleep(0.5)
 
-    # now it should disappear from the stats
+    # With activity-based cleanup, workspace should persist briefly to prevent race conditions
+    # but be managed by the activity tracker for eventual cleanup
     async with connect_to_server(
         {"server_url": WS_SERVER_URL, "client_id": "admin", "token": root_user_token}
     ) as root:
         admin = await root.get_service("admin-utils")
         workspaces = await admin.list_workspaces()
         workspace_info = find_item(workspaces, "name", api.config["workspace"])
-        assert workspace_info is None
+        # Workspace should still exist due to activity-based cleanup (prevents race conditions)
+        assert workspace_info is not None
+        # Verify it's a persistent user workspace that will be cleaned up by activity manager
+        assert workspace_info["persistent"] is True
+        assert workspace_info["id"].startswith("ws-user-")
 
 
 async def test_server_apps(fastapi_server, test_user_token):

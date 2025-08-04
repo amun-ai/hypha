@@ -29,6 +29,7 @@ All workers must implement these core methods:
 
 Optional methods:
 - `compile(manifest, files, config, context=None)` - Compile application files (for build-time processing)
+- `execute(session_id, script, config=None, progress_callback=None, context=None)` - Execute scripts in running sessions
 
 ## Worker Properties
 
@@ -646,6 +647,7 @@ async def main():
         "get_session_info": get_session_info,
         "prepare_workspace": prepare_workspace,
         "close_workspace": close_workspace,
+        "execute": execute,  # Optional: if your worker supports script execution
     })
     
     print(f"Simple worker registered: {service.id}")
@@ -931,6 +933,7 @@ class MyCustomWorker {
             get_session_info: this.getSessionInfo.bind(this),
             prepare_workspace: this.prepareWorkspace.bind(this),
             close_workspace: this.closeWorkspace.bind(this),
+            execute: this.execute.bind(this),  // Optional: if your worker supports script execution
         };
     }
 }
@@ -1108,6 +1111,7 @@ async function main() {
             get_session_info: getSessionInfo,
             prepare_workspace: prepareWorkspace,
             close_workspace: closeWorkspace,
+            execute: execute,  // Optional: if your worker supports script execution
         });
         
         console.log(`Simple worker registered: ${service.id}`);
@@ -1170,6 +1174,102 @@ const response = await fetch(fileUrl);
 if (response.ok) {
     const content = await response.text();
 }
+```
+
+## Script Execution in Running Sessions
+
+### The Execute Method
+
+Workers can optionally implement an `execute()` method to allow interactive script execution in running sessions. This enables notebook-like functionality where users can execute code, JavaScript, or other scripts in an already-running application environment.
+
+```python
+async def execute(
+    self,
+    session_id: str,
+    script: str,
+    config: Optional[Dict[str, Any]] = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Execute a script in the running session.
+    
+    This method allows interaction with running sessions by executing scripts.
+    Different workers may implement this differently:
+    - Conda worker: Execute Python code via Jupyter kernel
+    - Browser worker: Execute JavaScript via Playwright
+    - Other workers: May not implement this method
+    
+    Args:
+        session_id: The session to execute in
+        script: The script/code to execute
+        config: Optional execution configuration (e.g., timeout settings)
+        progress_callback: Optional callback for execution progress
+        context: Optional context information
+        
+    Returns:
+        Execution results (format depends on worker implementation)
+        
+    Raises:
+        NotImplementedError: If the worker doesn't support execution
+        SessionNotFoundError: If the session doesn't exist
+        WorkerError: If execution fails
+    """
+```
+
+### Server-Side Execute API
+
+The Hypha server exposes an `execute()` method through the ServerAppController that allows clients to execute scripts in running application sessions:
+
+```python
+# Client usage example
+server = await connect_to_server(config)
+app_controller = await server.get_service("public/server-apps")
+
+# Execute Python code in a conda worker session  
+result = await app_controller.execute(
+    session_id="my-workspace/my-session",
+    script="print('Hello from running session!')",
+    config={"timeout": 30}
+)
+
+if result["status"] == "ok":
+    print("Output:", result.get("outputs", []))
+else:
+    print("Error:", result.get("error", {}))
+```
+
+### Execution Configuration
+
+The `config` parameter supports various execution options:
+
+```python
+config = {
+    "timeout": 30.0,          # Execution timeout in seconds
+    "silent": False,          # Whether to suppress output
+    "store_history": True,    # Whether to store in execution history
+    # Worker-specific options...
+}
+```
+
+### Progress Callbacks for Execution
+
+Workers can provide real-time feedback during script execution using progress callbacks:
+
+```python
+def execution_progress(info):
+    """Handle execution progress updates."""
+    if info["type"] == "info":
+        print(f"ℹ️ {info['message']}")
+    elif info["type"] == "success":
+        print(f"✅ {info['message']}")
+    elif info["type"] == "error":
+        print(f"❌ {info['message']}")
+
+result = await worker.execute(
+    session_id="my-session",
+    script="import time; time.sleep(5); print('Done!')",
+    progress_callback=execution_progress
+)
 ```
 
 ## Session Management
