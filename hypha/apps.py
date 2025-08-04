@@ -420,9 +420,9 @@ class ServerAppController:
     async def get_server_app_workers(
         self, 
         app_type: str = None, 
-        context: dict = None, 
         random_select: bool = False,
-        selection_config: Optional[WorkerSelectionConfig] = None
+        selection_config: Optional[WorkerSelectionConfig] = None,
+        context: dict = None, 
     ):
         workspace = context.get("ws") if context else None
 
@@ -445,16 +445,16 @@ class ServerAppController:
             for svc in workspace_svcs:
                 try:
                     # Get the full service info to access supported_types
-                    workspace_server = await self.store.get_workspace_interface(
-                        context.get("user"), context.get("ws"), context.get("from")
-                    )
-                    full_svc = await workspace_server.get_service(svc["id"])
-                    supported_types = full_svc.get("supported_types", [])
-                    if app_type in supported_types:
-                        filtered_workspace_svcs.append(svc)
-                        logger.info(
-                            f"Workspace service {svc['id']} supports app_type {app_type}"
-                        )
+                    # Properly validate user info before passing to get_workspace_interface
+                    user_info = UserInfo.model_validate(context["user"])
+                    async with self.store.get_workspace_interface(user_info, workspace) as ws:
+                        full_svc = await ws.get_service(svc["id"])
+                        supported_types = full_svc.get("supported_types", [])
+                        if app_type in supported_types:
+                            filtered_workspace_svcs.append(svc)
+                            logger.info(
+                                f"Workspace service {svc['id']} supports app_type {app_type}"
+                            )
                 except Exception as e:
                     logger.warning(
                         f"Failed to get full workspace service info for {svc['id']}: {e}"
@@ -602,11 +602,11 @@ class ServerAppController:
         # Try to get from workspace first
         if context:
             try:
-                workspace_server = await self.store.get_workspace_interface(
-                    context.get("user"), context.get("ws"), context.get("from")
-                )
-                worker = await workspace_server.get_service(worker_id)
-                return worker
+                # Properly validate user info before passing to get_workspace_interface
+                user_info = UserInfo.model_validate(context["user"])
+                async with self.store.get_workspace_interface(user_info, workspace) as ws:
+                    worker = await ws.get_service(worker_id)
+                    return worker
             except Exception as e:
                 logger.debug(f"Worker {worker_id} not found in workspace {workspace}: {e}")
         
@@ -667,23 +667,23 @@ class ServerAppController:
             for svc in workspace_svcs:
                 try:
                     # Get the full service info
-                    workspace_server = await self.store.get_workspace_interface(
-                        context.get("user"), context.get("ws"), context.get("from")
-                    )
-                    full_svc = await workspace_server.get_service(svc["id"])
-                    supported_types = full_svc.get("supported_types", [])
-                    
-                    # Filter by type if specified
-                    if app_type and app_type not in supported_types:
-                        continue
+                    # Properly validate user info before passing to get_workspace_interface
+                    user_info = UserInfo.model_validate(context["user"])
+                    async with self.store.get_workspace_interface(user_info, workspace) as ws:
+                        full_svc = await ws.get_service(svc["id"])
+                        supported_types = full_svc.get("supported_types", [])
                         
-                    worker_info = {
-                        "id": svc["id"],
-                        "name": full_svc.get("name", svc["id"]),
-                        "description": full_svc.get("description", ""),
-                        "supported_types": supported_types,
-                    }
-                    workers_info.append(worker_info)
+                        # Filter by type if specified
+                        if app_type and app_type not in supported_types:
+                            continue
+                            
+                        worker_info = {
+                            "id": svc["id"],
+                            "name": full_svc.get("name", svc["id"]),
+                            "description": full_svc.get("description", ""),
+                            "supported_types": supported_types,
+                        }
+                        workers_info.append(worker_info)
                 except Exception as e:
                     logger.warning(
                         f"Failed to get full workspace worker info for {svc['id']}: {e}"
@@ -1002,7 +1002,7 @@ class ServerAppController:
                 selection_config = WorkerSelectionConfig(mode=worker_selection_mode)
             
             worker = await self.get_server_app_workers(
-                app_type, context, random_select=True, selection_config=selection_config
+                app_type, random_select=True, selection_config=selection_config, context=context
             )
             if not worker:
                 raise Exception(f"No server app worker found for app type: {app_type}")
@@ -1449,7 +1449,7 @@ class ServerAppController:
                 selection_config = WorkerSelectionConfig(mode=worker_selection_mode)
             
             worker = await self.get_server_app_workers(
-                app_type, context, random_select=True, selection_config=selection_config
+                app_type, random_select=True, selection_config=selection_config, context=context
             )
             if not worker:
                 raise Exception(f"No server app worker found for type: {app_type}")
@@ -1767,7 +1767,7 @@ class ServerAppController:
                 # Use worker selection mode
                 selection_config = WorkerSelectionConfig(mode=worker_selection_mode)
                 selected_worker = await self.get_server_app_workers(
-                    app_type, context, random_select=True, selection_config=selection_config
+                    app_type, random_select=True, selection_config=selection_config, context=context
                 )
                 if not selected_worker:
                     raise Exception(f"No server app worker found for app type: {app_type}")
