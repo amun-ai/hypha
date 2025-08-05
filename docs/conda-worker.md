@@ -529,7 +529,7 @@ if result["status"] == "ok":
 code = """
 try:
     import requests
-    response = requests.get('https://httpbin.org/json')
+    response = requests.get('https://httpbingo.org/json')
     print(f"Requests working: {response.status_code == 200}")
     print(f"Requests version: {requests.__version__}")
 except ImportError as e:

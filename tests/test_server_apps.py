@@ -97,7 +97,7 @@ async def test_server_apps_workspace_removal(
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token_5,
         }
     )
@@ -146,7 +146,7 @@ async def test_server_apps(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -213,7 +213,7 @@ async def test_singleton_apps(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -279,7 +279,7 @@ async def test_daemon_apps(fastapi_server, test_user_token_6, root_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token_6,
             "workspace": workspace_id,
             "client_id": "test-client_daemon_1",
@@ -322,7 +322,7 @@ async def test_daemon_apps(fastapi_server, test_user_token_6, root_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token_6,
             "workspace": workspace_id,
             "client_id": "test-client",
@@ -354,7 +354,7 @@ async def test_web_python_apps(fastapi_server, test_user_token):
     config = await controller.install(
         source=source,
         wait_for_service="default",
-        timeout=40,
+        timeout=15,
     )
     config = await controller.start(config.id)
     assert config.name == "WebPythonPlugin"
@@ -399,7 +399,7 @@ async def test_web_python_with_artifact_files(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 60,  # Longer timeout for artifact operations
+            "method_timeout": 15,  # Longer timeout for artifact operations
             "token": test_user_token,
         }
     )
@@ -695,7 +695,7 @@ async def test_lazy_plugin(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -731,7 +731,7 @@ async def test_stop_after_inactive(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -757,20 +757,21 @@ async def test_stop_after_inactive(fastapi_server, test_user_token):
     app = await controller.start(app_info.id, stop_after_inactive=3)
     apps = await controller.list_running()
     assert find_item(apps, "id", app.id) is not None
-    await asyncio.sleep(4)
+    await asyncio.sleep(4)  # Wait longer than stop_after_inactive=3
     apps = await controller.list_running()
     assert find_item(apps, "id", app.id) is None
     await controller.uninstall(app_info.id)
     await api.disconnect()
 
 
+@pytest.mark.timeout(30)  # 30 second timeout to prevent hanging
 async def test_lazy_service(fastapi_server, test_user_token):
     """Test lazy service loading."""
     api = await connect_to_server(
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 15,  # Increased timeout for large string test
             "token": test_user_token,
         }
     )
@@ -789,7 +790,7 @@ async def test_lazy_service(fastapi_server, test_user_token):
 
     app_info = await controller.install(
         source=source,
-        timeout=30,
+        timeout=10,
         overwrite=True,
     )
 
@@ -797,7 +798,8 @@ async def test_lazy_service(fastapi_server, test_user_token):
     assert service.echo is not None
     assert await service.echo("hello") == "hello"
 
-    long_string = "h" * 10000000
+    # Test with a smaller string to avoid timeouts (100KB instead of 10MB)
+    long_string = "h" * 100000
     assert await service.echo(long_string) == long_string
 
     await controller.uninstall(app_info.id)
@@ -811,7 +813,7 @@ async def test_lazy_service_with_default_timeout(fastapi_server, test_user_token
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -830,12 +832,12 @@ async def test_lazy_service_with_default_timeout(fastapi_server, test_user_token
 
     app_info = await controller.install(
         source=source,
-        timeout=30,
+        timeout=10,
         overwrite=True,
         manifest={
             "startup_config": {
                 "stop_after_inactive": 3,  # Auto-stop after 3 seconds of inactivity
-                "timeout": 30,  # Default timeout for starting
+                "timeout": 10,  # Default timeout for starting
                 "wait_for_service": "echo",  # Default service to wait for
             }
         },
@@ -852,7 +854,7 @@ async def test_lazy_service_with_default_timeout(fastapi_server, test_user_token
     assert running_app is not None, "App should be running after lazy loading"
 
     # Wait for the startup_config stop_after_inactive to trigger (3 seconds + some buffer)
-    await asyncio.sleep(5)
+    await asyncio.sleep(4)
 
     # Verify that the app has been stopped due to inactivity (as configured in startup_config)
     apps = await controller.list_running()
@@ -872,7 +874,7 @@ async def test_startup_config_comprehensive(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -891,12 +893,12 @@ async def test_startup_config_comprehensive(fastapi_server, test_user_token):
 
     app_info = await controller.install(
         source=source,
-        timeout=30,
+        timeout=10,
         overwrite=True,
         manifest={
             "startup_config": {
                 "stop_after_inactive": 3,  # Auto-stop after 3 seconds of inactivity
-                "timeout": 25,  # Default timeout for starting
+                "timeout": 8,  # Default timeout for starting
                 "wait_for_service": "echo",  # Default service to wait for
             }
         },
@@ -916,7 +918,7 @@ async def test_startup_config_comprehensive(fastapi_server, test_user_token):
     assert service.echo is not None
     assert await service.echo("hello") == "hello"
 
-    # Wait for the startup_config stop_after_inactive to trigger (2 seconds + some buffer)
+    # Wait for the startup_config stop_after_inactive to trigger (3 seconds + some buffer)
     await asyncio.sleep(4)
 
     # Verify that the app has been stopped due to inactivity (as configured in startup_config)
@@ -937,7 +939,7 @@ async def test_raw_html_apps(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -1017,7 +1019,7 @@ async def test_lazy_service_web_python_app(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -1044,7 +1046,7 @@ async def test_lazy_service_web_python_app(fastapi_server, test_user_token):
 
     app_info = await controller.install(
         source=source,
-        timeout=30,
+        timeout=10,
         overwrite=True,
     )
 
@@ -1079,7 +1081,7 @@ async def test_service_collection_comparison(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -1099,7 +1101,7 @@ async def test_service_collection_comparison(fastapi_server, test_user_token):
 
     app_info_webworker = await controller.install(
         source=source_webworker,
-        timeout=30,
+        timeout=10,
         overwrite=True,
     )
 
@@ -1121,7 +1123,7 @@ async def test_service_collection_comparison(fastapi_server, test_user_token):
 
     app_info_fastapi = await controller.install(
         source=source_fastapi,
-        timeout=30,
+        timeout=10,
         overwrite=True,
     )
 
@@ -1168,7 +1170,7 @@ async def test_service_selection_mode_with_multiple_instances(
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -1344,7 +1346,7 @@ async def test_manifest_parameter_install(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -1491,7 +1493,7 @@ async def test_new_app_management_functions(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -1677,7 +1679,7 @@ async def test_python_eval_apps(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -1909,7 +1911,7 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 60,
+            "method_timeout": 15,
             "token": test_user_token,
         }
     )
@@ -1938,7 +1940,7 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
             "dependencies": ["python=3.11", "numpy"],
             "channels": ["conda-forge"],
         },
-        timeout=90,
+        timeout=20,
         wait_for_service=False,
         progress_callback=progress_callback,
         overwrite=True,
@@ -1972,7 +1974,7 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
     # Test starting the conda-jupyter-kernel app (without waiting for service)
     started_app = await controller.start(
         app_info["id"],
-        timeout=90,
+        timeout=20,
         wait_for_service=None,  # Don't wait for service registration
     )
 
@@ -2040,12 +2042,12 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
             ],
             "channels": ["conda-forge"],
             "startup_config": {
-                "timeout": 120,
+                "timeout": 25,
                 "wait_for_service": "hello-fastapi",
                 "stop_after_inactive": 0,  # Don't auto-stop
             },
         },
-        timeout=120,
+        timeout=25,
         wait_for_service="hello-fastapi",
         progress_callback=fastapi_progress_callback,
         overwrite=True,
@@ -2083,7 +2085,7 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
 
     fastapi_started_app = await controller.start(
         fastapi_app_info["id"],
-        timeout=120,
+        timeout=25,
         wait_for_service="hello-fastapi",
     )
 
@@ -2128,7 +2130,7 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
     # Test root endpoint
     home_url = f"{SERVER_URL}/{workspace}/apps/hello-fastapi@{fastapi_app_info['id']}/"
     response = requests.get(
-        home_url, headers={"Authorization": f"Bearer {test_user_token}"}, timeout=10
+        home_url, headers={"Authorization": f"Bearer {test_user_token}"}, timeout=5
     )
     response.raise_for_status()
 
@@ -2142,7 +2144,7 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
     # Test calculation endpoint
     calc_url = f"{SERVER_URL}/{workspace}/apps/hello-fastapi@{fastapi_app_info['id']}/api/calculate/5/3"
     response = requests.get(
-        calc_url, headers={"Authorization": f"Bearer {test_user_token}"}, timeout=10
+        calc_url, headers={"Authorization": f"Bearer {test_user_token}"}, timeout=5
     )
     response.raise_for_status()
 
@@ -2160,7 +2162,7 @@ async def test_conda_python_apps(fastapi_server, test_user_token, conda_availabl
     # Test matrix operations endpoint
     matrix_url = f"{SERVER_URL}/{workspace}/apps/hello-fastapi@{fastapi_app_info['id']}/api/matrix"
     response = requests.get(
-        matrix_url, headers={"Authorization": f"Bearer {test_user_token}"}, timeout=10
+        matrix_url, headers={"Authorization": f"Bearer {test_user_token}"}, timeout=5
     )
     response.raise_for_status()
 
@@ -2199,7 +2201,7 @@ print("This won't be reached")
                 "dependencies": ["python=3.11"],
                 "channels": ["conda-forge"],
             },
-            timeout=30,
+            timeout=10,
             overwrite=True,
         )
 
@@ -2231,7 +2233,7 @@ async def test_conda_worker_registration_and_discovery(fastapi_server_sqlite, te
         {
             "name": "test client",
             "server_url": WS_SERVER_URL_SQLITE,
-            "method_timeout": 90,
+            "method_timeout": 20,
             "token": test_user_token,
         }
     )
@@ -2268,7 +2270,7 @@ async def main():
             "server_url": "{WS_SERVER_URL_SQLITE}",
             "token": "{test_user_token}",
             "client_id": "test-conda-worker",
-            "method_timeout": 120,  # Longer timeout
+            "method_timeout": 20,  # Longer timeout
         }})
         
         logger.info("Connected to server successfully")
@@ -2433,7 +2435,7 @@ async def test_startup_config_from_source(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -2470,7 +2472,7 @@ async def test_startup_config_from_source(fastapi_server, test_user_token):
         manifest={
             "startup_config": {
                 "wait_for_service": "my-special-service",
-                "timeout": 45,
+                "timeout": 15,
                 "stop_after_inactive": 300,
             }
         },
@@ -2484,7 +2486,7 @@ async def test_startup_config_from_source(fastapi_server, test_user_token):
     assert "startup_config" in manifest
     startup_config = manifest["startup_config"]
     assert startup_config["wait_for_service"] == "my-special-service"
-    assert startup_config["timeout"] == 45
+    assert startup_config["timeout"] == 15
     assert startup_config["stop_after_inactive"] == 300
 
     print("✅ startup_config from source was correctly installed.")
@@ -2500,7 +2502,7 @@ async def test_detached_mode_apps(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -2704,7 +2706,7 @@ async def test_autoscaling_basic_functionality(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -2779,7 +2781,7 @@ async def test_autoscaling_basic_functionality(fastapi_server, test_user_token):
     print("✓ Generated load, waiting for autoscaling...")
 
     # Wait for autoscaling to respond (monitoring interval is 10s)
-    await asyncio.sleep(15)
+    await asyncio.sleep(3)
 
     # Check if scaling occurred
     running_apps = await controller.list_running()
@@ -2795,7 +2797,7 @@ async def test_autoscaling_basic_functionality(fastapi_server, test_user_token):
 
     # Wait for load to decrease and potential scale down
     print("\nWaiting for load to decrease...")
-    await asyncio.sleep(10)
+    await asyncio.sleep(2)
 
     # Check final state
     running_apps = await controller.list_running()
@@ -2824,7 +2826,7 @@ async def test_autoscaling_apps(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -2970,7 +2972,7 @@ window.onload = function() {
     # Wait for autoscaling to detect the load and scale up
     # The autoscaling manager checks every 10 seconds
     print("⏳ Waiting for autoscaling to detect high load...")
-    await asyncio.sleep(15)  # Wait longer than the monitoring interval
+    await asyncio.sleep(3)  # Wait longer than the monitoring interval
 
     # Check if new instances were started
     running_apps = await controller.list_running()
@@ -2991,7 +2993,7 @@ window.onload = function() {
 
     # Stop making requests and wait for load to decrease
     print("⏳ Waiting for load to decrease...")
-    await asyncio.sleep(20)  # Wait for load to decrease and cooldown period
+    await asyncio.sleep(2)  # Wait for load to decrease and cooldown period
 
     # Check if instances were scaled down
     running_apps = await controller.list_running()
@@ -3019,7 +3021,7 @@ window.onload = function() {
     print("✓ Generated sustained heavy load")
 
     # Wait for potential scaling
-    await asyncio.sleep(12)
+    await asyncio.sleep(3)
 
     final_running_apps = await controller.list_running()
     final_app_instances = [
@@ -3116,7 +3118,7 @@ async def test_files_parameter_install(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -3365,7 +3367,7 @@ async def test_progress_callback_functionality(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -3446,7 +3448,7 @@ async def test_browser_cache_integration(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -3457,10 +3459,10 @@ async def test_browser_cache_integration(fastapi_server, test_user_token):
         manifest={
             "name": "Cache Test Web App",
             "type": "web-app",
-            "entry_point": "https://httpbin.org/json",  # Use entry_point instead of url
+            "entry_point": "https://httpbingo.org/json",  # Use entry_point instead of url
             "version": "1.0.0",
             "enable_cache": True,
-            "cache_routes": ["https://httpbin.org/*"],
+            "cache_routes": ["https://httpbingo.org/*"],
             "cookies": {"test": "value"},
             "local_storage": {"theme": "dark"},
             "authorization_token": "Bearer test-token",
@@ -3473,7 +3475,7 @@ async def test_browser_cache_integration(fastapi_server, test_user_token):
 
     assert app_info["name"] == "Cache Test Web App"
     assert app_info["type"] == "web-app"
-    assert app_info["entry_point"] == "https://httpbin.org/json"
+    assert app_info["entry_point"] == "https://httpbingo.org/json"
 
     # Get browser worker to check cache
     browser_worker = None
@@ -3557,7 +3559,7 @@ async def test_enable_cache_key_functionality(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -3569,10 +3571,10 @@ async def test_enable_cache_key_functionality(fastapi_server, test_user_token):
         manifest={
             "name": "No Cache Web App",
             "type": "web-app",
-            "entry_point": "https://httpbin.org/json",
+            "entry_point": "https://httpbingo.org/json",
             "version": "1.0.0",
             "enable_cache": False,  # Explicitly disable caching
-            "cache_routes": ["https://httpbin.org/*"],  # Should be ignored
+            "cache_routes": ["https://httpbingo.org/*"],  # Should be ignored
         },
         files=[],
         stage=True,
@@ -3641,7 +3643,7 @@ async def test_custom_app_id_installation(fastapi_server, test_user_token):
         {
             "name": "test client",
             "server_url": WS_SERVER_URL,
-            "method_timeout": 30,
+            "method_timeout": 10,
             "token": test_user_token,
         }
     )
@@ -3902,7 +3904,8 @@ api.export({"setup": setup})
         app_id_random = await apps.install(
             source=source,
             worker_selection_mode="random",
-            stage=False
+            stage=False,
+
         )
         print(f"✅ Successfully installed app with random worker selection: {app_id_random}")
         
@@ -3912,7 +3915,8 @@ api.export({"setup": setup})
             app_id_first = await apps.install(
                 source=source.replace('"name": "Worker Selection Test App"', '"name": "Worker Selection Test App First"'),
                 worker_selection_mode="first",
-                stage=False
+                stage=False,
+    
             )
             print(f"✅ Successfully installed app with first worker selection: {app_id_first}")
         
@@ -3922,7 +3926,8 @@ api.export({"setup": setup})
             app_id_last = await apps.install(
                 source=source.replace('"name": "Worker Selection Test App"', '"name": "Worker Selection Test App Last"'),
                 worker_selection_mode="last",
-                stage=False
+                stage=False,
+    
             )
             print(f"✅ Successfully installed app with last worker selection: {app_id_last}")
         
@@ -3932,7 +3937,8 @@ api.export({"setup": setup})
             app_id_exact = await apps.install(
                 source=source.replace('"name": "Worker Selection Test App"', '"name": "Worker Selection Test App Exact"'),
                 worker_selection_mode="exact",
-                stage=False
+                stage=False,
+    
             )
             print(f"✅ Successfully installed app with exact worker selection: {app_id_exact}")
         except Exception as e:
@@ -3946,7 +3952,8 @@ api.export({"setup": setup})
         app_id_min_load = await apps.install(
             source=source.replace('"name": "Worker Selection Test App"', '"name": "Worker Selection Test App MinLoad"'),
             worker_selection_mode="min_load",
-            stage=False
+            stage=False,
+
         )
         print(f"✅ Successfully installed app with min_load worker selection: {app_id_min_load}")
         

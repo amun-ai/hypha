@@ -19,6 +19,7 @@ from fakeredis import aioredis
 from hypha_rpc import RPC
 from hypha_rpc.utils.schema import schema_method
 from pydantic import BaseModel, Field
+from hypha.core import RedisRPCConnection
 from sqlalchemy import (
     Column,
     JSON,
@@ -577,6 +578,96 @@ class WorkspaceManager:
         await self._update_workspace(workspace_info, user_info)
 
     @schema_method
+    def _validate_event_subscription(self, event_type: str, workspace: str):
+        """Validate that clients can only subscribe to workspace-safe event types."""
+        # Block events that contain workspace identifiers for other workspaces
+        forbidden_patterns = [
+            f"ws-",  # Other workspace identifiers
+            "/",     # Path separators indicating cross-workspace access
+            ":",     # Namespace separators that could indicate workspace targeting
+        ]
+        
+        # Allow system events and custom events within own workspace
+        allowed_system_events = [
+            "service_added", "service_removed", "service_updated",
+            "client_connected", "client_disconnected", "client_updated", 
+            "workspace_loaded", "workspace_deleted", "workspace_changed",
+            "workspace_ready", "workspace_unloaded", "workspace_status_changed"
+        ]
+        
+        # If it's a system event, it's allowed
+        if event_type in allowed_system_events:
+            return True
+            
+        # Check for forbidden patterns that could indicate cross-workspace access
+        for pattern in forbidden_patterns:
+            if pattern in event_type:
+                # Special case: allow events that explicitly reference current workspace
+                if event_type.startswith(f"{workspace}/") or event_type.startswith(f"ws-{workspace.split('-')[-1]}/"):
+                    continue
+                raise ValueError(
+                    f"Subscription to event '{event_type}' is forbidden as it contains "
+                    f"forbidden workspace identifiers. Clients can only subscribe to events "
+                    f"within their own workspace ({workspace}) or system events."
+                )
+        
+        return True
+
+    @schema_method
+    async def subscribe(
+        self,
+        event_type: Union[str, List[str]] = Field(..., description="Event type(s) to subscribe to"),
+        context: Optional[dict] = None,
+    ):
+        """Subscribe to event types for receiving broadcast messages."""
+        assert context is not None
+        workspace = context["ws"]
+        client_id = context["from"].split("/")[-1]  # Extract client_id from full path
+
+        # Get the connection for this client
+        connection = RedisRPCConnection.get_connection(workspace, client_id)
+        if not connection:
+            raise RuntimeError(f"Connection not found for client {workspace}/{client_id}")
+        
+        # Handle both single event type and list of event types
+        event_types = event_type if isinstance(event_type, list) else [event_type]
+        
+        # Validate all event types first
+        for evt in event_types:
+            self._validate_event_subscription(evt, workspace)
+        
+        # If validation passes, subscribe to all events
+        for evt in event_types:
+            connection.subscribe(evt)
+        
+        logger.info(f"Client {workspace}/{client_id} subscribed to: {event_type}")
+
+    @schema_method
+    async def unsubscribe(
+        self,
+        event_type: Union[str, List[str]] = Field(..., description="Event type(s) to unsubscribe from"),
+        context: Optional[dict] = None,
+    ):
+        """Unsubscribe from event types to stop receiving broadcast messages."""
+        assert context is not None
+        workspace = context["ws"]
+        client_id = context["from"].split("/")[-1]  # Extract client_id from full path
+        
+        # Get the connection for this client
+        connection = RedisRPCConnection.get_connection(workspace, client_id)
+        if not connection:
+            raise RuntimeError(f"Connection not found for client {workspace}/{client_id}")
+        
+        # Handle both single event type and list of event types
+        if isinstance(event_type, list):
+            for evt in event_type:
+                connection.unsubscribe(evt)
+        else:
+            connection.unsubscribe(event_type)
+        
+        logger.info(f"Client {workspace}/{client_id} unsubscribed from: {event_type}")
+
+    @schema_method
     async def get_env(
         self,
         key: Optional[str] = Field(
@@ -811,7 +902,9 @@ class WorkspaceManager:
             logger.error(f"Failed to verify workspace creation: {str(e)}")
             raise
 
-        await self._event_bus.emit("workspace_loaded", workspace.model_dump())
+        await self._event_bus.broadcast(
+            workspace.id, "workspace_loaded", workspace.model_dump()
+        )
         if user_info.get_workspace() != workspace.id:
             await self.bookmark(
                 {"bookmark_type": "workspace", "id": workspace.id}, context=context
@@ -849,7 +942,9 @@ class WorkspaceManager:
         if self._s3_controller:
             await self._s3_controller.cleanup_workspace(workspace_info, force=True)
         await self._redis.hdel("workspaces", workspace)
-        await self._event_bus.emit("workspace_deleted", workspace_info.model_dump())
+        await self._event_bus.broadcast(
+            workspace, "workspace_deleted", workspace_info.model_dump()
+        )
         # remove the workspace from the user's bookmarks
         user_workspace = await self.load_workspace_info(user_info.get_workspace())
         user_workspace.config = user_workspace.config or {}
@@ -1579,12 +1674,14 @@ class WorkspaceManager:
                     del redis_data["service_embedding"]
             await self._redis.hset(key, mapping=redis_data)
             if ":built-in@" in key:
-                await self._event_bus.emit(
-                    "client_updated", {"id": client_id, "workspace": ws}
+                await self._event_bus.broadcast(
+                    ws, "client_updated", {"id": client_id, "workspace": ws}
                 )
                 logger.info(f"Updating built-in service: {service.id}")
             else:
-                await self._event_bus.emit("service_updated", service.model_dump())
+                await self._event_bus.broadcast(
+                    ws, "service_updated", service.model_dump()
+                )
                 logger.info(f"Updating service: {service.id}")
         else:
             if self._enable_service_search:
@@ -1605,8 +1702,8 @@ class WorkspaceManager:
                         f"Failed to run setup for default service `{client_id}`: {e}"
                     )
             if ":built-in@" in key:
-                await self._event_bus.emit(
-                    "client_connected", {"id": client_id, "workspace": ws}
+                await self._event_bus.broadcast(
+                    ws, "client_connected", {"id": client_id, "workspace": ws}
                 )
                 logger.info(f"Adding built-in service: {service.id}")
 
@@ -1614,8 +1711,8 @@ class WorkspaceManager:
                 # Remove the service embedding from the config
                 if service.config and service.config.service_embedding is not None:
                     service.config.service_embedding = None
-                await self._event_bus.emit(
-                    "service_added", service.model_dump(mode="json")
+                await self._event_bus.broadcast(
+                    ws, "service_added", service.model_dump(mode="json")
                 )
                 logger.info(f"Adding service {service.id}")
                 
@@ -1810,12 +1907,14 @@ class WorkspaceManager:
             logger.info("Removing service: %s", service_keys[0])
             await self._redis.delete(service_keys[0])
             if ":built-in@" in key:
-                await self._event_bus.emit(
-                    "client_disconnected", {"id": client_id, "workspace": ws}
+                await self._event_bus.broadcast(
+                    ws, "client_disconnected", {"id": client_id, "workspace": ws}
                 )
 
             else:
-                await self._event_bus.emit("service_removed", service.model_dump())
+                await self._event_bus.broadcast(
+                    ws, "service_removed", service.model_dump()
+                )
 
         else:
             logger.warning(f"Service {key} does not exist and cannot be removed.")
@@ -1970,7 +2069,9 @@ class WorkspaceManager:
 
 
             await self._s3_controller.setup_workspace(workspace_info)
-            await self._event_bus.emit("workspace_loaded", workspace_info.model_dump())
+            await self._event_bus.broadcast(
+                workspace, "workspace_loaded", workspace_info.model_dump()
+            )
 
             # Reset activity timer for user workspaces when loaded from S3
             await self._activity_manager.reset_activity(workspace)
@@ -2289,7 +2390,9 @@ class WorkspaceManager:
         await self._redis.hset("workspaces", workspace.id, workspace.model_dump_json())
         if self._s3_controller:
             await self._s3_controller.save_workspace_config(workspace)
-        await self._event_bus.emit("workspace_changed", workspace.model_dump())
+        await self._event_bus.broadcast(
+            workspace.id, "workspace_changed", workspace.model_dump()
+        )
 
     async def _prepare_workspace(self, workspace_info: WorkspaceInfo):
         """Prepare the workspace."""
@@ -2324,7 +2427,9 @@ class WorkspaceManager:
                     workspace_info.id, WorkspaceStatus.READY
                 )
 
-            await self._event_bus.emit("workspace_ready", workspace_info.model_dump())
+            await self._event_bus.broadcast(
+                workspace_info.id, "workspace_ready", workspace_info.model_dump()
+            )
             logger.info("Workspace %s prepared.", workspace_info.id)
 
         except Exception as e:
@@ -2412,7 +2517,9 @@ class WorkspaceManager:
                         f"Server app controller failed to close workspace: {e}"
                     )
 
-        await self._event_bus.emit("workspace_unloaded", workspace_info.model_dump())
+        await self._event_bus.broadcast(
+            workspace_info.id, "workspace_unloaded", workspace_info.model_dump()
+        )
         logger.info("Workspace %s unloaded.", workspace_info.id)
 
     @schema_method
@@ -2528,6 +2635,8 @@ class WorkspaceManager:
             "check_status": self.check_status,
             "set_env": self.set_env,
             "get_env": self.get_env,
+            "subscribe": self.subscribe,
+            "unsubscribe": self.unsubscribe,
         }
         interface["config"].update(self._server_info)
         return interface
@@ -2563,8 +2672,8 @@ class WorkspaceManager:
         for key in keys:
             await self._redis.delete(key)
 
-        await self._event_bus.emit(
-            "client_disconnected", {"id": client_id, "workspace": cws}
+        await self._event_bus.broadcast(
+            cws, "client_disconnected", {"id": client_id, "workspace": cws}
         )
 
 
@@ -2634,9 +2743,9 @@ class WorkspaceManager:
             await self._redis.hset(
                 "workspaces", workspace_id, workspace_info.model_dump_json()
             )
-            await self._event_bus.emit(
-                "workspace_status_changed",
-                {"workspace": workspace_id, "status": status},
+            await self._event_bus.broadcast(
+                workspace_id, "workspace_status_changed",
+                {"workspace": workspace_id, "status": status}
             )
         except Exception as e:
             logger.error(f"Failed to set workspace status: {e}")
