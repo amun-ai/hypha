@@ -279,30 +279,29 @@ class BrowserWorker(BaseWorker):
 
             # For web-app type, navigate directly to the entry_point URL
             if app_type == "web-app":
-                external_url = entry_point  # Use entry_point as the external URL
+                goto_url = entry_point  # Use entry_point as the external URL
                 logger.info(
-                    f"Loading web-app from external URL: {external_url} with timeout {timeout_ms}ms"
+                    f"Loading web-app from external URL: {goto_url} with timeout {timeout_ms}ms"
                 )
                 response = await page.goto(
-                    external_url, timeout=timeout_ms, wait_until="load"
+                    goto_url, timeout=timeout_ms, wait_until="load"
                 )
             else:
+                goto_url = local_url
                 logger.info(
                     f"Loading browser app from URL: {local_url} with timeout {timeout_ms}ms"
                 )
-                response = await page.goto(
-                    local_url, timeout=timeout_ms, wait_until="load"
-                )
+                response = await page.goto(goto_url, timeout=timeout_ms, wait_until="load")
 
             if not response:
                 await context.close()
-                raise Exception(f"Failed to load URL: {local_url}")
+                raise Exception(f"Failed to load URL: {goto_url}")
 
             if response.status != 200:
                 await context.close()
                 raise Exception(
                     f"Failed to start browser app instance, "
-                    f"status: {response.status}, url: {local_url}"
+                    f"status: {response.status}, url: {goto_url}"
                 )
 
             # Apply localStorage after navigation (requires loaded page)

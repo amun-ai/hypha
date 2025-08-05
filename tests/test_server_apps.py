@@ -3459,10 +3459,10 @@ async def test_browser_cache_integration(fastapi_server, test_user_token):
         manifest={
             "name": "Cache Test Web App",
             "type": "web-app",
-            "entry_point": "https://httpbin.org/json",  # Use entry_point instead of url
+            "entry_point": "https://httpbingo.org/json",  # Use entry_point instead of url
             "version": "1.0.0",
             "enable_cache": True,
-            "cache_routes": ["https://httpbin.org/*"],
+            "cache_routes": ["https://httpbingo.org/*"],
             "cookies": {"test": "value"},
             "local_storage": {"theme": "dark"},
             "authorization_token": "Bearer test-token",
@@ -3475,7 +3475,7 @@ async def test_browser_cache_integration(fastapi_server, test_user_token):
 
     assert app_info["name"] == "Cache Test Web App"
     assert app_info["type"] == "web-app"
-    assert app_info["entry_point"] == "https://httpbin.org/json"
+    assert app_info["entry_point"] == "https://httpbingo.org/json"
 
     # Get browser worker to check cache
     browser_worker = None
@@ -3571,10 +3571,10 @@ async def test_enable_cache_key_functionality(fastapi_server, test_user_token):
         manifest={
             "name": "No Cache Web App",
             "type": "web-app",
-            "entry_point": "https://httpbin.org/json",
+            "entry_point": "https://httpbingo.org/json",
             "version": "1.0.0",
             "enable_cache": False,  # Explicitly disable caching
-            "cache_routes": ["https://httpbin.org/*"],  # Should be ignored
+            "cache_routes": ["https://httpbingo.org/*"],  # Should be ignored
         },
         files=[],
         stage=True,
