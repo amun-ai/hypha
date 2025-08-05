@@ -117,7 +117,7 @@ class ArtifactModel(SQLModel, table=True):  # `table=True` makes it a table mode
     manifest: Optional[dict] = Field(
         default=None, sa_column=Column(JSON, nullable=True)
     )
-    staging: Optional[dict] = Field(default=None, sa_column=Column(JSON, nullable=True))
+    staging: Optional[Union[dict, list]] = Field(default=None, sa_column=Column(JSON, nullable=True))
     download_count: float = Field(default=0.0)
     view_count: float = Field(default=0.0)
     file_count: int = Field(default=0)
@@ -992,6 +992,22 @@ class ArtifactController:
                 artifact_id = self._validate_artifact_id(
                     artifact_alias, context=context
                 )
+                
+                # Check if artifact is in staging mode first
+                session = await self._get_session(read_only=True)
+                try:
+                    async with session.begin():
+                        result = await session.execute(
+                            select(ArtifactModel).where(self._get_artifact_id_cond(artifact_id))
+                        )
+                        artifact = result.scalar_one_or_none()
+                        if not artifact:
+                            raise KeyError(f"Artifact not found: {artifact_id}")
+                        if artifact.staging is None:
+                            raise ValueError("Artifact must be in staging mode to upload files")
+                finally:
+                    await session.close()
+                
                 presigned_url = await self.put_file(
                     artifact_id=artifact_id,
                     file_path=file_path,
@@ -2722,7 +2738,37 @@ class ArtifactController:
                 ) as s3_client:
                     download_weights = {}
                     
-                    # Handle file operations from staging dict
+                    # First, handle file removals
+                    for file_info in staged_files:
+                        if file_info.get("_remove"):
+                            # This file needs to be removed
+                            file_path = file_info["path"]
+                            
+                            # Determine which version to remove from
+                            if has_new_version_intent:
+                                # Removing from the previous version (we're creating new)
+                                remove_from_version = max(0, len(versions) - 1)
+                            else:
+                                # Removing from current version
+                                remove_from_version = max(0, len(versions) - 1)
+                            
+                            file_key = safe_join(
+                                s3_config["prefix"],
+                                f"{artifact.id}/v{remove_from_version}/{file_path}",
+                            )
+                            
+                            try:
+                                await s3_client.delete_object(
+                                    Bucket=s3_config["bucket"], Key=file_key
+                                )
+                                logger.info(f"Removed file '{file_path}' from version {remove_from_version}")
+                            except ClientError as e:
+                                if e.response.get("Error", {}).get("Code") == "NoSuchKey":
+                                    logger.warning(f"File '{file_path}' not found for removal")
+                                else:
+                                    logger.error(f"Error removing file '{file_path}': {e}")
+                    
+                    # Handle file additions (non-removal files)
                     for file_info in staged_files:
                         # Skip intent markers and removal markers when processing files
                         if "_intent" in file_info or "_remove" in file_info:
@@ -4647,8 +4693,9 @@ class ArtifactController:
                             async with self._create_client_async(
                                 s3_config
                             ) as s3_client:
-                                for file_info in staging_list:
-                                    if "_intent" in file_info:
+                                staging_files = staging_dict.get("files", [])
+                                for file_info in staging_files:
+                                    if "_intent" in file_info or "_remove" in file_info:
                                         continue
                                     file_key = safe_join(
                                         s3_config["prefix"],

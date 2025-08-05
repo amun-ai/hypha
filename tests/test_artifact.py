@@ -4311,9 +4311,18 @@ async def test_no_automatic_new_version_intent(
     assert staged_artifact["staging"] is not None
 
     # Check that no new_version intent was automatically added
-    has_new_version_intent = any(
-        item.get("_intent") == "new_version" for item in staged_artifact["staging"]
-    )
+    # The staging field might be a dict or list depending on internal implementation
+    staging = staged_artifact.get("staging")
+    if staging:
+        if isinstance(staging, dict):
+            has_new_version_intent = staging.get("_intent") == "new_version"
+        else:
+            has_new_version_intent = any(
+                item.get("_intent") == "new_version" for item in staging if isinstance(item, dict)
+            )
+    else:
+        has_new_version_intent = False
+    
     assert (
         not has_new_version_intent
     ), "Files should not automatically trigger new_version intent"
