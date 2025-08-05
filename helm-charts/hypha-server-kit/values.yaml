@@ -115,17 +115,25 @@ hypha-server:
       value: "true"
     # - name: HYPHA_ENABLE_SERVICE_SEARCH
     #   value: "false"
+    - name: HYPHA_WORKSPACE_BUCKET
+      value: "hypha-workspaces"
 
 # MinIO configuration
 minio:
   enabled: true
-  
+    
   auth:
-    # Use existing secret for credentials
-    existingSecret: hypha-secrets
-    existingSecretKeys:
-      rootUser: root-user
-      rootPassword: root-password
+      # Use existing secret for credentials
+      existingSecret: hypha-secrets
+      rootUserSecretKey: HYPHA_ACCESS_KEY_ID
+      rootPasswordSecretKey: HYPHA_SECRET_ACCESS_KEY
+      # Optional: Force users to specify required passwords
+      forcePassword: false
+      # Optional: Mount credentials as files instead of using environment variables
+      usePasswordFiles: true
+      # Optional: Uses a secret to mount the credential files
+      useSecret: true
+    
   
   mode: standalone
   
@@ -150,7 +158,7 @@ minio:
     tls: false
   
   # Create default buckets
-  defaultBuckets: "hypha-storage"
+  defaultBuckets: "hypha-workspaces"
   
   resources:
     requests:
