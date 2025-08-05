@@ -3282,7 +3282,9 @@ class ArtifactController:
                 else:
                     # Non-staging mode - files go to current version
                     target_version_index = max(0, len(artifact.versions or []) - 1)
-                    
+
+                version_index = target_version_index
+
                 logger.info(
                     f"Uploading file '{file_path}' to staging version {target_version_index} (has_new_version_intent: {has_new_version_intent})"
                 )
@@ -3333,7 +3335,7 @@ class ArtifactController:
                         flag_modified(artifact, "staging")
                         
                     # Save artifact state to S3 (with staging info)
-                    await self._save_version_to_s3(version_index, artifact, s3_config)
+                    await self._save_version_to_s3(target_version_index, artifact, s3_config)
                     session.add(artifact)
                     await session.commit()
                     logger.info(
