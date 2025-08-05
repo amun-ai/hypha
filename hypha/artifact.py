@@ -3280,15 +3280,12 @@ class ArtifactController:
                     # Creating new version - use next index
                     target_version_index = len(artifact.versions or [])
                 else:
-                    # Editing current version - use current index
+                    # Non-staging mode - files go to current version
                     target_version_index = max(0, len(artifact.versions or []) - 1)
                     
                 logger.info(
                     f"Uploading file '{file_path}' to staging version {target_version_index} (has_new_version_intent: {has_new_version_intent})"
                 )
-
-                version_index = target_version_index
-
                 s3_config = self._get_s3_config(artifact, parent_artifact)
                 async with self._create_client_async(
                     s3_config,
