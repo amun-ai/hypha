@@ -1555,8 +1555,15 @@ class ServerAppController:
         if isinstance(error, asyncio.TimeoutError):
             return "Application startup timed out"
 
-        # For other exceptions, just return the message without chaining
-        return str(error)
+        # For other exceptions, extract meaningful error message
+        error_str = str(error)
+        if not error_str or error_str.strip() == "":
+            # If string conversion is empty, try to get more details
+            error_str = repr(error)
+            if hasattr(error, '__class__'):
+                error_str = f"{error.__class__.__name__}: {error_str}"
+        
+        return error_str or "Unknown error occurred"
 
     @schema_method
     async def start(
@@ -1948,22 +1955,16 @@ class ServerAppController:
         except (asyncio.TimeoutError, Exception) as exp:
             # Get worker logs for debugging
             logs = None
-            try:
-                session_info = self._sessions.get(full_client_id)
-                if session_info and "_worker" in session_info:
-                    logs = await session_info["_worker"].get_logs(
-                        full_client_id, context=context
-                    )
-            except Exception:
-                pass  # Ignore log retrieval errors
-
+            session_info = self._sessions.get(full_client_id)
+            if session_info and "_worker" in session_info:
+                logs = await session_info["_worker"].get_logs(
+                    full_client_id, context=context
+                )
             # Clean up session
-            try:
-                session_info = self._sessions.get(full_client_id)
-                if session_info and "_worker" in session_info:
-                    await session_info["_worker"].stop(full_client_id, context=context)
-            except Exception:
-                pass  # Ignore cleanup errors
+            session_info = self._sessions.get(full_client_id)
+            if session_info and "_worker" in session_info:
+                await session_info["_worker"].stop(full_client_id, context=context)
+
             raise Exception(
                 f"Failed to start app '{app_id}', error: {exp}, logs:\n{logs}"
             ) from None

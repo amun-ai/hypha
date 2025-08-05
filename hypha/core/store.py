@@ -80,6 +80,12 @@ class WorkspaceInterfaceContextManager:
         self._wm.disconnect = self._rpc.disconnect
         self._wm.register_codec = self._rpc.register_codec
         self._wm.register_service = self._rpc.register_service
+        self._wm.unregister_service = self._rpc.unregister_service
+        self._wm.get_service_schema = self._rpc.get_service_schema
+        self._wm.on = self._rpc.on
+        self._wm.off = self._rpc.off
+        self._wm.once = self._rpc.once
+        self._wm.emit = self._rpc.emit
         return self._wm
 
 

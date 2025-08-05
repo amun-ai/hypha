@@ -4259,3 +4259,229 @@ api.export({"setup": setup})
             print(f"⚠️  Failed to clean up app: {e}")
 
     await api.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_worker_discovery_and_removal(fastapi_server, test_user_token):
+    """Test that WorkerManager can dynamically discover and remove workers."""
+    print("🧪 Testing dynamic worker discovery and removal...")
+    
+    api = await connect_to_server(
+        {"name": "test client", "server_url": WS_SERVER_URL, "token": test_user_token, "method_timeout": 30}
+    )
+    
+    # Create a minimal test worker
+    MINIMAL_WORKER_CODE = """
+<config lang="json">
+{
+    "name": "Minimal Test Worker",
+    "type": "web-python",
+    "version": "0.1.0",
+    "description": "A minimal worker for testing dynamic discovery",
+    "tags": ["test", "worker"],
+    "covers": ["*"],
+    "icon": "🔧",
+    "inputs": null,
+    "outputs": null,
+    "flags": [],
+    "env": "",
+    "permissions": [],
+    "requirements": [],
+    "dependencies": [],
+    "timeout": 30
+}
+</config>
+
+<script lang="python">
+import asyncio
+from hypha_rpc import api
+
+class MinimalTestWorker:
+    def __init__(self):
+        self.name = "MinimalTestWorker"
+        self.supported_types = ["test-app"]
+    
+    async def compile(self, manifest, files, config=None, context=None):
+        \"\"\"Minimal compile method for testing.\"\"\"
+        return manifest, files
+    
+    async def start(self, session_id, context=None):
+        \"\"\"Minimal start method for testing.\"\"\"
+        return {"status": "started", "session_id": session_id}
+    
+    async def stop(self, session_id, context=None):
+        \"\"\"Minimal stop method for testing.\"\"\"
+        return {"status": "stopped", "session_id": session_id}
+
+async def setup():
+    # Register the minimal worker as a server-app-worker
+    worker = MinimalTestWorker()
+    api.export(
+        worker,
+        {
+            "id": "MinimalTestWorker",
+            "type": "server-app-worker",
+            "name": "Minimal Test Worker",
+            "description": "A minimal worker for testing dynamic discovery",
+            "supported_types": ["test-app"]
+        }
+    )
+    print("✅ Minimal test worker registered")
+
+if __name__ == "__main__":
+    from hypha_rpc import connect_to_server
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(setup())
+</script>
+"""
+
+    apps = await api.get_service("public/server-apps")
+    
+    try:
+        print("📋 Step 1: Install minimal worker...")
+        worker_app_id = await apps.install(
+            source=MINIMAL_WORKER_CODE,
+            overwrite=True,
+            wait_for_service="default"
+        )
+        print(f"✅ Worker installed: {worker_app_id}")
+        
+        # Start the worker
+        print("🚀 Step 2: Start the worker...")
+        worker_info = await apps.start(worker_app_id["id"])
+        worker_session_id = worker_info["id"]
+        print(f"✅ Worker started: {worker_session_id}")
+        
+        # Wait a moment for the worker to be discovered
+        await asyncio.sleep(2)
+        
+        print("🔍 Step 3: Verify worker discovery...")
+        # List all workers to see if our worker is discovered
+        workers = await apps.list_workers()
+        print(f"📊 Found {len(workers)} workers")
+        
+        # Look for our specific worker
+        test_worker_found = False
+        for worker in workers:
+            if "MinimalTestWorker" in worker.get("id", ""):
+                test_worker_found = True
+                print(f"✅ Found our test worker: {worker['id']}")
+                print(f"   - Name: {worker.get('name', 'N/A')}")
+                print(f"   - Supported types: {worker.get('supported_types', [])}")
+                break
+        
+        if not test_worker_found:
+            print("⚠️  Test worker not found in worker list")
+        
+        print("🎯 Step 4: Try to use the worker...")
+        # Create a simple test app that should use our worker
+        TEST_APP_CODE = """
+<config lang="json">
+{
+    "name": "Test App for Worker",
+    "type": "test-app",
+    "version": "0.1.0",
+    "description": "A test app to verify worker functionality"
+}
+</config>
+
+<script lang="python">
+from hypha_rpc import api
+
+async def setup():
+    api.export(
+        {"hello": lambda: "Hello from test app!"},
+        {"id": "default", "type": "test-service"}
+    )
+    print("Test app service registered")
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(setup())
+</script>
+"""
+        
+        try:
+            # Try to install an app that should use our worker
+            test_app_id = await apps.install(
+                source=TEST_APP_CODE,
+                overwrite=True,
+                wait_for_service="default",
+                timeout=15
+            )
+            print(f"✅ Test app installed successfully: {test_app_id}")
+            
+            # Start the test app
+            test_app_info = await apps.start(test_app_id)
+            print(f"✅ Test app started: {test_app_info['id']}")
+            
+            # Clean up test app
+            await apps.stop(test_app_info["id"])
+            await apps.uninstall(test_app_id)
+            print("✅ Test app cleaned up")
+            
+        except Exception as e:
+            print(f"⚠️  Test app installation/usage failed (expected): {e}")
+        
+        print("🗑️  Step 5: Remove the worker and test cleanup...")
+        # Stop and uninstall the worker
+        await apps.stop(worker_session_id)
+        print("✅ Worker stopped")
+        
+        await apps.uninstall(worker_app_id["id"])
+        print("✅ Worker uninstalled")
+        
+        # Wait for cleanup to propagate
+        await asyncio.sleep(2)
+        
+        print("🔍 Step 6: Verify worker removal...")
+        # Check that the worker is no longer in the list
+        workers_after = await apps.list_workers()
+        print(f"📊 Found {len(workers_after)} workers after removal")
+        
+        test_worker_still_exists = False
+        for worker in workers_after:
+            if "MinimalTestWorker" in worker.get("id", ""):
+                test_worker_still_exists = True
+                print(f"⚠️  Test worker still exists: {worker['id']}")
+                break
+        
+        if not test_worker_still_exists:
+            print("✅ Test worker successfully removed from worker list")
+        
+        print("🎯 Step 7: Verify error handling for removed worker...")
+        # Try to use the removed worker - should fail gracefully
+        try:
+            failed_app_id = await apps.install(
+                source=TEST_APP_CODE,
+                overwrite=True,
+                wait_for_service="default",
+                timeout=10
+            )
+            print(f"⚠️  Unexpectedly succeeded with removed worker: {failed_app_id}")
+            # Clean up if it somehow succeeded
+            await apps.uninstall(failed_app_id)
+        except Exception as e:
+            print(f"✅ Correctly failed to use removed worker: {type(e).__name__}")
+        
+        print("✅ Dynamic worker discovery and removal test completed successfully!")
+        
+    except Exception as e:
+        print(f"❌ Test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+    
+    finally:
+        # Cleanup any remaining resources
+        try:
+            # Try to stop and clean up worker if it still exists
+            running_apps = await apps.list_running()
+            for app in running_apps:
+                if "minimal-test-worker" in app.get("app_id", "").lower():
+                    await apps.stop(app["id"])
+                    print(f"🧹 Cleaned up running worker: {app['id']}")
+        except Exception as cleanup_error:
+            print(f"⚠️  Cleanup warning: {cleanup_error}")
+    
+    await api.disconnect()

@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+import traceback
 from typing import Dict, Optional, Any
 from contextlib import asynccontextmanager
 
@@ -102,133 +103,99 @@ class WorkerManager:
         if workspace in self._monitored_workspaces:
             return  # Already monitoring
         
-        try:
-            logger.info("Starting workspace monitoring for %s", workspace)
+        logger.info("Starting workspace monitoring for %s", workspace)
+        
+        # Connect to workspace
+        if context and workspace != "public":
+            user_info = UserInfo.model_validate(context["user"])
+            workspace_interface = await self.store.get_workspace_interface(
+                user_info, workspace
+            ).__aenter__()
             
-            # Connect to workspace
-            if context and workspace != "public":
-                user_info = UserInfo.model_validate(context["user"])
-                workspace_interface = await self.store.get_workspace_interface(
-                    user_info, workspace
-                ).__aenter__()
-                
-                # Set up event listeners
-                await self._setup_workspace_listeners(workspace, workspace_interface)
-                
-                # Do initial worker discovery
-                await self._discover_workspace_workers(workspace, workspace_interface)
-                
-                self._workspace_listeners[workspace] = workspace_interface
+            # Set up event listeners - this will handle ALL workers in this workspace
+            await self._setup_workspace_listeners(workspace, workspace_interface)
             
-            self._monitored_workspaces[workspace] = True
-            logger.info("Started monitoring workspace %s", workspace)
+            # Do initial worker discovery
+            await self._discover_workspace_workers(workspace, workspace_interface)
             
-        except Exception as e:
-            logger.error("Failed to start monitoring workspace %s: %s", workspace, e)
+            self._workspace_listeners[workspace] = workspace_interface
+        
+        self._monitored_workspaces[workspace] = True
+        logger.info("Started monitoring workspace %s", workspace)
     
     async def _setup_workspace_listeners(self, workspace: str, workspace_api: Any):
         """Set up event listeners for workspace changes."""
-        try:
-            # Listen for service added events
-            def on_service_added(data):
-                asyncio.create_task(self._handle_service_added(workspace, data))
-            
-            # Listen for service removed events
-            def on_service_removed(data):
-                asyncio.create_task(self._handle_service_removed(workspace, data))
-            
-            # Listen for client disconnected events
-            def on_client_disconnected(data):
-                asyncio.create_task(self._handle_client_disconnected(workspace, data))
-            
-            # Subscribe to system events first
-            await workspace_api.subscribe([
-                "service_added", 
-                "service_removed", 
-                "client_disconnected"
-            ])
-            
-            # Set up the listeners
-            workspace_api.on("service_added", on_service_added)
-            workspace_api.on("service_removed", on_service_removed)
-            workspace_api.on("client_disconnected", on_client_disconnected)
-            
-            logger.debug("Set up event listeners for workspace %s", workspace)
-            
-        except Exception as e:
-            logger.warning("Failed to set up listeners for workspace %s: %s", workspace, e)
-    
+        # Listen for service added events
+        async def on_service_added(data):
+            await self._handle_service_added(workspace, data)
+        
+        # Listen for service removed events
+        async def on_service_removed(data):
+            await self._handle_service_removed(workspace, data)
+        
+        # Listen for client disconnected events
+        async def on_client_disconnected(data):
+            await self._handle_client_disconnected(workspace, data)
+        
+        # Set up the listeners
+        workspace_api.on("service_added", on_service_added)
+        workspace_api.on("service_removed", on_service_removed)
+        workspace_api.on("client_disconnected", on_client_disconnected)
+        
+        logger.debug("Set up event listeners for workspace %s", workspace)
+
     async def _discover_workspace_workers(self, workspace: str, workspace_api: Any):
         """Discover and connect to existing workers in the workspace."""
-        try:
-            # List all services to find workers
-            services = await workspace_api.list_services({
-                "type": "server-app-worker",
-                "workspace": workspace
-            })
-            
-            logger.info("Discovered %d workers in workspace %s", len(services), workspace)
-            
-            # Note: We don't pre-connect to all workers, just track that they exist
-            # Connections will be made on-demand when requested
-            
-        except Exception as e:
-            logger.warning("Failed to discover workers in workspace %s: %s", workspace, e)
-    
+        # List all services to find workers
+        services = await workspace_api.list_services({
+            "type": "server-app-worker",
+            "workspace": workspace
+        })
+        
+        logger.info("Discovered %d workers in workspace %s", len(services), workspace)
+
     async def _handle_service_added(self, workspace: str, data: Dict[str, Any]):
         """Handle service added event."""
-        try:
-            service = data.get("service", {})
-            service_type = service.get("type")
+        service = data.get("service", {})
+        service_type = service.get("type")
+        
+        if service_type == "server-app-worker":
+            service_id = service.get("id")
+            logger.info("New worker discovered in workspace %s: %s", workspace, service_id)
+            # Worker is available, but we don't pre-connect. Connection will be made on-demand.
             
-            if service_type == "server-app-worker":
-                service_id = service.get("id")
-                logger.info("New worker discovered in workspace %s: %s", workspace, service_id)
-                # Worker is available, but we don't pre-connect. Connection will be made on-demand.
-                
-        except Exception as e:
-            logger.debug("Error handling service_added event: %s", e)
-    
     async def _handle_service_removed(self, workspace: str, data: Dict[str, Any]):
         """Handle service removed event."""
-        try:
-            service = data.get("service", {})
-            service_type = service.get("type")
+        service = data.get("service", {})
+        service_type = service.get("type")
+        
+        if service_type == "server-app-worker":
+            service_id = service.get("id")
+            logger.info("Worker removed from workspace %s: %s", workspace, service_id)
             
-            if service_type == "server-app-worker":
-                service_id = service.get("id")
-                logger.info("Worker removed from workspace %s: %s", workspace, service_id)
+            # Clean up any existing connections to this worker
+            await self.force_cleanup_worker(service_id)
                 
-                # Clean up any existing connections to this worker
-                await self.force_cleanup_worker(service_id)
-                
-        except Exception as e:
-            logger.debug("Error handling service_removed event: %s", e)
-    
     async def _handle_client_disconnected(self, workspace: str, data: Dict[str, Any]):
         """Handle client disconnected event."""
-        try:
-            client_id = data.get("client_id")
-            if client_id:
-                logger.info("Client disconnected from workspace %s: %s", workspace, client_id)
+        client_id = data.get("client_id")
+        if client_id:
+            logger.info("Client disconnected from workspace %s: %s", workspace, client_id)
+            
+            # Clean up all connections for services from this client
+            async with self._lock:
+                to_remove = []
+                for worker_id in self._connections.keys():
+                    # Check if worker_id belongs to the disconnected client
+                    if client_id in worker_id:
+                        to_remove.append(worker_id)
                 
-                # Clean up all connections for services from this client
-                async with self._lock:
-                    to_remove = []
-                    for worker_id in self._connections.keys():
-                        # Check if worker_id belongs to the disconnected client
-                        if client_id in worker_id:
-                            to_remove.append(worker_id)
-                    
-                    for worker_id in to_remove:
-                        logger.info("Cleaning up worker connection due to client disconnect: %s", worker_id)
-                        connection = self._connections.pop(worker_id, None)
-                        if connection:
-                            asyncio.create_task(connection.close())
-                
-        except Exception as e:
-            logger.debug("Error handling client_disconnected event: %s", e)
-    
+                for worker_id in to_remove:
+                    logger.info("Cleaning up worker connection due to client disconnect: %s", worker_id)
+                    connection = self._connections.pop(worker_id, None)
+                    if connection:
+                        asyncio.create_task(connection.close())
+
     def _determine_workspace(self, from_workspace: Optional[str], context: Optional[Dict[str, Any]]) -> Optional[str]:
         """Determine which workspace to use based on parameters."""
         if from_workspace is not None:
@@ -275,7 +242,10 @@ class WorkerManager:
             worker_service = await connection.acquire()
             
             yield worker_service
-            
+        except Exception as e:
+            logger.error("Failed to get worker %s: %s", worker_id, repr(e))
+            logger.error("Full traceback: %s", traceback.format_exc())
+            raise
         finally:
             # Always release reference
             if connection:
@@ -301,37 +271,33 @@ class WorkerManager:
         Returns:
             worker_service: The worker service proxy, or None if not found
         """
-        try:
-            # Determine workspace and ensure monitoring
-            workspace = self._determine_workspace(from_workspace, context)
-            if workspace and workspace != "public":
-                await self._ensure_workspace_monitoring(workspace, context)
-            
-            # Get or create connection
-            connection = await self._get_or_create_connection(
-                worker_id, context, from_workspace
-            )
-            
-            if connection is None:
-                return None
-            
-            # Acquire reference
-            worker_service = await connection.acquire()
-            
-            # Store connection reference in the worker service for later cleanup
-            if hasattr(worker_service, '_hypha_worker_id'):
-                # Worker already has connection info, just return it
-                pass
-            else:
-                # Add connection info to worker for cleanup
-                worker_service._hypha_worker_id = worker_id
-                worker_service._hypha_worker_manager = self
-            
-            return worker_service
-            
-        except Exception as e:
-            logger.debug("Failed to get worker %s: %s", worker_id, e)
+        # Determine workspace and ensure monitoring
+        workspace = self._determine_workspace(from_workspace, context)
+        if workspace and workspace != "public":
+            await self._ensure_workspace_monitoring(workspace, context)
+        
+        # Get or create connection
+        connection = await self._get_or_create_connection(
+            worker_id, context, from_workspace
+        )
+        
+        if connection is None:
             return None
+        
+        # Acquire reference
+        worker_service = await connection.acquire()
+        
+        # Store connection reference in the worker service for later cleanup
+        if hasattr(worker_service, '_hypha_worker_id'):
+            # Worker already has connection info, just return it
+            pass
+        else:
+            # Add connection info to worker for cleanup
+            worker_service._hypha_worker_id = worker_id
+            worker_service._hypha_worker_manager = self
+        
+        return worker_service
+        
     
     async def release_worker_ref(self, worker_id: str) -> None:
         """Release a worker reference obtained with get_worker_ref()."""
@@ -370,33 +336,28 @@ class WorkerManager:
         from_workspace: Optional[str] = None
     ) -> Optional[WorkerConnection]:
         """Create a new worker connection."""
-        try:
-            if from_workspace == "public" or (from_workspace is None and not context):
-                # Use public API
-                server = await self.store.get_public_api()
-                worker_service = await server.get_service(worker_id)
-                return WorkerConnection(worker_id, worker_service, None)
+        if from_workspace == "public" or (from_workspace is None and not context):
+            # Use public API
+            server = await self.store.get_public_api()
+            worker_service = await server.get_service(worker_id)
+            return WorkerConnection(worker_id, worker_service, None)
+        else:
+            # Use workspace interface (persistent connection)
+            # Determine which workspace to use
+            if from_workspace is not None and from_workspace != "public":
+                workspace = from_workspace
             else:
-                # Use workspace interface (persistent connection)
-                # Determine which workspace to use
-                if from_workspace is not None and from_workspace != "public":
-                    workspace = from_workspace
-                else:
-                    workspace = context.get("ws")
-                
-                user_info = UserInfo.model_validate(context["user"])
-                
-                # Create persistent workspace interface (don't use async with!)
-                workspace_interface = await self.store.get_workspace_interface(
-                    user_info, workspace
-                ).__aenter__()
-                
-                worker_service = await workspace_interface.get_service(worker_id)
-                return WorkerConnection(worker_id, worker_service, workspace_interface)
-                
-        except Exception as e:
-            logger.debug("Failed to create connection to worker %s: %s", worker_id, e)
-            return None
+                workspace = context.get("ws")
+            
+            user_info = UserInfo.model_validate(context["user"])
+            
+            # Create persistent workspace interface (don't use async with!)
+            workspace_interface = await self.store.get_workspace_interface(
+                user_info, workspace
+            ).__aenter__()
+            
+            worker_service = await workspace_interface.get_service(worker_id)
+            return WorkerConnection(worker_id, worker_service, workspace_interface)
     
     async def _cleanup_loop(self):
         """Periodically cleanup idle connections."""
