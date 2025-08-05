@@ -2195,14 +2195,14 @@ async def test_staging_with_files_isolation(
     )
     artifact_manager = await api.get_service("public/artifact-manager")
 
-    # Create initial artifact with a file
+    # Create initial artifact in staging mode
     dataset = await artifact_manager.create(
         type="dataset",
         manifest={"name": "File Test Dataset", "description": "Testing file isolation"},
-        stage=False
+        stage=True  # Create in staging mode to allow file upload
     )
     
-    # Add file to published version
+    # Add file to staged version
     published_content = "This is the published file content"
     put_url = await artifact_manager.put_file(
         artifact_id=dataset.id,
@@ -2210,6 +2210,9 @@ async def test_staging_with_files_isolation(
     )
     response = requests.put(put_url, data=published_content)
     assert response.ok
+    
+    # Commit to make it the published version
+    await artifact_manager.commit(artifact_id=dataset.id)
     
     # Now stage with different file content
     await artifact_manager.edit(

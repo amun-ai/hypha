@@ -1423,6 +1423,18 @@ class ArtifactController:
         artifact_data["_id"] = artifact.id
         # Exclude 'secrets' from artifact_data to prevent exposure
         artifact_data.pop("secrets", None)
+        
+        # Convert dict-based staging back to list format for API backward compatibility
+        if artifact_data.get("staging") and isinstance(artifact_data["staging"], dict):
+            staging_dict = artifact_data["staging"]
+            staging_list = staging_dict.get("files", [])
+            
+            # Add intent markers as list items for backward compatibility
+            if "_intent" in staging_dict:
+                staging_list.append({"_intent": staging_dict["_intent"]})
+            
+            artifact_data["staging"] = staging_list
+        
         return artifact_data
 
     def _expand_permission(self, permission):
@@ -3208,34 +3220,26 @@ class ArtifactController:
                     user_info, artifact_id, "put_file", session
                 )
                 
+                # Require artifact to be in staging mode
+                assert artifact.staging is not None, "Artifact must be in staging mode."
+                
                 # Convert legacy staging format if needed
-                if artifact.staging is not None:
-                    artifact.staging = convert_legacy_staging(artifact.staging)
+                artifact.staging = convert_legacy_staging(artifact.staging)
 
-                # Handle both staging and non-staging modes
-                if artifact.staging is not None:
-                    # Staging mode - files go to staging version
-                    staging_dict = artifact.staging
-                    has_new_version_intent = staging_dict.get("_intent") == "new_version"
-                    
-                    if has_new_version_intent:
-                        # Creating new version - use next index
-                        target_version_index = len(artifact.versions or [])
-                    else:
-                        # Editing current version - use current index
-                        target_version_index = max(0, len(artifact.versions or []) - 1)
-                        
-                    logger.info(
-                        f"Uploading file '{file_path}' to staging version {target_version_index} (has_new_version_intent: {has_new_version_intent})"
-                    )
+                # Staging mode - files go to staging version
+                staging_dict = artifact.staging
+                has_new_version_intent = staging_dict.get("_intent") == "new_version"
+                
+                if has_new_version_intent:
+                    # Creating new version - use next index
+                    target_version_index = len(artifact.versions or [])
                 else:
-                    # Non-staging mode - files go to current version
+                    # Editing current version - use current index
                     target_version_index = max(0, len(artifact.versions or []) - 1)
-                    has_new_version_intent = False
                     
-                    logger.info(
-                        f"Uploading file '{file_path}' directly to current version {target_version_index}"
-                    )
+                logger.info(
+                    f"Uploading file '{file_path}' to staging version {target_version_index} (has_new_version_intent: {has_new_version_intent})"
+                )
 
                 version_index = target_version_index
 
@@ -3273,31 +3277,22 @@ class ArtifactController:
                         # For S3 direct access with local URL, use the endpoint_url as-is
                         # (no replacement needed since endpoint_url is already the local/internal endpoint)
                         pass
-                    # Handle file tracking based on staging mode
-                    if artifact.staging is not None:
-                        # Staging mode - add file to staging dict
-                        staging_dict = artifact.staging
-                        staging_files = staging_dict.get("files", [])
+                    # Add file to staging dict
+                    staging_files = staging_dict.get("files", [])
+                    
+                    # Check if file already exists in staging
+                    if not any(f["path"] == file_path for f in staging_files):
+                        staging_files.append({
+                            "path": file_path,
+                            "download_weight": download_weight,
+                        })
+                        staging_dict["files"] = staging_files
+                        flag_modified(artifact, "staging")
                         
-                        # Check if file already exists in staging
-                        if not any(f["path"] == file_path for f in staging_files):
-                            staging_files.append({
-                                "path": file_path,
-                                "download_weight": download_weight,
-                            })
-                            staging_dict["files"] = staging_files
-                            flag_modified(artifact, "staging")
-                            
-                        # Save artifact state to S3 (with staging info)
-                        await self._save_version_to_s3(version_index, artifact, s3_config)
-                        session.add(artifact)
-                        await session.commit()
-                    else:
-                        # Non-staging mode - file goes directly to committed version
-                        # No need to track in staging, just save artifact state
-                        await self._save_version_to_s3(version_index, artifact, s3_config)
-                        session.add(artifact)
-                        await session.commit()
+                    # Save artifact state to S3 (with staging info)
+                    await self._save_version_to_s3(version_index, artifact, s3_config)
+                    session.add(artifact)
+                    await session.commit()
                     logger.info(
                         f"Put file '{file_path}' to artifact with ID: {artifact_id} (target version: {target_version_index})"
                     )
