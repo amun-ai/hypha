@@ -613,6 +613,7 @@ class WorkspaceManager:
         
         return True
 
+    @schema_method
     async def subscribe(
         self,
         event_type: Union[str, List[str]] = Field(..., description="Event type(s) to subscribe to"),

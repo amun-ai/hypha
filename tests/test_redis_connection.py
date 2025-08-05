@@ -156,6 +156,10 @@ async def test_broadcast_message_within_workspace(
     first_messages = []
     second_messages = []
 
+    # Subscribe both clients to "test-broadcast" event type
+    first_rpc.subscribe("test-broadcast")
+    second_client_same_workspace.subscribe("test-broadcast")
+
     first_rpc.on_message(lambda data: first_messages.append(msgpack.unpackb(data)))
     second_client_same_workspace.on_message(
         lambda data: second_messages.append(msgpack.unpackb(data))
@@ -163,7 +167,7 @@ async def test_broadcast_message_within_workspace(
 
     await asyncio.sleep(0.1)
 
-    broadcast_message = msgpack.packb({"to": "*", "content": "Broadcast message"})
+    broadcast_message = msgpack.packb({"to": "*", "type": "test-broadcast", "content": "Broadcast message"})
     await first_rpc.emit_message(broadcast_message)
 
     await asyncio.sleep(0.1)
@@ -181,6 +185,11 @@ async def test_broadcast_message_does_not_cross_workspaces(
     second_messages = []
     another_messages = []
 
+    # Subscribe all clients to "test-broadcast" event type
+    first_rpc.subscribe("test-broadcast")
+    second_client_same_workspace.subscribe("test-broadcast")
+    another_rpc_connection.subscribe("test-broadcast")
+
     first_rpc.on_message(lambda data: first_messages.append(msgpack.unpackb(data)))
     second_client_same_workspace.on_message(
         lambda data: second_messages.append(msgpack.unpackb(data))
@@ -191,7 +200,7 @@ async def test_broadcast_message_does_not_cross_workspaces(
 
     await asyncio.sleep(0.1)
 
-    broadcast_message = msgpack.packb({"to": "*", "content": "Broadcast message"})
+    broadcast_message = msgpack.packb({"to": "*", "type": "test-broadcast", "content": "Broadcast message"})
     await first_rpc.emit_message(broadcast_message)
 
     await asyncio.sleep(0.1)
