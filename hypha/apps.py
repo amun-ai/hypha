@@ -1684,14 +1684,18 @@ class ServerAppController:
                         logger.info(
                             f"Returning existing instance for app {app_id} in workspace {workspace}"
                         )
-                        return session_info
+                        # Filter out non-serializable objects like _worker
+                        filtered_session_info = {k: v for k, v in session_info.items() if not k.startswith("_")}
+                        return filtered_session_info
 
         if manifest.singleton:
             # check if the app is already running
             for session_info in self._sessions.values():
                 if session_info["app_id"] == app_id:
                     # For singleton apps, return the existing session instead of raising an error
-                    return session_info
+                    # Filter out non-serializable objects like _worker
+                    filtered_session_info = {k: v for k, v in session_info.items() if not k.startswith("_")}
+                    return filtered_session_info
         if manifest.daemon and stop_after_inactive and stop_after_inactive > 0:
             raise ValueError("Daemon apps should not have stop_after_inactive set.")
         if stop_after_inactive is None:

@@ -970,6 +970,12 @@ class RedisEventBus:
 
     async def broadcast(self, workspace: str, event_type: str, data: dict):
         """Broadcast a system event to all clients in a workspace."""
+        # First emit locally for local listeners (like apps system)
+        local_emit_result = self.emit_local(event_type, data)
+        if asyncio.iscoroutine(local_emit_result):
+            await local_emit_result
+        
+        # Then emit to Redis for remote clients with wrapped message format
         message = {
             "type": event_type,
             "to": "*",

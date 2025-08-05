@@ -3902,7 +3902,8 @@ api.export({"setup": setup})
         app_id_random = await apps.install(
             source=source,
             worker_selection_mode="random",
-            stage=False
+            stage=False,
+
         )
         print(f"✅ Successfully installed app with random worker selection: {app_id_random}")
         
@@ -3912,7 +3913,8 @@ api.export({"setup": setup})
             app_id_first = await apps.install(
                 source=source.replace('"name": "Worker Selection Test App"', '"name": "Worker Selection Test App First"'),
                 worker_selection_mode="first",
-                stage=False
+                stage=False,
+    
             )
             print(f"✅ Successfully installed app with first worker selection: {app_id_first}")
         
@@ -3922,7 +3924,8 @@ api.export({"setup": setup})
             app_id_last = await apps.install(
                 source=source.replace('"name": "Worker Selection Test App"', '"name": "Worker Selection Test App Last"'),
                 worker_selection_mode="last",
-                stage=False
+                stage=False,
+    
             )
             print(f"✅ Successfully installed app with last worker selection: {app_id_last}")
         
@@ -3932,7 +3935,8 @@ api.export({"setup": setup})
             app_id_exact = await apps.install(
                 source=source.replace('"name": "Worker Selection Test App"', '"name": "Worker Selection Test App Exact"'),
                 worker_selection_mode="exact",
-                stage=False
+                stage=False,
+    
             )
             print(f"✅ Successfully installed app with exact worker selection: {app_id_exact}")
         except Exception as e:
@@ -3946,7 +3950,8 @@ api.export({"setup": setup})
         app_id_min_load = await apps.install(
             source=source.replace('"name": "Worker Selection Test App"', '"name": "Worker Selection Test App MinLoad"'),
             worker_selection_mode="min_load",
-            stage=False
+            stage=False,
+
         )
         print(f"✅ Successfully installed app with min_load worker selection: {app_id_min_load}")
         
