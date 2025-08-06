@@ -1,0 +1,116 @@
+<manifest lang="yaml">
+name: "Test Conda FastAPI App"
+type: "conda-jupyter-kernel"
+version: "1.0.0"
+entry_point: "main.py"
+description: "A conda-python FastAPI app with service registration"
+dependencies:
+    - "python=3.11"
+    - "numpy"
+    - "fastapi"
+    - "uvicorn"
+    - "pip"
+    - pip:
+        - "hypha-rpc"
+channels:
+    - "conda-forge"
+startup_config:
+    timeout: 25
+    wait_for_service: "hello-fastapi"
+    stop_after_inactive: 0
+</manifest>
+
+<script lang="python">
+import sys
+import os
+
+# Import hypha_rpc for service registration
+from hypha_rpc.sync import connect_to_server
+
+# Import FastAPI for web service
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from datetime import datetime
+import numpy as np
+
+print("Imported FastAPI and NumPy successfully!", flush=True)
+
+# Connect to the server using environment variables
+server = connect_to_server({
+    "client_id": os.environ["HYPHA_CLIENT_ID"],
+    "server_url": os.environ["HYPHA_SERVER_URL"],
+    "workspace": os.environ["HYPHA_WORKSPACE"],
+    "method_timeout": 30,
+    "token": os.environ["HYPHA_TOKEN"],
+})
+
+print("Connected to Hypha server!", flush=True)
+
+# Create FastAPI app
+def create_fastapi_app():
+    app = FastAPI(
+        title="Conda FastAPI App",
+        description="A FastAPI application running in conda environment with NumPy",
+        version="1.0.0"
+    )
+
+    @app.get("/")
+    async def home():
+        return JSONResponse({
+            "message": "Hello from Conda FastAPI!",
+            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
+            "numpy_version": np.__version__,
+            "timestamp": datetime.now().isoformat()
+        })
+
+    @app.get("/api/calculate/{a}/{b}")
+    async def calculate_numbers(a: float, b: float):
+        # Use numpy for calculations
+        arr = np.array([a, b])
+        result = {
+            "operation": "numpy_calculation",
+            "inputs": {"a": a, "b": b},
+            "sum": float(np.sum(arr)),
+            "mean": float(np.mean(arr)),
+            "product": float(np.prod(arr)),
+            "timestamp": datetime.now().isoformat()
+        }
+        return JSONResponse(result)
+
+    @app.get("/api/matrix")
+    async def matrix_operations():
+        # Demonstrate numpy matrix operations
+        matrix = np.random.rand(3, 3)
+        result = {
+            "matrix": matrix.tolist(),
+            "determinant": float(np.linalg.det(matrix)),
+            "mean": float(np.mean(matrix)),
+            "max": float(np.max(matrix)),
+            "min": float(np.min(matrix))
+        }
+        return JSONResponse(result)
+
+    return app
+
+# Create and register the FastAPI service
+fastapi_app = create_fastapi_app()
+print("Created FastAPI app!", flush=True)
+
+async def serve_fastapi(args):
+    \"\"\"ASGI server function for FastAPI.\"\"\"
+    await fastapi_app(args["scope"], args["receive"], args["send"])
+
+# Register the service with the expected name
+server.register_service({
+    "id": "hello-fastapi",
+    "name": "Conda FastAPI Service",
+    "type": "asgi",
+    "serve": serve_fastapi,
+    "config": {
+        "visibility": "public"
+    }
+}, overwrite=True)
+
+print("Registered hello-fastapi service!", flush=True)
+print("SUCCESS: Conda FastAPI app setup completed!", flush=True)
+</script>

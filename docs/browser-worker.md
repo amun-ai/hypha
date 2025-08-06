@@ -135,6 +135,15 @@ services:
       - HYPHA_SERVICE_ID=my-browser-worker
       - HYPHA_VISIBILITY=public
       - HYPHA_IN_DOCKER=true
+      # Optional: Playwright configuration
+      - PLAYWRIGHT_PERMISSIONS=camera,microphone,geolocation
+      - PLAYWRIGHT_BYPASS_CSP=false
+      - PLAYWRIGHT_IGNORE_HTTPS_ERRORS=false
+      - PLAYWRIGHT_LOCALE=en-US
+      - PLAYWRIGHT_TIMEZONE_ID=America/New_York
+      - PLAYWRIGHT_VIEWPORT_WIDTH=1920
+      - PLAYWRIGHT_VIEWPORT_HEIGHT=1080
+      - PLAYWRIGHT_COLOR_SCHEME=light
     shm_size: 2gb
     restart: unless-stopped
     volumes:
@@ -177,6 +186,141 @@ All command line arguments can be set using environment variables with the `HYPH
 | `HYPHA_VISIBILITY` | `--visibility` |
 | `HYPHA_IN_DOCKER` | `--in-docker` |
 
+#### Playwright Browser Configuration
+
+The Browser Worker also supports extensive Playwright-specific configuration through environment variables with the `PLAYWRIGHT_` prefix:
+
+##### Security & CSP Settings
+
+| Environment Variable | Description | Example Values |
+|---------------------|-------------|----------------|
+| `PLAYWRIGHT_BYPASS_CSP` | Bypass Content Security Policy restrictions | `true`, `false` |
+| `PLAYWRIGHT_IGNORE_HTTPS_ERRORS` | Ignore HTTPS certificate errors | `true`, `false` |
+| `PLAYWRIGHT_ACCEPT_DOWNLOADS` | Allow file downloads (default: false) | `true`, `false` |
+| `PLAYWRIGHT_PERMISSIONS` | Comma-separated list of permissions to grant | `camera,microphone,geolocation` |
+
+##### Browser Identity & Localization
+
+| Environment Variable | Description | Example Values |
+|---------------------|-------------|----------------|
+| `PLAYWRIGHT_USER_AGENT` | Custom user agent string | `Mozilla/5.0 (compatible; MyApp/1.0)` |
+| `PLAYWRIGHT_LOCALE` | Locale for the browser context | `en-US`, `fr-FR`, `ja-JP` |
+| `PLAYWRIGHT_TIMEZONE_ID` | Timezone ID | `America/New_York`, `Europe/London`, `Asia/Tokyo` |
+
+##### Display & Viewport Settings
+
+| Environment Variable | Description | Example Values |
+|---------------------|-------------|----------------|
+| `PLAYWRIGHT_VIEWPORT_WIDTH` | Viewport width in pixels | `1920`, `1366`, `375` |
+| `PLAYWRIGHT_VIEWPORT_HEIGHT` | Viewport height in pixels | `1080`, `768`, `812` |
+| `PLAYWRIGHT_DEVICE_SCALE_FACTOR` | Device pixel ratio | `1`, `2`, `3` |
+| `PLAYWRIGHT_IS_MOBILE` | Enable mobile mode | `true`, `false` |
+| `PLAYWRIGHT_HAS_TOUCH` | Enable touch events | `true`, `false` |
+
+##### Accessibility & Preferences
+
+| Environment Variable | Description | Example Values |
+|---------------------|-------------|----------------|
+| `PLAYWRIGHT_COLOR_SCHEME` | Color scheme preference | `dark`, `light`, `no-preference`, `null` |
+| `PLAYWRIGHT_REDUCED_MOTION` | Reduced motion preference | `reduce`, `no-preference`, `null` |
+
+##### Geolocation Settings
+
+| Environment Variable | Description | Example Values |
+|---------------------|-------------|----------------|
+| `PLAYWRIGHT_GEOLOCATION_LATITUDE` | Geolocation latitude (requires longitude) | `40.7128`, `-34.6037` |
+| `PLAYWRIGHT_GEOLOCATION_LONGITUDE` | Geolocation longitude (requires latitude) | `-74.0060`, `-58.3816` |
+| `PLAYWRIGHT_GEOLOCATION_ACCURACY` | Geolocation accuracy in meters (optional) | `10`, `100`, `1000` |
+
+##### Network & Authentication
+
+| Environment Variable | Description | Example Values |
+|---------------------|-------------|----------------|
+| `PLAYWRIGHT_JAVASCRIPT_ENABLED` | Enable/disable JavaScript | `true`, `false` |
+| `PLAYWRIGHT_OFFLINE` | Enable offline mode | `true`, `false` |
+| `PLAYWRIGHT_HTTP_USERNAME` | HTTP basic auth username | `myuser` |
+| `PLAYWRIGHT_HTTP_PASSWORD` | HTTP basic auth password | `mypassword` |
+| `PLAYWRIGHT_EXTRA_HTTP_HEADERS` | Extra HTTP headers as JSON | `{"X-API-Key": "secret", "Custom-Header": "value"}` |
+| `PLAYWRIGHT_BASE_URL` | Base URL for relative URLs | `https://api.example.com` |
+
+##### Available Permissions
+
+When using `PLAYWRIGHT_PERMISSIONS`, you can specify any combination of:
+- `camera` - Access to camera devices
+- `microphone` - Access to microphone devices  
+- `geolocation` - Access to geolocation services
+- `notifications` - Permission to show notifications
+- `background-sync` - Background synchronization
+- `persistent-storage` - Persistent storage access
+- `accessibility-events` - Accessibility events
+- `clipboard-read` - Read from clipboard
+- `clipboard-write` - Write to clipboard
+- `payment-handler` - Payment handling capabilities
+
+##### Configuration Examples
+
+**Basic Mobile Testing Setup:**
+```bash
+export PLAYWRIGHT_IS_MOBILE=true
+export PLAYWRIGHT_HAS_TOUCH=true
+export PLAYWRIGHT_VIEWPORT_WIDTH=375
+export PLAYWRIGHT_VIEWPORT_HEIGHT=812
+export PLAYWRIGHT_DEVICE_SCALE_FACTOR=3
+export PLAYWRIGHT_USER_AGENT="Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X)"
+
+python -m hypha.workers.browser --verbose
+```
+
+**Geolocation-Enabled App (New York City):**
+```bash
+export PLAYWRIGHT_PERMISSIONS="geolocation"
+export PLAYWRIGHT_GEOLOCATION_LATITUDE=40.7128
+export PLAYWRIGHT_GEOLOCATION_LONGITUDE=-74.0060
+export PLAYWRIGHT_GEOLOCATION_ACCURACY=10
+
+python -m hypha.workers.browser --verbose
+```
+
+**Dark Mode with French Localization:**
+```bash
+export PLAYWRIGHT_COLOR_SCHEME=dark
+export PLAYWRIGHT_LOCALE=fr-FR
+export PLAYWRIGHT_TIMEZONE_ID=Europe/Paris
+export PLAYWRIGHT_REDUCED_MOTION=reduce
+
+python -m hypha.workers.browser --verbose
+```
+
+**API Testing with Authentication:**
+```bash
+export PLAYWRIGHT_BASE_URL=https://api.myapp.com
+export PLAYWRIGHT_HTTP_USERNAME=testuser
+export PLAYWRIGHT_HTTP_PASSWORD=testpass
+export PLAYWRIGHT_EXTRA_HTTP_HEADERS='{"X-API-Version": "v2", "X-Test-Mode": "true"}'
+
+python -m hypha.workers.browser --verbose
+```
+
+**Development/Testing Configuration:**
+```bash
+export PLAYWRIGHT_BYPASS_CSP=true
+export PLAYWRIGHT_IGNORE_HTTPS_ERRORS=true
+export PLAYWRIGHT_ACCEPT_DOWNLOADS=true
+export PLAYWRIGHT_PERMISSIONS="camera,microphone,notifications,clipboard-read,clipboard-write"
+export PLAYWRIGHT_JAVASCRIPT_ENABLED=true
+
+python -m hypha.workers.browser --verbose
+```
+
+**File Download Testing:**
+```bash
+# Enable downloads for testing file download functionality
+export PLAYWRIGHT_ACCEPT_DOWNLOADS=true
+export PLAYWRIGHT_PERMISSIONS="persistent-storage"
+
+python -m hypha.workers.browser --verbose
+```
+
 ### Example Configurations
 
 #### Basic Setup
@@ -215,11 +359,27 @@ export HYPHA_WORKSPACE=my-workspace
 export HYPHA_TOKEN=your-token-here
 export HYPHA_IN_DOCKER=true
 
+# Optional: Configure Playwright settings for production
+export PLAYWRIGHT_PERMISSIONS="camera,microphone,geolocation"
+export PLAYWRIGHT_BYPASS_CSP=false
+export PLAYWRIGHT_IGNORE_HTTPS_ERRORS=false
+export PLAYWRIGHT_LOCALE=en-US
+export PLAYWRIGHT_TIMEZONE_ID=America/New_York
+export PLAYWRIGHT_VIEWPORT_WIDTH=1920
+export PLAYWRIGHT_VIEWPORT_HEIGHT=1080
+
 docker run -it --rm \
   -e HYPHA_SERVER_URL \
   -e HYPHA_WORKSPACE \
   -e HYPHA_TOKEN \
   -e HYPHA_IN_DOCKER \
+  -e PLAYWRIGHT_PERMISSIONS \
+  -e PLAYWRIGHT_BYPASS_CSP \
+  -e PLAYWRIGHT_IGNORE_HTTPS_ERRORS \
+  -e PLAYWRIGHT_LOCALE \
+  -e PLAYWRIGHT_TIMEZONE_ID \
+  -e PLAYWRIGHT_VIEWPORT_WIDTH \
+  -e PLAYWRIGHT_VIEWPORT_HEIGHT \
   --shm-size=2gb \
   ghcr.io/amun-ai/hypha:0.20.71 \
   python -m hypha.workers.browser --verbose
@@ -620,6 +780,13 @@ spec:
           value: "protected"
         - name: HYPHA_IN_DOCKER
           value: "true"
+        # Optional: Playwright configuration
+        - name: PLAYWRIGHT_PERMISSIONS
+          value: "camera,microphone"
+        - name: PLAYWRIGHT_BYPASS_CSP
+          value: "false"
+        - name: PLAYWRIGHT_IGNORE_HTTPS_ERRORS
+          value: "false"
         resources:
           requests:
             memory: "1Gi"

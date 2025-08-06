@@ -834,7 +834,7 @@ get_url = await artifact_manager.get_file(artifact_id="example-dataset", file_pa
 
 ---
 
-### `put_file_start_multipart(artifact_id: str, file_path: str, part_count: int, expires_in: int = 3600) -> dict`
+### `put_file_start_multipart(artifact_id: str, file_path: str, part_count: int, expires_in: int = 3600, use_proxy: bool = False, use_local_url: bool = False) -> dict`
 
 Initiates a multipart upload for large files and generates pre-signed URLs for uploading each part. This is useful for files larger than 100MB or when you need to upload files in chunks with parallel processing.
 
@@ -848,6 +848,11 @@ Initiates a multipart upload for large files and generates pre-signed URLs for u
 - `file_path`: The relative path of the file to upload within the artifact (e.g., `"large_dataset.zip"`).
 - `part_count`: The number of parts to split the file into. Must be between 1 and 10,000.
 - `expires_in`: The expiration time in seconds for the multipart upload session and part URLs. Defaults to 3600 (1 hour).
+- `use_proxy`: A boolean to control whether to use the S3 proxy for the generated URLs. If `None` (default), follows the server configuration. If `True`, forces the use of the proxy. If `False`, bypasses the proxy and returns direct S3 URLs.
+- `use_local_url`: A boolean to control whether to generate URLs for local/cluster-internal access. Defaults to `False`. When `True`, generates URLs suitable for access within the cluster:
+  - **With proxy (`use_proxy=True`)**: Uses `local_base_url/s3` instead of the public proxy URL for cluster-internal access
+  - **Direct S3 (`use_proxy=False`)**: Uses the S3 endpoint URL as-is (already configured for local access)
+  - **Use case**: Useful when services within a cluster need to access files but public URLs are not accessible from within the cluster network
 
 **Returns:** A dictionary containing:
 - `upload_id`: The unique identifier for this multipart upload session
@@ -870,6 +875,31 @@ multipart_info = await artifact_manager.put_file_start_multipart(
     file_path="large_video.mp4", 
     part_count=5,
     expires_in=7200  # 2 hours
+)
+
+# Start multipart upload with proxy bypassed (useful for direct S3 access)
+multipart_info = await artifact_manager.put_file_start_multipart(
+    artifact_id="example-dataset",
+    file_path="large_video.mp4", 
+    part_count=5,
+    use_proxy=False
+)
+
+# Start multipart upload using local/cluster-internal URLs
+multipart_info = await artifact_manager.put_file_start_multipart(
+    artifact_id="example-dataset",
+    file_path="large_video.mp4", 
+    part_count=5,
+    use_local_url=True
+)
+
+# Start multipart upload using local proxy URL for cluster-internal access
+multipart_info = await artifact_manager.put_file_start_multipart(
+    artifact_id="example-dataset",
+    file_path="large_video.mp4", 
+    part_count=5,
+    use_proxy=True,
+    use_local_url=True
 )
 
 upload_id = multipart_info["upload_id"]
@@ -1536,6 +1566,9 @@ Upload a single file by streaming it directly to S3 storage. This endpoint is ef
   - **file_path**: The relative path where the file will be stored within the artifact
 - **Query Parameters**:
   - **download_weight**: (Optional) Float value representing the file's impact on download count. Defaults to `0`.
+  - **use_proxy**: (Optional) Boolean to control whether to use the S3 proxy for the generated URLs. Defaults to server configuration.
+  - **use_local_url**: (Optional) Boolean to generate local/cluster-internal URLs. Defaults to `False`.
+  - **expires_in**: (Optional) Number of seconds for the presigned URL to expire. Defaults to 3600.
 - **Headers**:
   - `Authorization`: Optional. Bearer token for private artifact access
   - `Content-Type`: Optional. MIME type of the file being uploaded
@@ -1574,6 +1607,38 @@ async def upload_file():
                 }
             )
 
+    # Upload with proxy bypassed (useful for direct S3 access)
+    with open("local_file.csv", "rb") as f:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.put(
+                f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/files/{file_path}",
+                data=f,
+                params={
+                    "download_weight": 1.0,
+                    "use_proxy": False
+                },
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "text/csv"
+                }
+            )
+
+    # Upload using local/cluster-internal URLs
+    with open("local_file.csv", "rb") as f:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.put(
+                f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/files/{file_path}",
+                data=f,
+                params={
+                    "download_weight": 1.0,
+                    "use_local_url": True
+                },
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "text/csv"
+                }
+            )
+
     if response.status_code == 200:
         print("File uploaded successfully")
     else:
@@ -1602,6 +1667,8 @@ Initiate a multipart upload and get presigned URLs for all parts.
   - **path**: The relative path where the file will be stored within the artifact
   - **part_count**: The total number of parts for the upload (required, max 10,000)
   - **expires_in**: (Optional) Number of seconds for presigned URLs to expire. Defaults to 3600.
+  - **use_proxy**: (Optional) Boolean to control whether to use the S3 proxy for the generated URLs. Defaults to `False`.
+  - **use_local_url**: (Optional) Boolean to generate local/cluster-internal URLs. Defaults to `False`.
 
 **Response:**
 ```json
@@ -1666,6 +1733,19 @@ async def upload_large_file():
                 "path": file_path,
                 "part_count": 3,
                 "expires_in": 3600
+            },
+            headers={"Authorization": f"Bearer {token}"}
+        )
+
+        # Or with proxy/local URL options
+        response = await client.post(
+            f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/create-multipart-upload",
+            params={
+                "path": file_path,
+                "part_count": 3,
+                "expires_in": 3600,
+                "use_proxy": False,  # Bypass proxy for direct S3 access
+                "use_local_url": True  # Use local URLs for cluster-internal access
             },
             headers={"Authorization": f"Bearer {token}"}
         )

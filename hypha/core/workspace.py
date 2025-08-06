@@ -851,13 +851,12 @@ class WorkspaceManager:
         if user_info.is_anonymous and config["persistent"]:
             raise Exception("Only registered user can create persistent workspace.")
         workspace = WorkspaceInfo.model_validate(config)
-        if user_info.id not in workspace.owners:
+        if not workspace.owned_by(user_info):
             workspace.owners.append(user_info.id)
         self._validate_workspace_id(workspace.id, with_hyphen=user_info.id != "root")
         # make sure we add the user's email to owners
-        _id = user_info.id
-        if _id not in workspace.owners:
-            workspace.owners.append(_id)
+        if not workspace.owned_by(user_info):
+            workspace.owners.append(user_info.id)
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
 
         # user workspace, let's store all the created workspaces
@@ -930,30 +929,29 @@ class WorkspaceManager:
     ):
         """Remove a workspace."""
         assert context is not None
-        ws = context["ws"]
         user_info = UserInfo.model_validate(context["user"])
-        if not user_info.check_permission(ws, UserPermission.admin):
-            raise PermissionError(f"Permission denied for workspace {ws}")
         workspace_info = await self.load_workspace_info(workspace)
+        if not user_info.check_permission(workspace, UserPermission.admin) and not workspace_info.owned_by(user_info):
+            raise PermissionError(f"Permission denied for workspace {workspace}")
         # delete all the associated keys
-        keys = await self._redis.keys(f"{ws}:*")
+        keys = await self._redis.keys(f"{workspace_info.id}:*")
         for key in keys:
             await self._redis.delete(key)
         if self._s3_controller:
             await self._s3_controller.cleanup_workspace(workspace_info, force=True)
-        await self._redis.hdel("workspaces", workspace)
+        await self._redis.hdel("workspaces", workspace_info.id)
         await self._event_bus.broadcast(
-            workspace, "workspace_deleted", workspace_info.model_dump()
+            workspace_info.id, "workspace_deleted", workspace_info.model_dump()
         )
         # remove the workspace from the user's bookmarks
         user_workspace = await self.load_workspace_info(user_info.get_workspace())
         user_workspace.config = user_workspace.config or {}
         if "bookmarks" in user_workspace.config:
             user_workspace.config["bookmarks"] = [
-                b for b in user_workspace.config["bookmarks"] if b["name"] != workspace
+                b for b in user_workspace.config["bookmarks"] if b["name"] != workspace_info.id
             ]
             await self._update_workspace(user_workspace, user_info)
-        logger.info("Workspace %s removed by %s", workspace, user_info.id)
+        logger.info("Workspace %s removed by %s", workspace_info.id, user_info.id)
         
 
 
@@ -1077,7 +1075,7 @@ class WorkspaceManager:
         maximum_permission = user_info.get_permission(allowed_workspace)
         if not maximum_permission:
             workspace_info = await self.load_workspace_info(allowed_workspace)
-            if workspace_info.owners and user_info.id in workspace_info.owners:
+            if workspace_info.owned_by(user_info):
                 maximum_permission = UserPermission.admin
             else:
                 raise PermissionError(
@@ -2257,7 +2255,6 @@ class WorkspaceManager:
         # self.validate_context(context, permission=UserPermission.read)
         try:
             config = config or GetServiceConfig()
-            service_id_without_app_id = service_id.split("@")[0]
             # Permission check will be handled by the get_service_api function
             svc_info = await self.get_service_info(
                 service_id, {"mode": config.mode}, context=context
@@ -2338,8 +2335,7 @@ class WorkspaceManager:
                         user_info.check_permission(
                             workspace_info.id, UserPermission.read
                         )
-                        or user_info.id in workspace_info.owners
-                        or user_info.email in workspace_info.owners
+                        or workspace_info.owned_by(user_info)
                     ):
                         match = match or {}
                         if not all(
@@ -2381,9 +2377,8 @@ class WorkspaceManager:
                 json.loads(workspace_info.decode())
             )
             assert existing_workspace.id == workspace.id, "Workspace name mismatch."
-        _id = user_info.email or user_info.id
-        if _id not in workspace.owners:
-            workspace.owners.append(_id)
+        if not workspace.owned_by(user_info):
+            workspace.owners.append(user_info.id)
         workspace.owners = [o.strip() for o in workspace.owners if o.strip()]
         logger.info("Updating workspace %s", workspace.id)
 

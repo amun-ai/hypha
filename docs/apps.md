@@ -518,6 +518,75 @@ The Server Apps service operates by running a full-featured web browser (Chromiu
 
 For web applications that need HTTP endpoints, consider using [ASGI Applications](asgi-apps.md) for full web frameworks like FastAPI, or [Serverless Functions](serverless-functions.md) for simple HTTP endpoints.
 
+### Browser Worker Configuration
+
+When using the built-in browser worker (for `web-python`, `web-worker`, `window`, `iframe`, and `web-app` application types), you can configure additional Playwright browser settings through environment variables:
+
+**Playwright Configuration Environment Variables:**
+
+**Security & Permissions:**
+- `PLAYWRIGHT_BYPASS_CSP=true/false` - Bypass Content Security Policy restrictions
+- `PLAYWRIGHT_IGNORE_HTTPS_ERRORS=true/false` - Ignore HTTPS certificate errors
+- `PLAYWRIGHT_ACCEPT_DOWNLOADS=true/false` - Allow file downloads (default: false)
+- `PLAYWRIGHT_PERMISSIONS=camera,microphone,geolocation` - Comma-separated list of permissions to grant
+
+**Display & Device Simulation:**
+- `PLAYWRIGHT_VIEWPORT_WIDTH=1920` - Viewport width in pixels (default: 1280)
+- `PLAYWRIGHT_VIEWPORT_HEIGHT=1080` - Viewport height in pixels (default: 720)
+- `PLAYWRIGHT_IS_MOBILE=true/false` - Enable mobile mode
+- `PLAYWRIGHT_HAS_TOUCH=true/false` - Enable touch events
+- `PLAYWRIGHT_DEVICE_SCALE_FACTOR=2` - Device pixel ratio for high-DPI displays
+
+**Localization & Accessibility:**
+- `PLAYWRIGHT_LOCALE=en-US` - Browser locale (affects date/time formatting, etc.)
+- `PLAYWRIGHT_TIMEZONE_ID=America/New_York` - Timezone for the browser context
+- `PLAYWRIGHT_COLOR_SCHEME=dark/light` - Preferred color scheme
+- `PLAYWRIGHT_REDUCED_MOTION=reduce` - Reduce motion for accessibility
+
+**Network & Authentication:**
+- `PLAYWRIGHT_USER_AGENT="Custom Agent"` - Custom user agent string
+- `PLAYWRIGHT_OFFLINE=true/false` - Enable offline mode
+- `PLAYWRIGHT_HTTP_USERNAME=user` - HTTP basic auth username
+- `PLAYWRIGHT_HTTP_PASSWORD=pass` - HTTP basic auth password
+- `PLAYWRIGHT_EXTRA_HTTP_HEADERS='{"X-API-Key": "secret"}'` - Extra headers as JSON
+- `PLAYWRIGHT_BASE_URL=https://api.example.com` - Base URL for relative URLs
+
+**Geolocation:**
+- `PLAYWRIGHT_GEOLOCATION_LATITUDE=40.7128` - Latitude coordinate
+- `PLAYWRIGHT_GEOLOCATION_LONGITUDE=-74.0060` - Longitude coordinate
+- `PLAYWRIGHT_GEOLOCATION_ACCURACY=10` - Accuracy in meters
+
+**Available Permissions:**
+`camera`, `microphone`, `geolocation`, `notifications`, `background-sync`, `persistent-storage`, `accessibility-events`, `clipboard-read`, `clipboard-write`, `payment-handler`
+
+**Example Usage:**
+```bash
+# Mobile app testing with geolocation
+export PLAYWRIGHT_IS_MOBILE=true
+export PLAYWRIGHT_HAS_TOUCH=true
+export PLAYWRIGHT_VIEWPORT_WIDTH=375
+export PLAYWRIGHT_VIEWPORT_HEIGHT=812
+export PLAYWRIGHT_PERMISSIONS="geolocation,camera"
+export PLAYWRIGHT_GEOLOCATION_LATITUDE=37.7749
+export PLAYWRIGHT_GEOLOCATION_LONGITUDE=-122.4194
+
+# Dark mode French localization
+export PLAYWRIGHT_COLOR_SCHEME=dark
+export PLAYWRIGHT_LOCALE=fr-FR
+export PLAYWRIGHT_TIMEZONE_ID=Europe/Paris
+
+# API testing with authentication
+export PLAYWRIGHT_BASE_URL=https://api.myapp.com
+export PLAYWRIGHT_HTTP_USERNAME=testuser
+export PLAYWRIGHT_HTTP_PASSWORD=testpass
+export PLAYWRIGHT_EXTRA_HTTP_HEADERS='{"X-API-Version": "v2"}'
+
+# Start server with browser worker
+python -m hypha.server --enable-server-apps
+```
+
+> **Note:** These settings apply to all browser-based applications running on the server. For more detailed browser worker configuration, see the [Browser Worker documentation](browser-worker.md).
+
 ---
 
 ## Hypha Apps (Built-in Templates)
