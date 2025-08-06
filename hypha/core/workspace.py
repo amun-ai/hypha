@@ -2255,7 +2255,6 @@ class WorkspaceManager:
         # self.validate_context(context, permission=UserPermission.read)
         try:
             config = config or GetServiceConfig()
-            service_id_without_app_id = service_id.split("@")[0]
             # Permission check will be handled by the get_service_api function
             svc_info = await self.get_service_info(
                 service_id, {"mode": config.mode}, context=context
