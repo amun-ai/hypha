@@ -890,6 +890,8 @@ class ArtifactController:
                 3600,
                 description="The number of seconds for the presigned URLs to expire.",
             ),
+            use_proxy: bool = False,
+            use_local_url: bool = False,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """
@@ -905,6 +907,8 @@ class ArtifactController:
                     part_count=part_count,
                     download_weight=download_weight,
                     expires_in=expires_in,
+                    use_proxy=use_proxy,
+                    use_local_url=use_local_url,
                     context=context,
                 )
             except HTTPException:
@@ -977,6 +981,9 @@ class ArtifactController:
             artifact_alias: str,
             file_path: str,
             download_weight: float = 0,
+            use_proxy: bool = False,
+            use_local_url: bool = False,
+            expires_in: int = 3600,
             user_info: self.store.login_optional = Depends(self.store.login_optional),
         ):
             """
@@ -1012,9 +1019,9 @@ class ArtifactController:
                     artifact_id=artifact_id,
                     file_path=file_path,
                     download_weight=download_weight,
-                    use_proxy=False,
-                    use_local_url=False,
-                    expires_in=3600,
+                    use_proxy=use_proxy,
+                    use_local_url=use_local_url,
+                    expires_in=expires_in,
                     context=context,
                 )
                 # stream the request.stream() to the url
@@ -1869,8 +1876,10 @@ class ArtifactController:
         Check which aliases already exist under the given parent artifact.
         """
         query = select(ArtifactModel.alias).where(
-            ArtifactModel.workspace == workspace,
-            ArtifactModel.alias.in_(aliases),
+            and_(
+                ArtifactModel.workspace == workspace,
+                ArtifactModel.alias.in_(aliases)
+            )
         )
         result = await self._execute_with_retry(
             session,
@@ -3354,6 +3363,8 @@ class ArtifactController:
         part_count: int,
         download_weight: float = 0,
         expires_in: int = 3600,
+        use_proxy: bool = False,
+        use_local_url: bool = False,
         context: dict = None,
     ):
         """
@@ -3382,8 +3393,8 @@ class ArtifactController:
                 artifact_id=artifact_id,
                 file_path=file_path,
                 download_weight=download_weight,
-                use_proxy=False,
-                use_local_url=False,
+                use_proxy=use_proxy,
+                use_local_url=use_local_url,
                 expires_in=expires_in,
                 context=context,
             )
@@ -3433,6 +3444,24 @@ class ArtifactController:
                             },
                             ExpiresIn=expires_in,
                         )
+                        
+                        # Apply URL replacement logic based on use_proxy and use_local_url
+                        if use_proxy:
+                            if use_local_url:
+                                # Use local URL for proxy within cluster
+                                local_proxy_url = f"{self.store.local_base_url}/s3"
+                                url = url.replace(s3_config["endpoint_url"], local_proxy_url)
+                            elif s3_config["public_endpoint_url"]:
+                                # Use public proxy URL
+                                url = url.replace(
+                                    s3_config["endpoint_url"],
+                                    s3_config["public_endpoint_url"],
+                                )
+                        elif use_local_url and not use_proxy:
+                            # For S3 direct access with local URL, use the endpoint_url as-is
+                            # (no replacement needed since endpoint_url is already the local/internal endpoint)
+                            pass
+                        
                         part_urls.append({"part_number": i, "url": url})
 
                     # Cache the upload info for later completion
@@ -4198,7 +4227,7 @@ class ArtifactController:
                         if stage:
                             # Return only staged artifacts
                             stage_condition = and_(
-                                ArtifactModel.staging.isnot(None),
+                                ArtifactModel.staging.is_not(None),
                                 text("staging != 'null'"),
                             )
                             logger.info(
@@ -4214,7 +4243,7 @@ class ArtifactController:
                         if stage:
                             # Return only staged artifacts
                             stage_condition = and_(
-                                ArtifactModel.staging.isnot(None),
+                                ArtifactModel.staging.is_not(None),
                                 text("staging::text != 'null'"),
                             )
                             logger.info(

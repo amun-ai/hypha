@@ -711,18 +711,22 @@ class BrowserWorker(BaseWorker):
 
         # Handle hypha app type with legacy compilation logic
         if app_type == "hypha":
-            try:
-                template_config = parse_imjoy_plugin(source)
-                if template_config:
-                    # Merge template config with manifest
-                    final_config = manifest.copy()
-                    final_config.update(template_config)
-                    if not final_config.get("type"):
-                        raise Exception("No app type found in manifest")
-                    final_config["source_hash"] = manifest.get("source_hash", "")
-                    entry_point = template_config.get("entry_point", "index.html")
-                    final_config["entry_point"] = entry_point
-
+            template_config = parse_imjoy_plugin(source)
+            if template_config:
+                # Merge template config with manifest
+                final_config = manifest.copy()
+                final_config.update(template_config)
+                if not final_config.get("type"):
+                    raise ValueError("No application type found in manifest")
+                final_config["source_hash"] = manifest.get("source_hash", "")
+                entry_point = template_config.get("entry_point", "index.html")
+                final_config["entry_point"] = entry_point
+                # check if the template file exists
+                template_file = safe_join("apps", final_config["type"] + "." + entry_point)
+                if template_file not in self.jinja_env.loader.list_templates():
+                    raise ValueError(f"Application type {final_config['type']} is not supported by any existing application worker.")
+                
+                try:
                     template = self.jinja_env.get_template(
                         safe_join("apps", final_config["type"] + "." + entry_point)
                     )
@@ -750,12 +754,11 @@ class BrowserWorker(BaseWorker):
                     )
 
                     return template_config, compiled_html
-                else:
-                    raise Exception("Failed to parse hypha plugin config")
-            except Exception as err:
-                raise Exception(
-                    f"Failed to parse or compile the hypha app: {err}"
-                ) from err
+                except Exception as e:
+                    raise ValueError(f"Failed to compile hypha plugin config: {e}") from e
+            else:
+                raise Exception("Failed to parse hypha plugin config")
+    
 
         # We need to check if source has top level xml tags
         # If not, we need to wrap it as a script tag, if type=window/iframe/web-worker we use js script tag
