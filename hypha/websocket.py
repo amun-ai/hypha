@@ -292,7 +292,7 @@ class WebsocketServer:
         user_permission = user_info.get_permission(workspace)
         is_readonly = user_permission == UserPermission.read if user_permission else False
         
-        conn = RedisRPCConnection(event_bus, workspace, client_id, user_info, None, readonly=is_readonly)
+        conn = RedisRPCConnection(event_bus, workspace, client_id, user_info, self.store.get_manager_id(), readonly=is_readonly)
         self._websockets[f"{workspace}/{client_id}"] = websocket
         try:
             _gauge.labels(workspace=workspace).inc()

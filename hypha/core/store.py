@@ -802,7 +802,9 @@ class RedisStore:
         )
 
     def get_manager_id(self):
-        return self._workspace_manager.get_client_id()
+        # Return the pre-calculated manager_id directly
+        # This avoids issues during startup when _workspace_manager is not yet initialized
+        return self._manager_id
 
     async def register_workspace_manager(self):
         """Register a workspace manager."""
