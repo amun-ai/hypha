@@ -450,6 +450,14 @@ class WorkspaceInfo(BaseModel):
     def model_validate(cls, data):
         data = data.copy()
         return super().model_validate(data)
+    
+    def owned_by(self, user_info: Union[UserInfo, str]):
+        if isinstance(user_info, str):
+            return user_info in self.owners
+        # check if user_info.id or user_info.email is in the owners list
+        if user_info.id in self.owners or user_info.email in self.owners:
+            return True
+        return False
 
 
 class TokenConfig(BaseModel):
