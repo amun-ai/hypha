@@ -204,9 +204,15 @@ class BrowserWorker(BaseWorker):
         )
 
         # Create a new context for isolation
-        context = await self.browser.new_context(
-            viewport={"width": 1280, "height": 720}, accept_downloads=True
-        )
+        context_options = {
+            "viewport": {"width": 1280, "height": 720}, 
+            "accept_downloads": False  # Default to false for security
+        }
+        
+        # Add Playwright configuration from environment variables
+        self._apply_playwright_env_config(context_options)
+        
+        context = await self.browser.new_context(**context_options)
 
         # Create a new page in the context
         page = await context.new_page()
@@ -972,6 +978,120 @@ class BrowserWorker(BaseWorker):
         """Get cache statistics for an app."""
         return await self.cache_manager.get_cache_stats(workspace, app_id)
 
+    def _apply_playwright_env_config(self, context_options: Dict[str, Any]) -> None:
+        """Apply Playwright configuration from environment variables to context options.
+        
+        Args:
+            context_options: Dictionary of context options to modify in-place
+        """
+        # Security & CSP Settings
+        bypass_csp = os.environ.get("PLAYWRIGHT_BYPASS_CSP")
+        if bypass_csp is not None:
+            context_options["bypass_csp"] = bypass_csp.lower() in ("true", "1", "yes")
+            
+        ignore_https_errors = os.environ.get("PLAYWRIGHT_IGNORE_HTTPS_ERRORS")
+        if ignore_https_errors is not None:
+            context_options["ignore_https_errors"] = ignore_https_errors.lower() in ("true", "1", "yes")
+            
+        accept_downloads = os.environ.get("PLAYWRIGHT_ACCEPT_DOWNLOADS")
+        if accept_downloads is not None:
+            context_options["accept_downloads"] = accept_downloads.lower() in ("true", "1", "yes")
+            
+        permissions = os.environ.get("PLAYWRIGHT_PERMISSIONS")
+        if permissions:
+            # Split permissions by comma and strip whitespace
+            context_options["permissions"] = [perm.strip() for perm in permissions.split(",") if perm.strip()]
+        
+        # Browser Identity & Localization
+        user_agent = os.environ.get("PLAYWRIGHT_USER_AGENT")
+        if user_agent:
+            context_options["user_agent"] = user_agent
+        
+        locale = os.environ.get("PLAYWRIGHT_LOCALE")
+        if locale:
+            context_options["locale"] = locale
+            
+        timezone_id = os.environ.get("PLAYWRIGHT_TIMEZONE_ID")
+        if timezone_id:
+            context_options["timezone_id"] = timezone_id
+        
+        # Geolocation Configuration
+        geolocation_lat = os.environ.get("PLAYWRIGHT_GEOLOCATION_LATITUDE")
+        geolocation_lon = os.environ.get("PLAYWRIGHT_GEOLOCATION_LONGITUDE")
+        geolocation_accuracy = os.environ.get("PLAYWRIGHT_GEOLOCATION_ACCURACY")
+        if geolocation_lat and geolocation_lon:
+            geolocation = {
+                "latitude": float(geolocation_lat),
+                "longitude": float(geolocation_lon)
+            }
+            if geolocation_accuracy:
+                geolocation["accuracy"] = float(geolocation_accuracy)
+            context_options["geolocation"] = geolocation
+        
+        # Viewport Configuration (override default if specified)
+        viewport_width = os.environ.get("PLAYWRIGHT_VIEWPORT_WIDTH")
+        viewport_height = os.environ.get("PLAYWRIGHT_VIEWPORT_HEIGHT")
+        if viewport_width and viewport_height:
+            context_options["viewport"] = {
+                "width": int(viewport_width),
+                "height": int(viewport_height)
+            }
+        
+        # Device & Display Settings
+        device_scale_factor = os.environ.get("PLAYWRIGHT_DEVICE_SCALE_FACTOR")
+        if device_scale_factor:
+            context_options["device_scale_factor"] = float(device_scale_factor)
+        
+        is_mobile = os.environ.get("PLAYWRIGHT_IS_MOBILE")
+        if is_mobile is not None:
+            context_options["is_mobile"] = is_mobile.lower() in ("true", "1", "yes")
+            
+        has_touch = os.environ.get("PLAYWRIGHT_HAS_TOUCH")
+        if has_touch is not None:
+            context_options["has_touch"] = has_touch.lower() in ("true", "1", "yes")
+        
+        # Accessibility & Preferences
+        color_scheme = os.environ.get("PLAYWRIGHT_COLOR_SCHEME")
+        if color_scheme and color_scheme.lower() in ["dark", "light", "no-preference", "null"]:
+            context_options["color_scheme"] = color_scheme.lower()
+        
+        reduced_motion = os.environ.get("PLAYWRIGHT_REDUCED_MOTION")
+        if reduced_motion and reduced_motion.lower() in ["no-preference", "null", "reduce"]:
+            context_options["reduced_motion"] = reduced_motion.lower()
+        
+        # Network & JavaScript Settings
+        java_script_enabled = os.environ.get("PLAYWRIGHT_JAVASCRIPT_ENABLED")
+        if java_script_enabled is not None:
+            context_options["java_script_enabled"] = java_script_enabled.lower() in ("true", "1", "yes")
+        
+        offline = os.environ.get("PLAYWRIGHT_OFFLINE")
+        if offline is not None:
+            context_options["offline"] = offline.lower() in ("true", "1", "yes")
+        
+        # HTTP Authentication
+        http_username = os.environ.get("PLAYWRIGHT_HTTP_USERNAME")
+        http_password = os.environ.get("PLAYWRIGHT_HTTP_PASSWORD")
+        if http_username and http_password:
+            context_options["http_credentials"] = {
+                "username": http_username,
+                "password": http_password
+            }
+        
+        # Extra HTTP Headers
+        extra_headers = os.environ.get("PLAYWRIGHT_EXTRA_HTTP_HEADERS")
+        if extra_headers:
+            # Parse JSON format: {"Header-Name": "value", "Another-Header": "value"}
+            try:
+                import json
+                context_options["extra_http_headers"] = json.loads(extra_headers)
+            except (json.JSONDecodeError, ValueError):
+                logger.warning(f"Invalid PLAYWRIGHT_EXTRA_HTTP_HEADERS format: {extra_headers}")
+        
+        # Base URL for Relative URLs
+        base_url = os.environ.get("PLAYWRIGHT_BASE_URL")
+        if base_url:
+            context_options["base_url"] = base_url
+
     def get_worker_service(self) -> Dict[str, Any]:
         """Get the service configuration for registration with browser-specific methods."""
         service_config = super().get_worker_service()
@@ -1010,6 +1130,31 @@ Environment Variables (with HYPHA_ prefix):
   HYPHA_SERVICE_ID     Service ID for the worker (optional)
   HYPHA_VISIBILITY     Service visibility: public or protected (default: protected)
   HYPHA_IN_DOCKER      Set to 'true' if running in Docker container (default: false)
+
+Environment Variables (with PLAYWRIGHT_ prefix):
+  PLAYWRIGHT_BYPASS_CSP           Bypass Content Security Policy (true/false)
+  PLAYWRIGHT_IGNORE_HTTPS_ERRORS  Ignore HTTPS certificate errors (true/false)
+  PLAYWRIGHT_ACCEPT_DOWNLOADS     Allow file downloads (true/false, default: false)
+  PLAYWRIGHT_PERMISSIONS          Comma-separated list of permissions to grant (e.g., "camera,microphone,geolocation")
+  PLAYWRIGHT_USER_AGENT           Custom user agent string
+  PLAYWRIGHT_LOCALE               Locale for the browser context (e.g., "en-US", "fr-FR")
+  PLAYWRIGHT_TIMEZONE_ID          Timezone ID (e.g., "America/New_York", "Europe/London")
+  PLAYWRIGHT_GEOLOCATION_LATITUDE Geolocation latitude (requires longitude)
+  PLAYWRIGHT_GEOLOCATION_LONGITUDE Geolocation longitude (requires latitude)
+  PLAYWRIGHT_GEOLOCATION_ACCURACY Geolocation accuracy in meters (optional)
+  PLAYWRIGHT_VIEWPORT_WIDTH       Viewport width in pixels (overrides default 1280)
+  PLAYWRIGHT_VIEWPORT_HEIGHT      Viewport height in pixels (overrides default 720)
+  PLAYWRIGHT_DEVICE_SCALE_FACTOR  Device pixel ratio (e.g., "2" for high-DPI displays)
+  PLAYWRIGHT_IS_MOBILE            Enable mobile mode (true/false)
+  PLAYWRIGHT_HAS_TOUCH            Enable touch events (true/false)
+  PLAYWRIGHT_COLOR_SCHEME         Color scheme preference (dark/light/no-preference/null)
+  PLAYWRIGHT_REDUCED_MOTION       Reduced motion preference (no-preference/null/reduce)
+  PLAYWRIGHT_JAVASCRIPT_ENABLED   Enable/disable JavaScript (true/false, default: true)
+  PLAYWRIGHT_OFFLINE              Enable offline mode (true/false)
+  PLAYWRIGHT_HTTP_USERNAME        HTTP basic auth username (requires password)
+  PLAYWRIGHT_HTTP_PASSWORD        HTTP basic auth password (requires username)
+  PLAYWRIGHT_EXTRA_HTTP_HEADERS   Extra HTTP headers as JSON (e.g., '{"X-API-Key": "value"}')
+  PLAYWRIGHT_BASE_URL             Base URL for relative URLs
 
 Examples:
   # Using command line arguments
