@@ -1494,6 +1494,17 @@ class ServerAppController:
         # Get entry point from manifest
         entry_point = manifest.entry_point
 
+        # Determine URLs based on worker's use_local_url property
+        worker_use_local_url = getattr(worker, 'use_local_url', False)
+        if worker_use_local_url:
+            # Worker prefers local URLs - use local_base_url
+            effective_server_url = self.local_base_url or server_url
+            effective_app_files_base_url = f"{effective_server_url}/{workspace}/artifacts/{app_id}/files"
+        else:
+            # Worker uses public URLs - use public_base_url
+            effective_server_url = self.public_base_url or server_url
+            effective_app_files_base_url = f"{effective_server_url}/{workspace}/artifacts/{app_id}/files"
+
         # Start the app using the worker with reorganized config
         full_client_id = workspace + "/" + client_id
         additional_kwargs = additional_kwargs or {}
@@ -1503,8 +1514,8 @@ class ServerAppController:
                 "app_id": app_id,
                 "workspace": workspace,
                 "client_id": client_id,
-                "server_url": server_url,
-                "app_files_base_url": f"{server_url}/{workspace}/artifacts/{app_id}/files",
+                "server_url": effective_server_url,
+                "app_files_base_url": effective_app_files_base_url,
                 "token": token,
                 "entry_point": entry_point,
                 "artifact_id": f"{workspace}/{app_id}",

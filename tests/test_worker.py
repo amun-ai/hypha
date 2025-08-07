@@ -1363,5 +1363,87 @@ async def test_worker_workspace_isolation(
     await api2.disconnect()
 
 
+@pytest.mark.asyncio
+async def test_use_local_url_functionality(fastapi_server, test_user_token):
+    """Test that built-in workers have use_local_url property set correctly."""
+    # Test that built-in workers have use_local_url=True
+    from hypha.workers.browser import BrowserWorker
+    from hypha.workers.conda import CondaWorker
+    
+    # Test BrowserWorker (built-in worker)
+    browser_worker = BrowserWorker()
+    assert hasattr(browser_worker, 'use_local_url'), "BrowserWorker should have use_local_url property"
+    assert browser_worker.use_local_url == True, "BrowserWorker should have use_local_url=True"
+    
+    # Test that the property is included in worker service registration
+    browser_service = browser_worker.get_worker_service()
+    assert 'use_local_url' in browser_service, "Worker service should include use_local_url"
+    assert browser_service['use_local_url'] == True, "Worker service use_local_url should match property"
+    
+    # Test CondaWorker (can be external worker) - should have use_local_url=False by default
+    conda_worker = CondaWorker()
+    assert hasattr(conda_worker, 'use_local_url'), "CondaWorker should have use_local_url property"
+    assert conda_worker.use_local_url == False, "CondaWorker should have use_local_url=False"
+    
+    conda_service = conda_worker.get_worker_service()
+    assert 'use_local_url' in conda_service, "Worker service should include use_local_url"
+    assert conda_service['use_local_url'] == False, "Worker service use_local_url should match property"
+    
+    # Test the base worker class has the property
+    from hypha.workers.base import BaseWorker
+    
+    class TestWorker(BaseWorker):
+        def __init__(self):
+            super().__init__()
+        
+        @property
+        def name(self):
+            return "test-worker"
+            
+        @property
+        def description(self):
+            return "Test worker"
+            
+        @property
+        def supported_types(self):
+            return ["test"]
+            
+        async def start(self, config, context=None):
+            return "test-session"
+            
+        async def stop(self, session_id, context=None):
+            pass
+            
+        async def list_sessions(self, context=None):
+            return []
+            
+        async def get_logs(self, session_id, context=None):
+            return ""
+            
+        async def get_session_info(self, session_id, context=None):
+            return {}
+            
+        async def prepare_workspace(self, workspace, context=None):
+            pass
+            
+        async def close_workspace(self, workspace, context=None):
+            pass
+    
+    test_worker = TestWorker()
+    assert hasattr(test_worker, 'use_local_url'), "BaseWorker should have use_local_url property"
+    assert test_worker.use_local_url == False, "BaseWorker use_local_url should default to False"
+    
+    test_service = test_worker.get_worker_service()
+    assert 'use_local_url' in test_service, "Worker service should include use_local_url"
+    assert test_service['use_local_url'] == False, "Worker service use_local_url should match property"
+    
+    print("✓ use_local_url property is correctly set on all workers")
+    print(f"  BrowserWorker.use_local_url = {browser_worker.use_local_url}")
+    print(f"  CondaWorker.use_local_url = {conda_worker.use_local_url}")
+    print(f"  BaseWorker.use_local_url (default) = {test_worker.use_local_url}")
+    
+    print("✓ Test completed successfully - use_local_url functionality")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

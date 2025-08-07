@@ -222,12 +222,13 @@ class CondaWorker(BaseWorker):
 
     instance_counter: int = 0
 
-    def __init__(self):
+    def __init__(self, use_local_url: bool = False):
         """Initialize the conda environment worker."""
         super().__init__()
         self.instance_id = f"conda-jupyter-kernel-{shortuuid.uuid()}"
         self.controller_id = str(CondaWorker.instance_counter)
         CondaWorker.instance_counter += 1
+        self._use_local_url = use_local_url
 
         # Detect available package manager (mamba preferred over conda)
         try:
@@ -262,6 +263,11 @@ class CondaWorker(BaseWorker):
     def require_context(self) -> bool:
         """Return whether the worker requires a context."""
         return True
+
+    @property
+    def use_local_url(self) -> bool:
+        """Return whether the worker should use local URLs."""
+        return self._use_local_url
 
     async def compile(
         self,
@@ -1012,7 +1018,7 @@ exec('''{script}''')
 
 async def hypha_startup(server):
     """Hypha startup function to initialize conda environment worker."""
-    worker = CondaWorker()
+    worker = CondaWorker(use_local_url=True)  # Built-in worker should use local URLs
     await worker.register_worker_service(server)
     logger.info("Conda environment worker initialized and registered")
 
@@ -1092,6 +1098,11 @@ Examples:
         help="Directory for caching conda environments (default: from HYPHA_CACHE_DIR env var or ~/.hypha_conda_cache)",
     )
     parser.add_argument(
+        "--use-local-url",
+        action="store_true",
+        help="Use local URLs for server communication (default: false for CLI workers)",
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true", help="Enable verbose logging"
     )
 
@@ -1139,6 +1150,7 @@ Examples:
     print(f"  Workspace: {args.workspace}")
     print(f"  Service ID: {args.service_id or 'auto-generated'}")
     print(f"  Visibility: {args.visibility}")
+    print(f"  Use Local URL: {args.use_local_url}")
     print(f"  Cache Dir: {args.cache_dir or DEFAULT_CACHE_DIR}")
 
     async def run_worker():
@@ -1157,7 +1169,7 @@ Examples:
             )
 
             # Create and register worker
-            worker = CondaWorker()
+            worker = CondaWorker(use_local_url=args.use_local_url)
             if args.cache_dir:
                 worker._env_cache = EnvironmentCache(cache_dir=args.cache_dir)
 

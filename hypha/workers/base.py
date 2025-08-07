@@ -209,6 +209,19 @@ class BaseWorker(ABC):
         return False
 
     @property
+    def use_local_url(self) -> bool:
+        """Return whether the worker should use local URLs.
+        
+        When True, the worker will receive local_base_url for server_url and app_files_base_url.
+        This is typically True for workers running in the same cluster/host as the Hypha server
+        (e.g., built-in workers, startup function workers).
+        
+        When False (default), the worker will receive public_base_url for external access.
+        This is typically False for external workers started via CLI.
+        """
+        return False
+
+    @property
     def service_id(self) -> str:
         """Return the service id."""
         return f"{self.instance_id}"
@@ -314,6 +327,7 @@ class BaseWorker(ABC):
                 "require_context": self.require_context,
             },
             "supported_types": self.supported_types,
+            "use_local_url": self.use_local_url,
             "start": self.start,
             "stop": self.stop,
             "list_sessions": self.list_sessions,
