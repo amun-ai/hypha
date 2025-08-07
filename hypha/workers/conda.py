@@ -388,6 +388,7 @@ class CondaWorker(BaseWorker):
                 )
 
             script_url = f"{config.app_files_base_url}/{config.manifest['entry_point']}?use_proxy=true"
+            # script_url = f"https://hypha-dev.aicell.io/{config.workspace}/artifacts/{config.app_id}/files/{config.manifest['entry_point']}?use_proxy=true"
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     script_url, headers={"Authorization": f"Bearer {config.token}"}
@@ -465,6 +466,13 @@ class CondaWorker(BaseWorker):
 
         # Create a progress callback wrapper that stores messages in logs for real-time access
         def progress_callback_wrapper(message):
+            emoji = {
+                "info": "ℹ️",
+                "success": "✅", 
+                "error": "❌",
+                "warning": "⚠️",
+            }.get(message.get("type", ""), "🔸")
+            logger.info(f"{emoji} {message.get('message', '')}")
             # Store the progress message in logs for real-time retrieval
             logs["progress"].append(f"{message['type'].upper()}: {message['message']}")
 
@@ -641,65 +649,48 @@ os.environ['HYPHA_TOKEN'] = hypha_config['token']
 os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
 
 # Execute the user's script
-exec('''{script}''')
+{script}
 """
-
-        try:
-            result = await kernel.execute(init_code, timeout=60.0)
-            
-            # Process kernel outputs into logs
-            for output in result.get("outputs", []):
-                if output["type"] == "stream":
-                    if output["name"] == "stdout":
-                        logs["stdout"].append(output["text"])
-                    elif output["name"] == "stderr":
-                        logs["stderr"].append(output["text"])
-                elif output["type"] == "error":
-                    logs["error"].append("\n".join(output.get("traceback", [])))
-                elif output["type"] == "execute_result":
-                    # Convert execute results to string representation
-                    data = output.get("data", {})
-                    if "text/plain" in data:
-                        logs["info"].append(f"Result: {data['text/plain']}")
-            
-            # Handle kernel error if present
-            if result.get("error"):
-                error_info = result["error"]
-                logs["error"].append(f"Error: {error_info.get('ename', 'Unknown')}: {error_info.get('evalue', '')}")
-                if error_info.get("traceback"):
-                    logs["error"].extend(error_info["traceback"])
-            
-            if result["success"]:
-                progress_callback_wrapper(
-                    {
-                        "type": "success",
-                        "message": "Initialization script executed successfully",
-                    }
-                )
-            else:
-                progress_callback_wrapper(
-                    {
-                        "type": "error",
-                        "message": "Initialization script failed",
-                    }
-                )
-                
-        except Exception as e:
+        result = await kernel.execute(init_code, timeout=60.0)
+        
+        # Process kernel outputs into logs
+        for output in result.get("outputs", []):
+            if output["type"] == "stream":
+                if output["name"] == "stdout":
+                    logs["stdout"].append(output["text"])
+                elif output["name"] == "stderr":
+                    logs["stderr"].append(output["text"])
+            elif output["type"] == "error":
+                logs["error"].append("\n".join(output.get("traceback", [])))
+            elif output["type"] == "execute_result":
+                # Convert execute results to string representation
+                data = output.get("data", {})
+                if "text/plain" in data:
+                    logs["info"].append(f"Result: {data['text/plain']}")
+        
+        # Handle kernel error if present
+        if result.get("error"):
+            error_info = result["error"]
+            logs["error"].append(f"Error: {error_info.get('ename', 'Unknown')}: {error_info.get('evalue', '')}")
+            if error_info.get("traceback"):
+                logs["error"].extend(error_info["traceback"])
+        
+        if result["success"]:
+            progress_callback_wrapper(
+                {
+                    "type": "success",
+                    "message": "Conda environment session with Jupyter kernel ready",
+                }
+            )
+        else:
             progress_callback_wrapper(
                 {
                     "type": "error",
-                    "message": f"Failed to execute initialization script: {str(e)}",
+                    "message": "Initialization script failed",
                 }
             )
-            # Don't raise here - we want the session to continue even if init fails
-            logs["error"].append(f"Initialization error: {str(e)}")
+            raise Exception("Initialization script failed: " + result.get("error", {}).get("evalue", "Unknown error"))
 
-        progress_callback_wrapper(
-            {
-                "type": "success",
-                "message": "Conda environment session with Jupyter kernel ready",
-            }
-        )
 
         return {
             "executor": executor,
@@ -710,10 +701,6 @@ exec('''{script}''')
             "logs": logs,
             "hypha_config": hypha_config,
         }
-
-
-
-
 
     async def execute(
         self,

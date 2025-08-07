@@ -958,17 +958,30 @@ class ServerAppController:
             # Add extracted files (config.json/yaml, script.js/py, <file> tags)
             app_files.extend(extracted_files)
 
+            # Check if we extracted a script file and update entry_point accordingly
+            script_files = [f for f in extracted_files if f.get("source_type") == "script"]
+            if script_files:
+                # Use the first script file as entry point
+                script_file = script_files[0]
+                artifact_obj["entry_point"] = script_file["name"]
+                # Update the path in app_files to match entry_point
+                for f in app_files:
+                    if f.get("name") == script_file["name"]:
+                        f["path"] = script_file["name"]
+
             # If there's remaining source content, add it as source file
             if remaining_source and remaining_source.strip():
                 # Use entry_point from manifest if available, otherwise default to "source"
                 source_file_path = artifact_obj.get("entry_point", "source")
-                app_files.append(
-                    {
-                        "path": source_file_path,
-                        "content": remaining_source,
-                        "format": "text",
-                    }
-                )
+                # Only add remaining source if we haven't already set an entry point from extracted scripts
+                if not script_files:
+                    app_files.append(
+                        {
+                            "path": source_file_path,
+                            "content": remaining_source,
+                            "format": "text",
+                        }
+                    )
         elif source:
             # Use entry_point from manifest if available, otherwise default to "source"
             source_file_path = artifact_obj.get("entry_point", "source")
