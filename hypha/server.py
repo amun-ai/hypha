@@ -22,6 +22,7 @@ from hypha.http import HTTPProxy
 from hypha.triton import TritonProxy
 from hypha.utils import GZipMiddleware, GzipRoute, PatchedCORSMiddleware
 from hypha.websocket import WebsocketServer
+from hypha.sse import SSEServer
 from hypha.minio import start_minio_server
 from contextlib import asynccontextmanager
 
@@ -253,6 +254,7 @@ def create_application(args):
         await store.teardown()
         await asyncio.sleep(0.1)
         await websocket_server.stop()
+        await sse_server.stop()
 
         # Terminate Minio if we started it
         if minio_proc:
@@ -322,6 +324,13 @@ def create_application(args):
     application.state.store = store
 
     websocket_server = WebsocketServer(store, path=norm_url(args.base_path, "/ws"))
+    
+    # Add SSE server
+    sse_server = SSEServer(
+        store, 
+        sse_path=norm_url(args.base_path, "/sse"),
+        messages_path=norm_url(args.base_path, "/messages")
+    )
 
     static_folder = str(Path(__file__).parent / "static_files")
     mount_static_files(application, "/static", directory=static_folder, name="static")

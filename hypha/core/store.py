@@ -160,6 +160,7 @@ class RedisStore:
         self._ready = False
         self._workspace_manager = None
         self._websocket_server = None
+        self._sse_server = None
         self._cache_dir = cache_dir
         self._server_id = server_id or random_id(readable=True)
         self._manager_id = "manager-" + self._server_id
@@ -262,6 +263,10 @@ class RedisStore:
         """Set the websocket server."""
         assert self._websocket_server is None, "Websocket server already set"
         self._websocket_server = websocket_server
+    
+    def set_sse_server(self, sse_server):
+        """Set the SSE server."""
+        self._sse_server = sse_server
 
     @schema_method
     def kickout_client(self, workspace: str, client_id: str, code: int, reason: str):
