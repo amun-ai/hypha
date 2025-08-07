@@ -225,7 +225,7 @@ class RedisStore:
             from redis import asyncio as aioredis
 
             # Configure connection pool for production Redis
-            max_connections = int(os.environ.get("HYPHA_REDIS_MAX_CONNECTIONS", "100"))
+            max_connections = int(os.environ.get("HYPHA_REDIS_MAX_CONNECTIONS", "2000"))
             health_check_interval = int(
                 os.environ.get("HYPHA_REDIS_HEALTH_CHECK_INTERVAL", "30")
             )
