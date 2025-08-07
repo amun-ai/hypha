@@ -490,19 +490,19 @@ class ServerAppController:
             key = f"sessions:{full_client_id}"
             session_data = await self._redis.hgetall(key)
             if session_data:
-                # Convert bytes to strings and deserialize JSON data
+                # Convert bytes to strings and deserialize based on key prefixes
                 session = {}
                 for k, v in session_data.items():
                     key_str = k.decode() if isinstance(k, bytes) else k
                     value_str = v.decode() if isinstance(v, bytes) else v
                     
-                    # Try to deserialize JSON data for complex types
-                    if isinstance(value_str, str) and value_str.startswith(('[', '{')):
-                        try:
-                            session[key_str] = json.loads(value_str)
-                        except (json.JSONDecodeError, ValueError):
-                            # If JSON parsing fails, keep as string
-                            raise ValueError(f"Failed to parse JSON for key {key_str}")
+                    # Handle prefixed JSON data
+                    if key_str.startswith("json_list:"):
+                        original_key = key_str[10:]  # Remove "json_list:" prefix
+                        session[original_key] = json.loads(value_str)
+                    elif key_str.startswith("json_dict:"):
+                        original_key = key_str[10:]  # Remove "json_dict:" prefix
+                        session[original_key] = json.loads(value_str)
                     else:
                         session[key_str] = value_str
                 return session
@@ -519,9 +519,11 @@ class ServerAppController:
             redis_data = {}
             for k, v in session_data.items():
                 if k != "_worker" and v is not None:
-                    # Properly serialize complex data types (lists, dicts) to JSON
-                    if isinstance(v, (list, dict)):
-                        redis_data[k] = json.dumps(v)
+                    # Use key prefixes to indicate data type for explicit deserialization
+                    if isinstance(v, list):
+                        redis_data[f"json_list:{k}"] = json.dumps(v)
+                    elif isinstance(v, dict):
+                        redis_data[f"json_dict:{k}"] = json.dumps(v)
                     elif isinstance(v, (str, bytes, int, float, bool)):
                         redis_data[k] = v
                     else:
@@ -578,19 +580,19 @@ class ServerAppController:
             for key in keys:
                 session_data = await self._redis.hgetall(key)
                 if session_data:
-                    # Convert bytes to strings and add full_client_id
+                    # Convert bytes to strings and deserialize based on key prefixes
                     session = {}
                     for k, v in session_data.items():
                         key_str = k.decode() if isinstance(k, bytes) else k
                         value_str = v.decode() if isinstance(v, bytes) else v
                         
-                        # Try to deserialize JSON data for complex types
-                        if isinstance(value_str, str) and value_str.startswith(('[', '{')):
-                            try:
-                                session[key_str] = json.loads(value_str)
-                            except (json.JSONDecodeError, ValueError):
-                                # If JSON parsing fails, keep as string
-                                session[key_str] = value_str
+                        # Handle prefixed JSON data
+                        if key_str.startswith("json_list:"):
+                            original_key = key_str[10:]  # Remove "json_list:" prefix
+                            session[original_key] = json.loads(value_str)
+                        elif key_str.startswith("json_dict:"):
+                            original_key = key_str[10:]  # Remove "json_dict:" prefix
+                            session[original_key] = json.loads(value_str)
                         else:
                             session[key_str] = value_str
                     
