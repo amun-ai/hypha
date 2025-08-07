@@ -400,7 +400,7 @@ class ServerAppController:
         )
         self.templates_dir = Path(__file__).parent / "templates"
         self.autoscaling_manager = AutoscalingManager(self)
-        self.worker_manager = WorkerManager(store)
+        self.worker_manager = WorkerManager(store, cleanup_worker_sessions_callback=self.cleanup_worker_sessions)
 
         def shutdown(_) -> None:
             asyncio.ensure_future(self.shutdown())
@@ -419,24 +419,38 @@ class ServerAppController:
             workspace = info["workspace"]
             full_client_id = workspace + "/" + client_id
             
-            # Check if session exists in Redis
+            # Check if session exists in Redis for this specific client
             session_data = await self._get_session_from_redis(full_client_id)
             if session_data:
-                try:
-                    # Get worker from cache
-                    worker = self._get_worker_from_cache(session_data.get("worker_id"))
-                    if worker:
-                        # Create context for worker call
-                        context = {
-                            "ws": workspace,
-                            "user": self.store.get_root_user().model_dump(),
-                        }
-                        await worker.stop(full_client_id, context=context)
-                    
-                    # Remove session from Redis
-                    await self._remove_session_from_redis(full_client_id)
-                except Exception as exp:
-                    logger.warning(f"Failed to stop browser tab: {exp}")
+                # Get worker from cache
+                worker = self._get_worker_from_cache(session_data.get("worker_id"))
+                if worker:
+                    # Create context for worker call
+                    context = {
+                        "ws": workspace,
+                        "user": self.store.get_root_user().model_dump(),
+                    }
+                    await worker.stop(full_client_id, context=context)
+                
+                # Remove session from Redis
+                await self._remove_session_from_redis(full_client_id)
+            
+            # Check if the disconnected client was a worker providing services to other sessions
+            # Look for sessions that have this client as their worker
+            all_sessions = await self._get_all_sessions()
+            worker_sessions_to_cleanup = []
+            
+            for session in all_sessions:
+                worker_id = session.get("worker_id")
+                if worker_id and client_id in worker_id:
+                    # This session was running on the disconnected worker
+                    worker_sessions_to_cleanup.append(session)
+            
+            if worker_sessions_to_cleanup:
+                for session in worker_sessions_to_cleanup:
+                    session_id = session.get("id")
+                    # Remove session from Redis directly since worker is dead
+                    await self._remove_session_from_redis(session_id)
 
         self.event_bus.on_local("client_disconnected", client_disconnected)
         store.set_server_app_controller(self)
@@ -561,28 +575,42 @@ class ServerAppController:
     async def cleanup_worker_sessions(self, worker_id: str):
         """Clean up all sessions associated with a dead worker."""
         try:
-            logger.info(f"Cleaning up sessions for dead worker: {worker_id}")
+            logger.info(f"🧹 Cleaning up sessions for dead worker: {worker_id}")
             pattern = "sessions:*"
             keys = await self._redis.keys(pattern)
+            logger.info(f"🔍 Found {len(keys)} session keys to check")
             cleaned_count = 0
             
             for key in keys:
                 session_data = await self._redis.hgetall(key)
-                if session_data and session_data.get(b"worker_id", b"").decode() == worker_id:
-                    # Extract session ID from Redis key
-                    session_id = key.decode().replace("sessions:", "") if isinstance(key, bytes) else key.replace("sessions:", "")
-                    logger.info(f"Removing orphaned session: {session_id}")
-                    await self._redis.delete(key)
-                    cleaned_count += 1
+                if session_data:
+                    # Handle both bytes and string keys
+                    stored_worker_id = None
+                    if b"worker_id" in session_data:
+                        stored_worker_id = session_data[b"worker_id"].decode()
+                    elif "worker_id" in session_data:
+                        stored_worker_id = session_data["worker_id"]
+                    
+                    logger.debug(f"🔍 Session key {key}: stored_worker_id={stored_worker_id}, target_worker_id={worker_id}")
+                    
+                    if stored_worker_id == worker_id:
+                        # Extract session ID from Redis key
+                        session_id = key.decode().replace("sessions:", "") if isinstance(key, bytes) else key.replace("sessions:", "")
+                        logger.info(f"🗑️ Removing orphaned session: {session_id}")
+                        await self._redis.delete(key)
+                        cleaned_count += 1
             
             # Remove worker from cache
-            self._worker_cache.pop(worker_id, None)
+            removed_from_cache = self._worker_cache.pop(worker_id, None)
+            if removed_from_cache:
+                logger.info(f"🗑️ Removed worker from cache: {worker_id}")
             
-            if cleaned_count > 0:
-                logger.info(f"Cleaned up {cleaned_count} orphaned sessions for worker {worker_id}")
+            logger.info(f"✅ Cleaned up {cleaned_count} orphaned sessions for worker {worker_id}")
                 
         except Exception as e:
-            logger.error(f"Failed to cleanup sessions for worker {worker_id}: {e}")
+            logger.error(f"❌ Failed to cleanup sessions for worker {worker_id}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
 
     async def monitor_worker_health(self):
         """Monitor worker health and cleanup sessions for dead workers."""
@@ -642,6 +670,12 @@ class ServerAppController:
                 logger.info(
                     f"Found {len(workspace_svcs)} server-app-worker services in workspace {workspace}: {[svc['id'] for svc in workspace_svcs]}"
                 )
+                
+                # Ensure worker manager is monitoring this workspace for worker death detection
+                if workspace_svcs and workspace != "public":
+                    # Trigger workspace monitoring in worker manager
+                    await self.worker_manager._ensure_workspace_monitoring(workspace, context)
+                    
             except Exception as e:
                 logger.warning(f"Failed to get workspace workers: {e}")
 

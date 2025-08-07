@@ -5,6 +5,7 @@ import hashlib
 import httpx
 import json
 import logging
+import inspect
 import os
 import shutil
 import shortuuid
@@ -351,7 +352,7 @@ class CondaWorker(BaseWorker):
             config = WorkerConfig(**config)
 
         session_id = config.id
-        progress_callback = getattr(config, "progress_callback", None)
+        progress_callback = config.progress_callback
 
         if session_id in self._sessions:
             raise WorkerError(f"Session {session_id} already exists")
@@ -386,15 +387,19 @@ class CondaWorker(BaseWorker):
                 progress_callback(
                     {"type": "info", "message": "Fetching application script..."}
                 )
-
             script_url = f"{config.app_files_base_url}/{config.manifest['entry_point']}?use_proxy=true"
-            # script_url = f"https://hypha-dev.aicell.io/{config.workspace}/artifacts/{config.app_id}/files/{config.manifest['entry_point']}?use_proxy=true"
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     script_url, headers={"Authorization": f"Bearer {config.token}"}
                 )
                 response.raise_for_status()
                 script = response.text
+                
+                # TEMPORARY PATCH: Remove any remaining <script> or <file> tags from script content
+                import re
+                script = re.sub(r'<script[^>]*>(.*?)</script>', r'\1', script, flags=re.DOTALL | re.IGNORECASE)
+                script = re.sub(r'<file[^>]*>(.*?)</file>', r'\1', script, flags=re.DOTALL | re.IGNORECASE)
+                script = script.strip()
 
             if progress_callback:
                 progress_callback(
@@ -478,7 +483,11 @@ class CondaWorker(BaseWorker):
 
             # Also call the original progress callback if provided
             if progress_callback:
-                progress_callback(message)
+                # Handle both sync and async callbacks
+                if inspect.iscoroutinefunction(progress_callback):
+                    asyncio.ensure_future(progress_callback(message))
+                else:
+                    progress_callback(message)
 
         # Extract environment specification from manifest
         dependencies = config.manifest.get(

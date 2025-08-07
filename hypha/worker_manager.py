@@ -49,10 +49,11 @@ class WorkerConnection:
 class WorkerManager:
     """Manages persistent connections to workers."""
     
-    def __init__(self, store, cleanup_interval: int = 300, idle_timeout: int = 600):
+    def __init__(self, store, cleanup_interval: int = 300, idle_timeout: int = 600, cleanup_worker_sessions_callback=None):
         self.store = store
         self.cleanup_interval = cleanup_interval  # 5 minutes
         self.idle_timeout = idle_timeout  # 10 minutes
+        self.cleanup_worker_sessions_callback = cleanup_worker_sessions_callback
         
         # worker_id -> WorkerConnection
         self._connections: Dict[str, WorkerConnection] = {}
@@ -103,8 +104,6 @@ class WorkerManager:
         if workspace in self._monitored_workspaces:
             return  # Already monitoring
         
-        logger.info("Starting workspace monitoring for %s", workspace)
-        
         # Connect to workspace
         if context and workspace != "public":
             user_info = UserInfo.model_validate(context["user"])
@@ -121,7 +120,6 @@ class WorkerManager:
             self._workspace_listeners[workspace] = workspace_interface
         
         self._monitored_workspaces[workspace] = True
-        logger.info("Started monitoring workspace %s", workspace)
     
     async def _setup_workspace_listeners(self, workspace: str, workspace_api: Any):
         """Set up event listeners for workspace changes."""
@@ -137,12 +135,21 @@ class WorkerManager:
         async def on_client_disconnected(data):
             await self._handle_client_disconnected(workspace, data)
         
-        # Set up the listeners
+        # Set up the listeners first
         workspace_api.on("service_added", on_service_added)
         workspace_api.on("service_removed", on_service_removed)
         workspace_api.on("client_disconnected", on_client_disconnected)
         
-        logger.debug("Set up event listeners for workspace %s", workspace)
+        # Then subscribe to the events
+        logger.info("🎧 Subscribing to events for workspace %s", workspace)
+        try:
+            await workspace_api.subscribe(["service_added", "service_removed", "client_disconnected"])
+            logger.info("✅ Successfully subscribed to events for workspace %s", workspace)
+        except Exception as e:
+            logger.error("❌ Failed to subscribe to events for workspace %s: %s", workspace, e)
+            raise
+        
+        logger.info("✅ Set up event listeners for workspace %s", workspace)
 
     async def _discover_workspace_workers(self, workspace: str, workspace_api: Any):
         """Discover and connect to existing workers in the workspace."""
@@ -175,26 +182,37 @@ class WorkerManager:
             
             # Clean up any existing connections to this worker
             await self.force_cleanup_worker(service_id)
+            
+            # Notify app controller to clean up sessions for this worker
+            if self.cleanup_worker_sessions_callback:
+                try:
+                    await self.cleanup_worker_sessions_callback(service_id)
+                    logger.info("Notified app controller about worker death: %s", service_id)
+                except Exception as e:
+                    logger.error("Failed to notify app controller about worker death %s: %s", service_id, e)
                 
     async def _handle_client_disconnected(self, workspace: str, data: Dict[str, Any]):
         """Handle client disconnected event."""
         client_id = data.get("client_id")
-        if client_id:
-            logger.info("Client disconnected from workspace %s: %s", workspace, client_id)
+        if not client_id:
+            return
             
-            # Clean up all connections for services from this client
-            async with self._lock:
-                to_remove = []
-                for worker_id in self._connections.keys():
-                    # Check if worker_id belongs to the disconnected client
-                    if client_id in worker_id:
-                        to_remove.append(worker_id)
+        # Clean up all connections for services from this client
+        async with self._lock:
+            to_remove = []
+            for worker_id in self._connections.keys():
+                # Check if worker_id belongs to the disconnected client
+                if client_id in worker_id:
+                    to_remove.append(worker_id)
+            
+            for worker_id in to_remove:
+                connection = self._connections.pop(worker_id, None)
+                if connection:
+                    asyncio.create_task(connection.close())
                 
-                for worker_id in to_remove:
-                    logger.info("Cleaning up worker connection due to client disconnect: %s", worker_id)
-                    connection = self._connections.pop(worker_id, None)
-                    if connection:
-                        asyncio.create_task(connection.close())
+                # Notify app controller to clean up sessions for this worker
+                if self.cleanup_worker_sessions_callback:
+                    await self.cleanup_worker_sessions_callback(worker_id)
 
     def _determine_workspace(self, from_workspace: Optional[str], context: Optional[Dict[str, Any]]) -> Optional[str]:
         """Determine which workspace to use based on parameters."""
@@ -396,3 +414,4 @@ class WorkerManager:
                 connection = self._connections.pop(worker_id)
                 await connection.close()
                 logger.info("Force cleaned up worker connection: %s", worker_id)
+    
