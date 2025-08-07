@@ -60,6 +60,11 @@ class PythonEvalRunner(BaseWorker):
         """Return whether the worker requires a context."""
         return True
 
+    @property
+    def use_local_url(self) -> bool:
+        """Return whether the worker should use local URLs."""
+        return True  # Built-in worker runs in same cluster/host
+
     async def compile(
         self,
         manifest: dict,

@@ -788,6 +788,84 @@
             );
         };
 
+        const WorkerCard = ({ worker, isPublic }) => {
+            const [copiedWorkerId, setCopiedWorkerId] = React.useState(false);
+            
+            const copyWorkerId = async (workerId) => {
+                try {
+                    await navigator.clipboard.writeText(workerId);
+                    setCopiedWorkerId(true);
+                    setTimeout(() => setCopiedWorkerId(false), 2000);
+                } catch (error) {
+                    console.error('Failed to copy worker ID:', error);
+                    // Fallback for older browsers
+                    const textArea = document.createElement('textarea');
+                    textArea.value = workerId;
+                    document.body.appendChild(textArea);
+                    textArea.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(textArea);
+                    setCopiedWorkerId(true);
+                    setTimeout(() => setCopiedWorkerId(false), 2000);
+                }
+            };
+            
+            return (
+                <div className={`flex flex-col items-start p-4 rounded-lg shadow-lg mb-4 w-full transition-all duration-300 ${
+                    isPublic ? 'bg-gray-700 border border-blue-500' : 'bg-gray-800'
+                }`}>
+                    <div className="flex items-center mb-3 w-full">
+                        <i className={`fas fa-cogs fa-2x mr-3 ${isPublic ? 'text-blue-400' : 'text-green-400'}`}></i>
+                        <div className="flex-1">
+                            <div className="flex items-center justify-between mb-1">
+                                <h3 className="text-lg font-bold text-white">
+                                    {worker.name || worker.id.split('/').pop()}
+                                </h3>
+                                {isPublic && (
+                                    <span className="bg-blue-600 text-white px-2 py-1 rounded text-xs">
+                                        <i className="fas fa-globe mr-1"></i> Public
+                                    </span>
+                                )}
+                            </div>
+                            <p className="text-gray-400 text-sm">ID: <code className="bg-gray-700 px-1 rounded text-xs">{worker.id}</code></p>
+                            {worker.description && (
+                                <p className="text-gray-300 mt-1 text-sm">{worker.description}</p>
+                            )}
+                        </div>
+                    </div>
+                    
+                    {/* Supported Types */}
+                    {worker.supported_types && worker.supported_types.length > 0 && (
+                        <div className="w-full mb-3">
+                            <p className="text-gray-400 text-sm mb-2">Supported Types:</p>
+                            <div className="flex flex-wrap gap-1">
+                                {worker.supported_types.map((type, index) => (
+                                    <span key={index} className="bg-purple-600 text-white px-2 py-1 rounded text-xs">
+                                        {type}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                    
+                    <div className="flex gap-2 w-full justify-end">
+                        <button
+                            onClick={() => copyWorkerId(worker.id)}
+                            className={`text-xs px-3 py-1 rounded transition duration-300 ${
+                                copiedWorkerId
+                                    ? 'bg-green-600 hover:bg-green-500 text-white'
+                                    : 'bg-gray-600 hover:bg-gray-500 text-white'
+                            }`}
+                            title="Copy worker ID"
+                        >
+                            <i className={`fas ${copiedWorkerId ? 'fa-check' : 'fa-copy'} mr-1`}></i>
+                            {copiedWorkerId ? 'Copied!' : 'Copy ID'}
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
         const RunningAppCard = ({ app, onStop, onShowDetails, onTakeScreenshot }) => {
             const [showServices, setShowServices] = React.useState(false);
             const [copiedServiceId, setCopiedServiceId] = React.useState('');
@@ -5040,12 +5118,14 @@ license: "MIT"`);
             apps,
             files,
             runningApps,
+            workers,
             onShowDetails,
             onInstallApp,
             isInstallingApp,
             setClients,
             setApps,
             setRunningApps,
+            setWorkers,
             onTakeScreenshot,
         }) => {
         
@@ -5062,6 +5142,7 @@ license: "MIT"`);
             const [showMCPServerModal, setShowMCPServerModal] = React.useState(false);
             const [showA2AAgentModal, setShowA2AAgentModal] = React.useState(false);
             const [filesIncludeHiddenFiles, setFilesIncludeHiddenFiles] = React.useState(false); // For files panel
+            const [showPublicWorkers, setShowPublicWorkers] = React.useState(true); // For workers panel
         
             // Centralized expandedDirs state
             const [expandedDirs, setExpandedDirs] = React.useState({});
@@ -5514,6 +5595,20 @@ license: "MIT"`);
                 }
             };
 
+            const refreshWorkers = async (wsConnection) => {
+                try {
+                    if (!wsConnection || !wsConnection.getService) {
+                        console.warn('WebSocket connection not ready for refreshWorkers');
+                        return;
+                    }
+                    const controller = await wsConnection.getService('public/server-apps', { case_conversion: 'camel' });
+                    const workers = await controller.listWorkers();
+                    setWorkers(workers);
+                } catch (error) {
+                    console.error('Failed to refresh workers:', error);
+                }
+            };
+
             const handleCreateMCPServer = async (mcpConfig) => {
                 try {
                                          // Show progress spinner with logs
@@ -5863,28 +5958,34 @@ license: "MIT"`);
                                         )}
                                     </button>
                                 </div>
-                                <button
-                                    className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
-                                        isInstallingApp || !ws
-                                            ? 'bg-gray-700 cursor-not-allowed' 
-                                            : 'bg-purple-600 hover:bg-purple-500'
-                                    } text-white`}
-                                    onClick={() => onAddMCPServer()}
-                                    disabled={isInstallingApp || !ws}
-                                >
-                                    <i className="fas fa-cogs mr-2"></i> Add MCP Server
-                                </button>
-                                <button
-                                    className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
-                                        isInstallingApp || !ws
-                                            ? 'bg-gray-700 cursor-not-allowed' 
-                                            : 'bg-orange-600 hover:bg-orange-500'
-                                    } text-white`}
-                                    onClick={() => onAddA2AAgent()}
-                                    disabled={isInstallingApp || !ws}
-                                >
-                                    <i className="fas fa-robot mr-2"></i> Add A2A Agent
-                                </button>
+                                {/* Show Add MCP Server button only if MCP proxy worker is available */}
+                                {workers && workers.some(worker => worker.supported_types && worker.supported_types.includes('mcp-server')) && (
+                                    <button
+                                        className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
+                                            isInstallingApp || !ws
+                                                ? 'bg-gray-700 cursor-not-allowed' 
+                                                : 'bg-purple-600 hover:bg-purple-500'
+                                        } text-white`}
+                                        onClick={() => onAddMCPServer()}
+                                        disabled={isInstallingApp || !ws}
+                                    >
+                                        <i className="fas fa-cogs mr-2"></i> Add MCP Server
+                                    </button>
+                                )}
+                                {/* Show Add A2A Agent button only if A2A proxy worker is available */}
+                                {workers && workers.some(worker => worker.supported_types && worker.supported_types.includes('a2a-agent')) && (
+                                    <button
+                                        className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
+                                            isInstallingApp || !ws
+                                                ? 'bg-gray-700 cursor-not-allowed' 
+                                                : 'bg-orange-600 hover:bg-orange-500'
+                                        } text-white`}
+                                        onClick={() => onAddA2AAgent()}
+                                        disabled={isInstallingApp || !ws}
+                                    >
+                                        <i className="fas fa-robot mr-2"></i> Add A2A Agent
+                                    </button>
+                                )}
                                 <button
                                     className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
                                         isInstallingApp || !ws
@@ -5923,7 +6024,7 @@ license: "MIT"`);
                                     ))}
                                 </div>
                             )}
-                            
+
                             <hr className="my-8 border-gray-700"></hr>
                             
                             <div className="flex items-center justify-between mb-6">
@@ -5962,6 +6063,65 @@ license: "MIT"`);
                                     ))}
                                 </div>
                             )}
+                            
+                            <hr className="my-8 border-gray-700"></hr>
+                            
+                            <div className="flex items-center justify-between mb-6">
+                                <div className="flex items-center">
+                                    <i className="fas fa-server fa-2x text-purple-400 mr-3"></i>
+                                    <h2 className="text-2xl font-bold">Workers</h2>
+                                    <div className="flex items-center ml-4">
+                                        <input
+                                            type="checkbox"
+                                            id="showPublicWorkers"
+                                            checked={showPublicWorkers}
+                                            onChange={(e) => setShowPublicWorkers(e.target.checked)}
+                                            className="mr-2 w-4 h-4 text-blue-600 bg-gray-800 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
+                                        />
+                                        <label htmlFor="showPublicWorkers" className="text-sm text-gray-400 cursor-pointer">
+                                            Show public workers
+                                        </label>
+                                    </div>
+                                </div>
+                                <button
+                                    className={`font-bold py-2 px-4 rounded-full transition duration-300 flex items-center ${
+                                        isInstallingApp || !ws
+                                            ? 'bg-gray-700 cursor-not-allowed' 
+                                            : 'bg-gray-600 hover:bg-gray-500'
+                                    } text-white`}
+                                    onClick={() => refreshWorkers(ws)}
+                                    disabled={isInstallingApp || !ws}
+                                >
+                                    <i className="fas fa-sync mr-2"></i> Refresh
+                                </button>
+                            </div>
+                            
+                            {!workers || workers.length === 0 ? (
+                                <div className="text-center py-8 text-gray-400">
+                                    <i className="fas fa-server text-4xl mb-4"></i>
+                                    <p>No workers available</p>
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                    {workers
+                                        .filter(worker => {
+                                            // Show workspace workers always, public workers only if checkbox is checked
+                                            const isPublic = worker.id.startsWith('public/');
+                                            return !isPublic || showPublicWorkers;
+                                        })
+                                        .map(worker => {
+                                            const isPublic = worker.id.startsWith('public/');
+                                            return (
+                                                <WorkerCard 
+                                                    key={worker.id} 
+                                                    worker={worker}
+                                                    isPublic={isPublic}
+                                                />
+                                            );
+                                        })}
+                                </div>
+                            )}
+
                         </>
                     )}
         
@@ -6214,6 +6374,7 @@ license: "MIT"`);
             const [services, setServices] = React.useState([]);
             const [apps, setApps] = React.useState([]);
             const [runningApps, setRunningApps] = React.useState([]);
+            const [workers, setWorkers] = React.useState([]);
             const [files, setFiles] = React.useState([]);
             const [ws, setWs] = React.useState(null);
             const [s3, setS3] = React.useState(null);
@@ -6747,8 +6908,10 @@ license: "MIT"`);
                             const controller = await ws.getService('public/server-apps', { case_conversion: 'camel' });
                             const apps = await controller.listApps();
                             const running = await controller.listRunning();
+                            const workers = await controller.listWorkers();
                             setApps(apps);
                             setRunningApps(running);
+                            setWorkers(workers);
                         } catch (e) {
                             alert(`Failed to list apps: ${e.message}`);
                         } finally {
@@ -6904,6 +7067,7 @@ license: "MIT"`);
                         services={services}
                         apps={apps}
                         runningApps={runningApps}
+                        workers={workers}
                         files={files}
                         onShowDetails={onShowDetails}
                         onInstallApp={onInstallApp}
@@ -6911,6 +7075,7 @@ license: "MIT"`);
                         setClients={setClients}
                         setApps={setApps}
                         setRunningApps={setRunningApps}
+                        setWorkers={setWorkers}
                         onTakeScreenshot={handleTakeScreenshot}
                     />
                     {selectedService && <Modal serviceInfo={selectedService} onClose={() => setSelectedService(null)} />}

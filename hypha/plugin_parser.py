@@ -47,10 +47,15 @@ def parse_imjoy_plugin(source, overwrite_config=None):
         elms = root.xpath(f".//{tag_type}")
         values = []
         for elm in elms:
+            # Get the complete inner HTML content
+            inner_content = "".join(elm.itertext()) if elm.text or list(elm) else elm.text
+            # Clean up the content by removing the outer tag wrapper
+            if inner_content:
+                inner_content = inner_content.strip()
             values.append(
                 DefaultObjectProxy(
                     attrs=DefaultObjectProxy.fromDict(elm.attrib),
-                    content=elm.text,
+                    content=inner_content,
                 )
             )
         plugin_comp[tag_type] = values
@@ -207,15 +212,26 @@ def extract_files_from_source(source):
         elms = root.xpath(f".//{tag_type}")
         values = []
         for elm in elms:
+            # For file tags, get complete inner content including nested elements
+            if tag_type == "file":
+                # Get the complete inner HTML content
+                inner_content = "".join(elm.itertext()) if elm.text or list(elm) else elm.text
+                # Clean up the content by removing the outer tag wrapper
+                if inner_content:
+                    inner_content = inner_content.strip()
+            else:
+                # For other tags, use the text content directly
+                inner_content = elm.text
+                
             values.append(
                 DefaultObjectProxy(
                     attrs=DefaultObjectProxy.fromDict(elm.attrib),
-                    content=elm.text,
+                    content=inner_content,
                 )
             )
         plugin_comp[tag_type] = values
 
-    # Extract manifest files
+    # Extract manifest files from both <manifest> and <config> tags
     for manifest_elm in plugin_comp.manifest or []:
         lang = manifest_elm.attrs.get("lang", "json").lower()
         content = manifest_elm.content
@@ -241,12 +257,66 @@ def extract_files_from_source(source):
             {"name": "manifest.json", "content": content, "type": "json"}
         )
 
+    # Also extract config files from <config> tags (ImJoy format)
+    for config_elm in plugin_comp.config or []:
+        lang = config_elm.attrs.get("lang", "json").lower()
+        content = config_elm.content
+
+        if lang == "yaml":
+            # Validate YAML syntax
+            try:
+                content = yaml.safe_load(content)
+            except yaml.YAMLError as e:
+                raise Exception(f"Invalid YAML in config: {e}")
+        elif lang == "json":
+            # Validate JSON syntax
+            try:
+                content = json.loads(content)
+            except json.JSONDecodeError as e:
+                raise Exception(f"Invalid JSON in config: {e}")
+        else:
+            raise Exception(f"Unsupported config language: {lang}")
+
+        extracted_files.append(
+            {"name": "manifest.json", "content": content, "type": "json"}
+        )
+
     # Extract file elements
     for file_elm in plugin_comp.file or []:
         name = file_elm.attrs.get("name")
         format = file_elm.attrs.get("format", "text").lower()
         content = file_elm.content
+        
+        # Clean up content by stripping leading/trailing whitespace for better file content
+        if content:
+            content = content.strip()
+        
         extracted_files.append({"name": name, "content": content, "type": format})
+
+    # Extract script elements as files (without the script tags)
+    for script_elm in plugin_comp.script or []:
+        lang = script_elm.attrs.get("lang", "javascript").lower()
+        content = script_elm.content
+        if content and content.strip():
+            # Clean up content by stripping leading/trailing whitespace
+            content = content.strip()
+            
+            # Determine file extension based on language
+            if lang == "python":
+                file_ext = "py"
+            elif lang in ["javascript", "js"]:
+                file_ext = "js"
+            else:
+                file_ext = "txt"
+            
+            # Use a default filename if not specified
+            script_name = f"main.{file_ext}"
+            extracted_files.append({
+                "name": script_name, 
+                "content": content, 
+                "type": "text",
+                "source_type": "script"  # Mark this as coming from a script tag
+            })
 
     # Create remaining source by removing extracted tags
     remaining_source = source
@@ -267,6 +337,22 @@ def extract_files_from_source(source):
             pattern, "", remaining_source, flags=re.DOTALL | re.IGNORECASE
         )
 
+    # Remove config tags (ImJoy format)
+    for config_elm in plugin_comp.config or []:
+        lang = config_elm.attrs.get("lang", "json")
+        content = config_elm.content or ""
+        # Create regex pattern to match the tag
+        pattern = rf'<config[^>]*lang=["\']{re.escape(lang)}["\'][^>]*>.*?</config>'
+        remaining_source = re.sub(
+            pattern, "", remaining_source, flags=re.DOTALL | re.IGNORECASE
+        )
+
+        # Also try without lang attribute
+        pattern = rf"<config[^>]*>.*?{re.escape(content)}.*?</config>"
+        remaining_source = re.sub(
+            pattern, "", remaining_source, flags=re.DOTALL | re.IGNORECASE
+        )
+
     # Remove file tags
     for file_elm in plugin_comp.file or []:
         name = file_elm.attrs.get("name", "")
@@ -276,6 +362,23 @@ def extract_files_from_source(source):
         remaining_source = re.sub(
             pattern, "", remaining_source, flags=re.DOTALL | re.IGNORECASE
         )
+
+    # Remove script tags
+    for script_elm in plugin_comp.script or []:
+        lang = script_elm.attrs.get("lang", "javascript")
+        content = script_elm.content or ""
+        if content.strip():
+            # Create regex pattern to match the script tag
+            pattern = rf'<script[^>]*lang=["\']{re.escape(lang)}["\'][^>]*>.*?</script>'
+            remaining_source = re.sub(
+                pattern, "", remaining_source, flags=re.DOTALL | re.IGNORECASE
+            )
+            
+            # Also try without lang attribute or with different quote styles
+            pattern = rf'<script[^>]*>.*?{re.escape(content)}.*?</script>'
+            remaining_source = re.sub(
+                pattern, "", remaining_source, flags=re.DOTALL | re.IGNORECASE
+            )
 
     # Clean up extra whitespace
     remaining_source = re.sub(r"\n\s*\n", "\n", remaining_source.strip())
