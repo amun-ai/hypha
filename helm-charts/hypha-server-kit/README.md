@@ -50,19 +50,21 @@ kubectl create namespace hypha
 helm repo add amun-ai https://docs.amun.ai
 helm repo update
 
-# 3. Create minimal secrets (you'll want to customize these for production)
-export HYPHA_JWT_SECRET=$(openssl rand -base64 32)
-kubectl create secret generic hypha-secrets \
-  --from-literal=HYPHA_JWT_SECRET=$HYPHA_JWT_SECRET \
-  --from-literal=POSTGRES_PASSWORD=$(openssl rand -base64 32) \
-  --from-literal=REDIS_PASSWORD=$(openssl rand -base64 32) \
-  --from-literal=MINIO_ROOT_PASSWORD=$(openssl rand -base64 32) \
-  --namespace=hypha
+# 3. Generate secrets (automated approach - recommended)
+./generate-secrets.sh .env
 
-# 4. Install with default configuration
+# Alternative: Create secrets manually using kubectl
+# export HYPHA_JWT_SECRET=$(openssl rand -base64 32)
+# export HYPHA_ACCESS_KEY_ID=$(openssl rand -base64 32 | tr -d '=' | head -c 20)
+# ... (see generate-secrets.sh for full example)
+
+# 4. Create Kubernetes secrets from .env file
+./create-secrets.sh .env hypha
+
+# 5. Install with default configuration
 helm install hypha-server-kit amun-ai/hypha-server-kit --namespace=hypha
 
-# 5. Verify installation
+# 6. Verify installation
 kubectl get pods -n hypha
 ```
 
@@ -81,15 +83,27 @@ cd hypha/helm-charts/hypha-server-kit
 
 ### 2. Create Secrets
 
+Choose one of these approaches:
+
+#### Option A: Auto-generate secrets (Recommended)
+```bash
+# Generate all required secrets automatically
+./generate-secrets.sh .env
+
+# Create Kubernetes secrets from the generated .env file
+./create-secrets.sh .env hypha
+```
+
+#### Option B: Manual configuration
 ```bash
 # Copy the example environment file
-cp .env.example .env
+cp env.example .env
 
 # Edit the .env file and update all passwords and secrets
-# IMPORTANT: This file now contains ONLY secrets - all other config is in values.yaml
+# IMPORTANT: This file contains ONLY secrets - all other config is in values.yaml
 nano .env
 
-# Create Kubernetes secrets from your .env file
+# Create Kubernetes secrets from your customized .env file
 ./create-secrets.sh .env hypha
 ```
 
@@ -129,24 +143,35 @@ kubectl get svc -n hypha
 
 All sensitive data (passwords, tokens, keys) is stored in Kubernetes secrets. The `.env` file should contains ONLY secret values:
 
-- **JWT Secret**: Authentication token secret
-- **Database Passwords**: PostgreSQL credentials  
-- **Redis Password**: Cache authentication
-- **MinIO Credentials**: S3-compatible storage access
+- **JWT Secret**: `HYPHA_JWT_SECRET` - Authentication token secret
+- **S3 Credentials**: `HYPHA_ACCESS_KEY_ID` and `HYPHA_SECRET_ACCESS_KEY` (used by both Hypha and MinIO)
+- **Database Configuration**: 
+  - `HYPHA_DATABASE_URI` - Complete PostgreSQL connection string with embedded password
+  - `POSTGRES_PASSWORD` - Separate password field for PostgreSQL chart configuration
+- **Redis Configuration**:
+  - `HYPHA_REDIS_URI` - Complete Redis connection string with embedded password  
+  - `REDIS_PASSWORD` - Separate password field for Redis chart configuration
 - **OAuth Secrets**: Optional authentication provider secrets
 - **SMTP Password**: Optional email sending password
+
+**Important Notes**: 
+- MinIO uses the same S3 credentials (`HYPHA_ACCESS_KEY_ID` and `HYPHA_SECRET_ACCESS_KEY`) as Hypha
+- Database and Redis passwords are needed in two forms: embedded in URIs for Hypha, and as separate fields for the chart configurations
+- The same password values are used in both the URI and separate password fields
 
 All other configuration (domains, ports, feature flags, etc.) is now in `values.yaml`.
 
 ### Configuration Files
 
-1. **`.env`** - Contains ONLY secret values like passwords and tokens (create from `.env.example`)
-2. **`values.yaml`** - All non-secret configuration including:
+1. **`env.example`** - Template showing required secret structure (safe to commit)
+2. **`.env`** - Contains ONLY secret values like passwords and tokens (DO NOT commit)
+3. **`values.yaml`** - All non-secret configuration including:
    - Domain names and URLs
    - Feature flags and settings
    - Resource limits
    - Performance tuning
-3. **`create-secrets.sh`** - Script that creates Kubernetes secrets from `.env`
+4. **`generate-secrets.sh`** - Script that auto-generates secure secrets and saves to `.env`
+5. **`create-secrets.sh`** - Script that creates Kubernetes secrets from `.env` file
 
 
 
@@ -326,10 +351,14 @@ kubectl port-forward svc/hypha-server-kit 9520:9520 -n hypha
 ### Update Configuration
 
 ```bash
-# Edit your .env file with new secret values
+# For secret changes:
+# Option 1: Regenerate all secrets (creates new .env)
+./generate-secrets.sh .env
+
+# Option 2: Edit existing .env file manually
 nano .env
 
-# Re-create the secrets
+# Re-create the secrets from .env file
 ./create-secrets.sh .env hypha
 
 # For non-secret configuration changes, edit values.yaml
@@ -338,7 +367,7 @@ nano values.yaml
 # Apply the changes
 helm upgrade hypha-server-kit . --namespace hypha
 
-# Or restart pods to pick up secret changes
+# Restart pods to pick up secret changes (if secrets were updated)
 kubectl rollout restart deployment -n hypha
 ```
 
@@ -427,8 +456,8 @@ For detailed Auth0 setup instructions, see: https://docs.amun.ai/#/setup-authent
 | `HYPHA_ENABLE_S3_PROXY` | Enable S3 proxy | `false` | No |
 | `HYPHA_ENDPOINT_URL` | S3 endpoint URL (internal) | - | If S3 enabled |
 | `HYPHA_ENDPOINT_URL_PUBLIC` | S3 public endpoint URL | - | If S3 enabled |
-| `HYPHA_ACCESS_KEY_ID` | S3 access key | - | If S3 enabled |
-| `HYPHA_SECRET_ACCESS_KEY` | S3 secret key | - | If S3 enabled |
+| `HYPHA_ACCESS_KEY_ID` | S3 access key (shared with MinIO) | - | If S3 enabled |
+| `HYPHA_SECRET_ACCESS_KEY` | S3 secret key (shared with MinIO) | - | If S3 enabled |
 | **Feature Flags** |
 | `HYPHA_ENABLE_SERVER_APPS` | Enable server apps | `false` | No |
 | `HYPHA_ENABLE_MCP` | Enable MCP (Model Context Protocol) | `false` | No |
@@ -493,12 +522,12 @@ hypha-server:
       valueFrom:
         secretKeyRef:
           name: hypha-secrets
-          key: ACCESS_KEY_ID
+          key: HYPHA_ACCESS_KEY_ID
     - name: HYPHA_SECRET_ACCESS_KEY
       valueFrom:
         secretKeyRef:
           name: hypha-secrets
-          key: SECRET_ACCESS_KEY
+          key: HYPHA_SECRET_ACCESS_KEY
     - name: HYPHA_ENDPOINT_URL
       valueFrom:
         secretKeyRef:
