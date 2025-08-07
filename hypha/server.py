@@ -243,6 +243,13 @@ def create_application(args):
             args.startup_functions.append(a2a_startup_function)
             logger.info("Automatically added A2A proxy worker to startup functions")
 
+    # Automatically add K8s worker startup function if K8s worker is enabled
+    if args.enable_k8s_worker:
+        k8s_startup_function = "hypha.workers.k8s:hypha_startup"
+        if k8s_startup_function not in args.startup_functions:
+            args.startup_functions.append(k8s_startup_function)
+            logger.info("Automatically added Kubernetes worker to startup functions")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Here we can register all the startup functions
@@ -584,6 +591,11 @@ def get_argparser(add_help=True):
         "--enable-mcp",
         action="store_true",
         help="enable MCP (Model Context Protocol) support",
+    )
+    parser.add_argument(
+        "--enable-k8s-worker",
+        action="store_true",
+        help="enable Kubernetes pod worker support",
     )
     parser.add_argument(
         "--interactive",
