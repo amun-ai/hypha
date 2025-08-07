@@ -856,10 +856,10 @@
                                     ? 'bg-green-600 hover:bg-green-500 text-white'
                                     : 'bg-gray-600 hover:bg-gray-500 text-white'
                             }`}
-                            title="Copy worker ID"
+                            title="Copy Worker ID"
                         >
                             <i className={`fas ${copiedWorkerId ? 'fa-check' : 'fa-copy'} mr-1`}></i>
-                            {copiedWorkerId ? 'Copied!' : 'Copy ID'}
+                            {copiedWorkerId ? 'Copied!' : 'Copy Worker ID'}
                         </button>
                     </div>
                 </div>
@@ -6102,7 +6102,7 @@ license: "MIT"`);
                                     <p>No workers available</p>
                                 </div>
                             ) : (
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                <div className="grid grid-cols-1 md:grid-cols-1 lg:grid-cols-2 gap-8">
                                     {workers
                                         .filter(worker => {
                                             // Show workspace workers always, public workers only if checkbox is checked

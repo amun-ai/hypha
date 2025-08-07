@@ -145,7 +145,7 @@ async def test_conda_worker_service_registration(fastapi_server, test_user_token
     print(f"✓ Conda worker supports types: {worker.supported_types}")
 
     # Test worker info
-    assert "Conda Environment Worker" in worker.name
+    assert "Conda Worker" in worker.name
     assert worker.description is not None
     print(f"✓ Worker info: {worker.name}")
 

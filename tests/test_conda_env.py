@@ -176,7 +176,7 @@ class TestCondaWorkerBasic:
 
     def test_worker_properties(self):
         """Test worker properties."""
-        assert "Conda Environment Worker" in self.worker.name
+        assert "Conda Worker" in self.worker.name
         assert "conda environments" in self.worker.description
 
     async def test_compile_manifest(self):

@@ -253,7 +253,7 @@ class CondaWorker(BaseWorker):
     @property
     def name(self) -> str:
         """Return the worker name."""
-        return f"Conda Environment Worker (using {self.package_manager})"
+        return f"Conda Worker ({self.package_manager})"
 
     @property
     def description(self) -> str:
