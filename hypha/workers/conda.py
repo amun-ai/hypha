@@ -5,6 +5,7 @@ import hashlib
 import httpx
 import json
 import logging
+import inspect
 import os
 import shutil
 import shortuuid
@@ -222,12 +223,13 @@ class CondaWorker(BaseWorker):
 
     instance_counter: int = 0
 
-    def __init__(self):
+    def __init__(self, use_local_url: bool = False):
         """Initialize the conda environment worker."""
         super().__init__()
         self.instance_id = f"conda-jupyter-kernel-{shortuuid.uuid()}"
         self.controller_id = str(CondaWorker.instance_counter)
         CondaWorker.instance_counter += 1
+        self._use_local_url = use_local_url
 
         # Detect available package manager (mamba preferred over conda)
         try:
@@ -262,6 +264,11 @@ class CondaWorker(BaseWorker):
     def require_context(self) -> bool:
         """Return whether the worker requires a context."""
         return True
+
+    @property
+    def use_local_url(self) -> bool:
+        """Return whether the worker should use local URLs."""
+        return self._use_local_url
 
     async def compile(
         self,
@@ -345,7 +352,7 @@ class CondaWorker(BaseWorker):
             config = WorkerConfig(**config)
 
         session_id = config.id
-        progress_callback = getattr(config, "progress_callback", None)
+        progress_callback = config.progress_callback
 
         if session_id in self._sessions:
             raise WorkerError(f"Session {session_id} already exists")
@@ -380,7 +387,6 @@ class CondaWorker(BaseWorker):
                 progress_callback(
                     {"type": "info", "message": "Fetching application script..."}
                 )
-
             script_url = f"{config.app_files_base_url}/{config.manifest['entry_point']}?use_proxy=true"
             async with httpx.AsyncClient() as client:
                 response = await client.get(
@@ -388,6 +394,12 @@ class CondaWorker(BaseWorker):
                 )
                 response.raise_for_status()
                 script = response.text
+                
+                # TEMPORARY PATCH: Remove any remaining <script> or <file> tags from script content
+                import re
+                script = re.sub(r'<script[^>]*>(.*?)</script>', r'\1', script, flags=re.DOTALL | re.IGNORECASE)
+                script = re.sub(r'<file[^>]*>(.*?)</file>', r'\1', script, flags=re.DOTALL | re.IGNORECASE)
+                script = script.strip()
 
             if progress_callback:
                 progress_callback(
@@ -459,12 +471,23 @@ class CondaWorker(BaseWorker):
 
         # Create a progress callback wrapper that stores messages in logs for real-time access
         def progress_callback_wrapper(message):
+            emoji = {
+                "info": "ℹ️",
+                "success": "✅", 
+                "error": "❌",
+                "warning": "⚠️",
+            }.get(message.get("type", ""), "🔸")
+            logger.info(f"{emoji} {message.get('message', '')}")
             # Store the progress message in logs for real-time retrieval
             logs["progress"].append(f"{message['type'].upper()}: {message['message']}")
 
             # Also call the original progress callback if provided
             if progress_callback:
-                progress_callback(message)
+                # Handle both sync and async callbacks
+                if inspect.iscoroutinefunction(progress_callback):
+                    asyncio.ensure_future(progress_callback(message))
+                else:
+                    progress_callback(message)
 
         # Extract environment specification from manifest
         dependencies = config.manifest.get(
@@ -635,65 +658,48 @@ os.environ['HYPHA_TOKEN'] = hypha_config['token']
 os.environ['HYPHA_APP_ID'] = hypha_config['app_id']
 
 # Execute the user's script
-exec('''{script}''')
+{script}
 """
-
-        try:
-            result = await kernel.execute(init_code, timeout=60.0)
-            
-            # Process kernel outputs into logs
-            for output in result.get("outputs", []):
-                if output["type"] == "stream":
-                    if output["name"] == "stdout":
-                        logs["stdout"].append(output["text"])
-                    elif output["name"] == "stderr":
-                        logs["stderr"].append(output["text"])
-                elif output["type"] == "error":
-                    logs["error"].append("\n".join(output.get("traceback", [])))
-                elif output["type"] == "execute_result":
-                    # Convert execute results to string representation
-                    data = output.get("data", {})
-                    if "text/plain" in data:
-                        logs["info"].append(f"Result: {data['text/plain']}")
-            
-            # Handle kernel error if present
-            if result.get("error"):
-                error_info = result["error"]
-                logs["error"].append(f"Error: {error_info.get('ename', 'Unknown')}: {error_info.get('evalue', '')}")
-                if error_info.get("traceback"):
-                    logs["error"].extend(error_info["traceback"])
-            
-            if result["success"]:
-                progress_callback_wrapper(
-                    {
-                        "type": "success",
-                        "message": "Initialization script executed successfully",
-                    }
-                )
-            else:
-                progress_callback_wrapper(
-                    {
-                        "type": "error",
-                        "message": "Initialization script failed",
-                    }
-                )
-                
-        except Exception as e:
+        result = await kernel.execute(init_code, timeout=60.0)
+        
+        # Process kernel outputs into logs
+        for output in result.get("outputs", []):
+            if output["type"] == "stream":
+                if output["name"] == "stdout":
+                    logs["stdout"].append(output["text"])
+                elif output["name"] == "stderr":
+                    logs["stderr"].append(output["text"])
+            elif output["type"] == "error":
+                logs["error"].append("\n".join(output.get("traceback", [])))
+            elif output["type"] == "execute_result":
+                # Convert execute results to string representation
+                data = output.get("data", {})
+                if "text/plain" in data:
+                    logs["info"].append(f"Result: {data['text/plain']}")
+        
+        # Handle kernel error if present
+        if result.get("error"):
+            error_info = result["error"]
+            logs["error"].append(f"Error: {error_info.get('ename', 'Unknown')}: {error_info.get('evalue', '')}")
+            if error_info.get("traceback"):
+                logs["error"].extend(error_info["traceback"])
+        
+        if result["success"]:
+            progress_callback_wrapper(
+                {
+                    "type": "success",
+                    "message": "Conda environment session with Jupyter kernel ready",
+                }
+            )
+        else:
             progress_callback_wrapper(
                 {
                     "type": "error",
-                    "message": f"Failed to execute initialization script: {str(e)}",
+                    "message": "Initialization script failed",
                 }
             )
-            # Don't raise here - we want the session to continue even if init fails
-            logs["error"].append(f"Initialization error: {str(e)}")
+            raise Exception("Initialization script failed: " + result.get("error", {}).get("evalue", "Unknown error"))
 
-        progress_callback_wrapper(
-            {
-                "type": "success",
-                "message": "Conda environment session with Jupyter kernel ready",
-            }
-        )
 
         return {
             "executor": executor,
@@ -704,10 +710,6 @@ exec('''{script}''')
             "logs": logs,
             "hypha_config": hypha_config,
         }
-
-
-
-
 
     async def execute(
         self,
@@ -1012,7 +1014,7 @@ exec('''{script}''')
 
 async def hypha_startup(server):
     """Hypha startup function to initialize conda environment worker."""
-    worker = CondaWorker()
+    worker = CondaWorker(use_local_url=True)  # Built-in worker should use local URLs
     await worker.register_worker_service(server)
     logger.info("Conda environment worker initialized and registered")
 
@@ -1092,6 +1094,11 @@ Examples:
         help="Directory for caching conda environments (default: from HYPHA_CACHE_DIR env var or ~/.hypha_conda_cache)",
     )
     parser.add_argument(
+        "--use-local-url",
+        action="store_true",
+        help="Use local URLs for server communication (default: false for CLI workers)",
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true", help="Enable verbose logging"
     )
 
@@ -1139,6 +1146,7 @@ Examples:
     print(f"  Workspace: {args.workspace}")
     print(f"  Service ID: {args.service_id or 'auto-generated'}")
     print(f"  Visibility: {args.visibility}")
+    print(f"  Use Local URL: {args.use_local_url}")
     print(f"  Cache Dir: {args.cache_dir or DEFAULT_CACHE_DIR}")
 
     async def run_worker():
@@ -1157,7 +1165,7 @@ Examples:
             )
 
             # Create and register worker
-            worker = CondaWorker()
+            worker = CondaWorker(use_local_url=args.use_local_url)
             if args.cache_dir:
                 worker._env_cache = EnvironmentCache(cache_dir=args.cache_dir)
 

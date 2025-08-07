@@ -65,6 +65,7 @@ class BrowserWorker(BaseWorker):
     def __init__(
         self,
         in_docker: bool = False,
+        use_local_url: bool = True,
     ):
         """Initialize the class."""
         super().__init__()
@@ -72,6 +73,7 @@ class BrowserWorker(BaseWorker):
         self.controller_id = str(BrowserWorker.instance_counter)
         BrowserWorker.instance_counter += 1
         self.in_docker = in_docker
+        self._use_local_url = use_local_url
         self._playwright = None
         self.jinja_env = Environment(
             loader=PackageLoader("hypha"), autoescape=select_autoescape()
@@ -105,6 +107,11 @@ class BrowserWorker(BaseWorker):
     def require_context(self) -> bool:
         """Return whether the worker requires a context."""
         return True
+
+    @property
+    def use_local_url(self) -> bool:
+        """Return whether the worker should use local URLs."""
+        return self._use_local_url
 
     async def initialize(self) -> Browser:
         """Initialize the browser worker."""
@@ -1107,7 +1114,7 @@ class BrowserWorker(BaseWorker):
 
 async def hypha_startup(server):
     """Hypha startup function to initialize browser worker."""
-    worker = BrowserWorker()
+    worker = BrowserWorker(use_local_url=True)  # Built-in worker should use local URLs
     await worker.register_worker_service(server)
     logger.info("Browser worker initialized and registered")
 
@@ -1213,6 +1220,11 @@ Examples:
         help="Set if running in Docker container (default: from HYPHA_IN_DOCKER env var or false)",
     )
     parser.add_argument(
+        "--use-local-url",
+        action="store_true",
+        help="Use local URLs for server communication (default: false for CLI workers)",
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true", help="Enable verbose logging"
     )
 
@@ -1251,6 +1263,7 @@ Examples:
     print(f"  Workspace: {args.workspace}")
     print(f"  Service ID: {args.service_id or 'auto-generated'}")
     print(f"  Visibility: {args.visibility}")
+    print(f"  Use Local URL: {args.use_local_url}")
     print(f"  In Docker: {args.in_docker}")
 
     async def run_worker():
@@ -1264,7 +1277,7 @@ Examples:
             )
 
             # Create and register worker - use BrowserWorker directly
-            worker = BrowserWorker(in_docker=args.in_docker)
+            worker = BrowserWorker(in_docker=args.in_docker, use_local_url=args.use_local_url)
 
             # Get service config and set custom properties (use get_worker_service() to include browser-specific methods)
             service_config = worker.get_worker_service()

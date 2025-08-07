@@ -8,7 +8,6 @@ dependencies:
     - "python=3.11"
     - "numpy"
     - "fastapi"
-    - "uvicorn"
     - "pip"
     - pip:
         - "hypha-rpc"
@@ -97,7 +96,7 @@ fastapi_app = create_fastapi_app()
 print("Created FastAPI app!", flush=True)
 
 async def serve_fastapi(args):
-    \"\"\"ASGI server function for FastAPI.\"\"\"
+    """ASGI server function for FastAPI."""
     await fastapi_app(args["scope"], args["receive"], args["send"])
 
 # Register the service with the expected name

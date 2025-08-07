@@ -242,7 +242,7 @@ class AutoscalingManager:
         """Check current load and scale instances if needed."""
         try:
             # Get current instances for this app
-            current_instances = self._get_app_instances(app_id)
+            current_instances = await self._get_app_instances(app_id)
             current_count = len(current_instances)
 
             if current_count == 0:
@@ -307,12 +307,17 @@ class AutoscalingManager:
         except Exception as e:
             logger.error(f"Error checking and scaling app {app_id}: {e}")
 
-    def _get_app_instances(self, app_id: str) -> Dict[str, dict]:
+    async def _get_app_instances(self, app_id: str) -> Dict[str, dict]:
         """Get all running instances for a specific app."""
         instances = {}
-        for session_id, session_info in self.app_controller._sessions.items():
-            if session_info.get("app_id") == app_id:
-                instances[session_id] = session_info
+        try:
+            all_sessions = await self.app_controller._get_all_sessions()
+            
+            for session_info in all_sessions:
+                if session_info.get("app_id") == app_id:
+                    instances[session_info["id"]] = session_info
+        except Exception as e:
+            logger.error(f"Failed to get app instances for {app_id}: {e}")
         return instances
 
     async def _scale_up(self, app_id: str, context: dict):
@@ -327,7 +332,7 @@ class AutoscalingManager:
     async def _scale_down(self, app_id: str, context: dict):
         """Scale down by stopping the least loaded instance."""
         try:
-            instances = self._get_app_instances(app_id)
+            instances = await self._get_app_instances(app_id)
             if len(instances) <= 1:
                 return  # Don't scale down if only one instance
 
@@ -382,7 +387,10 @@ class ServerAppController:
         self.store = store
         self.in_docker = in_docker
         self.artifact_manager = artifact_manager
-        self._sessions = {}  # Track running sessions
+        # Redis-based session storage for horizontal scaling
+        self._redis = store.get_redis()
+        # Local cache for worker instances by worker_id
+        self._worker_cache = {}  # worker_id -> worker_instance
         self.event_bus = store.get_event_bus()
         self.local_base_url = store.local_base_url
         self.public_base_url = store.public_base_url
@@ -392,7 +400,7 @@ class ServerAppController:
         )
         self.templates_dir = Path(__file__).parent / "templates"
         self.autoscaling_manager = AutoscalingManager(self)
-        self.worker_manager = WorkerManager(store)
+        self.worker_manager = WorkerManager(store, cleanup_worker_sessions_callback=self.cleanup_worker_sessions)
 
         def shutdown(_) -> None:
             asyncio.ensure_future(self.shutdown())
@@ -401,23 +409,48 @@ class ServerAppController:
         
         # Worker manager will be started later when event loop is available
         self._worker_manager_started = False
+        # Worker health monitoring task
+        self._health_monitor_task = None
 
         async def client_disconnected(info: dict) -> None:
             """Handle client disconnected event."""
             # {"id": client_id, "workspace": ws}
             client_id = info["id"]
-            full_client_id = info["workspace"] + "/" + client_id
-            if full_client_id in self._sessions:
-                app_info = self._sessions.pop(full_client_id, None)
-                try:
+            workspace = info["workspace"]
+            full_client_id = workspace + "/" + client_id
+            
+            # Check if session exists in Redis for this specific client
+            session_data = await self._get_session_from_redis(full_client_id)
+            if session_data:
+                # Get worker from cache
+                worker = self._get_worker_from_cache(session_data.get("worker_id"))
+                if worker:
                     # Create context for worker call
                     context = {
-                        "ws": info["workspace"],
+                        "ws": workspace,
                         "user": self.store.get_root_user().model_dump(),
                     }
-                    await app_info["_worker"].stop(full_client_id, context=context)
-                except Exception as exp:
-                    logger.warning(f"Failed to stop browser tab: {exp}")
+                    await worker.stop(full_client_id, context=context)
+                
+                # Remove session from Redis
+                await self._remove_session_from_redis(full_client_id)
+            
+            # Check if the disconnected client was a worker providing services to other sessions
+            # Look for sessions that have this client as their worker
+            all_sessions = await self._get_all_sessions()
+            worker_sessions_to_cleanup = []
+            
+            for session in all_sessions:
+                worker_id = session.get("worker_id")
+                if worker_id and client_id in worker_id:
+                    # This session was running on the disconnected worker
+                    worker_sessions_to_cleanup.append(session)
+            
+            if worker_sessions_to_cleanup:
+                for session in worker_sessions_to_cleanup:
+                    session_id = session.get("id")
+                    # Remove session from Redis directly since worker is dead
+                    await self._remove_session_from_redis(session_id)
 
         self.event_bus.on_local("client_disconnected", client_disconnected)
         store.set_server_app_controller(self)
@@ -429,8 +462,191 @@ class ServerAppController:
                 await self.worker_manager.start()
                 self._worker_manager_started = True
                 logger.debug("Worker manager started successfully")
+                
+                # Start worker health monitoring
+                if not self._health_monitor_task:
+                    self._health_monitor_task = asyncio.create_task(self._worker_health_monitor_loop())
+                    logger.debug("Worker health monitoring started")
+                    
             except Exception as e:
                 logger.error("Failed to start worker manager: %s", e)
+
+    async def _worker_health_monitor_loop(self):
+        """Periodic worker health monitoring loop."""
+        while True:
+            try:
+                await asyncio.sleep(300)  # Check every 5 minutes
+                await self.monitor_worker_health()
+            except asyncio.CancelledError:
+                logger.debug("Worker health monitoring cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in worker health monitoring: {e}")
+                await asyncio.sleep(60)  # Wait 1 minute before retrying
+
+    async def _get_session_from_redis(self, full_client_id: str) -> Optional[dict]:
+        """Get session data from Redis."""
+        try:
+            key = f"sessions:{full_client_id}"
+            session_data = await self._redis.hgetall(key)
+            if session_data:
+                # Convert bytes to strings if needed
+                return {k.decode() if isinstance(k, bytes) else k: 
+                       v.decode() if isinstance(v, bytes) else v 
+                       for k, v in session_data.items()}
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get session {full_client_id} from Redis: {e}")
+            return None
+
+    async def _store_session_in_redis(self, full_client_id: str, session_data: dict):
+        """Store session data in Redis."""
+        try:
+            key = f"sessions:{full_client_id}"
+            # Store session metadata in Redis (excluding worker instance and None values)
+            redis_data = {}
+            for k, v in session_data.items():
+                if k != "_worker" and v is not None:
+                    redis_data[k] = str(v) if not isinstance(v, (str, bytes, int, float)) else v
+            await self._redis.hset(key, mapping=redis_data)
+            
+            # Cache worker instance locally by worker_id
+            if "_worker" in session_data and "worker_id" in session_data:
+                self._worker_cache[session_data["worker_id"]] = session_data["_worker"]
+        except Exception as e:
+            logger.error(f"Failed to store session {full_client_id} in Redis: {e}")
+
+    async def _remove_session_from_redis(self, full_client_id: str):
+        """Remove session data from Redis."""
+        try:
+            key = f"sessions:{full_client_id}"
+            # Get session data first to clean up worker cache
+            session_data = await self._get_session_from_redis(full_client_id)
+            if session_data and "worker_id" in session_data:
+                # Remove worker from cache if no other sessions use it
+                worker_id = session_data["worker_id"]
+                if await self._is_worker_unused(worker_id):
+                    self._worker_cache.pop(worker_id, None)
+            
+            await self._redis.delete(key)
+        except Exception as e:
+            logger.error(f"Failed to remove session {full_client_id} from Redis: {e}")
+
+    def _get_worker_from_cache(self, worker_id: str):
+        """Get worker instance from local cache."""
+        return self._worker_cache.get(worker_id)
+
+    async def _is_worker_unused(self, worker_id: str) -> bool:
+        """Check if a worker is not used by any other sessions."""
+        try:
+            # Search for sessions using this worker_id
+            pattern = "sessions:*"
+            keys = await self._redis.keys(pattern)
+            for key in keys:
+                session_data = await self._redis.hgetall(key)
+                if session_data.get(b"worker_id", b"").decode() == worker_id:
+                    return False
+            return True
+        except Exception as e:
+            logger.error(f"Failed to check if worker {worker_id} is unused: {e}")
+            return False
+
+    async def _get_all_sessions(self) -> List[dict]:
+        """Get all sessions from Redis for autoscaling and other operations."""
+        try:
+            pattern = "sessions:*"
+            keys = await self._redis.keys(pattern)
+            sessions = []
+            for key in keys:
+                session_data = await self._redis.hgetall(key)
+                if session_data:
+                    # Convert bytes to strings and add full_client_id
+                    session = {k.decode() if isinstance(k, bytes) else k: 
+                             v.decode() if isinstance(v, bytes) else v 
+                             for k, v in session_data.items()}
+                    # Extract full_client_id from Redis key
+                    session["id"] = key.decode().replace("sessions:", "") if isinstance(key, bytes) else key.replace("sessions:", "")
+                    sessions.append(session)
+            return sessions
+        except Exception as e:
+            logger.error(f"Failed to get all sessions from Redis: {e}")
+            return []
+
+    async def cleanup_worker_sessions(self, worker_id: str):
+        """Clean up all sessions associated with a dead worker."""
+        try:
+            logger.info(f"🧹 Cleaning up sessions for dead worker: {worker_id}")
+            pattern = "sessions:*"
+            keys = await self._redis.keys(pattern)
+            logger.info(f"🔍 Found {len(keys)} session keys to check")
+            cleaned_count = 0
+            
+            for key in keys:
+                session_data = await self._redis.hgetall(key)
+                if session_data:
+                    # Handle both bytes and string keys
+                    stored_worker_id = None
+                    if b"worker_id" in session_data:
+                        stored_worker_id = session_data[b"worker_id"].decode()
+                    elif "worker_id" in session_data:
+                        stored_worker_id = session_data["worker_id"]
+                    
+                    logger.debug(f"🔍 Session key {key}: stored_worker_id={stored_worker_id}, target_worker_id={worker_id}")
+                    
+                    if stored_worker_id == worker_id:
+                        # Extract session ID from Redis key
+                        session_id = key.decode().replace("sessions:", "") if isinstance(key, bytes) else key.replace("sessions:", "")
+                        logger.info(f"🗑️ Removing orphaned session: {session_id}")
+                        await self._redis.delete(key)
+                        cleaned_count += 1
+            
+            # Remove worker from cache
+            removed_from_cache = self._worker_cache.pop(worker_id, None)
+            if removed_from_cache:
+                logger.info(f"🗑️ Removed worker from cache: {worker_id}")
+            
+            logger.info(f"✅ Cleaned up {cleaned_count} orphaned sessions for worker {worker_id}")
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to cleanup sessions for worker {worker_id}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+
+    async def monitor_worker_health(self):
+        """Monitor worker health and cleanup sessions for dead workers."""
+        try:
+            # Get all sessions and check if their workers are still alive
+            all_sessions = await self._get_all_sessions()
+            worker_ids = set()
+            
+            for session in all_sessions:
+                worker_id = session.get("worker_id")
+                if worker_id:
+                    worker_ids.add(worker_id)
+            
+            # Check each worker's health
+            dead_workers = []
+            for worker_id in worker_ids:
+                worker = self._get_worker_from_cache(worker_id)
+                if not worker:
+                    # Worker not in cache, mark as dead
+                    dead_workers.append(worker_id)
+                else:
+                    # Try to ping worker to check if it's alive
+                    try:
+                        # Most workers should have some way to check health
+                        # For now, we'll assume if it's in cache, it's alive
+                        # In the future, we could add a ping method to workers
+                        pass
+                    except Exception:
+                        dead_workers.append(worker_id)
+            
+            # Clean up sessions for dead workers
+            for worker_id in dead_workers:
+                await self.cleanup_worker_sessions(worker_id)
+                
+        except Exception as e:
+            logger.error(f"Failed to monitor worker health: {e}")
 
     async def get_server_app_workers(
         self, 
@@ -454,6 +670,12 @@ class ServerAppController:
                 logger.info(
                     f"Found {len(workspace_svcs)} server-app-worker services in workspace {workspace}: {[svc['id'] for svc in workspace_svcs]}"
                 )
+                
+                # Ensure worker manager is monitoring this workspace for worker death detection
+                if workspace_svcs and workspace != "public":
+                    # Trigger workspace monitoring in worker manager
+                    await self.worker_manager._ensure_workspace_monitoring(workspace, context)
+                    
             except Exception as e:
                 logger.warning(f"Failed to get workspace workers: {e}")
 
@@ -958,17 +1180,30 @@ class ServerAppController:
             # Add extracted files (config.json/yaml, script.js/py, <file> tags)
             app_files.extend(extracted_files)
 
+            # Check if we extracted a script file and update entry_point accordingly
+            script_files = [f for f in extracted_files if f.get("source_type") == "script"]
+            if script_files:
+                # Use the first script file as entry point
+                script_file = script_files[0]
+                artifact_obj["entry_point"] = script_file["name"]
+                # Update the path in app_files to match entry_point
+                for f in app_files:
+                    if f.get("name") == script_file["name"]:
+                        f["path"] = script_file["name"]
+
             # If there's remaining source content, add it as source file
             if remaining_source and remaining_source.strip():
                 # Use entry_point from manifest if available, otherwise default to "source"
                 source_file_path = artifact_obj.get("entry_point", "source")
-                app_files.append(
-                    {
-                        "path": source_file_path,
-                        "content": remaining_source,
-                        "format": "text",
-                    }
-                )
+                # Only add remaining source if we haven't already set an entry point from extracted scripts
+                if not script_files:
+                    app_files.append(
+                        {
+                            "path": source_file_path,
+                            "content": remaining_source,
+                            "format": "text",
+                        }
+                    )
         elif source:
             # Use entry_point from manifest if available, otherwise default to "source"
             source_file_path = artifact_obj.get("entry_point", "source")
@@ -1449,8 +1684,9 @@ class ServerAppController:
             await self.artifact_manager.delete(app_id, context=context)
 
         # stop all the instances of the app
-        for app in self._sessions.values():
-            if app["id"] == app_id:
+        all_sessions = await self._get_all_sessions()
+        for app in all_sessions:
+            if app.get("app_id") == app_id:
                 await self.stop(app["id"], raise_exception=False)
 
     async def start_by_type(
@@ -1494,6 +1730,17 @@ class ServerAppController:
         # Get entry point from manifest
         entry_point = manifest.entry_point
 
+        # Determine URLs based on worker's use_local_url property
+        worker_use_local_url = getattr(worker, 'use_local_url', False)
+        if worker_use_local_url:
+            # Worker prefers local URLs - use local_base_url
+            effective_server_url = self.local_base_url or server_url
+            effective_app_files_base_url = f"{effective_server_url}/{workspace}/artifacts/{app_id}/files"
+        else:
+            # Worker uses public URLs - use public_base_url
+            effective_server_url = self.public_base_url or server_url
+            effective_app_files_base_url = f"{effective_server_url}/{workspace}/artifacts/{app_id}/files"
+
         # Start the app using the worker with reorganized config
         full_client_id = workspace + "/" + client_id
         additional_kwargs = additional_kwargs or {}
@@ -1503,8 +1750,8 @@ class ServerAppController:
                 "app_id": app_id,
                 "workspace": workspace,
                 "client_id": client_id,
-                "server_url": server_url,
-                "app_files_base_url": f"{server_url}/{workspace}/artifacts/{app_id}/files",
+                "server_url": effective_server_url,
+                "app_files_base_url": effective_app_files_base_url,
                 "token": token,
                 "entry_point": entry_point,
                 "artifact_id": f"{workspace}/{app_id}",
@@ -1516,8 +1763,8 @@ class ServerAppController:
             context=context,
         )
 
-        # Store minimal session info for apps.py - worker handles detailed session management
-        self._sessions[full_client_id] = {
+        # Store session info in Redis for horizontal scaling
+        session_data = {
             "id": full_client_id,
             "app_id": app_id,
             "workspace": workspace,
@@ -1530,8 +1777,15 @@ class ServerAppController:
             "source_hash": (
                 manifest.source_hash if hasattr(manifest, "source_hash") else None
             ),
-            "_worker": worker,
+            "worker_id": worker.get("id"),  # Store worker service ID
+            "_worker": worker,  # Keep for local caching
         }
+        await self._store_session_in_redis(full_client_id, session_data)
+        
+        # Cache the worker instance by its service ID
+        worker_id = worker.get("id")
+        if worker_id:
+            self._worker_cache[worker_id] = worker
 
         return session_id
 
@@ -1683,10 +1937,11 @@ class ServerAppController:
         # unless autoscaling is enabled.
         if not manifest.singleton and not manifest.daemon:
             if not (manifest.autoscaling and manifest.autoscaling.enabled):
-                for session_info in self._sessions.values():
+                all_sessions = await self._get_all_sessions()
+                for session_info in all_sessions:
                     if (
-                        session_info["app_id"] == app_id
-                        and session_info["workspace"] == workspace
+                        session_info.get("app_id") == app_id
+                        and session_info.get("workspace") == workspace
                     ):
                         logger.info(
                             f"Returning existing instance for app {app_id} in workspace {workspace}"
@@ -1697,8 +1952,9 @@ class ServerAppController:
 
         if manifest.singleton:
             # check if the app is already running
-            for session_info in self._sessions.values():
-                if session_info["app_id"] == app_id:
+            all_sessions = await self._get_all_sessions()
+            for session_info in all_sessions:
+                if session_info.get("app_id") == app_id:
                     # For singleton apps, return the existing session instead of raising an error
                     # Filter out non-serializable objects like _worker
                     filtered_session_info = {k: v for k, v in session_info.items() if not k.startswith("_")}
@@ -1871,7 +2127,8 @@ class ServerAppController:
             ):
 
                 async def _stop_after_inactive():
-                    if full_client_id in self._sessions:
+                    session_data = await self._get_session_from_redis(full_client_id)
+                    if session_data:
                         await self._stop(
                             full_client_id, raise_exception=False, context=context
                         )
@@ -1955,15 +2212,18 @@ class ServerAppController:
         except (asyncio.TimeoutError, Exception) as exp:
             # Get worker logs for debugging
             logs = None
-            session_info = self._sessions.get(full_client_id)
-            if session_info and "_worker" in session_info:
-                logs = await session_info["_worker"].get_logs(
-                    full_client_id, context=context
-                )
+            session_data = await self._get_session_from_redis(full_client_id)
+            if session_data and "worker_id" in session_data:
+                worker = self._get_worker_from_cache(session_data["worker_id"])
+                if worker:
+                    logs = await worker.get_logs(full_client_id, context=context)
             # Clean up session
-            session_info = self._sessions.get(full_client_id)
-            if session_info and "_worker" in session_info:
-                await session_info["_worker"].stop(full_client_id, context=context)
+            if session_data and "worker_id" in session_data:
+                worker = self._get_worker_from_cache(session_data["worker_id"])
+                if worker:
+                    await worker.stop(full_client_id, context=context)
+            # Remove from Redis
+            await self._remove_session_from_redis(full_client_id)
 
             raise Exception(
                 f"Failed to start app '{app_id}', error: {exp}, logs:\n{logs}"
@@ -1982,11 +2242,13 @@ class ServerAppController:
         app_info["services"] = [
             svc.model_dump(mode="json") for svc in collected_services
         ]
-        if full_client_id in self._sessions:
-            self._sessions[full_client_id]["services"] = app_info["services"]
-            # Update session metadata with final app name and description
-            self._sessions[full_client_id]["name"] = manifest.name
-            self._sessions[full_client_id]["description"] = manifest.description
+        # Update session in Redis with services and final metadata
+        session_data = await self._get_session_from_redis(full_client_id)
+        if session_data:
+            session_data["services"] = app_info["services"]
+            session_data["name"] = manifest.name
+            session_data["description"] = manifest.description
+            await self._store_session_in_redis(full_client_id, session_data)
 
         # Start autoscaling if enabled
         if manifest.autoscaling and manifest.autoscaling.enabled:
@@ -2020,6 +2282,8 @@ class ServerAppController:
         ),
     ) -> None:
         """Stop a server app instance."""
+        if not context:
+            context = {"user": self.store.get_root_user().model_dump(), "ws": "public"}
         user_info = UserInfo.model_validate(context["user"])
         workspace = context["ws"]
         if not user_info.check_permission(workspace, UserPermission.read):
@@ -2032,20 +2296,28 @@ class ServerAppController:
     async def _stop(
         self, session_id: str, raise_exception=True, context: Optional[dict] = None
     ):
-        if session_id in self._sessions:
-            app_info = self._sessions.pop(session_id, None)
+        if not context:
+            context = {"user": self.store.get_root_user().model_dump(), "ws": "public"}
+        session_data = await self._get_session_from_redis(session_id)
+        if session_data:
             try:
-                await app_info["_worker"].stop(session_id, context=context)
+                # Get worker from cache and stop session
+                worker = self._get_worker_from_cache(session_data.get("worker_id"))
+                if worker:
+                    await worker.stop(session_id, context=context)
             except Exception as exp:
                 if raise_exception:
                     raise
                 else:
                     logger.warning(f"Failed to stop browser tab: {exp}")
+            finally:
+                # Remove session from Redis
+                await self._remove_session_from_redis(session_id)
 
             # Check if this was the last instance of an app and stop autoscaling
-            app_id = app_info.get("app_id")
+            app_id = session_data.get("app_id")
             if app_id:
-                remaining_instances = self.autoscaling_manager._get_app_instances(
+                remaining_instances = await self.autoscaling_manager._get_app_instances(
                     app_id
                 )
                 if not remaining_instances:
@@ -2085,10 +2357,15 @@ class ServerAppController:
                 f"User {user_info.id} does not have permission"
                 f" to get log for app {session_id} in workspace {workspace}."
             )
-        if session_id in self._sessions:
-            return await self._sessions[session_id]["_worker"].get_logs(
-                session_id, type=type, offset=offset, limit=limit, context=context
-            )
+        session_data = await self._get_session_from_redis(session_id)
+        if session_data:
+            worker = self._get_worker_from_cache(session_data.get("worker_id"))
+            if worker:
+                return await worker.get_logs(
+                    session_id, type=type, offset=offset, limit=limit, context=context
+                )
+            else:
+                raise Exception(f"Worker not found for session: {session_id}")
         else:
             raise Exception(f"Server app instance not found: {session_id}")
 
@@ -2116,10 +2393,15 @@ class ServerAppController:
                 f"User {user_info.id} does not have permission"
                 f" to take screenshot of app {session_id} in workspace {workspace}."
             )
-        if session_id in self._sessions:
-            return await self._sessions[session_id]["_worker"].take_screenshot(
-                session_id, format=format, context=context
-            )
+        session_data = await self._get_session_from_redis(session_id)
+        if session_data:
+            worker = self._get_worker_from_cache(session_data.get("worker_id"))
+            if worker:
+                return await worker.take_screenshot(
+                    session_id, format=format, context=context
+                )
+            else:
+                raise Exception(f"Worker not found for session: {session_id}")
         else:
             raise Exception(f"Server app instance not found: {session_id}")
 
@@ -2164,20 +2446,24 @@ class ServerAppController:
                 f"User {user_info.id} does not have permission"
                 f" to execute scripts in app {session_id} in workspace {workspace}."
             )
-        if session_id in self._sessions:
-            worker = self._sessions[session_id]["_worker"]
-            if hasattr(worker, "execute"):
-                return await worker.execute(
-                    session_id, 
-                    script=script, 
-                    config=config,
-                    progress_callback=progress_callback,
-                    context=context
-                )
+        session_data = await self._get_session_from_redis(session_id)
+        if session_data:
+            worker = self._get_worker_from_cache(session_data.get("worker_id"))
+            if worker:
+                if hasattr(worker, "execute"):
+                    return await worker.execute(
+                        session_id, 
+                        script=script, 
+                        config=config,
+                        progress_callback=progress_callback,
+                        context=context
+                    )
+                else:
+                    raise NotImplementedError(
+                        f"Worker for session {session_id} does not support the execute method"
+                    )
             else:
-                raise NotImplementedError(
-                    f"Worker for session {session_id} does not support the execute method"
-                )
+                raise Exception(f"Worker not found for session: {session_id}")
         else:
             raise Exception(f"Server app instance not found: {session_id}")
 
@@ -2191,10 +2477,11 @@ class ServerAppController:
     ) -> List[str]:
         """List the running sessions for the current workspace."""
         workspace = context["ws"]
+        all_sessions = await self._get_all_sessions()
         return [
             {k: v for k, v in session_info.items() if not k.startswith("_")}
-            for session_id, session_info in self._sessions.items()
-            if session_id.startswith(f"{workspace}/")
+            for session_info in all_sessions
+            if session_info.get("id", "").startswith(f"{workspace}/")
         ]
 
     @schema_method
@@ -2580,8 +2867,9 @@ class ServerAppController:
                 updated_manifest["disabled"] = disabled
                 if disabled:
                     # stop all the instances of the app
-                    for app in self._sessions.values():
-                        if app["id"] == app_id:
+                    all_sessions = await self._get_all_sessions()
+                    for app in all_sessions:
+                        if app.get("app_id") == app_id:
                             await self.stop(app["id"], raise_exception=False)
 
             # Handle autoscaling configuration updates
@@ -2614,7 +2902,7 @@ class ServerAppController:
 
             # If the app is currently running and autoscaling config changed, restart autoscaling
             if autoscaling_config is not None:
-                app_instances = self.autoscaling_manager._get_app_instances(app_id)
+                app_instances = await self.autoscaling_manager._get_app_instances(app_id)
                 if app_instances:
                     # Stop existing autoscaling
                     await self.autoscaling_manager.stop_autoscaling(app_id)
@@ -2639,7 +2927,18 @@ class ServerAppController:
         for app_id in list(self.autoscaling_manager._autoscaling_tasks.keys()):
             await self.autoscaling_manager.stop_autoscaling(app_id)
 
-        for app in self._sessions.values():
+        # Stop worker health monitoring
+        if self._health_monitor_task:
+            self._health_monitor_task.cancel()
+            try:
+                await self._health_monitor_task
+            except asyncio.CancelledError:
+                pass
+            self._health_monitor_task = None
+            logger.debug("Worker health monitoring stopped")
+
+        all_sessions = await self._get_all_sessions()
+        for app in all_sessions:
             await self.stop(app["id"], raise_exception=False)
             
         # Shutdown worker manager
@@ -2688,8 +2987,9 @@ class ServerAppController:
             "user": self.store.get_root_user().model_dump(),
         }
         # Stop all running apps
-        for app in list(self._sessions.values()):
-            if app["workspace"] == workspace_info.id:
+        all_sessions = await self._get_all_sessions()
+        for app in all_sessions:
+            if app.get("workspace") == workspace_info.id:
                 await self._stop(app["id"], raise_exception=False, context=context)
         # Send to all workers
         workers = await self.get_server_app_workers(context=context)

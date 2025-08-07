@@ -41,6 +41,7 @@ All workers must define these properties:
 - `visibility` - Worker visibility ("public", "protected", or "private", defaults to "protected")
 - `run_in_executor` - Whether worker should run in executor (defaults to False)
 - `require_context` - Whether worker requires context parameter (defaults to True)
+- `use_local_url` - Whether worker should use local URLs (defaults to False)
 - `service_id` - Unique service identifier (auto-generated from name and instance)
 
 ### Context Parameter
@@ -48,6 +49,19 @@ All workers must define these properties:
 Workers with `require_context = True` (default) receive a `context` parameter in all their methods containing workspace and user information. This allows the server to inject security context and workspace details into worker operations.
 
 If `require_context = False`, the context parameter will still be present but may be None depending on the calling context.
+
+### URL Configuration
+
+The `use_local_url` property determines which base URL the worker receives for server communication:
+
+- **`use_local_url = True`**: Worker receives `local_base_url` for `server_url` and `app_files_base_url`. This is used for workers running in the same cluster/host as the Hypha server (e.g., built-in workers, startup function workers) to enable efficient local communication.
+
+- **`use_local_url = False`** (default): Worker receives `public_base_url` for external access. This is used for external workers started via CLI or running on different hosts.
+
+**Examples:**
+- Built-in workers (BrowserWorker, PythonEvalRunner, A2AClientRunner, MCPClientRunner): `use_local_url = True`
+- CLI-started workers (CondaWorker started via command line): `use_local_url = False`
+- Custom startup function workers: Should set `use_local_url = True` if running locally
 
 ## Hypha Worker Configuration
 
@@ -282,6 +296,11 @@ class MyCustomWorker(BaseWorker):
     def run_in_executor(self) -> bool:
         """Return whether the worker should run in an executor."""
         return True  # Set to True for CPU-intensive workers
+    
+    @property
+    def use_local_url(self) -> bool:
+        """Return whether the worker should use local URLs."""
+        return False  # Set to True if worker runs in same cluster/host as Hypha server
     
     async def start(self, config: Union[WorkerConfig, Dict[str, Any]], context: Optional[Dict[str, Any]] = None) -> str:
         """Start a new worker session."""
@@ -640,6 +659,7 @@ async def main():
             "run_in_executor": True,
         },
         "supported_types": ["simple-task", "custom-type"],
+        "use_local_url": False,  # Set to True if worker runs in same cluster/host
         "start": start,
         "stop": stop,
         "list_sessions": list_sessions,
@@ -693,6 +713,10 @@ class MyCustomWorker {
 
     get requireContext() {
         return true;
+    }
+
+    get useLocalUrl() {
+        return false; // Set to true if worker runs in same cluster/host as Hypha server
     }
 
     get serviceId() {
@@ -926,6 +950,7 @@ class MyCustomWorker {
                 require_context: this.requireContext,
             },
             supported_types: this.supportedTypes,
+            use_local_url: this.useLocalUrl,
             start: this.start.bind(this),
             stop: this.stop.bind(this),
             list_sessions: this.listSessions.bind(this),
@@ -1104,6 +1129,7 @@ async function main() {
                 run_in_executor: true,
             },
             supported_types: ["javascript-simple", "custom-js-type"],
+            use_local_url: false,  // Set to true if worker runs in same cluster/host
             start: start,
             stop: stop,
             list_sessions: listSessions,

@@ -241,27 +241,6 @@ async def test_conda_worker_session_lifecycle(fastapi_server, test_user_token):
     await api.rpc.register_service(service_config)
     worker_service = await api.get_service("test-conda-session-worker")
 
-    # Test session lifecycle
-    # Create session config
-    session_config = {
-        "id": f"{workspace}/test-conda-session",
-        "client_id": "test-conda-session",
-        "app_id": "test-conda-app",
-        "server_url": WS_SERVER_URL,
-        "workspace": workspace,
-        "token": test_user_token,
-        "entry_point": "main.py",
-        "artifact_id": f"{workspace}/test-conda-app",
-        "manifest": {
-            "type": "conda-jupyter-kernel",
-            "name": "Test Conda App",
-            "entry_point": "main.py",
-            "dependencies": ["python=3.11", "numpy"],
-            "channels": ["conda-forge"],
-        },
-        "app_files_base_url": f"{SERVER_URL}/{workspace}/artifacts/test-conda-app/files",
-        "progress_callback": lambda x: print(f"Progress: {x}"),
-    }
 
     # Note: We can't actually start a conda session without proper setup
     # So we'll test the session management methods directly
@@ -1361,6 +1340,256 @@ async def test_worker_workspace_isolation(
     await controller2.stop(config2.id)
     await api1.disconnect()
     await api2.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_worker_death_session_cleanup(fastapi_server, test_user_token):
+    """Test that sessions are properly cleaned up when a worker dies."""
+    from hypha.utils import random_id
+    from hypha.workers.base import BaseWorker, WorkerConfig, SessionInfo, SessionStatus
+    
+    # Connect as the main test client
+    api = await connect_to_server(
+        {"client_id": "test-worker-death-main", "server_url": SERVER_URL, "token": test_user_token}
+    )
+    
+    # Get the app controller service
+    controller = await api.get_service("public/server-apps")
+    
+    # Check initial running apps
+    running_apps_initial = await controller.list_running()
+    
+    # Create a test worker that extends BaseWorker properly
+    class TestWorker(BaseWorker):
+        def __init__(self):
+            super().__init__()
+            self._sessions = {}
+            
+        @property
+        def name(self):
+            return "TestWorker"
+            
+        @property
+        def description(self):
+            return "Test worker for death cleanup testing"
+            
+        @property
+        def supported_types(self):
+            return ["test-app"]
+            
+        @property
+        def use_local_url(self):
+            return True
+            
+        async def start(self, config, context=None):
+            """Start a new worker session."""
+            if isinstance(config, dict):
+                # Convert dict to WorkerConfig for consistency
+                config = WorkerConfig(**config)
+            
+            session_id = config.id
+            session_info = SessionInfo(
+                session_id=session_id,
+                app_id=config.app_id,
+                workspace=config.workspace,
+                client_id=config.client_id,
+                status=SessionStatus.RUNNING,
+                app_type="test-app",
+                created_at="2024-01-01T00:00:00Z",
+                entry_point=config.entry_point,
+            )
+            self._sessions[session_id] = session_info
+            print(f"🚀 TestWorker started session: {session_id}")
+            
+            # Simulate a running app by registering a service
+            # This prevents the app from being stopped immediately
+            import asyncio
+            await asyncio.sleep(0.1)  # Small delay to simulate startup
+            
+            return session_id
+            
+        async def stop(self, session_id, context=None):
+            """Stop a worker session."""
+            if session_id in self._sessions:
+                self._sessions.pop(session_id)
+                print(f"🛑 TestWorker stopped session: {session_id}")
+                
+        async def list_sessions(self, workspace, context=None):
+            """List all sessions for a workspace."""
+            return [info for info in self._sessions.values() if info.workspace == workspace]
+            
+        async def get_logs(self, session_id, log_type=None, offset=0, limit=None, context=None):
+            """Get logs for a session."""
+            return [f"Log from {session_id}"]
+            
+        async def get_session_info(self, session_id, context=None):
+            """Get information about a session."""
+            return self._sessions.get(session_id)
+            
+        async def prepare_workspace(self, workspace, context=None):
+            """Prepare workspace for worker operations."""
+            pass
+            
+        async def close_workspace(self, workspace, context=None):
+            """Close workspace and cleanup sessions."""
+            pass
+    
+    # Connect as a worker client and register the test worker
+    worker_client_id = "test-worker-client-" + random_id()
+    worker_api = await connect_to_server(
+        {"client_id": worker_client_id, "server_url": SERVER_URL, "token": test_user_token}
+    )
+    
+    test_worker = TestWorker()
+    worker_service = test_worker.get_worker_service()
+    
+    await worker_api.register_service(worker_service)
+    
+    # Install a test app that the worker supports
+    test_app_source = """<config lang="json">
+{
+    "name": "Test App for Worker Death",
+    "type": "test-app",
+    "version": "0.1.0",
+    "description": "Test app for worker death cleanup verification"
+}
+</config>
+<script lang="python">
+from hypha_rpc import api
+
+def test_function():
+    return "Hello from test app"
+
+api.export({"test": test_function})
+</script>
+"""
+    
+    app_info = await controller.install(source=test_app_source, overwrite=True, wait_for_service=False)
+    app_id = app_info.get("id") or app_info.get("alias")
+    
+    # Start the app - it should use our test worker
+    session_info = await controller.start(app_id, worker_id=test_worker.service_id, wait_for_service=False)
+    session_id = session_info.get("id")
+    
+    # Verify the session is running
+    running_apps_with_session = await controller.list_running()
+    assert len(running_apps_with_session) > len(running_apps_initial), "Session should be in running list"
+    
+    # Find our session in the running list
+    our_session = None
+    for session in running_apps_with_session:
+        # session might be a dict/object with 'id' field
+        session_id_to_check = session.get('id') if hasattr(session, 'get') else str(session)
+        if session_id in session_id_to_check:
+            our_session = session
+            break
+    
+    assert our_session is not None, f"Our session {session_id} should be in running list"
+    
+    # Now simulate worker death by disconnecting the worker client
+    await worker_api.disconnect()
+    
+    # Wait for cleanup events to be processed
+    await asyncio.sleep(5)
+    
+    # Check running apps - our session should be gone
+    running_apps_after = await controller.list_running()
+    
+    # Verify our session is no longer in the running list
+    session_still_running = False
+    for session in running_apps_after:
+        # session might be a dict/object with 'id' field
+        session_id_to_check = session.get('id') if hasattr(session, 'get') else str(session)
+        if session_id in session_id_to_check:
+            session_still_running = True
+            break
+    
+    assert not session_still_running, f"Session {session_id} should be removed from running list after worker death"
+    
+    # Clean up
+    await controller.uninstall(app_id)
+    await api.disconnect()
+
+@pytest.mark.asyncio
+async def test_use_local_url_functionality(fastapi_server, test_user_token):
+    """Test that built-in workers have use_local_url property set correctly."""
+    # Test that built-in workers have use_local_url=True
+    from hypha.workers.browser import BrowserWorker
+    from hypha.workers.conda import CondaWorker
+    
+    # Test BrowserWorker (built-in worker)
+    browser_worker = BrowserWorker()
+    assert hasattr(browser_worker, 'use_local_url'), "BrowserWorker should have use_local_url property"
+    assert browser_worker.use_local_url == True, "BrowserWorker should have use_local_url=True"
+    
+    # Test that the property is included in worker service registration
+    browser_service = browser_worker.get_worker_service()
+    assert 'use_local_url' in browser_service, "Worker service should include use_local_url"
+    assert browser_service['use_local_url'] == True, "Worker service use_local_url should match property"
+    
+    # Test CondaWorker (can be external worker) - should have use_local_url=False by default
+    conda_worker = CondaWorker()
+    assert hasattr(conda_worker, 'use_local_url'), "CondaWorker should have use_local_url property"
+    assert conda_worker.use_local_url == False, "CondaWorker should have use_local_url=False"
+    
+    conda_service = conda_worker.get_worker_service()
+    assert 'use_local_url' in conda_service, "Worker service should include use_local_url"
+    assert conda_service['use_local_url'] == False, "Worker service use_local_url should match property"
+    
+    # Test the base worker class has the property
+    from hypha.workers.base import BaseWorker
+    
+    class TestWorker(BaseWorker):
+        def __init__(self):
+            super().__init__()
+        
+        @property
+        def name(self):
+            return "test-worker"
+            
+        @property
+        def description(self):
+            return "Test worker"
+            
+        @property
+        def supported_types(self):
+            return ["test"]
+            
+        async def start(self, config, context=None):
+            return "test-session"
+            
+        async def stop(self, session_id, context=None):
+            pass
+            
+        async def list_sessions(self, context=None):
+            return []
+            
+        async def get_logs(self, session_id, context=None):
+            return ""
+            
+        async def get_session_info(self, session_id, context=None):
+            return {}
+            
+        async def prepare_workspace(self, workspace, context=None):
+            pass
+            
+        async def close_workspace(self, workspace, context=None):
+            pass
+    
+    test_worker = TestWorker()
+    assert hasattr(test_worker, 'use_local_url'), "BaseWorker should have use_local_url property"
+    assert test_worker.use_local_url == False, "BaseWorker use_local_url should default to False"
+    
+    test_service = test_worker.get_worker_service()
+    assert 'use_local_url' in test_service, "Worker service should include use_local_url"
+    assert test_service['use_local_url'] == False, "Worker service use_local_url should match property"
+    
+    print("✓ use_local_url property is correctly set on all workers")
+    print(f"  BrowserWorker.use_local_url = {browser_worker.use_local_url}")
+    print(f"  CondaWorker.use_local_url = {conda_worker.use_local_url}")
+    print(f"  BaseWorker.use_local_url (default) = {test_worker.use_local_url}")
+    
+    print("✓ Test completed successfully - use_local_url functionality")
 
 
 if __name__ == "__main__":
