@@ -552,6 +552,25 @@ hypha-server:
 ```
 
 
+### Persistent Volume Permissions (fsGroup)
+
+When running Hypha as a non-root user, the mounted PVC may be owned by `root:root`, preventing writes. Configure a pod security context so Kubernetes adjusts volume group ownership at mount time:
+
+```yaml
+hypha-server:
+  podSecurityContext:
+    fsGroup: 1000
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+```
+
+Notes:
+- On storage drivers that do not honor `fsGroup` (commonly some NFS/RWX provisioners), this setting is harmless but won’t change ownership; you may need storage-side permissions or a one-time initContainer to chown.
+- On large volumes where it is supported, the initial mount may take longer due to ownership updates.
+
+
 ## Troubleshooting
 
 ### Check Pod Status

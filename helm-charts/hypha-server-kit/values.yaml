@@ -52,6 +52,14 @@ hypha-server:
       cpu: "1"
       memory: "2Gi"
   
+  # Security context for pod and container to ensure writable PVCs for non-root
+  podSecurityContext:
+    fsGroup: 1000
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+  
   persistence:
     enabled: true
     size: 10Gi
