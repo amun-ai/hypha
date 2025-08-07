@@ -903,7 +903,7 @@ class ServerAppController:
         
         This method returns basic information about available workers:
         1. Gets all workspace workers of type "server-app-worker"
-        2. Falls back to public workers if no workspace workers found
+        2. Gets all public workers of type "server-app-worker"
         3. Optionally filters by supported app type
         4. Returns basic info: id, name, description, supported_types
         
@@ -957,39 +957,38 @@ class ServerAppController:
                     )
                     continue
 
-        # Fallback to public workers if no workspace workers found
-        if not workers_info:
-            try:
-                server = await self.store.get_public_api()
-                public_svcs = await server.list_services({"type": "server-app-worker"})
-                logger.info(
-                    f"Found {len(public_svcs)} server-app-worker services in public workspace"
-                )
+        # Always fetch public workers to allow frontend filtering
+        try:
+            server = await self.store.get_public_api()
+            public_svcs = await server.list_services({"type": "server-app-worker"})
+            logger.info(
+                f"Found {len(public_svcs)} server-app-worker services in public workspace"
+            )
 
-                for svc in public_svcs:
-                    try:
-                        # Get the full service info
-                        full_svc = await server.get_service(svc["id"])
-                        supported_types = full_svc.get("supported_types", [])
-                        
-                        # Filter by type if specified
-                        if app_type and app_type not in supported_types:
-                            continue
-                            
-                        worker_info = {
-                            "id": svc["id"],
-                            "name": full_svc.get("name", svc["id"]),
-                            "description": full_svc.get("description", ""),
-                            "supported_types": supported_types,
-                        }
-                        workers_info.append(worker_info)
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to get full public worker info for {svc['id']}: {e}"
-                        )
+            for svc in public_svcs:
+                try:
+                    # Get the full service info
+                    full_svc = await server.get_service(svc["id"])
+                    supported_types = full_svc.get("supported_types", [])
+                    
+                    # Filter by type if specified
+                    if app_type and app_type not in supported_types:
                         continue
-            except Exception as e:
-                logger.warning(f"Failed to get public workers: {e}")
+                        
+                    worker_info = {
+                        "id": svc["id"],
+                        "name": full_svc.get("name", svc["id"]),
+                        "description": full_svc.get("description", ""),
+                        "supported_types": supported_types,
+                    }
+                    workers_info.append(worker_info)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to get full public worker info for {svc['id']}: {e}"
+                    )
+                    continue
+        except Exception as e:
+            logger.warning(f"Failed to get public workers: {e}")
 
         return workers_info
 
