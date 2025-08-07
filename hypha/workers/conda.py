@@ -1226,5 +1226,130 @@ Examples:
     asyncio.run(run_worker())
 
 
+async def run_from_env():
+    """Run the conda worker using only environment variables.
+    
+    This function is useful when running the worker in containerized environments
+    like Kubernetes where all configuration comes from environment variables.
+    """
+    try:
+        from hypha_rpc import connect_to_server
+
+        # Get configuration from environment variables
+        server_url = os.environ.get("HYPHA_SERVER_URL")
+        workspace = os.environ.get("HYPHA_WORKSPACE") 
+        token = os.environ.get("HYPHA_TOKEN")
+        client_id = os.environ.get("HYPHA_CLIENT_ID")
+        service_id = os.environ.get("HYPHA_SERVICE_ID")
+        visibility = os.environ.get("HYPHA_VISIBILITY", "protected")
+        cache_dir = os.environ.get("HYPHA_CACHE_DIR")
+        verbose = os.environ.get("HYPHA_VERBOSE", "false").lower() in ("true", "1", "yes")
+
+        # Validate required environment variables
+        if not server_url:
+            raise ValueError("HYPHA_SERVER_URL environment variable is required")
+        if not workspace:
+            raise ValueError("HYPHA_WORKSPACE environment variable is required")
+        if not token:
+            raise ValueError("HYPHA_TOKEN environment variable is required")
+
+        # Set up logging
+        if verbose:
+            logging.basicConfig(
+                level=logging.INFO,
+                format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            )
+            logger.setLevel(logging.INFO)
+
+        # Detect package manager early for better error reporting
+        try:
+            package_manager = get_available_package_manager()
+        except RuntimeError as e:
+            logger.error(f"Package manager detection failed: {e}")
+            logger.error("Please install conda or mamba to use this worker.")
+            raise
+
+        logger.info(f"Starting Hypha Conda Environment Worker from environment variables...")
+        logger.info(f"  Package Manager: {package_manager}")
+        logger.info(f"  Server URL: {server_url}")
+        logger.info(f"  Workspace: {workspace}")
+        logger.info(f"  Client ID: {client_id or 'auto-generated'}")
+        logger.info(f"  Service ID: {service_id or 'auto-generated'}")
+        logger.info(f"  Visibility: {visibility}")
+        # Override cache directory if specified
+        global DEFAULT_CACHE_DIR
+        if cache_dir:
+            DEFAULT_CACHE_DIR = cache_dir
+
+        logger.info(f"  Cache Dir: {cache_dir or DEFAULT_CACHE_DIR}")
+
+        # Connect to server
+        server = await connect_to_server(
+            server_url=server_url,
+            workspace=workspace,
+            token=token,
+            client_id=client_id,
+        )
+
+        # Create and register worker
+        worker = CondaWorker()
+        if cache_dir:
+            worker._env_cache = EnvironmentCache(cache_dir=cache_dir)
+
+        # Get service config and set custom properties
+        service_config = worker.get_worker_service()
+        if service_id:
+            service_config["id"] = service_id
+        # Set visibility in the correct location (inside config)
+        service_config["config"]["visibility"] = visibility
+
+        # Register the service
+        logger.info(f"Registering conda worker with config:")
+        logger.info(f"   Service ID: {service_config['id']}")
+        logger.info(f"   Type: {service_config['type']}")
+        logger.info(f"   Supported types: {service_config['supported_types']}")
+        logger.info(f"   Visibility: {service_config.get('config', {}).get('visibility', 'N/A')}")
+        logger.info(f"   Workspace: {workspace}")
+
+        registration_result = await server.register_service(service_config)
+        logger.info(f"   Registered service id: {registration_result.id}")
+
+        # Verify registration by listing services
+        try:
+            services = await server.list_services({"type": "server-app-worker"})
+            logger.info(f"   Found {len(services)} server-app-worker services in workspace")
+            conda_workers = [s for s in services if s.get('id').endswith(service_config['id'])]
+            if conda_workers:
+                logger.info(f"   ✅ Worker found in service list")
+            else:
+                logger.warning(f"   ⚠️  Worker NOT found in service list!")
+                logger.warning(f"   Available workers: {[s.get('id') for s in services]}")
+        except Exception as e:
+            logger.warning(f"   ⚠️  Failed to verify registration: {e}")
+
+        logger.info(f"✅ Conda Environment Worker registered successfully!")
+        logger.info(f"   Service ID: {service_config['id']}")
+        logger.info(f"   Supported types: {worker.supported_types}")
+        logger.info(f"   Visibility: {visibility}")
+        logger.info(f"Worker is ready to process conda environment requests...")
+
+        # Keep the worker running
+        try:
+            while True:
+                await asyncio.sleep(1)
+        except KeyboardInterrupt:
+            logger.info(f"Shutting down Conda Environment Worker...")
+            await worker.shutdown()
+            logger.info(f"Worker shutdown complete.")
+
+    except Exception as e:
+        logger.error(f"Failed to start Conda Environment Worker: {e}")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    main()
+    # Check if we should run from environment variables only
+    if os.environ.get("HYPHA_RUN_FROM_ENV", "false").lower() in ("true", "1", "yes"):
+        asyncio.run(run_from_env())
+    else:
+        main()
