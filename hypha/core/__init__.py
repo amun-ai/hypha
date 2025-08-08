@@ -503,6 +503,30 @@ class RedisRPCConnection:
         "Current load per client (requests per minute)",
         ["workspace", "client_id"],
     )
+    _connections_created_total = Counter(
+        "redis_rpc_connections_created_total",
+        "Total RPC connections created",
+    )
+    _connections_closed_total = Counter(
+        "redis_rpc_connections_closed_total",
+        "Total RPC connections closed",
+    )
+    _active_connections_gauge = Gauge(
+        "redis_rpc_active_connections",
+        "Current active RPC connections",
+    )
+    _created_total_int = 0
+    _closed_total_int = 0
+
+    @classmethod
+    def get_metrics_snapshot(cls) -> dict:
+        return {
+            "rpc_connections": {
+                "created_total": cls._created_total_int,
+                "closed_total": cls._closed_total_int,
+                "active": len(cls._connections),
+            }
+        }
     _tracker = None
 
     @classmethod
@@ -535,6 +559,10 @@ class RedisRPCConnection:
         # Register this connection in the global registry
         connection_key = f"{self._workspace}/{self._client_id}"
         RedisRPCConnection._connections[connection_key] = self
+        # Metrics
+        RedisRPCConnection._connections_created_total.inc()
+        RedisRPCConnection._created_total_int += 1
+        RedisRPCConnection._active_connections_gauge.set(len(RedisRPCConnection._connections))
         
         # Register this client for targeted subscriptions
         # We'll register this asynchronously in on_message to avoid blocking
@@ -767,6 +795,10 @@ class RedisRPCConnection:
         # Unregister this connection from the global registry
         connection_key = f"{self._workspace}/{self._client_id}"
         RedisRPCConnection._connections.pop(connection_key, None)
+        # Metrics
+        RedisRPCConnection._connections_closed_total.inc()
+        RedisRPCConnection._closed_total_int += 1
+        RedisRPCConnection._active_connections_gauge.set(len(RedisRPCConnection._connections))
         if self._handle_message:
             self._event_bus.off(
                 f"{self._workspace}/{self._client_id}:msg", self._handle_message
@@ -819,9 +851,69 @@ class RedisEventBus:
     _counter = Counter(
         "event_bus", "Counts the events on the redis event bus", ["event", "status"]
     )
-    _pubsub_latency = Gauge(
-        "redis_pubsub_latency_seconds", "Redis pubsub latency in seconds"
+    _messages_processed_total = Counter(
+        "redis_eventbus_messages_processed_total",
+        "Total messages processed by RedisEventBus",
     )
+    _active_pubsub_connections = Gauge(
+        "redis_eventbus_active_pubsub_connections",
+        "Current active Redis pubsub connections",
+    )
+    _pubsub_connections_created_total = Counter(
+        "redis_eventbus_pubsub_connections_created_total",
+        "Total Redis pubsub connections created",
+    )
+    _pubsub_connections_closed_total = Counter(
+        "redis_eventbus_pubsub_connections_closed_total",
+        "Total Redis pubsub connections closed",
+    )
+    _patterns_subscribed_total = Counter(
+        "redis_eventbus_patterns_subscribed_total",
+        "Total pattern subscriptions through RedisEventBus",
+    )
+    _patterns_unsubscribed_total = Counter(
+        "redis_eventbus_patterns_unsubscribed_total",
+        "Total pattern unsubscriptions through RedisEventBus",
+    )
+    _active_local_clients_gauge = Gauge(
+        "redis_eventbus_local_clients",
+        "Current number of local clients known to RedisEventBus",
+    )
+    _active_patterns_gauge = Gauge(
+        "redis_eventbus_active_patterns",
+        "Current number of active subscribed patterns",
+    )
+    _reconnect_attempts_total = Counter(
+        "redis_eventbus_reconnect_attempts_total",
+        "Total reconnect attempts for RedisEventBus pubsub",
+    )
+    # mirror values for admin metrics snapshot (int counters)
+    _messages_processed_total_int = 0
+    _pubsub_connections_created_total_int = 0
+    _pubsub_connections_closed_total_int = 0
+    _patterns_subscribed_total_int = 0
+    _patterns_unsubscribed_total_int = 0
+    _reconnect_attempts_total_int = 0
+
+    @classmethod
+    def get_metrics_snapshot(cls, instance: "RedisEventBus") -> dict:
+        return {
+            "eventbus": {
+                "messages_processed_total": cls._messages_processed_total_int,
+                "pubsub_connections": {
+                    "created_total": cls._pubsub_connections_created_total_int,
+                    "closed_total": cls._pubsub_connections_closed_total_int,
+                    "active": 1 if instance._pubsub else 0,
+                },
+                "patterns": {
+                    "subscribed_total": cls._patterns_subscribed_total_int,
+                    "unsubscribed_total": cls._patterns_unsubscribed_total_int,
+                    "active": len(instance._subscribed_patterns),
+                },
+                "local_clients": len(instance._local_clients),
+                "reconnect_attempts_total": cls._reconnect_attempts_total_int,
+            }
+        }
 
     def __init__(self, redis) -> None:
         """Initialize the event bus."""
@@ -830,18 +922,6 @@ class RedisEventBus:
         self._stop = False
         self._local_event_bus = EventBus(logger)
         self._redis_event_bus = EventBus(logger)
-        self._reconnect_delay = 1  # Start with 1 second delay
-        self._max_reconnect_delay = 30  # Maximum delay between reconnection attempts
-        self._health_check_interval = 5  # Health check every 5 seconds
-        self._consecutive_failures = 0
-        self._max_failures = 3  # Circuit breaker threshold
-        self._circuit_breaker_open = False
-        self._last_successful_connection = None
-        self._health_check_channel = "health_check:" + str(uuid.uuid4())
-        self._health_check_pubsub = None
-        self._pubsub_health_future = None
-        # Ensure only one pubsub health check runs at a time to avoid races
-        self._health_check_lock = asyncio.Lock()
         # Track local clients for optimized routing
         self._local_clients = set()  # Set of "workspace/client_id" strings
         self._subscribed_patterns = set()  # Track which patterns we've subscribed to
@@ -852,37 +932,54 @@ class RedisEventBus:
         client_key = f"{workspace}/{client_id}"
         self._local_clients.add(client_key)
         logger.debug(f"Registered local client: {client_key}")
+        # metrics
+        try:
+            RedisEventBus._active_local_clients_gauge.set(len(self._local_clients))
+        except Exception:
+            pass
 
     async def unregister_local_client(self, workspace: str, client_id: str):
         """Unregister a local client."""
         client_key = f"{workspace}/{client_id}"
         self._local_clients.discard(client_key)
         logger.debug(f"Unregistered local client: {client_key}")
+        try:
+            RedisEventBus._active_local_clients_gauge.set(len(self._local_clients))
+        except Exception:
+            pass
 
     async def subscribe_to_client_events(self, workspace: str, client_id: str):
         """Subscribe to events for a specific client using targeted prefix."""
         client_key = f"{workspace}/{client_id}"
         # Subscribe to targeted messages for this client
         pattern = f"targeted:{client_key}:*"
-        if pattern not in self._subscribed_patterns and self._pubsub:
-            try:
-                await self._pubsub.psubscribe(pattern)
-                self._subscribed_patterns.add(pattern)
-                logger.debug(f"Subscribed to client events: {pattern}")
-            except Exception as e:
-                logger.warning(f"Failed to subscribe to client events {pattern}: {e}")
+        if pattern not in self._subscribed_patterns:
+            # Record desired subscription regardless of pubsub availability
+            self._subscribed_patterns.add(pattern)
+            RedisEventBus._active_patterns_gauge.set(len(self._subscribed_patterns))
+            if self._pubsub:
+                try:
+                    await self._pubsub.psubscribe(pattern)
+                    logger.debug("Subscribed to client events: %s", pattern)
+                    RedisEventBus._patterns_subscribed_total.inc()
+                    RedisEventBus._patterns_subscribed_total_int += 1
+                except Exception as e:
+                    logger.warning("Failed to subscribe to client events %s: %s", pattern, e)
 
     async def unsubscribe_from_client_events(self, workspace: str, client_id: str):
         """Unsubscribe from events for a specific client."""
         client_key = f"{workspace}/{client_id}"
         pattern = f"targeted:{client_key}:*"
-        if pattern in self._subscribed_patterns and self._pubsub:
-            try:
-                await self._pubsub.punsubscribe(pattern)
-                self._subscribed_patterns.discard(pattern)
-                logger.debug(f"Unsubscribed from client events: {pattern}")
-            except Exception as e:
-                logger.warning(f"Failed to unsubscribe from client events {pattern}: {e}")
+        if pattern in self._subscribed_patterns:
+            if self._pubsub:
+                try:
+                    await self._pubsub.punsubscribe(pattern)
+                    RedisEventBus._patterns_unsubscribed_total.inc()
+                    RedisEventBus._patterns_unsubscribed_total_int += 1
+                except Exception as e:
+                    logger.warning("Failed to unsubscribe from client events %s: %s", pattern, e)
+            self._subscribed_patterns.discard(pattern)
+            RedisEventBus._active_patterns_gauge.set(len(self._subscribed_patterns))
 
     def is_local_client(self, workspace: str, client_id: str) -> bool:
         """Check if a client is local to this server instance."""
@@ -910,7 +1007,6 @@ class RedisEventBus:
 
         # Start the Redis subscription task
         self._subscribe_task = loop.create_task(self._subscribe_redis())
-        self._health_check_task = loop.create_task(self._health_check())
 
         # Wait for readiness signal
         await self._ready
@@ -1063,178 +1159,14 @@ class RedisEventBus:
         # Cancel tasks first
         if self._subscribe_task:
             self._subscribe_task.cancel()
-        if self._health_check_task:
-            self._health_check_task.cancel()
-
-        # Clean up pubsub connections
-        if self._health_check_pubsub:
-            try:
-                await self._health_check_pubsub.unsubscribe()
-                await self._health_check_pubsub.close()
-                self._health_check_pubsub = None
-            except Exception as e:
-                logger.warning(
-                    f"Error cleaning up health check pubsub during stop: {str(e)}"
-                )
 
         # Wait for tasks to complete
         try:
             await asyncio.gather(
-                self._subscribe_task, self._health_check_task, return_exceptions=True
+                self._subscribe_task, return_exceptions=True
             )
         except asyncio.CancelledError:
             pass
-
-    async def _check_pubsub_health(self):
-        """Check if pubsub is working by sending and receiving a test message.
-
-        Guarded by a lock to avoid concurrent health checks racing each other
-        (e.g. readiness endpoint vs. background health task) which could lead
-        to message/future mismatches and intermittent failures.
-        """
-        async with self._health_check_lock:
-            try:
-                if not self._health_check_pubsub:
-                    self._health_check_pubsub = self._redis.pubsub()
-                    await self._health_check_pubsub.subscribe(self._health_check_channel)
-
-                # Create a future to wait for the message
-                self._pubsub_health_future = asyncio.Future()
-
-                # Send test message with timestamp
-                test_message = str(time.time())
-                await self._redis.publish(self._health_check_channel, test_message)
-
-                # Wait for message with timeout
-                try:
-                    start_time = time.time()
-                    received = await asyncio.wait_for(
-                        self._pubsub_health_future, timeout=2.0
-                    )
-                    end_time = time.time()
-
-                    # Verify it's the message we sent
-                    if received == test_message:
-                        latency = end_time - start_time
-                        self._pubsub_latency.set(latency)
-                        self._counter.labels(event="pubsub_health", status="success").inc()
-                        return True
-                    else:
-                        logger.warning("Received unexpected message in pubsub health check")
-                        self._counter.labels(event="pubsub_health", status="mismatch").inc()
-                        return False
-
-                except asyncio.TimeoutError:
-                    logger.warning("Pubsub health check timed out")
-                    self._counter.labels(event="pubsub_health", status="timeout").inc()
-                    return False
-
-            except Exception as e:
-                logger.error(f"Pubsub health check failed: {str(e)}")
-                self._counter.labels(event="pubsub_health", status="error").inc()
-                # Clean up health check pubsub on error
-                if self._health_check_pubsub:
-                    try:
-                        await self._health_check_pubsub.unsubscribe()
-                        await self._health_check_pubsub.close()
-                        self._health_check_pubsub = None
-                    except Exception as cleanup_error:
-                        logger.warning(
-                            f"Error cleaning up health check pubsub: {str(cleanup_error)}"
-                        )
-                return False
-
-    async def _process_health_check_message(self, message):
-        """Process incoming health check messages."""
-        try:
-            if self._pubsub_health_future and not self._pubsub_health_future.done():
-                self._pubsub_health_future.set_result(message.decode("utf-8"))
-        except Exception as e:
-            logger.error(f"Error processing health check message: {str(e)}")
-
-    async def _health_check(self):
-        """Periodically check Redis health including pubsub and performance."""
-        while not self._stop:
-            try:
-                await self._redis.ping()
-                await asyncio.sleep(self._health_check_interval)
-                if self._circuit_breaker_open:
-                    continue
-
-                # Check pubsub functionality
-                pubsub_healthy = await self._check_pubsub_health()
-                if not pubsub_healthy:
-                    self._consecutive_failures += 1
-                    if self._consecutive_failures >= self._max_failures:
-                        logger.error("Circuit breaker opened due to pubsub failures")
-                        self._circuit_breaker_open = True
-                        self._counter.labels(
-                            event="circuit_breaker", status="open"
-                        ).inc()
-                        await self._attempt_reconnection()
-                    continue
-
-                # Reset failure counter on successful health check
-                self._consecutive_failures = 0
-                self._last_successful_connection = asyncio.get_event_loop().time()
-                self._counter.labels(event="health_check", status="success").inc()
-
-            except Exception as e:
-                logger.warning(f"Redis health check failed: {str(e)}")
-                self._counter.labels(event="health_check", status="failure").inc()
-                self._consecutive_failures += 1
-
-                if self._consecutive_failures >= self._max_failures:
-                    logger.error("Circuit breaker opened due to multiple failures")
-                    self._circuit_breaker_open = True
-                    await self._attempt_reconnection()
-
-    async def _attempt_reconnection(self):
-        """Attempt to reconnect with exponential backoff."""
-        while self._circuit_breaker_open and not self._stop:
-            try:
-                # Cancel existing subscription task and clean up connections
-                if self._subscribe_task:
-                    self._subscribe_task.cancel()
-                    try:
-                        await self._subscribe_task
-                    except asyncio.CancelledError:
-                        pass
-
-                # Clean up health check pubsub during reconnection
-                if self._health_check_pubsub:
-                    try:
-                        await self._health_check_pubsub.unsubscribe()
-                        await self._health_check_pubsub.close()
-                        self._health_check_pubsub = None
-                    except Exception as cleanup_error:
-                        logger.warning(
-                            f"Error cleaning up health check pubsub during reconnection: {str(cleanup_error)}"
-                        )
-
-                await asyncio.sleep(self._reconnect_delay)
-
-                # Try to ping Redis
-                await self._redis.ping()
-
-                # If successful, reset circuit breaker and restart subscription
-                self._circuit_breaker_open = False
-                self._consecutive_failures = 0
-                self._reconnect_delay = 1
-                self._counter.labels(event="reconnection", status="success").inc()
-
-                self._subscribe_task = self._loop.create_task(self._subscribe_redis())
-                logger.info("Successfully reconnected to Redis")
-                return
-
-            except Exception as e:
-                logger.error(f"Reconnection attempt failed: {str(e)}")
-                self._counter.labels(event="reconnection", status="failure").inc()
-
-                # Exponential backoff with max delay
-                self._reconnect_delay = min(
-                    self._reconnect_delay * 2, self._max_reconnect_delay
-                )
 
     async def _subscribe_redis(self):
         """Handle Redis subscription with automatic reconnection."""
@@ -1250,10 +1182,11 @@ class RedisEventBus:
                 pubsub = self._redis.pubsub()
                 self._pubsub = pubsub  # Store reference for dynamic subscriptions
                 self._stop = False
+                # metrics
+                RedisEventBus._pubsub_connections_created_total.inc()
+                RedisEventBus._pubsub_connections_created_total_int += 1
+                RedisEventBus._active_pubsub_connections.set(1)
                 semaphore = asyncio.Semaphore(concurrent_tasks)
-
-                # Subscribe to health check channel
-                await pubsub.subscribe(self._health_check_channel)
                 
                 # Subscribe to all broadcast messages (server-wide events)
                 await pubsub.psubscribe("broadcast:*")
@@ -1267,28 +1200,22 @@ class RedisEventBus:
                         logger.warning(f"Failed to re-subscribe to pattern {pattern}: {e}")
                         self._subscribed_patterns.discard(pattern)
                 
-                self._ready.set_result(True) if not self._ready.done() else None
+                if not self._ready.done():
+                    self._ready.set_result(True)
                 self._counter.labels(event="subscription", status="success").inc()
 
                 while not self._stop:
-                    if self._circuit_breaker_open:
-                        await asyncio.sleep(0.1)
-                        continue
-
                     try:
                         msg = await pubsub.get_message(
-                            ignore_subscribe_messages=True, timeout=0.05
+                            ignore_subscribe_messages=True, timeout=0.2
                         )
                         if msg:
-                            channel = msg["channel"].decode("utf-8")
-                            if channel == self._health_check_channel:
-                                await self._process_health_check_message(msg["data"])
-                            else:
-                                task = asyncio.create_task(
-                                    self._process_message(msg, semaphore)
-                                )
-                                background_tasks.add(task)
-                                task.add_done_callback(background_tasks.discard)
+                            # channel = msg["channel"].decode("utf-8")  # not used
+                            task = asyncio.create_task(
+                                self._process_message(msg, semaphore)
+                            )
+                            background_tasks.add(task)
+                            task.add_done_callback(background_tasks.discard)
                     except Exception as e:
                         logger.warning(f"Error getting message: {str(e)}")
                         self._counter.labels(
@@ -1301,6 +1228,9 @@ class RedisEventBus:
                 self._counter.labels(event="subscription", status="failure").inc()
                 if not self._ready.done():
                     self._ready.set_exception(exp)
+                # metrics
+                RedisEventBus._reconnect_attempts_total.inc()
+                RedisEventBus._reconnect_attempts_total_int += 1
                 await asyncio.sleep(1)  # Prevent tight loop on connection errors
             finally:
                 # Always clean up pubsub connection
@@ -1308,6 +1238,10 @@ class RedisEventBus:
                     try:
                         await pubsub.unsubscribe()
                         await pubsub.close()
+                        # metrics
+                        RedisEventBus._pubsub_connections_closed_total.inc()
+                        RedisEventBus._pubsub_connections_closed_total_int += 1
+                        RedisEventBus._active_pubsub_connections.set(0)
                     except Exception as e:
                         logger.warning(f"Error cleaning up pubsub connection: {str(e)}")
                 self._pubsub = None
@@ -1319,6 +1253,8 @@ class RedisEventBus:
             try:
                 channel = msg["channel"].decode("utf-8") 
                 RedisEventBus._counter.labels(event="*", status="processed").inc()
+                RedisEventBus._messages_processed_total.inc()
+                RedisEventBus._messages_processed_total_int += 1
 
                 # Handle prefix-based system with data type encoded in payload
                 if channel.startswith("broadcast:") or channel.startswith("targeted:"):

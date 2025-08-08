@@ -641,6 +641,7 @@ class RedisStore:
                 "kickout_client": self.kickout_client,
                 "list_workspaces": self.list_all_workspaces,
                 "unload_workspace": self.unload_workspace,
+                "get_metrics": self.get_metrics,
             }
         )
 
@@ -671,6 +672,14 @@ class RedisStore:
 
     def get_activity_tracker(self):
         return self._tracker
+
+    @schema_method
+    async def get_metrics(self):
+        """Return internal metrics snapshot for admin observability."""
+        return {
+            "rpc": RedisRPCConnection.get_metrics_snapshot(),
+            "eventbus": RedisEventBus.get_metrics_snapshot(self._event_bus),
+        }
 
     async def get_public_api(self):
         """Get the public API."""
