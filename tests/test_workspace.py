@@ -2,8 +2,7 @@
 
 import pytest
 from hypha_rpc import connect_to_server
-import time
-import asyncio
+import uuid
 
 from . import (
     WS_SERVER_URL,
@@ -315,6 +314,81 @@ async def test_workspace_env_variables(fastapi_server, test_user_token):
     assert "SHARED_VAR" in all_vars_first
     assert all_vars_first["SHARED_VAR"] == "shared_value"
 
+
+async def test_cross_workspace_list_public_service(
+    fastapi_server, test_user_token, test_user_token_2
+):
+    """User 1 registers public and protected services; user 2 lists user 1's workspace and should see only the public service."""
+    # Connect as user 1
+    api_user1 = await connect_to_server(
+        {
+            "client_id": "user1-client",
+            "name": "user1 client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 20,
+            "token": test_user_token,
+        }
+    )
+
+    cws_user1 = api_user1.config.workspace
+
+    suffix = str(uuid.uuid4())
+    public_service_name = f"public-x-{suffix}"
+    protected_service_name = f"protected-x-{suffix}"
+
+    # Register one public and one protected service as user 1
+    svc_public = await api_user1.register_service(
+        {
+            "id": public_service_name,
+            "name": f"Public X {suffix}",
+            "type": "test",
+            "config": {"visibility": "public"},
+            "hello": lambda: "hello public",
+        }
+    )
+
+    svc_protected = await api_user1.register_service(
+        {
+            "id": protected_service_name,
+            "name": f"Protected X {suffix}",
+            "type": "test",
+            "config": {"visibility": "protected"},
+            "hello": lambda: "hello protected",
+        }
+    )
+
+    # Connect as user 2
+    api_user2 = await connect_to_server(
+        {
+            "client_id": "user2-client",
+            "name": "user2 client",
+            "server_url": WS_SERVER_URL,
+            "method_timeout": 20,
+            "token": test_user_token_2,
+        }
+    )
+
+    try:
+        # List services in user 1's workspace
+        services = await api_user2.list_services({"workspace": cws_user1})
+        names = [s["name"] for s in services]
+        assert any(n == f"Public X {suffix}" for n in names)
+        assert all(n != f"Protected X {suffix}" for n in names)
+    except Exception as e:
+        print(f"Error listing services: {e}")
+        raise e
+    finally:
+        # Cleanup
+        try:
+            await api_user1.unregister_service(svc_public["id"])  # type: ignore[index]
+        except Exception:
+            pass
+        try:
+            await api_user1.unregister_service(svc_protected["id"])  # type: ignore[index]
+        except Exception:
+            pass
+        await api_user2.disconnect()
+        await api_user1.disconnect()
 
 async def test_service_selection_mode(fastapi_server, test_user_token):
     """Test that service_selection_mode from application manifest is used."""

@@ -95,6 +95,8 @@ hypha-server:
           key: HYPHA_REDIS_URI
     - name: HYPHA_ENABLE_SERVER_APPS
       value: "true"
+    - name: HYPHA_EXECUTABLE_PATH
+      value: "/home/bin"
     - name: HYPHA_ENABLE_S3
       value: "true"
     - name: HYPHA_ACCESS_KEY_ID
